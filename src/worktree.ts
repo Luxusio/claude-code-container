@@ -2672,7 +2672,8 @@ function warnUnreachableNestedRepository(candidatePath: string, recorded: string
         // when the -f path stopped crashing and started deleting. Say what holds on both
         // sides of the flag.
         + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary\n`
-        + "      files — which `ccc rm -f` deletes along with the workspace.\n"
+        + "      files — which `ccc rm -f` deletes along with the workspace, unless you repair\n"
+        + "      it first.\n"
         // The container boundary is the common cause, not the only one: a workspace that was
         // moved or renamed leaves the same unresolvable back-pointer with no container
         // anywhere near it, and an operator told "registered inside the container" about a
@@ -3691,9 +3692,57 @@ function captureExistingWorktreeRegistrationFence(
 // Without this, repair returned null on every attempt and the CLI said only "failed to fix
 // (content unchanged)", so the operator had no way to learn that a registration was the
 // obstacle, let alone which one.
+/**
+ * Repositories that still hold `branch` through a registration recorded at a path nothing
+ * here can reach — after the workspace that path belonged to has been removed.
+ *
+ * `ccc rm -f` said "Workspace removed." and left exactly this, silently: the next
+ * `ccc @<branch>` then died with `fatal: '<branch>' is already used by worktree at
+ * '/project/…'`, whose only noun is a path on the other side of the container boundary and
+ * which names no remedy. Three commands from ccc's own output, and `git worktree prune` in
+ * the named repository is the whole fix.
+ *
+ * Best effort by construction: this runs after a successful removal and must never turn one
+ * into a failure, so every step that can throw is contained.
+ */
+export function strandedBranchRegistrations(
+    sourcePath: string,
+    branch: string,
+): string[] {
+    const resolved = resolve(sourcePath);
+    const repositories = [resolved];
+    try {
+        const entries = hasGitMetadata(resolved)
+            ? scanUnifiedNestedRepositories(resolved, {
+                strict: false,
+                allowRegisteredWorktrees: true,
+                openingExistingWorkspace: true,
+            })
+            : scanDirectory(resolved, { strict: false });
+        for (const entry of entries) if (entry.isGitRepo) repositories.push(entry.path);
+    } catch {
+        // The root alone is still worth checking.
+    }
+    const stranded: string[] = [];
+    for (const repository of repositories) {
+        try {
+            if (!pathExistsStrict(join(repository, ".git"))) continue;
+            if (unreachableRegistrationPathHoldingBranch(repository, null, branch)) {
+                stranded.push(repository);
+            }
+        } catch {
+            // A repository we cannot inspect is one we cannot advise about.
+        }
+    }
+    return stranded;
+}
+
 function unreachableRegistrationPathHoldingBranch(
     repositoryPath: string,
-    destinationPath: string,
+    // null means "exclude nothing". `fixBrokenWorktree` passes its destination because that
+    // registration is its other case; `strandedBranchRegistrations` runs AFTER the workspace
+    // is gone, where the workspace path's own registration is precisely what was left behind.
+    destinationPath: string | null,
     branch: string,
 ): string | null {
     const listed = spawnSync(
@@ -3724,9 +3773,9 @@ function unreachableRegistrationPathHoldingBranch(
         const worktreeLine = lines.find((line) => line.startsWith("worktree "));
         if (!worktreeLine || !lines.includes(wanted)) continue;
         const registered = worktreeLine.slice("worktree ".length).trim();
-        // The destination's own registration is the caller's other case, handled by the
+        // The destination's own registration is that caller's other case, handled by the
         // fence below with the checks it already carries.
-        if (sameObservedPath(registered, destinationPath)) continue;
+        if (destinationPath !== null && sameObservedPath(registered, destinationPath)) continue;
         // `git worktree lock` is git's documented answer to exactly the case this test can
         // not tell apart from the container boundary: "a linked worktree stored on a portable
         // device or network share which is not always mounted". An unmounted volume answers

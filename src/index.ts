@@ -51,6 +51,7 @@ import {
     getWorktreeGitMounts,
     assertWorkspaceBranch,
     assertWorkspaceRootOwnership,
+    strandedBranchRegistrations,
     repairWorkspaceRootOwnership,
     hasGitMetadata,
     detectWorktreeWorkspaceBranch,
@@ -1423,6 +1424,22 @@ function handleWorktreeRemove(
             process.exit(1);
         } else {
             console.log("Workspace removed.");
+            // Removed is not the same as finished. A registration recorded on the other side
+            // of the container boundary survives the removal still holding the branch, and
+            // the next `ccc @<branch>` dies on it with a message whose only noun is a path
+            // that does not exist here. Say it now, while the operator is still looking.
+            const stranded = strandedBranchRegistrations(cwd, branch);
+            if (stranded.length > 0) {
+                console.error(
+                    `\nBranch '${branch}' is still held by a worktree registration recorded at`
+                    + " a path that cannot be reached from here, in:",
+                );
+                for (const repository of stranded) console.error(`  ${repository}`);
+                console.error(
+                    "Run `git worktree prune` there, or the next `ccc @"
+                    + `${branch}\` will refuse.`,
+                );
+            }
         }
     } catch (e) {
         console.error(`Error: ${(e as Error).message}`);
@@ -1514,8 +1531,8 @@ export function workspaceRemovalFailureNote(error: unknown, force: boolean): str
         // Third time in this task that a fix was measured in one layout and shipped for both.
         // Whatever comes next gets run in both before it ships.
         + "\nThat leaves worktree registrations still holding the branch: run"
-        + " `git worktree prune` in the source repository and in each nested repository"
-        + " afterwards, or the next `ccc @<branch>` will refuse.";
+        + " `git worktree prune` in the source repository if it is one, and in each nested"
+        + " repository, or the next `ccc @<branch>` will refuse.";
 }
 
 function showHelp(): void {

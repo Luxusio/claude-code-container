@@ -30,6 +30,7 @@ import {
     unreachableRecordedGitPath,
     unmanagedPathRefusal,
     relayNestedRemovalError,
+    strandedBranchRegistrations,
     repairWorkspace,
     isValidWorktree,
     detectBrokenWorktrees,
@@ -1449,7 +1450,10 @@ describe("assertWorkspaceBranch", () => {
         // One line per NOTE line. A separator that survived would split it into what looks
         // like two. The count is the NOTE's own shape, so it moves when the NOTE is reworded
         // — five since the container sentence stopped claiming to be the only cause.
-        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(6);
+        // Seven since the container sentence stopped claiming to be the only cause, the
+        // "ordinary files" promise started saying what -f does to them, and that promise
+        // started admitting that the repair prompt printed below it can make -f moot.
+        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(7);
     });
 
     // Escaping control characters is not on its own enough. The name is rendered into a line
@@ -7099,7 +7103,7 @@ describe("the remedy for an ownership refusal, run end to end", () => {
         nested: string[],
     ): void {
         rmSync(workspacePath, { recursive: true, force: true });
-        const targets = note.includes("in the source repository and in each nested repository")
+        const targets = note.includes("in the source repository if it is one, and in each nested")
             ? [source, ...nested]
             : note.includes("in each nested repository")
                 ? nested
@@ -7134,7 +7138,7 @@ describe("the remedy for an ownership refusal, run end to end", () => {
         // "in each nested repository" alone terminates in multi-repo and dead-ends in
         // unified, where the workspace root is itself a linked worktree of the source root
         // and nothing among the nested repositories can clear its registration.
-        expect(note).toContain("in the source repository and in each nested repository");
+        expect(note).toContain("in the source repository if it is one, and in each nested");
     });
 
     it("terminates in the unified layout", () => {
@@ -7504,4 +7508,76 @@ describe("the removal preflight, through the CLI entry point", () => {
                 .toMatch(new RegExp(`${runtime} is not running|Cannot connect to the`, "i"));
         }
     }, 30000);
+});
+
+// "Workspace removed." is not the same as finished. The registration recorded on the other
+// side of the container boundary survives the removal still holding the branch, and the next
+// `ccc @<branch>` then dies on it with a message whose only noun is a path that does not
+// exist here — three commands from ccc's own output, with no remedy named anywhere.
+describe("strandedBranchRegistrations", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-stranded-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function sourceWithSubmodule(branch: string) {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, branch).workspacePath;
+        return { src, submodule: join(src, "services", "api"), workspacePath };
+    }
+
+    it("names the repository still holding the branch after the workspace is gone", () => {
+        const { src, submodule, workspacePath } = sourceWithSubmodule("stranded-yes");
+        const worktrees = join(src, ".git", "modules", "services", "api", "worktrees");
+        writeFileSync(
+            join(worktrees, readdirSync(worktrees)[0], "gitdir"),
+            "/project/catchy-415bfb4/services/api/.git\n",
+        );
+        rmSync(workspacePath, { recursive: true, force: true });
+
+        // BOTH: the submodule holds it through the container-side path, and the source root
+        // holds it through the workspace path the operator just deleted. An earlier version
+        // excluded the workspace path — right for repair, where that registration is the
+        // other case, and wrong here, where it is precisely what was left behind.
+        expect(strandedBranchRegistrations(src, "stranded-yes").sort())
+            .toEqual([src, submodule].sort());
+        // And the remedy it names is the one that works, run rather than read.
+        for (const repository of [src, submodule]) {
+            expect(spawnSync("git", ["worktree", "prune"], {
+                cwd: repository, encoding: "utf-8", stdio: "pipe",
+            }).status, repository).toBe(0);
+        }
+        expect(strandedBranchRegistrations(src, "stranded-yes")).toEqual([]);
+        expect(existsSync(createWorkspace(src, "stranded-yes").workspacePath),
+            "and the branch is usable again").toBe(true);
+    });
+
+    it("says nothing when the removal really did finish", () => {
+        const { src, workspacePath } = sourceWithSubmodule("stranded-no");
+        expect(removeWorkspace(src, "stranded-no", { force: true }).errors).toEqual([]);
+
+        // A clean removal deregisters as it goes. Advertising a prune here would send the
+        // operator to a command with nothing to do, which is its own kind of wrong.
+        expect(strandedBranchRegistrations(src, "stranded-no")).toEqual([]);
+    });
 });
