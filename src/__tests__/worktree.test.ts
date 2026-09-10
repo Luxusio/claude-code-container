@@ -29,6 +29,7 @@ import {
     removeWorkspace,
     unreachableRecordedGitPath,
     unmanagedPathRefusal,
+    relayNestedRemovalError,
     repairWorkspace,
     isValidWorktree,
     detectBrokenWorktrees,
@@ -43,7 +44,7 @@ import {
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
-import { workspaceRemovalFailureNote } from "../index.js";
+import { workspaceRemovalFailureNote, assertRemovableWorkspace } from "../index.js";
 
 /** Helper: create a real git repo with an initial commit */
 function initRepo(repoPath: string): void {
@@ -7081,14 +7082,48 @@ describe("the remedy for an ownership refusal, run end to end", () => {
         return spawnSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
     }
 
-    /** Every step the note names, in its order, and nothing else. */
-    function followTheRemedy(workspacePath: string, source: string, nested: string[]): void {
+    /**
+     * Every step the note names, in its order, and nothing else — with the steps DERIVED
+     * from the note rather than hardcoded beside it. Hardcoding `[source, ...nested]` made
+     * these tests prove "pruning both terminates", which is true and is the harder half, but
+     * not "following the note terminates", which is what they claim. The difference showed
+     * up under mutation: rewording the remedy back to "in each nested repository" — the exact
+     * regression this pair exists to prevent — failed only the one-line wording test while
+     * both of these still passed. Coupling by string where the whole task has been about
+     * coupling by execution.
+     */
+    function followTheRemedy(
+        note: string,
+        workspacePath: string,
+        source: string,
+        nested: string[],
+    ): void {
         rmSync(workspacePath, { recursive: true, force: true });
-        for (const repository of [source, ...nested]) {
+        const targets = note.includes("in the source repository and in each nested repository")
+            ? [source, ...nested]
+            : note.includes("in each nested repository")
+                ? nested
+                : [];
+        for (const repository of targets) {
             if (!existsSync(join(repository, ".git"))) continue;
             const pruned = git(repository, "worktree", "prune");
             expect(pruned.status, pruned.stderr).toBe(0);
         }
+    }
+
+    /** The operator's actual error, turned into the actual note they are shown. */
+    function noteFor(run: () => unknown): string {
+        let raised = "";
+        try {
+            run();
+        } catch (error) {
+            raised = (error as Error).message;
+        }
+        expect(raised, "removal must raise the ownership error these tests are about")
+            .toContain("not owned by");
+        const note = workspaceRemovalFailureNote(new Error(raised), true);
+        expect(note, "and the CLI must have something to print under it").not.toBeNull();
+        return note!;
     }
 
     it("names both the source and the nested repositories", () => {
@@ -7125,10 +7160,9 @@ describe("the remedy for an ownership refusal, run end to end", () => {
             const nested = join(workspacePath, "services", "api");
             rmSync(nested, { recursive: true, force: true });
             expect(spawnSync("cp", ["-a", foreign, nested], { stdio: "pipe" }).status).toBe(0);
-            expect(() => removeWorkspace(src, "remedy-u", { force: true }))
-                .toThrow("not owned by");
+            const note = noteFor(() => removeWorkspace(src, "remedy-u", { force: true }));
 
-            followTheRemedy(workspacePath, src, [join(src, "services", "api")]);
+            followTheRemedy(note, workspacePath, src, [join(src, "services", "api")]);
 
             // The clause the note ends on: "or the next `ccc @<branch>` will refuse". It
             // must not, once the remedy has been followed. Before the source was named, this
@@ -7151,13 +7185,161 @@ describe("the remedy for an ownership refusal, run end to end", () => {
         rmSync(nested, { recursive: true, force: true });
         mkdirSync(nested, { recursive: true });
         writeFileSync(join(nested, "stuff.txt"), "files");
-        expect(() => removeWorkspace(src, "remedy-m", { force: true })).toThrow("not owned by");
+        const note = noteFor(() => removeWorkspace(src, "remedy-m", { force: true }));
 
         // The source is not a git repository here, so pruning it is a no-op — which is why
         // naming it costs this layout nothing.
-        followTheRemedy(workspacePath, src, [join(src, "frontend")]);
+        followTheRemedy(note, workspacePath, src, [join(src, "frontend")]);
 
         const again = createWorkspace(src, "remedy-m");
         expect(existsSync(again.workspacePath)).toBe(true);
+    });
+});
+
+describe("relayNestedRemovalError", () => {
+    // Removal runs git against the quarantined copy, and the quarantine is rolled back before
+    // the operator reads the line — so the one concrete noun in git's refusal was a path that
+    // no longer existed, while the operator's dirty files sat somewhere else entirely.
+    const real = "/w/src--feature/services/web";
+
+    it("substitutes the operator's path for the transient quarantine path", () => {
+        const said = relayNestedRemovalError("services/web", real, new Error(
+            "fatal: '/w/.ccc-worktree-quarantine-6JLX1n/web' contains modified"
+            + " or untracked files, use --force to delete it",
+        ));
+        expect(said, "the path they can actually visit").toContain(real);
+        expect(said, "and not the one that is already gone")
+            .not.toContain(".ccc-worktree-quarantine-");
+        // git's wording is the accurate part; only the path token is replaced, and the
+        // quoting around it survives so the sentence still reads as git wrote it.
+        expect(said).toContain("contains modified or untracked files, use --force to delete it");
+        expect(said).toContain(`'${real}'`);
+    });
+
+    it("leaves a message with no quarantine path exactly as it was", () => {
+        expect(relayNestedRemovalError("services/web", real, new Error("fatal: something else")))
+            .toBe("services/web: fatal: something else");
+    });
+});
+
+// `ccc rm` runs its own ownership assert before calling removeWorkspace, and it was passing
+// different options than removeWorkspace passes to the same function. So the CLI refused a
+// workspace the library it wraps removes without complaint — measured through the real CLI:
+// both `ccc rm` and `ccc rm -f` exited 1 with "Workspace repository 'services/api' is not
+// owned by its source repository", while removeWorkspace(src, branch, {force:true}) on that
+// same workspace returned {"removed":["src"],"errors":[]}.
+//
+// It also contradicted the NOTE printed on that very workspace — "`ccc rm` will not delete it
+// unless you pass -f" — with -f being what had just refused, and it left the partial-removal
+// state unrecoverable, since the way out of that state is `--force`.
+describe("the CLI's removal assert and removeWorkspace's own", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-assert-parity-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function workspaceWithSubmodule(branch: string) {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, branch).workspacePath;
+        return { src, workspacePath, nested: join(workspacePath, "services", "api") };
+    }
+
+    it("agree on a tracked submodule path holding ordinary files", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("parity-loose");
+        rmSync(nested, { recursive: true, force: true });
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files the operator put here");
+
+        // The options src/index.ts passes on the removal path. If these two ever disagree
+        // again, the CLI refuses what the library removes and the NOTE becomes a lie.
+        expect(() => assertRemovableWorkspace(workspacePath, "parity-loose", src)).not.toThrow();
+        expect(removeWorkspace(src, "parity-loose", { force: true }).errors).toEqual([]);
+        expect(existsSync(workspacePath)).toBe(false);
+    });
+
+    it("still refuse a genuinely foreign repository at that path", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("parity-foreign");
+        const foreign = join(root, "foreign");
+        initRepo(foreign);
+        rmSync(nested, { recursive: true, force: true });
+        expect(spawnSync("cp", ["-a", foreign, nested], { stdio: "pipe" }).status).toBe(0);
+
+        // The parity above must not have widened what is deletable: `allowTrackedGitlinks`
+        // admits only gitlinks the workspace's own index tracks.
+        expect(() => assertRemovableWorkspace(workspacePath, "parity-foreign", src))
+            .toThrow("not owned by");
+        expect(existsSync(join(nested, "init.txt")), "and nothing is lost").toBe(true);
+    });
+});
+
+// Driven through `removeWorkspace` rather than through the helper, because a test that calls
+// `relayNestedRemovalError` directly passes whatever the removal loop does — reverting the
+// loop to the raw relay left it green. The assertion has to come out of the code path the
+// operator's command runs.
+describe("the error a partial removal actually prints", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-partial-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it("names the path the operator has, not the quarantine it no longer has", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        for (const name of ["services/api", "services/web"]) {
+            const added = spawnSync("git", [
+                "-c", "protocol.file.allow=always",
+                "submodule", "add", origin, name,
+            ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+            expect(added.status, added.stderr).toBe(0);
+        }
+        spawnSync("git", ["commit", "-am", "add submodules"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "partial").workspacePath;
+        // One clean, one dirty: git refuses the dirty one, and it is run against the
+        // quarantined copy, so its sentence names a path that is rolled back before the
+        // operator reads it.
+        const dirty = join(workspacePath, "services", "web");
+        writeFileSync(join(dirty, "WIP.txt"), "uncommitted");
+
+        const result = removeWorkspace(src, "partial");
+
+        const said = result.errors.join(" ");
+        expect(said, "git's refusal is what we are relaying").toContain("use --force");
+        expect(said, "and it must name where the operator's files are").toContain(dirty);
+        expect(said, "not a directory that was rolled back before they read the line")
+            .not.toContain(".ccc-worktree-quarantine-");
+        expect(existsSync(join(dirty, "WIP.txt")), "and the work is still there").toBe(true);
     });
 });

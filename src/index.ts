@@ -1396,7 +1396,7 @@ function handleWorktreeRemove(
     let removalResult: ReturnType<typeof removeWorkspace> | null = null;
     try {
         withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
-            assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
+            assertRemovableWorkspace(wsPath, branch, cwd);
             ensureDockerRunning();
             console.log(`Removing workspace @${branch}...`);
             const containerRemovalPlan = prepareWorkspaceContainerRemovalPlan(wsPath);
@@ -1442,6 +1442,36 @@ function handleWorktreeRemove(
 // had become the way through; this is the live case where it has not, and the sentence that
 // flag existed to produce is still needed. It belongs here, in the catch, rather than as a
 // field on a result this path never returns.
+// Extracted so a test can drive the assertion the removal path ACTUALLY makes, rather than
+// an assertion written to look like it. The first version of this fix was pinned by a test
+// that called `assertWorkspaceBranch` with the options spelled out beside it — which passes
+// whatever `src/index.ts` does, so reverting the call site left the suite green. Coupling by
+// resemblance instead of by execution, which is the mistake this task has now paid for three
+// times.
+export function assertRemovableWorkspace(
+    workspacePath: string,
+    branch: string,
+    sourcePath: string,
+    spawn: typeof spawnSync = spawnSync,
+): void {
+    // The same options `removeWorkspace` uses on its own copy of this assert, and the same
+    // ones the arm that OPENS a workspace passes. Without them `ccc rm` and `ccc rm -f` both
+    // died on a workspace whose tracked submodule is not a linked worktree — `Workspace
+    // repository 'services/api' is not owned by its source repository` — while
+    // `removeWorkspace()` on that same workspace returned {"removed":["src"],"errors":[]}.
+    // The CLI refused what the library it wraps does fine, contradicted the NOTE printed on
+    // that very workspace ("`ccc rm` will not delete it unless you pass -f", with -f being
+    // what had just refused), and left the partial-removal state unrecoverable, since the way
+    // out of that state is `--force`.
+    //
+    // This does not widen what is deletable: `allowTrackedGitlinks` admits only gitlinks the
+    // workspace's own index tracks, so a genuinely foreign repository at that path still
+    // refuses under both flags.
+    assertWorkspaceBranch(workspacePath, branch, spawn, sourcePath, {
+        allowTrackedGitlinks: true,
+    });
+}
+
 export function workspaceRemovalFailureNote(error: unknown, force: boolean): string | null {
     const message = (error as Error)?.message ?? "";
     // The narrower substring, because the class has more than one sentence in it. Matching
@@ -1449,6 +1479,14 @@ export function workspaceRemovalFailureNote(error: unknown, force: boolean): str
     // missed `assertWorkspaceRootOwnership`'s "Workspace is not owned by source repository
     // '<path>'" — same class, same need, one word apart. A guard written against one message
     // rather than one class is the string-literal version of the layout mistake below.
+    //
+    // Measured, this also catches a third sentence not named above — "Nested Git repository
+    // metadata is not owned by its parent or a registered worktree". That is deliberate to
+    // keep: same class, the note's opening sentence is accurate for it, and the remedy
+    // applies. But it is claimed by a substring rather than decided, and a fourth message
+    // containing these three words, for a class where the remedy is wrong, would be claimed
+    // silently. The version that stops this recurring is a typed error on the ownership
+    // asserts, matched on instead of prose; widening the literal only moves the boundary.
     if (!message.includes("not owned by")) return null;
     // Two things this note MUST NOT do, both measured after the first version did them:
     //

@@ -442,6 +442,30 @@ operator message runs in both layouts before it ships**, and the test that
 proves a remedy is the one that executes it and asserts where the operator ends
 up — not the one that asserts the message contains the word `prune`.
 
+### Bind the test to the call site, not to something that resembles it
+
+Three fixes in this task were pinned by tests that passed with the fix reverted,
+each for the same reason: the test re-created the behaviour beside the code
+instead of driving the code.
+
+- A remedy test that pruned `[source, ...nested]` from a hardcoded list. Reword
+  the remedy back to "each nested repository" and the sequence still terminated,
+  because the test never read the sentence it was validating. Fixed by deriving
+  the prune targets from the note the removal actually produces.
+- An assert-parity test that called `assertWorkspaceBranch(..., {
+  allowTrackedGitlinks: true })` with the options spelled out beside it. That
+  passes whatever `src/index.ts` does. Fixed by extracting
+  `assertRemovableWorkspace` and having both the CLI and the test call it.
+- A message test that called the relay helper directly. Reverting the removal
+  loop to the raw relay left it green. Fixed by driving `removeWorkspace` on a
+  two-submodule fixture with one dirty, and asserting on the error it returns.
+
+The check is mechanical and cheap: **revert the fix and run the test.** If it
+still passes, the test is describing the fix rather than depending on it. A
+mutation result is only worth what the verification of its application is worth
+— and an applied mutation that changes nothing is the test telling you it was
+never attached.
+
 ### A guard written against one message is not written against the class
 
 `workspaceRemovalFailureNote` matched `"is not owned by its source repository"`

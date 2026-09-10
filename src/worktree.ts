@@ -2583,6 +2583,32 @@ function warnUnmanagedNestedRepository(candidatePath: string, protectedFromDelet
 // operator has to be told, because the only other party who could is the machine that cannot
 // be reached: if that path comes back, its worktree will have lost its registration, and this
 // line is the one record of where the contents went.
+// Removal runs git against the QUARANTINED copy, so git's refusal names a path inside
+// `.ccc-worktree-quarantine-*` — and the quarantine is rolled back before the operator reads
+// the line. The one concrete noun in the sentence is therefore a path that does not exist by
+// the time it is printed:
+//
+//     services/web: fatal: '…/.ccc-worktree-quarantine-6JLX1n/web' contains modified or
+//                   untracked files, use --force to delete it
+//
+// while the operator's dirty files are at `<workspace>/services/web`. ccc knows that path —
+// it is already prefixing the line with it. Only the quarantine token is substituted; git's
+// sentence is otherwise passed through, because its wording is the accurate part.
+const QUARANTINED_PATH_IN_MESSAGE =
+    /'[^']*\.ccc-worktree-quarantine-[^']*'|"[^"]*\.ccc-worktree-quarantine-[^"]*"|\S*\.ccc-worktree-quarantine-\S*/g;
+
+export function relayNestedRemovalError(
+    name: string,
+    operatorPath: string,
+    error: unknown,
+): string {
+    const message = (error as Error)?.message ?? String(error);
+    return `${name}: ${message.replace(QUARANTINED_PATH_IN_MESSAGE, (match) => {
+        const quote = match.startsWith("'") || match.startsWith('"') ? match[0] : "";
+        return `${quote}${operatorPath}${quote}`;
+    })}`;
+}
+
 function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: string): void {
     process.stderr.write(
         `[ccc] NOTE: A worktree registration recorded at ${terminalSafe(recordedPath)}\n`
@@ -7089,7 +7115,7 @@ function removeUnifiedWorkspace(
             operationGuard();
             removed.push(entry.name);
         } catch (error) {
-            errors.push(`${entry.name}: ${(error as Error).message}`);
+            errors.push(relayNestedRemovalError(entry.name, nestedPath, error));
         }
     }
 
@@ -7265,7 +7291,7 @@ function removeMultiRepoWorkspace(
                 );
                 removed.push(entry.name);
             } catch (error) {
-                errors.push(`${entry.name}: ${(error as Error).message}`);
+                errors.push(relayNestedRemovalError(entry.name, wsEntryPath, error));
             }
         } else {
             try {
@@ -7284,7 +7310,7 @@ function removeMultiRepoWorkspace(
                 }
                 removed.push(entry.name);
             } catch (error) {
-                errors.push(`${entry.name}: ${(error as Error).message}`);
+                errors.push(relayNestedRemovalError(entry.name, wsEntryPath, error));
             }
         }
     }
