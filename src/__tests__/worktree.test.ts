@@ -7343,3 +7343,81 @@ describe("the error a partial removal actually prints", () => {
         expect(existsSync(join(dirty, "WIP.txt")), "and the work is still there").toBe(true);
     });
 });
+
+// The call site, not something that resembles it.
+//
+// `assertRemovableWorkspace` being exported made the OPTIONS testable and left
+// `handleWorktreeRemove`'s call to it unpinned: reverting src/index.ts to the four-argument
+// `assertWorkspaceBranch(wsPath, branch, spawnSync, cwd)` — the exact defect CLI QA found by
+// running the real binary — shipped green through a whole suite. That is the fourth time in
+// this task a fix was pinned by a test that passed without it.
+//
+// `handleWorktreeRemove` is not exported, so the only thing that binds it is running the
+// entry point. `tsx` runs src/index.ts directly, which avoids asserting against a `dist/`
+// that may be stale, and `ensureDockerRunning()` sits AFTER the assert, so the preflight is
+// reachable whether or not Docker exists here.
+describe("the removal preflight, through the CLI entry point", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-cli-preflight-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it("does not refuse a workspace removeWorkspace removes without complaint", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "cli-loose").workspacePath;
+        const nested = join(workspacePath, "services", "api");
+        rmSync(nested, { recursive: true, force: true });
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files the operator put here");
+
+        const repoRoot = resolve(__dirname, "..", "..");
+        const tsx = join(repoRoot, "node_modules", ".bin", "tsx");
+        expect(existsSync(tsx), "tsx is a declared devDependency of this repo").toBe(true);
+        const ran = spawnSync(tsx, [join(repoRoot, "src", "index.ts"), "@cli-loose", "rm"], {
+            cwd: src,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            // vitest injects NODE_OPTIONS (its own loader) and VITEST_* into the environment.
+            // Inherited by the child they made it exit 0 having printed nothing at all, which
+            // is indistinguishable from "the preflight did not fire" — the exact ambiguity
+            // the second assertion below exists to catch.
+            env: Object.fromEntries([
+                ...Object.entries(process.env).filter(([key]) => (
+                    key !== "NODE_OPTIONS" && !key.startsWith("VITEST")
+                )),
+                ["GIT_ALLOW_PROTOCOL", "file"],
+            ]) as NodeJS.ProcessEnv,
+        });
+        const output = `${ran.stdout ?? ""}${ran.stderr ?? ""}`;
+        expect(ran.error, "the CLI must actually run").toBeUndefined();
+        expect(output, `status=${ran.status} signal=${ran.signal}`).not.toBe("");
+
+        // The ownership preflight must not fire. `ccc rm` and `ccc rm -f` both exited 1 with
+        // this on a workspace `removeWorkspace()` removes and reports {"errors":[]} for.
+        expect(output, "the CLI must not refuse what the library it wraps removes")
+            .not.toContain("not owned by");
+        // And it must have got past the preflight to the removal itself. Without this a
+        // crash before the assert would satisfy the line above by saying nothing at all.
+        expect(output, "and it must have reached the removal").toContain("Removing workspace");
+    }, 30000);
+});

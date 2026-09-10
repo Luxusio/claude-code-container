@@ -466,6 +466,23 @@ mutation result is only worth what the verification of its application is worth
 — and an applied mutation that changes nothing is the test telling you it was
 never attached.
 
+Revert the thing the DEFECT was, not the thing the fix became. A fourth
+instance made that distinction the whole point: extracting
+`assertRemovableWorkspace` made the options testable and left the call site
+unpinned, so reverting the option inside the helper failed a test while
+reverting `src/index.ts` to the original four-argument call shipped green. The
+defect was never "the helper has the wrong options" — the helper did not exist.
+When the fix moves code, the mutation has to go back to the shape the bug
+actually had.
+
+When the call site is not exported, run the entry point. `tsx src/index.ts` runs
+the real CLI from source in about two seconds — no `dist/` to go stale — and
+that is the only thing that binds an unexported caller. Strip `NODE_OPTIONS`
+and `VITEST*` from the child environment first: inherited, they make it exit 0
+having printed nothing, which reads exactly like a passing preflight. Assert
+both that the bad output is absent AND that the expected output is present, or
+silence passes.
+
 ### A guard written against one message is not written against the class
 
 `workspaceRemovalFailureNote` matched `"is not owned by its source repository"`
