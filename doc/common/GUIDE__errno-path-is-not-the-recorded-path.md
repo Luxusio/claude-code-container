@@ -460,6 +460,13 @@ instead of driving the code.
   loop to the raw relay left it green. Fixed by driving `removeWorkspace` on a
   two-submodule fixture with one dirty, and asserting on the error it returns.
 
+**Measure the baseline green first, or the count is fiction.** Twice in this task a
+mutation was reported as killing 4 tests and 2 tests when it killed 1 and 0 — the rest were
+pre-existing failures the working tree already had, counted as if the mutation caused them.
+One of those was the reassuring direction on a guard that in fact nothing defended: reworded
+to the OPPOSITE meaning, it shipped green. A mutation count is only evidence if the run it is
+compared against was clean.
+
 The check is mechanical and cheap: **revert the fix and run the test.** If it
 still passes, the test is describing the fix rather than depending on it. A
 mutation result is only worth what the verification of its application is worth

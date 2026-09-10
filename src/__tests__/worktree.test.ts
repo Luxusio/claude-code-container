@@ -6689,6 +6689,15 @@ describe("a worktree registered on the other side of the container boundary", ()
         // those files. Same defect as the sibling NOTE's "will not delete it".
         expect(notice, "including what -f then does to them")
             .toContain("`ccc rm -f` deletes along with the workspace");
+        // And the caveat, asserted rather than left to a line count. The only thing holding
+        // it in place was the escaping test's assertion on how many lines this NOTE has, so
+        // a reword to the OPPOSITE meaning — "and there is nothing you can do about that" —
+        // kept the same two lines and shipped green. The repair prompt three lines below can
+        // make -f moot, which is the whole point of the sentence.
+        expect(notice, "and that the repair prompt below can make -f unnecessary")
+            // Not the full sentence: it wraps, and an assertion that spans a line break breaks
+            // on rewrap rather than on meaning.
+            .toContain("unless you repair");
         expect(existsSync(join(nested, "init.txt")), "ordinary files, still there").toBe(true);
     });
 

@@ -3742,6 +3742,13 @@ function unreachableRegistrationPathHoldingBranch(
     // null means "exclude nothing". `fixBrokenWorktree` passes its destination because that
     // registration is its other case; `strandedBranchRegistrations` runs AFTER the workspace
     // is gone, where the workspace path's own registration is precisely what was left behind.
+    //
+    // Honest about what defends this: nothing. Review found that passing `null` from the
+    // repair caller ships green, and a fixture to pin it was attempted and abandoned —
+    // reaching the difference needs the destination's OWN registration to be unreachable,
+    // which means destPath does not exist, and repair only runs when destPath has content.
+    // The exclusion is a guard for a state this file cannot currently construct. Said here
+    // rather than left as an untested line someone later assumes is covered.
     destinationPath: string | null,
     branch: string,
 ): string | null {
