@@ -7354,8 +7354,15 @@ describe("the error a partial removal actually prints", () => {
 //
 // `handleWorktreeRemove` is not exported, so the only thing that binds it is running the
 // entry point. `tsx` runs src/index.ts directly, which avoids asserting against a `dist/`
-// that may be stale, and `ensureDockerRunning()` sits AFTER the assert, so the preflight is
-// reachable whether or not Docker exists here.
+// that may be stale.
+//
+// `ensureDockerRunning()` sits after the assert, so the preflight RUNS without Docker — but
+// the line that proves it ran, `Removing workspace @…`, is printed one line AFTER that check.
+// An earlier version of this comment claimed the test was Docker-independent; measured with
+// DOCKER_HOST pointed at a dead socket, the preflight worked perfectly and the test failed
+// anyway, blaming the removal. So either observation is accepted: reaching the removal, or
+// dying on Docker after the assert. A crash BEFORE the assert produces neither, which is the
+// thing being detected.
 describe("the removal preflight, through the CLI entry point", () => {
     let root: string;
     let previousProtocol: string | undefined;
@@ -7373,7 +7380,7 @@ describe("the removal preflight, through the CLI entry point", () => {
         rmSync(root, { recursive: true, force: true });
     });
 
-    it("does not refuse a workspace removeWorkspace removes without complaint", () => {
+    it("removes, through the CLI, the workspace removeWorkspace removes", () => {
         const origin = join(root, "origin");
         const src = join(root, "src");
         initRepo(origin);
@@ -7393,7 +7400,10 @@ describe("the removal preflight, through the CLI entry point", () => {
         const repoRoot = resolve(__dirname, "..", "..");
         const tsx = join(repoRoot, "node_modules", ".bin", "tsx");
         expect(existsSync(tsx), "tsx is a declared devDependency of this repo").toBe(true);
-        const ran = spawnSync(tsx, [join(repoRoot, "src", "index.ts"), "@cli-loose", "rm"], {
+        // `-f`, not bare `rm`. Same preflight, and it lets this assert the claim the whole fix
+        // is about — that the CLI removes what the library removes — instead of stopping at
+        // "the preflight did not fire".
+        const ran = spawnSync(tsx, [join(repoRoot, "src", "index.ts"), "@cli-loose", "rm", "-f"], {
             cwd: src,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
@@ -7416,8 +7426,28 @@ describe("the removal preflight, through the CLI entry point", () => {
         // this on a workspace `removeWorkspace()` removes and reports {"errors":[]} for.
         expect(output, "the CLI must not refuse what the library it wraps removes")
             .not.toContain("not owned by");
-        // And it must have got past the preflight to the removal itself. Without this a
-        // crash before the assert would satisfy the line above by saying nothing at all.
-        expect(output, "and it must have reached the removal").toContain("Removing workspace");
+        // And it must have got PAST the preflight. Without this, a crash before the assert
+        // satisfies the line above by saying nothing at all — which is exactly what happened
+        // when vitest's own NODE_OPTIONS reached the child.
+        //
+        // Either observation proves it: reaching the removal, or dying on Docker, which is
+        // checked one line before the removal is announced. A crash before the assert
+        // produces neither. Measured with DOCKER_HOST on a dead socket, where the preflight
+        // worked perfectly and an earlier version of this test failed anyway, blaming the
+        // removal — an assertion depending on something other than the thing it tests.
+        const stoppedOnDocker = /docker is not running|Cannot connect to the Docker daemon/i
+            .test(output);
+        expect(
+            stoppedOnDocker || output.includes("Removing workspace"),
+            `neither reached the removal nor stopped on Docker: ${output}`,
+        ).toBe(true);
+        if (!stoppedOnDocker) {
+            // The claim the whole fix is about, asserted through the entry point rather than
+            // through the library: `-f` removes what `removeWorkspace(..., {force:true})`
+            // removes. Nothing else in the suite says that about the CLI.
+            expect(output, "and -f must not have been refused either").not.toContain("error:");
+            expect(existsSync(workspacePath), "the CLI removes what the library removes")
+                .toBe(false);
+        }
     }, 30000);
 });
