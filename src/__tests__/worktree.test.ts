@@ -31,6 +31,7 @@ import {
     unmanagedPathRefusal,
     relayNestedRemovalError,
     strandedBranchRegistrations,
+    gitFailureReason,
     repairWorkspace,
     isValidWorktree,
     detectBrokenWorktrees,
@@ -1453,7 +1454,7 @@ describe("assertWorkspaceBranch", () => {
         // Seven since the container sentence stopped claiming to be the only cause, the
         // "ordinary files" promise started saying what -f does to them, and that promise
         // started admitting that the repair prompt printed below it can make -f moot.
-        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(7);
+        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(8);
     });
 
     // Escaping control characters is not on its own enough. The name is rendered into a line
@@ -7582,7 +7583,7 @@ describe("strandedBranchRegistrations", () => {
         // holds it through the workspace path the operator just deleted. An earlier version
         // excluded the workspace path — right for repair, where that registration is the
         // other case, and wrong here, where it is precisely what was left behind.
-        expect(strandedBranchRegistrations(src, "stranded-yes").sort())
+        expect(strandedBranchRegistrations(src, "stranded-yes").map((e) => e.repository).sort())
             .toEqual([src, submodule].sort());
         // And the remedy it names is the one that works, run rather than read.
         for (const repository of [src, submodule]) {
@@ -7727,5 +7728,98 @@ describe("warnWorktreeRepairFailure's choice of line", () => {
         // The remedy list alone names nothing. That is what taking the last line produced.
         expect(notice, "not the bare remedy list under it")
             .not.toMatch(/git said: "use 'add -f' to override/);
+    });
+});
+
+// Two shapes QA found by running the product, both of which put the operator back where this
+// task started: told the thing failed, and told nothing useful about why.
+describe("what a failed repair and a finished removal still owe the operator", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-owed-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function workspaceWithSubmodule(branch: string) {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        return {
+            src,
+            submodule: join(src, "services", "api"),
+            workspacePath: createWorkspace(src, branch).workspacePath,
+            registry: join(src, ".git", "modules", "services", "api", "worktrees"),
+        };
+    }
+
+    it("still names a locked registration after the workspace is removed", () => {
+        const { src, submodule, workspacePath, registry } = workspaceWithSubmodule("owed-lock");
+        writeFileSync(
+            join(registry, readdirSync(registry)[0], "gitdir"),
+            "/project/catchy-415bfb4/services/api/.git\n",
+        );
+        writeFileSync(join(registry, readdirSync(registry)[0], "locked"), "portable drive\n");
+        rmSync(workspacePath, { recursive: true, force: true });
+
+        const stranded = strandedBranchRegistrations(src, "owed-lock");
+
+        // Skipping locked registrations is right when DISPLACING one — that is git's own
+        // protection. Inheriting the skip here made `ccc rm -f` print "Workspace removed."
+        // and nothing else, in the one case where `git worktree prune` will not help either.
+        expect(stranded.map((entry) => entry.repository)).toContain(submodule);
+        expect(
+            stranded.find((entry) => entry.repository === submodule)?.locked,
+            "and the CLI has to know to say unlock before prune",
+        ).toBe(true);
+    });
+});
+
+describe("gitFailureReason", () => {
+    // The three shapes QA measured by running git, verbatim. A NOTE-level test cannot
+    // enumerate these — the fixture that would produce the checkout failure aborts at the
+    // ownership fence before the NOTE is reached, which is how the first attempt at pinning
+    // this ended up asserting nothing at all.
+    it("takes the fatal line, not the remedy list under it", () => {
+        expect(gitFailureReason(
+            "fatal: '/w/src--f' is a missing but already registered worktree;\n"
+            + "use 'add -f' to override, or 'prune' or 'remove' to clear\n",
+        ), "the path is on the first line, and the semicolon goes with the continuation")
+            .toBe("fatal: '/w/src--f' is a missing but already registered worktree");
+    });
+
+    it("takes an error line over a success sentence", () => {
+        // `git checkout --force` exits 1 like this on a partial checkout. The last line is
+        // "Already on '<branch>'" — a success sentence quoted as the reason a repair failed.
+        expect(gitFailureReason(
+            "error: unable to read sha1 file of a.txt (78981922)\n"
+            + "error: invalid object 100644 78981922 for 'a.txt'\n"
+            + "Already on 'feature-x'\n",
+        )).toBe("error: unable to read sha1 file of a.txt (78981922)");
+        expect(gitFailureReason(
+            "error: unable to create file sub/b.txt: Permission denied\n"
+            + "Already on 'feature-x'\n",
+        )).toBe("error: unable to create file sub/b.txt: Permission denied");
+    });
+
+    it("takes the last line when git names neither", () => {
+        expect(gitFailureReason("something unexpected\nand then this\n")).toBe("and then this");
+        expect(gitFailureReason("   \n  \n")).toBeUndefined();
     });
 });

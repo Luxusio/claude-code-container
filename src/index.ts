@@ -1434,10 +1434,20 @@ function handleWorktreeRemove(
                     `\nBranch '${branch}' is still held by a worktree registration recorded at`
                     + " a path that cannot be reached from here, in:",
                 );
-                for (const repository of stranded) console.error(`  ${repository}`);
+                for (const { repository, locked } of stranded) {
+                    // `git worktree prune` does not clear a LOCKED registration — that is the
+                    // whole point of the lock, and ccc honours it when repairing. So naming
+                    // prune alone would send exactly the most-stuck operator to a command
+                    // that does nothing.
+                    console.error(`  ${repository}${locked ? "   (locked)" : ""}`);
+                }
                 console.error(
-                    "Run `git worktree prune` there, or the next `ccc @"
-                    + `${branch}\` will refuse.`,
+                    stranded.some(({ locked }) => locked)
+                        ? "Run `git worktree unlock` and then `git worktree prune` there — prune"
+                            + ` alone will not clear a locked one — or the next \`ccc @${branch}\``
+                            + " will refuse."
+                        : "Run `git worktree prune` there, or the next `ccc @"
+                            + `${branch}\` will refuse.`,
                 );
             }
         }

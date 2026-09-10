@@ -2636,22 +2636,41 @@ function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: str
     );
 }
 
-function warnWorktreeRepairFailure(destinationPath: string, gitStderr: string): void {
+// Which line of git's stderr is the reason. Exported because the choice is the thing that
+// was wrong twice, and a NOTE-level test cannot enumerate git's error shapes.
+//
+// `fatal:` first. Git's "missing but already registered worktree" error is two lines and
+// the path is on the FIRST, so taking the last one printed the remedy list and dropped the
+// only noun in the message.
+//
+// Then `error:`, because the last line can be a SUCCESS sentence. This is also fed
+// `git checkout --force`'s stderr, and a partial checkout exits 1 like this:
+//
+//     error: unable to read sha1 file of a.txt (78981922…)
+//     error: invalid object 100644 78981922… for 'a.txt'
+//     Already on 'feature-x'
+//
+// so the last line told the operator the repair failed and that git's reason was
+// "Already on 'feature-x'", discarding both lines naming the cause. That is the defect
+// this NOTE exists to fix, one error shape over.
+//
+// The trailing semicolon goes because git's two-line message continues below it, and
+// keeping it made the quoted sentence read as truncated output.
+export function gitFailureReason(gitStderr: string): string | undefined {
     const lines = gitStderr
         .trim()
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
-    // The `fatal:` line, not the last one. Git's "missing but already registered worktree"
-    // error is two lines and the path is on the FIRST:
-    //
-    //     fatal: '<path>' is a missing but already registered worktree;
-    //     use 'add -f' to override, or 'prune' or 'remove' to clear
-    //
-    // Taking the last line printed the remedy list and dropped the only noun in the message
-    // — a NOTE naming no path, in a task that has been about nothing else. Single-line errors
-    // are unaffected, and the fallback is still the last line when git names no fatal.
-    const reason = lines.find((line) => line.startsWith("fatal:")) ?? lines.pop();
+    return (
+        lines.find((line) => line.startsWith("fatal:"))
+        ?? lines.find((line) => line.startsWith("error:"))
+        ?? lines.pop()
+    )?.replace(/;$/, "");
+}
+
+function warnWorktreeRepairFailure(destinationPath: string, gitStderr: string): void {
+    const reason = gitFailureReason(gitStderr);
     process.stderr.write(
         `[ccc] NOTE: Could not recreate the worktree at ${terminalSafe(destinationPath)}.\n`
         + `      git said: ${reason ? terminalSafe(reason) : "nothing"}\n`
@@ -2682,7 +2701,8 @@ function warnUnreachableNestedRepository(candidatePath: string, recorded: string
         // sides of the flag.
         + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary\n`
         + "      files — which `ccc rm -f` deletes along with the workspace, unless you repair\n"
-        + "      it first.\n"
+        + "      it first by running `ccc @<branch>` from the source repository — the same\n"
+        + "      invocation the sibling NOTE names, and the only one that repairs.\n"
         // The container boundary is the common cause, not the only one: a workspace that was
         // moved or renamed leaves the same unresolvable back-pointer with no container
         // anywhere near it, and an operator told "registered inside the container" about a
@@ -3714,10 +3734,12 @@ function captureExistingWorktreeRegistrationFence(
  * Best effort by construction: this runs after a successful removal and must never turn one
  * into a failure, so every step that can throw is contained.
  */
+export type StrandedBranchRegistration = { repository: string; locked: boolean };
+
 export function strandedBranchRegistrations(
     sourcePath: string,
     branch: string,
-): string[] {
+): StrandedBranchRegistration[] {
     const resolved = resolve(sourcePath);
     const repositories = [resolved];
     try {
@@ -3732,13 +3754,16 @@ export function strandedBranchRegistrations(
     } catch {
         // The root alone is still worth checking.
     }
-    const stranded: string[] = [];
+    const stranded: StrandedBranchRegistration[] = [];
     for (const repository of repositories) {
         try {
             if (!pathExistsStrict(join(repository, ".git"))) continue;
-            if (unreachableRegistrationPathHoldingBranch(repository, null, branch)) {
-                stranded.push(repository);
-            }
+            // `includeLocked`: this advises, it does not displace. A locked registration is
+            // the one case where the operator is MOST stuck — `git worktree prune` will not
+            // clear it — so inheriting displacement's skip made the warning go silent exactly
+            // there, and `ccc rm -f` went back to saying "Workspace removed." and nothing else.
+            const held = unreachableRegistrationPathHoldingBranch(repository, null, branch, true);
+            if (held) stranded.push({ repository, locked: held.locked });
         } catch {
             // A repository we cannot inspect is one we cannot advise about.
         }
@@ -3769,7 +3794,12 @@ function unreachableRegistrationPathHoldingBranch(
     // measurement is why nobody checks the next one.
     destinationPath: string | null,
     branch: string,
-): string | null {
+    // Displacement skips locked registrations — that is git's own protection and honouring
+    // it is the contract this function can defend. A read-only ADVISORY must not inherit
+    // that skip: it displaces nothing, and going silent on a locked entry is going silent
+    // exactly where the operator is most stuck, since `prune` will not clear it either.
+    includeLocked = false,
+): { path: string; locked: boolean } | null {
     const listed = spawnSync(
         "git",
         ["worktree", "list", "--porcelain"],
@@ -3792,7 +3822,7 @@ function unreachableRegistrationPathHoldingBranch(
         }
     };
     const wanted = `branch refs/heads/${branch}`;
-    const holders: string[] = [];
+    const holders: Array<{ path: string; locked: boolean }> = [];
     for (const block of (listed.stdout ?? "").split(/\r?\n\r?\n/)) {
         const lines = block.split(/\r?\n/);
         const worktreeLine = lines.find((line) => line.startsWith("worktree "));
@@ -3809,13 +3839,14 @@ function unreachableRegistrationPathHoldingBranch(
         // name to the new worktree — two working trees on one gitdir. Honouring the lock is
         // the whole contract this function can defensibly claim: it does what
         // `git worktree prune` would do, and stops where prune stops.
-        if (lines.some((line) => line === "locked" || line.startsWith("locked "))) continue;
+        const locked = lines.some((line) => line === "locked" || line.startsWith("locked "));
+        if (locked && !includeLocked) continue;
         // Decided by observing the path rather than by reading git's `prunable` line: git
         // also sets prunable for a registration whose gitdir file is malformed or whose
         // entry is stale for reasons that have nothing to do with the container boundary,
         // and this displaces a registration, so the condition has to be the narrow one.
         if (observable(registered)) continue;
-        holders.push(registered);
+        holders.push({ path: registered, locked });
     }
     // `git worktree add --force` DOES create a second worktree on one branch — measured
     // against git 2.43.0, and the earlier version of this comment claimed otherwise and used
@@ -6606,7 +6637,7 @@ export function fixBrokenWorktree(
         sourceRepo.path,
         destPath,
         branch,
-    ) ?? destPath;
+    )?.path ?? destPath;
     const staleRegistrationFence = captureMissingWorktreeRegistrationFence(
         sourceRepo.path,
         staleRegistrationPath,
