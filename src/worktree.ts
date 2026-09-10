@@ -3758,12 +3758,17 @@ export function strandedBranchRegistrations(
     for (const repository of repositories) {
         try {
             if (!pathExistsStrict(join(repository, ".git"))) continue;
-            // `includeLocked`: this advises, it does not displace. A locked registration is
-            // the one case where the operator is MOST stuck — `git worktree prune` will not
-            // clear it — so inheriting displacement's skip made the warning go silent exactly
-            // there, and `ccc rm -f` went back to saying "Workspace removed." and nothing else.
-            const held = unreachableRegistrationPathHoldingBranch(repository, null, branch, true);
-            if (held) stranded.push({ repository, locked: held.locked });
+            // Every holder, with no policy applied. This advises; it displaces nothing. Both of
+            // displacement's rules were wrong here and both went the same way — a locked
+            // entry is where the operator is MOST stuck, since `prune` will not clear it, and
+            // two holders means there is MORE to clean up, not less. Inheriting either made
+            // `ccc rm -f` print "Workspace removed." and nothing else.
+            const held = registrationsHoldingBranch(repository, branch);
+            if (held.length === 0) continue;
+            // One line per REPOSITORY, because that is what the operator runs the command in.
+            // Locked if ANY of its holders is: prune clears the rest and stops at that one, so
+            // the remedy has to be the stronger of the two.
+            stranded.push({ repository, locked: held.some((entry) => entry.locked) });
         } catch {
             // A repository we cannot inspect is one we cannot advise about.
         }
@@ -3771,35 +3776,23 @@ export function strandedBranchRegistrations(
     return stranded;
 }
 
-function unreachableRegistrationPathHoldingBranch(
+type UnreachableRegistration = { path: string; locked: boolean };
+
+/**
+ * Every registration in `repositoryPath` that holds `branch` through a path nothing here can
+ * reach. No policy: this reports what git's registry says, and each caller applies its own.
+ *
+ * Split out because two callers wanted opposite things from the same function and the
+ * shared version carried DISPLACEMENT's rules — skip locked entries, refuse when there is
+ * more than one. Both are right for choosing an entry to move aside and both are wrong for a
+ * read-only advisory, which went silent in exactly the states with the most to clean up. The
+ * first divergence was patched with a boolean parameter; the second arrived the same way,
+ * which is what a parameter on a policy question buys you.
+ */
+function registrationsHoldingBranch(
     repositoryPath: string,
-    // null means "exclude nothing". `fixBrokenWorktree` passes its destination because that
-    // registration is its other case; `strandedBranchRegistrations` runs AFTER the workspace
-    // is gone, where the workspace path's own registration is precisely what was left behind.
-    //
-    // Honest about what defends this: nothing, and an earlier version of this comment was
-    // wrong about why. It claimed the state cannot be constructed. It can — `git worktree
-    // add --force` puts a second worktree on one branch, delete both registered directories
-    // and both are unreachable. My reason was wrong twice over: `sameObservedPath` falls back
-    // to string comparison when realpath throws, so it is true for an absent destPath, and
-    // `fixBrokenWorktree` only guards `pathExistsStrict(destPath)` around the backup, so it
-    // runs with destPath absent.
-    //
-    // Measured in that state, with and without the exclusion: repair returns null both ways,
-    // every registration is restored, no quarantine survives. The only difference is which
-    // git error surfaces — and the excluded path yields the WORSE one, a bare remedy list
-    // naming no path, because ccc quarantines the rival first and the add then fails on the
-    // destination's own entry. Left in place because one fixture is not enough to redesign a
-    // guard and both paths fail safely; recorded because a comment that contradicts a
-    // measurement is why nobody checks the next one.
-    destinationPath: string | null,
     branch: string,
-    // Displacement skips locked registrations — that is git's own protection and honouring
-    // it is the contract this function can defend. A read-only ADVISORY must not inherit
-    // that skip: it displaces nothing, and going silent on a locked entry is going silent
-    // exactly where the operator is most stuck, since `prune` will not clear it either.
-    includeLocked = false,
-): { path: string; locked: boolean } | null {
+): UnreachableRegistration[] {
     const listed = spawnSync(
         "git",
         ["worktree", "list", "--porcelain"],
@@ -3808,9 +3801,9 @@ function unreachableRegistrationPathHoldingBranch(
     if (listed.error || listed.status !== 0) {
         throw new Error(`Unable to inspect worktree registrations: ${repositoryPath}`);
     }
-    // Anything other than a clean absence counts as reachable. This decides whether to
-    // displace someone's registration, so every ambiguity falls on the side of leaving it
-    // alone — an EACCES on the recorded path means we cannot see it, not that it is gone.
+    // Anything other than a clean absence counts as reachable. Displacement decides whether to
+    // move someone's registry entry on this, so every ambiguity falls on the side of leaving
+    // it alone — an EACCES on the recorded path means we cannot see it, not that it is gone.
     const observable = (path: string): boolean => {
         try {
             lstatSync(path);
@@ -3822,39 +3815,52 @@ function unreachableRegistrationPathHoldingBranch(
         }
     };
     const wanted = `branch refs/heads/${branch}`;
-    const holders: Array<{ path: string; locked: boolean }> = [];
+    const holders: UnreachableRegistration[] = [];
     for (const block of (listed.stdout ?? "").split(/\r?\n\r?\n/)) {
         const lines = block.split(/\r?\n/);
         const worktreeLine = lines.find((line) => line.startsWith("worktree "));
         if (!worktreeLine || !lines.includes(wanted)) continue;
         const registered = worktreeLine.slice("worktree ".length).trim();
-        // The destination's own registration is that caller's other case, handled by the
-        // fence below with the checks it already carries.
-        if (destinationPath !== null && sameObservedPath(registered, destinationPath)) continue;
-        // `git worktree lock` is git's documented answer to exactly the case this test can
-        // not tell apart from the container boundary: "a linked worktree stored on a portable
-        // device or network share which is not always mounted". An unmounted volume answers
-        // ENOENT identically to a container path, and displacing a locked entry was measured
-        // to destroy the operator's staged index, HEAD and reflog and then hand the freed
-        // name to the new worktree — two working trees on one gitdir. Honouring the lock is
-        // the whole contract this function can defensibly claim: it does what
-        // `git worktree prune` would do, and stops where prune stops.
-        const locked = lines.some((line) => line === "locked" || line.startsWith("locked "));
-        if (locked && !includeLocked) continue;
-        // Decided by observing the path rather than by reading git's `prunable` line: git
-        // also sets prunable for a registration whose gitdir file is malformed or whose
-        // entry is stale for reasons that have nothing to do with the container boundary,
-        // and this displaces a registration, so the condition has to be the narrow one.
         if (observable(registered)) continue;
-        holders.push({ path: registered, locked });
+        holders.push({
+            path: registered,
+            locked: lines.some((line) => line === "locked" || line.startsWith("locked ")),
+        });
     }
-    // `git worktree add --force` DOES create a second worktree on one branch — measured
-    // against git 2.43.0, and the earlier version of this comment claimed otherwise and used
-    // that claim as a safety argument. So a second unreachable holder is not proof of
-    // corruption; it is proof that this function cannot tell which one to displace. Refusing
-    // is still right, for that reason rather than the one written here before.
-    if (holders.length !== 1) return null;
-    return holders[0];
+    return holders;
+}
+
+/**
+ * The one registration `fixBrokenWorktree` may move aside, or null if there is none it may.
+ *
+ * Three rules, all of them displacement's alone:
+ *
+ * - The destination's own entry is that caller's other case, handled by the fence with the
+ *   checks it already carries.
+ * - A `locked` entry is never displaced. Git's manual names this exact case — a worktree "on
+ *   a portable device or network share which is not always mounted" — and an unmounted volume
+ *   answers ENOENT identically to a container path. Honouring the lock is the contract this
+ *   can defend: it does what `git worktree prune` would do, and stops where prune stops.
+ * - More than one candidate is a refusal. `git worktree add --force` DOES put a second
+ *   worktree on a branch — measured against git 2.43.0, and an earlier comment here claimed
+ *   otherwise and used the claim as a safety argument — so a second holder is not proof of
+ *   corruption, it is proof that this cannot tell which to displace.
+ *
+ *   Untested, and said so rather than dressed up: removing this rule leaves the suite green.
+ *   Measured in the two-rival state — both variants return null, both roll every
+ *   registration back, and which path git names first varies with the fixture rather than
+ *   with the rule. It is a safety policy whose effect is not observable in outcome. The test
+ *   beside it pins what IS observable, that a refusal changes nothing, and claims no more.
+ */
+function registrationToDisplace(
+    repositoryPath: string,
+    destinationPath: string,
+    branch: string,
+): UnreachableRegistration | null {
+    const candidates = registrationsHoldingBranch(repositoryPath, branch)
+        .filter((holder) => !sameObservedPath(holder.path, destinationPath))
+        .filter((holder) => !holder.locked);
+    return candidates.length === 1 ? candidates[0] : null;
 }
 
 function captureMissingWorktreeRegistrationFence(
@@ -6633,7 +6639,7 @@ export function fixBrokenWorktree(
     // takes this path as "the path the registration records", which is what the quarantine
     // and its rollback have always keyed on — so displacing a container-side entry needs no
     // new machinery, only the right path.
-    const staleRegistrationPath = unreachableRegistrationPathHoldingBranch(
+    const staleRegistrationPath = registrationToDisplace(
         sourceRepo.path,
         destPath,
         branch,

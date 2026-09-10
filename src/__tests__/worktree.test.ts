@@ -7823,3 +7823,197 @@ describe("gitFailureReason", () => {
         expect(gitFailureReason("   \n  \n")).toBeUndefined();
     });
 });
+
+// Displacement's rules leaking into the advisory, both of them, one at a time. The locked
+// skip was found first and patched with a parameter; the single-holder rule arrived the same
+// way, which is what a parameter on a policy question buys you. They are separate functions
+// now and this pins the states each rule used to swallow.
+describe("what the post-removal advisory reports that displacement refuses", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-advisory-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function sourceWithSubmodule(branch: string) {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        return {
+            src,
+            submodule: join(src, "services", "api"),
+            workspacePath: createWorkspace(src, branch).workspacePath,
+        };
+    }
+
+    it("names a repository with TWO unreachable holders, where there is more to clean up", () => {
+        const { src, submodule, workspacePath } = sourceWithSubmodule("advisory-two");
+        // `git worktree add --force` puts a second worktree on the branch. Delete both
+        // registered directories and both registrations are unreachable.
+        const rival = join(root, "rival");
+        expect(spawnSync("git", ["worktree", "add", "--force", rival, "advisory-two"], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        }).status).toBe(0);
+        rmSync(rival, { recursive: true, force: true });
+        rmSync(workspacePath, { recursive: true, force: true });
+
+        const stranded = strandedBranchRegistrations(src, "advisory-two");
+
+        // Under displacement's single-holder rule this was silent — `ccc rm -f` printed
+        // "Workspace removed." and nothing else while two registrations held the branch.
+        expect(stranded.map((entry) => entry.repository)).toContain(submodule);
+    });
+
+    // NOT a pin on the ambiguity rule. Removing `candidates.length === 1` leaves this green:
+    // both variants return null, both roll every registration back, and which path git names
+    // first varies with the fixture rather than with the rule. What this DOES pin is the
+    // safety property — a refusal changes nothing — which is the part worth having.
+    it("changes nothing when there are two, and reports a rival", () => {
+        const { src, submodule, workspacePath } = sourceWithSubmodule("displace-two");
+        // TWO rivals, not one: the destination's own registration is filtered out before the
+        // count, so a single rival leaves one candidate and the ambiguity rule never fires.
+        // The first version of this test made that mistake and the mutation survived it.
+        for (const name of ["rival-a", "rival-b"]) {
+            const rival = join(root, name);
+            expect(spawnSync("git", ["worktree", "add", "--force", rival, "displace-two"], {
+                cwd: submodule, encoding: "utf-8", stdio: "pipe",
+            }).status, name).toBe(0);
+            rmSync(rival, { recursive: true, force: true });
+        }
+        rmSync(join(workspacePath, "services", "api"), { recursive: true, force: true });
+        const registry = join(src, ".git", "modules", "services", "api", "worktrees");
+        const before = readdirSync(registry).sort();
+
+        const chunks: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => {
+            chunks.push(String(chunk));
+            return true;
+        }) as typeof process.stderr.write;
+        let fixed;
+        try {
+            fixed = fixBrokenWorktree(src, workspacePath, "services/api", "displace-two", true);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+
+        // Advising about both and displacing neither are the same decision made twice, in
+        // opposite directions. Splitting the function must not have relaxed this one.
+        expect(fixed, "ambiguity is still a refusal for the destructive caller").toBeNull();
+        expect(readdirSync(registry).sort(), "and nothing was moved aside").toEqual(before);
+        // The outcome alone cannot tell the two apart — both return null and both roll back —
+        // so the message is what discriminates. Measured: refusing leaves every registration
+        // in place and git names a RIVAL; displacing one anyway quarantines it and git then
+        // refuses on the destination's own entry instead. Sensitive to which conflict git
+        // reports first, deliberately: if that changes, this should be looked at.
+        expect(chunks.join(""), "git refuses on a rival, not on the destination we did not touch")
+            .not.toContain(`git said: "fatal: ''`);
+    });
+});
+
+// The line choice, through ccc's own repair path rather than through a string I transcribed.
+//
+// `gitFailureReason` is unit-tested against the stderr QA measured, and that proves the
+// choice is right for those strings. It does not prove ccc's repair path produces them — if
+// git rewords, the unit test keeps passing on the transcription and the NOTE quietly goes
+// wrong again. Same gap as a helper test standing in for a call site, which this lineage has
+// paid for five times.
+//
+// Deleting a loose object gives the `error:` / "Already on" shape; corrupting it gives
+// `fatal: loose object … is corrupt`. One line apart, both arms from one fixture.
+describe("the reason a repair failed, from ccc's own repair path", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-reason-e2e-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function looseObjectOf(repository: string, path: string): string {
+        const sha = spawnSync("git", ["rev-parse", `HEAD:${path}`], {
+            cwd: repository, encoding: "utf-8", stdio: "pipe",
+        }).stdout.trim();
+        expect(sha, `${path} must be tracked`).toMatch(/^[0-9a-f]{40}$/);
+        const common = spawnSync("git", ["rev-parse", "--git-common-dir"], {
+            cwd: repository, encoding: "utf-8", stdio: "pipe",
+        }).stdout.trim();
+        return join(resolve(repository, common), "objects", sha.slice(0, 2), sha.slice(2));
+    }
+
+    function repairAfter(breakObject: (loose: string) => void): string {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        expect(spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" }).status).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "reason-e2e").workspacePath;
+        const nested = join(workspacePath, "services", "api");
+        // Make repair run: ordinary files where the worktree belongs.
+        rmSync(nested, { recursive: true, force: true });
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files");
+
+        const loose = looseObjectOf(join(src, "services", "api"), "init.txt");
+        chmodSync(loose, 0o644);
+        breakObject(loose);
+
+        const chunks: string[] = [];
+        const original = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => {
+            chunks.push(String(chunk));
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            fixBrokenWorktree(src, workspacePath, "services/api", "reason-e2e", true);
+        } catch {
+            // Some breakages abort rather than return null; the NOTE is what is pinned.
+        } finally {
+            process.stderr.write = original;
+        }
+        return chunks.join("");
+    }
+
+    it("quotes git's error line, not the success sentence git ends on", () => {
+        const notice = repairAfter((loose) => rmSync(loose));
+        expect(notice, "the repair failure is reported").toContain("git said:");
+        expect(notice, "a success sentence is not a reason for a failure")
+            .not.toMatch(/git said: "Already on/);
+        expect(notice, "and the line it quotes names the cause").toMatch(/git said: "error:/);
+    });
+
+    it("prefers git's fatal line when there is one", () => {
+        const notice = repairAfter((loose) => writeFileSync(loose, "not an object"));
+        expect(notice, "the repair failure is reported").toContain("git said:");
+        expect(notice).toMatch(/git said: "fatal:/);
+    });
+});
