@@ -2466,7 +2466,7 @@ function nestedRepositoryCandidateIsSafe(
 
 const warnedUnreachableNestedRepositories = new Set<string>();
 
-type PathContent = "absent" | "empty" | "unreadable" | "content";
+type PathContent = "absent" | "empty" | "unreadable" | "content" | "repository";
 
 // One rule for reading the path, used by both the decision to refuse and the sentence
 // explaining it. It replaced two functions that classified the same errors differently.
@@ -2485,7 +2485,13 @@ type PathContent = "absent" | "empty" | "unreadable" | "content";
 // refuse, not a reason to proceed.
 function pathContent(path: string): PathContent {
     try {
-        return readdirSync(path).length === 0 ? "empty" : "content";
+        const entries = readdirSync(path);
+        if (entries.length === 0) return "empty";
+        // The listing already answers this, so distinguishing costs one comparison. It matters
+        // because the refusal below called every non-empty path "a nested Git repository" —
+        // false for the shape that actually blocked `ccc rm -f`, which is a tracked
+        // submodule's path holding ordinary files and no `.git` at all.
+        return entries.includes(".git") ? "repository" : "content";
     } catch (error) {
         return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
     }
@@ -2499,7 +2505,10 @@ function pathContent(path: string): PathContent {
 // Only reached without `--force`. Every branch therefore ends by naming `-f`, which is the way
 // through: a workspace removal takes what is inside it, and this message is the one chance the
 // operator gets to know that before it happens.
-function unmanagedPathRefusal(path: string, content: PathContent): string {
+// Exported for the branch-coverage test: the two assertions that pinned "-f" both landed on
+// the `default` arm, so stripping it from `empty` and `content` left the suite green. A message
+// that stops naming the way through is the whole safety story failing silently.
+export function unmanagedPathRefusal(path: string, content: PathContent): string {
     const where = terminalSafe(path);
     const anyway = " — re-run with -f to delete it along with the workspace";
     switch (content) {
@@ -2509,6 +2518,9 @@ function unmanagedPathRefusal(path: string, content: PathContent): string {
         case "unreadable":
             return `workspace holds a nested Git repository ccc could not read: ${where}`
                 + " — make it readable to see what is in it" + anyway;
+        case "content":
+            return `workspace holds files where a tracked submodule belongs: ${where}`
+                + " — move them out of the workspace to keep them" + anyway;
         default:
             return `workspace holds a nested Git repository ccc does not manage: ${where}`
                 + " — move it out of the workspace to keep it" + anyway;
@@ -2532,7 +2544,14 @@ function warnUnmanagedNestedRepository(candidatePath: string, protectedFromDelet
     process.stderr.write(
         `[ccc] NOTE: Tracked submodule ${terminalSafe(candidatePath)} is not initialized.\n`
         + (protectedFromDeletion
-            ? "      Continuing without it; ccc is not managing it and will not delete it.\n"
+            // "will not delete it" was true when unmanaged meant undeletable. It stopped
+            // being true when the owner decided a command that deletes a workspace deletes
+            // the git inside it: under -f this exact path is deleted, and this NOTE is
+            // printed by a scan that runs before removal and does not know the flag. Rather
+            // than thread `force` through four scan call sites to fix a sentence, say the
+            // thing that is true either way and names the flag that decides it.
+            ? "      Continuing without it; ccc is not managing it, and `ccc rm` will not\n"
+                + "      delete it unless you pass -f.\n"
             : "      Continuing without it; there is nothing at that path for ccc to manage.\n")
         + "      To have ccc set it up as a linked worktree, run `ccc @<branch>` from the source\n"
         + "      repository — that is the only invocation that repairs; plain `ccc` inside the\n"
@@ -6891,7 +6910,19 @@ function removeUnifiedWorkspace(
             continue;
         }
         if (!isValidWorktree(nestedPath, entry.path)) {
-            errors.push(`${entry.name}: worktree ownership changed before deletion`);
+            // The SECOND veto. Lifting the first one and stopping there left `ccc rm -f`
+            // refusing exactly the shape the change was written for: a tracked submodule's
+            // path holding a directory with files and no `.git`. Measured before and after
+            // that change, the result was identical — blocked, and now blocked with a
+            // sentence that named no path, no cause and no remedy.
+            //
+            // There is no registration to deregister here, only files. Under -f the
+            // workspace deletion below takes them with everything else, which is what -f
+            // means. Without it, refuse in the same words as the other guard: naming the
+            // path and naming -f is the whole safety story.
+            if (opts?.force !== true) {
+                errors.push(unmanagedPathRefusal(nestedPath, pathContent(nestedPath)));
+            }
             continue;
         }
         const nestedIdentity = captureDirectoryIdentity(nestedPath);
@@ -7061,7 +7092,12 @@ function removeMultiRepoWorkspace(
         if (entry.isGitRepo) {
             assertDirectoryIdentity(wsPath, workspaceIdentity);
             if (!isValidWorktree(wsEntryPath, entry.path)) {
-                errors.push(`${entry.name}: worktree ownership changed before deletion`);
+                // Multi-repo mode's copy of the veto above, and the same decision: nothing to
+                // deregister, so -f deletes the files with the workspace and no-force says
+                // which path and how to get past it.
+                if (opts?.force !== true) {
+                    errors.push(unmanagedPathRefusal(wsEntryPath, pathContent(wsEntryPath)));
+                }
                 continue;
             }
             const entryIdentity = captureDirectoryIdentity(wsEntryPath);

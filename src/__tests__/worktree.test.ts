@@ -28,6 +28,7 @@ import {
     createWorkspace,
     removeWorkspace,
     unreachableRecordedGitPath,
+    unmanagedPathRefusal,
     repairWorkspace,
     isValidWorktree,
     detectBrokenWorktrees,
@@ -1642,7 +1643,12 @@ describe("assertWorkspaceBranch", () => {
             expect(removal.removed).toEqual([]);
             expect(existsSync(stranded), "content at the unmanaged path must survive the warning").toBe(true);
             expect(removal.errors.join(" "), "the remedy has to match what is actually there")
-                .toContain("move it out of the workspace");
+                .toContain("move them out of the workspace");
+            // And what is there is files, not a repository. `stranded` is a file at a tracked
+            // submodule's path with no `.git` beside it; the message used to call that "a
+            // nested Git repository ccc does not manage", which is the kind of inaccuracy an
+            // operator acts on and then cannot find the repository it named.
+            expect(removal.errors.join(" "), "named for what it is").toContain("files where");
             expect(removal.errors.join(" "), "and name the way through").toContain("re-run with -f");
 
             // Empty: nothing to protect but the directory is there. Still warned, and the
@@ -1673,21 +1679,43 @@ describe("assertWorkspaceBranch", () => {
                 expect(unreadable.errors.join(" "), "not the remedy for a directory it could read")
                     .not.toContain("move it out of the workspace");
 
-                // -f gets past THIS refusal. It then meets a pre-existing obstruction — an
-                // unreadable path cannot be validated as a worktree, so the nested removal loop
-                // stops on its own — which is out of this change's scope. What must hold is
-                // that the unmanaged-repository veto is no longer what blocks it.
+                // -f gets past THIS refusal and past everything after it. That second half is
+                // the assertion this test was missing: a SECOND veto further down the same
+                // function refused the same workspace under -f with "worktree ownership
+                // changed before deletion", and the two `not.toContain`s that used to stand
+                // here stayed green the whole time, because neither phrase appears in that
+                // message and neither of them looks at the disk.
                 const forcedUnreadable = removeWorkspace(repoPath, "feature-login", { force: true });
-                expect(forcedUnreadable.errors.join(" "), "-f is not blocked by the unmanaged veto")
+                const forcedSaid = forcedUnreadable.errors.join(" ");
+                expect(forcedSaid, "-f is not blocked by the unmanaged veto")
                     .not.toContain("could not read");
-                expect(forcedUnreadable.errors.join(" "))
-                    .not.toContain("does not manage");
+                expect(forcedSaid).not.toContain("does not manage");
+                // Nor by the SECOND veto, which is what actually blocked -f here until now and
+                // which the two lines above could never have detected: neither phrase appears
+                // in "worktree ownership changed before deletion" and neither looks at disk.
+                expect(forcedSaid, "nor by an ownership check with nothing to check")
+                    .not.toContain("ownership changed before deletion");
+                // What DOES block it, stated rather than left as an absence: a directory with
+                // no read bit cannot be enumerated, so `rm -rf` cannot empty it. That is the
+                // filesystem, not a policy of ccc's, and no veto of ours can lift it. Pinned
+                // positively so this test reports the day that changes.
+                expect(forcedSaid, "the filesystem is the obstruction, and it is named")
+                    .toContain("failed to delete");
             } finally {
-                chmodSync(uninitialized, 0o755);
+                // The step above may have moved the directory this was restoring.
+                if (existsSync(uninitialized)) chmodSync(uninitialized, 0o755);
             }
 
             // Absent: nothing there at all. Refusing would hand the operator a remedy they
-            // cannot perform, so removal proceeds.
+            // cannot perform, so removal proceeds. Rebuilt first, because the step above
+            // deleted the workspace it was measured on — which is what that step is for.
+            chmodSync(uninitialized, 0o755);
+            rmSync(workspace, { recursive: true, force: true });
+            spawnSync("git", ["worktree", "prune"], { cwd: repoPath, stdio: "pipe" });
+            const rebuilt = spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
+                cwd: repoPath, encoding: "utf-8", stdio: "pipe",
+            });
+            expect(rebuilt.status, rebuilt.stderr).toBe(0);
             rmSync(uninitialized, { recursive: true, force: true });
             const absentRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
             expect(absentRemoval.errors, "an absent path is not something to protect").toEqual([]);
@@ -6703,5 +6731,123 @@ describe("a worktree registered on the other side of the container boundary", ()
         expect(notice, "git's words, not a summary of them")
             .toContain("is already used by worktree at");
         expect(readFileSync(join(nested, "WORK.txt"), "utf-8")).toBe("uncommitted work");
+    });
+});
+
+// `ccc rm -f` on a workspace whose tracked submodule is a plain directory of files.
+//
+// The commit that made -f override the unmanaged refusal lifted ONE veto and stopped there.
+// A second, force-ungated veto sat further down the same function and refused this exact
+// shape — measured identical before and after that change, with a sentence
+// ("worktree ownership changed before deletion") that named no path, no cause and no remedy.
+// The tests that were supposed to cover it asserted only that two phrases were ABSENT from
+// `errors`, which stayed true while `errors` held the second veto's message and the workspace
+// stayed on disk.
+describe("removeWorkspace -f on a tracked submodule path holding ordinary files", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-rm-force-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function workspaceHoldingLooseFiles(branch: string) {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, branch).workspacePath;
+        // Tracked in the index, present on disk, no `.git`: a linked worktree that was
+        // replaced by ordinary files. This is the shape the operator kept hitting.
+        const nested = join(workspacePath, "services", "api");
+        rmSync(nested, { recursive: true, force: true });
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files the operator put here");
+        return { src, workspacePath, nested };
+    }
+
+    it("removes the workspace, files and all", () => {
+        const { src, workspacePath } = workspaceHoldingLooseFiles("force-loose");
+
+        const forced = removeWorkspace(src, "force-loose", { force: true });
+
+        // Both halves. `errors` being empty is not the claim — the claim is that the
+        // directory is gone, and the assertion that was missing is exactly this one.
+        expect(forced.errors, "-f must not refuse this").toEqual([]);
+        expect(existsSync(workspacePath), "and the workspace must actually be gone").toBe(false);
+    });
+
+    it("refuses without -f, and the refusal says which path and how to get past it", () => {
+        const { src, workspacePath, nested } = workspaceHoldingLooseFiles("keep-loose");
+
+        const refused = removeWorkspace(src, "keep-loose");
+
+        expect(existsSync(workspacePath), "the work survives").toBe(true);
+        expect(existsSync(join(nested, "stuff.txt"))).toBe(true);
+        const said = refused.errors.join(" ");
+        expect(said, "the path, so the operator knows what is being protected").toContain(nested);
+        expect(said, "and the way through").toContain("re-run with -f");
+        // Not "worktree ownership changed before deletion". That is an invariant name, not a
+        // sentence an operator can act on, and it was what this refusal used to say.
+        expect(said, "in words about the workspace, not about an internal invariant")
+            .toContain("tracked submodule belongs");
+    });
+
+    // Multi-repo mode keeps its own copy of the veto and it got the same force gate, but that
+    // gate is not reachable for this shape: assertWorkspaceOwnership throws first, from
+    // assertWorkspaceBranch, before the removal loop runs. So `ccc rm -f` here does not
+    // refuse — it raises, which is worse than the refusal it replaced, and `-f` cannot get
+    // past it because the assert takes no force.
+    //
+    // Pinned rather than fixed. Relaxing an ownership assert under -f is a separate decision
+    // from "a workspace-deleting command deletes the git inside it", it is the fifth such
+    // assert in this file, and the operator's repositories are submodule-shaped. This test
+    // exists so the gap is a recorded fact instead of a reviewer's code-read, and so it fails
+    // the day someone fixes it without noticing this promise.
+    it("does not yet let -f past the ownership assert in multi-repo mode", () => {
+        const src = join(root, "multi");
+        initRepo(src);
+        initRepo(join(src, "frontend"));
+        const workspacePath = createWorkspace(src, "force-multi").workspacePath;
+        const nested = join(workspacePath, "frontend");
+        rmSync(nested, { recursive: true, force: true });
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files the operator put here");
+
+        expect(() => removeWorkspace(src, "force-multi", { force: true }))
+            .toThrow("is not owned by its source repository");
+        expect(existsSync(workspacePath), "and nothing is lost while it refuses").toBe(true);
+    });
+});
+
+describe("unmanagedPathRefusal", () => {
+    // Every branch, because the two assertions that pinned "-f" both happened to land on the
+    // same one: stripping the advice from the others left the whole suite green.
+    it("names -f in every state, and says something different in each", () => {
+        const states = ["empty", "unreadable", "content", "repository"] as const;
+        const said = states.map((state) => unmanagedPathRefusal("/w/services/api", state));
+        for (const [index, message] of said.entries()) {
+            expect(message, `${states[index]} must name the way through`)
+                .toContain("re-run with -f");
+            expect(message, `${states[index]} must name the path`)
+                .toContain("/w/services/api");
+        }
+        expect(new Set(said).size, "and each state must describe what is actually there")
+            .toBe(states.length);
     });
 });
