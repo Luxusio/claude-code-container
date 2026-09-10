@@ -307,12 +307,17 @@ describe('workspace profile container discovery', () => {
     expect(workspaceRemovalCompleted({ errors: ['quarantine cleanup failed'] })).toBe(false)
   })
 
-  it('points at -f when it is the way through, and not when it is not', () => {
-    // Without -f, an incomplete removal is something -f can finish, including the
-    // unmanaged-repository warning that exists precisely to be overridden.
-    expect(workspaceRemovalAdvice(false)).toContain('-f')
-    // With -f already given, saying "use -f" would send them back to what just failed.
+  it('never advertises a remedy of its own, because it cannot know which one applies', () => {
+    // It used to say "Use -f to force". That was measured wrong for one of the refusals it
+    // trails: an unreadable directory needs a chmod first, and -f refuses it until then — so
+    // this line contradicted the specific one printed directly above it. Each refusal now
+    // carries its own remedy and this defers to them.
+    expect(workspaceRemovalAdvice(false)).not.toContain('-f')
+    // And with -f already given, "use -f" would send them back to what just failed.
     expect(workspaceRemovalAdvice(true)).not.toContain('-f')
+    // Not empty, though: the operator still has to be told the removal did not happen.
+    expect(workspaceRemovalAdvice(false)).toContain('Nothing was removed')
+    expect(workspaceRemovalAdvice(true)).toContain('did not complete')
   })
 
   it('removes containers only after workspace removal succeeds', () => {

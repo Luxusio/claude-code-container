@@ -1338,10 +1338,15 @@ export function removePreparedWorkspaceContainers(
 // and the previous change to it shipped with no test at all — the suite stayed green while the
 // operator was told to use a flag that could not help them. It is one line of logic; the reason
 // it is a function is that a line no test can reach is a line that drifts.
+// Deliberately no longer says "Use -f to force". Every refusal `removeWorkspace` produces now
+// carries its own remedy, and they are not all the same one: an unreadable directory needs a
+// chmod BEFORE -f, and -f refuses it until then. A standing line telling the operator to use
+// -f contradicted the specific line printed directly above it — which is the same shape as
+// `forceWouldNotHelp`, the flag this replaced, and the reason it existed.
 export function workspaceRemovalAdvice(force: boolean): string {
     return force
         ? "Workspace removal did not complete."
-        : "Some items could not be removed. Use -f to force.";
+        : "Nothing was removed. Each line above says how to proceed.";
 }
 
 export function workspaceRemovalCompleted(

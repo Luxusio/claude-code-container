@@ -6827,6 +6827,35 @@ describe("a worktree registered on the other side of the container boundary", ()
             .toBe(true);
     });
 
+    // The workspace the operator is actually holding when they give up and delete it. Its
+    // nested `.git` names a path that cannot be resolved here, and `removeUnifiedWorkspace`
+    // asked `gitLinkKind` about it without catching — so `ccc rm -f` died with `Unable to
+    // inspect worktree common directory '<path>'` and exit 1, on the very workspace whose
+    // no-force refusal had just told them to re-run with -f. Both sides of the flag, because
+    // the refusal and the thing it advertises have to agree.
+    it("refuses to remove it without -f, and names -f", () => {
+        const { src, workspacePath } = workspaceWithSubmodule("feature-rm-a");
+        writeFileSync(registrationGitdirFile(src), `${CONTAINER_PATH}/.git\n`);
+
+        const refused = removeWorkspace(src, "feature-rm-a");
+
+        expect(existsSync(workspacePath), "without -f nothing is removed").toBe(true);
+        expect(refused.errors.join(" "), "and the refusal names the way through")
+            .toContain("re-run with -f");
+    });
+
+    it("removes it with -f, which is what that refusal advertises", () => {
+        const { src, workspacePath } = workspaceWithSubmodule("feature-rm-b");
+        writeFileSync(registrationGitdirFile(src), `${CONTAINER_PATH}/.git\n`);
+
+        const forced = removeWorkspace(src, "feature-rm-b", { force: true });
+
+        // It used to die here: `Unable to inspect worktree common directory '<path>'`, from
+        // an uncaught `gitLinkKind`, exit 1, no path the operator could act on.
+        expect(forced.errors, "-f must do what the refusal said it would").toEqual([]);
+        expect(existsSync(workspacePath), "the workspace is gone").toBe(false);
+    });
+
     it("moves a displaced registration aside rather than deleting it", () => {
         const { src, workspacePath, nested } = workspaceWithSubmodule("feature-keep");
         const management = dirname(registrationGitdirFile(src));

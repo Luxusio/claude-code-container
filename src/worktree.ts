@@ -2595,8 +2595,17 @@ function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: str
         // commit made there moves the branch and writes through this workspace's index. "It
         // was moved aside rather than deleted" reads as "deregistered, contents kept", which
         // is only half of what happened.
-        + "      If that path comes back, its working tree now resolves to a DIFFERENT\n"
-        + "      worktree's index and HEAD. Run `git worktree repair` there before using it.\n",
+        // `git worktree repair` was this line's first advice and it is WRONG here, measured:
+        // the premise of this whole path is that the source repository is the SAME directory
+        // on both sides of the mount, so repair rewrites the one registration back to the
+        // other side's path — un-repairing this workspace, aborting `ccc` again, and leaving
+        // both working trees on one gitdir. The operator was stuck until they undid it by
+        // hand. Do not name a command whose effect depends on a premise this message cannot
+        // check; name the state and the artefact instead.
+        + "      If that path comes back, its working tree resolves to THIS workspace's index\n"
+        + "      and HEAD — a commit made there would write through them. Do not use it until\n"
+        + "      one of the two has been re-created. The directory above is the only copy of\n"
+        + "      the other side's HEAD, index and reflog, and ccc will not reclaim it.\n",
     );
 }
 
@@ -6964,8 +6973,23 @@ function removeUnifiedWorkspace(
         };
         operationGuard();
         const nestedGitPath = join(nestedPath, ".git");
-        if (existsSync(nestedGitPath)
-            && gitLinkKind(nestedGitPath) === "gitlink"
+        // `gitLinkKind` THROWS on metadata that names a path it cannot resolve here — which
+        // is the container boundary, the state this whole task exists to handle. Calling it
+        // raw made `ccc rm -f` die with `Unable to inspect worktree common directory '<path>'`
+        // and exit 1, on the exact workspace whose no-force refusal had just told the operator
+        // to re-run with -f. A message that sends someone to a command that crashes is the
+        // defect this file keeps relearning, so the classification is answered rather than
+        // raised: unreadable-from-here is not a tracked gitlink, and the checks below decide
+        // what happens to it.
+        let nestedKind: GitLinkKind | null = null;
+        if (existsSync(nestedGitPath)) {
+            try {
+                nestedKind = gitLinkKind(nestedGitPath);
+            } catch (error) {
+                if (unreachableRecordedGitPath(error) === null) throw error;
+            }
+        }
+        if (nestedKind === "gitlink"
             && isNestedTrackedGitlink(
                 wsPath,
                 workspaceRepositoryEntries,
