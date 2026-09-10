@@ -7470,8 +7470,19 @@ describe("the removal preflight, through the CLI entry point", () => {
             named === undefined || named === "docker" || named === "podman",
             `CCC_RUNTIME must be 'docker' or 'podman', not ${JSON.stringify(named)}`,
         ).toBe(true);
-        const runtime = named ?? (spawnOk("podman", "--version") ? "podman" : "docker");
-        if (spawnOk(runtime, "info")) {
+        // `resolveRuntime` has THREE outcomes, not two: podman if on PATH, else docker if on
+        // PATH, else it throws. Collapsing the throw into "docker" made the test say the run
+        // never reached the runtime check on a machine with neither installed — where the run
+        // reached it and was told there is nothing to reach. The same misdirection as the two
+        // before it, on the one outcome the mirror did not cover.
+        const runtime = named
+            ?? (spawnOk("podman", "--version")
+                ? "podman"
+                : spawnOk("docker", "--version") ? "docker" : null);
+        if (runtime === null) {
+            expect(output, "with no runtime installed, ccc refuses to choose one")
+                .toMatch(/No container runtime found/i);
+        } else if (spawnOk(runtime, "info")) {
             expect(output, "the run must have reached the removal").toContain("Removing workspace");
             // The claim the whole fix is about, asserted through the entry point rather than
             // through the library: `-f` removes what `removeWorkspace(..., {force:true})`

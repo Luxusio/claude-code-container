@@ -483,6 +483,25 @@ having printed nothing, which reads exactly like a passing preflight. Assert
 both that the bad output is absent AND that the expected output is present, or
 silence passes.
 
+### Mirror the question, including the outcome where it refuses to answer
+
+The same rule cost three findings at three depths in one commit lineage:
+
+1. A guard matching one call site's literal sentence rather than the class of
+   sentences its asserts produce.
+2. A test probe resolving the container runtime docker-first-by-liveness where
+   `resolveRuntime()` resolves podman-first-by-PATH-presence. It agrees with the
+   product on most machines and disagrees on an ordinary one — Podman Desktop
+   installed and stopped beside a running Docker.
+3. The same probe collapsing `resolveRuntime()`'s THIRD outcome — it throws
+   when neither runtime is on PATH — into "docker", so on a machine with
+   neither, the test reported that the run never reached the runtime check when
+   it had reached it and been told there is nothing to reach.
+
+Ask the question the product asks, in its order, by its predicate, and with all
+of its outcomes. A mirror that covers the common cases is an approximation, and
+the case it drops is the one someone is standing in.
+
 ### A guard written against one message is not written against the class
 
 `workspaceRemovalFailureNote` matched `"is not owned by its source repository"`
