@@ -7881,10 +7881,9 @@ describe("what the post-removal advisory reports that displacement refuses", () 
         expect(stranded.map((entry) => entry.repository)).toContain(submodule);
     });
 
-    // NOT a pin on the ambiguity rule. Removing `candidates.length === 1` leaves this green:
-    // both variants return null, both roll every registration back, and which path git names
-    // first varies with the fixture rather than with the rule. What this DOES pin is the
-    // safety property — a refusal changes nothing — which is the part worth having.
+    // Pins the ambiguity rule, and the safety property beside it. The outcome is identical
+    // either way — null, every registration rolled back — so it is the git error that
+    // discriminates, and it needs three unreachable holders before the rule is reached at all.
     it("changes nothing when there are two, and reports a rival", () => {
         const { src, submodule, workspacePath } = sourceWithSubmodule("displace-two");
         // THREE unreachable holders, because the destination's own registration is filtered
@@ -7923,12 +7922,23 @@ describe("what the post-removal advisory reports that displacement refuses", () 
         expect(fixed, "ambiguity is still a refusal for the destructive caller").toBeNull();
         expect(readdirSync(registry).sort(), "and nothing was moved aside").toEqual(before);
         // The outcome alone cannot tell the two apart — both return null and both roll back —
-        // so the message is what discriminates. Measured: refusing leaves every registration
-        // in place and git names a RIVAL; displacing one anyway quarantines it and git then
-        // refuses on the destination's own entry instead. Sensitive to which conflict git
-        // reports first, deliberately: if that changes, this should be looked at.
-        expect(chunks.join(""), "git refuses on a rival, not on the destination we did not touch")
-            .not.toContain(`git said: "fatal: ''`);
+        // so the message is what discriminates. WHICH rival git names varies with registry
+        // order, so the invariant is the error SHAPE: refusing displaces nothing and git
+        // refuses because a rival holds the branch; displacing one anyway quarantines it and
+        // git then complains that the destination is registered, which says nothing about the
+        // rivals still holding it.
+        //
+        // Four earlier versions of this assertion passed under the mutation. Three of them
+        // because the fixture had two holders and the rule was never reached; the fourth
+        // because a `not.toContain` needle of `fatal: ''` — an empty quoted path — is a
+        // string git never emits, so it was true no matter what happened. The first defect
+        // reported in this task was a vacuous `not.toContain` that let `-f` ship broken
+        // through a whole suite, and so was the last one.
+        const notice = chunks.join("");
+        expect(notice, "git refuses on a rival, not on the destination we did not touch")
+            .toContain("already used by worktree at");
+        expect(notice, "and not on the destination's own registration, which we left alone")
+            .not.toContain("missing but already registered");
     });
 });
 

@@ -3846,11 +3846,14 @@ function registrationsHoldingBranch(
  *   otherwise and used the claim as a safety argument — so a second holder is not proof of
  *   corruption, it is proof that this cannot tell which to displace.
  *
- *   Untested, and said so rather than dressed up: removing this rule leaves the suite green.
- *   Measured in the two-rival state — both variants return null, both roll every
- *   registration back, and which path git names first varies with the fixture rather than
- *   with the rule. It is a safety policy whose effect is not observable in outcome. The test
- *   beside it pins what IS observable, that a refusal changes nothing, and claims no more.
+ *   The OUTCOME is identical either way — null, every registration rolled back — so what
+ *   this rule changes is the git error the operator is shown: refusing displaces nothing and
+ *   git names a rival that is holding the branch, while displacing one anyway leaves git
+ *   complaining that the destination is registered, which says nothing about the rivals.
+ *   That is the difference between "here is what is holding your branch" and "this path is
+ *   registered". Pinned by a fixture with THREE unreachable holders, because the
+ *   destination's own registration is filtered out before the count and two leave only one
+ *   candidate — with two, the rule is never reached and any assertion against it passes.
  */
 function registrationToDisplace(
     repositoryPath: string,

@@ -467,6 +467,21 @@ One of those was the reassuring direction on a guard that in fact nothing defend
 to the OPPOSITE meaning, it shipped green. A mutation count is only evidence if the run it is
 compared against was clean.
 
+**A `not.toContain` whose needle the code never emits is always true.** The first
+defect found in this task was a pair of them that let `ccc rm -f` ship broken
+through a whole suite; the last was one more, a needle of `fatal: ''` — an empty
+quoted path git does not produce — written while trying to pin the rule that
+kept escaping. Prefer `toContain` on what the code SHOULD say. When an absence
+is genuinely what matters, assert a presence beside it, and check that the
+needle appears in the failing variant before trusting the passing one.
+
+**A surviving mutation can mean the fixture never reaches the mutated line.**
+Three assertions in a row survived one mutation, and the reason was not the
+assertions: the fixture had two registrations and the rule under test needs
+three, because one is filtered out before the count. No rewording would have
+fixed that. When an assertion survives twice, stop rewriting it and go and
+check the mutated line actually runs.
+
 The check is mechanical and cheap: **revert the fix and run the test.** If it
 still passes, the test is describing the fix rather than depending on it. A
 mutation result is only worth what the verification of its application is worth
