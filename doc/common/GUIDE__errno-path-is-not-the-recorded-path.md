@@ -414,6 +414,42 @@ Both measured, both intended, neither obvious from the code:
    separate source repository, which the message has no way to know. Name the
    state and the artefact instead.
 
+### Run it in both layouts, or you have tested half of it
+
+`ccc` has two workspace shapes and they take different code paths: **unified**,
+where the source root is a git repository and nested repositories are its
+submodules, and **multi-repo**, where the root is not a repository at all and
+each child is its own checkout. Three separate defects in one task shipped from
+being measured in one of them:
+
+1. A test named "multi-repo" that called `initRepo` on the root — which makes
+   `hasGitMetadata` true and routes the whole thing to the unified path. It
+   pinned unified behaviour under a multi-repo name, which is worse than no
+   test: the next reader trusts it.
+2. A force gate added to multi-repo's copy of a veto that nothing reaches,
+   because an ownership assert raises first. Removing the gate entirely left
+   the suite green.
+3. An operator remedy — "delete the workspace directory yourself, then run
+   `git worktree prune` in each nested repository" — validated in multi-repo,
+   where it terminates. In unified the workspace root is **itself** a linked
+   worktree of the source root, so hand-deleting it always leaves a
+   registration there and nothing among the nested repositories can clear it.
+   The operator followed the sentence exactly and landed on the outcome its own
+   last clause promised they were avoiding.
+
+The rule that follows is cheap: **anything touching removal, repair or an
+operator message runs in both layouts before it ships**, and the test that
+proves a remedy is the one that executes it and asserts where the operator ends
+up — not the one that asserts the message contains the word `prune`.
+
+### A guard written against one message is not written against the class
+
+`workspaceRemovalFailureNote` matched `"is not owned by its source repository"`
+and silently missed `"Workspace is not owned by source repository '<path>'"` —
+same class, same need, one word apart. Match the narrowest substring the whole
+class shares, or give the asserts a typed error and match on that. A string
+literal copied from one call site is the same mistake as measuring one layout.
+
 ### The same defect, three times in one session
 
 Each of these was a message pointing at something that does not work:

@@ -1347,6 +1347,14 @@ export function workspaceRemovalAdvice(
     force: boolean,
     removed: readonly string[] = [],
 ): string {
+    // `removed` is consulted BEFORE `force`. Partial removal is reachable under -f — more
+    // likely there than without it, since -f is what gets far enough to remove some and stop
+    // — and returning early on force handed the operator who forced the weaker sentence in
+    // the state that needs the stronger one.
+    if (removed.length > 0) {
+        return `Removed ${removed.length} item(s) before stopping — the workspace is partly`
+            + " dismantled. See the errors above.";
+    }
     if (force) return "Workspace removal did not complete.";
     // `removed` is why this takes a second argument. Taking only `force` made the line a
     // guess, and the guess was measured wrong on the most ordinary refusal there is: a
@@ -1355,10 +1363,7 @@ export function workspaceRemovalAdvice(
     // the CLI's own `removed: services/api`. The workspace is half dismantled at that point
     // and the operator has to be told so, because the next thing they decide is whether to
     // re-run or to go looking for what is missing.
-    return removed.length === 0
-        ? "Nothing was removed. See the errors above."
-        : `Removed ${removed.length} item(s) before stopping — the workspace is partly`
-            + " dismantled. See the errors above.";
+    return "Nothing was removed. See the errors above.";
 }
 
 export function workspaceRemovalCompleted(
@@ -1439,7 +1444,12 @@ function handleWorktreeRemove(
 // field on a result this path never returns.
 export function workspaceRemovalFailureNote(error: unknown, force: boolean): string | null {
     const message = (error as Error)?.message ?? "";
-    if (!message.includes("is not owned by its source repository")) return null;
+    // The narrower substring, because the class has more than one sentence in it. Matching
+    // "is not owned by its source repository" caught `assertWorkspaceOwnership` and silently
+    // missed `assertWorkspaceRootOwnership`'s "Workspace is not owned by source repository
+    // '<path>'" — same class, same need, one word apart. A guard written against one message
+    // rather than one class is the string-literal version of the layout mistake below.
+    if (!message.includes("not owned by")) return null;
     // Two things this note MUST NOT do, both measured after the first version did them:
     //
     // It said "this is the multi-repo layout". The same assert raises in unified mode — a
@@ -1455,9 +1465,19 @@ export function workspaceRemovalFailureNote(error: unknown, force: boolean): str
         + `${force ? ", and -f does not lift this" : ""}.`
         + "\nMove what you want to keep out of the workspace, then delete the workspace"
         + " directory yourself."
-        + "\nThat leaves a worktree registration in the source repository still holding the"
-        + " branch: run `git worktree prune` in each nested repository afterwards, or the next"
-        + " `ccc @<branch>` will refuse.";
+        // "in each nested repository" was the first version, and it was validated in the
+        // multi-repo layout, where it terminates. In the unified layout the workspace root is
+        // ITSELF a linked worktree of the source root, so hand-deleting it always leaves a
+        // registration there and nothing among the nested repositories can clear it — the
+        // operator followed the sentence exactly and landed on the outcome its own last clause
+        // promised they were avoiding. Naming the source too is a no-op in multi-repo, where
+        // the root is not a git repository at all, and is the one that matters in unified.
+        //
+        // Third time in this task that a fix was measured in one layout and shipped for both.
+        // Whatever comes next gets run in both before it ships.
+        + "\nThat leaves worktree registrations still holding the branch: run"
+        + " `git worktree prune` in the source repository and in each nested repository"
+        + " afterwards, or the next `ccc @<branch>` will refuse.";
 }
 
 function showHelp(): void {

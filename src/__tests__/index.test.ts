@@ -1254,3 +1254,31 @@ describe('workspaceRemovalFailureNote', () => {
     expect(workspaceRemovalFailureNote(undefined, true)).toBeNull()
   })
 })
+
+describe('workspaceRemovalAdvice under -f', () => {
+  it('says the workspace is partly dismantled even when -f was given', () => {
+    // The force branch used to return before `removed` was consulted. Partial removal is
+    // reachable under -f — measured: {"removed":["services/web"],"errors":["ccc cannot
+    // delete a directory it cannot read: …"]} — and arguably more likely there, since -f is
+    // what gets far enough to remove some and stop. So the operator who forced got the
+    // weaker sentence in the state that needs the stronger one.
+    expect(workspaceRemovalAdvice(true, ['services/web'])).toContain('partly')
+    expect(workspaceRemovalAdvice(true, ['services/web'])).toContain('Removed 1 item')
+    // And with nothing removed it still says what -f failing means.
+    expect(workspaceRemovalAdvice(true, [])).toContain('did not complete')
+  })
+})
+
+describe('workspaceRemovalFailureNote guard width', () => {
+  it('catches every ownership sentence in the class, not just one of them', () => {
+    // These are the two `ccc rm` can raise. They differ by one word, and matching the first
+    // literally left the second — assertWorkspaceRootOwnership's — with no remedy and, under
+    // -f, no statement that force does not lift it.
+    for (const message of [
+      "Workspace repository 'frontend' is not owned by its source repository.",
+      "Workspace is not owned by source repository '/tmp/src'.",
+    ]) {
+      expect(workspaceRemovalFailureNote(new Error(message), true), message).not.toBeNull()
+    }
+  })
+})

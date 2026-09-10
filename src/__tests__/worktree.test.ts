@@ -43,6 +43,7 @@ import {
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
+import { workspaceRemovalFailureNote } from "../index.js";
 
 /** Helper: create a real git repo with an initial commit */
 function initRepo(repoPath: string): void {
@@ -7054,5 +7055,109 @@ describe("unmanagedPathRefusal", () => {
         // byte-identical sentence claiming a repository sits at a path with nothing at it.
         expect(new Set(said).size, "and each state must describe what is actually there")
             .toBe(states.length);
+    });
+});
+
+// The remedy `workspaceRemovalFailureNote` gives, executed rather than read — in BOTH
+// layouts, because three separate defects in this task shipped from being measured in one.
+//
+// `assertWorkspaceOwnership` raises before `removeWorkspace` can return anything, so the
+// operator's whole output is one sentence and that note is the only guidance they get. The
+// assertion that matters is not that the note contains the word "prune"; it is that doing
+// what it says ends somewhere they can work from.
+describe("the remedy for an ownership refusal, run end to end", () => {
+    let root: string;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-remedy-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function git(cwd: string, ...args: string[]) {
+        return spawnSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
+    }
+
+    /** Every step the note names, in its order, and nothing else. */
+    function followTheRemedy(workspacePath: string, source: string, nested: string[]): void {
+        rmSync(workspacePath, { recursive: true, force: true });
+        for (const repository of [source, ...nested]) {
+            if (!existsSync(join(repository, ".git"))) continue;
+            const pruned = git(repository, "worktree", "prune");
+            expect(pruned.status, pruned.stderr).toBe(0);
+        }
+    }
+
+    it("names both the source and the nested repositories", () => {
+        const note = workspaceRemovalFailureNote(
+            new Error("Workspace repository 'frontend' is not owned by its source repository."),
+            true,
+        )!;
+        // "in each nested repository" alone terminates in multi-repo and dead-ends in
+        // unified, where the workspace root is itself a linked worktree of the source root
+        // and nothing among the nested repositories can clear its registration.
+        expect(note).toContain("in the source repository and in each nested repository");
+    });
+
+    it("terminates in the unified layout", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const previous = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+        try {
+            const added = spawnSync("git", [
+                "-c", "protocol.file.allow=always",
+                "submodule", "add", origin, "services/api",
+            ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+            expect(added.status, added.stderr).toBe(0);
+            spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+            const workspacePath = createWorkspace(src, "remedy-u").workspacePath;
+
+            // A foreign repository at the tracked submodule's path: ownership cannot be
+            // proven, so removal raises before it can refuse.
+            const foreign = join(root, "foreign");
+            initRepo(foreign);
+            const nested = join(workspacePath, "services", "api");
+            rmSync(nested, { recursive: true, force: true });
+            expect(spawnSync("cp", ["-a", foreign, nested], { stdio: "pipe" }).status).toBe(0);
+            expect(() => removeWorkspace(src, "remedy-u", { force: true }))
+                .toThrow("not owned by");
+
+            followTheRemedy(workspacePath, src, [join(src, "services", "api")]);
+
+            // The clause the note ends on: "or the next `ccc @<branch>` will refuse". It
+            // must not, once the remedy has been followed. Before the source was named, this
+            // threw `'…' is a missing but already registered worktree`.
+            const again = createWorkspace(src, "remedy-u");
+            expect(existsSync(again.workspacePath)).toBe(true);
+        } finally {
+            if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+            else process.env.GIT_ALLOW_PROTOCOL = previous;
+        }
+    });
+
+    it("terminates in the multi-repo layout", () => {
+        const src = join(root, "multi");
+        mkdirSync(src, { recursive: true });
+        initRepo(join(src, "frontend"));
+        expect(existsSync(join(src, ".git")), "multi-repo means no git at the root").toBe(false);
+        const workspacePath = createWorkspace(src, "remedy-m").workspacePath;
+        const nested = join(workspacePath, "frontend");
+        rmSync(nested, { recursive: true, force: true });
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files");
+        expect(() => removeWorkspace(src, "remedy-m", { force: true })).toThrow("not owned by");
+
+        // The source is not a git repository here, so pruning it is a no-op — which is why
+        // naming it costs this layout nothing.
+        followTheRemedy(workspacePath, src, [join(src, "frontend")]);
+
+        const again = createWorkspace(src, "remedy-m");
+        expect(existsSync(again.workspacePath)).toBe(true);
     });
 });
