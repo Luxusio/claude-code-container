@@ -1329,4 +1329,9 @@ describe('strandedBranchNotice escaping', () => {
     // the path either.
     expect(notice).not.toContain('C:\\\\Users')
   })
+
+  // An exported function has callers the guard at the one current call site does not cover.
+  it('says nothing when nothing is held', () => {
+    expect(strandedBranchNotice('feat', [])).toBe('')
+  })
 })

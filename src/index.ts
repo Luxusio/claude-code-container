@@ -1503,6 +1503,11 @@ export function strandedBranchNotice(
     branch: string,
     stranded: StrandedBranchRegistration[],
 ): string {
+    // Nothing held means nothing to say. The call site guards on this too, but an exported
+    // function that answers "Branch 'x' is still held ... Run these:" with no repository and no
+    // command under it is a message that is not true, and the guard belonging only to the
+    // caller is how the same sentence gets printed by the next caller.
+    if (stranded.length === 0) return "";
     const lines = [
         `\nBranch '${branch}' is still held by a worktree registration recorded at a path`
         + " that cannot be reached from here, in:",
