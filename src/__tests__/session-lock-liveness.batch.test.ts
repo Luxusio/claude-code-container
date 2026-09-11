@@ -34,12 +34,15 @@ describe("pre-observed process starts", () => {
             sessionLockLiveness(lock(absentPid, "windows:1"), new Map([[absentPid, { status: "missing" as const }]])),
             "and missing is stale",
         ).toBe("stale");
-        // Fail-closed: an owner that cannot be observed keeps its lock. This is the answer that
-        // protects a live session from having its container stopped underneath it.
+        // `unknown` from the batch is not an answer, so it is not taken as one: the single-pid
+        // path is asked, and ITS answer wins. For a pid that does not exist that answer is
+        // stale, which is what the batch-free code has always said. QA found this: taking the
+        // batch's `unknown` skipped the tasklist fallback behind the single-pid probe and
+        // turned a live-but-unreadable owner from "active" into "unknown".
         expect(
             sessionLockLiveness(lock(absentPid, "windows:1"), new Map([[absentPid, { status: "unknown" as const }]])),
-            "unknown is not proof the owner exited",
-        ).toBe("unknown");
+            "an unknown batch entry defers to the real probe",
+        ).toBe(sessionLockLiveness(lock(absentPid, "windows:1")));
     });
 
     it("falls through for a pid the batch did not answer for", () => {

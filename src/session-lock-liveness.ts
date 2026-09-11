@@ -216,12 +216,30 @@ export function sessionLockOwner(content: string): SessionLockOwner | null {
     return Number.isSafeInteger(pid) ? { pid } : null;
 }
 
+/**
+ * The batch's answer for one pid, or a fresh single-pid probe.
+ *
+ * An `unknown` from the batch is NOT an answer. The single-pid path has a `tasklist` fallback
+ * behind it that can still report the process present — which is what happens on Windows for an
+ * elevated, protected or System process whose `StartTime` cannot be read. Taking `unknown` from
+ * the map skipped that fallback and turned a legacy lock's owner from "active" into "unknown".
+ * Both preserve the lock at today's only caller, so nothing broke; but the comment here claimed
+ * the map "can only ever save a launch, never change an answer", and that was false. It is true
+ * again now.
+ */
+function observationFor(
+    pid: number,
+    observed?: ReadonlyMap<number, ProcessStartObservation>,
+): ProcessStartObservation {
+    const batched = observed?.get(pid);
+    return batched && batched.status !== "unknown" ? batched : observeProcessStart(pid);
+}
 function legacyProcessLiveness(
     pid: number,
     observed?: ReadonlyMap<number, ProcessStartObservation>,
 ): SessionLockLiveness {
     if (process.platform === "win32") {
-        const observation = observed?.get(pid) ?? observeProcessStart(pid);
+        const observation = observationFor(pid, observed);
         return observation.status === "found" || observation.status === "present"
             ? "active"
             : observation.status === "missing" ? "stale" : "unknown";
@@ -239,16 +257,17 @@ function legacyProcessLiveness(
 
 export function sessionLockLiveness(
     content: string,
-    // Pre-observed pids, when the caller had several locks to examine and asked for them in
-    // one process. Absent or missing entries fall through to the single-pid path, so this can
-    // only ever save a launch, never change an answer.
+    // Pre-observed pids, when the caller had several locks to examine and asked for them in one
+    // process. Absent, missing, or `unknown` entries fall through to the single-pid path — see
+    // `observationFor` — so this can only ever save a launch, never change an answer. That
+    // sentence was untrue for one release of this function; `unknown` is the case it missed.
     observed?: ReadonlyMap<number, ProcessStartObservation>,
 ): SessionLockLiveness {
     const record = sessionLockOwner(content.trim());
     if (!record) return "unknown";
     if (!record.startToken) return legacyProcessLiveness(record.pid, observed);
 
-    const observation = observed?.get(record.pid) ?? observeProcessStart(record.pid);
+    const observation = observationFor(record.pid, observed);
     if (observation.status === "missing") return "stale";
     if (observation.status === "found") {
         return observation.token === record.startToken ? "active" : "stale";

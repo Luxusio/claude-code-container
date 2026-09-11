@@ -555,9 +555,9 @@ export const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HYPER_V_NETWORK_FAILURE_DIAGNOSTICS,
 ];
 // The identity probe's wall-clock budget, unchanged from the fixed 25ms × 20 it replaces —
-// what changed is how many launches fit inside it. Doubling from 25ms reaches the same 500ms
-// in four probes rather than twenty, and the loop still exits the instant both values are
-// known, which is the ordinary case.
+// what changed is how many launches fit inside it. Doubling from 25ms spends it across five
+// sleeps (25+50+100+200+125) rather than twenty flat ones, and the loop still exits the instant
+// both values are known, which is the ordinary case.
 const DEVICE_BROKER_IDENTITY_PROBE_SLEEP_BUDGET_MS = 500;
 // Six, down from twenty. "One probe per attempt" is true of the PRE-LOOP read and NOT of the
 // loop, which is the arithmetic an earlier version of this comment got backwards: entering the
@@ -3044,8 +3044,9 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             // producers of the same value on every execution of this path — and this
             // comparison decides whether ccc may terminate the process it just launched. The
             // observation above already read the current identity, from the same producer, and
-            // it is read fresh every time rather than echoed back, so it is if anything less
-            // stale than a second read would be.
+            // it is read fresh every time rather than echoed back. It is read EARLIER than a second
+            // read would be, so marginally staler — not fresher, as this once claimed; what matters
+            // is that it is a real observation of the current process, not the expected value.
             const currentStartToken = pid && spawnedProcessStartToken
                 ? observation.current?.startToken ?? processStartTokenReader(pid, normalized.platform)
                 : null;

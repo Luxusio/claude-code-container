@@ -54,7 +54,7 @@ export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string 
 /**
  * The one spelling of a Windows process start token's PowerShell expression.
  *
- * There were four: two scripts in device-lab-process-identity.ts, one in
+ * There were five: two scripts in device-lab-process-identity.ts, one in
  * device-lab-broker.ts, and two more built inside PowerShell in this file. Every one of them
  * produces a value that is compared for EQUALITY against the others — across processes and
  * across ccc invocations, to decide whether ccc may terminate a process it believes is its
