@@ -1434,18 +1434,25 @@ function handleWorktreeRemove(
                     `\nBranch '${branch}' is still held by a worktree registration recorded at`
                     + " a path that cannot be reached from here, in:",
                 );
-                for (const { repository, locked } of stranded) {
-                    // `git worktree prune` does not clear a LOCKED registration — that is the
-                    // whole point of the lock, and ccc honours it when repairing. So naming
-                    // prune alone would send exactly the most-stuck operator to a command
-                    // that does nothing.
-                    console.error(`  ${repository}${locked ? "   (locked)" : ""}`);
+                // `git worktree prune` does not clear a LOCKED registration — that is the
+                // whole point of the lock, and ccc honours it when repairing. So naming prune
+                // alone would send exactly the most-stuck operator to a command that does
+                // nothing. Naming `git worktree unlock` without its argument sent them to a
+                // usage error instead — measured, exit 129 — which is the same defect. The
+                // path is printed because that is what the command takes, and ccc knows it:
+                // it is the recorded path it just detected.
+                for (const { repository, lockedPaths } of stranded) {
+                    console.error(`  ${repository}`);
+                    for (const path of lockedPaths) {
+                        console.error(`      locked, held by: ${path}`);
+                    }
                 }
+                const locked = stranded.flatMap(({ lockedPaths }) => lockedPaths);
                 console.error(
-                    stranded.some(({ locked }) => locked)
-                        ? "Run `git worktree unlock` and then `git worktree prune` there — prune"
-                            + ` alone will not clear a locked one — or the next \`ccc @${branch}\``
-                            + " will refuse."
+                    locked.length > 0
+                        ? `Run \`git worktree unlock ${locked[0]}\` — prune alone will not clear`
+                            + " a locked one — and then `git worktree prune` there, or the next"
+                            + ` \`ccc @${branch}\` will refuse.`
                         : "Run `git worktree prune` there, or the next `ccc @"
                             + `${branch}\` will refuse.`,
                 );

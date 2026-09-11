@@ -7784,10 +7784,13 @@ describe("what a failed repair and a finished removal still owe the operator", (
         // protection. Inheriting the skip here made `ccc rm -f` print "Workspace removed."
         // and nothing else, in the one case where `git worktree prune` will not help either.
         expect(stranded.map((entry) => entry.repository)).toContain(submodule);
+        // The PATH, not just a flag: `git worktree unlock` takes the worktree path and exits
+        // 129 without it, so naming only the repository sent the most-stuck operator to a
+        // usage error — the same defect as naming a command that does nothing.
         expect(
-            stranded.find((entry) => entry.repository === submodule)?.locked,
-            "and the CLI has to know to say unlock before prune",
-        ).toBe(true);
+            stranded.find((entry) => entry.repository === submodule)?.lockedPaths,
+            "and the CLI has to have the path `git worktree unlock` requires",
+        ).toEqual(["/project/catchy-415bfb4/services/api"]);
     });
 });
 

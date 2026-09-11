@@ -3758,7 +3758,14 @@ function captureExistingWorktreeRegistrationFence(
  * Best effort by construction: this runs after a successful removal and must never turn one
  * into a failure, so every step that can throw is contained.
  */
-export type StrandedBranchRegistration = { repository: string; locked: boolean };
+// `lockedPaths` because `git worktree unlock` takes the worktree PATH — measured, without
+// one it exits 129 with a usage line. Naming only the repository sent the most-stuck
+// operator to a usage error, which is the same shape as sending them to a command that does
+// nothing; that was the defect the locked branch was added to avoid.
+export type StrandedBranchRegistration = {
+    repository: string;
+    lockedPaths: string[];
+};
 
 export function strandedBranchRegistrations(
     sourcePath: string,
@@ -3792,7 +3799,10 @@ export function strandedBranchRegistrations(
             // One line per REPOSITORY, because that is what the operator runs the command in.
             // Locked if ANY of its holders is: prune clears the rest and stops at that one, so
             // the remedy has to be the stronger of the two.
-            stranded.push({ repository, locked: held.some((entry) => entry.locked) });
+            stranded.push({
+                repository,
+                lockedPaths: held.filter((entry) => entry.locked).map((entry) => entry.path),
+            });
         } catch {
             // A repository we cannot inspect is one we cannot advise about.
         }
