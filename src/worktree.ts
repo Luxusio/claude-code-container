@@ -2787,21 +2787,27 @@ export function terminalSafeLiteral(value: string): string {
     return TERMINAL_UNSAFE_PROBE.test(value) ? terminalSafe(value) : value;
 }
 
-// The bare-word set, kept conservative and deliberately including `\` and `:` so an ordinary
-// Windows path stays unquoted. `%` is NOT in it: a single one is harmless, but `%VAR%` expands
-// in cmd and no quoting form stops it there, so such a path is at least quoted for the other
-// two shells and cmd is out of reach — say it rather than imply otherwise.
-const SHELL_SAFE_BARE = /^[A-Za-z0-9_@+=:,./\\-]+$/u;
-// Double quotes tame a space, and `;` `|` `&` `#` with it — measured, they are inert inside
-// them. They do NOT tame these: `"` ends the argument, `$` and a backtick still substitute
-// inside double quotes in bash, zsh and PowerShell, and a value ENDING in a backslash escapes
-// its own closing quote — `git -C "C:\Users\Kyeong Jae\" worktree prune` does not misparse the
-// path, it fails to parse at all: `unexpected EOF while looking for matching '"'`. An earlier
-// version of this routed the first three to `terminalSafe`, which is `JSON.stringify`, which
-// is double quotes — so the comment said "escaped data" while the line it emitted was a live
-// shell word that ran `$(id)` on paste. That is this task's own defect, in the function
-// written to fix it.
-const SHELL_NEEDS_SINGLE_QUOTES = /["$`]|\\$/u;
+// The bare-word set. `\` is NOT in it, which is a reversal: it was put there so an ordinary
+// Windows path would stay unquoted, and that was measured backwards. Bare, a shell eats the
+// separators — `C:\dev\proj` reaches git as `C:devproj`, and `C:\dev\proj\ worktree` escapes
+// the SPACE, so git gets `-C "C:devproj worktree"` and runs `git prune`, the object-database
+// GC, instead of `git worktree prune`. The only reason the suite ever passed is that every
+// Windows path in its table happened to contain a space, so it took the quoted branch and the
+// bare exception it was written for was never exercised. `%` is out for the same kind of
+// reason: `%VAR%` expands in cmd and no quoting form stops it there.
+const SHELL_SAFE_BARE = /^[A-Za-z0-9_@+=:,./-]+$/u;
+// Double quotes are the form all three shells read alike, and they tame a space, `;`, `|`, `&`
+// and `#` — measured. They do not tame everything, and this is the exact boundary, measured in
+// bash: inside double quotes a backslash is still special before `$`, a backtick, `"` and
+// another backslash, and at the end of the value it escapes the closing quote itself.
+//   "C:\dev\proj"          -> C:\dev\proj          (fine — the ordinary Windows path)
+//   "\\server\share\repo"  -> \server\share\repo   (one separator eaten — a UNC path)
+//   "C:\dev\proj\"         -> unexpected EOF       (the whole pasted line fails to parse)
+// So: an expander, a doubled backslash, or a trailing backslash means single quotes, where
+// nothing is special at all. That costs cmd, which has no single-quote form, and the trade is
+// deliberate: a path that does not run in cmd beats a path that runs something else in bash,
+// or that silently becomes a different git subcommand.
+const SHELL_NEEDS_SINGLE_QUOTES = /["$`]|\\{2}|\\$/u;
 
 /**
  * One argument of a command the operator is meant to paste.
@@ -3866,9 +3872,31 @@ export function strandedBranchRegistrations(
         // The root alone is still worth checking.
     }
     const stranded: StrandedBranchRegistration[] = [];
+    // Keyed by REGISTRY, not by directory. The scan runs with allowRegisteredWorktrees, so a
+    // worktree of the source that lives inside the source is listed as its own repository
+    // while sharing the source's registry — one registration, reported twice, and the second
+    // command in the emitted block then fails with `is not a working tree` because the first
+    // already cleared it. Under `sh -e` that aborts the rest of the block, so the duplicate
+    // does not merely look untidy: it stops the remedy halfway.
+    const registries = new Set<string>();
     for (const repository of repositories) {
         try {
             if (!pathExistsStrict(join(repository, ".git"))) continue;
+            // `--git-common-dir` is the registry a worktree shares with its source; `--git-dir`
+            // is per-worktree and would not collapse them.
+            const registry = spawnSync(
+                "git",
+                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                { cwd: repository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            const key = registry.status === 0 ? (registry.stdout ?? "").trim() : "";
+            // No key means git could not answer, and a repository we cannot identify is one we
+            // must not silently drop — report it and let the operator see the duplicate rather
+            // than lose a registration to a failed probe.
+            if (key !== "") {
+                if (registries.has(key)) continue;
+                registries.add(key);
+            }
             // Every holder, with no policy applied. This advises; it displaces nothing. Both of
             // displacement's rules were wrong here and both went the same way — a locked
             // entry is where the operator is MOST stuck, since `prune` will not clear it, and

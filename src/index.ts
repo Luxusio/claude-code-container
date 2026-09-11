@@ -1517,7 +1517,12 @@ export function strandedBranchNotice(
     for (const { repository, lockedPaths } of stranded) {
         const repo = pasteableArgument(repository);
         for (const path of lockedPaths) {
-            lines.push(`  git -C ${repo} worktree unlock ${pasteableArgument(path)}`);
+            // `--` because the recorded path is read verbatim out of a registry gitdir file and
+            // may begin with a dash. Without it `git worktree unlock -foo` answers
+            // `error: unknown switch 'f'` and a usage line, exit 129 — measured, and precisely
+            // the failure this notice was rewritten to stop producing. With it, git stops
+            // parsing options and reports `fatal: '-foo' is not a working tree`.
+            lines.push(`  git -C ${repo} worktree unlock -- ${pasteableArgument(path)}`);
         }
         lines.push(`  git -C ${repo} worktree prune`);
     }

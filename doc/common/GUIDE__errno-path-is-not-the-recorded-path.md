@@ -614,19 +614,47 @@ Three rules came out of it:
      it emitted ran `id` on paste. Measured — the test for it asserts what a
      shell sees after reading the argument, not what the string looks like.
 
-  What holds: bare for an ordinary path; double quotes otherwise, the one form
-  bash, cmd and PowerShell read alike (they also make `;`, `|`, `&` and `#`
-  inert — measured, not assumed); single quotes when the value carries `$`, a
-  backtick or a `"`, which costs cmd and is worth it, because a path that does
+  What holds, as a table, because prose kept getting it wrong — measured in
+  bash, reasoned for cmd and PowerShell and labelled as such:
+
+  | value | bare | double quotes | single quotes |
+  |---|---|---|---|
+  | `/src/api` | ok | ok | ok |
+  | `/home/kj/My Projects` | splits | ok | ok |
+  | `C:\dev\proj` | `C:devproj` | ok | ok |
+  | `\\server\share\repo` | `\serversharerepo` | one separator eaten | ok |
+  | `C:\dev\proj\` | eats the next word | `unexpected EOF` | ok |
+  | `/project/$(id)/api` | substitutes | substitutes | ok |
+
+  So: bare only for a value with no backslash and nothing else special; double
+  quotes for the rest, the one form all three shells read alike (they also make
+  `;`, `|`, `&` and `#` inert); single quotes when the value carries `$`, a
+  backtick, a `"`, a doubled backslash or a trailing one. Single quotes cost
+  cmd, which has no such form, and the trade is deliberate: a path that does
   not run in cmd beats a path that runs something else in bash. A value
   carrying a control character has no runnable form at all — escape it for
   display and do not call it a command. `%VAR%` in cmd is out of reach of every
-  quoting form; say so rather than imply otherwise. A value ending in a
-  backslash is not a misparse but a parse failure — it escapes its own closing
-  double quote and the line dies on `unexpected EOF` — so it takes the single
-  quotes too. Measured and deliberately NOT handled: `git -C -foo` treats the
-  leading dash as a path, not a flag, and an empty path fails loudly; neither
-  is reachable from a resolved repository path.
+  quoting form; say so rather than imply otherwise.
+
+  Two entries in this table were wrong for a whole round because of HOW they
+  were measured. `\` was in the bare-word set on the strength of "a Windows
+  path must not be JSON-doubled" — true, and not an argument for bare — and the
+  suite never caught it because every Windows path in the table happened to
+  contain a space, so all of them took the quoted branch and the bare exception
+  written for them was never exercised. **A row that cannot reach the branch it
+  was written for is not a test of that branch.** The trailing-backslash case
+  is the sharpest consequence: bare, `git -C C:\dev\proj\ worktree prune`
+  reaches git as argv `[C:devproj worktree]` `[prune]`, so it silently runs
+  `git prune` — object-database GC — instead of `git worktree prune`.
+
+  And the shell is not the only reader. `git worktree unlock -foo` answers
+  `error: unknown switch 'f'` and a usage line, exit 129 — the exact failure
+  the notice was rewritten to stop producing — because the shell hands git an
+  argv git then parses as options. A recorded path begins wherever a gitdir
+  file says it begins, including with a dash, so every such argument takes a
+  `--` separator. Measuring `git -C -foo` and concluding "safe" was measuring
+  the wrong position: `-C` consumes its next element whatever it looks like,
+  and the value is emitted in two positions, not one.
 
   The general rule underneath: **when the question is "what will the shell do
   with this", the assertion belongs in a shell.** `expect(text).toContain(...)`

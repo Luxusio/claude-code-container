@@ -1288,32 +1288,45 @@ describe('strandedBranchNotice escaping', () => {
   // repository-controlled: printed raw, an ESC sequence in it rewrites the screen the
   // operator is reading the remedy on. The NOTE in worktree.ts already escapes for this
   // reason; this notice printed the same class of string raw.
-  // Two paths, not one: escaping has to hold for every path in a notice, not just the first.
+  // Two paths AND a repository, not two paths alone. Escaping has to hold for every value in
+  // the notice and in both of the places each one is printed — the listing line and the
+  // command. With both repositories spelled plainly, dropping the escape from the listing's
+  // repository left the whole suite green: the repository's half of this property was free to
+  // disappear, which is the same asymmetry as pinning one argument and not the other.
   // (It does not pin the non-global probe regex — measured, the `g` one passes this too,
   // because `terminalSafe`'s own `replace` resets `lastIndex`.)
   it('escapes a control character instead of emitting it, every time', () => {
     const notice = strandedBranchNotice('feat', [
-      { repository: '/src/api', lockedPaths: ['/project/x\u001b[31m/api'] },
+      { repository: '/src/ap\u001bi', lockedPaths: ['/project/x\u001b[31m/api'] },
       { repository: '/src/web', lockedPaths: ['/project/x\u001b[31m/web'] },
     ])
 
     expect(notice).not.toContain('\u001b')
     expect(
       notice.match(/\\u001b/g) ?? [],
-      'both paths, each printed twice: in the listing and in its command',
-    ).toHaveLength(4)
+      'the repository three times — listing, unlock, prune — and each path twice',
+    ).toHaveLength(7)
   })
 
   // And leaves an ordinary path alone, byte for byte. Escaping unconditionally would
   // JSON-quote every path, which doubles the separators in `C:\Users\x` — the result is no
   // longer the path, and these lines exist to be pasted.
-  it('leaves a Windows path pasteable', () => {
+  it('keeps a Windows path intact, without JSON-doubling it', () => {
     const repository = 'C:\\Users\\kj\\catchy'
     const notice = strandedBranchNotice('feat', [
       { repository, lockedPaths: [] },
     ])
+    const command = notice.split('\n').find((line) => line.trim().startsWith('git -C')) ?? ''
 
-    expect(notice).toContain(`git -C ${repository} worktree prune`)
+    // The path reaches the command whole — quoted or not is `pasteableArgument`'s business, and
+    // whether a shell reads it back unchanged is asserted there, in a shell. THIS test used to
+    // demand the bare form (`git -C C:\Users\kj\catchy worktree prune`) and so pinned the
+    // defect: bare, a shell eats those separators and git is handed `C:Userskjcatchy`. An
+    // assertion on an exact spelling is an assertion that the spelling is correct, which is the
+    // one thing it cannot check.
+    expect(command).toContain(repository)
+    // And is not JSON-doubled, which is the other wrong answer: `C:\\Users\\kj\\catchy` is not
+    // the path either.
     expect(notice).not.toContain('C:\\\\Users')
   })
 })

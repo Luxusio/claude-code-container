@@ -8263,6 +8263,17 @@ describe("the stranded-branch notice, run as printed", () => {
             .toEqual([api, web].sort());
 
         const notice = strandedBranchNotice("feat", stranded);
+        // The two sentences nothing read until a mutation deleted each of them and the whole
+        // suite stayed green: the one naming the branch that is still held, and the one saying
+        // the lines below are commands to run. Without them this is a bare list of paths and
+        // git invocations with no statement of what happened or what to do. Anchored by
+        // POSITION — everything before the first command — rather than by exact wording, so it
+        // pins the two claims without freezing the prose around them.
+        const preamble = notice.split("\n")
+            .slice(0, notice.split("\n").findIndex((line) => line.trim().startsWith("git -C")))
+            .join("\n");
+        expect(preamble, "it says which branch is held, and that these are to be run")
+            .toMatch(/Branch 'feat'[\s\S]*Run/);
         const commands = notice
             .split("\n")
             .map((line) => line.trim())
@@ -8369,9 +8380,18 @@ describe("the stranded-branch notice, run as printed", () => {
         const registry = join(source, ".git", "worktrees");
         writeFileSync(
             join(registry, readdirSync(registry)[0], "gitdir"),
-            "/project/catchy-415bfb4/wt/.git\n",
+            "/project/catchy 415bfb4/wt/.git\n",
         );
         rmSync(checkout, { recursive: true, force: true });
+        // Locked, and the RECORDED path carries the space too — not just the repository. The
+        // notice quotes both through the same helper, and a mutation that dropped the quoting
+        // from the recorded path alone went uncaught while the fixture's recorded path was a
+        // plain one: the control-character property was pinned, the shell-quoting property was
+        // not.
+        expect(spawnSync("git", ["worktree", "lock", "/project/catchy 415bfb4/wt"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status).toBe(0);
 
         const stranded = strandedBranchRegistrations(source, "feat");
         const commands = strandedBranchNotice("feat", stranded)
@@ -8421,6 +8441,15 @@ describe("pasteableArgument", () => {
         // Ending in a backslash is not a misparse, it is a parse failure: the backslash escapes
         // the closing double quote and the whole pasted line dies on `unexpected EOF`.
         ["a Windows path ending in a separator", "C:\\Users\\Kyeong Jae\\"],
+        // The rows that were missing, and the reason the bare-backslash defect survived a
+        // green suite: every Windows path in this table used to contain a space, so all of them
+        // took the quoted branch and the bare exception written for them was never exercised.
+        ["a Windows path without a space", "C:\\dev\\proj"],
+        ["a UNC path", "\\\\server\\share\\repo"],
+        // Both a quote AND an expander, so the `'\''` idiom actually executes. With only one or
+        // the other the value takes the double-quote branch and that line never runs.
+        ["a path with a quote and an expander", "/project/it's$HOME/api"],
+        ["a path with a cmd variable", "/project/%USERPROFILE%/api"],
     ])("hands the shell %s unchanged", (_label, value) => {
         expect(whatTheShellSees(pasteableArgument(value))).toBe(value);
     });
@@ -8428,5 +8457,14 @@ describe("pasteableArgument", () => {
     it("does not put an expanding value inside double quotes", () => {
         // The specific shape that made the previous comment false. Single quotes, not double.
         expect(pasteableArgument("/project/$(id)/api")).toBe("'/project/$(id)/api'");
+    });
+
+    // Asserted on the emitted spelling, not through a shell, because the property is invisible
+    // to a POSIX one: `%VAR%` expands in cmd and nowhere else. That is why `%` left the
+    // bare-word set, and without this the removal — one of the two things its commit claims —
+    // has no test at all.
+    it("quotes a cmd variable rather than leaving it bare", () => {
+        expect(pasteableArgument("/project/%USERPROFILE%/api"))
+            .toBe("\"/project/%USERPROFILE%/api\"");
     });
 });
