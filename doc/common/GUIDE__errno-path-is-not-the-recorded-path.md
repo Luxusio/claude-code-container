@@ -579,6 +579,41 @@ keyed on errnos rather than on what the errno was about. Each time the list was
 right about everything on it. Prefer the category — a Unicode property, a
 marker attached at the deciding site — and assert its premise.
 
+## The text ccc prints is code, and it was the part no test read
+
+Four defects in this task were defects in a *sentence*, and all four shipped
+green: `git worktree prune` for a registration a lock makes prune-proof;
+`git worktree unlock` with no argument (exit 129); `git worktree unlock <the
+first locked path>` plus "prune there" when the notice had just listed two
+repositories; and a skip NOTE promising a repair that raises in the layout it
+was printed in. The unit tests covered the function that *produced the data*
+for each message and never the message.
+
+Three rules came out of it:
+
+- **If the product prints a remedy, a test runs the remedy.** Not "contains
+  the word prune" — `spawnSync` the exact lines, from an unrelated cwd, then
+  re-ask the question that produced the notice and assert it is now empty.
+  That single assertion is what caught "clears one of the two listed
+  repositories"; no `toContain` on the text would have.
+- **A message with more than one subject cannot say "there".** The moment a
+  notice lists N things, every command it gives needs its own target — `git -C
+  <repo>` rather than a sentence that assumes the reader is standing in the
+  one repository the author had in mind.
+- **Escape for the terminal, but not inside something meant to be pasted.**
+  The quoted-and-escaped form is right for display and wrong for a command
+  line: JSON-quoting `C:\Users\x` doubles its separators, and what the
+  operator pastes is no longer the path. `terminalSafeLiteral` escapes only
+  when the value actually carries something a terminal acts on.
+
+And a corollary about *which* boolean a message branches on: the skip NOTE
+chose its arm from the workspace's layout while the claims it made were decided
+by the source's. They agree in the two ordinary layouts and come apart in a
+real one — a workspace whose root `.git` was removed by a partial removal, with
+a unified source still holding the branch at its root. **When a message makes a
+claim about what another function will do, branch on the input that function
+branches on, or say something true under both.**
+
 ## Testing note
 
 A test that asserts on a path is only as portable as the ancestors that path
@@ -591,13 +626,14 @@ would have caught this immediately.
 
 - `src/worktree.ts` — `gitLinkKind` (the throw site that attaches
   `recordedGitPath`), `unreachableRecordedGitPath` (the two-condition key),
-  `warnUnreachableNestedRepository`, `terminalSafe`
+  `warnUnreachableNestedRepository`, `terminalSafe`, `terminalSafeLiteral`
 - `src/__tests__/worktree.test.ts` — "skips a nested repository whose Git
   metadata names an unreachable path"
 - `doc/harness/tasks/TASK__worktree-nested-gitlink-unreachable-path/PLAN.md`
 - `src/worktree.ts` — `unreachableRegistrationPathHoldingBranch` (which
   registration may be displaced), `recordedGitPathUnreachableHere` (the single
   reader the choke-point filter asks), `warnWorktreeRepairFailure`
-- `src/__tests__/worktree.test.ts` — "a worktree registered on the other side
+- `src/__tests__/worktree.test.ts` — "the stranded-branch notice, run as
+  printed", "the skip NOTE, in both layouts", "a worktree registered on the other side
   of the container boundary"
 - `doc/harness/tasks/TASK__worktree-repair-past-a-container-registration/PLAN.md`
