@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { observeProcessStarts, sessionLockLiveness } from "../session-lock-liveness.js";
+import { observeProcessStarts, parseProcessStartObservations, sessionLockLiveness } from "../session-lock-liveness.js";
 
 // The saving this batches for is a Windows one — one `powershell.exe` per candidate lock file,
 // on every `ccc` invocation, which is why the operator's report of PowerShell windows varied
@@ -54,5 +54,48 @@ describe("pre-observed process starts", () => {
         // Off Windows there is no batch to run: the per-pid probes there are `/proc` reads and
         // a single `ps`, which cost nothing worth batching.
         if (process.platform !== "win32") expect(observeProcessStarts([process.pid]).size).toBe(0);
+    });
+});
+
+// The batch script only runs on Windows, so the parse is the only half of it a test on any
+// other host can reach. Review found two mutations unkillable without this split — the token
+// prefix, and MISSING silently becoming unknown — and the second of those is the difference
+// between deleting a dead owner's lock and keeping it forever.
+describe("the batch script's output", () => {
+    const pids = [4242, 4243, 4244];
+
+    it("reads each status as the single-pid probe would", () => {
+        const parsed = parseProcessStartObservations(
+            ["4242 FOUND:133000000000000000", "4243 MISSING", "4244 UNKNOWN"].join("\n"),
+            pids,
+        );
+
+        expect(parsed.get(4242), "same prefix as every other windows token producer")
+            .toEqual({ status: "found", token: "windows:133000000000000000" });
+        expect(parsed.get(4243), "MISSING is what makes a lock deletable; it must not blur")
+            .toEqual({ status: "missing" });
+        expect(parsed.get(4244)).toEqual({ status: "unknown" });
+    });
+
+    it("ignores anything it was not asked about or cannot read", () => {
+        const parsed = parseProcessStartObservations(
+            [
+                "9999 FOUND:1",            // never asked about
+                "4242 FOUND:not-a-number", // malformed
+                "garbage",
+                "4243 MISSING",
+                "4243 FOUND:5",            // a second answer for one pid
+            ].join("\r\n"),
+            pids,
+        );
+
+        expect(parsed.has(9999), "a pid we did not ask about is not ours to judge").toBe(false);
+        expect(parsed.has(4242), "an unreadable answer is no answer").toBe(false);
+        expect(parsed.get(4243), "first answer wins; a later one cannot overturn it")
+            .toEqual({ status: "missing" });
+    });
+
+    it("returns nothing for empty output", () => {
+        expect(parseProcessStartObservations("", pids).size).toBe(0);
     });
 });

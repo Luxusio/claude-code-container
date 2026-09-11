@@ -107,6 +107,32 @@ function observeProcessStart(pid: number): ProcessStartObservation {
  * caller falls back to the single-pid path for it — the batch is an optimisation, never the
  * authority on liveness, and a lock whose owner cannot be observed must still be preserved.
  */
+
+/**
+ * The batch script's stdout, as observations. Exported because the script itself only runs on
+ * Windows, so this is the only part of the batch a test on any other host can reach — the same
+ * split `parseWindowsBrokerNetstatListenerForTest` already uses for netstat in this codebase.
+ *
+ * Anything unrecognised is simply absent from the map, which the caller reads as "ask the
+ * single-pid probe" — the batch is never the authority on whether a lock may be deleted.
+ */
+export function parseProcessStartObservations(
+    stdout: string,
+    pids: readonly number[],
+): Map<number, ProcessStartObservation> {
+    const observations = new Map<number, ProcessStartObservation>();
+    const wanted = new Set(pids);
+    for (const line of stdout.split(/\r?\n/)) {
+        const row = /^([0-9]+) (MISSING|UNKNOWN|FOUND:[0-9]+)$/.exec(line.trim());
+        if (!row) continue;
+        const pid = Number(row[1]);
+        if (!wanted.has(pid) || observations.has(pid)) continue;
+        if (row[2] === "MISSING") observations.set(pid, { status: "missing" });
+        else if (row[2] === "UNKNOWN") observations.set(pid, { status: "unknown" });
+        else observations.set(pid, { status: "found", token: `windows:${row[2].slice("FOUND:".length)}` });
+    }
+    return observations;
+}
 export function observeProcessStarts(pids: readonly number[]): Map<number, ProcessStartObservation> {
     const observations = new Map<number, ProcessStartObservation>();
     const unique = [...new Set(pids)].filter((pid) => Number.isSafeInteger(pid) && pid > 0);
@@ -119,18 +145,37 @@ export function observeProcessStarts(pids: readonly number[]): Map<number, Proce
     // stays N+1 when the batch itself fails.
     if (unique.length < 2) return observations;
     if (process.platform !== "win32") return observations;
+    // Wrapped, because every other process observation in the lock filter happens inside a
+    // `try { ... } catch { return true }` that fails closed, and this one is called above that
+    // guard. A throw escaping here would take down the whole `ccc` invocation rather than
+    // costing one extra probe. The empty map means "ask per pid", never "assume stale".
+    try {
+        return runProcessStartBatch(unique);
+    } catch {
+        return observations;
+    }
+}
+
+function runProcessStartBatch(unique: number[]): Map<number, ProcessStartObservation> {
+    const observations = new Map<number, ProcessStartObservation>();
     const powershell = canonicalWindowsPowerShellPath();
     if (!powershell) return observations;
-    // The ids are integers by the filter above, so they cannot carry anything into the script.
+    // Single quotes and concatenation, matching every other script that is already proven on
+    // the operator's host. The first version used `"$id MISSING"` — double quotes inside a
+    // `-Command` payload, which nothing else in these files does. If that quoting had been
+    // wrong the script would exit non-zero, the map would come back empty, every pid would
+    // fall through to the old path, and the only symptom would be the operator reporting no
+    // improvement: a silent failure indistinguishable from the fix not working. There is no
+    // PowerShell in this container to prove it either way, so the safe spelling wins.
     const script = [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
         `foreach ($id in @(${unique.join(",")})) {`,
         "  try { $P = [System.Diagnostics.Process]::GetProcessById($id) }",
-        "  catch [System.ArgumentException] { Write-Output \"$id MISSING\"; continue }",
-        "  catch { Write-Output \"$id UNKNOWN\"; continue }",
-        "  try { Write-Output (\"$id FOUND:\" + $P.StartTime.ToUniversalTime().Ticks) }",
-        "  catch { Write-Output \"$id UNKNOWN\" }",
+        "  catch [System.ArgumentException] { Write-Output ([string]$id + ' MISSING'); continue }",
+        "  catch { Write-Output ([string]$id + ' UNKNOWN'); continue }",
+        "  try { Write-Output ([string]$id + ' FOUND:' + $P.StartTime.ToUniversalTime().Ticks) }",
+        "  catch { Write-Output ([string]$id + ' UNKNOWN') }",
         "}",
     ].join("\n");
     const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
@@ -139,16 +184,7 @@ export function observeProcessStarts(pids: readonly number[]): Map<number, Proce
         windowsHide: true,
     });
     if (result.error || result.status !== 0 || result.stderr?.trim()) return observations;
-    for (const line of (result.stdout ?? "").split(/\r?\n/)) {
-        const row = /^([0-9]+) (MISSING|UNKNOWN|FOUND:[0-9]+)$/.exec(line.trim());
-        if (!row) continue;
-        const pid = Number(row[1]);
-        if (!unique.includes(pid)) continue;
-        if (row[2] === "MISSING") observations.set(pid, { status: "missing" });
-        else if (row[2] === "UNKNOWN") observations.set(pid, { status: "unknown" });
-        else observations.set(pid, { status: "found", token: `windows:${row[2].slice("FOUND:".length)}` });
-    }
-    return observations;
+    return parseProcessStartObservations(result.stdout ?? "", unique);
 }
 export function processStartToken(pid: number): string | null {
     const observed = observeProcessStart(pid);

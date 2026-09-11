@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
-import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs, windowsStartTokenExpression } from "./windows-system-powershell.js";
 
 export type DeviceRuntimeProcessIdentity = {
     pid: number;
@@ -41,7 +41,7 @@ function linuxProcessStartToken(pid: number): string | null {
 function windowsProcessStartToken(pid: number): string | null {
     const powershell = canonicalWindowsPowerShellPath();
     if (!powershell) return null;
-    const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }`;
+    const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write(${windowsStartTokenExpression("$P")}) }`;
     const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         timeout: 5000,
@@ -102,7 +102,7 @@ function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | nul
 }
 
 function windowsProcessIdentityScript(pid: number): string {
-    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
 }
 
 export const windowsProcessIdentityScriptForTest = windowsProcessIdentityScript;
@@ -112,7 +112,10 @@ function parseWindowsProcessIdentity(pid: number, output: string): DeviceRuntime
         const parsed = JSON.parse(output) as { startToken?: unknown; commandLine?: unknown };
         return identity(
             pid,
-            typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : null,
+            // Trimmed like the standalone reader trims its stdout. Nothing `o` emits can carry
+            // whitespace, so this bites nothing today — but the two paths normalising
+            // differently is how a harmless script edit becomes a token mismatch.
+            typeof parsed.startToken === "string" ? `windows:${parsed.startToken.trim()}` : null,
             typeof parsed.commandLine === "string" ? parsed.commandLine : null,
         );
     } catch {

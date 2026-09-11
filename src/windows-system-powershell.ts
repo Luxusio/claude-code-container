@@ -50,6 +50,25 @@ export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string 
     return canonicalWindowsSystemExecutablePath("WindowsPowerShell/v1.0/powershell.exe", testSystemRoot);
 }
 
+
+/**
+ * The one spelling of a Windows process start token's PowerShell expression.
+ *
+ * There were four: two scripts in device-lab-process-identity.ts, one in
+ * device-lab-broker.ts, and two more built inside PowerShell in this file. Every one of them
+ * produces a value that is compared for EQUALITY against the others — across processes and
+ * across ccc invocations, to decide whether ccc may terminate a process it believes is its
+ * own — and nothing bound them together. On linux and macOS the equivalent tokens are
+ * identical by construction, because those paths call one function; on Windows they were
+ * identical only by coincidence, and an edit to one script would have drifted it from the
+ * rest with no test anywhere able to notice.
+ *
+ * `ToString('o')` is the round-trip specifier: culture-invariant and always Gregorian, so it
+ * cannot vary by locale. That was never the risk. The risk was four copies.
+ */
+export function windowsStartTokenExpression(processVariable: string): string {
+    return `${processVariable}.StartTime.ToUniversalTime().ToString('o')`;
+}
 export function hiddenWindowsPowerShellArgs(args: readonly string[]): string[] {
     const filtered: string[] = [];
     for (let index = 0; index < args.length; index += 1) {
@@ -78,7 +97,7 @@ export function windowsHandleBoundTerminationScript(): string {
         "$ErrorActionPreference = 'Stop'",
         "$RootPid = [int]$env:CCC_WINDOWS_TERMINATE_PID",
         "$Root = [Diagnostics.Process]::GetProcessById($RootPid)",
-        "$StartToken = 'windows:' + $Root.StartTime.ToUniversalTime().ToString('o')",
+        `$StartToken = 'windows:' + ${windowsStartTokenExpression("$Root")}`,
         "if ($StartToken -ne $env:CCC_WINDOWS_TERMINATE_START_TOKEN) { exit 3 }",
         "$Rows = @()",
         "try { $Rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId, CreationDate) } catch { $Rows = @() }",
@@ -100,7 +119,7 @@ export function windowsHandleBoundTerminationScript(): string {
         "    $ChildPid = [int]$Row.ProcessId",
         "    $Child = [Diagnostics.Process]::GetProcessById($ChildPid)",
         "    $SnapshotToken = 'windows:' + $Row.CreationDate.ToUniversalTime().ToString('o')",
-        "    $ObservedToken = 'windows:' + $Child.StartTime.ToUniversalTime().ToString('o')",
+        `    $ObservedToken = 'windows:' + ${windowsStartTokenExpression("$Child")}`,
         "    if ($ObservedToken -eq $SnapshotToken) { $Descendants.Add($Child) }",
         "  } catch { }",
         "}",

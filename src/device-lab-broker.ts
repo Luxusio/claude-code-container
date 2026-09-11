@@ -15,7 +15,7 @@ import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from 
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
 import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, readDeviceRuntimeProcessStartToken, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
-import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken, windowsHandleBoundTerminationScript } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken, windowsHandleBoundTerminationScript, windowsStartTokenExpression } from "./windows-system-powershell.js";
 import { assertHyperVOperationDeadline, HyperVOperationDeadlineError, hyperVOperationDeadlineExpired, hyperVRemainingTimeout } from "./device-lab/broker/hyper-v/deadline.js";
 import {
     assertNoSymlinkPathComponents,
@@ -558,7 +558,11 @@ export const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
 // what changed is how many launches fit inside it. Doubling from 25ms reaches the same 500ms
 // in four probes rather than twenty, and the loop still exits the instant both values are
 // known, which is the ordinary case.
-const DEVICE_BROKER_IDENTITY_PROBE_BUDGET_MS = 500;
+const DEVICE_BROKER_IDENTITY_PROBE_SLEEP_BUDGET_MS = 500;
+// Six, not the old twenty: one probe per attempt instead of two means six attempts cost
+// fewer launches than the old three, and a slow host keeps six chances where a wall-clock
+// bound gave it none.
+const DEVICE_BROKER_IDENTITY_PROBE_ATTEMPTS = 6;
 const DEVICE_BROKER_IDENTITY_PROBE_FIRST_DELAY_MS = 25;
 const DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS = 200;
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
@@ -2577,7 +2581,7 @@ function discoverWindowsBrokerPortProcess(port: number): BrokerPortProcess | nul
         `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${listener.pid}"`,
         `$h = Get-Process -Id ${listener.pid} -ErrorAction SilentlyContinue`,
         "if (-not $p -or -not $h) { exit 1 }",
-        "[pscustomobject]@{ pid = [int]$p.ProcessId; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
+        `[pscustomobject]@{ pid = [int]$p.ProcessId; commandLine = [string]$p.CommandLine; startToken = ${windowsStartTokenExpression("$h")} } | ConvertTo-Json -Compress`,
     ].join("; ");
     const result = powershell ? spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]), {
         encoding: "utf8",
@@ -2606,10 +2610,18 @@ function discoverWindowsBrokerPortProcess(port: number): BrokerPortProcess | nul
             // Fall through to the locale-independent netstat listener lookup.
         }
     }
+    // One probe, not two, and one PRODUCER rather than two. `readDeviceRuntimeProcessIdentity`
+    // returns the start token it derived; asking `readDeviceRuntimeProcessStartToken` for the
+    // same pid launched a second powershell.exe AND produced the value from a second script,
+    // so the two could drift. `discoverBrokerPortProcess` is called from about ten sites, and
+    // the token it returns is persisted and later compared for equality to decide whether ccc
+    // may terminate its own broker — a comparison that must not straddle two producers.
+    const processIdentity = readDeviceRuntimeProcessIdentity(listener.pid, { platform: "win32" });
     return {
         ...listener,
-        processIdentity: readDeviceRuntimeProcessIdentity(listener.pid, { platform: "win32" }),
-        processStartToken: readDeviceRuntimeProcessStartToken(listener.pid, { platform: "win32" }),
+        processIdentity,
+        processStartToken: processIdentity?.startToken
+            ?? readDeviceRuntimeProcessStartToken(listener.pid, { platform: "win32" }),
     };
 }
 
@@ -2910,18 +2922,30 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         // kept as the fallback because identity needs BOTH a start token and a command
         // line: a process whose command line cannot be read yields no identity but still
         // has a readable token.
-        const identityProbeDeadline = Date.now() + DEVICE_BROKER_IDENTITY_PROBE_BUDGET_MS;
+        // The retry bound is an ATTEMPT count, not wall clock. A wall-clock bound charges the
+        // probe's own cost against the retry budget, and these probes are synchronous
+        // `spawnSync` powershell launches: measured, once one probe costs ~475ms the loop body
+        // never runs at all. That is precisely the slow, loaded Windows host the retries exist
+        // for — `Get-CimInstance Win32_Process` behind a cold powershell.exe is routinely that
+        // slow, WMI fails transiently under exactly that load, and losing the retry there means
+        // no identity, which makes the launch unverifiable and kills a broker that came up
+        // healthy. The budget below bounds only how long this SLEEPS; when it is spent the
+        // remaining attempts run back to back.
+        const identitySleepDeadline = Date.now() + DEVICE_BROKER_IDENTITY_PROBE_SLEEP_BUDGET_MS;
         let spawnedProcessIdentity = pid ? processIdentityReader(pid, normalized.platform) : null;
         let spawnedProcessStartToken = spawnedProcessIdentity?.startToken
             ?? (pid ? processStartTokenReader(pid, normalized.platform) : null);
         for (
-            let delay = DEVICE_BROKER_IDENTITY_PROBE_FIRST_DELAY_MS;
+            let attempt = 0, delay = DEVICE_BROKER_IDENTITY_PROBE_FIRST_DELAY_MS;
             pid
                 && (!spawnedProcessIdentity || !spawnedProcessStartToken)
-                && Date.now() + delay <= identityProbeDeadline;
-            delay = Math.min(delay * 2, DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS)
+                && attempt < DEVICE_BROKER_IDENTITY_PROBE_ATTEMPTS;
+            attempt += 1, delay = Math.min(delay * 2, DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS)
         ) {
-            await new Promise((resolve) => setTimeout(resolve, delay));
+            // Clamped, not refused: the old guard declined to START a sleep that would end past
+            // the deadline, so it left the last ~125ms of its own budget unused.
+            const sleep = Math.max(0, Math.min(delay, identitySleepDeadline - Date.now()));
+            if (sleep > 0) await new Promise((resolve) => setTimeout(resolve, sleep));
             spawnedProcessIdentity ||= processIdentityReader(pid, normalized.platform);
             spawnedProcessStartToken ||= spawnedProcessIdentity?.startToken
                 ?? processStartTokenReader(pid, normalized.platform);
@@ -3010,8 +3034,16 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                     readIdentity: (value) => processIdentityReader(value, normalized.platform),
                 })
                 : { status: "unavailable", current: null };
+            // Same substitution as the readiness path, and here it is CORRECTNESS rather than
+            // a saved launch. `spawnedProcessStartToken` now comes from the identity probe,
+            // so reading the current token with the standalone reader compares two DIFFERENT
+            // producers of the same value on every execution of this path — and this
+            // comparison decides whether ccc may terminate the process it just launched. The
+            // observation above already read the current identity, from the same producer, and
+            // it is read fresh every time rather than echoed back, so it is if anything less
+            // stale than a second read would be.
             const currentStartToken = pid && spawnedProcessStartToken
-                ? processStartTokenReader(pid, normalized.platform)
+                ? observation.current?.startToken ?? processStartTokenReader(pid, normalized.platform)
                 : null;
             if (pid && (observation.status === "match"
                 || (spawnedProcessStartToken && currentStartToken === spawnedProcessStartToken))) {

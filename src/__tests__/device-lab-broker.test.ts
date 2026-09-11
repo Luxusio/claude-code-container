@@ -1066,8 +1066,6 @@ describe("device-lab host broker daemon", () => {
         expect(identityReads, "one capture plus one deliberate re-read, not a poll").toBe(2);
     });
 
-    // When identity genuinely cannot be formed, the separate reader is still used — the
-
     // Identity that arrives LATE, which is the only path where the loop's own derivation runs
     // — the pre-loop assignment covers the ordinary case and short-circuits the rest, so a
     // mutation to the loop line survived the test above. Measured, not assumed: I reverted the
@@ -1103,12 +1101,50 @@ describe("device-lab host broker daemon", () => {
                 return startTokenReads === 1 ? null : "windows:2026-09-11T00:00:00.0000000Z";
             },
         });
-
-        // One separate read, from the pre-loop assignment where there was no identity to take
+        // One read: the pre-loop attempt, which returned null. The loop then found identity
+        // and took the token from it rather than asking again.
         // One read: the pre-loop attempt that returned null. The loop then found identity and
         expect(startTokenReads, "one failed pre-loop attempt, then identity answered it").toBe(1);
         expect(identityReads, "the loop probed once more and that answered both").toBeGreaterThan(1);
     });
+
+    // The regression this pins, measured by review: bounding the retries by WALL CLOCK charges
+    // each probe's own cost against the retry budget, and these probes are synchronous
+    // powershell launches. At a 400ms probe the loop body ran zero times — on exactly the
+    // loaded Windows host the retries exist for, where WMI fails transiently and losing the
+    // retry means no identity, an unverifiable launch, and a healthy broker killed.
+    it("keeps retrying when each probe is slow, which is when retries matter", async () => {
+        const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+        child.pid = 51518;
+        child.unref = vi.fn();
+        let identityReads = 0;
+
+        await ensureHostDeviceBroker({
+            ownerId: "cdcdcdcdcdcdcdd0",
+            cwd: "/project/broker-slow-probe-test",
+            port: 0,
+            timeoutMs: 1,
+            startupTimeoutMs: 1,
+            cliPath: "/opt/ccc/dist/index.js",
+            spawnImpl: vi.fn(() => child) as any,
+            processIdentityReader: () => {
+                identityReads += 1;
+                // Burn the whole sleep budget in one probe, as a cold powershell.exe running
+                // `Get-CimInstance Win32_Process` does on a loaded host.
+                const until = Date.now() + 520;
+                while (Date.now() < until) { /* deliberate synchronous stall */ }
+                return null;
+            },
+            processStartTokenReader: () => null,
+        });
+
+        // One capture, then the loop's own attempts, then the one deliberate re-read on the
+        // failure path. The point is that the loop ran at all: with the wall-clock bound this
+        // was 2 — the capture and the re-read, with nothing in between.
+        expect(identityReads, "a slow probe must not consume the retries").toBeGreaterThan(3);
+    }, 20_000);
+
+    // When identity genuinely cannot be formed, the separate reader is still used — the
     // saving must not cost the fallback.
     it("still reads the start token separately when no identity can be formed", async () => {
         const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
