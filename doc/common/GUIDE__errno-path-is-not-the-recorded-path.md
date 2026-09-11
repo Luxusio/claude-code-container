@@ -633,8 +633,22 @@ Three rules came out of it:
   cmd, which has no such form, and the trade is deliberate: a path that does
   not run in cmd beats a path that runs something else in bash. A value
   carrying a control character has no runnable form at all — escape it for
-  display and do not call it a command. `%VAR%` in cmd is out of reach of every
-  quoting form; say so rather than imply otherwise.
+  display and do not call it a command. `%VAR%` in cmd expands inside double
+  quotes exactly as it does bare, so it is beyond reach there — a fact about
+  cmd, not a knob. Taking `%` out of the bare set to "handle" it changed
+  which quotes were emitted and nothing else; it went back in.
+
+  And one that is not about shells at all: a fix can be correct and still not
+  apply. The registry dedupe first probed `git rev-parse --path-format=absolute
+  --git-common-dir`. That flag landed in git 2.31; Debian 11 ships 2.30.2, one
+  patch release under the line — and this runs on the HOST, not in the
+  container, so the image's modern git is not what answers. Older git exits
+  non-zero, the key comes back empty, and the dedupe turns itself off silently.
+  The flag was not needed: plain `--git-common-dir` answers `.git` from a
+  repository root and an absolute path from a linked worktree, and resolving
+  against the repository normalises both on every version. **Before reaching
+  for a flag, check when it was added — and prefer the form that needs no
+  floor.**
 
   Two entries in this table were wrong for a whole round because of HOW they
   were measured. `\` was in the bare-word set on the strength of "a Windows

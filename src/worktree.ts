@@ -2793,9 +2793,13 @@ export function terminalSafeLiteral(value: string): string {
 // the SPACE, so git gets `-C "C:devproj worktree"` and runs `git prune`, the object-database
 // GC, instead of `git worktree prune`. The only reason the suite ever passed is that every
 // Windows path in its table happened to contain a space, so it took the quoted branch and the
-// bare exception it was written for was never exercised. `%` is out for the same kind of
-// reason: `%VAR%` expands in cmd and no quoting form stops it there.
-const SHELL_SAFE_BARE = /^[A-Za-z0-9_@+=:,./-]+$/u;
+// bare exception it was written for was never exercised. `%` IS in the set, after being taken
+// out and put back: it went out for cmd's `%VAR%`, but that expands inside double quotes in
+// cmd exactly as it does bare, so the removal changed which quotes are emitted and nothing
+// else — measured in sh and bash, bare and quoted, all four readings identical. cmd is beyond
+// the reach of every quoting form here, which is a fact about cmd rather than something this
+// function can do anything about.
+const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./-]+$/u;
 // Double quotes are the form all three shells read alike, and they tame a space, `;`, `|`, `&`
 // and `#` — measured. They do not tame everything, and this is the exact boundary, measured in
 // bash: inside double quotes a backslash is still special before `$`, a backtick, `"` and
@@ -2833,9 +2837,13 @@ const SHELL_NEEDS_SINGLE_QUOTES = /["$`]|\\{2}|\\$/u;
 export function pasteableArgument(value: string): string {
     if (TERMINAL_UNSAFE_PROBE.test(value)) return terminalSafe(value);
     if (SHELL_SAFE_BARE.test(value)) return value;
-    // `'\''`: close the quote, an escaped literal quote, reopen. The POSIX idiom, and
-    // PowerShell reads `''` as an escaped quote inside a single-quoted string, so a value
-    // carrying a quote is handled in both.
+    // `'\''`: close the quote, an escaped literal quote, reopen. POSIX only — PowerShell wants
+    // `''` for an embedded quote and reads this one as three fragments and a stray backslash.
+    // The single-quote FORM is inert in PowerShell; this ESCAPE inside it is not, and saying
+    // otherwise was a comment asserting a property the code does not have. Reachable only for a
+    // value carrying a single quote AND an expander or a doubled backslash, so it is stated
+    // rather than fixed: one emitted line cannot be correct in both shells at once, and POSIX
+    // is where a pasted `git -C` line most often lands.
     if (SHELL_NEEDS_SINGLE_QUOTES.test(value)) {
         return `'${value.replace(/'/g, "'\\''")}'`;
     }
@@ -3883,13 +3891,19 @@ export function strandedBranchRegistrations(
         try {
             if (!pathExistsStrict(join(repository, ".git"))) continue;
             // `--git-common-dir` is the registry a worktree shares with its source; `--git-dir`
-            // is per-worktree and would not collapse them.
+            // is per-worktree and would not collapse them. Plain, not `--path-format=absolute`:
+            // that flag landed in git 2.31 and Debian 11 ships 2.30.2, where the probe would
+            // exit non-zero, the key would be empty, and the dedupe would silently turn itself
+            // off — on the HOST, which is where this runs, not in the container. git answers
+            // `.git` relative from a repository root and an absolute path from a linked
+            // worktree; resolving against the repository normalises both, on every version.
             const registry = spawnSync(
                 "git",
-                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                ["rev-parse", "--git-common-dir"],
                 { cwd: repository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
             );
-            const key = registry.status === 0 ? (registry.stdout ?? "").trim() : "";
+            const answer = registry.status === 0 ? (registry.stdout ?? "").trim() : "";
+            const key = answer === "" ? "" : resolve(repository, answer);
             // No key means git could not answer, and a repository we cannot identify is one we
             // must not silently drop — report it and let the operator see the duplicate rather
             // than lose a registration to a failed probe.

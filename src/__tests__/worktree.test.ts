@@ -8310,6 +8310,96 @@ describe("the stranded-branch notice, run as printed", () => {
     });
 
     // The other shape, and the one the test above cannot see: N locked holders in ONE
+
+
+    // A recorded path that begins with a dash. Where it comes from: a gitdir file decides where
+    // the path starts, `git worktree list --porcelain` reports it verbatim, and the value
+    // crosses the container boundary. Without the `--` separator git parses it as options and
+    // answers `error: unknown switch 'f'` with a usage line, exit 129 — the exact failure this
+    // notice was rewritten to stop producing, reintroduced by the notice itself.
+    it("survives a recorded path that begins with a dash", () => {
+        const source = join(root, "src");
+        initRepo(source);
+        expect(spawnSync("git", ["branch", "feat"], { cwd: source, stdio: "pipe" }).status)
+            .toBe(0);
+        const checkout = join(root, "wt");
+        expect(spawnSync("git", ["worktree", "add", "--force", checkout, "feat"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const registry = join(source, ".git", "worktrees");
+        writeFileSync(join(registry, readdirSync(registry)[0], "gitdir"), "-foo/.git\n");
+        rmSync(checkout, { recursive: true, force: true });
+        // `--` here too: git's own lock subcommand needs it for the same reason.
+        expect(spawnSync("git", ["worktree", "lock", "--", "-foo"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status, "the fixture itself proves git needs the separator").toBe(0);
+
+        const stranded = strandedBranchRegistrations(source, "feat");
+        expect(stranded[0]?.lockedPaths, "the dash survives into the notice").toEqual(["-foo"]);
+
+        const commands = strandedBranchNotice("feat", stranded)
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("git -C"));
+        const pasted = spawnSync("sh", ["-e", "-c", commands.join("\n")], {
+            cwd: tmpdir(),
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(pasted.status, pasted.stderr).toBe(0);
+        expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
+    });
+    // A worktree of the source that lives INSIDE the source. The scan runs with
+    // allowRegisteredWorktrees, so it is found as its own repository — but it shares the
+    // source's registry, so the one stranded registration was reported twice and the block
+    // told the operator to unlock it twice. The second command then fails with `is not a
+    // working tree`, and under `sh -e` — which is how a pasted block behaves — that aborts
+    // everything after it. The remedy stopped halfway.
+    it("reports one registration once, however many worktrees share its registry", () => {
+        const source = join(root, "src");
+        initRepo(source);
+        expect(spawnSync("git", ["branch", "feat"], { cwd: source, stdio: "pipe" }).status)
+            .toBe(0);
+        expect(spawnSync("git", ["branch", "sibling"], { cwd: source, stdio: "pipe" }).status)
+            .toBe(0);
+        // The second worktree, inside the source tree itself.
+        expect(spawnSync("git", ["worktree", "add", "--force", join(source, "inside"), "sibling"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status).toBe(0);
+        // And the stranded holder of the branch being removed.
+        const checkout = join(root, "wt");
+        expect(spawnSync("git", ["worktree", "add", "--force", checkout, "feat"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const registry = join(source, ".git", "worktrees");
+        const entry = readdirSync(registry).find((name) => name.endsWith("wt"))!;
+        writeFileSync(join(registry, entry, "gitdir"), "/project/catchy-415bfb4/wt/.git\n");
+        rmSync(checkout, { recursive: true, force: true });
+        expect(spawnSync("git", ["worktree", "lock", "/project/catchy-415bfb4/wt"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status).toBe(0);
+
+        const stranded = strandedBranchRegistrations(source, "feat");
+
+        expect(stranded, "one registry, one entry — not one per worktree of it").toHaveLength(1);
+        // And the block it produces runs to the end, which is the consequence that matters.
+        const commands = strandedBranchNotice("feat", stranded)
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("git -C"));
+        const pasted = spawnSync("sh", ["-e", "-c", commands.join("\n")], {
+            cwd: tmpdir(),
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(pasted.status, pasted.stderr).toBe(0);
+        expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
+    });
     // repository. `git worktree add --force` really does register a second holder of one
     // branch — measured, git 2.43.0 — so "the locked path" was never a single thing, and a
     // notice that emitted lockedPaths[0] per repository would still leave the second holder
@@ -8457,14 +8547,5 @@ describe("pasteableArgument", () => {
     it("does not put an expanding value inside double quotes", () => {
         // The specific shape that made the previous comment false. Single quotes, not double.
         expect(pasteableArgument("/project/$(id)/api")).toBe("'/project/$(id)/api'");
-    });
-
-    // Asserted on the emitted spelling, not through a shell, because the property is invisible
-    // to a POSIX one: `%VAR%` expands in cmd and nowhere else. That is why `%` left the
-    // bare-word set, and without this the removal — one of the two things its commit claims —
-    // has no test at all.
-    it("quotes a cmd variable rather than leaving it bare", () => {
-        expect(pasteableArgument("/project/%USERPROFILE%/api"))
-            .toBe("\"/project/%USERPROFILE%/api\"");
     });
 });
