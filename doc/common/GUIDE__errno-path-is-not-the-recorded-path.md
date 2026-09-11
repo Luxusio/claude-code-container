@@ -600,11 +600,32 @@ Three rules came out of it:
   notice lists N things, every command it gives needs its own target — `git -C
   <repo>` rather than a sentence that assumes the reader is standing in the
   one repository the author had in mind.
-- **Escape for the terminal, but not inside something meant to be pasted.**
-  The quoted-and-escaped form is right for display and wrong for a command
-  line: JSON-quoting `C:\Users\x` doubles its separators, and what the
-  operator pastes is no longer the path. `terminalSafeLiteral` escapes only
-  when the value actually carries something a terminal acts on.
+- **Escaping for a terminal and quoting for a shell are different rules, and a
+  command line needs the second.** Three wrong answers in a row here, each
+  shipped as a confident comment:
+  1. *Print it raw.* `C:\Users\Kyeong Jae\catchy` stops at the space —
+     `fatal: cannot change to '...\Kyeong'`. Ordinary on macOS and Windows.
+  2. *Escape it like the NOTE does.* That form is `JSON.stringify`, which
+     doubles the separators in a Windows path; what the operator pastes is no
+     longer the path.
+  3. *Escape only the unquotable ones.* `JSON.stringify` is double quotes, and
+     `$( )` and a backtick substitute inside double quotes in bash, zsh and
+     PowerShell. The comment said "printed as escaped data instead"; the line
+     it emitted ran `id` on paste. Measured — the test for it asserts what a
+     shell sees after reading the argument, not what the string looks like.
+
+  What holds: bare for an ordinary path; double quotes otherwise, the one form
+  bash, cmd and PowerShell read alike (they also make `;`, `|`, `&` and `#`
+  inert — measured, not assumed); single quotes when the value carries `$`, a
+  backtick or a `"`, which costs cmd and is worth it, because a path that does
+  not run in cmd beats a path that runs something else in bash. A value
+  carrying a control character has no runnable form at all — escape it for
+  display and do not call it a command. `%VAR%` in cmd is out of reach of every
+  quoting form; say so rather than imply otherwise.
+
+  The general rule underneath: **when the question is "what will the shell do
+  with this", the assertion belongs in a shell.** `expect(text).toContain(...)`
+  cannot tell a quoted path from a substitution that has not run yet.
 
 And a corollary about *which* boolean a message branches on: the skip NOTE
 chose its arm from the workspace's layout while the claims it made were decided
@@ -626,7 +647,8 @@ would have caught this immediately.
 
 - `src/worktree.ts` — `gitLinkKind` (the throw site that attaches
   `recordedGitPath`), `unreachableRecordedGitPath` (the two-condition key),
-  `warnUnreachableNestedRepository`, `terminalSafe`, `terminalSafeLiteral`
+  `warnUnreachableNestedRepository`, `terminalSafe`, `terminalSafeLiteral`,
+  `pasteableArgument`
 - `src/__tests__/worktree.test.ts` — "skips a nested repository whose Git
   metadata names an unreachable path"
 - `doc/harness/tasks/TASK__worktree-nested-gitlink-unreachable-path/PLAN.md`

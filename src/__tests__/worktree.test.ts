@@ -31,6 +31,7 @@ import {
     unmanagedPathRefusal,
     relayNestedRemovalError,
     strandedBranchRegistrations,
+    pasteableArgument,
     gitFailureReason,
     repairWorkspace,
     isValidWorktree,
@@ -8389,5 +8390,40 @@ describe("the stranded-branch notice, run as printed", () => {
         });
         expect(pasted.status, pasted.stderr).toBe(0);
         expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
+    });
+});
+
+// The recorded path is read verbatim out of a registry `gitdir` file — from the other side of
+// the container boundary, which is the whole subject of this task — and then printed into a
+// block headed "Run these". So what a shell does with it is the question, and "it is escaped"
+// was the wrong answer: the escaped form was `JSON.stringify`, which is double quotes, and
+// `$( )` substitutes inside those. The assertion is therefore not on the text but on what a
+// shell sees after reading it.
+describe("pasteableArgument", () => {
+    function whatTheShellSees(emitted: string): string {
+        const ran = spawnSync("sh", ["-c", `printf '%s' ${emitted}`], {
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(ran.status, ran.stderr).toBe(0);
+        return ran.stdout;
+    }
+
+    it.each([
+        ["an ordinary path", "/src/api"],
+        ["a path with a space", "/home/kj/My Projects/src"],
+        ["a Windows path with a space", "C:\\Users\\Kyeong Jae\\catchy"],
+        ["a path that would substitute", "/project/$(id)/api"],
+        ["a path with a backtick", "/project/`id`/api"],
+        ["a path with shell separators", "/project/x;id;#/api"],
+        ["a path with a quote", "/project/it's/api"],
+        ["a path with a double quote", '/project/say"hi"/api'],
+    ])("hands the shell %s unchanged", (_label, value) => {
+        expect(whatTheShellSees(pasteableArgument(value))).toBe(value);
+    });
+
+    it("does not put an expanding value inside double quotes", () => {
+        // The specific shape that made the previous comment false. Single quotes, not double.
+        expect(pasteableArgument("/project/$(id)/api")).toBe("'/project/$(id)/api'");
     });
 });

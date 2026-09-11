@@ -2788,14 +2788,17 @@ export function terminalSafeLiteral(value: string): string {
 }
 
 // The bare-word set, kept conservative and deliberately including `\` and `:` so an ordinary
-// Windows path stays unquoted. Anything outside it gets double quotes, which is the one
-// quoting form bash, cmd and PowerShell all read the same way.
-const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./\\-]+$/u;
-// And the characters double quotes do NOT tame in all three: `"` ends the argument, `$` and a
-// backtick still expand inside quotes in bash and PowerShell. A value carrying one of those
-// cannot be made pasteable by quoting it, so it is printed as escaped data instead — wrong as
-// a command either way, and at least not wrong silently.
-const SHELL_UNQUOTABLE = /["$`]/u;
+// Windows path stays unquoted. `%` is NOT in it: a single one is harmless, but `%VAR%` expands
+// in cmd and no quoting form stops it there, so such a path is at least quoted for the other
+// two shells and cmd is out of reach — say it rather than imply otherwise.
+const SHELL_SAFE_BARE = /^[A-Za-z0-9_@+=:,./\\-]+$/u;
+// Double quotes tame a space, and `;` `|` `&` `#` with it — measured, they are inert inside
+// them. They do NOT tame these three: `"` ends the argument, and `$` and a backtick still
+// substitute inside double quotes in bash, zsh and PowerShell. An earlier version of this
+// routed them to `terminalSafe`, which is `JSON.stringify`, which is double quotes — so the
+// comment said "escaped data" while the line it emitted was a live shell word that ran
+// `$(id)` on paste. That is this task's own defect, in the function written to fix it.
+const SHELL_EXPANDS_IN_DOUBLE_QUOTES = /["$`]/u;
 
 /**
  * One argument of a command the operator is meant to paste.
@@ -2804,12 +2807,30 @@ const SHELL_UNQUOTABLE = /["$`]/u;
  * printed bare produces `fatal: cannot change to '...Kyeong': No such file or directory`,
  * measured. That is the same defect as naming a command that does nothing: a remedy the
  * operator cannot run.
+ *
+ * Three forms, because no single one is right for all of it:
+ *  - bare, for an ordinary path, which is nearly all of them;
+ *  - double quotes for the rest, the one form bash, cmd and PowerShell read the same way;
+ *  - single quotes when the value carries `$`, a backtick or a `"`, because those are inert
+ *    inside single quotes in bash, zsh and PowerShell. It costs cmd, which has no single-quote
+ *    form — a trade taken deliberately: a path that does not run in cmd beats a path that runs
+ *    something else in bash. These values reach us from a registry `gitdir` file, which is to
+ *    say from the other side of the container boundary.
+ *
+ * What it does NOT do, stated because the previous comment here claimed otherwise: it cannot
+ * make a value carrying a control character into a runnable command. Those get the escaped
+ * display form, and that form is data — the caller must not present it as something to paste.
  */
 export function pasteableArgument(value: string): string {
-    if (TERMINAL_UNSAFE_PROBE.test(value) || SHELL_UNQUOTABLE.test(value)) {
-        return terminalSafe(value);
+    if (TERMINAL_UNSAFE_PROBE.test(value)) return terminalSafe(value);
+    if (SHELL_SAFE_BARE.test(value)) return value;
+    // `'\''`: close the quote, an escaped literal quote, reopen. The POSIX idiom, and
+    // PowerShell reads `''` as an escaped quote inside a single-quoted string, so a value
+    // carrying a quote is handled in both.
+    if (SHELL_EXPANDS_IN_DOUBLE_QUOTES.test(value)) {
+        return `'${value.replace(/'/g, "'\\''")}'`;
     }
-    return SHELL_SAFE_BARE.test(value) ? value : `"${value}"`;
+    return `"${value}"`;
 }
 
 function terminalSafe(value: string): string {
