@@ -554,6 +554,13 @@ export const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HYPER_V_AUTOMATIC_IMAGE_FINALIZATION,
     DEVICE_BROKER_CAPABILITY_HYPER_V_NETWORK_FAILURE_DIAGNOSTICS,
 ];
+// The identity probe's wall-clock budget, unchanged from the fixed 25ms × 20 it replaces —
+// what changed is how many launches fit inside it. Doubling from 25ms reaches the same 500ms
+// in four probes rather than twenty, and the loop still exits the instant both values are
+// known, which is the ordinary case.
+const DEVICE_BROKER_IDENTITY_PROBE_BUDGET_MS = 500;
+const DEVICE_BROKER_IDENTITY_PROBE_FIRST_DELAY_MS = 25;
+const DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS = 200;
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
 const DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS = 3000;
 const DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS = 60 * 60 * 1000;
@@ -2892,12 +2899,32 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         child.once("error", () => { /* readiness probe below reports startup failure */ });
         child.once("exit", () => { /* readiness probe below reports early exit as timeout */ });
         const pid = child.pid || null;
+        // ONE probe per attempt, not two, and a budget rather than a drumbeat.
+        //
+        // `readDeviceRuntimeProcessIdentity` already returns `startToken`, and it is
+        // byte-identical to what the standalone reader produces — both prefix it
+        // (`windows:`, `linux:`, `ps:`) in the same place — so asking for it separately
+        // launched a SECOND `powershell.exe` on Windows for a value already in hand.
+        // With the old fixed 25ms × 20 that was up to 40 PowerShell processes inside half
+        // a second, every time `Preparing device broker...` runs. The standalone reader is
+        // kept as the fallback because identity needs BOTH a start token and a command
+        // line: a process whose command line cannot be read yields no identity but still
+        // has a readable token.
+        const identityProbeDeadline = Date.now() + DEVICE_BROKER_IDENTITY_PROBE_BUDGET_MS;
         let spawnedProcessIdentity = pid ? processIdentityReader(pid, normalized.platform) : null;
-        let spawnedProcessStartToken = pid ? processStartTokenReader(pid, normalized.platform) : null;
-        for (let attempt = 0; pid && (!spawnedProcessIdentity || !spawnedProcessStartToken) && attempt < 20; attempt += 1) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
+        let spawnedProcessStartToken = spawnedProcessIdentity?.startToken
+            ?? (pid ? processStartTokenReader(pid, normalized.platform) : null);
+        for (
+            let delay = DEVICE_BROKER_IDENTITY_PROBE_FIRST_DELAY_MS;
+            pid
+                && (!spawnedProcessIdentity || !spawnedProcessStartToken)
+                && Date.now() + delay <= identityProbeDeadline;
+            delay = Math.min(delay * 2, DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS)
+        ) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
             spawnedProcessIdentity ||= processIdentityReader(pid, normalized.platform);
-            spawnedProcessStartToken ||= processStartTokenReader(pid, normalized.platform);
+            spawnedProcessStartToken ||= spawnedProcessIdentity?.startToken
+                ?? processStartTokenReader(pid, normalized.platform);
         }
         child.unref();
 
@@ -2909,8 +2936,13 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                     platform: normalized.platform,
                     readIdentity: (value) => processIdentityReader(value, normalized.platform),
                 });
+                // The observation above already read the CURRENT identity, and its start token
+                // is the same value this asked a second process for — same prefix, same
+                // source. Only fall back to a separate read when the observation produced no
+                // identity at all, which is the case where a command line is unreadable but a
+                // start token is not.
                 const currentStartToken = spawnedProcessStartToken
-                    ? processStartTokenReader(pid, normalized.platform)
+                    ? observation.current?.startToken ?? processStartTokenReader(pid, normalized.platform)
                     : null;
                 if (observation.status === "match"
                     || (spawnedProcessStartToken && currentStartToken === spawnedProcessStartToken)) {

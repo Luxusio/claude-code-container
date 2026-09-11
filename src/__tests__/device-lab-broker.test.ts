@@ -1018,6 +1018,122 @@ describe("device-lab host broker daemon", () => {
         }
     });
 
+
+    // The operator's report was "파워쉘 너무 많이 켜졌다꺼졌다" during
+    // `Preparing device broker...`. On Windows each of these two readers is its own
+    // synchronous `powershell.exe`, and the old loop called BOTH, every 25ms, twenty times —
+    // up to forty processes in half a second, half of them fetching a start token the
+    // identity probe had already returned in the same JSON. The assertion is therefore on the
+    // COUNT, because the count is the defect; the values were always correct.
+    it("does not launch a second identity probe for a value the first already returned", async () => {
+        const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+        child.pid = 51515;
+        child.unref = vi.fn();
+        let identityReads = 0;
+        let startTokenReads = 0;
+
+        const result = await ensureHostDeviceBroker({
+            ownerId: "cdcdcdcdcdcdcdcd",
+            cwd: "/project/broker-probe-count-test",
+            port: 0,
+            timeoutMs: 1,
+            startupTimeoutMs: 1,
+            cliPath: "/opt/ccc/dist/index.js",
+            spawnImpl: vi.fn(() => child) as any,
+            processIdentityReader: (pid) => {
+                identityReads += 1;
+                return { pid, startToken: "windows:2026-09-11T00:00:00.0000000Z", commandHash: "abc" };
+            },
+            processStartTokenReader: () => {
+                startTokenReads += 1;
+                return "windows:2026-09-11T00:00:00.0000000Z";
+            },
+        });
+
+        expect(result.ok, "this fixture cannot reach a ready broker; the counts are the point")
+            .not.toBe(true);
+        // One identity read answers both questions, so the standalone token reader is never
+        // needed on the startup path. It stays in the code for the case identity cannot be
+        // formed at all — a readable start token with an unreadable command line.
+        expect(startTokenReads, "the start token comes from the identity it is already in")
+            .toBe(0);
+        // And identity is read twice for reasons that are both deliberate: once on the startup
+        // path to capture what was spawned, once afterwards — because this fixture's broker
+        // never becomes ready — to re-read the CURRENT identity and decide whether the pid is
+        // still that process. The second is a fresh observation by design and must not be
+        // served from the first. What the old loop did instead was read it up to twenty times
+        // before either of those.
+        expect(identityReads, "one capture plus one deliberate re-read, not a poll").toBe(2);
+    });
+
+    // When identity genuinely cannot be formed, the separate reader is still used — the
+
+    // Identity that arrives LATE, which is the only path where the loop's own derivation runs
+    // — the pre-loop assignment covers the ordinary case and short-circuits the rest, so a
+    // mutation to the loop line survived the test above. Measured, not assumed: I reverted the
+    // loop line and that test stayed green.
+    it("derives the start token from a late identity too, without a second probe", async () => {
+        const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+        child.pid = 51517;
+        child.unref = vi.fn();
+        let identityReads = 0;
+        let startTokenReads = 0;
+
+        await ensureHostDeviceBroker({
+            ownerId: "cdcdcdcdcdcdcdcf",
+            cwd: "/project/broker-late-identity-test",
+            port: 0,
+            timeoutMs: 1,
+            startupTimeoutMs: 1,
+            cliPath: "/opt/ccc/dist/index.js",
+            spawnImpl: vi.fn(() => child) as any,
+            processIdentityReader: (pid) => {
+                identityReads += 1;
+                // Nothing on the first look, as when the process has not been registered yet.
+                return identityReads === 1
+                    ? null
+                    : { pid, startToken: "windows:2026-09-11T00:00:00.0000000Z", commandHash: "abc" };
+            },
+            processStartTokenReader: () => {
+                startTokenReads += 1;
+                // Null on the first look too, so the pre-loop assignment cannot satisfy the
+                // token and short-circuit the loop. This is the ONLY shape that reaches the
+                // loop's own derivation: without it a mutation to that line survives, which I
+                // measured twice before getting the fixture right.
+                return startTokenReads === 1 ? null : "windows:2026-09-11T00:00:00.0000000Z";
+            },
+        });
+
+        // One separate read, from the pre-loop assignment where there was no identity to take
+        // One read: the pre-loop attempt that returned null. The loop then found identity and
+        expect(startTokenReads, "one failed pre-loop attempt, then identity answered it").toBe(1);
+        expect(identityReads, "the loop probed once more and that answered both").toBeGreaterThan(1);
+    });
+    // saving must not cost the fallback.
+    it("still reads the start token separately when no identity can be formed", async () => {
+        const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+        child.pid = 51516;
+        child.unref = vi.fn();
+        let startTokenReads = 0;
+
+        await ensureHostDeviceBroker({
+            ownerId: "cdcdcdcdcdcdcdce",
+            cwd: "/project/broker-probe-fallback-test",
+            port: 0,
+            timeoutMs: 1,
+            startupTimeoutMs: 1,
+            cliPath: "/opt/ccc/dist/index.js",
+            spawnImpl: vi.fn(() => child) as any,
+            processIdentityReader: () => null,
+            processStartTokenReader: () => {
+                startTokenReads += 1;
+                return "windows:2026-09-11T00:00:00.0000000Z";
+            },
+        });
+
+        expect(startTokenReads, "the fallback is still there when identity is unavailable")
+            .toBeGreaterThan(0);
+    });
     it("reuses an already-running host broker during auto-start", async () => {
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-auto-reuse-test",
