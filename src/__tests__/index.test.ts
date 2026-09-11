@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, workspaceRemovalFailureNote, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, workspaceRemovalAdvice, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
+import { parseArgs, workspaceRemovalFailureNote, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, workspaceRemovalAdvice, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness, strandedBranchNotice } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -1280,5 +1280,40 @@ describe('workspaceRemovalFailureNote guard width', () => {
     ]) {
       expect(workspaceRemovalFailureNote(new Error(message), true), message).not.toBeNull()
     }
+  })
+})
+
+describe('strandedBranchNotice escaping', () => {
+  // The recorded path comes out of a gitdir file inside a repository, so it is
+  // repository-controlled: printed raw, an ESC sequence in it rewrites the screen the
+  // operator is reading the remedy on. The NOTE in worktree.ts already escapes for this
+  // reason; this notice printed the same class of string raw.
+  // Two paths, not one: escaping has to hold for every path in a notice, not just the first.
+  // (It does not pin the non-global probe regex — measured, the `g` one passes this too,
+  // because `terminalSafe`'s own `replace` resets `lastIndex`.)
+  it('escapes a control character instead of emitting it, every time', () => {
+    const notice = strandedBranchNotice('feat', [
+      { repository: '/src/api', lockedPaths: ['/project/x\u001b[31m/api'] },
+      { repository: '/src/web', lockedPaths: ['/project/x\u001b[31m/web'] },
+    ])
+
+    expect(notice).not.toContain('\u001b')
+    expect(
+      notice.match(/\\u001b/g) ?? [],
+      'both paths, each printed twice: in the listing and in its command',
+    ).toHaveLength(4)
+  })
+
+  // And leaves an ordinary path alone, byte for byte. Escaping unconditionally would
+  // JSON-quote every path, which doubles the separators in `C:\Users\x` — the result is no
+  // longer the path, and these lines exist to be pasted.
+  it('leaves a Windows path pasteable', () => {
+    const repository = 'C:\\Users\\kj\\catchy'
+    const notice = strandedBranchNotice('feat', [
+      { repository, lockedPaths: [] },
+    ])
+
+    expect(notice).toContain(`git -C ${repository} worktree prune`)
+    expect(notice).not.toContain('C:\\\\Users')
   })
 })

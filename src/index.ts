@@ -52,6 +52,8 @@ import {
     assertWorkspaceBranch,
     assertWorkspaceRootOwnership,
     strandedBranchRegistrations,
+    terminalSafeLiteral,
+    type StrandedBranchRegistration,
     repairWorkspaceRootOwnership,
     hasGitMetadata,
     detectWorktreeWorkspaceBranch,
@@ -1429,34 +1431,7 @@ function handleWorktreeRemove(
             // the next `ccc @<branch>` dies on it with a message whose only noun is a path
             // that does not exist here. Say it now, while the operator is still looking.
             const stranded = strandedBranchRegistrations(cwd, branch);
-            if (stranded.length > 0) {
-                console.error(
-                    `\nBranch '${branch}' is still held by a worktree registration recorded at`
-                    + " a path that cannot be reached from here, in:",
-                );
-                // `git worktree prune` does not clear a LOCKED registration — that is the
-                // whole point of the lock, and ccc honours it when repairing. So naming prune
-                // alone would send exactly the most-stuck operator to a command that does
-                // nothing. Naming `git worktree unlock` without its argument sent them to a
-                // usage error instead — measured, exit 129 — which is the same defect. The
-                // path is printed because that is what the command takes, and ccc knows it:
-                // it is the recorded path it just detected.
-                for (const { repository, lockedPaths } of stranded) {
-                    console.error(`  ${repository}`);
-                    for (const path of lockedPaths) {
-                        console.error(`      locked, held by: ${path}`);
-                    }
-                }
-                const locked = stranded.flatMap(({ lockedPaths }) => lockedPaths);
-                console.error(
-                    locked.length > 0
-                        ? `Run \`git worktree unlock ${locked[0]}\` — prune alone will not clear`
-                            + " a locked one — and then `git worktree prune` there, or the next"
-                            + ` \`ccc @${branch}\` will refuse.`
-                        : "Run `git worktree prune` there, or the next `ccc @"
-                            + `${branch}\` will refuse.`,
-                );
-            }
+            if (stranded.length > 0) console.error(strandedBranchNotice(branch, stranded));
         }
     } catch (e) {
         console.error(`Error: ${(e as Error).message}`);
@@ -1504,6 +1479,48 @@ export function assertRemovableWorkspace(
     assertWorkspaceBranch(workspacePath, branch, spawn, sourcePath, {
         allowTrackedGitlinks: true,
     });
+}
+
+/**
+ * What is still holding the branch after a successful removal, and the commands that clear it.
+ *
+ * Extracted from the print site so it can be asserted directly: every defect this notice has
+ * had was a defect in its TEXT, and the text was the one thing no test read. The first version
+ * named `git worktree prune`, which does nothing to a locked registration. The second named
+ * `git worktree unlock` with no argument, which exits 129. The third named
+ * `git worktree unlock <the first locked path>` and "prune there", which fixes one repository
+ * out of however many are listed and leaves the operator's next `ccc @<branch>` refusing on
+ * the second — and said nothing at all about a listed repository that was stranded but not
+ * locked.
+ *
+ * So: one line per repository, unlock before prune because prune alone will not clear a locked
+ * one, and `-C` on every command because `git worktree unlock` is scoped to the repository
+ * that recorded the registration — run in the wrong one of the listed repositories it exits
+ * 128, and the sentence that just printed two repositories cannot say "there".
+ */
+export function strandedBranchNotice(
+    branch: string,
+    stranded: StrandedBranchRegistration[],
+): string {
+    const lines = [
+        `\nBranch '${branch}' is still held by a worktree registration recorded at a path`
+        + " that cannot be reached from here, in:",
+    ];
+    for (const { repository, lockedPaths } of stranded) {
+        lines.push(`  ${terminalSafeLiteral(repository)}`);
+        for (const path of lockedPaths) {
+            lines.push(`      locked, held by: ${terminalSafeLiteral(path)}`);
+        }
+    }
+    lines.push("Run these, or the next `ccc @" + `${branch}\` will refuse:`);
+    for (const { repository, lockedPaths } of stranded) {
+        const repo = terminalSafeLiteral(repository);
+        for (const path of lockedPaths) {
+            lines.push(`  git -C ${repo} worktree unlock ${terminalSafeLiteral(path)}`);
+        }
+        lines.push(`  git -C ${repo} worktree prune`);
+    }
+    return lines.join("\n");
 }
 
 export function workspaceRemovalFailureNote(error: unknown, force: boolean): string | null {

@@ -46,7 +46,7 @@ import {
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
-import { workspaceRemovalFailureNote, assertRemovableWorkspace } from "../index.js";
+import { workspaceRemovalFailureNote, assertRemovableWorkspace, strandedBranchNotice } from "../index.js";
 
 /** Helper: create a real git repo with an initial commit */
 function initRepo(repoPath: string): void {
@@ -8196,5 +8196,104 @@ describe("the skip NOTE, in both layouts", () => {
         // What it gives instead is the ownership refusal's remedy, which was run end to end
         // in this layout and terminates.
         expect(notice, "and it gives the one that works").toContain("git worktree prune");
+        // The arm is chosen by the WORKSPACE's layout while the claims it makes are decided by
+        // the SOURCE's, and the two come apart — a workspace whose root `.git` is gone reaches
+        // this arm from a unified source that still holds the branch at its root. Pruning only
+        // the nested repositories there leaves that registration and the next `ccc @<branch>`
+        // dies on it, so the source has to be named. It is the sentence ccc already ships in
+        // the ownership refusal.
+        expect(notice, "including the registration a nested-only prune leaves behind")
+            .toContain("the source repository if it is one");
+    });
+});
+
+// Every defect this notice has had was a defect in its TEXT, and the text was the one thing
+// no test read: `git worktree prune`, which does nothing to a locked registration;
+// `git worktree unlock` with no argument, which exits 129; and unlock of the FIRST locked
+// path plus "prune there", which clears one of the listed repositories and leaves the operator
+// refused by the next `ccc @<branch>` on the second. The only assertion that would have caught
+// the third is the one that runs what was printed and then asks whether anything still holds
+// the branch — so that is what this does.
+describe("the stranded-branch notice, run as printed", () => {
+    let root: string;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-stranded-notice-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function strandedRepository(name: string, lock: boolean): string {
+        const repository = join(root, "src", name);
+        initRepo(repository);
+        expect(spawnSync("git", ["branch", "feat"], { cwd: repository, stdio: "pipe" }).status)
+            .toBe(0);
+        const checkout = join(root, `wt-${name}`);
+        expect(spawnSync("git", ["worktree", "add", "--force", checkout, "feat"], {
+            cwd: repository,
+            stdio: "pipe",
+        }).status).toBe(0);
+        // The container boundary, written down: the registration survives, recording a path
+        // that does not resolve on this side.
+        const registry = join(repository, ".git", "worktrees");
+        const recorded = `/project/catchy-415bfb4/${name}`;
+        writeFileSync(join(registry, readdirSync(registry)[0], "gitdir"), `${recorded}/.git\n`);
+        rmSync(checkout, { recursive: true, force: true });
+        if (lock) {
+            // By the recorded path, which is what git takes and what ccc reports.
+            expect(spawnSync("git", ["worktree", "lock", recorded], {
+                cwd: repository,
+                stdio: "pipe",
+            }).status, "the fixture's whole point is a lock prune will not clear").toBe(0);
+        }
+        return repository;
+    }
+
+    it("clears every listed repository, not just the first locked one", () => {
+        const api = strandedRepository("api", true);
+        const web = strandedRepository("web", false);
+        const source = join(root, "src");
+
+        const stranded = strandedBranchRegistrations(source, "feat");
+        expect(stranded.map((entry) => entry.repository).sort(), "both are stranded")
+            .toEqual([api, web].sort());
+
+        const notice = strandedBranchNotice("feat", stranded);
+        const commands = notice
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("git -C"));
+        // Both repositories get an instruction. The version this replaced printed one command
+        // naming one path, and a repository stranded without a lock got no command at all.
+        expect(commands.some((line) => line.includes(api)), "api is named").toBe(true);
+        expect(commands.some((line) => line.includes(web)), "and so is web").toBe(true);
+        // Order inside a repository is load-bearing: prune first does nothing to the locked
+        // registration, and unlocking afterwards leaves it registered.
+        expect(
+            commands.findIndex((line) => line.includes("unlock")),
+            "unlock comes before the prune it enables",
+        ).toBeLessThan(commands.findIndex((line) => line.includes(`${api} worktree prune`)));
+
+        for (const command of commands) {
+            const argv = command.split(" ");
+            // Run from somewhere unrelated on purpose: `git worktree unlock` is scoped to the
+            // repository that recorded the registration and exits 128 in the wrong one, and a
+            // notice that has just listed two repositories cannot say "there". `-C` is what
+            // makes each line pasteable from wherever the operator is standing.
+            const result = spawnSync(argv[0], argv.slice(1), {
+                cwd: tmpdir(),
+                encoding: "utf-8",
+                stdio: "pipe",
+            });
+            expect(result.status, `${command}\n${result.stderr}`).toBe(0);
+        }
+
+        expect(
+            strandedBranchRegistrations(source, "feat"),
+            "and after them nothing holds the branch — the next `ccc @feat` will not refuse",
+        ).toEqual([]);
     });
 });

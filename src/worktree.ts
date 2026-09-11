@@ -2452,10 +2452,15 @@ function nestedRepositoryCandidateIsSafe(
             // Skipped, not silent. `ccc` now manages less than the workspace
             // contains, and the run that used to fail loudly would otherwise
             // succeed while saying nothing about what it dropped.
-            // The layout, derived from the root being scanned: unified roots are git
-            // repositories, multi-repo ones are not. That is exactly the condition that
-            // decides whether `ccc @<branch>` repairs and `ccc rm -f` deletes.
-            warnUnreachableNestedRepository(candidatePath, recorded, hasGitMetadata(parentRepository));
+            // Unified by construction, not by measurement: this is the unified scan, and it
+            // only ever recurses into confirmed git repositories, so `parentRepository` is
+            // one. Asking `hasGitMetadata` here would have been a discrimination that never
+            // discriminates — instrumented across the suite, this site answered true 17 times
+            // out of 17 — and worse, it rethrows any non-ENOENT errno, which would turn this
+            // catch block's whole purpose (skip gracefully, tell the operator) into the abort
+            // it exists to prevent. The one live discriminator is the filter at the bottom of
+            // workspaceWorktreeGitFiles, which is reached for both layouts.
+            warnUnreachableNestedRepository(candidatePath, recorded, true);
             unreachable?.push(candidatePath);
             return false;
         }
@@ -2723,10 +2728,18 @@ function warnUnreachableNestedRepository(
             // neither claim above is true here. Say what the operator can actually do, which
             // is the remedy the ownership refusal already gives and which was verified to
             // terminate in this layout.
+            // "in the source repository if it is one" is not filler. The arm is chosen by the
+            // WORKSPACE's layout, and the ownership check that makes the two claims above true
+            // or false branches on the SOURCE's — they agree in the ordinary layouts and come
+            // apart in real ones, e.g. a workspace whose root `.git` was removed by a partial
+            // removal while the source is unified and still holds the branch at its root.
+            // Pruning only the nested repositories there leaves that registration, and the
+            // next `ccc @<branch>` dies on it. This is the sentence ccc already ships in the
+            // ownership refusal, and it terminates in both.
             : "      files. ccc cannot repair or delete this layout's nested repository while it\n"
                 + "      cannot prove it owns it: move what you want to keep out of the workspace,\n"
                 + "      delete the workspace directory yourself, then run `git worktree prune` in\n"
-                + "      each nested repository.\n")
+                + "      the source repository if it is one, and in each nested repository.\n")
         // The container boundary is the common cause, not the only one: a workspace that was
         // moved or renamed leaves the same unresolvable back-pointer with no container
         // anywhere near it, and an operator told "registered inside the container" about a
@@ -2755,6 +2768,24 @@ function warnUnreachableNestedRepository(
 // characters, and line terminators to a terminal all the same. Cc and Cf carry the ESC and
 // BEL and the bidi overrides; Zl and Zp carry the two that keep being forgotten.
 const TERMINAL_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+// A separate, non-global copy. `RegExp.test` on a `g` regex carries `lastIndex` between calls,
+// and here that happens to cancel out — a true leads straight into `terminalSafe`, whose
+// `replace` resets `lastIndex` to 0, and a false resets it itself. Measured: reusing the `g`
+// regex passes every test. It is still not what this should read, because the property that
+// saves it belongs to a different function and nothing states it there.
+const TERMINAL_UNSAFE_PROBE = new RegExp(TERMINAL_UNSAFE.source, "u");
+
+/**
+ * The form to print inside a command the operator is meant to paste: unchanged when there is
+ * nothing to escape, which is every ordinary path including a Windows one — JSON-quoting
+ * `C:\Users\x` doubles its separators and what they paste is no longer the path. When the
+ * value does carry something a terminal would act on, the quoted and escaped form is printed
+ * instead: a command that cannot be pasted safely is better shown as data than emitted raw.
+ */
+export function terminalSafeLiteral(value: string): string {
+    return TERMINAL_UNSAFE_PROBE.test(value) ? terminalSafe(value) : value;
+}
 
 function terminalSafe(value: string): string {
     return JSON.stringify(value).replace(TERMINAL_UNSAFE, (character) => {
@@ -5982,7 +6013,10 @@ function workspaceWorktreeGitFiles(
                     // Deduplicated per path inside, so this is the one NOTE for the run
                     // whether the scan reached the path first or this loop did — and the
                     // loop exists precisely for paths the scan does not reach.
-                    warnUnreachableNestedRepository(workspaceRepository, recorded, unifiedWorkspace);
+                    // `true`, spelled out: this loop is inside `if (unifiedWorkspace)`, so the
+                    // variable would be a constant here and reading it suggests a choice the
+                    // site cannot make.
+                    warnUnreachableNestedRepository(workspaceRepository, recorded, true);
                     continue;
                 }
                 if (!required) continue;
