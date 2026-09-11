@@ -93,21 +93,6 @@ function observeProcessStart(pid: number): ProcessStartObservation {
     }
 }
 
-
-/**
- * One observation for many pids, in a single process.
- *
- * `observeProcessStart` costs one `powershell.exe` per pid on Windows, and the session-lock
- * filter calls it once per candidate lock file — stale or not — on every `ccc` invocation. A
- * host carrying a dozen leftover locks therefore paid a dozen launches before anything else
- * happened, which is why the operator's report of PowerShell windows "너무 많이" varied between
- * runs: it scales with lock count, not with the work being done.
- *
- * Returns a map keyed by pid. A pid the batch could not answer for is simply absent, and the
- * caller falls back to the single-pid path for it — the batch is an optimisation, never the
- * authority on liveness, and a lock whose owner cannot be observed must still be preserved.
- */
-
 /**
  * The batch script's stdout, as observations. Exported because the script itself only runs on
  * Windows, so this is the only part of the batch a test on any other host can reach — the same
@@ -133,6 +118,20 @@ export function parseProcessStartObservations(
     }
     return observations;
 }
+
+/**
+ * One observation for many pids, in a single process.
+ *
+ * `observeProcessStart` costs one `powershell.exe` per pid on Windows, and the session-lock
+ * filter calls it once per candidate lock file — stale or not — on every `ccc` invocation. A
+ * host carrying a dozen leftover locks therefore paid a dozen launches before anything else
+ * happened, which is why the operator's report of PowerShell windows "너무 많이" varied between
+ * runs: it scales with lock count, not with the work being done.
+ *
+ * Returns a map keyed by pid. A pid the batch could not answer for is simply absent, and the
+ * caller falls back to the single-pid path for it — the batch is an optimisation, never the
+ * authority on liveness, and a lock whose owner cannot be observed must still be preserved.
+ */
 export function observeProcessStarts(pids: readonly number[]): Map<number, ProcessStartObservation> {
     const observations = new Map<number, ProcessStartObservation>();
     const unique = [...new Set(pids)].filter((pid) => Number.isSafeInteger(pid) && pid > 0);

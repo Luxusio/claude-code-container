@@ -1103,7 +1103,6 @@ describe("device-lab host broker daemon", () => {
         });
         // One read: the pre-loop attempt, which returned null. The loop then found identity
         // and took the token from it rather than asking again.
-        // One read: the pre-loop attempt that returned null. The loop then found identity and
         expect(startTokenReads, "one failed pre-loop attempt, then identity answered it").toBe(1);
         expect(identityReads, "the loop probed once more and that answered both").toBeGreaterThan(1);
     });

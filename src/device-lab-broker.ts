@@ -559,9 +559,13 @@ export const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
 // in four probes rather than twenty, and the loop still exits the instant both values are
 // known, which is the ordinary case.
 const DEVICE_BROKER_IDENTITY_PROBE_SLEEP_BUDGET_MS = 500;
-// Six, not the old twenty: one probe per attempt instead of two means six attempts cost
-// fewer launches than the old three, and a slow host keeps six chances where a wall-clock
-// bound gave it none.
+// Six, down from twenty. "One probe per attempt" is true of the PRE-LOOP read and NOT of the
+// loop, which is the arithmetic an earlier version of this comment got backwards: entering the
+// loop requires `!identity || !token`, and `identity()` refuses to build an identity without a
+// token, so loop entry implies identity is null and the standalone fallback fires on every
+// attempt. Six attempts therefore cost twelve launches where the old twenty cost forty — a real
+// reduction, but not the "fewer than the old three" this used to claim. The number is chosen so
+// a slow host keeps six chances at a transient WMI failure; a wall-clock bound gave it none.
 const DEVICE_BROKER_IDENTITY_PROBE_ATTEMPTS = 6;
 const DEVICE_BROKER_IDENTITY_PROBE_FIRST_DELAY_MS = 25;
 const DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS = 200;
