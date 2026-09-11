@@ -6,7 +6,7 @@ import { getProjectId, DATA_DIR } from "./utils.js";
 import { runtimeCli } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "./device-lab-shared-state.js";
-import { processStartToken, sessionLockLiveness, sessionLockOwner } from "./session-lock-liveness.js";
+import { observeProcessStarts, processStartToken, sessionLockLiveness, sessionLockOwner } from "./session-lock-liveness.js";
 
 const locksDir = join(DATA_DIR, "locks");
 
@@ -200,10 +200,34 @@ function filterLiveSessionLocks(locks: string[], currentLockFile?: string): stri
             // Without a valid current ownership record, preserve every claim.
         }
     }
-    return locks.filter((f) => {
-        const lockPath = join(locksDir, f);
+    // Each lock is read ONCE, here, and the walk below works from what was read. The first
+    // version of this batching read every file a second time to collect the owners, which
+    // broke two existing tests outright — their `readFileSync` is mocked per call, so the
+    // extra reads consumed the sequence the walk depended on. A double read is a bad way to
+    // save a process launch in any case.
+    const claims = locks.map((name) => {
         try {
-            const content = readFileSync(lockPath, "utf-8").trim();
+            return { name, content: readFileSync(join(locksDir, name), "utf-8").trim() };
+        } catch {
+            // Unreadable here is not a decision: the walk preserves such a lock, fail-closed.
+            return { name, content: null as string | null };
+        }
+    });
+    // One observation for every candidate owner, in one process. Each `sessionLockLiveness`
+    // call otherwise costs its own `powershell.exe` on Windows, so this filter's price grew
+    // with the number of leftover lock files — paid on every `ccc` invocation, before any work
+    // began. The map can only save a launch: a pid it cannot answer for falls through to the
+    // single-pid probe inside `sessionLockLiveness`.
+    const observedOwners = observeProcessStarts(
+        claims.flatMap(({ content }) => {
+            const owner = content === null ? null : sessionLockOwner(content);
+            return owner ? [owner.pid] : [];
+        }),
+    );
+    return claims.filter(({ name: f, content }) => {
+        const lockPath = join(locksDir, f);
+        if (content === null) return true;
+        try {
             const owner = sessionLockOwner(content);
             if (f !== currentLockName
                 && currentOwnerPid === process.pid
@@ -215,7 +239,7 @@ function filterLiveSessionLocks(locks: string[], currentLockFile?: string): stri
                 try { unlinkSync(lockPath); } catch { /* ignore */ }
                 return false;
             }
-            const liveness = sessionLockLiveness(content);
+            const liveness = sessionLockLiveness(content, observedOwners);
             if (liveness === "stale") {
                 try { unlinkSync(lockPath); } catch { /* ignore */ }
                 return false;
@@ -228,7 +252,7 @@ function filterLiveSessionLocks(locks: string[], currentLockFile?: string): stri
             // antivirus, or permission errors cannot authorize stop/rm.
             return true;
         }
-    });
+    }).map(({ name }) => name);
 }
 
 /**

@@ -93,6 +93,63 @@ function observeProcessStart(pid: number): ProcessStartObservation {
     }
 }
 
+
+/**
+ * One observation for many pids, in a single process.
+ *
+ * `observeProcessStart` costs one `powershell.exe` per pid on Windows, and the session-lock
+ * filter calls it once per candidate lock file — stale or not — on every `ccc` invocation. A
+ * host carrying a dozen leftover locks therefore paid a dozen launches before anything else
+ * happened, which is why the operator's report of PowerShell windows "너무 많이" varied between
+ * runs: it scales with lock count, not with the work being done.
+ *
+ * Returns a map keyed by pid. A pid the batch could not answer for is simply absent, and the
+ * caller falls back to the single-pid path for it — the batch is an optimisation, never the
+ * authority on liveness, and a lock whose owner cannot be observed must still be preserved.
+ */
+export function observeProcessStarts(pids: readonly number[]): Map<number, ProcessStartObservation> {
+    const observations = new Map<number, ProcessStartObservation>();
+    const unique = [...new Set(pids)].filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+    // Fewer than two owners is not worth a batch, and batching them is actively worse: the
+    // batch would be one launch, and if it cannot answer — a denied PowerShell, say — the
+    // single-pid probe still runs, so one lock would cost two launches where it used to cost
+    // one. Two existing tests caught exactly this by failing, because they mock `spawnSync`
+    // as a SEQUENCE and my extra call consumed the first answer. The saving is real only when
+    // there is something to save: N locks become one launch instead of N, and the worst case
+    // stays N+1 when the batch itself fails.
+    if (unique.length < 2) return observations;
+    if (process.platform !== "win32") return observations;
+    const powershell = canonicalWindowsPowerShellPath();
+    if (!powershell) return observations;
+    // The ids are integers by the filter above, so they cannot carry anything into the script.
+    const script = [
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        `foreach ($id in @(${unique.join(",")})) {`,
+        "  try { $P = [System.Diagnostics.Process]::GetProcessById($id) }",
+        "  catch [System.ArgumentException] { Write-Output \"$id MISSING\"; continue }",
+        "  catch { Write-Output \"$id UNKNOWN\"; continue }",
+        "  try { Write-Output (\"$id FOUND:\" + $P.StartTime.ToUniversalTime().Ticks) }",
+        "  catch { Write-Output \"$id UNKNOWN\" }",
+        "}",
+    ].join("\n");
+    const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
+        encoding: "utf-8",
+        timeout: 5000,
+        windowsHide: true,
+    });
+    if (result.error || result.status !== 0 || result.stderr?.trim()) return observations;
+    for (const line of (result.stdout ?? "").split(/\r?\n/)) {
+        const row = /^([0-9]+) (MISSING|UNKNOWN|FOUND:[0-9]+)$/.exec(line.trim());
+        if (!row) continue;
+        const pid = Number(row[1]);
+        if (!unique.includes(pid)) continue;
+        if (row[2] === "MISSING") observations.set(pid, { status: "missing" });
+        else if (row[2] === "UNKNOWN") observations.set(pid, { status: "unknown" });
+        else observations.set(pid, { status: "found", token: `windows:${row[2].slice("FOUND:".length)}` });
+    }
+    return observations;
+}
 export function processStartToken(pid: number): string | null {
     const observed = observeProcessStart(pid);
     return observed.status === "found" ? observed.token : null;
@@ -124,12 +181,15 @@ export function sessionLockOwner(content: string): SessionLockOwner | null {
     return Number.isSafeInteger(pid) ? { pid } : null;
 }
 
-function legacyProcessLiveness(pid: number): SessionLockLiveness {
+function legacyProcessLiveness(
+    pid: number,
+    observed?: ReadonlyMap<number, ProcessStartObservation>,
+): SessionLockLiveness {
     if (process.platform === "win32") {
-        const observed = observeProcessStart(pid);
-        return observed.status === "found" || observed.status === "present"
+        const observation = observed?.get(pid) ?? observeProcessStart(pid);
+        return observation.status === "found" || observation.status === "present"
             ? "active"
-            : observed.status === "missing" ? "stale" : "unknown";
+            : observation.status === "missing" ? "stale" : "unknown";
     }
     try {
         process.kill(pid, 0);
@@ -142,16 +202,22 @@ function legacyProcessLiveness(pid: number): SessionLockLiveness {
     }
 }
 
-export function sessionLockLiveness(content: string): SessionLockLiveness {
+export function sessionLockLiveness(
+    content: string,
+    // Pre-observed pids, when the caller had several locks to examine and asked for them in
+    // one process. Absent or missing entries fall through to the single-pid path, so this can
+    // only ever save a launch, never change an answer.
+    observed?: ReadonlyMap<number, ProcessStartObservation>,
+): SessionLockLiveness {
     const record = sessionLockOwner(content.trim());
     if (!record) return "unknown";
-    if (!record.startToken) return legacyProcessLiveness(record.pid);
+    if (!record.startToken) return legacyProcessLiveness(record.pid, observed);
 
-    const observed = observeProcessStart(record.pid);
-    if (observed.status === "missing") return "stale";
-    if (observed.status === "found") {
-        return observed.token === record.startToken ? "active" : "stale";
+    const observation = observed?.get(record.pid) ?? observeProcessStart(record.pid);
+    if (observation.status === "missing") return "stale";
+    if (observation.status === "found") {
+        return observation.token === record.startToken ? "active" : "stale";
     }
-    if (observed.status === "present") return "unknown";
+    if (observation.status === "present") return "unknown";
     return "unknown";
 }
