@@ -2452,7 +2452,10 @@ function nestedRepositoryCandidateIsSafe(
             // Skipped, not silent. `ccc` now manages less than the workspace
             // contains, and the run that used to fail loudly would otherwise
             // succeed while saying nothing about what it dropped.
-            warnUnreachableNestedRepository(candidatePath, recorded);
+            // The layout, derived from the root being scanned: unified roots are git
+            // repositories, multi-repo ones are not. That is exactly the condition that
+            // decides whether `ccc @<branch>` repairs and `ccc rm -f` deletes.
+            warnUnreachableNestedRepository(candidatePath, recorded, hasGitMetadata(parentRepository));
             unreachable?.push(candidatePath);
             return false;
         }
@@ -2678,7 +2681,18 @@ function warnWorktreeRepairFailure(destinationPath: string, gitStderr: string): 
     );
 }
 
-function warnUnreachableNestedRepository(candidatePath: string, recorded: string): void {
+function warnUnreachableNestedRepository(
+    candidatePath: string,
+    recorded: string,
+    // Whether `ccc @<branch>` repairs this, and whether `ccc rm -f` deletes it. Both are true
+    // in the unified layout and neither is in the multi-repo one, where `ccc @<branch>` dies
+    // with a raw `Workspace repository '<name>' is not owned by its source repository` and
+    // `ccc rm -f` refuses with the same. An earlier version of this NOTE asserted both
+    // unconditionally, which is the fourth time in this task a claim was measured in one
+    // layout and shipped for both — and the third of those is what put "run it in both
+    // layouts before it ships" in the guide.
+    managedLayout: boolean,
+): void {
     // The scan runs more than once per invocation, and repeating the same line
     // teaches an operator to skim past it.
     if (warnedUnreachableNestedRepositories.has(`unreachable:${candidatePath}`)) return;
@@ -2700,9 +2714,19 @@ function warnUnreachableNestedRepository(candidatePath: string, recorded: string
         // when the -f path stopped crashing and started deleting. Say what holds on both
         // sides of the flag.
         + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary\n`
-        + "      files — which `ccc rm -f` deletes along with the workspace, unless you repair\n"
-        + "      it first by running `ccc @<branch>` from the source repository — the same\n"
-        + "      invocation the sibling NOTE names, and the only one that repairs.\n"
+        + (managedLayout
+            ? "      files — which `ccc rm -f` deletes along with the workspace, unless you repair\n"
+                + "      it first by running `ccc @<branch>` from the source repository — the same\n"
+                + "      invocation the sibling NOTE names, and the only one that repairs.\n"
+            // Multi-repo: measured, `ccc @<branch>` raises `Workspace repository '<name>' is
+            // not owned by its source repository` and `ccc rm -f` refuses with the same, so
+            // neither claim above is true here. Say what the operator can actually do, which
+            // is the remedy the ownership refusal already gives and which was verified to
+            // terminate in this layout.
+            : "      files. ccc cannot repair or delete this layout's nested repository while it\n"
+                + "      cannot prove it owns it: move what you want to keep out of the workspace,\n"
+                + "      delete the workspace directory yourself, then run `git worktree prune` in\n"
+                + "      each nested repository.\n")
         // The container boundary is the common cause, not the only one: a workspace that was
         // moved or renamed leaves the same unresolvable back-pointer with no container
         // anywhere near it, and an operator told "registered inside the container" about a
@@ -5948,7 +5972,7 @@ function workspaceWorktreeGitFiles(
                     // Deduplicated per path inside, so this is the one NOTE for the run
                     // whether the scan reached the path first or this loop did — and the
                     // loop exists precisely for paths the scan does not reach.
-                    warnUnreachableNestedRepository(workspaceRepository, recorded);
+                    warnUnreachableNestedRepository(workspaceRepository, recorded, unifiedWorkspace);
                     continue;
                 }
                 if (!required) continue;
@@ -5972,7 +5996,7 @@ function workspaceWorktreeGitFiles(
         if (gitFile === rootGit) return true;
         const recorded = recordedGitPathUnreachableHere(gitFile);
         if (recorded === null) return true;
-        warnUnreachableNestedRepository(dirname(gitFile), recorded);
+        warnUnreachableNestedRepository(dirname(gitFile), recorded, unifiedWorkspace);
         return false;
     });
     // Counted before the filter, deliberately. "Missing" is a claim about what was found, and

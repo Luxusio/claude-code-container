@@ -8106,3 +8106,92 @@ describe("the destination's own registration is not a rival", () => {
             .not.toContain("already used by worktree at");
     });
 });
+
+// The skip NOTE claims two things about what the operator can do next, and both are true
+// only in the unified layout. In multi-repo `ccc @<branch>` dies with a raw
+// `Workspace repository '<name>' is not owned by its source repository` and `ccc rm -f`
+// refuses with the same, so an unconditional NOTE promised a repair that crashes and a
+// deletion that does not happen. Fourth time in this task a claim was measured in one layout
+// and shipped for both, and the third of those is what put "run it in both layouts before it
+// ships" in the guide — so both layouts are asserted here.
+describe("the skip NOTE, in both layouts", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-note-layout-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function noticeFor(workspacePath: string, source: string): string {
+        const chunks: string[] = [];
+        const original = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => {
+            chunks.push(String(chunk));
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            getWorktreeGitMounts(workspacePath, true, source);
+        } catch {
+            // The NOTE is what is pinned; whether the mounts resolve is other tests' business.
+        } finally {
+            process.stderr.write = original;
+        }
+        return chunks.join("");
+    }
+
+    it("offers the repair in the unified layout, where it works", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        expect(spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" }).status).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "note-unified").workspacePath;
+        const registry = join(src, ".git", "modules", "services", "api", "worktrees");
+        writeFileSync(
+            join(registry, readdirSync(registry)[0], "gitdir"),
+            "/project/catchy-415bfb4/services/api/.git\n",
+        );
+
+        const notice = noticeFor(workspacePath, src);
+
+        expect(notice, "here `ccc @<branch>` does repair it").toContain("`ccc @<branch>`");
+        expect(notice, "and -f does delete it").toContain("`ccc rm -f` deletes");
+    });
+
+    it("does not offer it in the multi-repo layout, where it crashes", () => {
+        const src = join(root, "proj");
+        mkdirSync(src, { recursive: true });
+        initRepo(join(src, "api"));
+        expect(existsSync(join(src, ".git")), "multi-repo means no git at the root").toBe(false);
+        const workspacePath = createWorkspace(src, "note-multi").workspacePath;
+        const registry = join(src, "api", ".git", "worktrees");
+        writeFileSync(
+            join(registry, readdirSync(registry)[0], "gitdir"),
+            "/project/proj-abc/api/.git\n",
+        );
+
+        const notice = noticeFor(workspacePath, src);
+
+        expect(notice, "the NOTE still fires").toContain("does not exist here");
+        expect(notice, "but it must not send them to a command that raises")
+            .not.toContain("`ccc @<branch>`");
+        expect(notice, "nor promise a deletion that is refused")
+            .not.toContain("`ccc rm -f` deletes");
+        // What it gives instead is the ownership refusal's remedy, which was run end to end
+        // in this layout and terminates.
+        expect(notice, "and it gives the one that works").toContain("git worktree prune");
+    });
+});
