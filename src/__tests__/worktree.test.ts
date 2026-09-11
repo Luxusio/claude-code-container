@@ -8418,6 +8418,9 @@ describe("pasteableArgument", () => {
         ["a path with shell separators", "/project/x;id;#/api"],
         ["a path with a quote", "/project/it's/api"],
         ["a path with a double quote", '/project/say"hi"/api'],
+        // Ending in a backslash is not a misparse, it is a parse failure: the backslash escapes
+        // the closing double quote and the whole pasted line dies on `unexpected EOF`.
+        ["a Windows path ending in a separator", "C:\\Users\\Kyeong Jae\\"],
     ])("hands the shell %s unchanged", (_label, value) => {
         expect(whatTheShellSees(pasteableArgument(value))).toBe(value);
     });

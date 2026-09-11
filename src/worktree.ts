@@ -2793,12 +2793,15 @@ export function terminalSafeLiteral(value: string): string {
 // two shells and cmd is out of reach — say it rather than imply otherwise.
 const SHELL_SAFE_BARE = /^[A-Za-z0-9_@+=:,./\\-]+$/u;
 // Double quotes tame a space, and `;` `|` `&` `#` with it — measured, they are inert inside
-// them. They do NOT tame these three: `"` ends the argument, and `$` and a backtick still
-// substitute inside double quotes in bash, zsh and PowerShell. An earlier version of this
-// routed them to `terminalSafe`, which is `JSON.stringify`, which is double quotes — so the
-// comment said "escaped data" while the line it emitted was a live shell word that ran
-// `$(id)` on paste. That is this task's own defect, in the function written to fix it.
-const SHELL_EXPANDS_IN_DOUBLE_QUOTES = /["$`]/u;
+// them. They do NOT tame these: `"` ends the argument, `$` and a backtick still substitute
+// inside double quotes in bash, zsh and PowerShell, and a value ENDING in a backslash escapes
+// its own closing quote — `git -C "C:\Users\Kyeong Jae\" worktree prune` does not misparse the
+// path, it fails to parse at all: `unexpected EOF while looking for matching '"'`. An earlier
+// version of this routed the first three to `terminalSafe`, which is `JSON.stringify`, which
+// is double quotes — so the comment said "escaped data" while the line it emitted was a live
+// shell word that ran `$(id)` on paste. That is this task's own defect, in the function
+// written to fix it.
+const SHELL_NEEDS_SINGLE_QUOTES = /["$`]|\\$/u;
 
 /**
  * One argument of a command the operator is meant to paste.
@@ -2811,7 +2814,7 @@ const SHELL_EXPANDS_IN_DOUBLE_QUOTES = /["$`]/u;
  * Three forms, because no single one is right for all of it:
  *  - bare, for an ordinary path, which is nearly all of them;
  *  - double quotes for the rest, the one form bash, cmd and PowerShell read the same way;
- *  - single quotes when the value carries `$`, a backtick or a `"`, because those are inert
+ *  - single quotes when the value carries `$`, a backtick or a `"`, or ends in a backslash, because those are inert
  *    inside single quotes in bash, zsh and PowerShell. It costs cmd, which has no single-quote
  *    form — a trade taken deliberately: a path that does not run in cmd beats a path that runs
  *    something else in bash. These values reach us from a registry `gitdir` file, which is to
@@ -2827,7 +2830,7 @@ export function pasteableArgument(value: string): string {
     // `'\''`: close the quote, an escaped literal quote, reopen. The POSIX idiom, and
     // PowerShell reads `''` as an escaped quote inside a single-quoted string, so a value
     // carrying a quote is handled in both.
-    if (SHELL_EXPANDS_IN_DOUBLE_QUOTES.test(value)) {
+    if (SHELL_NEEDS_SINGLE_QUOTES.test(value)) {
         return `'${value.replace(/'/g, "'\\''")}'`;
     }
     return `"${value}"`;

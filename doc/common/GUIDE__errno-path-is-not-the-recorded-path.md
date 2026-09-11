@@ -621,7 +621,12 @@ Three rules came out of it:
   not run in cmd beats a path that runs something else in bash. A value
   carrying a control character has no runnable form at all — escape it for
   display and do not call it a command. `%VAR%` in cmd is out of reach of every
-  quoting form; say so rather than imply otherwise.
+  quoting form; say so rather than imply otherwise. A value ending in a
+  backslash is not a misparse but a parse failure — it escapes its own closing
+  double quote and the line dies on `unexpected EOF` — so it takes the single
+  quotes too. Measured and deliberately NOT handled: `git -C -foo` treats the
+  leading dash as a path, not a flag, and an empty path fails loudly; neither
+  is reachable from a resolved repository path.
 
   The general rule underneath: **when the question is "what will the shell do
   with this", the assertion belongs in a shell.** `expect(text).toContain(...)`
