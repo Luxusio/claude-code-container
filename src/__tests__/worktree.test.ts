@@ -8309,9 +8309,6 @@ describe("the stranded-branch notice, run as printed", () => {
         ).toEqual([]);
     });
 
-    // The other shape, and the one the test above cannot see: N locked holders in ONE
-
-
     // A recorded path that begins with a dash. Where it comes from: a gitdir file decides where
     // the path starts, `git worktree list --porcelain` reports it verbatim, and the value
     // crosses the container boundary. Without the `--` separator git parses it as options and
@@ -8400,6 +8397,8 @@ describe("the stranded-branch notice, run as printed", () => {
         expect(pasted.status, pasted.stderr).toBe(0);
         expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
     });
+
+    // The other shape, and the one the test above cannot see: N locked holders in ONE
     // repository. `git worktree add --force` really does register a second holder of one
     // branch — measured, git 2.43.0 — so "the locked path" was never a single thing, and a
     // notice that emitted lockedPaths[0] per repository would still leave the second holder
