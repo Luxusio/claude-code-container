@@ -8296,4 +8296,98 @@ describe("the stranded-branch notice, run as printed", () => {
             "and after them nothing holds the branch — the next `ccc @feat` will not refuse",
         ).toEqual([]);
     });
+
+    // The other shape, and the one the test above cannot see: N locked holders in ONE
+    // repository. `git worktree add --force` really does register a second holder of one
+    // branch — measured, git 2.43.0 — so "the locked path" was never a single thing, and a
+    // notice that emitted lockedPaths[0] per repository would still leave the second holder
+    // behind. Here the repository is also the source root, which is the shape the operator
+    // hits when the source itself is the checkout ccc worked from.
+    it("unlocks every holder in a repository, not just its first", () => {
+        const source = join(root, "src");
+        initRepo(source);
+        expect(spawnSync("git", ["branch", "feat"], { cwd: source, stdio: "pipe" }).status)
+            .toBe(0);
+        for (const name of ["wt1", "wt2"]) {
+            const checkout = join(root, name);
+            expect(spawnSync("git", ["worktree", "add", "--force", checkout, "feat"], {
+                cwd: source,
+                stdio: "pipe",
+            }).status).toBe(0);
+            const registry = join(source, ".git", "worktrees");
+            const entry = readdirSync(registry).find((candidate) => candidate.endsWith(name))!;
+            const recorded = `/project/catchy-415bfb4/${name}`;
+            writeFileSync(join(registry, entry, "gitdir"), `${recorded}/.git\n`);
+            rmSync(checkout, { recursive: true, force: true });
+            expect(spawnSync("git", ["worktree", "lock", recorded], {
+                cwd: source,
+                stdio: "pipe",
+            }).status).toBe(0);
+        }
+
+        const stranded = strandedBranchRegistrations(source, "feat");
+        expect(stranded, "one repository, two locked holders").toEqual([
+            {
+                repository: source,
+                lockedPaths: ["/project/catchy-415bfb4/wt1", "/project/catchy-415bfb4/wt2"],
+            },
+        ]);
+
+        for (const command of strandedBranchNotice("feat", stranded)
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("git -C"))) {
+            const argv = command.split(" ");
+            const result = spawnSync(argv[0], argv.slice(1), {
+                cwd: tmpdir(),
+                encoding: "utf-8",
+                stdio: "pipe",
+            });
+            expect(result.status, `${command}\n${result.stderr}`).toBe(0);
+        }
+
+        expect(strandedBranchRegistrations(source, "feat"), "both holders gone").toEqual([]);
+    });
+
+    // The repository path is the operator's, not ccc's, and on the host this task was reported
+    // from it looks like `C:\Users\Kyeong Jae\...`. Printed bare, the command stops at the
+    // space: `fatal: cannot change to '...\Kyeong': No such file or directory`, measured. A
+    // remedy that cannot be pasted is the same defect as a remedy that does nothing, which is
+    // what this notice has now been fixed for three times.
+    it("quotes a path with a space so the command still runs", () => {
+        const source = join(root, "Kyeong Jae", "src");
+        mkdirSync(dirname(source), { recursive: true });
+        initRepo(source);
+        expect(spawnSync("git", ["branch", "feat"], { cwd: source, stdio: "pipe" }).status)
+            .toBe(0);
+        const checkout = join(root, "wt");
+        expect(spawnSync("git", ["worktree", "add", "--force", checkout, "feat"], {
+            cwd: source,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const registry = join(source, ".git", "worktrees");
+        writeFileSync(
+            join(registry, readdirSync(registry)[0], "gitdir"),
+            "/project/catchy-415bfb4/wt/.git\n",
+        );
+        rmSync(checkout, { recursive: true, force: true });
+
+        const stranded = strandedBranchRegistrations(source, "feat");
+        const commands = strandedBranchNotice("feat", stranded)
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("git -C"));
+
+        expect(commands[0], "double quotes: the one form bash, cmd and PowerShell agree on")
+            .toContain(`"${source}"`);
+        // Through a shell, because splitting on spaces is what a shell does and what the bare
+        // form got wrong. `sh -e` fails the test on the first non-zero exit.
+        const pasted = spawnSync("sh", ["-e", "-c", commands.join("\n")], {
+            cwd: tmpdir(),
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(pasted.status, pasted.stderr).toBe(0);
+        expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
+    });
 });

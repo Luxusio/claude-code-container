@@ -53,6 +53,7 @@ import {
     assertWorkspaceRootOwnership,
     strandedBranchRegistrations,
     terminalSafeLiteral,
+    pasteableArgument,
     type StrandedBranchRegistration,
     repairWorkspaceRootOwnership,
     hasGitMetadata,
@@ -1514,9 +1515,9 @@ export function strandedBranchNotice(
     }
     lines.push("Run these, or the next `ccc @" + `${branch}\` will refuse:`);
     for (const { repository, lockedPaths } of stranded) {
-        const repo = terminalSafeLiteral(repository);
+        const repo = pasteableArgument(repository);
         for (const path of lockedPaths) {
-            lines.push(`  git -C ${repo} worktree unlock ${terminalSafeLiteral(path)}`);
+            lines.push(`  git -C ${repo} worktree unlock ${pasteableArgument(path)}`);
         }
         lines.push(`  git -C ${repo} worktree prune`);
     }

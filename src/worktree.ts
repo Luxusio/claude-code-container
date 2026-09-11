@@ -2787,6 +2787,31 @@ export function terminalSafeLiteral(value: string): string {
     return TERMINAL_UNSAFE_PROBE.test(value) ? terminalSafe(value) : value;
 }
 
+// The bare-word set, kept conservative and deliberately including `\` and `:` so an ordinary
+// Windows path stays unquoted. Anything outside it gets double quotes, which is the one
+// quoting form bash, cmd and PowerShell all read the same way.
+const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./\\-]+$/u;
+// And the characters double quotes do NOT tame in all three: `"` ends the argument, `$` and a
+// backtick still expand inside quotes in bash and PowerShell. A value carrying one of those
+// cannot be made pasteable by quoting it, so it is printed as escaped data instead — wrong as
+// a command either way, and at least not wrong silently.
+const SHELL_UNQUOTABLE = /["$`]/u;
+
+/**
+ * One argument of a command the operator is meant to paste.
+ *
+ * A path with a space in it — `C:\Users\Kyeong Jae\catchy`, which is most Windows hosts —
+ * printed bare produces `fatal: cannot change to '...Kyeong': No such file or directory`,
+ * measured. That is the same defect as naming a command that does nothing: a remedy the
+ * operator cannot run.
+ */
+export function pasteableArgument(value: string): string {
+    if (TERMINAL_UNSAFE_PROBE.test(value) || SHELL_UNQUOTABLE.test(value)) {
+        return terminalSafe(value);
+    }
+    return SHELL_SAFE_BARE.test(value) ? value : `"${value}"`;
+}
+
 function terminalSafe(value: string): string {
     return JSON.stringify(value).replace(TERMINAL_UNSAFE, (character) => {
         const code = character.codePointAt(0)!;
