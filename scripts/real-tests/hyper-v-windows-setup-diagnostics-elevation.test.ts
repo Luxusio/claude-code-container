@@ -68,6 +68,32 @@ function failureReasonInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Windows Setup diagnostics elevation request", () => {
+    it("announces the Administrator request immediately before launching UAC", async () => {
+        const writeOutput = vi.fn();
+        const request = vi.fn(async (options: any) => {
+            options.onBeforeElevation();
+            return { status: 0, stdout: privilegedResultFrame({ ok: true, logs: LOGS }), stderr: "" };
+        });
+        const outcome = await requestElevatedSetupDiagnostics(IDENTITY, {
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => TRUSTED_POWERSHELL,
+            isAdministratorImpl: () => false,
+            bundlePath: "bundle.mjs",
+            statSyncImpl: () => ({ size: 32 }),
+            readFileSyncImpl: () => Buffer.from("export const bundled = 1;\n"),
+            nodePath: "C:\\node.exe",
+            fileDigestImpl: async () => "a".repeat(64),
+            requestAdministratorImpl: request,
+            writeOutputImpl: writeOutput,
+        });
+        expect(outcome).toEqual({ attempted: true, result: { ok: true, logs: LOGS } });
+        expect(writeOutput).toHaveBeenCalledOnce();
+        expect(writeOutput).toHaveBeenCalledWith(
+            "REQUEST Hyper-V Windows setup diagnostics administrator permission via UAC\n",
+        );
+        expect(request).toHaveBeenCalledOnce();
+    });
+
     it("retries elevated and publishes the recovered logs from the unelevated side", async () => {
         const elevate = vi.fn(async (_input: unknown, _dependencies?: unknown) => ({ attempted: true, result: { ok: true, logs: LOGS } }));
         const publish = vi.fn((logs: unknown) => ({ ok: true, latestRelativePath: "results/device-lab-real/setup-latest.json", latestPath: "/repo/x", timestampedPath: "/repo/y", logs }));

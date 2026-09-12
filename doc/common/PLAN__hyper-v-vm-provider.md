@@ -1134,6 +1134,20 @@ operation and re-runs the diagnostic elevated. The launcher itself stays
 unelevated, so it keeps the terminal stdin the evaluation-licence question
 reads.
 
+The first real-host exercise of that path on 2026-09-12 exposed a launch
+failure before the elevated collector connected: the result ended in
+`(elevation=elevation-launch-failed)`. The helper had placed the whole compressed
+Administrator bootstrap in an approximately 25,000-character
+`-EncodedCommand`. Even though that is below CreateProcessW's theoretical
+ceiling, it makes the consent path depend on a very large
+PowerShell/Start-Process/ShellExecute argument. The corrected path writes that
+bootstrap to a fresh per-request temporary file and puts only a small loader on
+the `RunAs` command line. The loader reads the file once, verifies its embedded
+SHA-256, and executes those same verified bytes in memory; the unelevated parent
+removes the file on every terminal path. Immediately before launching `RunAs`,
+the Level 3 process prints `REQUEST ... administrator permission via UAC`, so
+the terminal and secure-desktop prompt form one explicit user request.
+
 The mechanism is the one this repository already uses for the same problem in
 `hyper-v-windows-library-command.mjs`: `requestAdministrator` stages a
 digest-verified program in an Administrators-only ProgramData root and streams

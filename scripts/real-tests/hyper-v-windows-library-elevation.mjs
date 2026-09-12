@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
-import { realpathSync } from "fs";
+import { mkdtempSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "net";
-import { win32 } from "path";
+import { tmpdir } from "os";
+import { join, win32 } from "path";
 import { gzipSync } from "zlib";
 
 const WINDOWS_SYSTEM_ROOT_ALIAS = "\\\\?\\GLOBALROOT\\SystemRoot";
@@ -15,6 +16,7 @@ const ELEVATION_PIPE_FRAME_LIMIT_BYTES = Math.ceil(ELEVATION_OUTPUT_LIMIT_BYTES 
 const ELEVATION_PIPE_AUTH_LIMIT_BYTES = 1024;
 const ELEVATION_SERVER_CLOSE_TIMEOUT_MILLISECONDS = 5000;
 const ELEVATION_PIPE_SETTLE_TIMEOUT_MILLISECONDS = 5000;
+export const ELEVATION_RUNAS_COMMAND_LIMIT_CHARS = 8191;
 
 export const HYPER_V_WINDOWS_LIBRARY_BOUNDED_CAPTURE_CSHARP = String.raw`using System;
 using System.Diagnostics;
@@ -289,9 +291,12 @@ export function isAdministrator({ powerShellPath, spawnSyncImpl = spawnSync }) {
     return result.status === 0;
 }
 
-export function elevationPowerShellScripts({ powerShellPath, nodePath, nodeDigest, programDigest, pipeName, token }) {
+export function elevationPowerShellScripts({ powerShellPath, nodePath, nodeDigest, programDigest, pipeName, token, bootstrapPath }) {
     if (nodePath.includes('"') || !/^[a-f0-9]{64}$/.test(nodeDigest) || !/^[a-f0-9]{64}$/.test(programDigest)) {
         throw new Error("hyper-v-library-elevation-path-invalid");
+    }
+    if (typeof bootstrapPath !== "string" || !bootstrapPath) {
+        throw new Error("hyper-v-library-elevation-bootstrap-path-invalid");
     }
     const childPayload = decodedJsonExpression({ nodePath, nodeDigest, programDigest, pipeName, token });
     const captureSource = gzipSync(Buffer.from(HYPER_V_WINDOWS_LIBRARY_BOUNDED_CAPTURE_CSHARP, "utf8")).toString("base64");
@@ -431,9 +436,28 @@ export function elevationPowerShellScripts({ powerShellPath, nodePath, nodeDiges
         "& ([ScriptBlock]::Create($Source))",
         "} finally { if ($BootstrapWatchdog) { if (-not $BootstrapWatchdog.HasExited) { $BootstrapWatchdog.Kill() }; $BootstrapWatchdog.Dispose() } }",
     ].join("; ");
+    const bootstrapBytes = Buffer.from(elevatedBootstrap, "utf8");
+    const bootstrapDigest = createHash("sha256").update(bootstrapBytes).digest("hex");
+    const loaderPayload = decodedJsonExpression({ bootstrapPath, bootstrapDigest });
+    // Keep the ShellExecute/RunAs command small. The full bootstrap used to be embedded here as a
+    // roughly 25,000-character EncodedCommand. The parent now stages those exact bytes and this
+    // loader verifies them before creating a ScriptBlock from the same in-memory byte array. A
+    // same-user replacement can therefore cause a digest failure, but cannot inject Administrator
+    // code between verification and execution.
+    const elevatedLoader = [
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        `$Payload = ${loaderPayload}`,
+        "$BootstrapBytes = [IO.File]::ReadAllBytes([string]$Payload.bootstrapPath)",
+        "$Sha256 = [Security.Cryptography.SHA256]::Create()",
+        "try { $ObservedBootstrapDigest = ([BitConverter]::ToString($Sha256.ComputeHash($BootstrapBytes))).Replace('-', '').ToLowerInvariant() } finally { $Sha256.Dispose() }",
+        "if ($ObservedBootstrapDigest -cne [string]$Payload.bootstrapDigest) { throw 'elevation-bootstrap-integrity-failed' }",
+        "$BootstrapSource = [Text.Encoding]::UTF8.GetString($BootstrapBytes)",
+        "& ([ScriptBlock]::Create($BootstrapSource))",
+    ].join("; ");
     const launcherInput = Buffer.from(JSON.stringify({
         powerShellPath,
-        elevatedCommand: encodedPowerShell(elevatedBootstrap),
+        elevatedCommand: encodedPowerShell(elevatedLoader),
     }), "utf8").toString("base64");
     const launcherScript = [
         "$ErrorActionPreference = 'Stop'",
@@ -453,7 +477,7 @@ export function elevationPowerShellScripts({ powerShellPath, nodePath, nodeDiges
         "  }",
         "}",
     ].join("\n");
-    return { elevatedScript, elevatedBootstrap, launcherInput, launcherScript };
+    return { elevatedScript, elevatedBootstrap, elevatedLoader, bootstrapBytes, bootstrapDigest, launcherInput, launcherScript };
 }
 
 function parseLauncherResult(stdout) {
@@ -474,6 +498,16 @@ export async function requestAdministrator({
     spawnImpl = spawn,
     createServerImpl = createServer,
     randomBytesImpl = randomBytes,
+    makeTempDirImpl = mkdtempSync,
+    writeFileImpl = writeFileSync,
+    removeBootstrapImpl = (file, directory) => {
+        let failure;
+        try { unlinkSync(file); } catch (error) { failure = error; }
+        try { rmdirSync(directory); } catch (error) { failure ??= error; }
+        if (failure) throw failure;
+    },
+    tempRoot = tmpdir(),
+    onBeforeElevation = () => {},
 }) {
     if (!Buffer.isBuffer(programBytes) || programBytes.length === 0 || programBytes.length > ELEVATION_PROGRAM_LIMIT_BYTES
         || !/^[a-f0-9]{64}$/.test(nodeDigest) || !/^[a-f0-9]{64}$/.test(programDigest)) {
@@ -609,58 +643,78 @@ export async function requestAdministrator({
         server.listen(pipePath, resolve);
     });
 
-    const { launcherInput, launcherScript } = elevationPowerShellScripts({
-        powerShellPath, nodePath, nodeDigest, programDigest, pipeName, token,
-    });
     let launcherStdout = "";
     let launcherStderr = "";
     let launcherError = null;
     let launcherStatus = null;
+    let bootstrapDir = "";
+    let bootstrapPath = "";
+    let scripts = null;
     try {
-        const child = spawnImpl(powerShellPath, [
-            "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-EncodedCommand", encodedPowerShell(launcherScript),
-        ], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-        await new Promise((resolve) => {
-            const timeout = setTimeout(() => {
-                launcherError = "elevation-timeout";
-                child.kill();
-            }, ELEVATION_TIMEOUT_MILLISECONDS);
-            child.stdout?.setEncoding("utf8");
-            child.stderr?.setEncoding("utf8");
-            child.stdout?.on("data", (chunk) => {
-                launcherStdout += chunk;
-                if (Buffer.byteLength(launcherStdout, "utf8") > ELEVATION_OUTPUT_LIMIT_BYTES) {
-                    launcherError = "elevation-output-limit-exceeded";
-                    child.kill();
-                }
+        try {
+            bootstrapDir = makeTempDirImpl(join(tempRoot, "ccc-hyper-v-elevation-"));
+            bootstrapPath = join(bootstrapDir, "bootstrap.ps1");
+            scripts = elevationPowerShellScripts({
+                powerShellPath, nodePath, nodeDigest, programDigest, pipeName, token, bootstrapPath,
             });
-            child.stderr?.on("data", (chunk) => {
-                launcherStderr += chunk;
-                if (Buffer.byteLength(launcherStderr, "utf8") > ELEVATION_OUTPUT_LIMIT_BYTES) {
-                    launcherError = "elevation-output-limit-exceeded";
-                    child.kill();
-                }
-            });
-            child.stdin?.once("error", () => {});
-            child.stdin?.end(`${launcherInput}\n`);
-            child.once("error", () => {
-                launcherError = "elevation-launch-failed";
-                clearTimeout(timeout);
-                resolve();
-            });
-            child.once("close", (status) => {
-                launcherStatus = status;
-                clearTimeout(timeout);
-                resolve();
-            });
-        });
-        if (connected || activeSockets.size > 0) {
-            const settled = await Promise.race([
-                pipeSettlement.then(() => true),
-                new Promise((resolve) => setTimeout(() => resolve(false), ELEVATION_PIPE_SETTLE_TIMEOUT_MILLISECONDS)),
-            ]);
-            if (!settled) pipeError ??= "elevation-pipe-settle-timeout";
+            if (scripts.launcherInput.length > ELEVATION_RUNAS_COMMAND_LIMIT_CHARS) {
+                throw new Error("elevation-launch-command-too-long");
+            }
+            writeFileImpl(bootstrapPath, scripts.bootstrapBytes, { flag: "wx", mode: 0o600 });
+        } catch {
+            launcherError ??= "elevation-bootstrap-stage-failed";
+        }
+        if (!launcherError && scripts) {
+            try {
+                try { onBeforeElevation(); } catch { /* a closed reporter must not suppress the UAC request */ }
+                const child = spawnImpl(powerShellPath, [
+                    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-EncodedCommand", encodedPowerShell(scripts.launcherScript),
+                ], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(() => {
+                        launcherError = "elevation-timeout";
+                        child.kill();
+                    }, ELEVATION_TIMEOUT_MILLISECONDS);
+                    child.stdout?.setEncoding("utf8");
+                    child.stderr?.setEncoding("utf8");
+                    child.stdout?.on("data", (chunk) => {
+                        launcherStdout += chunk;
+                        if (Buffer.byteLength(launcherStdout, "utf8") > ELEVATION_OUTPUT_LIMIT_BYTES) {
+                            launcherError = "elevation-output-limit-exceeded";
+                            child.kill();
+                        }
+                    });
+                    child.stderr?.on("data", (chunk) => {
+                        launcherStderr += chunk;
+                        if (Buffer.byteLength(launcherStderr, "utf8") > ELEVATION_OUTPUT_LIMIT_BYTES) {
+                            launcherError = "elevation-output-limit-exceeded";
+                            child.kill();
+                        }
+                    });
+                    child.stdin?.once("error", () => {});
+                    child.stdin?.end(`${scripts.launcherInput}\n`);
+                    child.once("error", () => {
+                        launcherError = "elevation-launch-failed";
+                        clearTimeout(timeout);
+                        resolve();
+                    });
+                    child.once("close", (status) => {
+                        launcherStatus = status;
+                        clearTimeout(timeout);
+                        resolve();
+                    });
+                });
+            } catch {
+                launcherError ??= "elevation-launch-failed";
+            }
+            if (connected || activeSockets.size > 0) {
+                const settled = await Promise.race([
+                    pipeSettlement.then(() => true),
+                    new Promise((resolve) => setTimeout(() => resolve(false), ELEVATION_PIPE_SETTLE_TIMEOUT_MILLISECONDS)),
+                ]);
+                if (!settled) pipeError ??= "elevation-pipe-settle-timeout";
+            }
         }
     } finally {
         for (const socket of activeSockets) socket.destroy();
@@ -676,6 +730,12 @@ export async function requestAdministrator({
             const timer = setTimeout(() => finish(true), ELEVATION_SERVER_CLOSE_TIMEOUT_MILLISECONDS);
             server.close(() => finish(false));
         });
+        if (bootstrapPath) {
+            // Both removals are deliberately non-recursive. The directory sits below a same-user
+            // writable temp root, so a hostile replacement must be allowed to make cleanup fail,
+            // never turn cleanup into an Administrator-adjacent recursive delete primitive.
+            try { removeBootstrapImpl(bootstrapPath, bootstrapDir); } catch { launcherError ??= "elevation-bootstrap-cleanup-failed"; }
+        }
     }
 
     if (serverShutdownTimedOut) return { status: 1, stdout, stderr, errorCode: "elevation-pipe-shutdown-timeout" };

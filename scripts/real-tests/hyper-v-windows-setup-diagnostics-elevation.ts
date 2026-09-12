@@ -133,12 +133,14 @@ export async function requestElevatedSetupDiagnostics(
     const nodePath = dependencies.nodePath || process.execPath;
     const digestFile = dependencies.fileDigestImpl || fileDigest;
     const request = dependencies.requestAdministratorImpl || requestAdministrator;
+    const writeOutput = dependencies.writeOutputImpl || ((value: string) => process.stdout.write(value));
     const elevated = await request({
         powerShellPath,
         nodePath,
         nodeDigest: await digestFile(nodePath),
         programBytes,
         programDigest: createHash("sha256").update(programBytes).digest("hex"),
+        onBeforeElevation: () => writeOutput("REQUEST Hyper-V Windows setup diagnostics administrator permission via UAC\n"),
     });
     if (elevated.errorCode) return { attempted: true, errorCode: String(elevated.errorCode) };
     const decoded = decodePrivilegedResultFrame(elevated.stdout || "");

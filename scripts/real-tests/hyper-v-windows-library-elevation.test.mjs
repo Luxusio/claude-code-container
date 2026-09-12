@@ -5,6 +5,7 @@ import { connect } from "net";
 import { PassThrough } from "stream";
 
 import {
+    ELEVATION_RUNAS_COMMAND_LIMIT_CHARS,
     HYPER_V_WINDOWS_LIBRARY_BOUNDED_CAPTURE_CSHARP,
     elevationPowerShellScripts,
     isAdministrator,
@@ -97,13 +98,15 @@ describe("Hyper-V Windows library command elevation", () => {
     });
 
     it("builds one encoded RunAs launch with a named-pipe output channel", () => {
-        const { elevatedScript, elevatedBootstrap, launcherInput, launcherScript } = elevationPowerShellScripts({
+        const bootstrapPath = "C:\\Users\\Operator\\AppData\\Local\\Temp\\ccc-hyper-v-elevation-test\\bootstrap.ps1";
+        const { elevatedScript, elevatedBootstrap, elevatedLoader, bootstrapBytes, bootstrapDigest, launcherInput, launcherScript } = elevationPowerShellScripts({
             powerShellPath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             nodePath: "C:\\Program Files\\nodejs\\node.exe",
             nodeDigest,
             programDigest,
             pipeName,
             token,
+            bootstrapPath,
         });
         expect(launcherScript).toContain("Start-Process");
         expect(launcherScript).toContain("-Verb RunAs");
@@ -113,8 +116,17 @@ describe("Hyper-V Windows library command elevation", () => {
         const payload = JSON.parse(Buffer.from(launcherInput, "base64").toString("utf8"));
         const elevated = Buffer.from(payload.elevatedCommand, "base64").toString("utf16le");
         expect(elevated).not.toContain("hyper-v-windows-library-command.mjs");
-        expect(elevated).toContain("GZipStream");
-        expect(elevated).toContain("ScriptBlock]::Create($Source)");
+        expect(elevated).toContain("[IO.File]::ReadAllBytes");
+        expect(elevated).toContain("elevation-bootstrap-integrity-failed");
+        expect(elevated).toContain("ScriptBlock]::Create($BootstrapSource)");
+        expect(elevated).not.toContain("GZipStream");
+        expect(elevated).toBe(elevatedLoader);
+        expect(bootstrapBytes).toEqual(Buffer.from(elevatedBootstrap, "utf8"));
+        expect(bootstrapDigest).toBe(createHash("sha256").update(bootstrapBytes).digest("hex"));
+        const encodedLoaderPayload = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(elevatedLoader)?.[1];
+        expect(JSON.parse(Buffer.from(encodedLoaderPayload, "base64").toString("utf8")))
+            .toEqual({ bootstrapPath, bootstrapDigest });
+        expect(elevatedBootstrap).toContain("GZipStream");
         expect(elevatedScript).toContain("NamedPipeClientStream");
         expect(elevatedScript).toContain(":AUTH:");
         expect(elevatedBootstrap).toContain("elevation-bootstrap-watchdog-start-failed");
@@ -172,13 +184,19 @@ describe("Hyper-V Windows library command elevation", () => {
         expect(HYPER_V_WINDOWS_LIBRARY_BOUNDED_CAPTURE_CSHARP).not.toContain("ReadToEnd");
         expect(launcherScript).toBeTruthy();
         expect(Buffer.from(launcherScript, "utf16le").toString("base64").length).toBeLessThan(32_767);
-        expect(payload.elevatedCommand.length).toBeLessThan(32_767);
+        expect(Buffer.from(elevatedBootstrap, "utf16le").toString("base64").length,
+            "the former inline bootstrap exceeds the conservative command boundary seen by Windows launchers")
+            .toBeGreaterThan(ELEVATION_RUNAS_COMMAND_LIMIT_CHARS);
+        expect(payload.elevatedCommand.length).toBeLessThan(ELEVATION_RUNAS_COMMAND_LIMIT_CHARS);
+        expect(launcherInput.length).toBeLessThan(ELEVATION_RUNAS_COMMAND_LIMIT_CHARS);
     });
 
     it("returns named-pipe Vitest output and propagates the elevated status", async () => {
         const output = "RUN v4.1.2\r\nPASS real host\r\n";
         const errorOutput = "failure stack\r\n";
         const onProgram = vi.fn();
+        const staged = { directory: "C:\\Temp\\ccc-elevation-test", writes: [], removed: [] };
+        const onBeforeElevation = vi.fn();
         const spawnImpl = fakeLauncher({
             launcherStdout: "CCC_HYPER_V_WINDOWS_LIBRARY_ELEVATION_RESULT:EXIT:7\r\n",
             pipeLines: [
@@ -196,7 +214,18 @@ describe("Hyper-V Windows library command elevation", () => {
             programDigest,
             spawnImpl,
             randomBytesImpl,
+            makeTempDirImpl: vi.fn(() => staged.directory),
+            writeFileImpl: vi.fn((...args) => staged.writes.push(args)),
+            removeBootstrapImpl: vi.fn((...args) => staged.removed.push(args)),
+            tempRoot: "C:\\Temp",
+            onBeforeElevation,
         })).resolves.toEqual({ status: 7, stdout: output, stderr: errorOutput });
+        expect(onBeforeElevation).toHaveBeenCalledOnce();
+        expect(staged.writes).toHaveLength(1);
+        expect(staged.writes[0][0]).toContain("bootstrap.ps1");
+        expect(Buffer.isBuffer(staged.writes[0][1])).toBe(true);
+        expect(staged.writes[0][2]).toEqual({ flag: "wx", mode: 0o600 });
+        expect(staged.removed).toEqual([[expect.stringContaining("bootstrap.ps1"), staged.directory]]);
         expect(decodeCommand(spawnImpl.mock.calls[0][1])).toContain("-Verb RunAs");
         expect(onProgram).toHaveBeenCalledWith(expect.stringContaining(
             `CCC_HYPER_V_WINDOWS_LIBRARY_ELEVATION_PIPE:${token}:PROGRAM:${programBytes.toString("base64")}`,
@@ -252,6 +281,8 @@ describe("Hyper-V Windows library command elevation", () => {
     });
 
     it("reports UAC cancellation without accepting a missing pipe result", async () => {
+        const stagedDirectory = "C:\\Temp\\ccc-elevation-cancelled";
+        const removeBootstrapImpl = vi.fn();
         await expect(requestAdministrator({
             powerShellPath: "trusted-powershell.exe",
             nodePath: "node.exe",
@@ -262,7 +293,36 @@ describe("Hyper-V Windows library command elevation", () => {
                 launcherStdout: "CCC_HYPER_V_WINDOWS_LIBRARY_ELEVATION_RESULT:CANCELLED\r\n",
             }),
             randomBytesImpl,
+            makeTempDirImpl: () => stagedDirectory,
+            writeFileImpl: vi.fn(),
+            removeBootstrapImpl,
+            tempRoot: "C:\\Temp",
         })).resolves.toEqual({ status: 1, stdout: "", stderr: "", errorCode: "elevation-cancelled" });
+        expect(removeBootstrapImpl, "declining UAC still removes the unelevated bootstrap staging directory")
+            .toHaveBeenCalledWith(expect.stringContaining("bootstrap.ps1"), stagedDirectory);
+    });
+
+    it("does not request UAC when the verified bootstrap cannot be staged", async () => {
+        const spawnImpl = vi.fn();
+        const onBeforeElevation = vi.fn();
+        await expect(requestAdministrator({
+            powerShellPath: "trusted-powershell.exe",
+            nodePath: "node.exe",
+            nodeDigest,
+            programBytes,
+            programDigest,
+            spawnImpl,
+            randomBytesImpl,
+            makeTempDirImpl: () => { throw new Error("temp unavailable"); },
+            onBeforeElevation,
+        })).resolves.toEqual({
+            status: 1,
+            stdout: "",
+            stderr: "",
+            errorCode: "elevation-bootstrap-stage-failed",
+        });
+        expect(onBeforeElevation).not.toHaveBeenCalled();
+        expect(spawnImpl).not.toHaveBeenCalled();
     });
 
     it("fails when the bounded elevated capture terminates an over-limit child", async () => {
