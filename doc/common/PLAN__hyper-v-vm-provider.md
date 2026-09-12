@@ -1081,12 +1081,13 @@ Real-provider tests:
 
 ## Level 3 requires elevation for setup diagnostics
 
-Confirmed on a real Windows host, not inferred. The Level 3 VM lifecycle runs
-unelevated — the broker attests, the VM is created and runs — but the Windows
-Setup diagnostic mounts the guest VHDX read-only to read Panther logs, and
-`Mount-VHD` needs a privilege that Hyper-V VM management membership does not
-grant. Unelevated, that fails with `ERROR_PRIVILEGE_NOT_HELD`, so a guest that
-fails to boot loses exactly the logs that would explain why.
+Confirmed on a real Windows host: the Level 3 VM lifecycle can run unelevated —
+the broker attests, the VM is created and runs — while the Windows Setup
+diagnostic's read-only `Mount-VHD` fails with `ERROR_PRIVILEGE_NOT_HELD`. That
+run proves the invoking user's filtered token lacked the required mount
+privilege. It does not by itself prove which group membership supplies the
+privilege, including the stronger claim about Hyper-V Administrators without
+local Administrators membership.
 
 Two details worth keeping, because both cost time to find:
 
@@ -1098,7 +1099,7 @@ Two details worth keeping, because both cost time to find:
 - It was retried. The mount loop treated it as transient and spent seven
   attempts with exponential backoff on an error that waiting cannot change.
 
-### Measured after the change, on the same host, unelevated
+### Historical baseline measured after retry classification, before the UAC request
 
     NOTE This run is not elevated. …
          Re-run from an elevated terminal to keep the diagnostics.
@@ -1120,12 +1121,12 @@ Three things this settles, none of them previously more than argued:
 
 The warning printed **before** the build, which is its whole point.
 
-What that run does **not** settle is whether elevation is the remedy for this
-host: `p=code` says Windows named the privilege, not that the local
-Administrators role is what supplies it. **The next run settles it without
-anyone re-running anything** — approving the UAC prompt either recovers the
-Panther logs, or comes back with the mount still refused, which is the
-"elevated AND `0x80070522`" state observed rather than reasoned about.
+What that historical run does **not** settle is whether elevation is the remedy
+for this host: `p=code` says Windows named the privilege, not that the local
+Administrators role supplies it. The corrected staged-loader path has not yet
+been exercised on Windows. On the next unelevated run, approving its UAC prompt
+either recovers the Panther logs or returns the mount refusal from the elevated
+collector. No elevated-terminal re-run is required for that check.
 
 **The diagnostic now requests the privilege instead of asking for a re-run.**
 When the mount fails for want of it, `hyperVWindowsFailureReason` calls
@@ -1142,11 +1143,17 @@ Administrator bootstrap in an approximately 25,000-character
 ceiling, it makes the consent path depend on a very large
 PowerShell/Start-Process/ShellExecute argument. The corrected path writes that
 bootstrap to a fresh per-request temporary file and puts only a small loader on
-the `RunAs` command line. The loader reads the file once, verifies its embedded
-SHA-256, and executes those same verified bytes in memory; the unelevated parent
-removes the file on every terminal path. Immediately before launching `RunAs`,
-the Level 3 process prints `REQUEST ... administrator permission via UAC`, so
-the terminal and secure-desktop prompt form one explicit user request.
+the `RunAs` command line. Both the encoded elevated command and the launcher
+input must remain below the conservative 8,191-character bound. The loader
+reads the file once, verifies its embedded SHA-256, and executes those same
+verified bytes in memory. The unelevated parent attempts non-recursive removal
+of the file and directory on every terminal path; a removal failure can leave
+the file behind and returns the bounded cleanup error when no earlier error
+already determines the result. Bootstrap staging or command-bound failure ends
+as `elevation-bootstrap-stage-failed` before the UAC prompt. Immediately before
+launching `RunAs`, the Level 3 process prints `REQUEST ... administrator
+permission via UAC`, so the terminal and secure-desktop prompt form one explicit
+user request.
 
 The mechanism is the one this repository already uses for the same problem in
 `hyper-v-windows-library-command.mjs`: `requestAdministrator` stages a
@@ -1228,22 +1235,23 @@ One gap in that story, and one that requesting elevation closed:
   will satisfy a `/p=(code|unelevated)/` grep. Keying on the code **name**
   cannot be fooled. Nothing parses it the loose way today.
 
-Two caveats, one of them **asserted rather than measured**. The probe tests the
-local Administrators role, and the warning text tells operators that membership
-of Hyper-V Administrators alone runs VMs but does not grant the mount
-privilege. What was actually observed is weaker: one unelevated run failed with
-`0x80070522`. If the stronger claim is wrong it is wrong for a whole host class
-— the elevation clause would abandon retries at attempt 1 on genuinely
-transient errors and print a remedy that does not help.
+Two caveats remain. The probe tests the local Administrators role, while the
+warning text says Hyper-V Administrators membership alone is insufficient for
+the mount. The real-host evidence is weaker: one unelevated run failed with
+`0x80070522`, then the first automatic-elevation attempt failed before the
+collector connected because its inline command was too large. The stronger
+group-membership statement has not been measured on a Hyper-V-Administrators-
+only account.
 
-What settles it is `npm run test:level3:hyper-v:windows` run twice, unelevated
-then elevated: the emitted `p=code` / `p=unelevated` says which signal concluded
-privilege, and an elevated re-run that gets past the mount proves elevation is
-the remedy the code names. An earlier draft recorded `whoami /groups` as the
-check; it is the weaker instrument, because it reports group membership rather
-than outcome, and the host class the claim is about — Hyper-V Administrators
-*without* local Administrators — is by construction not a host on which the
-elevated path already works. Neither run has been made yet.
+The next decisive check is one unelevated
+`npm run test:level3:hyper-v:windows` run with the UAC prompt approved. Its
+`p=code` / `p=unelevated` token records which signal concluded privilege, and
+the elevated collector outcome shows whether elevation remedies the mount on
+that host. A separate already-elevated run only verifies the no-dialog
+`already-elevated` path; it is not required to prove that the unelevated command
+requests permission. `whoami /groups` remains a weaker instrument because it
+reports group membership rather than the mount outcome. Neither corrected-path
+run has been made yet.
 
 The second: on an unelevated host the code is emitted for *any* mount failure,
 including a transient category such as `ResourceBusy`, because `Mount-VHD`
