@@ -69,9 +69,11 @@ function failureReasonInput(overrides: Record<string, unknown> = {}) {
 
 describe("Windows Setup diagnostics elevation request", () => {
     it("announces the Administrator request immediately before launching UAC", async () => {
-        const writeOutput = vi.fn();
+        const events: string[] = [];
+        const writeOutput = vi.fn(() => { events.push("request"); });
         const request = vi.fn(async (options: any) => {
             options.onBeforeElevation();
+            events.push("spawn");
             return { status: 0, stdout: privilegedResultFrame({ ok: true, logs: LOGS }), stderr: "" };
         });
         const outcome = await requestElevatedSetupDiagnostics(IDENTITY, {
@@ -89,8 +91,9 @@ describe("Windows Setup diagnostics elevation request", () => {
         expect(outcome).toEqual({ attempted: true, result: { ok: true, logs: LOGS } });
         expect(writeOutput).toHaveBeenCalledOnce();
         expect(writeOutput).toHaveBeenCalledWith(
-            "REQUEST Hyper-V Windows setup diagnostics administrator permission via UAC\n",
+            "REQUEST Windows is asking for Administrator permission via UAC to collect this failed Hyper-V test VM's setup diagnostics\n",
         );
+        expect(events).toEqual(["request", "spawn"]);
         expect(request).toHaveBeenCalledOnce();
     });
 

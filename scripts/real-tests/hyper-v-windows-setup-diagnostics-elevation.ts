@@ -140,7 +140,7 @@ export async function requestElevatedSetupDiagnostics(
         nodeDigest: await digestFile(nodePath),
         programBytes,
         programDigest: createHash("sha256").update(programBytes).digest("hex"),
-        onBeforeElevation: () => writeOutput("REQUEST Hyper-V Windows setup diagnostics administrator permission via UAC\n"),
+        onBeforeElevation: () => writeOutput("REQUEST Windows is asking for Administrator permission via UAC to collect this failed Hyper-V test VM's setup diagnostics\n"),
     });
     if (elevated.errorCode) return { attempted: true, errorCode: String(elevated.errorCode) };
     const decoded = decodePrivilegedResultFrame(elevated.stdout || "");

@@ -119,6 +119,16 @@ describe("Hyper-V Windows library command elevation", () => {
         expect(elevated).toContain("[IO.File]::ReadAllBytes");
         expect(elevated).toContain("elevation-bootstrap-integrity-failed");
         expect(elevated).toContain("ScriptBlock]::Create($BootstrapSource)");
+        const readIndex = elevated.indexOf("[IO.File]::ReadAllBytes");
+        const hashIndex = elevated.indexOf("ComputeHash($BootstrapBytes)");
+        const digestCheckIndex = elevated.indexOf("$ObservedBootstrapDigest -cne [string]$Payload.bootstrapDigest");
+        const decodeIndex = elevated.indexOf("GetString($BootstrapBytes)");
+        const executeIndex = elevated.indexOf("ScriptBlock]::Create($BootstrapSource)");
+        expect(elevated.match(/\[IO\.File\]::ReadAllBytes/g)).toHaveLength(1);
+        expect(readIndex).toBeLessThan(hashIndex);
+        expect(hashIndex).toBeLessThan(digestCheckIndex);
+        expect(digestCheckIndex).toBeLessThan(decodeIndex);
+        expect(decodeIndex).toBeLessThan(executeIndex);
         expect(elevated).not.toContain("GZipStream");
         expect(elevated).toBe(elevatedLoader);
         expect(bootstrapBytes).toEqual(Buffer.from(elevatedBootstrap, "utf8"));
@@ -299,6 +309,35 @@ describe("Hyper-V Windows library command elevation", () => {
             tempRoot: "C:\\Temp",
         })).resolves.toEqual({ status: 1, stdout: "", stderr: "", errorCode: "elevation-cancelled" });
         expect(removeBootstrapImpl, "declining UAC still removes the unelevated bootstrap staging directory")
+            .toHaveBeenCalledWith(expect.stringContaining("bootstrap.ps1"), stagedDirectory);
+    });
+
+    it("removes the staged bootstrap when the UAC launcher fails to start", async () => {
+        const stagedDirectory = "C:\\Temp\\ccc-elevation-launch-failed";
+        const removeBootstrapImpl = vi.fn();
+        const spawnImpl = vi.fn(() => {
+            const child = new EventEmitter();
+            child.stdin = new PassThrough();
+            child.stdout = new PassThrough();
+            child.stderr = new PassThrough();
+            child.kill = vi.fn();
+            setImmediate(() => child.emit("error", new Error("launcher unavailable")));
+            return child;
+        });
+        await expect(requestAdministrator({
+            powerShellPath: "trusted-powershell.exe",
+            nodePath: "node.exe",
+            nodeDigest,
+            programBytes,
+            programDigest,
+            spawnImpl,
+            randomBytesImpl,
+            makeTempDirImpl: () => stagedDirectory,
+            writeFileImpl: vi.fn(),
+            removeBootstrapImpl,
+            tempRoot: "C:\\Temp",
+        })).resolves.toEqual({ status: 1, stdout: "", stderr: "", errorCode: "elevation-launch-failed" });
+        expect(removeBootstrapImpl, "a launcher failure still removes the unelevated bootstrap staging directory")
             .toHaveBeenCalledWith(expect.stringContaining("bootstrap.ps1"), stagedDirectory);
     });
 
