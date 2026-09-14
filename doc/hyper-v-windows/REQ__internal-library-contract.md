@@ -264,13 +264,18 @@ confirms the exact native identity before advancing to the next dependency.
 Inspection, UAC, mutation, confirmation, and retry share one bounded transaction
 deadline.
 Closing the callback-scoped administrator executor MUST also be bounded without
-racing its own proof of termination. The medium-integrity parent relay grace
-MUST strictly exceed the elevated child's bounded termination-confirmation
-window, so the child can report either confirmed exit or
-`hyper-v-network-elevation-termination-unconfirmed` before the parent applies
-its fallback. A graceful relay completion inside that outer window MUST NOT be
-reclassified as termination uncertainty merely because it took longer than the
-inner child window.
+racing termination proof. The medium-integrity PowerShell relay MUST force-stop
+the exact elevated child at scope closure, wait up to five seconds for that
+process to exit, and emit `hyper-v-network-elevation-termination-unconfirmed`
+when the same process remains. The Node parent MUST give that PowerShell relay
+a strictly longer ten-second grace to publish its result and exit before the
+Node parent applies its own kill fallback. This outer shutdown grace MUST start
+at scope closure and MUST NOT be shortened by an exhausted operation deadline.
+A graceful relay completion just after the five-second child-confirmation
+window, including when the operation deadline has already expired, MUST NOT be
+reclassified as termination uncertainty. A relay that never completes MUST
+still fail closed at the ten-second outer bound. These three timing boundaries
+are verification requirements for the elevated-session adapter.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes

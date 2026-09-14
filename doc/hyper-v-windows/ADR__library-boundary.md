@@ -194,11 +194,19 @@ after elevation and removes only proven identities in NAT → gateway → switch
 order.
 
 Administrator-session shutdown uses nested bounded windows. The elevated child
-gets five seconds to confirm its watchdog/process exit and emit a terminal
-failure when it cannot. The medium-integrity relay owner waits a strictly longer
-ten-second grace before its own kill fallback. Equal windows are invalid: timer
-jitter lets the parent erase the child's authoritative terminal result and
-misclassify a successful transaction as termination uncertainty.
+does not prove its own termination. After the callback scope closes, the
+medium-integrity PowerShell relay force-stops that exact elevated child, waits
+up to five seconds for its process exit, and emits
+`hyper-v-network-elevation-termination-unconfirmed` if the same process remains.
+The Node parent independently gives the PowerShell relay a strictly longer
+ten-second grace to publish that result and exit before applying its own kill
+fallback. That outer grace begins at scope closure and is not shortened by an
+exhausted operation deadline. Equal windows are invalid: timer jitter can let
+the Node parent erase the relay's authoritative terminal result and misclassify
+a successful transaction as termination uncertainty. Fake-timer verification
+therefore covers relay completion just after five seconds, the same completion
+after the operation deadline has expired, and fail-closed termination at the
+ten-second outer bound.
 
 Device Lab continues to own and encode version-1 network intent/state. New
 token-scoped intent checkpoints exact switch, gateway, and NAT receipts after
