@@ -180,7 +180,8 @@ reconciliation unions carry the exact identity evidence required by mutation,
 so invalid cleanup/adoption combinations are not representable as independent
 booleans. Their operation parameter also correlates ensure outcomes with only
 ensure action receipts and cleanup outcomes with only cleanup action receipts;
-conflict and indeterminate reasons are operation-specific too.
+conflict and indeterminate reasons are operation-specific too, including in the
+default exported union used without a generic argument.
 
 Privilege is runtime evidence, not a TypeScript brand. Ordinary inspection
 produces a typed decision before UAC. After consent, the transaction obtains one
@@ -212,9 +213,12 @@ same-name resource observed while the old exact ID still exists remains a
 successor conflict. Compatible stable↔token adoption first atomically aligns the
 intent identity and records its adopted ownership origin, preventing
 partial-fabric receipts from contradicting their top-level journal or a restart
-from widening ownership over pre-existing resources. The final cleanup removal deletes the state file as its
-terminal checkpoint, so a crash before the caller returns resumes as already
-complete rather than as an unmanaged stale identity.
+from widening ownership over pre-existing resources. Existing current state is
+likewise checkpointed as one correlated marker/NAT identity before any missing
+resource mutation, so later per-action receipts cannot mix the old and new
+identities. The final cleanup removal deletes the state file as its terminal
+checkpoint, so a crash before the caller returns resumes as already complete
+rather than as an unmanaged stale identity.
 
 `hyperVSnapshotRepairCommand` deliberately stays a host-control PowerShell asset:
 it reconciles checkpoint state across several cmdlets rather than issuing one

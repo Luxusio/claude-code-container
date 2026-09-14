@@ -252,6 +252,8 @@ implementation-private prepared action that Device Lab cannot construct.
 Operation is a correlated type parameter: ensure outcomes/actions cannot be
 combined with cleanup outcomes/actions in a transaction result, or vice versa;
 operation-specific conflict and indeterminate reasons are correlated as well.
+That correlation also holds when consumers use the exported default union
+without an explicit operation type argument.
 
 Ensure performs ordinary inspection, makes a pure decision, and asks for
 administrator consent only for `needs-administrator`. One callback-scoped
@@ -296,6 +298,11 @@ before creating any missing resource. That checkpoint durably records
 `ownershipOrigin: "adopted"`, so a restart cannot reinterpret the aligned token
 identity as a fresh intent; pre-existing adopted resources remain unmanaged
 both before and after partial-fabric recovery.
+When current state already exists, the same exact-ID stable↔token transition
+atomically checkpoints marker, NAT name, and NAT instance ID together before
+any missing resource is created. Per-action ownership receipts build on that
+revised state, so a crash cannot lose ownership of a resource created after the
+transition.
 Recovery consumes confirmed receipts through the same NAT -> gateway -> switch
 cleanup planner; an indeterminate action is never removed before reinspection
 proves what occurred.

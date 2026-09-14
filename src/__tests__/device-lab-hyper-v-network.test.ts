@@ -773,6 +773,45 @@ describe("Hyper-V network module", () => {
             .toMatchObject({ createdAt: "concurrent-revision" });
     });
 
+    it("does not overwrite a concurrently revised receipt with unchanged intent identity", async () => {
+        const root = privateRoot();
+        let reviseBeforeNat = true;
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                if (action !== "create-nat" || !reviseBeforeNat) return;
+                reviseBeforeNat = false;
+                const path = join(root, "network", "hyper-v-intent.json");
+                const intent = JSON.parse(readFileSync(path, "utf8"));
+                writeFileSync(path, JSON.stringify({
+                    ...intent,
+                    ownershipEvidence: {
+                        ...intent.ownershipEvidence,
+                        nat: {
+                            natName: intent.natName,
+                            natInstanceId: "concurrent-nat-revision",
+                            marker: intent.marker,
+                            prefix: intent.prefix,
+                        },
+                    },
+                }));
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            detail: "hyper-v-network-intent-revision-conflict",
+            preserveEvidence: true,
+        });
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8")))
+            .toMatchObject({ ownershipEvidence: { nat: { natInstanceId: "concurrent-nat-revision" } } });
+    });
+
     it("does not overwrite concurrently revised allocation state while checkpointing an action", async () => {
         const root = privateRoot();
         writeNetworkState(root, { managedGateway: false, managedNat: true });
@@ -1344,6 +1383,64 @@ describe("Hyper-V network module", () => {
             managedSwitch: true,
             managedGateway: true,
             managedNat: true,
+        });
+    });
+
+    it("checkpoints a current-state identity adoption before creating and claiming a missing gateway", async () => {
+        const root = privateRoot();
+        const token = "d".repeat(24);
+        writeNetworkState(root, {
+            managedSwitch: false,
+            managedGateway: false,
+            managedNat: false,
+        });
+        const host = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: `ccc-device-lab:hyper-v-network:${token}`,
+                natName: `CCCDeviceLab-${token}`,
+            },
+            initialResources: { switch: true, gateway: false, nat: true },
+        });
+        let crashAfterTransition = true;
+        host.network.assertSafePath = (_path, label) => {
+            if (label === "hyper-v-network-state-identity-transition-checkpoint" && crashAfterTransition) {
+                crashAfterTransition = false;
+                throw new Error("crash-after-state-identity-transition-checkpoint");
+            }
+        };
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            detail: "hyper-v-network-setup-failed",
+            preserveEvidence: true,
+        });
+        expect(host.mutations).toEqual([]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            managedSwitch: false,
+            managedGateway: false,
+            managedNat: false,
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(host.mutations).toEqual(["create-gateway"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: false,
         });
     });
 

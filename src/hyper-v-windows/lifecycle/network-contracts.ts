@@ -138,11 +138,13 @@ export type HyperVHostNetworkSettledOutcome<
 
 export type HyperVHostNetworkConflictOutcome<
     Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
-> = {
-    readonly kind: "conflict";
-    readonly operation: Operation;
-    readonly reason: HyperVHostNetworkConflictReasonFor<Operation>;
-};
+> = Operation extends HyperVHostNetworkOperation
+    ? {
+        readonly kind: "conflict";
+        readonly operation: Operation;
+        readonly reason: HyperVHostNetworkConflictReasonFor<Operation>;
+    }
+    : never;
 
 export type HyperVHostNetworkActionKindFor<Operation extends HyperVHostNetworkOperation> =
     Operation extends "ensure"
@@ -151,19 +153,23 @@ export type HyperVHostNetworkActionKindFor<Operation extends HyperVHostNetworkOp
 
 export type HyperVHostNetworkNeedsAdministratorOutcome<
     Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
-> = {
-    readonly kind: "needs-administrator";
-    readonly operation: Operation;
-    readonly requiredAction: HyperVHostNetworkActionKindFor<Operation>;
-};
+> = Operation extends HyperVHostNetworkOperation
+    ? {
+        readonly kind: "needs-administrator";
+        readonly operation: Operation;
+        readonly requiredAction: HyperVHostNetworkActionKindFor<Operation>;
+    }
+    : never;
 
 export type HyperVHostNetworkIndeterminateOutcome<
     Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
-> = {
-    readonly kind: "indeterminate";
-    readonly operation: Operation;
-    readonly reason: "mutation-result-unconfirmed"
-        | (Operation extends "ensure" ? "host-adapter-missing" | "gateway-transitioning" : never);
-    readonly actionKind?: HyperVHostNetworkActionKindFor<Operation>;
-    readonly cause?: unknown;
-};
+> = Operation extends HyperVHostNetworkOperation
+    ? {
+        readonly kind: "indeterminate";
+        readonly operation: Operation;
+        readonly reason: "mutation-result-unconfirmed"
+            | (Operation extends "ensure" ? "host-adapter-missing" | "gateway-transitioning" : never);
+        readonly actionKind?: HyperVHostNetworkActionKindFor<Operation>;
+        readonly cause?: unknown;
+    }
+    : never;

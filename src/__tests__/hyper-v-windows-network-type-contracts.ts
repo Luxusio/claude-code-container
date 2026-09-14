@@ -60,6 +60,21 @@ function rejectIncompleteHandling(outcome: HyperVHostNetworkReconciliationOutcom
 }
 
 if (false) {
+    const cleanupWithEnsureReason: HyperVHostNetworkReconciliationOutcome = {
+        kind: "conflict",
+        operation: "cleanup",
+        // @ts-expect-error the default outcome union must keep cleanup correlated with cleanup-only reasons
+        reason: "switch-notes-conflict",
+    };
+    const cleanupWithEnsureAction: HyperVHostNetworkReconciliationOutcome = {
+        kind: "needs-administrator",
+        operation: "cleanup",
+        // @ts-expect-error the default outcome union must keep cleanup correlated with cleanup actions
+        requiredAction: "create-switch",
+    };
+    void cleanupWithEnsureReason;
+    void cleanupWithEnsureAction;
+
     void client.removeVMSwitch({ identity: { id: switchId, name: switchName } });
     void client.removeNetNat({ identity: { instanceId: natInstanceId, name: natName } });
     void client.createNetIPAddress({ interfaceIndex, address, prefixLength });

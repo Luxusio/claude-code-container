@@ -260,6 +260,33 @@ function persistTypedIntentIdentityTransition(
     return checkpoint;
 }
 
+function persistTypedCurrentStateIdentityTransition(
+    runtime: HyperVNetworkRuntime,
+    current: HyperVNetworkState,
+    marker: string,
+    natName: string,
+    natInstanceId: string,
+): HyperVNetworkState {
+    if (current.marker === marker && current.natName === natName) return current;
+    if (!isAllowedPersistedCccIdentityTransition(current.marker, current.natName, marker, natName)) {
+        throw new Error("hyper-v-network-state-identity-conflict");
+    }
+    const persisted = readState(runtime);
+    if (!persisted || hyperVNetworkStateRevision(persisted) !== hyperVNetworkStateRevision(current)) {
+        throw new Error("hyper-v-network-state-revision-conflict");
+    }
+    const checkpoint = decodeHyperVNetworkState({
+        ...persisted,
+        marker,
+        natName,
+        natInstanceId,
+    });
+    ensureStateRoot(runtime);
+    writeJsonFileAtomically(stateFile(runtime), checkpoint);
+    runtime.assertSafePath(dirname(stateFile(runtime)), "hyper-v-network-state-identity-transition-checkpoint");
+    return checkpoint;
+}
+
 function typedOwnershipEvidenceFromConfirmedAction(
     action: DeviceLabHyperVHostNetworkEnsureCompletedAction,
     observation: HyperVHostNetworkObservation,
@@ -327,14 +354,7 @@ function persistTypedOwnershipEvidence(
     if (!nextEvidence) return intent;
 
     const persisted = readIntent(runtime);
-    if (!persisted
-        || persisted.token !== intent.token
-        || persisted.switchName !== intent.switchName
-        || persisted.natName !== intent.natName
-        || persisted.marker !== intent.marker
-        || persisted.prefix !== intent.prefix
-        || persisted.gateway !== intent.gateway
-        || persisted.createdAt !== intent.createdAt) {
+    if (!persisted || !sameOwnershipReceipt(persisted, intent)) {
         throw new Error("hyper-v-network-intent-revision-conflict");
     }
     const previousSwitchEvidence = persisted.ownershipEvidence?.switch ?? persisted.ownershipEvidence?.gateway;
@@ -713,6 +733,7 @@ async function typedEnsureProvenance(
 ): Promise<{
     readonly network: HyperVHostNetworkSpec;
     readonly provenance: HyperVHostNetworkEnsureProvenance;
+    readonly current: HyperVNetworkState | null;
     readonly intent: HyperVNetworkIntent | null;
     readonly freshIntentOwnershipEligible: boolean;
 }> {
@@ -740,6 +761,13 @@ async function typedEnsureProvenance(
                         exactSwitch.notes,
                         String(exactNat.name),
                     )) {
+                    const transitionedCurrent = persistTypedCurrentStateIdentityTransition(
+                        runtime,
+                        current,
+                        exactSwitch.notes,
+                        String(exactNat.name),
+                        String(exactNat.instanceId),
+                    );
                     return {
                         network: typedHostNetworkSpec(current.switchName, String(exactNat.name)),
                         provenance: {
@@ -751,6 +779,7 @@ async function typedEnsureProvenance(
                                 identity: { instanceId: exactNat.instanceId, name: exactNat.name },
                             },
                         },
+                        current: transitionedCurrent,
                         intent,
                         freshIntentOwnershipEligible: false,
                     };
@@ -760,6 +789,7 @@ async function typedEnsureProvenance(
         return {
             network: currentNetwork,
             provenance: currentProvenance,
+            current,
             intent,
             freshIntentOwnershipEligible: false,
         };
@@ -789,6 +819,7 @@ async function typedEnsureProvenance(
                     }
                     : { kind: "unrecorded" },
             },
+            current: null,
             intent,
             freshIntentOwnershipEligible: intentCanClaimFreshOwnership(intent),
         };
@@ -803,13 +834,15 @@ async function typedEnsureProvenance(
         privilege: "standard",
     });
     if (inspection.virtualSwitches.length !== 1) {
-        return { network: intendedNetwork, provenance: fresh, intent, freshIntentOwnershipEligible: true };
+        return { network: intendedNetwork, provenance: fresh, current: null, intent, freshIntentOwnershipEligible: true };
     }
     const virtualSwitch = inspection.virtualSwitches[0];
-    if (!virtualSwitch) return { network: intendedNetwork, provenance: fresh, intent, freshIntentOwnershipEligible: true };
+    if (!virtualSwitch) {
+        return { network: intendedNetwork, provenance: fresh, current: null, intent, freshIntentOwnershipEligible: true };
+    }
     const adoptedNatName = natNameFromCccMarker(virtualSwitch.notes);
     if (!adoptedNatName || !isHyperVCccNetworkIdentity(virtualSwitch.notes, adoptedNatName)) {
-        return { network: intendedNetwork, provenance: fresh, intent, freshIntentOwnershipEligible: true };
+        return { network: intendedNetwork, provenance: fresh, current: null, intent, freshIntentOwnershipEligible: true };
     }
     const matchingNats = inspection.nats.filter((nat) => String(nat.name) === adoptedNatName);
     if (matchingNats.length > 1) throw new Error("hyper-v-network-nat-ambiguous");
@@ -838,6 +871,7 @@ async function typedEnsureProvenance(
                     ? { kind: "exact", identity: { instanceId: adoptedNat.instanceId, name: adoptedNat.name } }
                 : { kind: "absent" },
         },
+        current: null,
         intent: transitionedIntent,
         freshIntentOwnershipEligible: intentCanClaimFreshOwnership(transitionedIntent),
     };
@@ -856,7 +890,7 @@ async function ensureTypedHyperVHostNetwork(
     const typed = typedHostFabric(runtime);
     if (!typed) throw new Error("hyper-v-network-typed-runtime-missing");
     const request = await typedEnsureProvenance(runtime, typed.client, current, intent);
-    let checkpointedCurrent = current;
+    let checkpointedCurrent = request.current;
     let checkpointedIntent = request.intent;
     const transaction = await ensureDeviceLabHyperVHostNetwork({
         client: typed.client,

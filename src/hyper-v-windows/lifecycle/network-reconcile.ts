@@ -47,16 +47,19 @@ type HyperVUnpreparedHostNetworkActionFor<Operation extends HyperVHostNetworkOpe
 >;
 
 type HyperVPreparedHostNetworkAction<Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation> =
-    HyperVUnpreparedHostNetworkActionFor<Operation>
-    & { readonly [preparedActionBrand]: true };
+    Operation extends HyperVHostNetworkOperation
+        ? HyperVUnpreparedHostNetworkActionFor<Operation> & { readonly [preparedActionBrand]: true }
+        : never;
 
 export type HyperVHostNetworkExecuteOutcome<
     Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
-> = {
-    readonly kind: "execute";
-    readonly operation: Operation;
-    readonly action: HyperVPreparedHostNetworkAction<Operation>;
-};
+> = Operation extends HyperVHostNetworkOperation
+    ? {
+        readonly kind: "execute";
+        readonly operation: Operation;
+        readonly action: HyperVPreparedHostNetworkAction<Operation>;
+    }
+    : never;
 
 export type HyperVHostNetworkReconciliationOutcome<
     Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
@@ -114,26 +117,58 @@ function assertNever(value: never): never {
     throw new Error(`hyper-v-host-network-unhandled:${String(value)}`);
 }
 
-function conflict<Operation extends HyperVHostNetworkOperation>(
-    operation: Operation,
-    reason: HyperVHostNetworkConflictReasonFor<Operation>,
-): HyperVHostNetworkConflictOutcome<Operation> {
+function conflict(
+    operation: "ensure",
+    reason: HyperVHostNetworkConflictReasonFor<"ensure">,
+): HyperVHostNetworkConflictOutcome<"ensure">;
+function conflict(
+    operation: "cleanup",
+    reason: HyperVHostNetworkConflictReasonFor<"cleanup">,
+): HyperVHostNetworkConflictOutcome<"cleanup">;
+function conflict(
+    ...[operation, reason]:
+        | ["ensure", HyperVHostNetworkConflictReasonFor<"ensure">]
+        | ["cleanup", HyperVHostNetworkConflictReasonFor<"cleanup">]
+): HyperVHostNetworkConflictOutcome {
+    if (operation === "ensure") return { kind: "conflict", operation, reason };
     return { kind: "conflict", operation, reason };
 }
 
-function prepared<Operation extends HyperVHostNetworkOperation>(
-    action: HyperVUnpreparedHostNetworkActionFor<Operation>,
-): HyperVPreparedHostNetworkAction<Operation> {
+function prepared(
+    action: HyperVUnpreparedHostNetworkActionFor<"ensure">,
+): HyperVPreparedHostNetworkAction<"ensure">;
+function prepared(
+    action: HyperVUnpreparedHostNetworkActionFor<"cleanup">,
+): HyperVPreparedHostNetworkAction<"cleanup">;
+function prepared(
+    action: HyperVUnpreparedHostNetworkAction,
+): HyperVPreparedHostNetworkAction {
     return { ...action, [preparedActionBrand]: true };
 }
 
-function actionOutcome<Operation extends HyperVHostNetworkOperation>(
+function actionOutcome(
     privilege: "standard" | "administrator",
-    operation: Operation,
-    action: HyperVUnpreparedHostNetworkActionFor<Operation>,
-): HyperVHostNetworkNeedsAdministratorOutcome<Operation> | HyperVHostNetworkExecuteOutcome<Operation> {
+    operation: "ensure",
+    action: HyperVUnpreparedHostNetworkActionFor<"ensure">,
+): HyperVHostNetworkNeedsAdministratorOutcome<"ensure"> | HyperVHostNetworkExecuteOutcome<"ensure">;
+function actionOutcome(
+    privilege: "standard" | "administrator",
+    operation: "cleanup",
+    action: HyperVUnpreparedHostNetworkActionFor<"cleanup">,
+): HyperVHostNetworkNeedsAdministratorOutcome<"cleanup"> | HyperVHostNetworkExecuteOutcome<"cleanup">;
+function actionOutcome(
+    ...[privilege, operation, action]:
+        | ["standard" | "administrator", "ensure", HyperVUnpreparedHostNetworkActionFor<"ensure">]
+        | ["standard" | "administrator", "cleanup", HyperVUnpreparedHostNetworkActionFor<"cleanup">]
+): HyperVHostNetworkNeedsAdministratorOutcome | HyperVHostNetworkExecuteOutcome {
     if (privilege === "standard") {
+        if (operation === "ensure") {
+            return { kind: "needs-administrator", operation, requiredAction: action.kind };
+        }
         return { kind: "needs-administrator", operation, requiredAction: action.kind };
+    }
+    if (operation === "ensure") {
+        return { kind: "execute", operation, action: prepared(action) };
     }
     return { kind: "execute", operation, action: prepared(action) };
 }
@@ -179,28 +214,64 @@ function notesRepairIsProven(provenance: HyperVHostNetworkEnsureProvenance): boo
     return provenance.kind === "persisted" && provenance.nat.kind === "exact";
 }
 
-function singleNamedSwitch<Operation extends HyperVHostNetworkOperation>(
+function singleNamedSwitch(
     switches: readonly HyperVVirtualSwitch[],
     network: HyperVHostNetworkSpec,
-    operation: Operation,
+    operation: "ensure",
 ): { readonly kind: "found"; readonly value: HyperVVirtualSwitch }
     | { readonly kind: "absent" }
-    | HyperVHostNetworkConflictOutcome<Operation> {
+    | HyperVHostNetworkConflictOutcome<"ensure">;
+function singleNamedSwitch(
+    switches: readonly HyperVVirtualSwitch[],
+    network: HyperVHostNetworkSpec,
+    operation: "cleanup",
+): { readonly kind: "found"; readonly value: HyperVVirtualSwitch }
+    | { readonly kind: "absent" }
+    | HyperVHostNetworkConflictOutcome<"cleanup">;
+function singleNamedSwitch(
+    switches: readonly HyperVVirtualSwitch[],
+    network: HyperVHostNetworkSpec,
+    operation: HyperVHostNetworkOperation,
+): { readonly kind: "found"; readonly value: HyperVVirtualSwitch }
+    | { readonly kind: "absent" }
+    | HyperVHostNetworkConflictOutcome {
     const named = switches.filter((candidate) => candidate.name === network.switchName);
-    if (named.length > 1) return conflict(operation, "switch-ambiguous");
+    if (named.length > 1) {
+        return operation === "ensure"
+            ? conflict("ensure", "switch-ambiguous")
+            : conflict("cleanup", "switch-ambiguous");
+    }
     const value = named[0];
     return value ? { kind: "found", value } : { kind: "absent" };
 }
 
-function singleNamedNat<Operation extends HyperVHostNetworkOperation>(
+function singleNamedNat(
     nats: readonly HyperVNetNat[],
     network: HyperVHostNetworkSpec,
-    operation: Operation,
+    operation: "ensure",
 ): { readonly kind: "found"; readonly value: HyperVNetNat }
     | { readonly kind: "absent" }
-    | HyperVHostNetworkConflictOutcome<Operation> {
+    | HyperVHostNetworkConflictOutcome<"ensure">;
+function singleNamedNat(
+    nats: readonly HyperVNetNat[],
+    network: HyperVHostNetworkSpec,
+    operation: "cleanup",
+): { readonly kind: "found"; readonly value: HyperVNetNat }
+    | { readonly kind: "absent" }
+    | HyperVHostNetworkConflictOutcome<"cleanup">;
+function singleNamedNat(
+    nats: readonly HyperVNetNat[],
+    network: HyperVHostNetworkSpec,
+    operation: HyperVHostNetworkOperation,
+): { readonly kind: "found"; readonly value: HyperVNetNat }
+    | { readonly kind: "absent" }
+    | HyperVHostNetworkConflictOutcome {
     const named = nats.filter((candidate) => candidate.name === network.natName);
-    if (named.length > 1) return conflict(operation, "nat-ambiguous");
+    if (named.length > 1) {
+        return operation === "ensure"
+            ? conflict("ensure", "nat-ambiguous")
+            : conflict("cleanup", "nat-ambiguous");
+    }
     const value = named[0];
     return value ? { kind: "found", value } : { kind: "absent" };
 }
@@ -611,9 +682,18 @@ export async function executeHyperVHostNetworkAction(
             default: return assertNever(outcome.action);
         }
     } catch (cause) {
+        if (outcome.operation === "ensure") {
+            return {
+                kind: "indeterminate",
+                operation: "ensure",
+                reason: "mutation-result-unconfirmed",
+                actionKind: outcome.action.kind,
+                cause,
+            };
+        }
         return {
             kind: "indeterminate",
-            operation: outcome.operation,
+            operation: "cleanup",
             reason: "mutation-result-unconfirmed",
             actionKind: outcome.action.kind,
             cause,
