@@ -2,7 +2,7 @@ import { spawnSync } from "child_process";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, relative } from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const root = new URL("../", import.meta.url);
 const temporaryRoot = mkdtempSync(join(tmpdir(), "ccc-hyper-v-package-"));
@@ -35,6 +35,32 @@ try {
 
     run("tar", ["-xzf", join(temporaryRoot, filename), "-C", temporaryRoot]);
     const packageRoot = join(temporaryRoot, "package");
+    const consumerSource = join(temporaryRoot, "hyper-v-network-consumer.mts");
+    const consumerConfig = join(temporaryRoot, "hyper-v-network-consumer.json");
+    writeFileSync(consumerSource, [
+        'import { createHyperVHostNetworkSpec, parseHyperVNatName, parseHyperVVirtualSwitchName, type HyperVHostNetworkReconciliationOutcome } from "./package/dist/hyper-v-windows/index.js";',
+        'const network = createHyperVHostNetworkSpec({ switchName: parseHyperVVirtualSwitchName("consumer-switch"), natName: parseHyperVNatName("consumer-nat"), cidr: "172.29.0.0/24", gateway: "172.29.0.1" });',
+        'function outcomeKind(outcome: HyperVHostNetworkReconciliationOutcome): string { switch (outcome.kind) { case "settled": case "conflict": case "needs-administrator": case "execute": case "indeterminate": return outcome.kind; } }',
+        'void network; void outcomeKind;',
+    ].join("\n"), "utf8");
+    writeFileSync(consumerConfig, JSON.stringify({
+        compilerOptions: {
+            target: "ES2023",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            strict: true,
+            exactOptionalPropertyTypes: true,
+            noUncheckedIndexedAccess: true,
+            noEmit: true,
+            skipLibCheck: false,
+        },
+        files: [consumerSource],
+    }), "utf8");
+    run(process.execPath, [
+        fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),
+        "-p",
+        consumerConfig,
+    ]);
     const compiledStandalone = join("dist", "real-tests", "hyper-v-windows-library.mjs");
     for (const relativePath of [
         compiledStandalone,

@@ -4,6 +4,23 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+    HyperVWindowsError,
+    parseHyperVInterfaceIndex,
+    parseHyperVNatInstanceId,
+    parseHyperVNatName,
+    parseHyperVNetworkAdapterName,
+    parseHyperVVirtualMachineId,
+    parseHyperVVirtualSwitchId,
+    parseHyperVVirtualSwitchName,
+    parseIPv4Address,
+    parseIPv4Cidr,
+    parseIPv4PrefixLength,
+    type HyperVNetIPAddress,
+    type HyperVNetNat,
+    type HyperVVirtualSwitch,
+    type HyperVWindowsNetworkClient,
+} from "../hyper-v-windows/index.js";
+import {
     adoptHyperVLinuxSshHostIdentity,
     cachedHyperVOwnerDevicesReader,
     ensureHyperVNetworkAllocation,
@@ -85,6 +102,167 @@ function runtime(root: string, run?: HyperVNetworkRuntime["run"]): HyperVNetwork
     };
 }
 
+function typedHostFabricRuntime(
+    root: string,
+    options: {
+        readonly attachVmAfterNatRemoval?: boolean;
+        readonly initialIdentity?: { readonly marker: string; readonly natName: string };
+        readonly administratorFailureCode?: string;
+        readonly removeNatFailureCode?: string;
+    } = {},
+) {
+    const switches: HyperVVirtualSwitch[] = [];
+    const addresses: HyperVNetIPAddress[] = [];
+    const nats: HyperVNetNat[] = [];
+    const mutations: string[] = [];
+    const inventoryRequests: string[][] = [];
+    const vmNetworkAdapters: Awaited<ReturnType<HyperVWindowsNetworkClient["getAllVMNetworkAdapters"]>>[number][] = [];
+    const legacyRun = vi.fn(async () => {
+        throw new Error("legacy-host-fabric-command-must-not-run");
+    });
+    const switchId = parseHyperVVirtualSwitchId(SWITCH_ID);
+    const interfaceIndex = parseHyperVInterfaceIndex(42);
+    if (options.initialIdentity) {
+        switches.push({
+            id: switchId,
+            name: parseHyperVVirtualSwitchName("CCC Device Lab"),
+            switchType: "Internal",
+            notes: options.initialIdentity.marker,
+        });
+        addresses.push({
+            interfaceIndex,
+            address: parseIPv4Address("172.29.0.1"),
+            prefixLength: parseIPv4PrefixLength(24),
+            prefixOrigin: "Manual",
+            suffixOrigin: "Manual",
+            addressState: "Preferred",
+        });
+        nats.push({
+            instanceId: parseHyperVNatInstanceId(NAT_INSTANCE_ID),
+            name: parseHyperVNatName(options.initialIdentity.natName),
+            internalAddressPrefix: parseIPv4Cidr("172.29.0.0/24"),
+        });
+    }
+    const client: HyperVWindowsNetworkClient = {
+        async getVMSwitches(selector) {
+            switch (selector.kind) {
+                case "all": return [...switches];
+                case "id": return switches.filter((candidate) => candidate.id === selector.id);
+                case "name": return switches.filter((candidate) => candidate.name === selector.name);
+            }
+        },
+        async createVMSwitch(request) {
+            const created = { id: switchId, name: request.name, switchType: "Internal", notes: request.notes };
+            switches.push(created);
+            mutations.push("create-switch");
+            return created;
+        },
+        async setVMSwitchNotes(request) {
+            const found = switches.find((candidate) => candidate.id === request.identity.id);
+            if (found) switches.splice(switches.indexOf(found), 1, { ...found, notes: request.notes });
+            mutations.push("repair-switch-notes");
+        },
+        async removeVMSwitch(request) {
+            const found = switches.findIndex((candidate) => candidate.id === request.identity.id);
+            if (found >= 0) switches.splice(found, 1);
+            mutations.push("remove-switch");
+        },
+        async getAllVMNetworkAdapters() { return [...vmNetworkAdapters]; },
+        async getVMsByExactNames(request) {
+            inventoryRequests.push(request.names.map(String));
+            return [];
+        },
+        async getHostNetworkAdapters(request) {
+            return switches.length === 0 ? [] : [{
+                interfaceIndex,
+                name: parseHyperVNetworkAdapterName(String(request.name)),
+                status: "Up",
+                interfaceDescription: "Hyper-V Virtual Ethernet Adapter",
+            }];
+        },
+        async getNetIPAddresses(selector) {
+            return selector.kind === "all-ipv4"
+                ? [...addresses]
+                : addresses.filter((candidate) => candidate.interfaceIndex === selector.interfaceIndex);
+        },
+        async createNetIPAddress(request) {
+            const created = {
+                ...request,
+                prefixOrigin: "Manual",
+                suffixOrigin: "Manual",
+                addressState: "Preferred",
+            };
+            addresses.push(created);
+            mutations.push("create-gateway");
+            return created;
+        },
+        async removeNetIPAddress(request) {
+            const found = addresses.findIndex((candidate) => candidate.interfaceIndex === request.interfaceIndex
+                && candidate.address === request.address
+                && candidate.prefixLength === request.prefixLength);
+            if (found >= 0) addresses.splice(found, 1);
+            mutations.push("remove-gateway");
+        },
+        async getNetNats(selector) {
+            switch (selector.kind) {
+                case "all": return [...nats];
+                case "instance-id": return nats.filter((candidate) => candidate.instanceId === selector.instanceId);
+                case "name": return nats.filter((candidate) => candidate.name === selector.name);
+            }
+        },
+        async createNetNat(request) {
+            const created = {
+                instanceId: parseHyperVNatInstanceId(NAT_INSTANCE_ID),
+                name: request.name,
+                internalAddressPrefix: request.internalAddressPrefix,
+            };
+            nats.push(created);
+            mutations.push("create-nat");
+            return created;
+        },
+        async removeNetNat(request) {
+            if (options.removeNatFailureCode) {
+                throw new HyperVWindowsError({
+                    category: "transport",
+                    operation: "Remove-NetNat",
+                    code: options.removeNatFailureCode,
+                });
+            }
+            const found = nats.findIndex((candidate) => candidate.instanceId === request.identity.instanceId);
+            if (found >= 0) nats.splice(found, 1);
+            mutations.push("remove-nat");
+            if (options.attachVmAfterNatRemoval) {
+                vmNetworkAdapters.push({
+                    vmId: parseHyperVVirtualMachineId("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                    vmName: "late-attached-vm",
+                    name: "Network Adapter",
+                    switchId,
+                    switchName: String(switches[0]?.name || "CCC Device Lab"),
+                    status: "Ok",
+                    managementOperatingSystem: false,
+                });
+            }
+        },
+    };
+    const network: HyperVNetworkRuntime = {
+        ...runtime(root, legacyRun),
+        typedHostNetwork: {
+            client,
+            withAdministratorClient: async (operation) => {
+                if (options.administratorFailureCode) {
+                    throw new HyperVWindowsError({
+                        category: "transport",
+                        operation: "New-VMSwitch",
+                        code: options.administratorFailureCode,
+                    });
+                }
+                return operation(client);
+            },
+        },
+    };
+    return { network, mutations, inventoryRequests, legacyRun };
+}
+
 function allocationInspection(
     present: boolean,
     deviceId = "existing-device",
@@ -117,6 +295,21 @@ function writeTokenIntent(root: string, token: string): void {
         switchName: "CCC Device Lab",
         natName: `CCCDeviceLab-${token}`,
         marker: `ccc-device-lab:hyper-v-network:${token}`,
+        prefix: "172.29.0.0/24",
+        gateway: "172.29.0.1",
+        createdAt: new Date().toISOString(),
+    }));
+}
+
+function writeStableIntent(root: string, token = "0".repeat(24)): void {
+    const networkRoot = join(root, "network");
+    mkdirSync(networkRoot, { recursive: true });
+    writeFileSync(join(networkRoot, "hyper-v-intent.json"), JSON.stringify({
+        version: 1,
+        token,
+        switchName: "CCC Device Lab",
+        natName: "CCCDeviceLab",
+        marker: "ccc-device-lab:hyper-v-network:v1",
         prefix: "172.29.0.0/24",
         gateway: "172.29.0.1",
         createdAt: new Date().toISOString(),
@@ -218,16 +411,281 @@ describe("Hyper-V network module", () => {
             incarnationId: INCARNATION_ID,
         });
         expect(state).toMatchObject({
-            marker: "ccc-device-lab:hyper-v-network:v1",
-            natName: "CCCDeviceLab",
             managedNat: true,
         });
+        expect(state.marker).toMatch(/^ccc-device-lab:hyper-v-network:[a-f0-9]{24}$/);
+        expect(state.natName).toBe(`CCCDeviceLab-${state.marker.slice(-24)}`);
         expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(false);
         expect(run).toHaveBeenCalledTimes(2);
     });
 
+    it("routes production-style host-fabric ensure and cleanup through the typed client only", async () => {
+        const root = privateRoot();
+        const { network, mutations, inventoryRequests, legacyRun } = typedHostFabricRuntime(root);
+
+        const allocated = await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        );
+        expect(allocated).toMatchObject({ ok: true, switchName: "CCC Device Lab", outboundPolicy: "nat" });
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(legacyRun).not.toHaveBeenCalled();
+
+        network.allocationReferenced = () => false;
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+        expect(inventoryRequests).toEqual([[`ccc-${OWNER_ID}-${DEVICE_ID}-${INCARNATION_ID}`]]);
+        expect(legacyRun).not.toHaveBeenCalled();
+
+        const released = await releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        );
+        expect(released).toMatchObject({
+            ok: true,
+            remaining: 0,
+            networkCleanup: {
+                removedNat: true,
+                removedGateway: true,
+                removedSwitch: true,
+            },
+        });
+        expect(mutations).toEqual([
+            "create-switch",
+            "create-gateway",
+            "create-nat",
+            "remove-nat",
+            "remove-gateway",
+            "remove-switch",
+        ]);
+        expect(legacyRun).not.toHaveBeenCalled();
+        expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
+    });
+
+    it("preserves a typed UAC cancellation in the existing bounded public diagnostic shape", async () => {
+        const root = privateRoot();
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            administratorFailureCode: "hyper-v-network-elevation-cancelled",
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            status: 502,
+            error: "hyper-v-network-setup-failed",
+            detail: "hyper-v-network-elevation-cancelled",
+            preserveEvidence: true,
+            execution: {
+                mode: "exec",
+                provider: "hyper-v",
+                status: null,
+                stdoutPresent: false,
+                stderrPresent: false,
+                outputRedacted: true,
+                diagnosticCode: "hyper-v-network-elevation-cancelled",
+            },
+        });
+        expect(mutations).toEqual([]);
+    });
+
+    it("keeps typed cleanup failures in the existing bounded networkCleanup diagnostic shape", async () => {
+        const root = privateRoot();
+        const { network } = typedHostFabricRuntime(root, {
+            removeNatFailureCode: "hyper-v-network-elevation-relay-failed",
+        });
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            error: "hyper-v-network-elevation-relay-failed",
+            networkCleanup: {
+                mode: "exec",
+                provider: "hyper-v",
+                status: null,
+                stdoutPresent: false,
+                stderrPresent: false,
+                outputRedacted: true,
+                diagnosticCode: "hyper-v-network-elevation-relay-failed",
+            },
+        });
+    });
+
+    it("adopts the same exact host IDs from token state to the observed stable CCC identity", async () => {
+        const root = privateRoot();
+        const token = "e".repeat(24);
+        writeNetworkState(root, {
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: DEVICE_ID,
+                incarnationId: INCARNATION_ID,
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+            },
+        });
+
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+        expect(mutations).toEqual([]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: "CCCDeviceLab",
+            switchId: SWITCH_ID,
+            natInstanceId: NAT_INSTANCE_ID,
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("adopts the same exact host IDs from stable state to the observed token CCC identity", async () => {
+        const root = privateRoot();
+        const token = "f".repeat(24);
+        writeNetworkState(root, {
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: DEVICE_ID,
+                incarnationId: INCARNATION_ID,
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: `ccc-device-lab:hyper-v-network:${token}`,
+                natName: `CCCDeviceLab-${token}`,
+            },
+        });
+
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+        expect(mutations).toEqual([]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            switchId: SWITCH_ID,
+            natInstanceId: NAT_INSTANCE_ID,
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("rejects an exact-ID transition between two different token CCC identities", async () => {
+        const root = privateRoot();
+        const currentToken = "a".repeat(24);
+        const observedToken = "b".repeat(24);
+        writeNetworkState(root, {
+            marker: `ccc-device-lab:hyper-v-network:${currentToken}`,
+            natName: `CCCDeviceLab-${currentToken}`,
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: `ccc-device-lab:hyper-v-network:${observedToken}`,
+                natName: `CCCDeviceLab-${observedToken}`,
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            error: "hyper-v-network-setup-failed",
+            detail: "hyper-v-network-conflict-nat-identity-conflict",
+            preserveEvidence: true,
+        });
+        expect(mutations).toEqual([]);
+    });
+
+    it("persists typed cleanup receipts when a late VM attachment defers the remaining cleanup", async () => {
+        const root = privateRoot();
+        const { network, mutations, legacyRun } = typedHostFabricRuntime(root, {
+            attachVmAfterNatRemoval: true,
+        });
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+
+        const released = await releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        );
+        expect(released).toMatchObject({
+            ok: true,
+            remaining: 0,
+            networkCleanup: { deferred: true, reason: "hyper-v-network-switch-in-use" },
+        });
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat", "remove-nat"]);
+        expect(legacyRun).not.toHaveBeenCalled();
+        const state = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
+        expect(state).toMatchObject({
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: false,
+            allocations: [],
+        });
+        expect(state).not.toHaveProperty("natInstanceId");
+    });
+
     it("reuses a setup-managed stable CCC network without claiming cleanup ownership", async () => {
         const root = privateRoot();
+        writeStableIntent(root);
         const run = vi.fn(async () => {
             const observation = setupObservation(root);
             const parsed = JSON.parse(observation.stdout || "{}");
@@ -1032,6 +1490,7 @@ describe("Hyper-V network module", () => {
 
     it("cleans a newly created NAT without deleting a setup-owned switch", async () => {
         const root = privateRoot();
+        writeStableIntent(root);
         const run = vi.fn()
             .mockImplementationOnce(async () => {
                 const observation = setupObservation(root);
@@ -1072,6 +1531,7 @@ describe("Hyper-V network module", () => {
 
     it("cleans a newly created switch and gateway without deleting a pre-existing NAT", async () => {
         const root = privateRoot();
+        writeStableIntent(root);
         const run = vi.fn()
             .mockImplementationOnce(async () => {
                 const observation = setupObservation(root);
@@ -1233,6 +1693,7 @@ describe("Hyper-V network module", () => {
 
     it("cleans a newly created gateway without deleting the existing switch or NAT", async () => {
         const root = privateRoot();
+        writeStableIntent(root);
         const run = vi.fn()
             .mockImplementationOnce(async () => {
                 const observation = setupObservation(root);
