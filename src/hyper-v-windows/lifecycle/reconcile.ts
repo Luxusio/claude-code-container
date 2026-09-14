@@ -71,6 +71,7 @@ function unexpectedAttachments(
 
 function attachmentIdentityMatches(inspection: HyperVVirtualMachineInspection): boolean {
     const virtualMachine = inspection.virtualMachines[0];
+    if (!virtualMachine) return false;
     return [...inspection.hardDiskDrives, ...inspection.dvdDrives].every(
         (drive) => drive.vmId.toLowerCase() === virtualMachine.id.toLowerCase()
             && drive.vmName === virtualMachine.name,
@@ -79,6 +80,7 @@ function attachmentIdentityMatches(inspection: HyperVVirtualMachineInspection): 
 
 function pending(
     intent: HyperVVirtualMachineIntent,
+    virtualMachine: HyperVPendingOutcome["virtualMachine"],
     inspection: HyperVVirtualMachineInspection,
     drift: HyperVAttachmentDrift,
     reason: HyperVPendingOutcome["reason"],
@@ -87,7 +89,7 @@ function pending(
     return {
         kind: "pending",
         intent,
-        virtualMachine: inspection.virtualMachines[0],
+        virtualMachine,
         inspection,
         drift,
         reason,
@@ -113,6 +115,9 @@ export function reconcileHyperVVirtualMachine(
     }
 
     const virtualMachine = inspection.virtualMachines[0];
+    if (!virtualMachine) {
+        return { kind: "identity-conflict", intent, inspection, reason: "ambiguous" };
+    }
     if (virtualMachine.id.toLowerCase() !== expectation.id.toLowerCase()) {
         return { kind: "identity-conflict", intent, inspection, reason: "id-mismatch" };
     }
@@ -139,7 +144,7 @@ export function reconcileHyperVVirtualMachine(
 
     const drift = attachmentDrift(inspection, expectation.attachments);
     if (intent === "remove") {
-        return pending(intent, inspection, drift, "removal-required", "remove");
+        return pending(intent, virtualMachine, inspection, drift, "removal-required", "remove");
     }
 
     const state = virtualMachine.state.toLowerCase();
@@ -150,11 +155,12 @@ export function reconcileHyperVVirtualMachine(
     if (state === "running" || state === "off") {
         return pending(
             intent,
+            virtualMachine,
             inspection,
             drift,
             "terminal-state-mismatch",
             intent === "stop" ? "stop" : "start",
         );
     }
-    return pending(intent, inspection, drift, "transitioning-or-unknown", "wait");
+    return pending(intent, virtualMachine, inspection, drift, "transitioning-or-unknown", "wait");
 }

@@ -9,7 +9,6 @@ import {
     HYPER_V_NETWORK_NAT,
     HYPER_V_NETWORK_PREFIX,
     HYPER_V_NETWORK_PREFIX_LENGTH,
-    HYPER_V_NETWORK_SWITCH,
     hyperVCleanupNetworkCommand,
     hyperVEnsureNetworkCommand,
     hyperVInspectNetworkAllocationsCommand,
@@ -18,8 +17,23 @@ import {
     parseHyperVNetworkCleanupObservation,
     parseHyperVNetworkAllocationsObservation,
     parseHyperVNetworkObservation,
+    type HyperVNetworkCleanupObservation,
+    type HyperVNetworkObservation,
     type HyperVProviderCommand,
 } from "../../../host-control/hyper-v/index.js";
+import {
+    createHyperVHostNetworkSpec,
+    parseHyperVNatInstanceId,
+    parseHyperVNatName,
+    parseHyperVVirtualMachineName,
+    parseHyperVVirtualSwitchId,
+    parseHyperVVirtualSwitchName,
+    HyperVWindowsError,
+    type HyperVHostNetworkCleanupProvenance,
+    type HyperVHostNetworkEnsureProvenance,
+    type HyperVHostNetworkSpec,
+    type HyperVWindowsNetworkClient,
+} from "../../../hyper-v-windows/index.js";
 import { assertHyperVOperationDeadline, hyperVRemainingTimeout } from "./deadline.js";
 import {
     hyperVBoundedErrorCode,
@@ -27,6 +41,24 @@ import {
     redactProviderCommandInput,
 } from "./public-response.js";
 import { validHyperVIncarnationId } from "./state.js";
+import {
+    createFreshHyperVNetworkIntent,
+    decodeHyperVNetworkIntent,
+    decodeHyperVNetworkState,
+    hyperVDeterministicMacAddress,
+    type HyperVNetworkAllocation,
+    type HyperVNetworkIntent,
+    type HyperVNetworkState,
+} from "./network-state.js";
+import {
+    cleanupDeviceLabHyperVHostNetwork,
+    ensureDeviceLabHyperVHostNetwork,
+    inspectDeviceLabHyperVHostNetwork,
+    type WithAdministratorHyperVWindowsNetworkClient,
+} from "./network-adapter.js";
+
+export { hyperVDeterministicMacAddress } from "./network-state.js";
+export type { HyperVNetworkAllocation } from "./network-state.js";
 
 const HYPER_V_NETWORK_STATE_LIMIT_BYTES = 256 * 1024;
 const HYPER_V_ELEVATED_TERMINATION_GRACE_MS = 10_000;
@@ -56,16 +88,11 @@ export interface HyperVNetworkRuntime extends HyperVNetworkStateRuntime {
     ): Promise<HyperVNetworkCommandResult>;
     commandOutputBytes: number;
     allocationReferenced?(allocation: HyperVNetworkAllocation): boolean;
+    typedHostNetwork?: {
+        readonly client: HyperVWindowsNetworkClient;
+        readonly withAdministratorClient: WithAdministratorHyperVWindowsNetworkClient;
+    };
 }
-
-export type HyperVNetworkAllocation = {
-    ownerId: string;
-    deviceId: string;
-    incarnationId?: string;
-    address: string;
-    macAddress: string;
-    allocatedAt: string;
-};
 
 export type HyperVOwnerDevicesReader = (
     ownerId: string,
@@ -106,33 +133,6 @@ export function hyperVNetworkAllocationReferenced(
     return incarnations[0] === allocation.incarnationId;
 }
 
-type HyperVNetworkState = {
-    version: 1;
-    switchName: string;
-    switchId: string;
-    marker: string;
-    natName: string;
-    natInstanceId?: string;
-    prefix: string;
-    gateway: string;
-    outboundPolicy: "nat";
-    managedSwitch: boolean;
-    managedGateway: boolean;
-    managedNat: boolean;
-    allocations: HyperVNetworkAllocation[];
-};
-
-type HyperVNetworkIntent = {
-    version: 1;
-    token: string;
-    switchName: string;
-    natName: string;
-    marker: string;
-    prefix: string;
-    gateway: string;
-    createdAt: string;
-};
-
 export type HyperVNetworkRelease = {
     ok: boolean;
     released: boolean;
@@ -154,22 +154,12 @@ function hyperVNetworkStateRevision(state: HyperVNetworkState): string {
     return createHash("sha256").update(JSON.stringify(state)).digest("hex");
 }
 
-export function hyperVDeterministicMacAddress(ownerId: string, deviceId: string, salt = 0): string {
-    const digest = createHash("sha256").update(`${ownerId}\0${deviceId}\0${salt}`).digest();
-    const bytes = [0x02, digest[0], digest[1], digest[2], digest[3], digest[4]];
-    return bytes.map((value) => value.toString(16).padStart(2, "0")).join(":");
-}
-
 export function hyperVDeterministicNetworkAddresses(ownerId: string, deviceId: string): string[] {
     const digest = createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest();
     const start = digest.readUInt32BE(0) % 241;
     let step = (digest.readUInt32BE(4) % 240) + 1;
     while (step % 241 === 0) step += 1;
     return Array.from({ length: 241 }, (_, index) => `172.29.0.${10 + ((start + index * step) % 241)}`);
-}
-
-function isGuid(value: unknown): value is string {
-    return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function intentOwnsDedicatedNat(intent: HyperVNetworkIntent): boolean {
@@ -193,90 +183,26 @@ function ensureStateRoot(runtime: HyperVNetworkStateRuntime): void {
 }
 
 function readState(runtime: HyperVNetworkStateRuntime): HyperVNetworkState | null {
-    return readDeviceLabStateFile(stateFile(runtime), (parsed) => {
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("hyper-v-network-state-invalid");
-        const state = parsed as Record<string, unknown>;
-        if (state.version !== 1
-            || state.switchName !== HYPER_V_NETWORK_SWITCH
-            || typeof state.switchId !== "string" || !isGuid(state.switchId)
-            || (state.natName !== HYPER_V_NETWORK_NAT && !/^CCCDeviceLab-[a-f0-9]{24}$/.test(String(state.natName || "")))
-            || (state.marker !== undefined && (typeof state.marker !== "string" || !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(state.marker)))
-            || (state.marker !== undefined && !isHyperVCccNetworkIdentity(state.marker, state.natName))
-            || (state.natInstanceId !== undefined && (typeof state.natInstanceId !== "string" || !state.natInstanceId || state.natInstanceId.length > 256 || /[\u0000-\u001f]/.test(state.natInstanceId)))
-            || (state.managedNat === true && (typeof state.natInstanceId !== "string" || !state.natInstanceId))
-            || state.prefix !== HYPER_V_NETWORK_PREFIX
-            || state.gateway !== HYPER_V_NETWORK_GATEWAY
-            || (state.outboundPolicy !== undefined && state.outboundPolicy !== "nat")
-            || (state.managedSwitch !== undefined && typeof state.managedSwitch !== "boolean")
-            || (state.managedGateway !== undefined && typeof state.managedGateway !== "boolean")
-            || (state.managedNat !== undefined && typeof state.managedNat !== "boolean")
-            || !Array.isArray(state.allocations)) throw new Error("hyper-v-network-state-invalid");
-        const identities = new Set<string>();
-        const addresses = new Set<string>();
-        const macAddresses = new Set<string>();
-        const allocations = state.allocations.map((candidate) => {
-            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) throw new Error("hyper-v-network-allocation-invalid");
-            const allocation = candidate as Record<string, unknown>;
-            if (typeof allocation.ownerId !== "string" || !/^[a-f0-9]{16}$/.test(allocation.ownerId)
-                || typeof allocation.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(allocation.deviceId)
-                || (allocation.incarnationId !== undefined && !validHyperVIncarnationId(allocation.incarnationId))
-                || typeof allocation.address !== "string" || !/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/.test(allocation.address)
-                || (allocation.macAddress !== undefined && (typeof allocation.macAddress !== "string" || !/^02(?::[a-f0-9]{2}){5}$/.test(allocation.macAddress)))
-                || typeof allocation.allocatedAt !== "string") throw new Error("hyper-v-network-allocation-invalid");
-            const identity = `${allocation.ownerId}:${allocation.deviceId}`;
-            const macAddress = typeof allocation.macAddress === "string"
-                ? allocation.macAddress
-                : hyperVDeterministicMacAddress(allocation.ownerId as string, allocation.deviceId as string);
-            if (identities.has(identity) || addresses.has(allocation.address as string) || macAddresses.has(macAddress)) {
-                throw new Error("hyper-v-network-allocation-conflict");
-            }
-            identities.add(identity);
-            addresses.add(allocation.address as string);
-            macAddresses.add(macAddress);
-            return { ...allocation, macAddress } as HyperVNetworkAllocation;
-        });
-        return {
-            ...(state as Omit<HyperVNetworkState, "allocations" | "outboundPolicy" | "managedSwitch" | "managedGateway" | "managedNat" | "marker">),
-            marker: typeof state.marker === "string" ? state.marker : HYPER_V_NETWORK_MARKER,
-            outboundPolicy: "nat",
-            managedSwitch: state.managedSwitch === undefined ? state.managedNat === true : state.managedSwitch === true,
-            managedGateway: state.managedGateway === undefined ? state.managedNat === true : state.managedGateway === true,
-            managedNat: state.managedNat === true,
-            allocations,
-        } as HyperVNetworkState;
-    }, "hyper-v-network-state", HYPER_V_NETWORK_STATE_LIMIT_BYTES);
+    return readDeviceLabStateFile(
+        stateFile(runtime),
+        decodeHyperVNetworkState,
+        "hyper-v-network-state",
+        HYPER_V_NETWORK_STATE_LIMIT_BYTES,
+    );
 }
 
 function readIntent(runtime: HyperVNetworkStateRuntime): HyperVNetworkIntent | null {
-    return readDeviceLabStateFile(intentFile(runtime), (parsed) => {
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("hyper-v-network-intent-invalid");
-        const intent = parsed as Record<string, unknown>;
-        if (intent.version !== 1
-            || typeof intent.token !== "string" || !/^[a-f0-9]{24}$/.test(intent.token)
-            || intent.switchName !== HYPER_V_NETWORK_SWITCH
-            || !isHyperVCccNetworkIdentity(intent.marker, intent.natName)
-            || (intent.marker !== HYPER_V_NETWORK_MARKER
-                && (intent.natName !== `${HYPER_V_NETWORK_NAT}-${intent.token}`
-                    || intent.marker !== `ccc-device-lab:hyper-v-network:${intent.token}`))
-            || intent.prefix !== HYPER_V_NETWORK_PREFIX
-            || intent.gateway !== HYPER_V_NETWORK_GATEWAY
-            || typeof intent.createdAt !== "string") throw new Error("hyper-v-network-intent-invalid");
-        return intent as HyperVNetworkIntent;
-    }, "hyper-v-network-intent", HYPER_V_NETWORK_STATE_LIMIT_BYTES);
+    return readDeviceLabStateFile(
+        intentFile(runtime),
+        decodeHyperVNetworkIntent,
+        "hyper-v-network-intent",
+        HYPER_V_NETWORK_STATE_LIMIT_BYTES,
+    );
 }
 
 function createIntent(runtime: HyperVNetworkStateRuntime): HyperVNetworkIntent {
     const token = randomBytes(12).toString("hex");
-    const intent: HyperVNetworkIntent = {
-        version: 1,
-        token,
-        switchName: HYPER_V_NETWORK_SWITCH,
-        natName: HYPER_V_NETWORK_NAT,
-        marker: HYPER_V_NETWORK_MARKER,
-        prefix: HYPER_V_NETWORK_PREFIX,
-        gateway: HYPER_V_NETWORK_GATEWAY,
-        createdAt: new Date().toISOString(),
-    };
+    const intent = createFreshHyperVNetworkIntent(token, new Date().toISOString());
     ensureStateRoot(runtime);
     writeJsonFileAtomically(intentFile(runtime), intent);
     return intent;
@@ -311,13 +237,33 @@ async function reconcileOrphanedAllocations(
     const orphaned = new Set<string>();
     for (let offset = 0; offset < candidates.length; offset += HYPER_V_NETWORK_INSPECTION_BATCH_SIZE) {
         const batch = candidates.slice(offset, offset + HYPER_V_NETWORK_INSPECTION_BATCH_SIZE);
+        if (runtime.typedHostNetwork) {
+            const names = batch.map(({ ownerId, deviceId, incarnationId }) => {
+                if (!incarnationId) throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
+                return parseHyperVVirtualMachineName(hyperVVmName(ownerId, deviceId, incarnationId));
+            });
+            const observed = await runtime.typedHostNetwork.client.getVMsByExactNames({ names });
+            const byName = new Map(observed.map((virtualMachine) => [String(virtualMachine.name), virtualMachine]));
+            for (const candidate of batch) {
+                assertHyperVOperationDeadline(deadlineAt);
+                const incarnationId = candidate.incarnationId;
+                if (!incarnationId) throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
+                const vmName = hyperVVmName(candidate.ownerId, candidate.deviceId, incarnationId);
+                const virtualMachine = byName.get(vmName);
+                if (virtualMachine
+                    && virtualMachine.notes !== `ccc-device-lab:${candidate.ownerId}:${candidate.deviceId}:${incarnationId}`) {
+                    throw new Error("hyper-v-network-allocation-vm-ownership-conflict");
+                }
+                if (!virtualMachine) orphaned.add(`${candidate.ownerId}:${candidate.deviceId}:${incarnationId}`);
+            }
+            continue;
+        }
         const execution = await runtime.run(hyperVInspectNetworkAllocationsCommand({
             executable: powershell,
-            allocations: batch.map(({ ownerId, deviceId, incarnationId }) => ({
-                ownerId,
-                deviceId,
-                incarnationId: incarnationId!,
-            })),
+            allocations: batch.map(({ ownerId, deviceId, incarnationId }) => {
+                if (!incarnationId) throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
+                return { ownerId, deviceId, incarnationId };
+            }),
         }), {
             timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000),
             outputLimit: runtime.commandOutputBytes,
@@ -334,10 +280,11 @@ async function reconcileOrphanedAllocations(
             assertHyperVOperationDeadline(deadlineAt);
             const candidate = batch[index];
             const observed = observation.allocations[index];
+            if (!candidate?.incarnationId) throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
             if (observed.ownerId !== candidate.ownerId
                 || observed.deviceId !== candidate.deviceId
                 || observed.incarnationId !== candidate.incarnationId
-                || observed.vmName !== hyperVVmName(candidate.ownerId, candidate.deviceId, candidate.incarnationId!)) {
+                || observed.vmName !== hyperVVmName(candidate.ownerId, candidate.deviceId, candidate.incarnationId)) {
                 throw new Error("hyper-v-network-allocation-inspection-identity-mismatch");
             }
             if (!observed.present) orphaned.add(`${candidate.ownerId}:${candidate.deviceId}:${candidate.incarnationId}`);
@@ -389,6 +336,292 @@ async function runWithElevation(
     return execution;
 }
 
+function typedHostNetworkSpec(switchName: string, natName: string): HyperVHostNetworkSpec {
+    return createHyperVHostNetworkSpec({
+        switchName: parseHyperVVirtualSwitchName(switchName),
+        natName: parseHyperVNatName(natName),
+        cidr: HYPER_V_NETWORK_PREFIX,
+        gateway: HYPER_V_NETWORK_GATEWAY,
+    });
+}
+
+function typedNetworkDiagnosticCode(error: unknown, fallback: string): string {
+    if (error instanceof HyperVWindowsError) {
+        if (/^hyper-v-[a-z0-9-]{3,128}$/.test(error.code)) return error.code;
+        const normalized = error.code.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        return normalized ? `hyper-v-ps-${normalized}`.slice(0, 80).replace(/-+$/, "") : fallback;
+    }
+    return hyperVBoundedErrorCode(error, fallback);
+}
+
+function typedNetworkExecutionDiagnostic(error: unknown, fallback: string): Record<string, unknown> {
+    const diagnosticCode = typedNetworkDiagnosticCode(error, fallback);
+    return redactProviderCommandInput({
+        mode: "exec",
+        provider: "hyper-v",
+        status: null,
+        error: diagnosticCode,
+    }, true, diagnosticCode);
+}
+
+function persistedNetworkProvenance(
+    current: HyperVNetworkState,
+): HyperVHostNetworkEnsureProvenance {
+    return {
+        kind: "persisted",
+        expectedSwitchNotes: current.marker,
+        switchIdentity: {
+            id: parseHyperVVirtualSwitchId(current.switchId),
+            name: parseHyperVVirtualSwitchName(current.switchName),
+        },
+        nat: current.natInstanceId
+            ? {
+                kind: "exact",
+                identity: {
+                    instanceId: parseHyperVNatInstanceId(current.natInstanceId),
+                    name: parseHyperVNatName(current.natName),
+                },
+            }
+            : { kind: "unrecorded" },
+    };
+}
+
+function natNameFromCccMarker(marker: string): string | null {
+    if (marker === HYPER_V_NETWORK_MARKER) return HYPER_V_NETWORK_NAT;
+    const match = /^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$/.exec(marker);
+    return match ? `${HYPER_V_NETWORK_NAT}-${match[1]}` : null;
+}
+
+function isStableCccNetworkIdentity(marker: string, natName: string): boolean {
+    return marker === HYPER_V_NETWORK_MARKER && natName === HYPER_V_NETWORK_NAT;
+}
+
+function isTokenCccNetworkIdentity(marker: string, natName: string): boolean {
+    return marker !== HYPER_V_NETWORK_MARKER && isHyperVCccNetworkIdentity(marker, natName);
+}
+
+function isAllowedPersistedCccIdentityTransition(
+    currentMarker: string,
+    currentNatName: string,
+    observedMarker: string,
+    observedNatName: string,
+): boolean {
+    return (isStableCccNetworkIdentity(currentMarker, currentNatName)
+            && isTokenCccNetworkIdentity(observedMarker, observedNatName))
+        || (isTokenCccNetworkIdentity(currentMarker, currentNatName)
+            && isStableCccNetworkIdentity(observedMarker, observedNatName));
+}
+
+async function typedEnsureProvenance(
+    client: HyperVWindowsNetworkClient,
+    current: HyperVNetworkState | null,
+    intent: HyperVNetworkIntent | null,
+): Promise<{
+    readonly network: HyperVHostNetworkSpec;
+    readonly provenance: HyperVHostNetworkEnsureProvenance;
+}> {
+    if (current) {
+        const currentNetwork = typedHostNetworkSpec(current.switchName, current.natName);
+        const currentProvenance = persistedNetworkProvenance(current);
+        if (current.natInstanceId) {
+            const inspection = await inspectDeviceLabHyperVHostNetwork(client, {
+                network: currentNetwork,
+                provenance: currentProvenance,
+                privilege: "standard",
+            });
+            const exactSwitches = inspection.virtualSwitches.filter((candidate) =>
+                String(candidate.id).toLowerCase() === current.switchId.toLowerCase()
+                && String(candidate.name) === current.switchName);
+            const exactNats = inspection.nats.filter((candidate) =>
+                String(candidate.instanceId) === current.natInstanceId);
+            if (exactSwitches.length === 1 && exactNats.length === 1) {
+                const exactSwitch = exactSwitches[0];
+                const exactNat = exactNats[0];
+                if (exactSwitch && exactNat
+                    && isAllowedPersistedCccIdentityTransition(
+                        current.marker,
+                        current.natName,
+                        exactSwitch.notes,
+                        String(exactNat.name),
+                    )) {
+                    return {
+                        network: typedHostNetworkSpec(current.switchName, String(exactNat.name)),
+                        provenance: {
+                            kind: "recognized-adoption",
+                            expectedSwitchNotes: exactSwitch.notes,
+                            switchIdentity: { id: exactSwitch.id, name: exactSwitch.name },
+                            nat: {
+                                kind: "exact",
+                                identity: { instanceId: exactNat.instanceId, name: exactNat.name },
+                            },
+                        },
+                    };
+                }
+            }
+        }
+        return {
+            network: currentNetwork,
+            provenance: currentProvenance,
+        };
+    }
+    if (!intent) throw new Error("hyper-v-network-intent-missing");
+
+    const intendedNetwork = typedHostNetworkSpec(intent.switchName, intent.natName);
+    const fresh: HyperVHostNetworkEnsureProvenance = {
+        kind: "fresh",
+        expectedSwitchNotes: intent.marker,
+    };
+    const inspection = await inspectDeviceLabHyperVHostNetwork(client, {
+        network: intendedNetwork,
+        provenance: fresh,
+        privilege: "standard",
+    });
+    if (inspection.virtualSwitches.length !== 1) {
+        return { network: intendedNetwork, provenance: fresh };
+    }
+    const virtualSwitch = inspection.virtualSwitches[0];
+    if (!virtualSwitch) return { network: intendedNetwork, provenance: fresh };
+    const adoptedNatName = natNameFromCccMarker(virtualSwitch.notes);
+    if (!adoptedNatName || !isHyperVCccNetworkIdentity(virtualSwitch.notes, adoptedNatName)) {
+        return { network: intendedNetwork, provenance: fresh };
+    }
+    const matchingNats = inspection.nats.filter((nat) => String(nat.name) === adoptedNatName);
+    if (matchingNats.length > 1) throw new Error("hyper-v-network-nat-ambiguous");
+    const adoptedNat = matchingNats[0];
+    return {
+        network: typedHostNetworkSpec(intent.switchName, adoptedNatName),
+        provenance: {
+            kind: "recognized-adoption",
+            expectedSwitchNotes: virtualSwitch.notes,
+            switchIdentity: { id: virtualSwitch.id, name: virtualSwitch.name },
+            nat: adoptedNat
+                ? { kind: "exact", identity: { instanceId: adoptedNat.instanceId, name: adoptedNat.name } }
+                : { kind: "absent" },
+        },
+    };
+}
+
+async function ensureTypedHyperVHostNetwork(
+    runtime: HyperVNetworkRuntime,
+    current: HyperVNetworkState | null,
+    intent: HyperVNetworkIntent | null,
+): Promise<HyperVNetworkObservation> {
+    const typed = runtime.typedHostNetwork;
+    if (!typed) throw new Error("hyper-v-network-typed-runtime-missing");
+    const request = await typedEnsureProvenance(typed.client, current, intent);
+    const transaction = await ensureDeviceLabHyperVHostNetwork({
+        client: typed.client,
+        network: request.network,
+        provenance: request.provenance,
+        withAdministratorClient: typed.withAdministratorClient,
+    });
+    const outcome = transaction.outcome;
+    if (outcome.kind !== "settled" || outcome.operation !== "ensure") {
+        if (outcome.kind === "indeterminate" && outcome.cause instanceof HyperVWindowsError) {
+            throw outcome.cause;
+        }
+        const detail = outcome.kind === "conflict" || outcome.kind === "indeterminate"
+            ? outcome.reason
+            : outcome.kind;
+        throw new Error(`hyper-v-network-${outcome.kind}-${detail}`);
+    }
+    const completed = new Set(transaction.completedActions.map((action) => action.actionKind));
+    return {
+        ok: true,
+        switchName: String(outcome.identity.switchIdentity.name),
+        switchId: String(outcome.identity.switchIdentity.id),
+        marker: request.provenance.expectedSwitchNotes,
+        natName: String(outcome.identity.natIdentity.name),
+        natInstanceId: String(outcome.identity.natIdentity.instanceId),
+        prefix: String(request.network.cidr),
+        gateway: String(request.network.gateway),
+        interfaceIndex: Number(outcome.identity.interfaceIndex),
+        createdSwitch: completed.has("create-switch"),
+        createdGateway: completed.has("create-gateway"),
+        createdNat: completed.has("create-nat"),
+    };
+}
+
+function typedCleanupProvenance(release: HyperVNetworkRelease): HyperVHostNetworkCleanupProvenance {
+    if (!release.switchName || !release.switchId || !release.natName) {
+        throw new Error("hyper-v-network-identity-unproven");
+    }
+    const switchIdentity = {
+        id: parseHyperVVirtualSwitchId(release.switchId),
+        name: parseHyperVVirtualSwitchName(release.switchName),
+    };
+    return {
+        switch: release.managedSwitch === true
+            ? { kind: "managed", identity: switchIdentity }
+            : { kind: "unmanaged" },
+        gateway: release.managedGateway === true
+            ? {
+                kind: "managed",
+                identity: {
+                    switchIdentity,
+                    address: typedHostNetworkSpec(release.switchName, release.natName).gateway,
+                    prefixLength: typedHostNetworkSpec(release.switchName, release.natName).prefixLength,
+                },
+            }
+            : { kind: "unmanaged" },
+        nat: release.managedNat === true && release.natInstanceId
+            ? {
+                kind: "managed",
+                identity: {
+                    instanceId: parseHyperVNatInstanceId(release.natInstanceId),
+                    name: parseHyperVNatName(release.natName),
+                },
+            }
+            : { kind: "unmanaged" },
+    };
+}
+
+async function cleanupTypedHyperVHostNetwork(
+    runtime: HyperVNetworkRuntime,
+    release: HyperVNetworkRelease,
+) {
+    const typed = runtime.typedHostNetwork;
+    if (!typed || !release.switchName || !release.natName) {
+        throw new Error("hyper-v-network-typed-runtime-missing");
+    }
+    const network = typedHostNetworkSpec(release.switchName, release.natName);
+    const transaction = await cleanupDeviceLabHyperVHostNetwork({
+        client: typed.client,
+        network,
+        provenance: typedCleanupProvenance(release),
+        withAdministratorClient: typed.withAdministratorClient,
+    });
+    const outcome = transaction.outcome;
+    if (outcome.kind !== "settled" || outcome.operation !== "cleanup") {
+        if (outcome.kind === "indeterminate" && outcome.cause instanceof HyperVWindowsError) {
+            throw outcome.cause;
+        }
+        const detail = outcome.kind === "conflict" || outcome.kind === "indeterminate"
+            ? outcome.reason
+            : outcome.kind;
+        throw new Error(`hyper-v-network-${outcome.kind}-${detail}`);
+    }
+    const completed = new Set(transaction.completedActions.map((action) => action.actionKind));
+    if (outcome.disposition === "deferred-switch-in-use") {
+        return {
+            ok: true,
+            removedSwitch: false,
+            removedNat: completed.has("remove-nat"),
+            removedGateway: completed.has("remove-gateway"),
+            alreadyMissing: false,
+            deferred: true,
+            reason: "hyper-v-network-switch-in-use" as const,
+        };
+    }
+    return {
+        ok: true,
+        removedSwitch: completed.has("remove-switch"),
+        removedNat: completed.has("remove-nat"),
+        removedGateway: completed.has("remove-gateway"),
+        alreadyMissing: transaction.completedActions.length === 0,
+    };
+}
+
 export async function ensureHyperVNetworkAllocation(
     runtime: HyperVNetworkRuntime,
     ownerId: string,
@@ -433,6 +666,15 @@ export async function ensureHyperVNetworkAllocation(
             detail: hyperVBoundedErrorCode(error, "hyper-v-network-allocation-failed"),
         };
     }
+    const expectedNetworkIdentity = current ?? intent;
+    if (!expectedNetworkIdentity) {
+        return {
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-failed",
+            detail: "hyper-v-network-intent-missing",
+        };
+    }
     try {
         if (current) current = await reconcileOrphanedAllocations(runtime, current, powershell, deadlineAt);
     } catch (error) {
@@ -455,9 +697,9 @@ export async function ensureHyperVNetworkAllocation(
         || (current.allocations.length === 0 && !canRepairPersistedCccIdentity);
     const networkOptions = {
         executable: powershell,
-        switchName: current?.switchName || intent!.switchName,
-        natName: current?.natName || intent!.natName,
-        marker: current?.marker || intent!.marker,
+        switchName: expectedNetworkIdentity.switchName,
+        natName: expectedNetworkIdentity.natName,
+        marker: expectedNetworkIdentity.marker,
         prefix: HYPER_V_NETWORK_PREFIX,
         gateway: HYPER_V_NETWORK_GATEWAY,
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
@@ -467,30 +709,47 @@ export async function ensureHyperVNetworkAllocation(
         expectedSwitchId: canReconcileNetworkIdentity ? undefined : current?.switchId,
         expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
-    const execution = await runWithElevation(
-        runtime,
-        hyperVEnsureNetworkCommand(networkOptions),
-        (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({
-            ...networkOptions,
-            executable: runtime.resolveElevationExecutable(powershell),
-            elevated: true,
-            elevatedDeadlineUnixMs,
-        }),
-        deadlineAt,
-    );
-    assertHyperVOperationDeadline(deadlineAt);
-    if (!commandSucceeded(execution)) {
-        return {
-            ok: false,
-            status: 502,
-            error: "hyper-v-network-setup-failed",
-            detail: hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed"),
-            execution: redactProviderCommandInput(execution, true, "hyper-v-network-setup-failed"),
-            preserveEvidence: true,
-        };
+    let observation: HyperVNetworkObservation | null;
+    if (runtime.typedHostNetwork) {
+        try {
+            observation = await ensureTypedHyperVHostNetwork(runtime, current, intent);
+        } catch (error) {
+            const detail = typedNetworkDiagnosticCode(error, "hyper-v-network-setup-failed");
+            return {
+                ok: false,
+                status: 502,
+                error: "hyper-v-network-setup-failed",
+                detail,
+                execution: typedNetworkExecutionDiagnostic(error, detail),
+                preserveEvidence: true,
+            };
+        }
+    } else {
+        const execution = await runWithElevation(
+            runtime,
+            hyperVEnsureNetworkCommand(networkOptions),
+            (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({
+                ...networkOptions,
+                executable: runtime.resolveElevationExecutable(powershell),
+                elevated: true,
+                elevatedDeadlineUnixMs,
+            }),
+            deadlineAt,
+        );
+        assertHyperVOperationDeadline(deadlineAt);
+        if (!commandSucceeded(execution)) {
+            return {
+                ok: false,
+                status: 502,
+                error: "hyper-v-network-setup-failed",
+                detail: hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed"),
+                execution: redactProviderCommandInput(execution, true, "hyper-v-network-setup-failed"),
+                preserveEvidence: true,
+            };
+        }
+        observation = parseHyperVNetworkObservation(execution.stdout || "");
     }
-    const observation = parseHyperVNetworkObservation(execution.stdout || "");
-    const observedMarker = observation?.marker || current?.marker || intent!.marker;
+    const observedMarker = observation?.marker || expectedNetworkIdentity.marker;
     const observedIdentityIsCccOwned = isHyperVCccNetworkIdentity(observedMarker, observation?.natName);
     const observedUsesLegacyTokenIdentity = Boolean(observation
         && observedMarker !== HYPER_V_NETWORK_MARKER
@@ -510,7 +769,7 @@ export async function ensureHyperVNetworkAllocation(
         && current.natInstanceId === observation.natInstanceId
         && persistedIdentityTransitionIsAllowed);
     if (!observation
-        || observation.switchName !== (current?.switchName || intent!.switchName)
+        || observation.switchName !== expectedNetworkIdentity.switchName
         || (current
             ? (!canReconcileNetworkIdentity
                 && (observation.natName !== current.natName || observedMarker !== current.marker)
@@ -566,6 +825,9 @@ export async function ensureHyperVNetworkAllocation(
             macAddress = hyperVDeterministicMacAddress(ownerId, deviceId, ++macSalt);
         }
         if (usedMacs.has(macAddress)) throw new Error("hyper-v-network-mac-space-exhausted");
+        const freshIntentOwnsObservedIdentity = !current && intent
+            ? intentOwnsDedicatedNat({ ...intent, marker: observedMarker, natName: observation.natName })
+            : false;
         const next: HyperVNetworkState = {
             version: 1,
             switchName: observation.switchName,
@@ -578,14 +840,14 @@ export async function ensureHyperVNetworkAllocation(
             outboundPolicy: "nat",
             managedSwitch: (!resourceIdentityReconciled && current?.managedSwitch === true)
                 || observation.createdSwitch
-                || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
+                || freshIntentOwnsObservedIdentity,
             managedGateway: (!resourceIdentityReconciled && current?.managedGateway === true)
                 || observation.createdGateway === true
                 || observation.createdSwitch
-                || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
+                || freshIntentOwnsObservedIdentity,
             managedNat: (!resourceIdentityReconciled && current?.managedNat === true)
                 || observation.createdNat
-                || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
+                || freshIntentOwnsObservedIdentity,
             allocations: [
                 ...allocations,
                 { ownerId, deviceId, incarnationId, address, macAddress, allocatedAt: new Date().toISOString() },
@@ -605,7 +867,10 @@ export async function ensureHyperVNetworkAllocation(
         };
     } catch (error) {
         let cleanupFailure: string | null = null;
-        if (observation.createdSwitch || observation.createdGateway === true || observation.createdNat) {
+        const typedEvidencePreserved = Boolean(runtime.typedHostNetwork
+            && (observation.createdSwitch || observation.createdGateway === true || observation.createdNat));
+        if (!runtime.typedHostNetwork
+            && (observation.createdSwitch || observation.createdGateway === true || observation.createdNat)) {
             try {
                 const cleanupOptions = {
                     executable: powershell,
@@ -648,7 +913,7 @@ export async function ensureHyperVNetworkAllocation(
             status: cleanupFailure ? 502 : 409,
             error: cleanupFailure ? "hyper-v-network-allocation-cleanup-failed" : "hyper-v-network-allocation-failed",
             detail: cleanupFailure || allocationDetail,
-            ...(cleanupFailure ? { preserveEvidence: true } : {}),
+            ...(cleanupFailure || typedEvidencePreserved ? { preserveEvidence: true } : {}),
         };
     }
 }
@@ -711,6 +976,7 @@ function commitDeferredHyperVNetworkRelease(
     deviceId: string,
     incarnationId: string | null | undefined,
     expectedStateRevision: string | undefined,
+    cleanup: HyperVNetworkCleanupObservation,
 ): { ok: true; remaining: number } | { ok: false; error: string } {
     try {
         const current = readState(runtime);
@@ -724,8 +990,35 @@ function commitDeferredHyperVNetworkRelease(
             return { ok: false, error: "hyper-v-network-allocation-incarnation-conflict" };
         }
         const allocations = current.allocations.filter((allocation) => allocation !== matched);
+        let next: HyperVNetworkState;
+        if (cleanup.removedNat) {
+            const { natInstanceId: _removedNatIdentity, ...withoutNatIdentity } = current;
+            next = {
+                ...withoutNatIdentity,
+                managedSwitch: cleanup.removedSwitch ? false : current.managedSwitch,
+                managedGateway: cleanup.removedGateway ? false : current.managedGateway,
+                managedNat: false,
+                allocations,
+            };
+        } else if (current.managedNat) {
+            next = {
+                ...current,
+                managedSwitch: cleanup.removedSwitch ? false : current.managedSwitch,
+                managedGateway: cleanup.removedGateway ? false : current.managedGateway,
+                managedNat: true,
+                allocations,
+            };
+        } else {
+            next = {
+                ...current,
+                managedSwitch: cleanup.removedSwitch ? false : current.managedSwitch,
+                managedGateway: cleanup.removedGateway ? false : current.managedGateway,
+                managedNat: false,
+                allocations,
+            };
+        }
         ensureStateRoot(runtime);
-        writeJsonFileAtomically(stateFile(runtime), { ...current, allocations });
+        writeJsonFileAtomically(stateFile(runtime), next);
         return { ok: true, remaining: allocations.length };
     } catch (error) {
         return { ok: false, error: hyperVBoundedErrorCode(error, "hyper-v-network-state-update-failed") };
@@ -773,37 +1066,59 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
         expectedSwitchId: release.switchId,
         expectedNatInstanceId: release.natInstanceId,
     };
-    const execution = await runWithElevation(
-        runtime,
-        hyperVCleanupNetworkCommand(cleanupOptions),
-        (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({
-            ...cleanupOptions,
-            executable: runtime.resolveElevationExecutable(powershell),
-            elevated: true,
-            elevatedDeadlineUnixMs,
-        }),
-        deadlineAt,
-    );
-    if (!commandSucceeded(execution)) {
-        const diagnosticCode = hyperVProviderDiagnosticCode(execution, "hyper-v-network-cleanup-failed");
-        return {
-            ...release,
-            ok: false,
-            error: diagnosticCode,
-            networkCleanup: redactProviderCommandInput(execution, true, diagnosticCode),
-        };
-    }
-    const observation = parseHyperVNetworkCleanupObservation(execution.stdout || "");
-    if (!observation) {
-        return {
-            ...release,
-            ok: false,
-            error: "hyper-v-network-cleanup-invalid-result",
-            networkCleanup: redactProviderCommandInput(execution, true, "hyper-v-network-cleanup-invalid-result"),
-        };
+    let observation;
+    if (runtime.typedHostNetwork) {
+        try {
+            observation = await cleanupTypedHyperVHostNetwork(runtime, release);
+        } catch (error) {
+            const diagnosticCode = typedNetworkDiagnosticCode(error, "hyper-v-network-cleanup-failed");
+            return {
+                ...release,
+                ok: false,
+                error: diagnosticCode,
+                networkCleanup: typedNetworkExecutionDiagnostic(error, diagnosticCode),
+            };
+        }
+    } else {
+        const execution = await runWithElevation(
+            runtime,
+            hyperVCleanupNetworkCommand(cleanupOptions),
+            (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({
+                ...cleanupOptions,
+                executable: runtime.resolveElevationExecutable(powershell),
+                elevated: true,
+                elevatedDeadlineUnixMs,
+            }),
+            deadlineAt,
+        );
+        if (!commandSucceeded(execution)) {
+            const diagnosticCode = hyperVProviderDiagnosticCode(execution, "hyper-v-network-cleanup-failed");
+            return {
+                ...release,
+                ok: false,
+                error: diagnosticCode,
+                networkCleanup: redactProviderCommandInput(execution, true, diagnosticCode),
+            };
+        }
+        observation = parseHyperVNetworkCleanupObservation(execution.stdout || "");
+        if (!observation) {
+            return {
+                ...release,
+                ok: false,
+                error: "hyper-v-network-cleanup-invalid-result",
+                networkCleanup: redactProviderCommandInput(execution, true, "hyper-v-network-cleanup-invalid-result"),
+            };
+        }
     }
     if (observation.deferred === true) {
-        const committed = commitDeferredHyperVNetworkRelease(runtime, ownerId, deviceId, incarnationId, release.stateRevision);
+        const committed = commitDeferredHyperVNetworkRelease(
+            runtime,
+            ownerId,
+            deviceId,
+            incarnationId,
+            release.stateRevision,
+            observation,
+        );
         if (!committed.ok) {
             return { ...release, ok: false, error: committed.error, networkCleanup: null };
         }

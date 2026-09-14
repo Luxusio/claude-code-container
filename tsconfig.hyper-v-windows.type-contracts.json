@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "rootDir": "."
+  },
+  "include": [
+    "src/hyper-v-windows/**/*.ts",
+    "src/__tests__/hyper-v-windows-network-type-contracts.ts"
+  ],
+  "exclude": []
+}

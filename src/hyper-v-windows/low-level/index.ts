@@ -1,4 +1,20 @@
 export { createHyperVWindowsClient } from "./client.js";
+export { createHyperVWindowsNetworkClient } from "./network-client.js";
+export {
+    createHyperVHostNetworkSpec,
+    HyperVWindowsNetworkValueError,
+    parseHyperVInterfaceIndex,
+    parseHyperVNatInstanceId,
+    parseHyperVNatName,
+    parseHyperVNetworkAdapterName,
+    parseHyperVVirtualMachineId,
+    parseHyperVVirtualMachineName,
+    parseHyperVVirtualSwitchId,
+    parseHyperVVirtualSwitchName,
+    parseIPv4Address,
+    parseIPv4Cidr,
+    parseIPv4PrefixLength,
+} from "./network-contracts.js";
 export { HyperVWindowsError, type HyperVWindowsErrorCategory } from "./errors.js";
 export {
     createHyperVWindowsPowerShellExecutor,
@@ -45,6 +61,41 @@ export type {
     HyperVWindowsExecutor,
     HyperVWindowsOperation,
 } from "./contracts.js";
+export type {
+    HyperVCreateNetIPAddressRequest,
+    HyperVCreateNetNatRequest,
+    HyperVCreateVMSwitchRequest,
+    HyperVExactNameVirtualMachine,
+    HyperVExactNameVMInventoryRequest,
+    HyperVGetHostNetworkAdaptersRequest,
+    HyperVHostNetworkAdapter,
+    HyperVHostNetworkSpec,
+    HyperVInterfaceIndex,
+    HyperVNatIdentity,
+    HyperVNatInstanceId,
+    HyperVNatName,
+    HyperVNatSelector,
+    HyperVNetIPAddress,
+    HyperVNetIPAddressSelector,
+    HyperVNetNat,
+    HyperVNetworkAdapterName,
+    HyperVRemoveNetIPAddressRequest,
+    HyperVRemoveNetNatRequest,
+    HyperVRemoveVMSwitchRequest,
+    HyperVSetVMSwitchNotesRequest,
+    HyperVVirtualMachineName,
+    HyperVVirtualMachineId,
+    HyperVVirtualSwitch,
+    HyperVVirtualSwitchId,
+    HyperVVirtualSwitchIdentity,
+    HyperVVirtualSwitchName,
+    HyperVVirtualSwitchSelector,
+    HyperVVMNetworkAdapter,
+    HyperVWindowsNetworkClient,
+    IPv4Address,
+    IPv4Cidr,
+    IPv4PrefixLength,
+} from "./network-contracts.js";
 export type {
     HyperVWindowsPowerShellExecutorOptions,
     HyperVWindowsPowerShellFileRequest,

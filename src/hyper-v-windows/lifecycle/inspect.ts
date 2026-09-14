@@ -15,7 +15,11 @@ export async function inspectHyperVVirtualMachine(
         return { virtualMachines, hardDiskDrives: [], dvdDrives: [] };
     }
 
-    const selected = { kind: "id", id: virtualMachines[0].id } as const;
+    const virtualMachine = virtualMachines[0];
+    if (!virtualMachine) {
+        return { virtualMachines, hardDiskDrives: [], dvdDrives: [] };
+    }
+    const selected = { kind: "id", id: virtualMachine.id } as const;
     const [hardDiskDrives, dvdDrives] = await Promise.all([
         client.getVMHardDiskDrives(selected, options),
         client.getVMDvdDrives(selected, options),

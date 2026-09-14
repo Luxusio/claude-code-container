@@ -1,3 +1,18 @@
+import type {
+    HyperVCreateNetIPAddressRequest,
+    HyperVCreateNetNatRequest,
+    HyperVCreateVMSwitchRequest,
+    HyperVExactNameVMInventoryRequest,
+    HyperVGetHostNetworkAdaptersRequest,
+    HyperVNatSelector,
+    HyperVNetIPAddressSelector,
+    HyperVRemoveNetIPAddressRequest,
+    HyperVRemoveNetNatRequest,
+    HyperVRemoveVMSwitchRequest,
+    HyperVSetVMSwitchNotesRequest,
+    HyperVVirtualSwitchSelector,
+} from "./network-contracts.js";
+
 export const HYPER_V_WINDOWS_OPERATIONS = [
     "Get-VM",
     "Get-VMHardDiskDrive",
@@ -9,6 +24,18 @@ export const HYPER_V_WINDOWS_OPERATIONS = [
     "Checkpoint-VM",
     "Remove-VMSnapshot",
     "Restore-VMSnapshot",
+    "Get-VMSwitch",
+    "New-VMSwitch",
+    "Set-VMSwitch",
+    "Remove-VMSwitch",
+    "Get-VMNetworkAdapter",
+    "Get-NetAdapter",
+    "Get-NetIPAddress",
+    "New-NetIPAddress",
+    "Remove-NetIPAddress",
+    "Get-NetNat",
+    "New-NetNat",
+    "Remove-NetNat",
 ] as const;
 
 export type HyperVWindowsOperation = typeof HYPER_V_WINDOWS_OPERATIONS[number];
@@ -68,10 +95,20 @@ type HyperVWindowsExecutionRequestBase<Operation extends HyperVWindowsOperation>
     readonly schemaVersion: 1;
     readonly operation: Operation;
     readonly selector: HyperVVirtualMachineSelector;
+    readonly names?: never;
 };
+
+type HyperVWindowsHostExecutionRequestBase<Operation extends HyperVWindowsOperation> = {
+    readonly schemaVersion: 1;
+    readonly operation: Operation;
+};
+
+type HyperVWindowsHostExecutionRequestWithoutSelectorBase<Operation extends HyperVWindowsOperation> =
+    HyperVWindowsHostExecutionRequestBase<Operation> & { readonly selector?: never };
 
 export type HyperVWindowsExecutionRequest =
     | HyperVWindowsExecutionRequestBase<"Get-VM">
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-VM"> & HyperVExactNameVMInventoryRequest)
     | HyperVWindowsExecutionRequestBase<"Get-VMHardDiskDrive">
     | HyperVWindowsExecutionRequestBase<"Get-VMDvdDrive">
     | HyperVWindowsExecutionRequestBase<"Get-VMSnapshot">
@@ -92,7 +129,25 @@ export type HyperVWindowsExecutionRequest =
     })
     | (HyperVWindowsExecutionRequestBase<"Restore-VMSnapshot"> & {
         readonly snapshot: HyperVSnapshotSelector;
-    });
+    })
+    | (HyperVWindowsHostExecutionRequestBase<"Get-VMSwitch"> & {
+        readonly selector: HyperVVirtualSwitchSelector;
+    })
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"New-VMSwitch"> & HyperVCreateVMSwitchRequest)
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Set-VMSwitch"> & HyperVSetVMSwitchNotesRequest)
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Remove-VMSwitch"> & HyperVRemoveVMSwitchRequest)
+    | HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-VMNetworkAdapter">
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-NetAdapter"> & HyperVGetHostNetworkAdaptersRequest)
+    | (HyperVWindowsHostExecutionRequestBase<"Get-NetIPAddress"> & {
+        readonly selector: HyperVNetIPAddressSelector;
+    })
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"New-NetIPAddress"> & HyperVCreateNetIPAddressRequest)
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Remove-NetIPAddress"> & HyperVRemoveNetIPAddressRequest)
+    | (HyperVWindowsHostExecutionRequestBase<"Get-NetNat"> & {
+        readonly selector: HyperVNatSelector;
+    })
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"New-NetNat"> & HyperVCreateNetNatRequest)
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Remove-NetNat"> & HyperVRemoveNetNatRequest);
 
 export type HyperVWindowsExecutionResult = {
     readonly status: number | null;

@@ -1,5 +1,9 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true
+  },
   "include": ["src/hyper-v-windows/**/*.ts"],
   "exclude": []
 }

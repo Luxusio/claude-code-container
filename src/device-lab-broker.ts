@@ -52,11 +52,13 @@ import {
     createDeviceLabHyperVWindowsClient,
     reconcileDeviceLabHyperVOperation,
 } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
+import { createDeviceLabHyperVWindowsNetworkClient } from "./device-lab/broker/hyper-v/network-adapter.js";
+import { withElevatedHyperVNetworkExecutor } from "./device-lab/broker/hyper-v/elevated-network-session.js";
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
-import { HyperVWindowsError } from "./hyper-v-windows/index.js";
+import { createHyperVWindowsNetworkClient, HyperVWindowsError } from "./hyper-v-windows/index.js";
 import {
     createDeviceLabHyperVSnapshot,
     deleteDeviceLabHyperVSnapshot,
@@ -9408,8 +9410,17 @@ function hyperVNetworkStateRuntime(): HyperVNetworkStateRuntime {
     };
 }
 
-function hyperVNetworkRuntime(normalized: NormalizedBrokerOptions): HyperVNetworkRuntime {
+function hyperVNetworkRuntime(
+    normalized: NormalizedBrokerOptions,
+    deadlineAt = Number.POSITIVE_INFINITY,
+): HyperVNetworkRuntime {
     const readDevices = cachedHyperVOwnerDevicesReader(readOwnerDevices);
+    const powershell = providerExecutable("powershell.exe", normalized)
+        || providerExecutable("pwsh", normalized)
+        || providerExecutable("powershell", normalized);
+    const typedDeadline = () => Number.isSafeInteger(deadlineAt)
+        ? deadlineAt
+        : Date.now() + 180_000;
     return {
         ...hyperVNetworkStateRuntime(),
         resolveExecutable: (name) => providerExecutable(name, normalized),
@@ -9417,6 +9428,27 @@ function hyperVNetworkRuntime(normalized: NormalizedBrokerOptions): HyperVNetwor
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         commandOutputBytes: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         allocationReferenced: (allocation) => hyperVNetworkAllocationReferenced(allocation, readDevices),
+        ...(powershell && normalized.usesDefaultCommandRunner
+            ? {
+                typedHostNetwork: {
+                    client: createDeviceLabHyperVWindowsNetworkClient({
+                        executable: powershell,
+                        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000),
+                        run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+                        session: brokerHyperVWindowsSession(powershell),
+                    }),
+                    withAdministratorClient: async <Result>(operation: (
+                        client: ReturnType<typeof createHyperVWindowsNetworkClient>,
+                    ) => Result | Promise<Result>) => withElevatedHyperVNetworkExecutor({
+                        executable: hyperVElevationExecutable(powershell),
+                        deadlineUnixMilliseconds: typedDeadline(),
+                        onBeforeElevation: () => process.stderr.write(
+                            "REQUEST Windows is asking for Administrator permission via UAC to configure Hyper-V host networking\n",
+                        ),
+                    }, (executor) => operation(createHyperVWindowsNetworkClient(executor))),
+                },
+            }
+            : {}),
     };
 }
 
@@ -9428,7 +9460,7 @@ function ensureHyperVNetworkAllocation(
     deadlineAt = Number.POSITIVE_INFINITY,
 ) {
     return ensureHyperVNetworkAllocationWithRuntime(
-        hyperVNetworkRuntime(normalized),
+        hyperVNetworkRuntime(normalized, deadlineAt),
         ownerId,
         deviceId,
         incarnationId,
@@ -9444,7 +9476,7 @@ function releaseHyperVNetworkAllocationAndCleanup(
     deadlineAt = Number.POSITIVE_INFINITY,
 ) {
     return releaseHyperVNetworkAllocationAndCleanupWithRuntime(
-        hyperVNetworkRuntime(normalized),
+        hyperVNetworkRuntime(normalized, deadlineAt),
         ownerId,
         deviceId,
         incarnationId,

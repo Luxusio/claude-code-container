@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -10,6 +10,47 @@ const assetRoot = join(repoRoot, "scripts", "host-control", "hyper-v");
 const requireParser = process.argv.includes("--require-parser");
 const runPester = process.argv.includes("--pester");
 const libraryFixtureOnly = process.argv.includes("--library-fixture-only");
+
+function validateNetworkOperationAsset() {
+    const path = join(assetRoot, "Invoke-HyperVWindowsOperation.ps1");
+    const source = readFileSync(path, "utf8");
+    const requiredTrustFragments = [
+        '[Environment]::SystemDirectory',
+        '@("WindowsPowerShell", "v1.0", "Modules")',
+        '[IO.FileAttributes]::ReparsePoint',
+        '$ModuleName -notin @("Hyper-V", "NetAdapter", "NetTCPIP", "NetNat")',
+        '$InvalidCode = if ($ModuleName -eq "Hyper-V")',
+        'Microsoft.PowerShell.Core\\Import-Module -Name $ModulePath',
+    ];
+    for (const fragment of requiredTrustFragments) {
+        if (!source.includes(fragment)) throw new Error(`Hyper-V operation asset is missing trust fence: ${fragment}`);
+    }
+    const qualifiedCommands = {
+        "Get-VM": "Hyper-V",
+        "Get-VMSwitch": "Hyper-V",
+        "New-VMSwitch": "Hyper-V",
+        "Set-VMSwitch": "Hyper-V",
+        "Remove-VMSwitch": "Hyper-V",
+        "Get-VMNetworkAdapter": "Hyper-V",
+        "Get-NetAdapter": "NetAdapter",
+        "Get-NetIPAddress": "NetTCPIP",
+        "New-NetIPAddress": "NetTCPIP",
+        "Remove-NetIPAddress": "NetTCPIP",
+        "Get-NetNat": "NetNat",
+        "New-NetNat": "NetNat",
+        "Remove-NetNat": "NetNat",
+    };
+    for (const [command, moduleName] of Object.entries(qualifiedCommands)) {
+        if (!source.includes(`${moduleName}\\${command}`)) {
+            throw new Error(`Hyper-V operation asset is missing module-qualified command: ${moduleName}\\${command}`);
+        }
+        const unqualified = new RegExp(`(?:^|[|;{}]\\s*)${command}\\s`, "m");
+        if (unqualified.test(source)) throw new Error(`Hyper-V operation asset contains unqualified command: ${command}`);
+    }
+    console.log(`PASS Hyper-V network PowerShell trust commands=${Object.keys(qualifiedCommands).length}`);
+}
+
+validateNetworkOperationAsset();
 
 function validationPowerShellArgs(args) {
     return process.platform === "win32" ? hiddenWindowsPowerShellArgs(args) : [...args];

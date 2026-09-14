@@ -168,6 +168,12 @@ export function createRecordingDeviceLabHyperVWindowsClient(
 export function createDeviceLabHyperVWindowsClient(
     options: DeviceLabHyperVWindowsClientOptions,
 ): HyperVWindowsClient {
+    return createHyperVWindowsClient(createDeviceLabHyperVWindowsExecutor(options));
+}
+
+export function createDeviceLabHyperVWindowsExecutor(
+    options: DeviceLabHyperVWindowsClientOptions,
+): HyperVWindowsExecutor {
     const oneShot = createHyperVWindowsPowerShellExecutor({
         executable: options.executable,
         run: async (request, context) => {
@@ -195,8 +201,8 @@ export function createDeviceLabHyperVWindowsClient(
         },
     });
     const session = options.session;
-    if (!session) return createHyperVWindowsClient(oneShot);
-    return createHyperVWindowsClient({
+    if (!session) return oneShot;
+    return {
         async execute(request, context) {
             // The same clamp the one-shot branch applies. options.timeoutMilliseconds is passed as a
             // function by the broker so each primitive is bounded by what is left of the operation's
@@ -256,7 +262,7 @@ export function createDeviceLabHyperVWindowsClient(
             }
             return await oneShot.execute(request, { ...context, timeoutMilliseconds: remaining });
         },
-    });
+    };
 }
 
 export function deviceLabHyperVOperationIntent(
