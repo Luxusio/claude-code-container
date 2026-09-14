@@ -62,10 +62,13 @@ try {
         consumerConfig,
     ]);
     const compiledStandalone = join("dist", "real-tests", "hyper-v-windows-library.mjs");
+    const compiledNetworkHost = join("dist", "real-tests", "hyper-v-windows-network-host.mjs");
     for (const relativePath of [
         compiledStandalone,
+        compiledNetworkHost,
         join("dist", "real-tests", "hyper-v-windows-library-privileged.mjs"),
         join("scripts", "real-tests", "hyper-v-windows-library-command.mjs"),
+        join("scripts", "real-tests", "hyper-v-windows-network-command.mjs"),
         join("scripts", "real-tests", "hyper-v-windows-library-elevation.mjs"),
         join("scripts", "real-tests", "hyper-v-windows-library.ts"),
         join("scripts", "real-tests", "hyper-v-windows-library-real.ts"),
@@ -78,7 +81,12 @@ try {
     if (/import\s*\([^)]*\.ts["']\)/.test(compiledStandaloneSource)) {
         throw new Error("packaged Hyper-V library launcher retained a TypeScript runtime import");
     }
+    const compiledNetworkHostSource = readFileSync(join(packageRoot, compiledNetworkHost), "utf8");
+    if (/import\s*\([^)]*\.ts["']\)/.test(compiledNetworkHostSource)) {
+        throw new Error("packaged Hyper-V network host proof retained a TypeScript runtime import");
+    }
     const sourceCommand = readFileSync(join(packageRoot, "scripts", "real-tests", "hyper-v-windows-library-command.mjs"), "utf8");
+    const networkSourceCommand = readFileSync(join(packageRoot, "scripts", "real-tests", "hyper-v-windows-network-command.mjs"), "utf8");
     const elevationHelper = readFileSync(join(packageRoot, "scripts", "real-tests", "hyper-v-windows-library-elevation.mjs"), "utf8");
     const sourceHostSpec = readFileSync(join(packageRoot, "scripts", "real-tests", "hyper-v-windows-library-host.test.ts"), "utf8");
     if (!sourceCommand.includes("run-vitest.mjs")
@@ -87,6 +95,11 @@ try {
         || !sourceCommand.includes("--library-fixture-only")
         || !sourceCommand.includes("tsconfig.hyper-v-windows.json")) {
         throw new Error("source Hyper-V library command does not dispatch to the opt-in Vitest spec");
+    }
+    if (!networkSourceCommand.includes("tsconfig.hyper-v-windows.json")
+        || !networkSourceCommand.includes("hyper-v-windows-network-host.mjs")
+        || !networkSourceCommand.includes("compiled entrypoint or host proof missing")) {
+        throw new Error("source Hyper-V network command does not support checkout and packaged execution");
     }
     if (!sourceCommand.includes("requestAdministrator")
         || !elevationHelper.includes("-Verb RunAs")
@@ -148,6 +161,17 @@ try {
     if (!packagedStandalone.includes("SKIP level 3 Hyper-V Windows library real-host test: Windows host required")) {
         throw new Error("packaged Hyper-V library real-test entrypoint did not reach the host gate");
     }
+    if (process.platform !== "win32") {
+        const packagedNetwork = run(process.execPath, [
+            npmCli,
+            "run",
+            "test:level3:hyper-v:windows:network:library",
+            "--ignore-scripts",
+        ], packageRoot);
+        if (!packagedNetwork.includes("SKIP Hyper-V Windows typed network real-host proof: Windows host required")) {
+            throw new Error("packaged Hyper-V network real-test entrypoint did not use its prebuilt host proof");
+        }
+    }
     const resolverUrl = pathToFileURL(join(packageRoot, "dist", "host-control", "hyper-v", "powershell-assets.js"));
     const { hyperVPowerShellAssetPath } = await import(resolverUrl.href);
 
@@ -173,7 +197,7 @@ try {
         replacementRejected = error instanceof Error && error.message === "hyper-v-powershell-asset-integrity-failed";
     }
     if (!replacementRejected) throw new Error("replaced packaged Hyper-V asset was accepted");
-    process.stdout.write("PASS packaged Hyper-V PowerShell assets and standalone library entrypoint\n");
+    process.stdout.write("PASS packaged Hyper-V PowerShell assets and standalone library entrypoints\n");
 } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
 }

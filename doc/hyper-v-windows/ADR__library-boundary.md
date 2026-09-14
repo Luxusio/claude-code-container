@@ -138,9 +138,15 @@ Slice 2A is a complete vertical migration of the Device Lab host-fabric path,
 not a second implementation that is run alongside the legacy path. It covers
 internal switch inspection/creation/notes repair/removal, the host `vEthernet`
 adapter and IPv4 gateway, NAT, attachment inspection, and the bounded exact-name
-VM inventory used to validate address allocations. The old host-fabric helpers
-may remain unused as a source-level rollback seam until real Windows proof
-passes, but the broker never dual-runs or dual-writes both paths.
+VM inventory used to validate address allocations. The production broker
+composition always supplies the typed host-network adapter. The old host-fabric
+helpers remain reachable only through the explicit injected compatibility seam
+used by legacy regression tests and source-level rollback; the broker never
+dual-runs or dual-writes both paths.
+
+Broker composition represents that routing seam as a closed `hostFabric`
+union: `typed`, `legacy-compatibility`, or `unavailable`. A runtime cannot carry
+typed and legacy executors at the same time.
 
 The dependency direction for this slice is strict:
 
@@ -185,7 +191,8 @@ after elevation and removes only proven identities in NAT → gateway → switch
 order.
 
 Device Lab continues to own and encode version-1 network intent/state. New
-token-scoped intent records enough identity to recover creations made before a
+token-scoped intent checkpoints exact switch, gateway, and NAT receipts after
+confirmed typed mutations so recovery can reconcile creations made before a
 state commit, while existing v1 records remain conservatively readable. This
 slice changes neither required fields and filenames nor public response/status
 shapes, and a failed or revision-conflicting operation does not partially
@@ -870,6 +877,9 @@ symlink fences.
 - A dedicated compiled-library host test can isolate native transport and
   lifecycle defects from Device Lab, image, guest, and MCP failures while its
   injected seams keep the same scenario mockable on Linux.
+- The network-only hardware proof is exposed as
+  `npm run test:level3:hyper-v:windows:network:library`; a non-Windows skip is
+  environment evidence, not a Windows PASS.
 
 ## Compatibility and rollback
 

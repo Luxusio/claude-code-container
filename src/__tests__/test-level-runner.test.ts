@@ -1136,6 +1136,7 @@ describe("test level runner", () => {
             "test:level3:hyper-v",
             "test:level3:hyper-v:windows",
             "test:level3:hyper-v:windows:library",
+            "test:level3:hyper-v:windows:network:library",
             "test:level3:hyper-v:linux",
         ]);
     });

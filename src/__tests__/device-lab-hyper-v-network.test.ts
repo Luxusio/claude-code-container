@@ -21,6 +21,11 @@ import {
     type HyperVWindowsNetworkClient,
 } from "../hyper-v-windows/index.js";
 import {
+    hyperVCleanupNetworkCommand,
+    hyperVEnsureNetworkCommand,
+    hyperVInspectNetworkAllocationsCommand,
+} from "../host-control/hyper-v/index.js";
+import {
     adoptHyperVLinuxSshHostIdentity,
     cachedHyperVOwnerDevicesReader,
     ensureHyperVNetworkAllocation,
@@ -99,6 +104,12 @@ function runtime(root: string, run?: HyperVNetworkRuntime["run"]): HyperVNetwork
         resolveElevationExecutable: () => "elevated-powershell.exe",
         run: run || (async () => setupObservation(root)),
         commandOutputBytes: 64 * 1024,
+        hostFabric: {
+            kind: "legacy-compatibility",
+            ensureCommand: hyperVEnsureNetworkCommand,
+            cleanupCommand: hyperVCleanupNetworkCommand,
+            inspectAllocationsCommand: hyperVInspectNetworkAllocationsCommand,
+        },
     };
 }
 
@@ -107,6 +118,11 @@ function typedHostFabricRuntime(
     options: {
         readonly attachVmAfterNatRemoval?: boolean;
         readonly initialIdentity?: { readonly marker: string; readonly natName: string };
+        readonly initialResources?: {
+            readonly switch?: boolean;
+            readonly gateway?: boolean;
+            readonly nat?: boolean;
+        };
         readonly administratorFailureCode?: string;
         readonly removeNatFailureCode?: string;
     } = {},
@@ -123,25 +139,31 @@ function typedHostFabricRuntime(
     const switchId = parseHyperVVirtualSwitchId(SWITCH_ID);
     const interfaceIndex = parseHyperVInterfaceIndex(42);
     if (options.initialIdentity) {
-        switches.push({
-            id: switchId,
-            name: parseHyperVVirtualSwitchName("CCC Device Lab"),
-            switchType: "Internal",
-            notes: options.initialIdentity.marker,
-        });
-        addresses.push({
-            interfaceIndex,
-            address: parseIPv4Address("172.29.0.1"),
-            prefixLength: parseIPv4PrefixLength(24),
-            prefixOrigin: "Manual",
-            suffixOrigin: "Manual",
-            addressState: "Preferred",
-        });
-        nats.push({
-            instanceId: parseHyperVNatInstanceId(NAT_INSTANCE_ID),
-            name: parseHyperVNatName(options.initialIdentity.natName),
-            internalAddressPrefix: parseIPv4Cidr("172.29.0.0/24"),
-        });
+        if (options.initialResources?.switch !== false) {
+            switches.push({
+                id: switchId,
+                name: parseHyperVVirtualSwitchName("CCC Device Lab"),
+                switchType: "Internal",
+                notes: options.initialIdentity.marker,
+            });
+        }
+        if (options.initialResources?.gateway !== false) {
+            addresses.push({
+                interfaceIndex,
+                address: parseIPv4Address("172.29.0.1"),
+                prefixLength: parseIPv4PrefixLength(24),
+                prefixOrigin: "Manual",
+                suffixOrigin: "Manual",
+                addressState: "Preferred",
+            });
+        }
+        if (options.initialResources?.nat !== false) {
+            nats.push({
+                instanceId: parseHyperVNatInstanceId(NAT_INSTANCE_ID),
+                name: parseHyperVNatName(options.initialIdentity.natName),
+                internalAddressPrefix: parseIPv4Cidr("172.29.0.0/24"),
+            });
+        }
     }
     const client: HyperVWindowsNetworkClient = {
         async getVMSwitches(selector) {
@@ -246,7 +268,8 @@ function typedHostFabricRuntime(
     };
     const network: HyperVNetworkRuntime = {
         ...runtime(root, legacyRun),
-        typedHostNetwork: {
+        hostFabric: {
+            kind: "typed",
             client,
             withAdministratorClient: async (operation) => {
                 if (options.administratorFailureCode) {
@@ -470,6 +493,120 @@ describe("Hyper-V network module", () => {
         expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
     });
 
+    it.each([
+        {
+            name: "whole fabric",
+            initialResources: { switch: false, gateway: false, nat: false },
+            mutations: ["create-switch", "create-gateway", "create-nat"],
+            evidenceKeys: ["switch", "gateway", "nat"],
+            managed: { managedSwitch: true, managedGateway: true, managedNat: true },
+        },
+        {
+            name: "gateway",
+            initialResources: { switch: true, gateway: false, nat: true },
+            mutations: ["create-gateway"],
+            evidenceKeys: ["gateway"],
+            managed: { managedSwitch: false, managedGateway: true, managedNat: false },
+        },
+    ])("restores exact typed $name ownership after the allocation state commit crashes", async ({
+        initialResources,
+        mutations: expectedMutations,
+        evidenceKeys,
+        managed,
+    }) => {
+        const root = privateRoot();
+        writeStableIntent(root);
+        const { network, mutations, legacyRun } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+            },
+            initialResources,
+        });
+        let safePathChecks = 0;
+        network.assertSafePath = () => {
+            safePathChecks += 1;
+            if (safePathChecks === 2) throw new Error("simulated-state-commit-failure");
+        };
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-failed",
+            preserveEvidence: true,
+        });
+        expect(mutations).toEqual(expectedMutations);
+        expect(legacyRun).not.toHaveBeenCalled();
+        expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
+        const checkpoint = JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8"));
+        expect(Object.keys(checkpoint.ownershipEvidence)).toEqual(evidenceKeys);
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(mutations).toEqual(expectedMutations);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject(managed);
+        expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(false);
+    });
+
+    it("checkpoints a newly created typed gateway into existing v1 state before allocation commit", async () => {
+        const root = privateRoot();
+        writeNetworkState(root);
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+            },
+            initialResources: { switch: true, gateway: false, nat: true },
+        });
+        let safePathChecks = 0;
+        network.assertSafePath = () => {
+            safePathChecks += 1;
+            if (safePathChecks === 2) throw new Error("simulated-state-commit-failure");
+        };
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-failed",
+            preserveEvidence: true,
+        });
+        expect(mutations).toEqual(["create-gateway"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: false,
+            allocations: [],
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(mutations).toEqual(["create-gateway"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: false,
+            allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID }],
+        });
+    });
+
     it("preserves a typed UAC cancellation in the existing bounded public diagnostic shape", async () => {
         const root = privateRoot();
         const { network, mutations } = typedHostFabricRuntime(root, {
@@ -641,8 +778,9 @@ describe("Hyper-V network module", () => {
             INCARNATION_ID,
         )).resolves.toMatchObject({
             ok: false,
-            error: "hyper-v-network-setup-failed",
-            detail: "hyper-v-network-conflict-nat-identity-conflict",
+            status: 409,
+            error: "hyper-v-network-allocation-failed",
+            detail: "hyper-v-network-nat-identity-conflict",
             preserveEvidence: true,
         });
         expect(mutations).toEqual([]);

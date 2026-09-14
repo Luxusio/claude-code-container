@@ -9428,27 +9428,36 @@ function hyperVNetworkRuntime(
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         commandOutputBytes: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         allocationReferenced: (allocation) => hyperVNetworkAllocationReferenced(allocation, readDevices),
-        ...(powershell && normalized.usesDefaultCommandRunner
+        hostFabric: powershell
             ? {
-                typedHostNetwork: {
-                    client: createDeviceLabHyperVWindowsNetworkClient({
-                        executable: powershell,
-                        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000),
-                        run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-                        session: brokerHyperVWindowsSession(powershell),
-                    }),
-                    withAdministratorClient: async <Result>(operation: (
-                        client: ReturnType<typeof createHyperVWindowsNetworkClient>,
-                    ) => Result | Promise<Result>) => withElevatedHyperVNetworkExecutor({
+                kind: "typed",
+                client: createDeviceLabHyperVWindowsNetworkClient({
+                    executable: powershell,
+                    timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000),
+                    run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+                    ...(normalized.usesDefaultCommandRunner
+                        ? { session: brokerHyperVWindowsSession(powershell) }
+                        : {}),
+                }),
+                withAdministratorClient: async <Result>(operation: (
+                    client: ReturnType<typeof createHyperVWindowsNetworkClient>,
+                ) => Result | Promise<Result>) => normalized.usesDefaultCommandRunner
+                    ? withElevatedHyperVNetworkExecutor({
                         executable: hyperVElevationExecutable(powershell),
                         deadlineUnixMilliseconds: typedDeadline(),
                         onBeforeElevation: () => process.stderr.write(
                             "REQUEST Windows is asking for Administrator permission via UAC to configure Hyper-V host networking\n",
                         ),
-                    }, (executor) => operation(createHyperVWindowsNetworkClient(executor))),
-                },
+                    }, (executor) => operation(createHyperVWindowsNetworkClient(executor)))
+                    : operation(createDeviceLabHyperVWindowsNetworkClient({
+                        executable: powershell,
+                        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000),
+                        run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+                    })),
             }
-            : {}),
+            : {
+                kind: "unavailable",
+            },
     };
 }
 

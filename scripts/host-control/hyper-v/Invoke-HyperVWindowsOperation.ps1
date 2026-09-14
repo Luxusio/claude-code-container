@@ -353,7 +353,18 @@ try {
                     # failure (authorization, VMMS/RPC failure, provider failure, and so on)
                     # must remain an error so callers never mistake an unavailable inventory
                     # for proof that a VM is absent.
-                    if ([string]$QueryError.CategoryInfo.Category -ne "ObjectNotFound") { throw $QueryError }
+                    $MissingVmErrorId = "ObjectNotFound,Microsoft.HyperV.PowerShell.Commands.GetVM"
+                    $MissingVmTarget = if (-not [string]::IsNullOrEmpty([string]$QueryError.TargetObject)) {
+                        [string]$QueryError.TargetObject
+                    } else {
+                        [string]$QueryError.CategoryInfo.TargetName
+                    }
+                    if ([string]$QueryError.CategoryInfo.Category -ne "ObjectNotFound" -or
+                        [string]$QueryError.FullyQualifiedErrorId -ne $MissingVmErrorId -or
+                        [string]::IsNullOrEmpty($MissingVmTarget) -or
+                        $RequestedNames -cnotcontains $MissingVmTarget) {
+                        throw $QueryError
+                    }
                 }
                 $Items = @($MatchedVirtualMachines | Where-Object { $RequestedNames -ccontains [string]$_.Name } | ForEach-Object {
                     [ordered]@{

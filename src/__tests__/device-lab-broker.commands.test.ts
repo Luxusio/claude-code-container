@@ -6,13 +6,28 @@ import { hostname, tmpdir, uptime } from "os";
 import { dirname, join } from "path";
 import { runInNewContext } from "vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "../device-lab-broker.js";
+import { createDeviceBrokerServer as createRawDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "../device-lab-broker.js";
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "../device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity } from "../device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "../device-lab-shared-state.js";
 import { hyperVVmName } from "../host-control/hyper-v/index.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP } from "../hyper-v-windows/low-level/powershell-transport.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
+import {
+    configureTypedHyperVNetworkOperations,
+    withTypedHyperVNetworkOperations,
+} from "./helpers/hyper-v-network-operation-simulator.js";
+
+function createDeviceBrokerServer(options: Parameters<typeof createRawDeviceBrokerServer>[0]) {
+    return createRawDeviceBrokerServer({
+        ...options,
+        ...(options.commandRunner
+            ? { commandRunner: withTypedHyperVNetworkOperations(options.commandRunner, {
+                stateFile: join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
+            }) }
+            : {}),
+    });
+}
 
 // The typed Windows library never puts its operation script on the command line. The fixed
 // bootstrap reads one Base64 ASCII blob from stdin and runs the { script, input } envelope it
@@ -1034,6 +1049,42 @@ describe("device-lab host broker lifecycle commands", () => {
                     : {}),
             };
         });
+        configureTypedHyperVNetworkOperations(commandRunner, {
+            beforeOperation(request) {
+                if (request.operation === "Remove-NetNat" && networkCleanupFailure === "nonzero") {
+                    return {
+                        status: null,
+                        stdout: "",
+                        stderr: "",
+                        error: "hyper-v-network-elevation-request-failed",
+                    };
+                }
+                if (request.operation === "Remove-NetNat" && networkCleanupFailure === "invalid") {
+                    return { status: 0, stdout: "malformed network cleanup output", stderr: "" };
+                }
+                if (request.operation === "Get-VMNetworkAdapter" && networkCleanupFailure === "in-use") {
+                    return {
+                        status: 0,
+                        stdout: JSON.stringify({
+                            schemaVersion: 1,
+                            operation: "Get-VMNetworkAdapter",
+                            ok: true,
+                            items: [{
+                                vmId,
+                                vmName,
+                                name: "Network Adapter",
+                                switchId: "00000000-0000-0000-0000-000000000001",
+                                switchName: "CCC Device Lab",
+                                status: "Ok",
+                                managementOperatingSystem: false,
+                            }],
+                        }),
+                        stderr: "",
+                    };
+                }
+                return null;
+            },
+        });
         const server = createDeviceBrokerServer({
             cwd,
             host: "127.0.0.1",
@@ -1662,7 +1713,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const providerCleanupFailureBody = await providerCleanupFailed.json();
             expect(providerCleanupFailureBody).toEqual(expect.objectContaining({
                 error: "hyper-v-delete-reconciliation-cleanup-failed",
-                detail: expect.stringContaining("hyper-v-network-cleanup-failed"),
+                detail: expect.stringContaining("hyper-v-network-elevation-request-failed"),
             }));
             expect(JSON.stringify(providerCleanupFailureBody))
                 .not.toContain("network-cleanup-host-secret");
@@ -1683,7 +1734,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(invalidProviderCleanupBody).toEqual(expect.objectContaining({
                 error: "hyper-v-delete-reconciliation-cleanup-failed",
                 detail: expect.stringContaining(
-                    "hyper-v-network-cleanup-invalid-result",
+                    "hyper-v-ps-response-malformed",
                 ),
             }));
             expect(JSON.stringify(invalidProviderCleanupBody))
@@ -1726,8 +1777,10 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner).toHaveBeenCalledTimes(callsAfterDelete);
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-base-image-profile-conflict"))).toHaveLength(1);
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-orphan-vm-ownership-mismatch"))).toHaveLength(1);
-            expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
-            expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(4);
+            // The broker now routes host-network creation through the typed primitive adapter;
+            // the retired composite setup script must never run in this production-shaped flow.
+            expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(0);
+            expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(0);
             const snapshotRepairCalls = commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("Repair-CccVmSnapshotState"));
             // Unchanged by the drift case: it clears the preceding journal itself, so the repair
             // that used to fire on the following delete's pre-operation reconcile now fires inside
@@ -1757,8 +1810,10 @@ describe("device-lab host broker lifecycle commands", () => {
             // own assertion checks. The per-case split is not spelled out because the obvious
             // accounting — "each contained case costs a stop plus an ownership read" — was measured
             // and is not what the cases actually cost; a plausible breakdown is worse than none.
-            // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(281);
+            // Host-network composition now omits the two legacy setup and four legacy cleanup
+            // composite calls asserted above. This guard catches runaway provider traffic, so it
+            // stays exact across that six-call reduction.
+            expect(commandRunner).toHaveBeenCalledTimes(275);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

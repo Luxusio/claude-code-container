@@ -5,7 +5,7 @@ import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     compareHyperVLinuxEd25519HostKeyFingerprint,
-    createDeviceBrokerServer,
+    createDeviceBrokerServer as createRawDeviceBrokerServer,
     DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
     DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS,
     DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
@@ -22,6 +22,21 @@ import {
     type HyperVWindowsExecutionRequest,
 } from "../hyper-v-windows/index.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
+import {
+    configureTypedHyperVNetworkOperations,
+    withTypedHyperVNetworkOperations,
+} from "./helpers/hyper-v-network-operation-simulator.js";
+
+function createDeviceBrokerServer(options: Parameters<typeof createRawDeviceBrokerServer>[0]) {
+    return createRawDeviceBrokerServer({
+        ...options,
+        ...(options.commandRunner
+            ? { commandRunner: withTypedHyperVNetworkOperations(options.commandRunner, {
+                stateFile: join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
+            }) }
+            : {}),
+    });
+}
 
 function providerScript(command: { args?: string[]; input?: string }): string {
     if (command.args?.at(-1) === "-" && typeof command.input === "string") return command.input;
@@ -435,6 +450,18 @@ describe("device-lab Hyper-V broker", () => {
             }
             return { ...command, status: 1, stdout: "", stderr: "stop after network setup" };
         });
+        let typedNetworkMutationAttempts = 0;
+        configureTypedHyperVNetworkOperations(commandRunner, {
+            beforeOperation(request) {
+                if (request.operation !== "New-VMSwitch" || typedNetworkMutationAttempts++ > 0) return null;
+                return {
+                    status: null,
+                    stdout: "",
+                    stderr: "",
+                    error: "hyper-v-network-elevation-handshake-timeout",
+                };
+            },
+        });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
         try {
             const baseUrl = await listen(server);
@@ -448,16 +475,14 @@ describe("device-lab Hyper-V broker", () => {
             const firstBody = await first.json();
             expect(firstBody).toEqual(expect.objectContaining({
                 error: "hyper-v-network-setup-failed",
-                detail: "hyper-v-network-pipe-handshake-timeout",
+                detail: "hyper-v-network-elevation-handshake-timeout",
                 execution: expect.objectContaining({
                     provider: "hyper-v",
-                    status: 1,
-                    timedOut: true,
-                    stdoutPresent: true,
-                    stderrPresent: true,
+                    status: null,
+                    stdoutPresent: false,
+                    stderrPresent: false,
                     outputRedacted: true,
-                    diagnosticCode: "hyper-v-network-pipe-handshake-timeout",
-                    inputConfigured: true,
+                    diagnosticCode: "hyper-v-network-elevation-handshake-timeout",
                 }),
             }));
             expect(firstBody.execution).not.toHaveProperty("command");
@@ -482,11 +507,8 @@ describe("device-lab Hyper-V broker", () => {
             expect(secondBody.result.execution).not.toHaveProperty("command");
             expect(JSON.stringify(secondBody)).not.toContain('"privateRoot"');
             expect(JSON.stringify(secondBody)).not.toContain("-EncodedCommand");
-            expect(networkScripts).toHaveLength(2);
-            expect(powerShellString(networkScripts[1], "NatName")).toBe(powerShellString(networkScripts[0], "NatName"));
-            expect(powerShellString(networkScripts[1], "Marker")).toBe(powerShellString(networkScripts[0], "Marker"));
-            expect(networkScripts[1]).toContain("$AllowExistingNat = $false");
-            expect(networkScripts[1]).toContain("$AllowExistingNat -or $ExistingSwitchOwned");
+            expect(networkScripts).toEqual([]);
+            expect(typedNetworkMutationAttempts).toBe(2);
             expect(existsSync(intentPath)).toBe(false);
             expect(existsSync(join(
                 process.env.HOME!,
@@ -593,7 +615,9 @@ describe("device-lab Hyper-V broker", () => {
             expect(response.status).toBeGreaterThanOrEqual(400);
             const body = await response.json();
             expect(createReached, JSON.stringify(body)).toBe(true);
-            expect(cleanupCalls).toBe(1);
+            // The injected typed simulator owns host-fabric cleanup; the legacy composite
+            // command runner must not receive a cleanup program.
+            expect(cleanupCalls).toBe(0);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -676,7 +700,8 @@ describe("device-lab Hyper-V broker", () => {
                 body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "stale-intent", name: "Stale intent", profile: "ubuntu-lts" } }),
             });
             expect(response.status).toBeGreaterThanOrEqual(400);
-            expect(networkReached).toBe(true);
+            expect(networkReached).toBe(false);
+            expect(existsSync(intentPath)).toBe(false);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -903,6 +928,17 @@ describe("device-lab Hyper-V broker", () => {
             }
             if (script.includes("$CreatedVm = New-VM")) throw new Error("provider must not run after the operation deadline");
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
+        });
+        let typedNatCreated = false;
+        configureTypedHyperVNetworkOperations(commandRunner, {
+            onOperation(request) {
+                if (request.operation === "New-NetNat") {
+                    typedNatCreated = true;
+                } else if (typedNatCreated && request.operation === "Get-NetNat") {
+                    typedNatCreated = false;
+                    deadlineChecksBeforeExpiry = 1;
+                }
+            },
         });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
         try {
@@ -1730,6 +1766,9 @@ describe("device-lab Hyper-V broker", () => {
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
+        configureTypedHyperVNetworkOperations(commandRunner, {
+            natInstanceIdOverride: "ccc-nat-instance-replaced",
+        });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
         try {
             const baseUrl = await listen(server);
@@ -1751,7 +1790,7 @@ describe("device-lab Hyper-V broker", () => {
         }
     });
 
-    it("reports failed provider compensation when the initial network state cannot be committed", async () => {
+    it("preserves typed ownership receipts when the initial network state cannot be committed", async () => {
         const cwd = join(process.env.HOME!, "project-network-commit-failure");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -1799,6 +1838,11 @@ describe("device-lab Hyper-V broker", () => {
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
+        configureTypedHyperVNetworkOperations(commandRunner, {
+            onOperation(request) {
+                if (request.operation === "New-NetNat") mkdirSync(networkStatePath, { recursive: true });
+            },
+        });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
         try {
             const baseUrl = await listen(server);
@@ -1808,14 +1852,13 @@ describe("device-lab Hyper-V broker", () => {
                 body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, name: "Network commit failure", profile: "ubuntu-lts" } }),
             });
             const body = await response.json();
-            expect(response.status, JSON.stringify(body)).toBe(502);
-            expect(JSON.stringify(body)).toContain("hyper-v-network-allocation-cleanup-failed");
+            expect(response.status, JSON.stringify(body)).toBe(409);
             expect(body).toEqual(expect.objectContaining({
-                detail: "hyper-v-network-cleanup-failed",
+                error: "hyper-v-network-allocation-failed",
             }));
             expect(JSON.stringify(body)).not.toContain("simulated compensation failure");
             expect(JSON.stringify(body)).not.toContain(profileRoot);
-            expect(cleanupCalls).toBe(1);
+            expect(cleanupCalls).toBe(0);
             expect(body).toEqual(expect.objectContaining({ artifactCleanup: expect.objectContaining({ preserved: true }) }));
             const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
             expect(existsSync(join(privateRoot, "incarnation.json"))).toBe(true);
@@ -2086,6 +2129,12 @@ describe("device-lab Hyper-V broker", () => {
                                 ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: true } : {}) }
                                 : { ok: true, vmId, vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: vmState, status: "Operating normally", diskPath, checkpointPolicy: "Production", snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
             return { ...command, status: 0, stdout: JSON.stringify(result), stderr: "" };
+        });
+        configureTypedHyperVNetworkOperations(commandRunner, {
+            onOperation(request) {
+                if (request.operation === "New-VMSwitch") elevatedNetworkSetups += 1;
+                if (request.operation === "Remove-NetNat") elevatedNetworkCleanups += 1;
+            },
         });
         const server = createDeviceBrokerServer({
             cwd,

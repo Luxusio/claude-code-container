@@ -44,7 +44,13 @@ const INTENT_KEYS = new Set([
     "prefix",
     "gateway",
     "createdAt",
+    "ownershipEvidence",
 ]);
+
+const OWNERSHIP_EVIDENCE_KEYS = new Set(["switch", "gateway", "nat"]);
+const SWITCH_OWNERSHIP_EVIDENCE_KEYS = new Set(["switchName", "switchId", "marker"]);
+const GATEWAY_OWNERSHIP_EVIDENCE_KEYS = new Set(["switchName", "switchId", "marker", "prefix", "gateway"]);
+const NAT_OWNERSHIP_EVIDENCE_KEYS = new Set(["natName", "natInstanceId", "marker", "prefix"]);
 
 const ALLOCATION_KEYS = new Set([
     "ownerId",
@@ -92,6 +98,28 @@ export type HyperVNetworkIntent = {
     prefix: string;
     gateway: string;
     createdAt: string;
+    ownershipEvidence?: HyperVNetworkIntentOwnershipEvidence;
+};
+
+export type HyperVNetworkIntentOwnershipEvidence = {
+    switch?: {
+        switchName: string;
+        switchId: string;
+        marker: string;
+    };
+    gateway?: {
+        switchName: string;
+        switchId: string;
+        marker: string;
+        prefix: string;
+        gateway: string;
+    };
+    nat?: {
+        natName: string;
+        natInstanceId: string;
+        marker: string;
+        prefix: string;
+    };
 };
 
 export type HyperVNetworkResourceProvenance<Identity> =
@@ -145,6 +173,73 @@ function validNatInstanceId(value: unknown): value is string {
         && value.length > 0
         && value.length <= NETWORK_NAT_INSTANCE_ID_MAX_LENGTH
         && !/[\u0000-\u001f]/.test(value);
+}
+
+function validNetworkMarker(value: unknown): value is string {
+    return typeof value === "string" && NETWORK_MARKER_PATTERN.test(value);
+}
+
+function decodeIntentOwnershipEvidence(value: unknown): HyperVNetworkIntentOwnershipEvidence {
+    if (!isRecord(value) || !hasOnlyKeys(value, OWNERSHIP_EVIDENCE_KEYS)) {
+        throw new Error("hyper-v-network-intent-invalid");
+    }
+
+    const evidence: HyperVNetworkIntentOwnershipEvidence = {};
+    if (value.switch !== undefined) {
+        if (!isRecord(value.switch)
+            || !hasOnlyKeys(value.switch, SWITCH_OWNERSHIP_EVIDENCE_KEYS)
+            || value.switch.switchName !== HYPER_V_NETWORK_SWITCH
+            || typeof value.switch.switchId !== "string"
+            || !NETWORK_SWITCH_ID_PATTERN.test(value.switch.switchId)
+            || !validNetworkMarker(value.switch.marker)) {
+            throw new Error("hyper-v-network-intent-invalid");
+        }
+        evidence.switch = {
+            switchName: value.switch.switchName,
+            switchId: value.switch.switchId.toLowerCase(),
+            marker: value.switch.marker,
+        };
+    }
+    if (value.gateway !== undefined) {
+        if (!isRecord(value.gateway)
+            || !hasOnlyKeys(value.gateway, GATEWAY_OWNERSHIP_EVIDENCE_KEYS)
+            || value.gateway.switchName !== HYPER_V_NETWORK_SWITCH
+            || typeof value.gateway.switchId !== "string"
+            || !NETWORK_SWITCH_ID_PATTERN.test(value.gateway.switchId)
+            || !validNetworkMarker(value.gateway.marker)
+            || value.gateway.prefix !== HYPER_V_NETWORK_PREFIX
+            || value.gateway.gateway !== HYPER_V_NETWORK_GATEWAY) {
+            throw new Error("hyper-v-network-intent-invalid");
+        }
+        evidence.gateway = {
+            switchName: value.gateway.switchName,
+            switchId: value.gateway.switchId.toLowerCase(),
+            marker: value.gateway.marker,
+            prefix: value.gateway.prefix,
+            gateway: value.gateway.gateway,
+        };
+    }
+    if (value.nat !== undefined) {
+        if (!isRecord(value.nat)
+            || !hasOnlyKeys(value.nat, NAT_OWNERSHIP_EVIDENCE_KEYS)
+            || typeof value.nat.natName !== "string"
+            || !validNatInstanceId(value.nat.natInstanceId)
+            || !validNetworkMarker(value.nat.marker)
+            || !isHyperVCccNetworkIdentity(value.nat.marker, value.nat.natName)
+            || value.nat.prefix !== HYPER_V_NETWORK_PREFIX) {
+            throw new Error("hyper-v-network-intent-invalid");
+        }
+        evidence.nat = {
+            natName: value.nat.natName,
+            natInstanceId: value.nat.natInstanceId,
+            marker: value.nat.marker,
+            prefix: value.nat.prefix,
+        };
+    }
+    if (!evidence.switch && !evidence.gateway && !evidence.nat) {
+        throw new Error("hyper-v-network-intent-invalid");
+    }
+    return evidence;
 }
 
 export function hyperVDeterministicMacAddress(ownerId: string, deviceId: string, salt = 0): string {
@@ -338,7 +433,8 @@ export function decodeHyperVNetworkIntent(value: unknown): HyperVNetworkIntent {
         || !isHyperVCccNetworkIdentity(value.marker, value.natName)
         || value.prefix !== HYPER_V_NETWORK_PREFIX
         || value.gateway !== HYPER_V_NETWORK_GATEWAY
-        || typeof value.createdAt !== "string") {
+        || typeof value.createdAt !== "string"
+        || (value.ownershipEvidence !== undefined && !isRecord(value.ownershipEvidence))) {
         throw new Error("hyper-v-network-intent-invalid");
     }
 
@@ -348,6 +444,9 @@ export function decodeHyperVNetworkIntent(value: unknown): HyperVNetworkIntent {
         throw new Error("hyper-v-network-intent-invalid");
     }
 
+    const ownershipEvidence = value.ownershipEvidence === undefined
+        ? undefined
+        : decodeIntentOwnershipEvidence(value.ownershipEvidence);
     return {
         version: 1,
         token: value.token,
@@ -357,6 +456,7 @@ export function decodeHyperVNetworkIntent(value: unknown): HyperVNetworkIntent {
         prefix: value.prefix,
         gateway: value.gateway,
         createdAt: value.createdAt,
+        ...(ownershipEvidence ? { ownershipEvidence } : {}),
     };
 }
 
@@ -370,6 +470,7 @@ export function encodeHyperVNetworkIntent(intent: HyperVNetworkIntent): HyperVNe
         prefix: intent.prefix,
         gateway: intent.gateway,
         createdAt: intent.createdAt,
+        ...(intent.ownershipEvidence === undefined ? {} : { ownershipEvidence: intent.ownershipEvidence }),
     });
 }
 

@@ -220,7 +220,9 @@ createHyperVHostNetworkSpec({
 declare const client: HyperVWindowsNetworkClient;
 
 // @ts-expect-error raw strings do not cross a typed mutation boundary
-client.removeVMSwitch({ selector: { kind: "name", name: "ccc-internal" } });
+client.removeVMSwitch({
+  identity: { id: "11111111-2222-3333-4444-555555555555", name: "ccc-internal" },
+});
 ```
 
 Positive and negative fixtures MUST compile under a focused `noEmit`
@@ -265,9 +267,10 @@ result is `indeterminate` and MUST NOT be automatically retried or compensated.
 Fresh exact ID/name inspection resolves it as follows: expected resource and
 state confirms success; proven absence permits a later create; same name with a
 different ID is conflict; ambiguous evidence fails closed while preserving
-intent/state. Confirmed rollback receipts execute in exact reverse order by ID,
-and an indeterminate action is never rolled back before reinspection proves
-what occurred.
+intent/state. Each confirmed typed mutation checkpoints an exact resource
+receipt in the intent. Recovery consumes those receipts through the same
+NAT -> gateway -> switch cleanup planner; an indeterminate action is never
+removed before reinspection proves what occurred.
 
 Networking cmdlets MUST be module-qualified. Hyper-V, NetAdapter, NetTCPIP, and
 NetNat manifests are resolved only beneath protected System32 module roots;
@@ -515,6 +518,10 @@ fixtures, records ordinary/elevated session invocation counts, proves exact-ID
 cleanup without touching unrelated resources, and verifies one UAC prompt per
 ensure or cleanup attempt. Cold/warm time and legacy-versus-typed native
 invocation counts are recorded rather than assumed equivalent.
+
+The discoverable network-only command is
+`npm run test:level3:hyper-v:windows:network:library`. A non-Windows run reports
+an explicit skip and does not count as the Windows hardware proof.
 
 ## Standalone real-host verification contract
 

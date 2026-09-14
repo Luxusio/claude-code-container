@@ -95,8 +95,13 @@ function memoryClient(
         readonly mutationAppliedThenLost?: string;
         readonly replaceCreatedSwitchBeforeConfirmation?: boolean;
         readonly attachVmAfterMutation?: string;
+        readonly hostAdapterMissingReadsAfterCreate?: number;
+        readonly gatewayTentativeReadsAfterCreate?: number;
+        readonly reappearAfterRemoval?: string;
     } = {},
 ): HyperVWindowsNetworkClient {
+    let remainingMissingHostAdapterReads = 0;
+    let remainingTentativeGatewayReads = 0;
     function recordMutation(kind: string): void {
         state.actions.push(kind);
         if (options.attachVmAfterMutation === kind) {
@@ -136,6 +141,7 @@ function memoryClient(
                 status: "Up",
                 interfaceDescription: "Hyper-V Virtual Ethernet Adapter",
             });
+            remainingMissingHostAdapterReads = options.hostAdapterMissingReadsAfterCreate ?? 0;
             recordMutation("create-switch");
             if (options.replaceCreatedSwitchBeforeConfirmation) {
                 state.virtualSwitches.splice(0, 1, { ...value, id: SUCCESSOR_SWITCH_ID });
@@ -153,6 +159,14 @@ function memoryClient(
             const index = state.virtualSwitches.findIndex((item) => item.id === request.identity.id);
             if (index >= 0) state.virtualSwitches.splice(index, 1);
             recordMutation("remove-switch");
+            if (options.reappearAfterRemoval === "remove-switch") {
+                state.virtualSwitches.push({
+                    id: request.identity.id,
+                    name: request.identity.name,
+                    switchType: "Internal",
+                    notes: NOTES,
+                });
+            }
         },
         async getAllVMNetworkAdapters() {
             state.reads.push("vm-adapters:all");
@@ -163,22 +177,35 @@ function memoryClient(
         },
         async getHostNetworkAdapters(request) {
             state.reads.push(`host-adapter:${request.name}`);
+            if (remainingMissingHostAdapterReads > 0) {
+                remainingMissingHostAdapterReads -= 1;
+                return [];
+            }
             return state.hostAdapters.filter((item) => item.name === request.name);
         },
         async getNetIPAddresses(selector) {
             state.reads.push(`ip:${selector.kind}`);
-            return selector.kind === "all-ipv4"
+            const values = selector.kind === "all-ipv4"
                 ? [...state.ipv4Addresses]
                 : state.ipv4Addresses.filter((item) => item.interfaceIndex === selector.interfaceIndex);
+            if (remainingTentativeGatewayReads > 0) {
+                remainingTentativeGatewayReads -= 1;
+                if (remainingTentativeGatewayReads === 0) {
+                    state.ipv4Addresses = state.ipv4Addresses.map((item) =>
+                        item.addressState === "Tentative" ? { ...item, addressState: "Preferred" } : item);
+                }
+            }
+            return values;
         },
         async createNetIPAddress(request) {
             const value: HyperVNetIPAddress = {
                 ...request,
                 prefixOrigin: "Manual",
                 suffixOrigin: "Manual",
-                addressState: "Preferred",
+                addressState: options.gatewayTentativeReadsAfterCreate ? "Tentative" : "Preferred",
             };
             state.ipv4Addresses.push(value);
+            remainingTentativeGatewayReads = options.gatewayTentativeReadsAfterCreate ?? 0;
             recordMutation("create-gateway");
             return value;
         },
@@ -189,6 +216,14 @@ function memoryClient(
                 && item.prefixLength === request.prefixLength);
             if (index >= 0) state.ipv4Addresses.splice(index, 1);
             recordMutation("remove-gateway");
+            if (options.reappearAfterRemoval === "remove-gateway") {
+                state.ipv4Addresses.push({
+                    ...request,
+                    prefixOrigin: "Manual",
+                    suffixOrigin: "Manual",
+                    addressState: "Preferred",
+                });
+            }
         },
         async getNetNats(selector) {
             state.reads.push(`nat:${selector.kind}`);
@@ -212,6 +247,13 @@ function memoryClient(
             const index = state.nats.findIndex((item) => item.instanceId === request.identity.instanceId);
             if (index >= 0) state.nats.splice(index, 1);
             recordMutation("remove-nat");
+            if (options.reappearAfterRemoval === "remove-nat") {
+                state.nats.push({
+                    instanceId: request.identity.instanceId,
+                    name: request.identity.name,
+                    internalAddressPrefix: NETWORK.cidr,
+                });
+            }
         },
     };
 }
@@ -340,6 +382,46 @@ describe("Device Lab Hyper-V network adapter", () => {
         ]);
         expect(administrator.count()).toBe(1);
         expect(state.actions).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(state.reads.filter((entry) => entry === "switch:name")).toHaveLength(5);
+    });
+
+    it.each([
+        ["host adapter visibility", { hostAdapterMissingReadsAfterCreate: 1 }],
+        ["tentative gateway", { gatewayTentativeReadsAfterCreate: 1 }],
+    ] as const)("reinspects bounded transient %s observations without repeating mutations", async (_case, options) => {
+        const state = emptyState();
+        const administrator = administratorScope(memoryClient(state, options));
+
+        const result = await ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: FRESH,
+            withAdministratorClient: administrator.scope,
+        });
+
+        expect(result.outcome.kind).toBe("settled");
+        expect(state.actions).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(state.reads.filter((entry) => entry === "switch:name")).toHaveLength(6);
+    });
+
+    it("stops after three transient observations without repeating the preceding mutation", async () => {
+        const state = emptyState();
+        const administrator = administratorScope(memoryClient(state, { hostAdapterMissingReadsAfterCreate: 10 }));
+
+        const result = await ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: FRESH,
+            withAdministratorClient: administrator.scope,
+        });
+
+        expect(result.outcome).toEqual({
+            kind: "indeterminate",
+            operation: "ensure",
+            reason: "host-adapter-missing",
+        });
+        expect(result.completedActions).toHaveLength(1);
+        expect(state.actions).toEqual(["create-switch"]);
         expect(state.reads.filter((entry) => entry === "switch:name")).toHaveLength(5);
     });
 
@@ -607,6 +689,44 @@ describe("Device Lab Hyper-V network adapter", () => {
         expect(state.actions).toEqual(["remove-nat"]);
         expect(state.ipv4Addresses).toHaveLength(1);
         expect(state.virtualSwitches).toHaveLength(1);
+    });
+
+    it.each([
+        ["remove-nat", "nat-successor-conflict", (state: MemoryState) => state],
+        ["remove-gateway", "gateway-conflict", (state: MemoryState) => {
+            state.nats.length = 0;
+            return state;
+        }],
+        ["remove-switch", "switch-successor-conflict", (state: MemoryState) => {
+            state.nats.length = 0;
+            state.ipv4Addresses.length = 0;
+            return state;
+        }],
+    ] as const)("stops after a completed %s receipt reappears on fresh inspection", async (
+        removedAction,
+        expectedReason,
+        arrange,
+    ) => {
+        const state = emptyState();
+        addSettledHostFabric(state);
+        arrange(state);
+        const administrator = administratorScope(memoryClient(state, { reappearAfterRemoval: removedAction }));
+
+        const result = await cleanupDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: managedCleanup(),
+            withAdministratorClient: administrator.scope,
+        });
+
+        expect(result.outcome).toEqual({
+            kind: "conflict",
+            operation: "cleanup",
+            reason: expectedReason,
+        });
+        expect(result.completedActions).toHaveLength(1);
+        expect(result.completedActions[0]?.actionKind).toBe(removedAction);
+        expect(state.actions).toEqual([removedAction]);
     });
 
     it.each([

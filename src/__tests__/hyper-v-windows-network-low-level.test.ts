@@ -366,5 +366,7 @@ describe("Hyper-V Windows network PowerShell asset", () => {
         expect(source).not.toContain("Import-Module NetNat");
         expect(source).toContain("-ErrorVariable +QueryErrors");
         expect(source).toContain('$QueryError.CategoryInfo.Category -ne "ObjectNotFound"');
+        expect(source).toContain('"ObjectNotFound,Microsoft.HyperV.PowerShell.Commands.GetVM"');
+        expect(source).toContain('$RequestedNames -cnotcontains $MissingVmTarget');
     });
 });
