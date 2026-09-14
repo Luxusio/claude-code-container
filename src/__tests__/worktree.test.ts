@@ -5034,15 +5034,15 @@ describe("fixBrokenWorktree", () => {
         mkdirSync(destination, { recursive: true });
         writeFileSync(join(destination, "wip.ts"), "preserve me");
         const dependencyTarget = join(destination, "node_modules", ".pnpm", "native-target");
-        const dependencyLink = join(
-            destination,
+        const dependencyLinkParts = [
             "node_modules",
             ".pnpm",
             "@ast-grep+napi@0.40.5",
             "node_modules",
             "@ast-grep",
             "napi-linux-x64-gnu",
-        );
+        ] as const;
+        const dependencyLink = join(destination, ...dependencyLinkParts);
         mkdirSync(dependencyTarget, { recursive: true });
         writeFileSync(join(dependencyTarget, "binding.node"), "generated");
         mkdirSync(dirname(dependencyLink), { recursive: true });
@@ -5057,6 +5057,7 @@ describe("fixBrokenWorktree", () => {
             notice += String(chunk);
             return true;
         }) as typeof process.stderr.write);
+        let cleanupAttempts = 0;
 
         const result = fixBrokenWorktree(
             tmpDir,
@@ -5064,6 +5065,13 @@ describe("fixBrokenWorktree", () => {
             repoName,
             "pnpm-links",
             true,
+            {
+                removeMergedBackup: (path) => {
+                    cleanupAttempts += 1;
+                    expect(existsSync(join(path, ...dependencyLinkParts))).toBe(false);
+                    rmSync(path, { recursive: true, force: true });
+                },
+            },
         );
 
         expect(result).not.toBeNull();
@@ -5075,6 +5083,7 @@ describe("fixBrokenWorktree", () => {
         expect(notice).toContain("package-manager install");
         expect(notice).toContain("\\u202e");
         expect(notice).not.toContain(repoName);
+        expect(cleanupAttempts).toBe(1);
     });
 
     it("still refuses an unignored dependency symlink and restores the broken content", () => {

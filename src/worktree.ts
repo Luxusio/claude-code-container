@@ -49,10 +49,86 @@ function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
     }
 }
 
+type CapturedIgnoredDependencyLink = {
+    readonly path: string;
+    readonly parentIdentity: DirectoryIdentity;
+    readonly dev: string;
+    readonly ino: string;
+};
+
+type CapturedIgnoredDependencyTree = {
+    readonly sourcePath: string;
+    readonly sourceIdentity: DirectoryIdentity;
+    readonly destinationPath: string;
+    readonly links: CapturedIgnoredDependencyLink[];
+};
+
 type PreservedContentMerge = {
     readonly worktreeRoot: string;
-    readonly skippedIgnoredDependencyTrees: string[];
+    readonly skippedIgnoredDependencyTrees: CapturedIgnoredDependencyTree[];
 };
+
+function captureIgnoredDependencyTree(
+    sourcePath: string,
+    destinationPath: string,
+): CapturedIgnoredDependencyTree {
+    const sourceIdentity = captureDirectoryIdentity(sourcePath);
+    const links: CapturedIgnoredDependencyLink[] = [];
+    const pending = [{ path: sourcePath, identity: sourceIdentity }];
+    while (pending.length > 0) {
+        const current = pending.pop()!;
+        assertDirectoryIdentity(current.path, current.identity);
+        const entries = readdirSync(current.path);
+        assertDirectoryIdentity(current.path, current.identity);
+        for (const entry of entries) {
+            const entryPath = join(current.path, entry);
+            const observed = lstatSync(entryPath, { bigint: true });
+            if (observed.isSymbolicLink()) {
+                links.push({
+                    path: entryPath,
+                    parentIdentity: current.identity,
+                    dev: observed.dev.toString(),
+                    ino: observed.ino.toString(),
+                });
+            } else if (observed.isDirectory()) {
+                pending.push({
+                    path: entryPath,
+                    identity: captureDirectoryIdentity(entryPath),
+                });
+            }
+        }
+        assertDirectoryIdentity(current.path, current.identity);
+    }
+    return {
+        sourcePath,
+        sourceIdentity,
+        destinationPath,
+        links,
+    };
+}
+
+function unlinkCapturedIgnoredDependencyLinks(
+    trees: readonly CapturedIgnoredDependencyTree[],
+): void {
+    for (const tree of trees) {
+        assertDirectoryIdentity(tree.sourcePath, tree.sourceIdentity);
+        for (const link of tree.links) {
+            assertDirectoryIdentity(dirname(link.path), link.parentIdentity);
+            const observed = lstatSync(link.path, { bigint: true });
+            if (!observed.isSymbolicLink()
+                || observed.dev.toString() !== link.dev
+                || observed.ino.toString() !== link.ino) {
+                throw new Error(`Ignored dependency link identity changed before cleanup: ${link.path}`);
+            }
+            unlinkSync(link.path);
+            if (pathExistsStrict(link.path)) {
+                throw new Error(`Ignored dependency link was not removed: ${link.path}`);
+            }
+            assertDirectoryIdentity(dirname(link.path), link.parentIdentity);
+        }
+        assertDirectoryIdentity(tree.sourcePath, tree.sourceIdentity);
+    }
+}
 
 function ignoredGeneratedDependencyTree(
     src: string,
@@ -91,7 +167,7 @@ function ignoredGeneratedDependencyTree(
         throw new Error(`Unable to inspect ignored dependency path '${dest}': ${detail}`);
     }
     if (ignored.status !== 0) return false;
-    merge.skippedIgnoredDependencyTrees.push(dest);
+    merge.skippedIgnoredDependencyTrees.push(captureIgnoredDependencyTree(src, dest));
     return true;
 }
 
@@ -7148,13 +7224,17 @@ function fixBrokenWorktreeSanitized(
         if (preservedContentMerge.skippedIgnoredDependencyTrees.length > 0) {
             process.stderr.write(
                 `[ccc] NOTE: Recreated ${terminalSafe(destPath)} without ignored generated dependency trees that may contain platform-specific links.\n`
-                + `      Skipped: ${preservedContentMerge.skippedIgnoredDependencyTrees.map(terminalSafe).join(", ")}\n`
+                + `      Skipped: ${preservedContentMerge.skippedIgnoredDependencyTrees.map((tree) => terminalSafe(tree.destinationPath)).join(", ")}\n`
                 + "      Run the repository's package-manager install command in the repaired worktree.\n",
             );
         }
         const removeMergedBackup = cleanupOperations.removeMergedBackup
             ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
         operationGuard();
+        assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
+        unlinkCapturedIgnoredDependencyLinks(
+            preservedContentMerge.skippedIgnoredDependencyTrees,
+        );
         assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
         removeMergedBackup(backup.path);
         operationGuard();
