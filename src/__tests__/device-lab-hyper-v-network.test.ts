@@ -125,6 +125,14 @@ function typedHostFabricRuntime(
         };
         readonly administratorFailureCode?: string;
         readonly removeNatFailureCode?: string;
+        readonly beforeMutation?: (action: string) => void;
+        readonly mutationAppliedThenLost?:
+            | "create-switch"
+            | "create-gateway"
+            | "create-nat"
+            | "remove-nat"
+            | "remove-gateway"
+            | "remove-switch";
     } = {},
 ) {
     const switches: HyperVVirtualSwitch[] = [];
@@ -138,6 +146,13 @@ function typedHostFabricRuntime(
     });
     const switchId = parseHyperVVirtualSwitchId(SWITCH_ID);
     const interfaceIndex = parseHyperVInterfaceIndex(42);
+    let mutationResponseLost = false;
+    const loseMutationResponse = (action: string): void => {
+        if (!mutationResponseLost && options.mutationAppliedThenLost === action) {
+            mutationResponseLost = true;
+            throw new Error(`response-lost-after-${action}`);
+        }
+    };
     if (options.initialIdentity) {
         if (options.initialResources?.switch !== false) {
             switches.push({
@@ -174,20 +189,25 @@ function typedHostFabricRuntime(
             }
         },
         async createVMSwitch(request) {
+            options.beforeMutation?.("create-switch");
             const created = { id: switchId, name: request.name, switchType: "Internal", notes: request.notes };
             switches.push(created);
             mutations.push("create-switch");
+            loseMutationResponse("create-switch");
             return created;
         },
         async setVMSwitchNotes(request) {
+            options.beforeMutation?.("repair-switch-notes");
             const found = switches.find((candidate) => candidate.id === request.identity.id);
             if (found) switches.splice(switches.indexOf(found), 1, { ...found, notes: request.notes });
             mutations.push("repair-switch-notes");
         },
         async removeVMSwitch(request) {
+            options.beforeMutation?.("remove-switch");
             const found = switches.findIndex((candidate) => candidate.id === request.identity.id);
             if (found >= 0) switches.splice(found, 1);
             mutations.push("remove-switch");
+            loseMutationResponse("remove-switch");
         },
         async getAllVMNetworkAdapters() { return [...vmNetworkAdapters]; },
         async getVMsByExactNames(request) {
@@ -208,6 +228,7 @@ function typedHostFabricRuntime(
                 : addresses.filter((candidate) => candidate.interfaceIndex === selector.interfaceIndex);
         },
         async createNetIPAddress(request) {
+            options.beforeMutation?.("create-gateway");
             const created = {
                 ...request,
                 prefixOrigin: "Manual",
@@ -216,14 +237,17 @@ function typedHostFabricRuntime(
             };
             addresses.push(created);
             mutations.push("create-gateway");
+            loseMutationResponse("create-gateway");
             return created;
         },
         async removeNetIPAddress(request) {
+            options.beforeMutation?.("remove-gateway");
             const found = addresses.findIndex((candidate) => candidate.interfaceIndex === request.interfaceIndex
                 && candidate.address === request.address
                 && candidate.prefixLength === request.prefixLength);
             if (found >= 0) addresses.splice(found, 1);
             mutations.push("remove-gateway");
+            loseMutationResponse("remove-gateway");
         },
         async getNetNats(selector) {
             switch (selector.kind) {
@@ -233,6 +257,7 @@ function typedHostFabricRuntime(
             }
         },
         async createNetNat(request) {
+            options.beforeMutation?.("create-nat");
             const created = {
                 instanceId: parseHyperVNatInstanceId(NAT_INSTANCE_ID),
                 name: request.name,
@@ -240,9 +265,11 @@ function typedHostFabricRuntime(
             };
             nats.push(created);
             mutations.push("create-nat");
+            loseMutationResponse("create-nat");
             return created;
         },
         async removeNetNat(request) {
+            options.beforeMutation?.("remove-nat");
             if (options.removeNatFailureCode) {
                 throw new HyperVWindowsError({
                     category: "transport",
@@ -264,6 +291,7 @@ function typedHostFabricRuntime(
                     managementOperatingSystem: false,
                 });
             }
+            loseMutationResponse("remove-nat");
         },
     };
     const network: HyperVNetworkRuntime = {
@@ -283,7 +311,20 @@ function typedHostFabricRuntime(
             },
         },
     };
-    return { network, mutations, inventoryRequests, legacyRun };
+    return {
+        network,
+        mutations,
+        inventoryRequests,
+        legacyRun,
+        replaceSwitch(succeedingSwitchId: string): void {
+            const current = switches[0];
+            if (!current) throw new Error("test-switch-missing");
+            switches.splice(0, switches.length, {
+                ...current,
+                id: parseHyperVVirtualSwitchId(succeedingSwitchId),
+            });
+        },
+    };
 }
 
 function allocationInspection(
@@ -526,7 +567,9 @@ describe("Hyper-V network module", () => {
         let safePathChecks = 0;
         network.assertSafePath = () => {
             safePathChecks += 1;
-            if (safePathChecks === 2) throw new Error("simulated-state-commit-failure");
+            if (safePathChecks === expectedMutations.length + 1) {
+                throw new Error("simulated-state-commit-failure");
+            }
         };
 
         await expect(ensureHyperVNetworkAllocation(
@@ -546,12 +589,13 @@ describe("Hyper-V network module", () => {
         const checkpoint = JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8"));
         expect(Object.keys(checkpoint.ownershipEvidence)).toEqual(evidenceKeys);
 
-        await expect(ensureHyperVNetworkAllocation(
+        const recovered = await ensureHyperVNetworkAllocation(
             network,
             OWNER_ID,
             DEVICE_ID,
             INCARNATION_ID,
-        )).resolves.toMatchObject({ ok: true });
+        );
+        expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
         expect(mutations).toEqual(expectedMutations);
         expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject(managed);
         expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(false);
@@ -605,6 +649,556 @@ describe("Hyper-V network module", () => {
             managedNat: false,
             allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID }],
         });
+    });
+
+    it.each([
+        "create-switch",
+        "create-gateway",
+        "create-nat",
+    ] as const)("recovers exact ownership after an applied %s response is lost", async (lostAction) => {
+        const root = privateRoot();
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            mutationAppliedThenLost: lostAction,
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: false, preserveEvidence: true });
+        expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(true);
+
+        const recovered = await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        );
+        expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
+        expect(mutations.filter((action) => action === lostAction)).toHaveLength(1);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+            allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID }],
+        });
+        expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(false);
+    });
+
+    it("writes each confirmed ensure receipt before the next native mutation", async () => {
+        const root = privateRoot();
+        const evidenceBeforeMutation: Record<string, string[]> = {};
+        const { network } = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                const intent = JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8"));
+                evidenceBeforeMutation[action] = Object.keys(intent.ownershipEvidence || {});
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(evidenceBeforeMutation).toEqual({
+            "create-switch": [],
+            "create-gateway": ["switch"],
+            "create-nat": ["switch", "gateway"],
+        });
+    });
+
+    it("fences a same-name switch successor from a checkpointed pre-crash receipt", async () => {
+        const root = privateRoot();
+        let interruptBeforeGateway = true;
+        const host = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                if (action === "create-gateway" && interruptBeforeGateway) {
+                    interruptBeforeGateway = false;
+                    throw new Error("simulated-crash-before-gateway");
+                }
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: false, preserveEvidence: true });
+        const checkpoint = JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8"));
+        expect(checkpoint.ownershipEvidence.switch.switchId).toBe(SWITCH_ID.toLowerCase());
+
+        host.replaceSwitch("99999999-8888-7777-6666-555555555555");
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            status: 409,
+            detail: "hyper-v-network-switch-identity-conflict",
+            preserveEvidence: true,
+        });
+        expect(host.mutations).toEqual(["create-switch"]);
+    });
+
+    it("does not overwrite a concurrently revised intent while checkpointing an action", async () => {
+        const root = privateRoot();
+        let reviseBeforeGateway = true;
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                if (action !== "create-gateway" || !reviseBeforeGateway) return;
+                reviseBeforeGateway = false;
+                const path = join(root, "network", "hyper-v-intent.json");
+                const intent = JSON.parse(readFileSync(path, "utf8"));
+                writeFileSync(path, JSON.stringify({ ...intent, createdAt: "concurrent-revision" }));
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            detail: "hyper-v-network-intent-revision-conflict",
+            preserveEvidence: true,
+        });
+        expect(mutations).toEqual(["create-switch", "create-gateway"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8")))
+            .toMatchObject({ createdAt: "concurrent-revision" });
+    });
+
+    it("does not overwrite concurrently revised allocation state while checkpointing an action", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, { managedGateway: false, managedNat: true });
+        let reviseBeforeGateway = true;
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+            },
+            initialResources: { switch: true, gateway: false, nat: true },
+            beforeMutation: (action) => {
+                if (action !== "create-gateway" || !reviseBeforeGateway) return;
+                reviseBeforeGateway = false;
+                const path = join(root, "network", "hyper-v.json");
+                const state = JSON.parse(readFileSync(path, "utf8"));
+                writeFileSync(path, JSON.stringify({
+                    ...state,
+                    allocations: [{
+                        ownerId: OWNER_ID,
+                        deviceId: "concurrent-device",
+                        incarnationId: "b".repeat(32),
+                        address: "172.29.0.20",
+                        macAddress: "02:11:22:33:44:66",
+                        allocatedAt: "concurrent-revision",
+                    }],
+                }));
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            detail: "hyper-v-network-state-revision-conflict",
+            preserveEvidence: true,
+        });
+        expect(mutations).toEqual(["create-gateway"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")))
+            .toMatchObject({ allocations: [{ deviceId: "concurrent-device", allocatedAt: "concurrent-revision" }] });
+    });
+
+    it("keeps a legacy stable intent conservative after an applied response is lost", async () => {
+        const root = privateRoot();
+        writeStableIntent(root);
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            mutationAppliedThenLost: "create-switch",
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: false, preserveEvidence: true });
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("atomically aligns a cross-identity adoption before checkpointing partial fabric creation", async () => {
+        const root = privateRoot();
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+            },
+            initialResources: { switch: true, gateway: false, nat: false },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(mutations).toEqual(["create-gateway", "create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: "CCCDeviceLab",
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("keeps adopted resources unmanaged after crashing immediately after a stable-to-token identity checkpoint", async () => {
+        const root = privateRoot();
+        const token = "e".repeat(24);
+        writeStableIntent(root);
+        const host = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: `ccc-device-lab:hyper-v-network:${token}`,
+                natName: `CCCDeviceLab-${token}`,
+            },
+            initialResources: { switch: true, gateway: false, nat: false },
+        });
+        let crashAfterTransition = true;
+        host.network.assertSafePath = (_path, label) => {
+            if (label === "hyper-v-network-intent-identity-transition-checkpoint" && crashAfterTransition) {
+                crashAfterTransition = false;
+                throw new Error("crash-after-identity-transition-checkpoint");
+            }
+        };
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            detail: "hyper-v-network-setup-failed",
+            preserveEvidence: true,
+        });
+        expect(host.mutations).toEqual([]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8"))).toMatchObject({
+            token,
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            ownershipOrigin: "adopted",
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(host.mutations).toEqual(["create-gateway", "create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("keeps adopted resources unmanaged after a partial creation receipt and restart", async () => {
+        const root = privateRoot();
+        const token = "f".repeat(24);
+        writeStableIntent(root);
+        let crashBeforeNat = true;
+        const host = typedHostFabricRuntime(root, {
+            initialIdentity: {
+                marker: `ccc-device-lab:hyper-v-network:${token}`,
+                natName: `CCCDeviceLab-${token}`,
+            },
+            initialResources: { switch: true, gateway: false, nat: false },
+            beforeMutation: (action) => {
+                if (action === "create-nat" && crashBeforeNat) {
+                    crashBeforeNat = false;
+                    throw new Error("crash-after-gateway-receipt");
+                }
+            },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({
+            ok: false,
+            detail: "hyper-v-network-indeterminate-mutation-result-unconfirmed",
+            preserveEvidence: true,
+        });
+        expect(host.mutations).toEqual(["create-gateway"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v-intent.json"), "utf8"))).toMatchObject({
+            ownershipOrigin: "adopted",
+            ownershipEvidence: { gateway: { marker: `ccc-device-lab:hyper-v-network:${token}` } },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            host.network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(host.mutations).toEqual(["create-gateway", "create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("replaces a checkpointed switch receipt only after its exact predecessor is absent", async () => {
+        const root = privateRoot();
+        const token = "c".repeat(24);
+        writeTokenIntent(root, token);
+        const path = join(root, "network", "hyper-v-intent.json");
+        const intent = JSON.parse(readFileSync(path, "utf8"));
+        writeFileSync(path, JSON.stringify({
+            ...intent,
+            ownershipEvidence: {
+                switch: {
+                    switchName: "CCC Device Lab",
+                    switchId: "99999999-8888-7777-6666-555555555555",
+                    marker: intent.marker,
+                },
+            },
+        }));
+        const { network, mutations } = typedHostFabricRuntime(root);
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            switchId: SWITCH_ID.toLowerCase(),
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it("replaces a checkpointed NAT receipt only after its exact predecessor is absent", async () => {
+        const root = privateRoot();
+        const token = "d".repeat(24);
+        writeTokenIntent(root, token);
+        const path = join(root, "network", "hyper-v-intent.json");
+        const intent = JSON.parse(readFileSync(path, "utf8"));
+        writeFileSync(path, JSON.stringify({
+            ...intent,
+            ownershipEvidence: {
+                switch: {
+                    switchName: "CCC Device Lab",
+                    switchId: SWITCH_ID,
+                    marker: intent.marker,
+                },
+                nat: {
+                    natName: intent.natName,
+                    natInstanceId: "absent-nat",
+                    marker: intent.marker,
+                    prefix: "172.29.0.0/24",
+                },
+            },
+        }));
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            initialIdentity: { marker: intent.marker, natName: intent.natName },
+            initialResources: { switch: true, gateway: true, nat: false },
+        });
+
+        await expect(ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true });
+        expect(mutations).toEqual(["create-nat"]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            natInstanceId: NAT_INSTANCE_ID,
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+    });
+
+    it.each([
+        "remove-nat",
+        "remove-gateway",
+        "remove-switch",
+    ] as const)("converges cleanup after an applied %s response is lost", async (lostAction) => {
+        const root = privateRoot();
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            mutationAppliedThenLost: lostAction,
+        });
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: false });
+        expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(true);
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true, remaining: 0 });
+        expect(mutations.filter((action) => action === lostAction)).toHaveLength(1);
+        expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
+    });
+
+    it("checkpoints each confirmed cleanup removal before the next native mutation", async () => {
+        const root = privateRoot();
+        const stateBeforeRemoval: Record<string, object> = {};
+        const { network } = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                if (!action.startsWith("remove-")) return;
+                stateBeforeRemoval[action] = JSON.parse(
+                    readFileSync(join(root, "network", "hyper-v.json"), "utf8"),
+                );
+            },
+        });
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true, remaining: 0 });
+        expect(stateBeforeRemoval["remove-nat"]).toMatchObject({
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+        expect(stateBeforeRemoval["remove-gateway"]).toMatchObject({
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: false,
+        });
+        expect(stateBeforeRemoval["remove-switch"]).toMatchObject({
+            managedSwitch: true,
+            managedGateway: false,
+            managedNat: false,
+        });
+    });
+
+    it("resumes cleanup from a durable removal checkpoint without repeating the removal", async () => {
+        const root = privateRoot();
+        let interruptBeforeGatewayRemoval = true;
+        const { network, mutations } = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                if (action === "remove-gateway" && interruptBeforeGatewayRemoval) {
+                    interruptBeforeGatewayRemoval = false;
+                    throw new Error("simulated-crash-before-gateway-removal");
+                }
+            },
+        });
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: false });
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: false,
+            allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID }],
+        });
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true, remaining: 0 });
+        expect(mutations.filter((action) => action === "remove-nat")).toHaveLength(1);
+        expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
+    });
+
+    it.each([
+        { name: "NAT", managed: { managedSwitch: false, managedGateway: false, managedNat: true }, action: "remove-nat" },
+        { name: "gateway", managed: { managedSwitch: false, managedGateway: true, managedNat: false }, action: "remove-gateway" },
+        { name: "switch", managed: { managedSwitch: true, managedGateway: false, managedNat: false }, action: "remove-switch" },
+    ] as const)("finishes cleanup after crashing at the terminal $name removal checkpoint", async ({ managed, action }) => {
+        const root = privateRoot();
+        const { network, mutations } = typedHostFabricRuntime(root);
+        expect((await ensureHyperVNetworkAllocation(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).ok).toBe(true);
+        const path = join(root, "network", "hyper-v.json");
+        const state = JSON.parse(readFileSync(path, "utf8"));
+        writeFileSync(path, JSON.stringify({ ...state, ...managed }));
+        network.assertSafePath = (_path, label) => {
+            if (label === "hyper-v-network-cleanup-terminal-checkpoint") {
+                throw new Error(`simulated-crash-after-${action}`);
+            }
+        };
+
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: false });
+        expect(existsSync(path)).toBe(false);
+        network.assertSafePath = () => undefined;
+        await expect(releaseHyperVNetworkAllocationAndCleanup(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).resolves.toMatchObject({ ok: true, statePresent: false, remaining: 0 });
+        expect(mutations.filter((mutation) => mutation === action)).toHaveLength(1);
     });
 
     it("preserves a typed UAC cancellation in the existing bounded public diagnostic shape", async () => {

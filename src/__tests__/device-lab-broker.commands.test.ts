@@ -1854,6 +1854,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let createIndex = 0;
         let recoveryCalls = 0;
         let activeVariant: typeof variants[number] | null = null;
+        let networkStateBeforeCleanupFailure: string | null = null;
         const provisioningSecretEcho = "hyper-v-secret-provider-echo";
         const rollbackSecretEcho = "hyper-v-rollback-provider-echo";
         const createdVmNames = new Map<string, string>();
@@ -1940,6 +1941,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 }
                 if (variant === "allocation-cleanup-failure") {
                     const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+                    networkStateBeforeCleanupFailure = readFileSync(networkStatePath, "utf8");
                     writeFileSync(networkStatePath, "{malformed");
                 }
                 const stdout = variant === "malformed" || variant === "artifact-cleanup-failure" || variant === "allocation-cleanup-failure"
@@ -1981,7 +1983,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 } else if (variant === "allocation-cleanup-failure") {
                     expect(body).toEqual(expect.objectContaining({ error: "hyper-v-create-invalid-result", rollback: expect.objectContaining({ ok: false, error: "hyper-v-recovery-cleanup-failed" }) }));
                     expect(existsSync(privateRoot)).toBe(true);
-                    rmSync(networkStatePath, { force: true });
+                    expect(networkStateBeforeCleanupFailure).not.toBeNull();
+                    writeFileSync(networkStatePath, networkStateBeforeCleanupFailure!);
                 } else if (variant === "provision-failure" || variant === "provision-ownership-failure" || variant === "provision-untagged-failure" || variant === "state-claim-conflict") {
                     expect(body).toEqual(expect.objectContaining({
                         error: variant === "state-claim-conflict" ? "owner-device-id-conflict" : "hyper-v-guest-provision-failed",

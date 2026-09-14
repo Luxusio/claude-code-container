@@ -44,6 +44,7 @@ const INTENT_KEYS = new Set([
     "prefix",
     "gateway",
     "createdAt",
+    "ownershipOrigin",
     "ownershipEvidence",
 ]);
 
@@ -98,6 +99,7 @@ export type HyperVNetworkIntent = {
     prefix: string;
     gateway: string;
     createdAt: string;
+    ownershipOrigin?: "adopted";
     ownershipEvidence?: HyperVNetworkIntentOwnershipEvidence;
 };
 
@@ -434,6 +436,7 @@ export function decodeHyperVNetworkIntent(value: unknown): HyperVNetworkIntent {
         || value.prefix !== HYPER_V_NETWORK_PREFIX
         || value.gateway !== HYPER_V_NETWORK_GATEWAY
         || typeof value.createdAt !== "string"
+        || (value.ownershipOrigin !== undefined && value.ownershipOrigin !== "adopted")
         || (value.ownershipEvidence !== undefined && !isRecord(value.ownershipEvidence))) {
         throw new Error("hyper-v-network-intent-invalid");
     }
@@ -447,6 +450,23 @@ export function decodeHyperVNetworkIntent(value: unknown): HyperVNetworkIntent {
     const ownershipEvidence = value.ownershipEvidence === undefined
         ? undefined
         : decodeIntentOwnershipEvidence(value.ownershipEvidence);
+    const receiptSwitch = ownershipEvidence?.switch;
+    const receiptGateway = ownershipEvidence?.gateway;
+    const receiptNat = ownershipEvidence?.nat;
+    if ((receiptSwitch && receiptSwitch.marker !== value.marker)
+        || (receiptGateway
+            && (receiptGateway.marker !== value.marker
+                || receiptGateway.prefix !== value.prefix
+                || receiptGateway.gateway !== value.gateway))
+        || (receiptNat
+            && (receiptNat.marker !== value.marker
+                || receiptNat.natName !== value.natName
+                || receiptNat.prefix !== value.prefix))
+        || (receiptSwitch && receiptGateway
+            && (receiptSwitch.switchName !== receiptGateway.switchName
+                || receiptSwitch.switchId !== receiptGateway.switchId))) {
+        throw new Error("hyper-v-network-intent-invalid");
+    }
     return {
         version: 1,
         token: value.token,
@@ -456,6 +476,7 @@ export function decodeHyperVNetworkIntent(value: unknown): HyperVNetworkIntent {
         prefix: value.prefix,
         gateway: value.gateway,
         createdAt: value.createdAt,
+        ...(value.ownershipOrigin === "adopted" ? { ownershipOrigin: value.ownershipOrigin } : {}),
         ...(ownershipEvidence ? { ownershipEvidence } : {}),
     };
 }
@@ -470,6 +491,7 @@ export function encodeHyperVNetworkIntent(intent: HyperVNetworkIntent): HyperVNe
         prefix: intent.prefix,
         gateway: intent.gateway,
         createdAt: intent.createdAt,
+        ...(intent.ownershipOrigin === undefined ? {} : { ownershipOrigin: intent.ownershipOrigin }),
         ...(intent.ownershipEvidence === undefined ? {} : { ownershipEvidence: intent.ownershipEvidence }),
     });
 }

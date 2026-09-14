@@ -13,6 +13,8 @@ import {
     type HyperVHostNetworkAdapter,
     type HyperVHostNetworkCleanupProvenance,
     type HyperVHostNetworkEnsureProvenance,
+    type HyperVHostNetworkConflictOutcome,
+    type HyperVHostNetworkIndeterminateOutcome,
     type HyperVNetIPAddress,
     type HyperVNetNat,
     type HyperVVirtualSwitch,
@@ -26,6 +28,8 @@ import {
     createDeviceLabHyperVWindowsNetworkClient,
     ensureDeviceLabHyperVHostNetwork,
     inspectDeviceLabHyperVHostNetwork,
+    type DeviceLabHyperVHostNetworkCleanupTransactionResult,
+    type DeviceLabHyperVHostNetworkEnsureTransactionResult,
     type WithAdministratorHyperVWindowsNetworkClient,
 } from "../device-lab/broker/hyper-v/network-adapter.js";
 
@@ -47,6 +51,25 @@ const FRESH: HyperVHostNetworkEnsureProvenance = {
     kind: "fresh",
     expectedSwitchNotes: NOTES,
 };
+
+type IsAssignable<From, To> = From extends To ? true : false;
+type CleanupAcceptsEnsureOnlyIndeterminateReason = IsAssignable<
+    { kind: "indeterminate"; operation: "cleanup"; reason: "host-adapter-missing" },
+    HyperVHostNetworkIndeterminateOutcome<"cleanup">
+>;
+type CleanupAcceptsEnsureOnlyConflictReason = IsAssignable<
+    { kind: "conflict"; operation: "cleanup"; reason: "switch-notes-conflict" },
+    HyperVHostNetworkConflictOutcome<"cleanup">
+>;
+
+const TRANSACTION_OPERATION_TYPES_ARE_CORRELATED: [
+    DeviceLabHyperVHostNetworkCleanupTransactionResult extends DeviceLabHyperVHostNetworkEnsureTransactionResult
+        ? true : false,
+    DeviceLabHyperVHostNetworkEnsureTransactionResult extends DeviceLabHyperVHostNetworkCleanupTransactionResult
+        ? true : false,
+    CleanupAcceptsEnsureOnlyIndeterminateReason,
+    CleanupAcceptsEnsureOnlyConflictReason,
+] = [false, false, false, false];
 
 type MemoryState = {
     virtualSwitches: HyperVVirtualSwitch[];
@@ -289,6 +312,9 @@ function managedCleanup(): HyperVHostNetworkCleanupProvenance {
 }
 
 describe("Device Lab Hyper-V network adapter", () => {
+    it("keeps ensure and cleanup transaction types mutually exclusive", () => {
+        expect(TRANSACTION_OPERATION_TYPES_ARE_CORRELATED).toEqual([false, false, false, false]);
+    });
     it("inspects only the exact switch/host-adapter target plus bounded host collections", async () => {
         const state = emptyState();
         addSettledHostFabric(state);
@@ -383,6 +409,123 @@ describe("Device Lab Hyper-V network adapter", () => {
         expect(administrator.count()).toBe(1);
         expect(state.actions).toEqual(["create-switch", "create-gateway", "create-nat"]);
         expect(state.reads.filter((entry) => entry === "switch:name")).toHaveLength(5);
+    });
+
+    it("settles a recognized switch with proven NAT absence after creating that NAT", async () => {
+        const state = emptyState();
+        addSettledHostFabric(state);
+        state.nats.length = 0;
+        const administrator = administratorScope(memoryClient(state));
+        const confirmed: string[] = [];
+
+        const result = await ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: {
+                kind: "recognized-adoption",
+                expectedSwitchNotes: NOTES,
+                switchIdentity: { id: SWITCH_ID, name: SWITCH_NAME },
+                nat: { kind: "absent" },
+            },
+            withAdministratorClient: administrator.scope,
+            onConfirmedAction: (action) => confirmed.push(action.actionKind),
+        });
+
+        expect(result.outcome.kind).toBe("settled");
+        expect(result.completedActions).toHaveLength(1);
+        expect(state.actions).toEqual(["create-nat"]);
+        expect(confirmed).toEqual(["create-nat"]);
+    });
+
+    it("settles after replacing a persisted switch whose exact ID is proven absent", async () => {
+        const state = emptyState();
+        const administrator = administratorScope(memoryClient(state));
+
+        const result = await ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: {
+                kind: "persisted",
+                expectedSwitchNotes: NOTES,
+                switchIdentity: { id: SUCCESSOR_SWITCH_ID, name: SWITCH_NAME },
+                nat: { kind: "unrecorded" },
+            },
+            withAdministratorClient: administrator.scope,
+        });
+
+        expect(result.outcome.kind).toBe("settled");
+        expect(state.actions).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(result.completedActions[0]).toMatchObject({
+            actionKind: "create-switch",
+            switchIdentity: { id: SWITCH_ID, name: SWITCH_NAME },
+        });
+    });
+
+    it("settles after replacing a persisted NAT whose exact ID is proven absent", async () => {
+        const state = emptyState();
+        addSettledHostFabric(state);
+        state.nats.length = 0;
+        const administrator = administratorScope(memoryClient(state));
+
+        const result = await ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: {
+                kind: "persisted",
+                expectedSwitchNotes: NOTES,
+                switchIdentity: { id: SWITCH_ID, name: SWITCH_NAME },
+                nat: {
+                    kind: "exact",
+                    identity: { instanceId: parseHyperVNatInstanceId("absent-nat"), name: NAT_NAME },
+                },
+            },
+            withAdministratorClient: administrator.scope,
+        });
+
+        expect(result.outcome.kind).toBe("settled");
+        expect(state.actions).toEqual(["create-nat"]);
+        expect(result.completedActions[0]).toMatchObject({
+            actionKind: "create-nat",
+            natIdentity: { instanceId: NAT_ID, name: NAT_NAME },
+        });
+    });
+
+    it.each([
+        ["create-switch", ["create-switch"]],
+        ["create-gateway", ["create-switch", "create-gateway"]],
+        ["create-nat", ["create-switch", "create-gateway", "create-nat"]],
+    ] as const)("publishes confirmed %s before the next mutation and converges after interruption", async (
+        interruptedAction,
+        actionsBeforeInterruption,
+    ) => {
+        const state = emptyState();
+        const firstAdministrator = administratorScope(memoryClient(state));
+        const confirmed: string[] = [];
+
+        await expect(ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: FRESH,
+            withAdministratorClient: firstAdministrator.scope,
+            onConfirmedAction: (action) => {
+                confirmed.push(action.actionKind);
+                if (action.actionKind === interruptedAction) {
+                    throw new Error(`simulated-crash-after-${interruptedAction}`);
+                }
+            },
+        })).rejects.toThrow(`simulated-crash-after-${interruptedAction}`);
+        expect(confirmed).toEqual(actionsBeforeInterruption);
+        expect(state.actions).toEqual(actionsBeforeInterruption);
+
+        const recoveryAdministrator = administratorScope(memoryClient(state));
+        const recovered = await ensureDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: FRESH,
+            withAdministratorClient: recoveryAdministrator.scope,
+        });
+        expect(recovered.outcome.kind).toBe("settled");
+        expect(state.actions).toEqual(["create-switch", "create-gateway", "create-nat"]);
     });
 
     it.each([
@@ -627,6 +770,49 @@ describe("Device Lab Hyper-V network adapter", () => {
             },
         ]);
         expect(administrator.count()).toBe(1);
+        expect(state.actions).toEqual(["remove-nat", "remove-gateway", "remove-switch"]);
+    });
+
+    it.each([
+        ["remove-nat", ["remove-nat"]],
+        ["remove-gateway", ["remove-nat", "remove-gateway"]],
+        ["remove-switch", ["remove-nat", "remove-gateway", "remove-switch"]],
+    ] as const)("publishes confirmed %s before the next cleanup mutation and converges after interruption", async (
+        interruptedAction,
+        actionsBeforeInterruption,
+    ) => {
+        const state = emptyState();
+        addSettledHostFabric(state);
+        const firstAdministrator = administratorScope(memoryClient(state));
+        const confirmed: string[] = [];
+
+        await expect(cleanupDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: managedCleanup(),
+            withAdministratorClient: firstAdministrator.scope,
+            onConfirmedAction: (action) => {
+                confirmed.push(action.actionKind);
+                if (action.actionKind === interruptedAction) {
+                    throw new Error(`simulated-crash-after-${interruptedAction}`);
+                }
+            },
+        })).rejects.toThrow(`simulated-crash-after-${interruptedAction}`);
+        expect(confirmed).toEqual(actionsBeforeInterruption);
+        expect(state.actions).toEqual(actionsBeforeInterruption);
+
+        const recoveryAdministrator = administratorScope(memoryClient(state));
+        const recovered = await cleanupDeviceLabHyperVHostNetwork({
+            client: memoryClient(state),
+            network: NETWORK,
+            provenance: managedCleanup(),
+            withAdministratorClient: recoveryAdministrator.scope,
+        });
+        expect(recovered.outcome).toEqual({
+            kind: "settled",
+            operation: "cleanup",
+            disposition: "complete",
+        });
         expect(state.actions).toEqual(["remove-nat", "remove-gateway", "remove-switch"]);
     });
 

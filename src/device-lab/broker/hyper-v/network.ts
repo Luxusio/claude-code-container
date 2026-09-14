@@ -33,6 +33,7 @@ import {
     HyperVWindowsError,
     type HyperVHostNetworkCleanupProvenance,
     type HyperVHostNetworkEnsureProvenance,
+    type HyperVHostNetworkObservation,
     type HyperVHostNetworkSpec,
     type HyperVWindowsNetworkClient,
 } from "../../../hyper-v-windows/index.js";
@@ -57,6 +58,8 @@ import {
     cleanupDeviceLabHyperVHostNetwork,
     ensureDeviceLabHyperVHostNetwork,
     inspectDeviceLabHyperVHostNetwork,
+    type DeviceLabHyperVHostNetworkCleanupCompletedAction,
+    type DeviceLabHyperVHostNetworkEnsureCompletedAction,
     type WithAdministratorHyperVWindowsNetworkClient,
 } from "./network-adapter.js";
 
@@ -180,6 +183,10 @@ function intentOwnsDedicatedNat(intent: HyperVNetworkIntent): boolean {
     return intent.marker !== HYPER_V_NETWORK_MARKER && isHyperVCccNetworkIdentity(intent.marker, intent.natName);
 }
 
+function intentCanClaimFreshOwnership(intent: HyperVNetworkIntent): boolean {
+    return intent.ownershipOrigin !== "adopted" && intentOwnsDedicatedNat(intent);
+}
+
 function stateFile(runtime: HyperVNetworkStateRuntime): string {
     return join(runtime.privateRoot, "network", "hyper-v.json");
 }
@@ -226,61 +233,97 @@ function sameOwnershipReceipt(left: unknown, right: unknown): boolean {
     return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function mergeOwnershipReceipt<T>(current: T | undefined, next: T | undefined): T | undefined {
-    if (!current) return next;
-    if (!next) return current;
-    if (!sameOwnershipReceipt(current, next)) {
-        throw new Error("hyper-v-network-intent-ownership-conflict");
+function persistTypedIntentIdentityTransition(
+    runtime: HyperVNetworkRuntime,
+    intent: HyperVNetworkIntent,
+    marker: string,
+    natName: string,
+): HyperVNetworkIntent {
+    if (intent.marker === marker && intent.natName === natName) return intent;
+    const persisted = readIntent(runtime);
+    if (!persisted || !sameOwnershipReceipt(persisted, intent)) {
+        throw new Error("hyper-v-network-intent-revision-conflict");
     }
-    return current;
+    const observedToken = /^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$/.exec(marker)?.[1];
+    const transition = marker === HYPER_V_NETWORK_MARKER && natName === HYPER_V_NETWORK_NAT
+        ? { ...persisted, marker, natName, ownershipOrigin: "adopted" as const }
+        : intent.marker === HYPER_V_NETWORK_MARKER
+            && observedToken
+            && natName === `${HYPER_V_NETWORK_NAT}-${observedToken}`
+            ? { ...persisted, token: observedToken, marker, natName, ownershipOrigin: "adopted" as const }
+            : null;
+    if (!transition) throw new Error("hyper-v-network-intent-identity-conflict");
+    const checkpoint = decodeHyperVNetworkIntent(transition);
+    ensureStateRoot(runtime);
+    writeJsonFileAtomically(intentFile(runtime), checkpoint);
+    runtime.assertSafePath(dirname(intentFile(runtime)), "hyper-v-network-intent-identity-transition-checkpoint");
+    return checkpoint;
 }
 
-function typedOwnershipEvidenceFromObservation(
-    observation: HyperVNetworkObservation,
+function typedOwnershipEvidenceFromConfirmedAction(
+    action: DeviceLabHyperVHostNetworkEnsureCompletedAction,
+    observation: HyperVHostNetworkObservation,
+    network: HyperVHostNetworkSpec,
     marker: string,
 ): HyperVNetworkIntentOwnershipEvidence | null {
-    const evidence: HyperVNetworkIntentOwnershipEvidence = {
-        ...(observation.createdSwitch
-            ? {
+    switch (action.actionKind) {
+        case "create-switch":
+            if (action.switchIdentity.name !== network.switchName) {
+                throw new Error("hyper-v-network-intent-ownership-conflict");
+            }
+            return {
                 switch: {
-                    switchName: observation.switchName,
-                    switchId: observation.switchId.toLowerCase(),
+                    switchName: String(action.switchIdentity.name),
+                    switchId: String(action.switchIdentity.id).toLowerCase(),
                     marker,
                 },
+            };
+        case "repair-switch-notes":
+            return null;
+        case "create-gateway": {
+            const switches = observation.virtualSwitches.filter((candidate) =>
+                candidate.name === network.switchName && candidate.notes === marker);
+            const hostAdapters = observation.hostAdapters.filter((candidate) =>
+                String(candidate.name) === `vEthernet (${network.switchName})`
+                && candidate.interfaceIndex === action.gatewayIdentity.interfaceIndex);
+            if (switches.length !== 1
+                || hostAdapters.length !== 1
+                || action.gatewayIdentity.address !== network.gateway
+                || action.gatewayIdentity.prefixLength !== network.prefixLength) {
+                throw new Error("hyper-v-network-intent-ownership-conflict");
             }
-            : {}),
-        ...(observation.createdGateway === true
-            ? {
+            const virtualSwitch = switches[0];
+            if (!virtualSwitch) throw new Error("hyper-v-network-intent-ownership-conflict");
+            return {
                 gateway: {
-                    switchName: observation.switchName,
-                    switchId: observation.switchId.toLowerCase(),
+                    switchName: String(virtualSwitch.name),
+                    switchId: String(virtualSwitch.id).toLowerCase(),
                     marker,
-                    prefix: observation.prefix,
-                    gateway: observation.gateway,
+                    prefix: String(network.cidr),
+                    gateway: String(network.gateway),
                 },
+            };
+        }
+        case "create-nat":
+            if (action.natIdentity.name !== network.natName) {
+                throw new Error("hyper-v-network-intent-ownership-conflict");
             }
-            : {}),
-        ...(observation.createdNat
-            ? {
+            return {
                 nat: {
-                    natName: observation.natName,
-                    natInstanceId: observation.natInstanceId,
+                    natName: String(action.natIdentity.name),
+                    natInstanceId: String(action.natIdentity.instanceId),
                     marker,
-                    prefix: observation.prefix,
+                    prefix: String(network.cidr),
                 },
-            }
-            : {}),
-    };
-    return evidence.switch || evidence.gateway || evidence.nat ? evidence : null;
+            };
+    }
 }
 
 function persistTypedOwnershipEvidence(
     runtime: HyperVNetworkRuntime,
     intent: HyperVNetworkIntent,
-    observation: HyperVNetworkObservation,
-    marker: string,
+    nextEvidence: HyperVNetworkIntentOwnershipEvidence | null,
 ): HyperVNetworkIntent {
-    const nextEvidence = typedOwnershipEvidenceFromObservation(observation, marker);
     if (!nextEvidence) return intent;
 
     const persisted = readIntent(runtime);
@@ -294,15 +337,22 @@ function persistTypedOwnershipEvidence(
         || persisted.createdAt !== intent.createdAt) {
         throw new Error("hyper-v-network-intent-revision-conflict");
     }
-    const switchEvidence = mergeOwnershipReceipt(persisted.ownershipEvidence?.switch, nextEvidence.switch);
-    const gatewayEvidence = mergeOwnershipReceipt(persisted.ownershipEvidence?.gateway, nextEvidence.gateway);
-    const natEvidence = mergeOwnershipReceipt(persisted.ownershipEvidence?.nat, nextEvidence.nat);
+    const previousSwitchEvidence = persisted.ownershipEvidence?.switch ?? persisted.ownershipEvidence?.gateway;
+    const switchReplaced = Boolean(nextEvidence.switch
+        && previousSwitchEvidence
+        && (nextEvidence.switch.switchName !== previousSwitchEvidence.switchName
+            || nextEvidence.switch.switchId !== previousSwitchEvidence.switchId
+            || nextEvidence.switch.marker !== previousSwitchEvidence.marker));
+    const switchEvidence = nextEvidence.switch ?? persisted.ownershipEvidence?.switch;
+    const gatewayEvidence = nextEvidence.gateway
+        ?? (switchReplaced ? undefined : persisted.ownershipEvidence?.gateway);
+    const natEvidence = nextEvidence.nat ?? persisted.ownershipEvidence?.nat;
     const ownershipEvidence: HyperVNetworkIntentOwnershipEvidence = {
         ...(switchEvidence ? { switch: switchEvidence } : {}),
         ...(gatewayEvidence ? { gateway: gatewayEvidence } : {}),
         ...(natEvidence ? { nat: natEvidence } : {}),
     };
-    const checkpoint: HyperVNetworkIntent = { ...persisted, ownershipEvidence };
+    const checkpoint = decodeHyperVNetworkIntent({ ...persisted, ownershipEvidence });
     ensureStateRoot(runtime);
     writeJsonFileAtomically(intentFile(runtime), checkpoint);
     return checkpoint;
@@ -345,28 +395,84 @@ function ownershipEvidenceMatchesObservation(
 function persistTypedOwnershipInCurrentState(
     runtime: HyperVNetworkRuntime,
     current: HyperVNetworkState,
-    observation: HyperVNetworkObservation,
-    marker: string,
+    evidence: HyperVNetworkIntentOwnershipEvidence | null,
 ): HyperVNetworkState {
-    const evidence = typedOwnershipEvidenceFromObservation(observation, marker);
     if (!evidence) return current;
 
     const persisted = readState(runtime);
     if (!persisted || hyperVNetworkStateRevision(persisted) !== hyperVNetworkStateRevision(current)) {
         throw new Error("hyper-v-network-state-revision-conflict");
     }
+    const switchEvidence = evidence.switch ?? evidence.gateway;
     const checkpoint = decodeHyperVNetworkState({
         ...current,
-        switchName: observation.switchName,
-        switchId: observation.switchId.toLowerCase(),
-        marker,
-        natName: observation.natName,
-        natInstanceId: observation.natInstanceId,
+        ...(switchEvidence
+            ? {
+                switchName: switchEvidence.switchName,
+                switchId: switchEvidence.switchId.toLowerCase(),
+                marker: switchEvidence.marker,
+            }
+            : {}),
+        ...(evidence.nat
+            ? {
+                natName: evidence.nat.natName,
+                natInstanceId: evidence.nat.natInstanceId,
+                marker: evidence.nat.marker,
+            }
+            : {}),
         managedSwitch: current.managedSwitch || Boolean(evidence.switch),
         managedGateway: current.managedGateway || Boolean(evidence.gateway),
         managedNat: current.managedNat || Boolean(evidence.nat),
     });
     ensureStateRoot(runtime);
+    writeJsonFileAtomically(stateFile(runtime), checkpoint);
+    return checkpoint;
+}
+
+function persistTypedCleanupCheckpoint(
+    runtime: HyperVNetworkRuntime,
+    current: HyperVNetworkState,
+    action: DeviceLabHyperVHostNetworkCleanupCompletedAction,
+): HyperVNetworkState | null {
+    const persisted = readState(runtime);
+    if (!persisted || hyperVNetworkStateRevision(persisted) !== hyperVNetworkStateRevision(current)) {
+        throw new Error("hyper-v-network-state-revision-conflict");
+    }
+    let checkpoint: HyperVNetworkState;
+    switch (action.actionKind) {
+        case "remove-nat": {
+            if (!current.managedNat
+                || current.natInstanceId !== String(action.natIdentity.instanceId)
+                || current.natName !== String(action.natIdentity.name)) {
+                throw new Error("hyper-v-network-nat-identity-conflict");
+            }
+            const { natInstanceId: _removedNatIdentity, ...withoutNatIdentity } = current;
+            checkpoint = decodeHyperVNetworkState({ ...withoutNatIdentity, managedNat: false });
+            break;
+        }
+        case "remove-gateway":
+            if (!current.managedGateway
+                || String(action.gatewayIdentity.address) !== current.gateway
+                || Number(action.gatewayIdentity.prefixLength) !== HYPER_V_NETWORK_PREFIX_LENGTH) {
+                throw new Error("hyper-v-network-gateway-identity-conflict");
+            }
+            checkpoint = decodeHyperVNetworkState({ ...current, managedGateway: false });
+            break;
+        case "remove-switch":
+            if (!current.managedSwitch
+                || current.switchId.toLowerCase() !== String(action.switchIdentity.id).toLowerCase()
+                || current.switchName !== String(action.switchIdentity.name)) {
+                throw new Error("hyper-v-network-switch-identity-conflict");
+            }
+            checkpoint = decodeHyperVNetworkState({ ...current, managedSwitch: false });
+            break;
+    }
+    ensureStateRoot(runtime);
+    if (!checkpoint.managedSwitch && !checkpoint.managedGateway && !checkpoint.managedNat) {
+        rmSync(stateFile(runtime), { force: true });
+        runtime.assertSafePath(dirname(stateFile(runtime)), "hyper-v-network-cleanup-terminal-checkpoint");
+        return null;
+    }
     writeJsonFileAtomically(stateFile(runtime), checkpoint);
     return checkpoint;
 }
@@ -600,12 +706,15 @@ function isAllowedPersistedCccIdentityTransition(
 }
 
 async function typedEnsureProvenance(
+    runtime: HyperVNetworkRuntime,
     client: HyperVWindowsNetworkClient,
     current: HyperVNetworkState | null,
     intent: HyperVNetworkIntent | null,
 ): Promise<{
     readonly network: HyperVHostNetworkSpec;
     readonly provenance: HyperVHostNetworkEnsureProvenance;
+    readonly intent: HyperVNetworkIntent | null;
+    readonly freshIntentOwnershipEligible: boolean;
 }> {
     if (current) {
         const currentNetwork = typedHostNetworkSpec(current.switchName, current.natName);
@@ -642,6 +751,8 @@ async function typedEnsureProvenance(
                                 identity: { instanceId: exactNat.instanceId, name: exactNat.name },
                             },
                         },
+                        intent,
+                        freshIntentOwnershipEligible: false,
                     };
                 }
             }
@@ -649,11 +760,39 @@ async function typedEnsureProvenance(
         return {
             network: currentNetwork,
             provenance: currentProvenance,
+            intent,
+            freshIntentOwnershipEligible: false,
         };
     }
     if (!intent) throw new Error("hyper-v-network-intent-missing");
 
     const intendedNetwork = typedHostNetworkSpec(intent.switchName, intent.natName);
+    const evidenceSwitch = intent.ownershipEvidence?.switch ?? intent.ownershipEvidence?.gateway;
+    const evidenceNat = intent.ownershipEvidence?.nat;
+    if (evidenceSwitch) {
+        return {
+            network: intendedNetwork,
+            provenance: {
+                kind: "persisted",
+                expectedSwitchNotes: intent.marker,
+                switchIdentity: {
+                    id: parseHyperVVirtualSwitchId(evidenceSwitch.switchId),
+                    name: parseHyperVVirtualSwitchName(evidenceSwitch.switchName),
+                },
+                nat: evidenceNat
+                    ? {
+                        kind: "exact",
+                        identity: {
+                            instanceId: parseHyperVNatInstanceId(evidenceNat.natInstanceId),
+                            name: parseHyperVNatName(evidenceNat.natName),
+                        },
+                    }
+                    : { kind: "unrecorded" },
+            },
+            intent,
+            freshIntentOwnershipEligible: intentCanClaimFreshOwnership(intent),
+        };
+    }
     const fresh: HyperVHostNetworkEnsureProvenance = {
         kind: "fresh",
         expectedSwitchNotes: intent.marker,
@@ -664,27 +803,43 @@ async function typedEnsureProvenance(
         privilege: "standard",
     });
     if (inspection.virtualSwitches.length !== 1) {
-        return { network: intendedNetwork, provenance: fresh };
+        return { network: intendedNetwork, provenance: fresh, intent, freshIntentOwnershipEligible: true };
     }
     const virtualSwitch = inspection.virtualSwitches[0];
-    if (!virtualSwitch) return { network: intendedNetwork, provenance: fresh };
+    if (!virtualSwitch) return { network: intendedNetwork, provenance: fresh, intent, freshIntentOwnershipEligible: true };
     const adoptedNatName = natNameFromCccMarker(virtualSwitch.notes);
     if (!adoptedNatName || !isHyperVCccNetworkIdentity(virtualSwitch.notes, adoptedNatName)) {
-        return { network: intendedNetwork, provenance: fresh };
+        return { network: intendedNetwork, provenance: fresh, intent, freshIntentOwnershipEligible: true };
     }
     const matchingNats = inspection.nats.filter((nat) => String(nat.name) === adoptedNatName);
     if (matchingNats.length > 1) throw new Error("hyper-v-network-nat-ambiguous");
     const adoptedNat = matchingNats[0];
+    const transitionedIntent = persistTypedIntentIdentityTransition(
+        runtime,
+        intent,
+        virtualSwitch.notes,
+        adoptedNatName,
+    );
     return {
-        network: typedHostNetworkSpec(intent.switchName, adoptedNatName),
+        network: typedHostNetworkSpec(transitionedIntent.switchName, transitionedIntent.natName),
         provenance: {
             kind: "recognized-adoption",
             expectedSwitchNotes: virtualSwitch.notes,
             switchIdentity: { id: virtualSwitch.id, name: virtualSwitch.name },
-            nat: adoptedNat
-                ? { kind: "exact", identity: { instanceId: adoptedNat.instanceId, name: adoptedNat.name } }
+            nat: evidenceNat
+                ? {
+                    kind: "exact",
+                    identity: {
+                        instanceId: parseHyperVNatInstanceId(evidenceNat.natInstanceId),
+                        name: parseHyperVNatName(evidenceNat.natName),
+                    },
+                }
+                : adoptedNat
+                    ? { kind: "exact", identity: { instanceId: adoptedNat.instanceId, name: adoptedNat.name } }
                 : { kind: "absent" },
         },
+        intent: transitionedIntent,
+        freshIntentOwnershipEligible: intentCanClaimFreshOwnership(transitionedIntent),
     };
 }
 
@@ -692,15 +847,45 @@ async function ensureTypedHyperVHostNetwork(
     runtime: HyperVNetworkRuntime,
     current: HyperVNetworkState | null,
     intent: HyperVNetworkIntent | null,
-): Promise<HyperVNetworkObservation> {
+): Promise<{
+    observation: HyperVNetworkObservation;
+    current: HyperVNetworkState | null;
+    intent: HyperVNetworkIntent | null;
+    freshIntentOwnershipEligible: boolean;
+}> {
     const typed = typedHostFabric(runtime);
     if (!typed) throw new Error("hyper-v-network-typed-runtime-missing");
-    const request = await typedEnsureProvenance(typed.client, current, intent);
+    const request = await typedEnsureProvenance(runtime, typed.client, current, intent);
+    let checkpointedCurrent = current;
+    let checkpointedIntent = request.intent;
     const transaction = await ensureDeviceLabHyperVHostNetwork({
         client: typed.client,
         network: request.network,
         provenance: request.provenance,
         withAdministratorClient: typed.withAdministratorClient,
+        onConfirmedAction: (action, observation) => {
+            const evidence = typedOwnershipEvidenceFromConfirmedAction(
+                action,
+                observation,
+                request.network,
+                request.provenance.expectedSwitchNotes,
+            );
+            if (checkpointedCurrent) {
+                checkpointedCurrent = persistTypedOwnershipInCurrentState(
+                    runtime,
+                    checkpointedCurrent,
+                    evidence,
+                );
+            } else if (checkpointedIntent) {
+                checkpointedIntent = persistTypedOwnershipEvidence(
+                    runtime,
+                    checkpointedIntent,
+                    evidence,
+                );
+            } else {
+                throw new Error("hyper-v-network-intent-missing");
+            }
+        },
     });
     const outcome = transaction.outcome;
     if (outcome.kind !== "settled" || outcome.operation !== "ensure") {
@@ -714,18 +899,23 @@ async function ensureTypedHyperVHostNetwork(
     }
     const completed = new Set(transaction.completedActions.map((action) => action.actionKind));
     return {
-        ok: true,
-        switchName: String(outcome.identity.switchIdentity.name),
-        switchId: String(outcome.identity.switchIdentity.id),
-        marker: request.provenance.expectedSwitchNotes,
-        natName: String(outcome.identity.natIdentity.name),
-        natInstanceId: String(outcome.identity.natIdentity.instanceId),
-        prefix: String(request.network.cidr),
-        gateway: String(request.network.gateway),
-        interfaceIndex: Number(outcome.identity.interfaceIndex),
-        createdSwitch: completed.has("create-switch"),
-        createdGateway: completed.has("create-gateway"),
-        createdNat: completed.has("create-nat"),
+        observation: {
+            ok: true,
+            switchName: String(outcome.identity.switchIdentity.name),
+            switchId: String(outcome.identity.switchIdentity.id),
+            marker: request.provenance.expectedSwitchNotes,
+            natName: String(outcome.identity.natIdentity.name),
+            natInstanceId: String(outcome.identity.natIdentity.instanceId),
+            prefix: String(request.network.cidr),
+            gateway: String(request.network.gateway),
+            interfaceIndex: Number(outcome.identity.interfaceIndex),
+            createdSwitch: completed.has("create-switch"),
+            createdGateway: completed.has("create-gateway"),
+            createdNat: completed.has("create-nat"),
+        },
+        current: checkpointedCurrent,
+        intent: checkpointedIntent,
+        freshIntentOwnershipEligible: request.freshIntentOwnershipEligible,
     };
 }
 
@@ -772,11 +962,22 @@ async function cleanupTypedHyperVHostNetwork(
         throw new Error("hyper-v-network-typed-runtime-missing");
     }
     const network = typedHostNetworkSpec(release.switchName, release.natName);
+    const persistedState = readState(runtime);
+    if (!persistedState
+        || !release.stateRevision
+        || hyperVNetworkStateRevision(persistedState) !== release.stateRevision) {
+        throw new Error("hyper-v-network-state-revision-conflict");
+    }
+    let checkpointedState: HyperVNetworkState | null = persistedState;
     const transaction = await cleanupDeviceLabHyperVHostNetwork({
         client: typed.client,
         network,
         provenance: typedCleanupProvenance(release),
         withAdministratorClient: typed.withAdministratorClient,
+        onConfirmedAction: (action) => {
+            if (!checkpointedState) throw new Error("hyper-v-network-state-missing");
+            checkpointedState = persistTypedCleanupCheckpoint(runtime, checkpointedState, action);
+        },
     });
     const outcome = transaction.outcome;
     if (outcome.kind !== "settled" || outcome.operation !== "cleanup") {
@@ -790,22 +991,40 @@ async function cleanupTypedHyperVHostNetwork(
     }
     const completed = new Set(transaction.completedActions.map((action) => action.actionKind));
     if (outcome.disposition === "deferred-switch-in-use") {
+        if (!checkpointedState) {
+            return {
+                observation: {
+                    ok: true,
+                    removedSwitch: completed.has("remove-switch"),
+                    removedNat: completed.has("remove-nat"),
+                    removedGateway: completed.has("remove-gateway"),
+                    alreadyMissing: false,
+                },
+                stateRevision: undefined,
+            };
+        }
         return {
-            ok: true,
-            removedSwitch: false,
-            removedNat: completed.has("remove-nat"),
-            removedGateway: completed.has("remove-gateway"),
-            alreadyMissing: false,
-            deferred: true,
-            reason: "hyper-v-network-switch-in-use" as const,
+            observation: {
+                ok: true,
+                removedSwitch: false,
+                removedNat: completed.has("remove-nat"),
+                removedGateway: completed.has("remove-gateway"),
+                alreadyMissing: false,
+                deferred: true,
+                reason: "hyper-v-network-switch-in-use" as const,
+            },
+            stateRevision: hyperVNetworkStateRevision(checkpointedState),
         };
     }
     return {
-        ok: true,
-        removedSwitch: completed.has("remove-switch"),
-        removedNat: completed.has("remove-nat"),
-        removedGateway: completed.has("remove-gateway"),
-        alreadyMissing: transaction.completedActions.length === 0,
+        observation: {
+            ok: true,
+            removedSwitch: completed.has("remove-switch"),
+            removedNat: completed.has("remove-nat"),
+            removedGateway: completed.has("remove-gateway"),
+            alreadyMissing: transaction.completedActions.length === 0,
+        },
+        stateRevision: checkpointedState ? hyperVNetworkStateRevision(checkpointedState) : undefined,
     };
 }
 
@@ -897,9 +1116,14 @@ export async function ensureHyperVNetworkAllocation(
         expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
     let observation: HyperVNetworkObservation | null;
+    let typedFreshIntentOwnershipEligible = false;
     if (typedHostFabric(runtime)) {
         try {
-            observation = await ensureTypedHyperVHostNetwork(runtime, current, intent);
+            const typedResult = await ensureTypedHyperVHostNetwork(runtime, current, intent);
+            observation = typedResult.observation;
+            current = typedResult.current;
+            intent = typedResult.intent;
+            typedFreshIntentOwnershipEligible = typedResult.freshIntentOwnershipEligible;
         } catch (error) {
             const detail = typedNetworkDiagnosticCode(error, "hyper-v-network-setup-failed");
             const allocationConflict = typedNetworkAllocationConflict(detail);
@@ -984,13 +1208,6 @@ export async function ensureHyperVNetworkAllocation(
         if (current?.natInstanceId && !canReconcileNetworkIdentity && current.natInstanceId !== observation.natInstanceId) {
             throw new Error("hyper-v-network-nat-identity-conflict");
         }
-        if (typedHostFabric(runtime)) {
-            if (current) {
-                current = persistTypedOwnershipInCurrentState(runtime, current, observation, observedMarker);
-            } else if (intent) {
-                intent = persistTypedOwnershipEvidence(runtime, intent, observation, observedMarker);
-            }
-        }
         const typedIntentOwnership = typedHostFabric(runtime)
             ? ownershipEvidenceMatchesObservation(intent, observation, observedMarker)
             : { managedSwitch: false, managedGateway: false, managedNat: false };
@@ -1032,9 +1249,19 @@ export async function ensureHyperVNetworkAllocation(
             macAddress = hyperVDeterministicMacAddress(ownerId, deviceId, ++macSalt);
         }
         if (usedMacs.has(macAddress)) throw new Error("hyper-v-network-mac-space-exhausted");
-        const freshIntentOwnsObservedIdentity = !typedHostFabric(runtime) && !current && intent
+        const legacyFreshIntentOwnsObservedIdentity = !typedHostFabric(runtime) && !current && intent
             ? intentOwnsDedicatedNat({ ...intent, marker: observedMarker, natName: observation.natName })
             : false;
+        const typedFreshIntentOwnsObservedIdentity = Boolean(
+            typedHostFabric(runtime)
+            && !current
+            && intent
+            && typedFreshIntentOwnershipEligible
+            && intentCanClaimFreshOwnership(intent)
+            && intent.marker === observedMarker
+            && intent.switchName === observation.switchName
+            && intent.natName === observation.natName,
+        );
         const next: HyperVNetworkState = {
             version: 1,
             switchName: observation.switchName,
@@ -1048,16 +1275,19 @@ export async function ensureHyperVNetworkAllocation(
             managedSwitch: (!resourceIdentityReconciled && current?.managedSwitch === true)
                 || observation.createdSwitch
                 || typedIntentOwnership.managedSwitch
-                || freshIntentOwnsObservedIdentity,
+                || typedFreshIntentOwnsObservedIdentity
+                || legacyFreshIntentOwnsObservedIdentity,
             managedGateway: (!resourceIdentityReconciled && current?.managedGateway === true)
                 || observation.createdGateway === true
                 || (!typedHostFabric(runtime) && observation.createdSwitch)
                 || typedIntentOwnership.managedGateway
-                || freshIntentOwnsObservedIdentity,
+                || typedFreshIntentOwnsObservedIdentity
+                || legacyFreshIntentOwnsObservedIdentity,
             managedNat: (!resourceIdentityReconciled && current?.managedNat === true)
                 || observation.createdNat
                 || typedIntentOwnership.managedNat
-                || freshIntentOwnsObservedIdentity,
+                || typedFreshIntentOwnsObservedIdentity
+                || legacyFreshIntentOwnsObservedIdentity,
             allocations: [
                 ...allocations,
                 { ownerId, deviceId, incarnationId, address, macAddress, allocatedAt: new Date().toISOString() },
@@ -1277,9 +1507,12 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
         expectedNatInstanceId: release.natInstanceId,
     };
     let observation;
+    let cleanupStateRevision = release.stateRevision;
     if (typedHostFabric(runtime)) {
         try {
-            observation = await cleanupTypedHyperVHostNetwork(runtime, release);
+            const typedResult = await cleanupTypedHyperVHostNetwork(runtime, release);
+            observation = typedResult.observation;
+            cleanupStateRevision = typedResult.stateRevision;
         } catch (error) {
             const diagnosticCode = typedNetworkDiagnosticCode(error, "hyper-v-network-cleanup-failed");
             return {
@@ -1326,7 +1559,7 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
             ownerId,
             deviceId,
             incarnationId,
-            release.stateRevision,
+            cleanupStateRevision,
             observation,
         );
         if (!committed.ok) {

@@ -178,7 +178,9 @@ The low-level protocol exposes one target Windows/Hyper-V primitive per request;
 it does not accept a fake VM selector for a host-wide operation. Closed
 reconciliation unions carry the exact identity evidence required by mutation,
 so invalid cleanup/adoption combinations are not representable as independent
-booleans.
+booleans. Their operation parameter also correlates ensure outcomes with only
+ensure action receipts and cleanup outcomes with only cleanup action receipts;
+conflict and indeterminate reasons are operation-specific too.
 
 Privilege is runtime evidence, not a TypeScript brand. Ordinary inspection
 produces a typed decision before UAC. After consent, the transaction obtains one
@@ -192,11 +194,27 @@ order.
 
 Device Lab continues to own and encode version-1 network intent/state. New
 token-scoped intent checkpoints exact switch, gateway, and NAT receipts after
-confirmed typed mutations so recovery can reconcile creations made before a
-state commit, while existing v1 records remain conservatively readable. This
-slice changes neither required fields and filenames nor public response/status
-shapes, and a failed or revision-conflicting operation does not partially
-replace persisted state.
+fresh reinspection confirms each typed mutation and before the next primitive,
+so recovery can reconcile creations made before the final allocation-state
+commit. Cleanup similarly clears each exact managed-resource flag after fresh
+absence confirmation and before the next removal. These are intentional
+semantic checkpoints: a later failure may leave a valid earlier receipt or
+removal checkpoint. Each individual checkpoint still uses atomic file
+replacement, so readers never observe torn JSON, and a revision conflict does
+not overwrite newer bytes. Existing v1 records remain conservatively readable;
+this slice changes neither required fields and filenames nor public
+response/status shapes.
+
+An exact receipt is a fence, not an immortal identifier. If fresh inspection
+proves its resource absent, a confirmed replacement may supersede it; replacing
+a switch also invalidates any gateway receipt tied to the predecessor. A
+same-name resource observed while the old exact ID still exists remains a
+successor conflict. Compatible stable↔token adoption first atomically aligns the
+intent identity and records its adopted ownership origin, preventing
+partial-fabric receipts from contradicting their top-level journal or a restart
+from widening ownership over pre-existing resources. The final cleanup removal deletes the state file as its
+terminal checkpoint, so a crash before the caller returns resumes as already
+complete rather than as an unmanaged stale identity.
 
 `hyperVSnapshotRepairCommand` deliberately stays a host-control PowerShell asset:
 it reconciles checkpoint state across several cmdlets rather than issuing one

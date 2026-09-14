@@ -74,23 +74,33 @@ export type HyperVHostNetworkSettledIdentity = {
     readonly natIdentity: HyperVNatIdentity;
 };
 
-export type HyperVHostNetworkConflictReason =
+type HyperVHostNetworkCommonConflictReason =
     | "switch-ambiguous"
     | "switch-identity-conflict"
     | "switch-successor-conflict"
     | "switch-type-unsupported"
-    | "switch-notes-conflict"
-    | "switch-notes-repair-unproven"
     | "host-adapter-ambiguous"
-    | "host-adapter-status-unsupported"
-    | "foreign-nat-subnet-overlap"
-    | "foreign-interface-subnet-overlap"
     | "gateway-conflict"
-    | "gateway-address-state-unsupported"
     | "nat-ambiguous"
     | "nat-identity-conflict"
     | "nat-successor-conflict"
     | "nat-prefix-conflict";
+
+type HyperVHostNetworkEnsureOnlyConflictReason =
+    | "switch-notes-conflict"
+    | "switch-notes-repair-unproven"
+    | "host-adapter-status-unsupported"
+    | "foreign-nat-subnet-overlap"
+    | "foreign-interface-subnet-overlap"
+    | "gateway-address-state-unsupported";
+
+export type HyperVHostNetworkConflictReason =
+    | HyperVHostNetworkCommonConflictReason
+    | HyperVHostNetworkEnsureOnlyConflictReason;
+
+export type HyperVHostNetworkConflictReasonFor<Operation extends HyperVHostNetworkOperation> =
+    | HyperVHostNetworkCommonConflictReason
+    | (Operation extends "ensure" ? HyperVHostNetworkEnsureOnlyConflictReason : never);
 
 export type HyperVHostNetworkActionKind =
     | "create-switch"
@@ -101,7 +111,9 @@ export type HyperVHostNetworkActionKind =
     | "remove-gateway"
     | "remove-switch";
 
-export type HyperVHostNetworkSettledOutcome =
+export type HyperVHostNetworkOperation = "ensure" | "cleanup";
+
+type HyperVHostNetworkSettledOutcomeByOperation =
     | {
         readonly kind: "settled";
         readonly operation: "ensure";
@@ -120,22 +132,38 @@ export type HyperVHostNetworkSettledOutcome =
         readonly attachments: readonly HyperVVMNetworkAdapter[];
     };
 
-export type HyperVHostNetworkConflictOutcome = {
+export type HyperVHostNetworkSettledOutcome<
+    Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
+> = Extract<HyperVHostNetworkSettledOutcomeByOperation, { readonly operation: Operation }>;
+
+export type HyperVHostNetworkConflictOutcome<
+    Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
+> = {
     readonly kind: "conflict";
-    readonly operation: "ensure" | "cleanup";
-    readonly reason: HyperVHostNetworkConflictReason;
+    readonly operation: Operation;
+    readonly reason: HyperVHostNetworkConflictReasonFor<Operation>;
 };
 
-export type HyperVHostNetworkNeedsAdministratorOutcome = {
+export type HyperVHostNetworkActionKindFor<Operation extends HyperVHostNetworkOperation> =
+    Operation extends "ensure"
+        ? "create-switch" | "repair-switch-notes" | "create-gateway" | "create-nat"
+        : "remove-nat" | "remove-gateway" | "remove-switch";
+
+export type HyperVHostNetworkNeedsAdministratorOutcome<
+    Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
+> = {
     readonly kind: "needs-administrator";
-    readonly operation: "ensure" | "cleanup";
-    readonly requiredAction: HyperVHostNetworkActionKind;
+    readonly operation: Operation;
+    readonly requiredAction: HyperVHostNetworkActionKindFor<Operation>;
 };
 
-export type HyperVHostNetworkIndeterminateOutcome = {
+export type HyperVHostNetworkIndeterminateOutcome<
+    Operation extends HyperVHostNetworkOperation = HyperVHostNetworkOperation,
+> = {
     readonly kind: "indeterminate";
-    readonly operation: "ensure" | "cleanup";
-    readonly reason: "host-adapter-missing" | "gateway-transitioning" | "mutation-result-unconfirmed";
-    readonly actionKind?: HyperVHostNetworkActionKind;
+    readonly operation: Operation;
+    readonly reason: "mutation-result-unconfirmed"
+        | (Operation extends "ensure" ? "host-adapter-missing" | "gateway-transitioning" : never);
+    readonly actionKind?: HyperVHostNetworkActionKindFor<Operation>;
     readonly cause?: unknown;
 };

@@ -169,6 +169,17 @@ describe("Hyper-V network v1 intent codec", () => {
         expect(hyperVNetworkIntentProvenance(intent)).toMatchObject({ kind: "token-scoped", token: TOKEN });
     });
 
+    it("round-trips durable adopted ownership provenance and rejects unknown modes", () => {
+        const adopted = {
+            ...createFreshHyperVNetworkIntent(TOKEN, "2026-09-14T00:00:00.000Z"),
+            ownershipOrigin: "adopted" as const,
+        };
+
+        expect(encodeHyperVNetworkIntent(decodeHyperVNetworkIntent(adopted))).toEqual(adopted);
+        expect(() => decodeHyperVNetworkIntent({ ...adopted, ownershipOrigin: "fresh" }))
+            .toThrow("hyper-v-network-intent-invalid");
+    });
+
     it("conservatively accepts the stable legacy v1 intent", () => {
         const intent = decodeHyperVNetworkIntent({
             version: 1,
@@ -200,6 +211,41 @@ describe("Hyper-V network v1 intent codec", () => {
         expect(() => decodeHyperVNetworkIntent({
             ...createFreshHyperVNetworkIntent(TOKEN, "now"),
             futureField: true,
+        })).toThrow("hyper-v-network-intent-invalid");
+    });
+
+    it("rejects ownership receipts that contradict their intent or each other", () => {
+        const intent = createFreshHyperVNetworkIntent(TOKEN, "now");
+        const marker = `ccc-device-lab:hyper-v-network:${TOKEN}`;
+        const ownershipEvidence = {
+            switch: { switchName: "CCC Device Lab", switchId: SWITCH_ID, marker },
+            gateway: {
+                switchName: "CCC Device Lab",
+                switchId: "99999999-8888-7777-6666-555555555555",
+                marker,
+                prefix: "172.29.0.0/24",
+                gateway: "172.29.0.1",
+            },
+        };
+
+        expect(() => decodeHyperVNetworkIntent({ ...intent, ownershipEvidence }))
+            .toThrow("hyper-v-network-intent-invalid");
+        expect(() => decodeHyperVNetworkIntent({
+            ...intent,
+            ownershipEvidence: {
+                switch: { switchName: "CCC Device Lab", switchId: SWITCH_ID, marker: "ccc-device-lab:hyper-v-network:v1" },
+            },
+        })).toThrow("hyper-v-network-intent-invalid");
+        expect(() => decodeHyperVNetworkIntent({
+            ...intent,
+            ownershipEvidence: {
+                nat: {
+                    natName: "CCCDeviceLab",
+                    natInstanceId: NAT_INSTANCE_ID,
+                    marker: "ccc-device-lab:hyper-v-network:v1",
+                    prefix: "172.29.0.0/24",
+                },
+            },
         })).toThrow("hyper-v-network-intent-invalid");
     });
 });

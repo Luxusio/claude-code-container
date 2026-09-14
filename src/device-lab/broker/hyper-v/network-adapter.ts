@@ -61,6 +61,10 @@ export type DeviceLabHyperVHostNetworkEnsureOptions = {
     readonly network: HyperVHostNetworkSpec;
     readonly provenance: HyperVHostNetworkEnsureProvenance;
     readonly withAdministratorClient: WithAdministratorHyperVWindowsNetworkClient;
+    readonly onConfirmedAction?: (
+        action: DeviceLabHyperVHostNetworkEnsureCompletedAction,
+        observation: HyperVHostNetworkObservation,
+    ) => void | Promise<void>;
 };
 
 export type DeviceLabHyperVHostNetworkCleanupOptions = {
@@ -68,6 +72,10 @@ export type DeviceLabHyperVHostNetworkCleanupOptions = {
     readonly network: HyperVHostNetworkSpec;
     readonly provenance: HyperVHostNetworkCleanupProvenance;
     readonly withAdministratorClient: WithAdministratorHyperVWindowsNetworkClient;
+    readonly onConfirmedAction?: (
+        action: DeviceLabHyperVHostNetworkCleanupCompletedAction,
+        observation: HyperVHostNetworkCleanupObservation,
+    ) => void | Promise<void>;
 };
 
 export type DeviceLabHyperVHostNetworkCompletedAction = Extract<
@@ -75,10 +83,39 @@ export type DeviceLabHyperVHostNetworkCompletedAction = Extract<
     { readonly kind: "mutation-completed" }
 >;
 
-export type DeviceLabHyperVHostNetworkTransactionResult = {
-    readonly outcome: HyperVHostNetworkReconciliationOutcome;
-    readonly completedActions: readonly DeviceLabHyperVHostNetworkCompletedAction[];
+export type DeviceLabHyperVHostNetworkEnsureCompletedAction = Extract<
+    DeviceLabHyperVHostNetworkCompletedAction,
+    { readonly operation: "ensure" }
+>;
+
+export type DeviceLabHyperVHostNetworkCleanupCompletedAction = Extract<
+    DeviceLabHyperVHostNetworkCompletedAction,
+    { readonly operation: "cleanup" }
+>;
+
+type DeviceLabHyperVHostNetworkEnsureOutcome = Exclude<
+    HyperVHostNetworkReconciliationOutcome<"ensure">,
+    { readonly kind: "execute" }
+>;
+
+type DeviceLabHyperVHostNetworkCleanupOutcome = Exclude<
+    HyperVHostNetworkReconciliationOutcome<"cleanup">,
+    { readonly kind: "execute" }
+>;
+
+export type DeviceLabHyperVHostNetworkEnsureTransactionResult = {
+    readonly outcome: DeviceLabHyperVHostNetworkEnsureOutcome;
+    readonly completedActions: readonly DeviceLabHyperVHostNetworkEnsureCompletedAction[];
 };
+
+export type DeviceLabHyperVHostNetworkCleanupTransactionResult = {
+    readonly outcome: DeviceLabHyperVHostNetworkCleanupOutcome;
+    readonly completedActions: readonly DeviceLabHyperVHostNetworkCleanupCompletedAction[];
+};
+
+export type DeviceLabHyperVHostNetworkTransactionResult =
+    | DeviceLabHyperVHostNetworkEnsureTransactionResult
+    | DeviceLabHyperVHostNetworkCleanupTransactionResult;
 
 export class DeviceLabHyperVNetworkAdapterError extends Error {
     readonly code:
@@ -95,10 +132,10 @@ export class DeviceLabHyperVNetworkAdapterError extends Error {
 }
 
 function confirmedEnsureOutcome(
-    outcome: HyperVHostNetworkReconciliationOutcome,
-    completedActions: readonly DeviceLabHyperVHostNetworkCompletedAction[],
-): HyperVHostNetworkReconciliationOutcome {
-    if (outcome.kind !== "settled" || outcome.operation !== "ensure") return outcome;
+    outcome: DeviceLabHyperVHostNetworkEnsureOutcome,
+    completedActions: readonly DeviceLabHyperVHostNetworkEnsureCompletedAction[],
+): DeviceLabHyperVHostNetworkEnsureOutcome {
+    if (outcome.kind !== "settled") return outcome;
     for (const completed of completedActions) {
         switch (completed.actionKind) {
             case "create-switch":
@@ -119,10 +156,6 @@ function confirmedEnsureOutcome(
                     return { kind: "conflict", operation: "ensure", reason: "nat-successor-conflict" };
                 }
                 break;
-            case "remove-switch":
-            case "remove-gateway":
-            case "remove-nat":
-                throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
         }
     }
     return outcome;
@@ -130,8 +163,8 @@ function confirmedEnsureOutcome(
 
 function ensureReceiptConflict(
     observation: HyperVHostNetworkObservation,
-    completedActions: readonly DeviceLabHyperVHostNetworkCompletedAction[],
-): HyperVHostNetworkReconciliationOutcome | null {
+    completedActions: readonly DeviceLabHyperVHostNetworkEnsureCompletedAction[],
+): DeviceLabHyperVHostNetworkEnsureOutcome | null {
     for (const completed of completedActions) {
         switch (completed.actionKind) {
             case "create-switch":
@@ -163,19 +196,44 @@ function ensureReceiptConflict(
                 }
                 break;
             }
-            case "remove-switch":
-            case "remove-gateway":
-            case "remove-nat":
-                throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
         }
     }
     return null;
 }
 
+function observationWithConfirmedEnsureReceipts(
+    observation: HyperVHostNetworkObservation,
+    completedActions: readonly DeviceLabHyperVHostNetworkEnsureCompletedAction[],
+): HyperVHostNetworkObservation {
+    let confirmedSwitch: Extract<
+        DeviceLabHyperVHostNetworkEnsureCompletedAction,
+        { readonly actionKind: "create-switch" | "repair-switch-notes" }
+    > | undefined;
+    let createdNat: Extract<DeviceLabHyperVHostNetworkEnsureCompletedAction, { readonly actionKind: "create-nat" }>
+        | undefined;
+    for (const action of completedActions) {
+        if (action.actionKind === "create-switch" || action.actionKind === "repair-switch-notes") {
+            confirmedSwitch = action;
+        }
+        if (action.actionKind === "create-nat") createdNat = action;
+    }
+    if ((!confirmedSwitch && !createdNat) || observation.provenance.kind === "fresh") return observation;
+    return {
+        ...observation,
+        provenance: {
+            ...observation.provenance,
+            ...(confirmedSwitch ? { switchIdentity: confirmedSwitch.switchIdentity } : {}),
+            ...(createdNat
+                ? { nat: { kind: "exact" as const, identity: createdNat.natIdentity } }
+                : {}),
+        },
+    };
+}
+
 function cleanupReceiptConflict(
     observation: HyperVHostNetworkCleanupObservation,
-    completedActions: readonly DeviceLabHyperVHostNetworkCompletedAction[],
-): HyperVHostNetworkReconciliationOutcome | null {
+    completedActions: readonly DeviceLabHyperVHostNetworkCleanupCompletedAction[],
+): DeviceLabHyperVHostNetworkCleanupOutcome | null {
     for (const completed of completedActions) {
         switch (completed.actionKind) {
             case "remove-switch": {
@@ -206,11 +264,6 @@ function cleanupReceiptConflict(
                 }
                 break;
             }
-            case "create-switch":
-            case "repair-switch-notes":
-            case "create-gateway":
-            case "create-nat":
-                throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
         }
     }
     return null;
@@ -224,7 +277,7 @@ function isRetryableEnsureObservation(outcome: HyperVHostNetworkReconciliationOu
 async function reconcileEnsureWithoutMutation(
     client: HyperVWindowsNetworkClient,
     options: Pick<DeviceLabHyperVHostNetworkEnsureOptions, "network" | "provenance">,
-): Promise<Exclude<HyperVHostNetworkReconciliationOutcome, { readonly kind: "execute" }>> {
+): Promise<DeviceLabHyperVHostNetworkEnsureOutcome> {
     for (let observationCount = 1; observationCount <= MAXIMUM_TRANSIENT_OBSERVATIONS; observationCount += 1) {
         const observation = await inspectDeviceLabHyperVHostNetwork(client, {
             network: options.network,
@@ -282,6 +335,12 @@ export async function inspectDeviceLabHyperVHostNetworkCleanup(
 }
 
 function assertStandardDecision(
+    outcome: HyperVHostNetworkReconciliationOutcome<"ensure">,
+): DeviceLabHyperVHostNetworkEnsureOutcome;
+function assertStandardDecision(
+    outcome: HyperVHostNetworkReconciliationOutcome<"cleanup">,
+): DeviceLabHyperVHostNetworkCleanupOutcome;
+function assertStandardDecision(
     outcome: HyperVHostNetworkReconciliationOutcome,
 ): Exclude<HyperVHostNetworkReconciliationOutcome, { readonly kind: "execute" }> {
     if (outcome.kind === "execute") {
@@ -292,11 +351,15 @@ function assertStandardDecision(
 
 async function reconcileEnsureAsAdministrator(
     client: HyperVWindowsNetworkClient,
-    options: Pick<DeviceLabHyperVHostNetworkEnsureOptions, "network" | "provenance">,
-): Promise<DeviceLabHyperVHostNetworkTransactionResult> {
+    options: Pick<
+        DeviceLabHyperVHostNetworkEnsureOptions,
+        "network" | "provenance" | "onConfirmedAction"
+    >,
+): Promise<DeviceLabHyperVHostNetworkEnsureTransactionResult> {
     let mutations = 0;
     let transientObservations = 0;
-    const completedActions: DeviceLabHyperVHostNetworkCompletedAction[] = [];
+    let confirmedActions = 0;
+    const completedActions: DeviceLabHyperVHostNetworkEnsureCompletedAction[] = [];
     while (true) {
         const observation = await inspectDeviceLabHyperVHostNetwork(client, {
             network: options.network,
@@ -305,7 +368,18 @@ async function reconcileEnsureAsAdministrator(
         });
         const receiptConflict = ensureReceiptConflict(observation, completedActions);
         if (receiptConflict) return { outcome: receiptConflict, completedActions: [...completedActions] };
-        const outcome = reconcileHyperVHostNetwork(observation, options.network);
+        while (confirmedActions < completedActions.length) {
+            const confirmedAction = completedActions[confirmedActions];
+            if (!confirmedAction) {
+                throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
+            }
+            await options.onConfirmedAction?.(confirmedAction, observation);
+            confirmedActions += 1;
+        }
+        const outcome = reconcileHyperVHostNetwork(
+            observationWithConfirmedEnsureReceipts(observation, completedActions),
+            options.network,
+        );
         switch (outcome.kind) {
             case "settled":
                 return {
@@ -335,6 +409,9 @@ async function reconcileEnsureAsAdministrator(
                     throwIfElevatedMutationNeverStarted(execution.cause);
                     return { outcome: execution, completedActions: [...completedActions] };
                 }
+                if (execution.operation !== "ensure") {
+                    throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
+                }
                 completedActions.push(execution);
                 transientObservations = 0;
                 break;
@@ -345,7 +422,7 @@ async function reconcileEnsureAsAdministrator(
 
 export async function ensureDeviceLabHyperVHostNetwork(
     options: DeviceLabHyperVHostNetworkEnsureOptions,
-): Promise<DeviceLabHyperVHostNetworkTransactionResult> {
+): Promise<DeviceLabHyperVHostNetworkEnsureTransactionResult> {
     const outcome = await reconcileEnsureWithoutMutation(options.client, options);
     if (outcome.kind !== "needs-administrator") return { outcome, completedActions: [] };
     return options.withAdministratorClient((client) => reconcileEnsureAsAdministrator(client, options));
@@ -353,10 +430,14 @@ export async function ensureDeviceLabHyperVHostNetwork(
 
 async function reconcileCleanupAsAdministrator(
     client: HyperVWindowsNetworkClient,
-    options: Pick<DeviceLabHyperVHostNetworkCleanupOptions, "network" | "provenance">,
-): Promise<DeviceLabHyperVHostNetworkTransactionResult> {
+    options: Pick<
+        DeviceLabHyperVHostNetworkCleanupOptions,
+        "network" | "provenance" | "onConfirmedAction"
+    >,
+): Promise<DeviceLabHyperVHostNetworkCleanupTransactionResult> {
     let mutations = 0;
-    const completedActions: DeviceLabHyperVHostNetworkCompletedAction[] = [];
+    let confirmedActions = 0;
+    const completedActions: DeviceLabHyperVHostNetworkCleanupCompletedAction[] = [];
     while (true) {
         const observation = await inspectDeviceLabHyperVHostNetworkCleanup(client, {
             network: options.network,
@@ -364,6 +445,14 @@ async function reconcileCleanupAsAdministrator(
         });
         const receiptConflict = cleanupReceiptConflict(observation, completedActions);
         if (receiptConflict) return { outcome: receiptConflict, completedActions: [...completedActions] };
+        while (confirmedActions < completedActions.length) {
+            const confirmedAction = completedActions[confirmedActions];
+            if (!confirmedAction) {
+                throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
+            }
+            await options.onConfirmedAction?.(confirmedAction, observation);
+            confirmedActions += 1;
+        }
         const outcome = planHyperVHostNetworkCleanup(observation, options.network, options.provenance);
         switch (outcome.kind) {
             case "settled":
@@ -384,6 +473,9 @@ async function reconcileCleanupAsAdministrator(
                     throwIfElevatedMutationNeverStarted(execution.cause);
                     return { outcome: execution, completedActions: [...completedActions] };
                 }
+                if (execution.operation !== "cleanup") {
+                    throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
+                }
                 completedActions.push(execution);
                 break;
             }
@@ -393,7 +485,7 @@ async function reconcileCleanupAsAdministrator(
 
 export async function cleanupDeviceLabHyperVHostNetwork(
     options: DeviceLabHyperVHostNetworkCleanupOptions,
-): Promise<DeviceLabHyperVHostNetworkTransactionResult> {
+): Promise<DeviceLabHyperVHostNetworkCleanupTransactionResult> {
     const observation = await inspectDeviceLabHyperVHostNetworkCleanup(options.client, {
         network: options.network,
         privilege: "standard",

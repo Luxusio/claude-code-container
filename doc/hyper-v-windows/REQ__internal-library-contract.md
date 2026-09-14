@@ -209,8 +209,8 @@ import type { HyperVWindowsNetworkClient } from "./hyper-v-windows/index.js";
 
 const natName = parseHyperVNatName("ccc-nat");
 
-// @ts-expect-error a NAT name is not a virtual-switch name
 createHyperVHostNetworkSpec({
+  // @ts-expect-error a NAT name is not a virtual-switch name
   switchName: natName,
   natName,
   cidr: "172.31.240.0/24",
@@ -219,9 +219,13 @@ createHyperVHostNetworkSpec({
 
 declare const client: HyperVWindowsNetworkClient;
 
-// @ts-expect-error raw strings do not cross a typed mutation boundary
 client.removeVMSwitch({
-  identity: { id: "11111111-2222-3333-4444-555555555555", name: "ccc-internal" },
+  identity: {
+    // @ts-expect-error a raw GUID is not a virtual-switch ID
+    id: "11111111-2222-3333-4444-555555555555",
+    // @ts-expect-error a raw string is not a virtual-switch name
+    name: "ccc-internal",
+  },
 });
 ```
 
@@ -245,6 +249,9 @@ not optional-boolean combinations. Every controlled union is handled by an
 exhaustive `switch`, `assertNever`, or `satisfies Record<...>` table. A branch
 that permits mutation carries exact ID/name and precondition evidence in an
 implementation-private prepared action that Device Lab cannot construct.
+Operation is a correlated type parameter: ensure outcomes/actions cannot be
+combined with cleanup outcomes/actions in a transaction result, or vice versa;
+operation-specific conflict and indeterminate reasons are correlated as well.
 
 Ensure performs ordinary inspection, makes a pure decision, and asks for
 administrator consent only for `needs-administrator`. One callback-scoped
@@ -259,6 +266,10 @@ Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes
 only confirmed managed identities in dependency-reverse order: NAT, gateway,
 then switch. A switch still in use is deferred with enough state for a later
+attempt. If an attachment is present at the initial ordinary inspection,
+cleanup does not request administrator access and preserves NAT, gateway, and
+switch. If an attachment first appears after NAT removal, that confirmed NAT
+removal remains recorded while gateway and switch are preserved for a later
 attempt. A same-name resource with a different ID is a successor conflict and
 MUST NOT be repaired, adopted, or removed from name/marker evidence alone.
 
@@ -267,10 +278,27 @@ result is `indeterminate` and MUST NOT be automatically retried or compensated.
 Fresh exact ID/name inspection resolves it as follows: expected resource and
 state confirms success; proven absence permits a later create; same name with a
 different ID is conflict; ambiguous evidence fails closed while preserving
-intent/state. Each confirmed typed mutation checkpoints an exact resource
-receipt in the intent. Recovery consumes those receipts through the same
-NAT -> gateway -> switch cleanup planner; an indeterminate action is never
-removed before reinspection proves what occurred.
+intent/state. After a mutation response is received, the adapter performs a
+fresh exact reinspection and publishes the confirmed action. Device Lab then
+atomically checkpoints that action's exact resource receipt before the adapter
+may issue the next primitive. If the mutation was applied but its response was
+lost, no receipt is invented: a retry may recover only when fresh inspection
+exactly matches the unique token-scoped intent (including marker and names).
+On restart, any checkpointed switch or NAT ID is supplied to reconciliation
+before mutation; a same-name successor therefore conflicts before it can
+receive a gateway or NAT. Receipt decoding rejects marker, switch-ID, NAT-name,
+prefix, and gateway contradictions both with the intent and between receipts.
+If the exact predecessor is proven absent, a confirmed replacement receipt may
+supersede it and invalid dependent receipts are cleared before the next
+primitive. When a compatible stable↔token CCC identity is recognized without
+current state, Device Lab atomically aligns the intent's top-level identity
+before creating any missing resource. That checkpoint durably records
+`ownershipOrigin: "adopted"`, so a restart cannot reinterpret the aligned token
+identity as a fresh intent; pre-existing adopted resources remain unmanaged
+both before and after partial-fabric recovery.
+Recovery consumes confirmed receipts through the same NAT -> gateway -> switch
+cleanup planner; an indeterminate action is never removed before reinspection
+proves what occurred.
 
 Networking cmdlets MUST be module-qualified. Hyper-V, NetAdapter, NetTCPIP, and
 NetNat manifests are resolved only beneath protected System32 module roots;
@@ -497,9 +525,12 @@ Slice-2A fake-executor and adapter tests MUST additionally prove:
     reinspection distinguishes confirmed, absent, successor-conflict, and
     ambiguous states;
 19. cleanup rechecks attachments after elevation and confirms NAT → gateway →
-    switch removal by exact identity, deferring a switch that is still in use;
-20. crash injection after each ensure and cleanup boundary converges by exact
-    identity or fails closed while preserving evidence;
+    switch removal by exact identity; each confirmed removal is atomically
+    checkpointed before the next primitive, terminal removal deletes state,
+    and a switch in use is deferred;
+20. crash injection after each freshly confirmed ensure and cleanup action,
+    before the next primitive, converges by exact identity or fails closed
+    while preserving evidence;
 21. v1 golden fixtures and legacy defaults remain byte/shape compatible, and a
     failure or revision conflict does not partially replace persisted state;
 22. exact-name inventory remains within 32 names and rejects duplicate or
@@ -515,9 +546,16 @@ Real Windows Hyper-V execution remains the hardware proof and MUST be reported
 as environment-gated when unavailable; Linux fake-executor success is not a
 claim that the Windows E2E passed. Slice 2A Windows Level 3 uses token-scoped
 fixtures, records ordinary/elevated session invocation counts, proves exact-ID
-cleanup without touching unrelated resources, and verifies one UAC prompt per
-ensure or cleanup attempt. Cold/warm time and legacy-versus-typed native
-invocation counts are recorded rather than assumed equivalent.
+cleanup without touching unrelated resources, and verifies one UAC prompt for
+the complete cold/warm scenario. Both attempts reuse that authenticated elevated
+session while each ensure or cleanup transaction still acquires one callback
+scope rather than elevating per primitive. Cold/warm wall time and typed native
+invocation counts are recorded. The standalone destructive proof intentionally
+does not execute a legacy baseline, so it reports a null legacy count and
+`not-run-standalone-safety` instead of claiming a measured comparison. Because
+that proof drives the low-level library directly, its wall time and invocation
+counts do not include Device Lab's bounded per-action intent-file checkpoints;
+those durability writes MUST NOT be inferred from the native-call metrics.
 
 The discoverable network-only command is
 `npm run test:level3:hyper-v:windows:network:library`. A non-Windows run reports
