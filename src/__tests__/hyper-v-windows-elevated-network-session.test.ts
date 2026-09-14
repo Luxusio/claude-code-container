@@ -273,6 +273,106 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         });
     });
 
+    it("lets the inner child termination window settle before the outer relay fallback", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            let resolveCompletion = (_value: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) =>
+                undefined as void;
+            const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
+                resolveCompletion = resolve;
+            });
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                completion,
+                kill() {
+                    setTimeout(() => resolveCompletion({ errorCode: null }), 5_001);
+                },
+            };
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, (executor) => executor.execute(getVmRequest(), executorContext()));
+
+            await vi.advanceTimersByTimeAsync(5_001);
+            await expect(result).resolves.toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("still fails closed when the outer relay never confirms termination", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                completion: new Promise(() => undefined),
+                kill() {},
+            };
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, (executor) => executor.execute(getVmRequest(), executorContext()));
+
+            const rejection = expect(result).rejects.toMatchObject({
+                code: "hyper-v-network-elevation-termination-unconfirmed",
+            });
+            await vi.advanceTimersByTimeAsync(10_000);
+            await rejection;
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not shrink termination proof after the operation deadline has elapsed", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            let resolveCompletion = (_value: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) =>
+                undefined as void;
+            const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
+                resolveCompletion = resolve;
+            });
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                completion,
+                kill() {
+                    setTimeout(() => resolveCompletion({ errorCode: null }), 5_001);
+                },
+            };
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 1_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, async (executor) => {
+                const execution = await executor.execute(getVmRequest(), executorContext());
+                await new Promise<void>((resolve) => setTimeout(resolve, 6_000));
+                return execution;
+            });
+
+            await vi.advanceTimersByTimeAsync(6_000);
+            await vi.advanceTimersByTimeAsync(5_001);
+            await expect(result).resolves.toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("keeps the production relay generic and pins the authentication controls", () => {
         const requestIndex = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
             "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST",
@@ -288,6 +388,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("startTicks");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("administrator");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("CopyToAsync");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$Y.WaitForExit(5000)");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain("\0");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.length).toBeLessThan(8_000);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.match(/-Verb RunAs/g)).toHaveLength(1);
