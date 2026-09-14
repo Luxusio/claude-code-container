@@ -23,13 +23,15 @@ without consumer policy. The lifecycle layer adds generic reconciliation and
 bounded retry behavior. Both layers are one future extraction unit. Device Lab
 is a consumer and MUST remain outside that unit.
 
-This requirement defines the first supported vertical slice. It is not a claim
-of complete WMI v2, HCS, VHD, networking, image, snapshot, or guest-management
-coverage.
+This requirement defines the supported vertical slices accumulated so far. It
+is not a claim of complete WMI v2, HCS, VHD, networking, image, or
+guest-management coverage. Networking is split into host fabric (2A), VM
+adapter/bootstrap (2B), and setup-network retirement (2C); only a slice whose
+production consumer has moved through this boundary is complete.
 
 ## Low-level operation contract
 
-The initial low-level client MUST provide typed counterparts for these native
+The low-level client MUST provide typed counterparts for these native
 Hyper-V operations:
 
 | TypeScript operation | Native primitive | Result |
@@ -44,6 +46,19 @@ Hyper-V operations:
 | checkpoint VM | `Checkpoint-VM` | the created checkpoint, exactly one |
 | remove VM snapshot | `Remove-VMSnapshot` | typed success/void |
 | restore VM snapshot | `Restore-VMSnapshot` | typed success/void |
+| get virtual switches | `Get-VMSwitch` | exact bounded switch result array |
+| create virtual switch | `New-VMSwitch` | exactly one created switch |
+| repair virtual-switch notes | `Set-VMSwitch` | typed success/void |
+| remove virtual switch | `Remove-VMSwitch` | typed success/void |
+| get all VM network adapters | `Get-VMNetworkAdapter -All` | exact bounded attachment evidence |
+| get bounded exact-name VMs | `Get-VM` | exact requested-name inventory only |
+| get host network adapter | `Get-NetAdapter` | exact bounded adapter result array |
+| get host IPv4 addresses | `Get-NetIPAddress` | exact bounded address result array |
+| create host IPv4 address | `New-NetIPAddress` | exactly one created address |
+| remove host IPv4 address | `Remove-NetIPAddress` | typed success/void |
+| get NATs | `Get-NetNat` | exact bounded NAT result array |
+| create NAT | `New-NetNat` | exactly one created NAT |
+| remove NAT | `Remove-NetNat` | typed success/void |
 
 ### Snapshot selector and result contract
 
@@ -124,6 +139,142 @@ Hyper-V Windows library and parse only its fixture before Vitest; it MUST NOT
 run the generic full-project build. An extracted installed package MAY retain a
 prebuilt no-devDependency launcher fallback because Vitest is not a runtime
 dependency.
+
+### Host-network type and operation contract
+
+The slice-2A public boundary MUST distinguish semantically different native
+values with module-private `unique symbol` brands. At minimum, virtual-switch
+ID/name, NAT instance ID/name, interface index, IPv4 address, canonical IPv4
+CIDR, and prefix length are mutually non-assignable where their meanings differ.
+The module MUST export named opaque types and safe `parseX`, `decodeX`, or
+`createX` functions; it MUST NOT export a brand constructor, a cast helper, or
+an `unsafe` shortcut. Native notes remain an open string because Windows may
+return values unknown to this library.
+
+Factory names communicate the trust transition:
+
+- `decodeX(unknown)` validates an entire external protocol or persisted shape;
+- `parseX(string | number)` validates and normalizes one primitive value;
+- `createX({...})` validates relationships between fields;
+- `planX(observation, request)` is a pure reconciliation decision.
+
+A host-network aggregate factory MUST prove that its CIDR is canonical, its
+prefix length is supported, its gateway belongs to that subnet and is not a
+reserved network/broadcast address, and its switch/NAT names are valid. CIDR
+and prefix length MUST NOT remain independent unchecked public inputs. Invalid
+factory input is a named validation failure and invokes no executor.
+
+Operation-specific methods and selectors are required. A host-wide operation
+MUST NOT carry a placeholder VM selector, and a switch identity MUST NOT be
+accepted where a NAT, VM, or interface identity is required. Each request maps
+to exactly one target primitive from the table above. Selector resolution or
+result confirmation is a separate read, never a hidden second mutation.
+Responses are decoded from `unknown` with exact schema version, operation,
+keys, field ranges, and bounded collection sizes. Unknown native type/status
+strings remain observable; reconciliation fails closed when an unknown value
+would affect a mutation decision.
+
+The following exported names define the source-level construction contract:
+
+```ts
+import {
+  createHyperVHostNetworkSpec,
+  parseHyperVNatName,
+  parseHyperVVirtualSwitchName,
+  reconcileHyperVHostNetwork,
+} from "./hyper-v-windows/index.js";
+import type { HyperVHostNetworkObservation } from "./hyper-v-windows/index.js";
+
+const switchName = parseHyperVVirtualSwitchName("ccc-internal");
+const natName = parseHyperVNatName("ccc-nat");
+const network = createHyperVHostNetworkSpec({
+  switchName,
+  natName,
+  cidr: "172.31.240.0/24",
+  gateway: "172.31.240.1",
+});
+
+declare const observation: HyperVHostNetworkObservation;
+const outcome = reconcileHyperVHostNetwork(observation, network);
+```
+
+The negative compile contract MUST contain equivalent rejected examples:
+
+```ts
+import {
+  createHyperVHostNetworkSpec,
+  parseHyperVNatName,
+} from "./hyper-v-windows/index.js";
+import type { HyperVWindowsNetworkClient } from "./hyper-v-windows/index.js";
+
+const natName = parseHyperVNatName("ccc-nat");
+
+// @ts-expect-error a NAT name is not a virtual-switch name
+createHyperVHostNetworkSpec({
+  switchName: natName,
+  natName,
+  cidr: "172.31.240.0/24",
+  gateway: "172.31.240.1",
+});
+
+declare const client: HyperVWindowsNetworkClient;
+
+// @ts-expect-error raw strings do not cross a typed mutation boundary
+client.removeVMSwitch({ selector: { kind: "name", name: "ccc-internal" } });
+```
+
+Positive and negative fixtures MUST compile under a focused `noEmit`
+configuration with `strict`, `exactOptionalPropertyTypes`, and
+`noUncheckedIndexedAccess`. The focused contract MUST run from normal build/CI,
+compile packed `dist` declarations from a root-entrypoint-only consumer, and
+normally finish within 5 seconds with an 8-second ceiling absent host load. A
+fixture must also prove that non-exhaustive outcome handling and illegal cleanup
+provenance fail compilation. Production code and fixtures MUST NOT use
+`as HyperV...`, double casts, or non-null assertions to bypass these contracts.
+
+### Host-network reconciliation contract
+
+Host-network reconciliation is consumer-neutral state adjustment, not a change
+to VM start/stop lifecycle. It consumes decoded observations and returns closed
+discriminated outcomes such as `settled`, `conflict`,
+`needs-administrator`, `execute`, and `indeterminate`. Managed/unmanaged,
+adoption, cleanup provenance, and removal results are likewise closed unions,
+not optional-boolean combinations. Every controlled union is handled by an
+exhaustive `switch`, `assertNever`, or `satisfies Record<...>` table. A branch
+that permits mutation carries exact ID/name and precondition evidence in an
+implementation-private prepared action that Device Lab cannot construct.
+
+Ensure performs ordinary inspection, makes a pure decision, and asks for
+administrator consent only for `needs-administrator`. One callback-scoped
+administrator executor is acquired for the attempt. Reconciliation MUST inspect
+again after UAC and before its first mutation; an executable plan made before
+consent is stale. It then executes one prepared primitive, reinspects, and
+confirms the exact native identity before advancing to the next dependency.
+Inspection, UAC, mutation, confirmation, and retry share one bounded transaction
+deadline.
+
+Cleanup decodes provenance, inspects exact identities and VM adapter
+attachments, and repeats both checks after privilege transition. It removes
+only confirmed managed identities in dependency-reverse order: NAT, gateway,
+then switch. A switch still in use is deferred with enough state for a later
+attempt. A same-name resource with a different ID is a successor conflict and
+MUST NOT be repaired, adopted, or removed from name/marker evidence alone.
+
+A mutation may have reached Windows even when the response is missing. Such a
+result is `indeterminate` and MUST NOT be automatically retried or compensated.
+Fresh exact ID/name inspection resolves it as follows: expected resource and
+state confirms success; proven absence permits a later create; same name with a
+different ID is conflict; ambiguous evidence fails closed while preserving
+intent/state. Confirmed rollback receipts execute in exact reverse order by ID,
+and an indeterminate action is never rolled back before reinspection proves
+what occurred.
+
+Networking cmdlets MUST be module-qualified. Hyper-V, NetAdapter, NetTCPIP, and
+NetNat manifests are resolved only beneath protected System32 module roots;
+missing, outside-root, reparse, and untrusted resolutions fail closed. The
+existing outer session request correlation remains authoritative for slice 2A:
+one-shot execution has one in-flight request, so this slice does not duplicate
+a request ID inside every response envelope.
 
 ### Native-fidelity rules
 
@@ -246,6 +397,24 @@ owns:
   and provisioning media;
 - post-removal network release and guarded artifact cleanup.
 
+For host networking, Device Lab additionally owns the version-1 network
+state/intent decoder and encoder, CCC marker/adoption policy, address and MAC
+allocation, storage revision checks, and the administrator-consent message. All
+persisted JSON enters that decoder as `unknown`. The decoder applies existing
+legacy defaults and rejects impossible provenance combinations; the encoder
+retains the existing version, required fields, filenames, and public result and
+status shapes. Fresh intent is token-scoped and records enough native identity
+to recover a switch, gateway, or NAT created before the final state commit.
+Legacy v1 intents remain readable with conservative adoption rules.
+
+The exact-name VM inventory request is bounded to at most the current allocation
+batch of 32 names. Device Lab, not the library, correlates native Notes and
+owner/device/incarnation identity, and rejects duplicate requested names,
+duplicate observations, and foreign ambiguity. After slice 2A production broker
+code MUST NOT call the legacy host-fabric ensure, cleanup, or allocation-inspect
+generators. The setup command's private network ensure remains a documented 2C
+concern and MUST NOT be reported as migrated by 2A.
+
 The adapter module owns journal-command/expectation translation and creation of
 the injected executor/client. Its broker command bridge uses the library's
 fixed in-memory bootstrap and bounded envelope helper, keeping the production
@@ -307,6 +476,33 @@ Linux-runnable fake-executor tests MUST prove at least:
 12. a broker regression clears/reconciles stable zero-disk residue, while a
     foreign attachment preserves the journal and prevents cleanup.
 
+Slice-2A fake-executor and adapter tests MUST additionally prove:
+
+13. opaque network identities reject raw and cross-resource values at compile
+    time, legal factories accept canonical values, and invalid factories execute
+    no native call;
+14. malformed, oversized, wrong-schema/operation, missing/extra-key,
+    invalid-range, duplicate, and ambiguous network responses fail decoding;
+15. every low-level network method invokes one target primitive, and host-wide
+    methods carry no VM selector;
+16. reconciliation exhaustively covers settled, conflict,
+    needs-administrator, prepared execution, and indeterminate outcomes;
+17. ordinary inspection precedes the single UAC request and administrator
+    acquisition, post-UAC inspection precedes mutation, and cancellation or
+    launch failure performs no mutation;
+18. an applied mutation with a lost response is not replayed, and exact
+    reinspection distinguishes confirmed, absent, successor-conflict, and
+    ambiguous states;
+19. cleanup rechecks attachments after elevation and confirms NAT → gateway →
+    switch removal by exact identity, deferring a switch that is still in use;
+20. crash injection after each ensure and cleanup boundary converges by exact
+    identity or fails closed while preserving evidence;
+21. v1 golden fixtures and legacy defaults remain byte/shape compatible, and a
+    failure or revision conflict does not partially replace persisted state;
+22. exact-name inventory remains within 32 names and rejects duplicate or
+    foreign ambiguity; and
+23. the production broker no longer imports or invokes legacy 2A generators.
+
 Static boundary tests MUST reject forbidden import direction and Device
 Lab-specific public terminology under `src/hyper-v-windows/`. Typecheck/build
 MUST emit declarations through the internal entrypoint. Integrity checks MUST
@@ -314,7 +510,11 @@ cover any package-owned PowerShell asset and its manifest digest.
 
 Real Windows Hyper-V execution remains the hardware proof and MUST be reported
 as environment-gated when unavailable; Linux fake-executor success is not a
-claim that the Windows E2E passed.
+claim that the Windows E2E passed. Slice 2A Windows Level 3 uses token-scoped
+fixtures, records ordinary/elevated session invocation counts, proves exact-ID
+cleanup without touching unrelated resources, and verifies one UAC prompt per
+ensure or cleanup attempt. Cold/warm time and legacy-versus-typed native
+invocation counts are recorded rather than assumed equivalent.
 
 ## Standalone real-host verification contract
 

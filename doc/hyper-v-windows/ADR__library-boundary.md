@@ -108,11 +108,12 @@ For a stable start/stop mismatch, broker orchestration performs the one typed
 pending action and re-inspects; it mutates state and clears the journal only
 after the fresh outcome is settled.
 
-The first production migration is deliberately narrow: operation
+The first production migration was deliberately narrow: operation
 reconciliation, including delete reconciliation and the zero-attached-disk
-residue case, moves through the new boundary. Create, image, networking,
-snapshot, guest setup/transport, and ordinary lifecycle call sites may remain
-on legacy host-control helpers until migrated one native operation at a time.
+residue case, moved through the new boundary. Later roadmap slices move one
+coherent production path at a time. Create, image, unmigrated networking,
+guest setup/transport, and ordinary lifecycle call sites may remain on legacy
+host-control helpers until their named slice is complete.
 
 ## Migration roadmap
 
@@ -124,10 +125,71 @@ are not Hyper-V operations and would contradict this boundary.
 | Slice | Legacy commands retired | Low-level operations added |
 |---|---|---|
 | 1. Snapshots (done) | `hyperVSnapshotCreateCommand`, `hyperVSnapshotDeleteCommand`, `hyperVSnapshotRestoreCommand` | `Get-VMSnapshot`, `Checkpoint-VM`, `Remove-VMSnapshot`, `Restore-VMSnapshot` |
-| 2. Networking | `hyperVEnsureNetworkCommand`, `hyperVCleanupNetworkCommand`, `hyperVBootstrapNetworkCommand`, `hyperVBootstrapNetworkCleanupCommand`, `hyperVInspectNetworkAllocationsCommand` | `Get-VMSwitch`, `New-VMSwitch`, `Remove-VMSwitch`, NAT/IP reads |
+| 2A. Host networking | host-fabric portions of `hyperVEnsureNetworkCommand`, `hyperVCleanupNetworkCommand`, and `hyperVInspectNetworkAllocationsCommand` | switch, host-adapter/interface, gateway, NAT, attachment, and bounded exact-name VM inventory primitives |
+| 2B. VM networking | `hyperVBootstrapNetworkCommand`, `hyperVBootstrapNetworkCleanupCommand` | VM network-adapter connection and guest bootstrap primitives |
+| 2C. Setup-network retirement | private network ensure logic embedded in the Windows setup command | reuse the typed 2A/2B adapter; no second host-fabric implementation |
 | 3. Creation and VHD | `hyperVCreateCommand`, the VHD portion of `hyperVPrepareBaseImageCommand` | `New-VM`, `Set-VMMemory`, `Set-VMProcessor`, `Set-VMFirmware`, `Add-VMHardDiskDrive`, `Add-VMDvdDrive`, `New-VHD`, `Convert-VHD`, `Optimize-VHD` |
 | 4. Guest PowerShell Direct | `hyperVGuestExecCommand`, `hyperVGuestUploadCommand`, `hyperVGuestDownloadCommand`, `hyperVGuestReadyCommand`, `hyperVGuestBootDiagnosticCommand`, `hyperVGuestProvisionCommand` | PowerShell Direct session primitives |
 | 5. Lifecycle residue | `hyperVStatusCommand`, `hyperVRebootCommand`, `hyperVDeleteCommand`, `hyperVRecoverOrphanCommand` | `Restart-VM`, plus adapter migration onto the existing operations |
+
+### Networking slice boundary
+
+Slice 2A is a complete vertical migration of the Device Lab host-fabric path,
+not a second implementation that is run alongside the legacy path. It covers
+internal switch inspection/creation/notes repair/removal, the host `vEthernet`
+adapter and IPv4 gateway, NAT, attachment inspection, and the bounded exact-name
+VM inventory used to validate address allocations. The old host-fabric helpers
+may remain unused as a source-level rollback seam until real Windows proof
+passes, but the broker never dual-runs or dual-writes both paths.
+
+The dependency direction for this slice is strict:
+
+```text
+hyper-v-windows/low-level
+    -> hyper-v-windows network reconciliation
+        -> Device Lab Hyper-V network adapter
+```
+
+This diagram shows the direction in which decoded facts and typed outcomes
+flow. Imports point the other way: the adapter imports reconciliation, and
+reconciliation imports low-level. Low-level remains a native-faithful mapping;
+network reconciliation owns the generic inspect → decide → execute one
+primitive → inspect sequence; the adapter alone owns CCC markers,
+owner/device/incarnation policy, persistence, UAC presentation, and public
+error/status mapping. “Network reconciliation” does not alter VM start/stop
+timing or the general VM lifecycle policy.
+
+Slice 2B connects VM adapters and generates guest bootstrap operations. Slice
+2C then removes the private network ensure implementation embedded in Windows
+setup. Image acquisition and the Linux SSH/cloud-init paths remain in
+host-control: they are not Hyper-V primitives and are not part of any slice 2
+claim.
+
+Host-network values that are easy to confuse are opaque validated values, not
+interchangeable strings or numbers. PowerShell and persisted JSON enter as
+`unknown` and cross the boundary only through exact decoders and safe factories.
+The low-level protocol exposes one target Windows/Hyper-V primitive per request;
+it does not accept a fake VM selector for a host-wide operation. Closed
+reconciliation unions carry the exact identity evidence required by mutation,
+so invalid cleanup/adoption combinations are not representable as independent
+booleans.
+
+Privilege is runtime evidence, not a TypeScript brand. Ordinary inspection
+produces a typed decision before UAC. After consent, the transaction obtains one
+callback-scoped administrator executor and inspects again before its first
+mutation, because host state may have changed while consent was pending. A
+mutation whose response is lost is indeterminate and is never blindly replayed;
+exact ID/name reinspection must prove success or absence, while a same-name,
+different-ID successor is a conflict. Cleanup likewise rechecks VM attachments
+after elevation and removes only proven identities in NAT → gateway → switch
+order.
+
+Device Lab continues to own and encode version-1 network intent/state. New
+token-scoped intent records enough identity to recover creations made before a
+state commit, while existing v1 records remain conservatively readable. This
+slice changes neither required fields and filenames nor public response/status
+shapes, and a failed or revision-conflicting operation does not partially
+replace persisted state.
 
 `hyperVSnapshotRepairCommand` deliberately stays a host-control PowerShell asset:
 it reconciles checkpoint state across several cmdlets rather than issuing one
