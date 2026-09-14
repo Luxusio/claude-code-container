@@ -263,6 +263,14 @@ consent is stale. It then executes one prepared primitive, reinspects, and
 confirms the exact native identity before advancing to the next dependency.
 Inspection, UAC, mutation, confirmation, and retry share one bounded transaction
 deadline.
+Closing the callback-scoped administrator executor MUST also be bounded without
+racing its own proof of termination. The medium-integrity parent relay grace
+MUST strictly exceed the elevated child's bounded termination-confirmation
+window, so the child can report either confirmed exit or
+`hyper-v-network-elevation-termination-unconfirmed` before the parent applies
+its fallback. A graceful relay completion inside that outer window MUST NOT be
+reclassified as termination uncertainty merely because it took longer than the
+inner child window.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes

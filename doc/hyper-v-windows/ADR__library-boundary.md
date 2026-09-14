@@ -193,6 +193,13 @@ different-ID successor is a conflict. Cleanup likewise rechecks VM attachments
 after elevation and removes only proven identities in NAT → gateway → switch
 order.
 
+Administrator-session shutdown uses nested bounded windows. The elevated child
+gets five seconds to confirm its watchdog/process exit and emit a terminal
+failure when it cannot. The medium-integrity relay owner waits a strictly longer
+ten-second grace before its own kill fallback. Equal windows are invalid: timer
+jitter lets the parent erase the child's authoritative terminal result and
+misclassify a successful transaction as termination uncertainty.
+
 Device Lab continues to own and encode version-1 network intent/state. New
 token-scoped intent checkpoints exact switch, gateway, and NAT receipts after
 fresh reinspection confirms each typed mutation and before the next primitive,
