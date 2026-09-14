@@ -24,7 +24,8 @@ const ELEVATION_FAILURE_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:";
 const ELEVATION_APPROVAL = "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE";
 const MAX_RELAY_LINE_BYTES = 256 * 1024;
 const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
-const TERMINATION_GRACE_MILLISECONDS = 5_000;
+const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000;
+const RELAY_TERMINATION_GRACE_MILLISECONDS = 10_000;
 
 export const HYPER_V_ELEVATED_NETWORK_ERROR_CODES = [
     "hyper-v-network-elevation-cancelled",
@@ -159,7 +160,7 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$U=[Console]::OpenStandardInput();$O=[Console]::OpenStandardOutput();$TC=$U.CopyToAsync($Q);$TP=$Q.CopyToAsync($O);$Done=[Threading.Tasks.Task]::WhenAny(@($TC,$TP)).GetAwaiter().GetResult()",
     "if($Done-eq $TP){$TP.GetAwaiter().GetResult()}else{$TC.GetAwaiter().GetResult();$Q.Flush()}",
     "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}default{'hyper-v-network-elevation-relay-failed'}};Send-Failure $F",
-    "}finally{try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$Y.WaitForExit(5000)};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Send-Failure 'hyper-v-network-elevation-termination-unconfirmed';$F='termination'}}}",
+    `}finally{try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$Y.WaitForExit(${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS})};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Send-Failure 'hyper-v-network-elevation-termination-unconfirmed';$F='termination'}}}`,
     "if($F){exit 1}",
 ].join(";");
 
@@ -246,7 +247,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         forcedKill = setTimeout(() => {
             failureCode ??= "hyper-v-network-elevation-termination-unconfirmed";
             child.kill();
-        }, TERMINATION_GRACE_MILLISECONDS);
+        }, RELAY_TERMINATION_GRACE_MILLISECONDS);
         forcedKill.unref?.();
     };
     const flushQueued = () => {
@@ -449,14 +450,10 @@ export async function withElevatedHyperVNetworkExecutor<T>(
     let terminationFailure: HyperVElevatedNetworkErrorCode | null = null;
     const completionPromise = currentRelayCompletion();
     if (completionPromise) {
-        const remaining = Math.max(1, Math.min(
-            TERMINATION_GRACE_MILLISECONDS,
-            options.deadlineUnixMilliseconds - Date.now() + TERMINATION_GRACE_MILLISECONDS,
-        ));
         const completion = await Promise.race([
             completionPromise,
             new Promise<null>((resolve) => {
-                const timer = setTimeout(() => resolve(null), remaining);
+                const timer = setTimeout(() => resolve(null), RELAY_TERMINATION_GRACE_MILLISECONDS);
                 timer.unref?.();
             }),
         ]);
