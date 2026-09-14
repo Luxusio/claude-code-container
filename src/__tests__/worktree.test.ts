@@ -5017,6 +5017,195 @@ describe("fixBrokenWorktree", () => {
         expect(existsSync(wsResult.workspacePath + ".ccc-backup")).toBe(false);
     });
 
+    it("repairs a broken worktree without merging an ignored pnpm dependency tree", () => {
+        initRepo(tmpDir);
+        const repoName = "front\u202eend";
+        const nestedRepo = join(tmpDir, repoName);
+        initRepo(nestedRepo);
+        writeFileSync(join(nestedRepo, ".gitignore"), "node_modules/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: nestedRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore dependencies"], { cwd: nestedRepo, stdio: "pipe" });
+        const wsResult = createWorkspace(tmpDir, "pnpm-links");
+        const destination = join(wsResult.workspacePath, repoName);
+        spawnSync("git", ["worktree", "remove", "--force", destination], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+        mkdirSync(destination, { recursive: true });
+        writeFileSync(join(destination, "wip.ts"), "preserve me");
+        const dependencyTarget = join(destination, "node_modules", ".pnpm", "native-target");
+        const dependencyLink = join(
+            destination,
+            "node_modules",
+            ".pnpm",
+            "@ast-grep+napi@0.40.5",
+            "node_modules",
+            "@ast-grep",
+            "napi-linux-x64-gnu",
+        );
+        mkdirSync(dependencyTarget, { recursive: true });
+        writeFileSync(join(dependencyTarget, "binding.node"), "generated");
+        mkdirSync(dirname(dependencyLink), { recursive: true });
+        symlinkSync(
+            dependencyTarget,
+            dependencyLink,
+            process.platform === "win32" ? "junction" : "dir",
+        );
+        expect(lstatSync(dependencyLink).isSymbolicLink()).toBe(true);
+        let notice = "";
+        vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+            notice += String(chunk);
+            return true;
+        }) as typeof process.stderr.write);
+
+        const result = fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            repoName,
+            "pnpm-links",
+            true,
+        );
+
+        expect(result).not.toBeNull();
+        expect(isValidWorktree(destination, nestedRepo)).toBe(true);
+        expect(readFileSync(join(destination, "wip.ts"), "utf-8")).toBe("preserve me");
+        expect(existsSync(join(destination, "node_modules"))).toBe(false);
+        expect(notice).toContain("without ignored generated dependency trees");
+        expect(notice).toContain("node_modules");
+        expect(notice).toContain("package-manager install");
+        expect(notice).toContain("\\u202e");
+        expect(notice).not.toContain(repoName);
+    });
+
+    it("still refuses an unignored dependency symlink and restores the broken content", () => {
+        initRepo(tmpDir);
+        const nestedRepo = join(tmpDir, "frontend");
+        initRepo(nestedRepo);
+        const wsResult = createWorkspace(tmpDir, "unignored-link");
+        const destination = join(wsResult.workspacePath, "frontend");
+        spawnSync("git", ["worktree", "remove", "--force", destination], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+        const dependencyTarget = join(destination, "node_modules", "target");
+        const dependencyLink = join(destination, "node_modules", "linked-package");
+        mkdirSync(dependencyTarget, { recursive: true });
+        writeFileSync(join(dependencyTarget, "index.js"), "user-controlled");
+        symlinkSync(
+            dependencyTarget,
+            dependencyLink,
+            process.platform === "win32" ? "junction" : "dir",
+        );
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "unignored-link",
+            true,
+        )).toThrow("Workspace content contains a symbolic link");
+
+        expect(isValidWorktree(destination, nestedRepo)).toBe(false);
+        expect(lstatSync(dependencyLink).isSymbolicLink()).toBe(true);
+        expect(readFileSync(join(dependencyTarget, "index.js"), "utf-8"))
+            .toBe("user-controlled");
+    });
+
+    it("uses the repaired worktree ignore rules instead of inherited Git selectors", () => {
+        initRepo(tmpDir);
+        const nestedRepo = join(tmpDir, "frontend");
+        initRepo(nestedRepo);
+        const foreignRepo = join(tmpdir(), `ccc-foreign-ignore-${randomUUID()}`);
+        initRepo(foreignRepo);
+        writeFileSync(join(foreignRepo, ".gitignore"), "node_modules/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: foreignRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "foreign ignore"], {
+            cwd: foreignRepo,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["branch", "selector-ignore"], {
+            cwd: foreignRepo,
+            stdio: "pipe",
+        });
+        const wsResult = createWorkspace(tmpDir, "selector-ignore");
+        const destination = join(wsResult.workspacePath, "frontend");
+        spawnSync("git", ["worktree", "remove", "--force", destination], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+        mkdirSync(join(destination, "node_modules"), { recursive: true });
+        writeFileSync(join(destination, "node_modules", "keep.txt"), "not ignored here");
+        const previous = {
+            GIT_DIR: process.env.GIT_DIR,
+            GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+            GIT_COMMON_DIR: process.env.GIT_COMMON_DIR,
+            GIT_INDEX_FILE: process.env.GIT_INDEX_FILE,
+        };
+        process.env.GIT_DIR = join(foreignRepo, ".git");
+        process.env.GIT_WORK_TREE = foreignRepo;
+        process.env.GIT_COMMON_DIR = join(foreignRepo, ".git");
+        process.env.GIT_INDEX_FILE = join(foreignRepo, ".git", "index");
+        try {
+            expect(fixBrokenWorktree(
+                tmpDir,
+                wsResult.workspacePath,
+                "frontend",
+                "selector-ignore",
+                true,
+            )).not.toBeNull();
+            expect(readFileSync(
+                join(destination, "node_modules", "keep.txt"),
+                "utf-8",
+            )).toBe("not ignored here");
+        } finally {
+            for (const [name, value] of Object.entries(previous)) {
+                if (value === undefined) delete process.env[name];
+                else process.env[name] = value;
+            }
+            rmSync(foreignRepo, { recursive: true, force: true });
+        }
+    });
+
+    it.skipIf(process.platform === "win32")(
+        "does not reinterpret a literal POSIX backslash when checking ignored dependencies",
+        () => {
+            initRepo(tmpDir);
+            const nestedRepo = join(tmpDir, "frontend");
+            initRepo(nestedRepo);
+            writeFileSync(join(nestedRepo, ".gitignore"), "cache/linux/node_modules/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: nestedRepo, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore a different dependency path"], {
+                cwd: nestedRepo,
+                stdio: "pipe",
+            });
+            const wsResult = createWorkspace(tmpDir, "literal-backslash");
+            const destination = join(wsResult.workspacePath, "frontend");
+            spawnSync("git", ["worktree", "remove", "--force", destination], {
+                cwd: nestedRepo,
+                stdio: "pipe",
+            });
+            const literalBackslashDependency = join(
+                destination,
+                "cache\\linux",
+                "node_modules",
+            );
+            mkdirSync(literalBackslashDependency, { recursive: true });
+            writeFileSync(join(literalBackslashDependency, "keep.txt"), "distinct path");
+
+            expect(fixBrokenWorktree(
+                tmpDir,
+                wsResult.workspacePath,
+                "frontend",
+                "literal-backslash",
+                true,
+            )).not.toBeNull();
+            expect(readFileSync(
+                join(literalBackslashDependency, "keep.txt"),
+                "utf-8",
+            )).toBe("distinct path");
+        },
+    );
+
     it("returns null for non-existent repo name", () => {
         initRepo(tmpDir);
         const wsResult = createWorkspace(tmpDir, "no-repo");

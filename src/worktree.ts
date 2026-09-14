@@ -49,12 +49,59 @@ function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
     }
 }
 
-function mergePreservingContent(src: string, dest: string): void {
+type PreservedContentMerge = {
+    readonly worktreeRoot: string;
+    readonly skippedIgnoredDependencyTrees: string[];
+};
+
+function ignoredGeneratedDependencyTree(
+    src: string,
+    dest: string,
+    merge: PreservedContentMerge,
+): boolean {
+    if (basename(src) !== "node_modules" || pathExistsStrict(dest)) return false;
+    const relativeDestination = relative(merge.worktreeRoot, dest);
+    if (!relativeDestination
+        || isAbsolute(relativeDestination)
+        || relativeDestination === ".."
+        || relativeDestination.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+        throw new Error(`Worktree merge path escaped its root: ${dest}`);
+    }
+    const ignored = spawnSync(
+        "git",
+        [
+            "check-ignore",
+            "--quiet",
+            "--",
+            `${process.platform === "win32"
+                ? relativeDestination.split(win32.sep).join(posix.sep)
+                : relativeDestination}/`,
+        ],
+        {
+            cwd: merge.worktreeRoot,
+            encoding: "utf-8",
+            env: sanitizedGitRepositoryEnvironment(),
+            stdio: ["pipe", "pipe", "pipe"],
+        },
+    );
+    if (ignored.error || ![0, 1].includes(ignored.status ?? -1)) {
+        const detail = (ignored.stderr ?? "").trim()
+            || ignored.error?.message
+            || `git exited with status ${String(ignored.status)}`;
+        throw new Error(`Unable to inspect ignored dependency path '${dest}': ${detail}`);
+    }
+    if (ignored.status !== 0) return false;
+    merge.skippedIgnoredDependencyTrees.push(dest);
+    return true;
+}
+
+function mergePreservingContent(src: string, dest: string, merge: PreservedContentMerge): void {
     const source = lstatSync(src);
     if (source.isSymbolicLink()) {
         throw new Error(`Workspace content contains a symbolic link that cannot be merged safely: ${src}`);
     }
     if (source.isDirectory()) {
+        if (ignoredGeneratedDependencyTree(src, dest, merge)) return;
         if (!pathExistsStrict(dest)) {
             mkdirSync(dest);
         } else {
@@ -65,7 +112,7 @@ function mergePreservingContent(src: string, dest: string): void {
         }
         for (const entry of readdirSync(src)) {
             if (entry === ".git") continue;
-            mergePreservingContent(join(src, entry), join(dest, entry));
+            mergePreservingContent(join(src, entry), join(dest, entry), merge);
         }
         return;
     }
@@ -3132,13 +3179,18 @@ function withSanitizedGitRepositoryEnvironment<T>(operation: () => T): T {
 function pinnedRepositoryEnvironment(
     identity: NestedRepositoryIdentity,
 ): NodeJS.ProcessEnv {
+    const environment = sanitizedGitRepositoryEnvironment();
+    environment.GIT_DIR = identity.gitDirectory.realpath;
+    environment.GIT_WORK_TREE = identity.directory.realpath;
+    environment.GIT_INDEX_FILE = join(identity.gitDirectory.realpath, "index");
+    return environment;
+}
+
+function sanitizedGitRepositoryEnvironment(): NodeJS.ProcessEnv {
     const environment = { ...process.env };
     for (const key of GIT_REPOSITORY_SELECTOR_ENVIRONMENT) {
         delete environment[key];
     }
-    environment.GIT_DIR = identity.gitDirectory.realpath;
-    environment.GIT_WORK_TREE = identity.directory.realpath;
-    environment.GIT_INDEX_FILE = join(identity.gitDirectory.realpath, "index");
     return environment;
 }
 
@@ -6761,6 +6813,26 @@ export function fixBrokenWorktree(
         removeMergedBackup?: (path: string) => void;
     } = {},
 ): WorktreeRepoResult | null {
+    return withSanitizedGitRepositoryEnvironment(() => fixBrokenWorktreeSanitized(
+        sourcePath,
+        wsPath,
+        repoName,
+        branch,
+        confirmed,
+        cleanupOperations,
+    ));
+}
+
+function fixBrokenWorktreeSanitized(
+    sourcePath: string,
+    wsPath: string,
+    repoName: string,
+    branch: string,
+    confirmed: boolean,
+    cleanupOperations: {
+        removeMergedBackup?: (path: string) => void;
+    },
+): WorktreeRepoResult | null {
     if (!confirmed) {
         throw new Error("Explicit confirmation is required to replace broken worktree content.");
     }
@@ -7009,6 +7081,10 @@ export function fixBrokenWorktree(
     );
 
     if (backup && backupIdentity) {
+        const preservedContentMerge: PreservedContentMerge = {
+            worktreeRoot: destPath,
+            skippedIgnoredDependencyTrees: [],
+        };
         try {
             operationGuard();
             if (!isValidWorktree(destPath, sourceRepo.path)) {
@@ -7021,6 +7097,7 @@ export function fixBrokenWorktree(
                 mergePreservingContent(
                     join(backup.path, name),
                     join(destPath, name),
+                    preservedContentMerge,
                 );
             }
         } catch (error) {
@@ -7068,6 +7145,13 @@ export function fixBrokenWorktree(
         // The replacement is now the authoritative worktree. Cleanup failures
         // must not roll it back after either quarantine has been settled.
         settleStaleRegistration();
+        if (preservedContentMerge.skippedIgnoredDependencyTrees.length > 0) {
+            process.stderr.write(
+                `[ccc] NOTE: Recreated ${terminalSafe(destPath)} without ignored generated dependency trees that may contain platform-specific links.\n`
+                + `      Skipped: ${preservedContentMerge.skippedIgnoredDependencyTrees.map(terminalSafe).join(", ")}\n`
+                + "      Run the repository's package-manager install command in the repaired worktree.\n",
+            );
+        }
         const removeMergedBackup = cleanupOperations.removeMergedBackup
             ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
         operationGuard();
