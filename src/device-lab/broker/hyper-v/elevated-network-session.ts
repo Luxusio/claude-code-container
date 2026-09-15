@@ -56,6 +56,7 @@ export const HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES = [
     "relay-terminal-ack-missing",
     "relay-terminal-ack-invalid",
     "relay-process-exit-timeout",
+    "relay-output-drain-timeout",
     "relay-input-write",
     "relay-completion-timeout",
 ] as const;
@@ -327,6 +328,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let killed = false;
     let terminalAcknowledged = false;
     let relayProcessExited = false;
+    let relayStdoutDrained = child.stdout === null;
     let forceExpired = false;
     let forcedKill: ReturnType<typeof setTimeout> | null = null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
@@ -368,7 +370,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         ? "hyper-v-windows-session-exited"
         : "hyper-v-windows-session-start-failed";
     const finishAfterTerminalExit = () => {
-        if (terminalAcknowledged && relayProcessExited) finish(normalExitReason());
+        if (terminalAcknowledged && relayProcessExited && relayStdoutDrained) finish(normalExitReason());
     };
     const armForcedKill = () => {
         if (forcedKill) return;
@@ -376,9 +378,11 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             forceExpired = true;
             recordTerminationFailure({
                 kind: "termination",
-                stage: terminalAcknowledged
-                    ? "relay-process-exit-timeout"
-                    : "relay-terminal-ack-missing",
+                stage: !terminalAcknowledged
+                    ? "relay-terminal-ack-missing"
+                    : !relayProcessExited
+                        ? "relay-process-exit-timeout"
+                        : "relay-output-drain-timeout",
                 replaceFailure: false,
             });
             child.stdin?.end();
@@ -501,6 +505,13 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             stop();
         }
     });
+    child.stdout?.once("end", () => {
+        relayStdoutDrained = true;
+        if (buffered.length > 0) {
+            recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
+        }
+        finishAfterTerminalExit();
+    });
     child.stderr?.on("data", (chunk: Buffer | string) => {
         stderrBytes += Buffer.byteLength(chunk);
         if (stderrBytes > MAX_RELAY_LINE_BYTES) {
@@ -515,21 +526,28 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     child.once("exit", () => {
         relayProcessExited = true;
         if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
-        if (terminalAcknowledged || forceExpired) finish(normalExitReason());
+        if (forceExpired) finish(normalExitReason());
+        else finishAfterTerminalExit();
     });
     child.once("close", () => {
         if (exited) return;
         if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
-        if (terminalAcknowledged) {
+        if (!terminalAcknowledged) {
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-terminal-ack-missing",
+                replaceFailure: false,
+            });
+        } else if (!relayProcessExited) {
             recordTerminationFailure({
                 kind: "termination",
                 stage: "relay-process-exit-timeout",
                 replaceFailure: false,
             });
-        } else {
+        } else if (!relayStdoutDrained) {
             recordTerminationFailure({
                 kind: "termination",
-                stage: "relay-terminal-ack-missing",
+                stage: "relay-output-drain-timeout",
                 replaceFailure: false,
             });
         }
