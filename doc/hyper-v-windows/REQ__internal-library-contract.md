@@ -284,15 +284,26 @@ Once either asynchronous pipe-copy direction completes and relay finalization
 begins, the medium-integrity PowerShell relay waits up to five seconds for the
 exact elevated process to exit and emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
-remains. Independently, the Node parent MUST bound a stuck graceful copy or
-relay finalization with a ten-second grace from scope closure before applying
-its own kill fallback. Once normal graceful close has begun, that Node grace is
-not recomputed from the operation deadline. Verification MUST prove that idle
-normal close writes the close frame without first ending relay stdin, unfinished
-work and abrupt discard still kill, the session bootstrap recognizes close
-before request decoding, the operation timer is disarmed before the frame write,
-completion just after five seconds is accepted, and a relay which never
-completes fails closed at the ten-second outer bound.
+remains. The Node-owned relay process then has a strictly longer ten-second
+grace from scope closure before its force fallback. The callback wrapper MUST
+wait a third, strictly longer fifteen-second window for that force fallback to
+publish and close the relay; equal adjacent windows are invalid because process
+close delivery occurs asynchronously after the force timer fires. Once normal
+graceful close has begun, these shutdown windows are not recomputed from the
+operation deadline.
+
+The stable error code remains
+`hyper-v-network-elevation-termination-unconfirmed`. Its bounded diagnostic
+stage MUST distinguish `elevated-child`, `relay-force-timeout`,
+`relay-input-write`, and `relay-completion-timeout`; no native exception text,
+path, PID, or unbounded output may be included. The standalone real-host proof
+MUST report that stage separately without changing the stable failure text.
+Verification MUST prove that
+idle normal close writes the close frame without first ending relay stdin,
+unfinished work and abrupt discard still kill, the session bootstrap recognizes
+close before request decoding, the operation timer is disarmed before the frame
+write, completion after the ten-second relay force window can still settle, and
+a relay which never completes fails closed at the fifteen-second wrapper bound.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes

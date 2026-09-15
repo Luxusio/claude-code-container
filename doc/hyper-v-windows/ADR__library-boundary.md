@@ -209,15 +209,20 @@ finishes and relay finalization begins, the medium-integrity PowerShell relay
 waits up to five seconds for the exact elevated process exit and emits
 `hyper-v-network-elevation-termination-unconfirmed` if the same process remains.
 The Node parent independently gives the PowerShell relay a strictly longer
-ten-second grace from scope closure to bound a stuck graceful copy or relay
-finalization before applying its own kill fallback. Once graceful close has
-begun, that Node grace is not recomputed from the operation deadline. Equal
-windows are invalid: timer jitter can let the Node parent erase the relay's
-authoritative terminal result and misclassify a successful transaction as
-termination uncertainty. Verification covers the close-frame-before-stdin-EOF
-ordering, graceful relay completion just after five seconds, disarming the relay
-operation timer, idle gating, abrupt discard, and fail-closed termination at the
-ten-second outer bound.
+ten-second grace from scope closure before forcing the Node-owned relay process.
+The callback wrapper waits a third, strictly longer fifteen-second window so
+that asynchronous process-close delivery after the ten-second force fallback
+can publish its terminal result. Once graceful close has begun, these windows
+are not recomputed from the operation deadline. Equal adjacent windows are
+invalid: timer jitter can let an outer owner erase the inner owner's terminal
+result and misclassify it as a different termination uncertainty. The stable
+error retains a bounded stage (`elevated-child`, `relay-force-timeout`,
+`relay-input-write`, or `relay-completion-timeout`) rather than native text.
+The standalone proof prints that stage separately while its failure text stays
+stable. Verification covers the close-frame-before-stdin-EOF ordering, completion after
+the ten-second force window, disarming the relay operation timer, idle gating,
+abrupt discard, stage correlation, and fail-closed termination at the
+fifteen-second wrapper bound.
 
 Device Lab continues to own and encode version-1 network intent/state. New
 token-scoped intent checkpoints exact switch, gateway, and NAT receipts after
