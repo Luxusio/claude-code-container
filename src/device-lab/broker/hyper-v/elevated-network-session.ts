@@ -8,6 +8,7 @@ import {
 } from "../../../windows-system-powershell.js";
 import {
     createHyperVWindowsPowerShellSession,
+    HYPER_V_WINDOWS_SESSION_CLOSE_MARKER,
     HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX,
     type HyperVWindowsExecutionContext,
     type HyperVWindowsExecutionRequest,
@@ -54,6 +55,7 @@ export class HyperVElevatedNetworkSessionError extends Error {
 }
 
 export type HyperVElevatedNetworkRelayProcess = HyperVWindowsSessionProcess & {
+    readonly close: () => void;
     readonly completion: Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>;
     readonly failureCode: () => HyperVElevatedNetworkErrorCode | null;
 };
@@ -221,8 +223,10 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let failureCode: HyperVElevatedNetworkErrorCode | null = null;
     let exited = false;
     let exitReason: HyperVWindowsSessionErrorCode = "hyper-v-windows-session-exited";
+    let closing = false;
     let killed = false;
     let forcedKill: ReturnType<typeof setTimeout> | null = null;
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     let resolveCompletion = (_result: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) => undefined as void;
     const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
         resolveCompletion = resolve;
@@ -240,15 +244,34 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         for (const listener of [...exitListeners]) listener(reason);
         resolveCompletion({ errorCode: failureCode });
     };
+    const armForcedKill = () => {
+        if (forcedKill) return;
+        forcedKill = setTimeout(() => {
+            failureCode ??= "hyper-v-network-elevation-termination-unconfirmed";
+            child.stdin?.end();
+            child.kill();
+        }, RELAY_TERMINATION_GRACE_MILLISECONDS);
+        forcedKill.unref?.();
+    };
     const stop = () => {
         if (killed) return;
         killed = true;
         child.stdin?.end();
-        forcedKill = setTimeout(() => {
+        armForcedKill();
+    };
+    const close = () => {
+        if (closing || killed || exited) return;
+        closing = true;
+        if (deadlineTimer) {
+            clearTimeout(deadlineTimer);
+            deadlineTimer = null;
+        }
+        child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`, (error) => {
+            if (!error || exited) return;
             failureCode ??= "hyper-v-network-elevation-termination-unconfirmed";
-            child.kill();
-        }, RELAY_TERMINATION_GRACE_MILLISECONDS);
-        forcedKill.unref?.();
+            stop();
+        });
+        armForcedKill();
     };
     const flushQueued = () => {
         if (!relayReady || exited) return;
@@ -341,18 +364,21 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             finish("hyper-v-windows-session-stdin-failed");
         }
     });
-    const deadlineTimer = setTimeout(() => {
+    deadlineTimer = setTimeout(() => {
         failureCode ??= "hyper-v-network-elevation-deadline-exceeded";
         stop();
     }, Math.max(1, Math.min(2_147_483_647, request.deadlineUnixMilliseconds - Date.now())));
     deadlineTimer.unref?.();
-    completion.finally(() => clearTimeout(deadlineTimer)).catch(() => undefined);
+    completion.finally(() => {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+    }).catch(() => undefined);
 
     return {
         completion,
         failureCode: () => failureCode,
+        close,
         write(line, settled) {
-            if (exited || killed) {
+            if (exited || closing || killed) {
                 settled?.(new Error(exitReason));
                 return;
             }

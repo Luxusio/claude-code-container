@@ -49,6 +49,7 @@ export type HyperVWindowsSessionErrorCode = typeof HYPER_V_WINDOWS_SESSION_ERROR
 export const HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX = "CCC_HYPER_V_SESSION_REQUEST:";
 export const HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX = "CCC_HYPER_V_SESSION_RESPONSE:";
 export const HYPER_V_WINDOWS_SESSION_READY_MARKER = "CCC_HYPER_V_SESSION_READY";
+export const HYPER_V_WINDOWS_SESSION_CLOSE_MARKER = "CCC_HYPER_V_SESSION_CLOSE";
 
 const MAX_FRAME_BYTES = 256 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
@@ -92,6 +93,7 @@ export const HYPER_V_WINDOWS_SESSION_BOOTSTRAP = [
     "while ($true) {",
     "  $Line = [Console]::In.ReadLine()",
     "  if ($null -eq $Line) { break }",
+    `  if ($Line -ceq '${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}') { break }`,
     `  if (-not $Line.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}')) { continue }`,
     `  $Frame = $Line.Substring(${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX.length})`,
     "  $Envelope = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Frame)) | ConvertFrom-Json",
@@ -138,6 +140,9 @@ export type HyperVWindowsSessionProcess = {
     // what makes a misspelled code fail to compile at the producer rather than silently fall out of
     // the never-ran set at the consumer.
     readonly onExit: (listener: (reason: HyperVWindowsSessionErrorCode) => void) => void;
+    // A process that owns a multiplexing relay can distinguish orderly session closure from an
+    // abrupt transport discard. Callers that do not expose this capability retain kill fallback.
+    readonly close?: () => void;
     readonly kill: () => void;
 };
 
@@ -251,15 +256,16 @@ export function createHyperVWindowsPowerShellSession(
         }
     }
 
-    function discard(code: HyperVWindowsSessionErrorCode) {
+    function discard(code: HyperVWindowsSessionErrorCode, graceful = false) {
         const previous = child;
         child = null;
         starting = null;
         if (previous) {
             try {
-                previous.kill();
+                if (graceful && pending.size === 0 && queueDepth === 0 && previous.close) previous.close();
+                else previous.kill();
             } catch {
-                // Killing an already-dead child is not a failure worth surfacing.
+                // Closing or killing an already-dead child is not a failure worth surfacing.
             }
         }
         failAll(code);
@@ -568,7 +574,7 @@ export function createHyperVWindowsPowerShellSession(
         },
         close() {
             closed = true;
-            discard("hyper-v-windows-session-closed");
+            discard("hyper-v-windows-session-closed", true);
         },
         starts() {
             return starts;
