@@ -367,17 +367,29 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "truncated-invalid-ack",
         "truncated-short-prefix",
         "exit-before-ack-with-extra-line",
+        "premature-ack",
+        "abrupt-stdin-error-truncated-eof",
         "ack-close-without-exit",
         "ack-exit-close-without-stdout-end",
         "ack-stdin-error",
     ] as const)(
         "handles correlated relay terminal protocol (%s) without depending on close for success",
         async (order) => {
+            const usesForceTimer = order === "abrupt-stdin-error-truncated-eof";
+            if (usesForceTimer) vi.useFakeTimers();
             const events = new EventEmitter();
             const stdoutEvents = new EventEmitter();
             const stderr = new EventEmitter();
             const stdout = Object.assign(stdoutEvents, { setEncoding: () => stdout });
-            const kill = vi.fn(() => true);
+            const kill = vi.fn(() => {
+                if (usesForceTimer) {
+                    stdout.emit("data", "CCC_HYPER_V_ELEVATED_");
+                    events.emit("exit", 1, null);
+                    stdout.emit("end");
+                    events.emit("close", 1, null);
+                }
+                return true;
+            });
             let input = "";
             let terminalToken = "";
             let launchObserved = false;
@@ -403,7 +415,19 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         launchObserved = true;
                         queueMicrotask(() => stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST\n"));
                     } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE") {
-                        queueMicrotask(() => stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n"));
+                        queueMicrotask(() => {
+                            if (order === "premature-ack") {
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
+                                );
+                                stdout.emit("end");
+                                events.emit("exit", 1, null);
+                                events.emit("close", 1, null);
+                                return;
+                            }
+                            stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n");
+                        });
                     } else if (line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) {
                         const encoded = line.slice(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX.length);
                         const frame: unknown = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
@@ -417,10 +441,15 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                             code: 0,
                             stdout: successEnvelope("Get-VM"),
                         }), "utf8").toString("base64");
-                        queueMicrotask(() => stdout.emit(
-                            "data",
-                            `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${reply}\n`,
-                        ));
+                        queueMicrotask(() => {
+                            stdout.emit(
+                                "data",
+                                `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${reply}\n`,
+                            );
+                            if (usesForceTimer) {
+                                stdinEvents.emit("error", new Error("simulated abrupt stdin failure"));
+                            }
+                        });
                     } else if (line === HYPER_V_WINDOWS_SESSION_CLOSE_MARKER) {
                         closeObserved = true;
                         expect(stdinEndedAfterTerminal).toBe(false);
@@ -537,6 +566,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "truncated-invalid-ack"
                 || order === "truncated-short-prefix"
                 || order === "exit-before-ack-with-extra-line"
+                || order === "premature-ack"
+                || order === "abrupt-stdin-error-truncated-eof"
                 || order === "ack-close-without-exit"
                 || order === "ack-exit-close-without-stdout-end"
                 || order === "ack-stdin-error";
@@ -547,23 +578,32 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "truncated-invalid-ack"
                 || order === "truncated-short-prefix"
                 || order === "exit-before-ack-with-extra-line"
+                || order === "premature-ack"
                 ? "relay-terminal-ack-invalid"
                 : order === "ack-close-without-exit"
                     ? "relay-process-exit-timeout"
                     : order === "ack-exit-close-without-stdout-end"
                         ? "relay-output-drain-timeout"
                     : "relay-input-write";
-            const result = expectsFailure
-                ? await resultPromise.then(() => null, (error: unknown) => error)
-                : await resultPromise;
+            const settledResult = expectsFailure
+                ? resultPromise.then(() => null, (error: unknown) => error)
+                : resultPromise;
+            let result: unknown;
+            try {
+                if (usesForceTimer) await vi.advanceTimersByTimeAsync(10_001);
+                result = await settledResult;
+            } finally {
+                if (usesForceTimer) vi.useRealTimers();
+            }
 
             expect(childProcessMocks.spawn).toHaveBeenCalledTimes(1);
             expect(childProcessMocks.spawn.mock.results[0]?.value).toBe(child);
             expect(simulationError).toBeNull();
             expect(launchObserved).toBe(true);
-            expect(closeObserved).toBe(true);
+            expect(closeObserved).toBe(order !== "premature-ack" && !usesForceTimer);
             expect(stdinEndedAfterTerminal).toBe(true);
-            expect(kill).not.toHaveBeenCalled();
+            if (usesForceTimer) expect(kill).toHaveBeenCalledTimes(1);
+            else expect(kill).not.toHaveBeenCalled();
             if (expectsFailure) {
                 expect(result).toMatchObject({
                     code: "hyper-v-network-elevation-termination-unconfirmed",
