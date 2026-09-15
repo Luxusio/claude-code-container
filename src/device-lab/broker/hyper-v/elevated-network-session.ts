@@ -22,6 +22,7 @@ import {
 const ELEVATION_REQUEST_MARKER = "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST";
 const ELEVATION_READY_MARKER = "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY";
 const ELEVATION_FAILURE_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:";
+const ELEVATION_TERMINAL_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:";
 const ELEVATION_APPROVAL = "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE";
 const MAX_RELAY_LINE_BYTES = 256 * 1024;
 const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
@@ -52,7 +53,9 @@ type HyperVElevatedNetworkNonTerminationErrorCode = Exclude<
 
 export const HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES = [
     "elevated-child",
-    "relay-force-timeout",
+    "relay-terminal-ack-missing",
+    "relay-terminal-ack-invalid",
+    "relay-process-exit-timeout",
     "relay-input-write",
     "relay-completion-timeout",
 ] as const;
@@ -230,13 +233,13 @@ function elevatedChildSource(pipeName: string, nonce: string, deadlineUnixMillis
 // bootstrap, so no Hyper-V operation logic is duplicated here.
 export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$ErrorActionPreference='Stop'",
-    "$F=$null;$P=$null;$C=$null;$CS=$null;$Q=$null;$R=$null;$W=$null",
+    "$F=$null;$P=$null;$C=$null;$CS=$null;$Q=$null;$R=$null;$W=$null;$Z=$null",
     "function Send-Failure([string]$Code){[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:'+$Code);[Console]::Out.Flush()}",
     "try{",
     "$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt 349528-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}",
     "$E=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($L))|ConvertFrom-Json -ErrorAction Stop",
-    "$P=[string]$E.pipeName;$N=[string]$E.nonce;$X=[string]$E.executable;$D=[long]$E.deadlineUnixMilliseconds;$I=[string]$E.childEncoded;$B=[string]$E.sessionBootstrapEncoded",
-    String.raw`if($P-notmatch '^ccc-hyper-v-network-[a-f0-9]{32}$'-or $N-notmatch '^[a-f0-9]{64}$'-or $X-notmatch '^[A-Za-z]:\\[^\x00-\x1f]{1,1024}\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$'-or $I.Length-gt 8000-or $I-notmatch '^[A-Za-z0-9+/]+={0,2}$'-or $B.Length-gt 131072-or $B-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}`,
+    "$P=[string]$E.pipeName;$N=[string]$E.nonce;$Z=[string]$E.terminalToken;$X=[string]$E.executable;$D=[long]$E.deadlineUnixMilliseconds;$I=[string]$E.childEncoded;$B=[string]$E.sessionBootstrapEncoded",
+    String.raw`if($P-notmatch '^ccc-hyper-v-network-[a-f0-9]{32}$'-or $N-notmatch '^[a-f0-9]{64}$'-or $Z-notmatch '^[a-f0-9]{64}$'-or $X-notmatch '^[A-Za-z]:\\[^\x00-\x1f]{1,1024}\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$'-or $I.Length-gt 8000-or $I-notmatch '^[A-Za-z0-9+/]+={0,2}$'-or $B.Length-gt 131072-or $B-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}`,
     "if($D-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-le 0){throw 'deadline'}",
     "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class CccHvPipe{[DllImport(\"kernel32.dll\",SetLastError=true)][return:MarshalAs(UnmanagedType.Bool)]public static extern bool GetNamedPipeClientProcessId(IntPtr h,out uint p);}'",
     "$S=[IO.Pipes.PipeSecurity]::new();$A=[Security.Principal.SecurityIdentifier]'S-1-5-32-544';$S.SetAccessRule([IO.Pipes.PipeAccessRule]::new($A,[IO.Pipes.PipeAccessRights]::ReadWrite,[Security.AccessControl.AccessControlType]::Allow))",
@@ -254,6 +257,7 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "if($Done-eq $TP){$TP.GetAwaiter().GetResult()}else{$TC.GetAwaiter().GetResult();$Q.Flush()}",
     "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}default{'hyper-v-network-elevation-relay-failed'}};Send-Failure $F",
     `}finally{try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$Y.WaitForExit(${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS})};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Send-Failure 'hyper-v-network-elevation-termination-unconfirmed';$F='termination'}}}`,
+    `if($Z-match '^[a-f0-9]{64}$'){[Console]::Out.WriteLine('${ELEVATION_TERMINAL_PREFIX}'+$Z);[Console]::Out.Flush()}`,
     "if($F){exit 1}",
 ].join(";");
 
@@ -273,6 +277,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     }
     const pipeName = `ccc-hyper-v-network-${randomBytes(16).toString("hex")}`;
     const nonce = randomBytes(32).toString("hex");
+    const terminalToken = randomBytes(32).toString("hex");
     const childLoader = compressedPowerShellLoader(elevatedChildSource(
         pipeName,
         nonce,
@@ -285,6 +290,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     const launchEnvelope = Buffer.from(JSON.stringify({
         pipeName,
         nonce,
+        terminalToken,
         executable: request.executable,
         deadlineUnixMilliseconds: request.deadlineUnixMilliseconds,
         childEncoded,
@@ -319,6 +325,9 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let exitReason: HyperVWindowsSessionErrorCode = "hyper-v-windows-session-exited";
     let closing = false;
     let killed = false;
+    let terminalAcknowledged = false;
+    let relayProcessExited = false;
+    let forceExpired = false;
     let forcedKill: ReturnType<typeof setTimeout> | null = null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     let resolveCompletion = (_result: HyperVElevatedNetworkRelayCompletion) => undefined as void;
@@ -355,16 +364,26 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     ) => {
         relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, event);
     };
+    const normalExitReason = (): HyperVWindowsSessionErrorCode => requestAttempted
+        ? "hyper-v-windows-session-exited"
+        : "hyper-v-windows-session-start-failed";
+    const finishAfterTerminalExit = () => {
+        if (terminalAcknowledged && relayProcessExited) finish(normalExitReason());
+    };
     const armForcedKill = () => {
         if (forcedKill) return;
         forcedKill = setTimeout(() => {
+            forceExpired = true;
             recordTerminationFailure({
                 kind: "termination",
-                stage: "relay-force-timeout",
+                stage: terminalAcknowledged
+                    ? "relay-process-exit-timeout"
+                    : "relay-terminal-ack-missing",
                 replaceFailure: false,
             });
             child.stdin?.end();
-            child.kill();
+            if (relayProcessExited) finish(normalExitReason());
+            else child.kill();
         }, RELAY_FORCE_GRACE_MILLISECONDS);
         forcedKill.unref?.();
     };
@@ -442,6 +461,21 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             flushQueued();
             return true;
         }
+        if (line.startsWith(ELEVATION_TERMINAL_PREFIX)) {
+            if (terminalAcknowledged || line !== `${ELEVATION_TERMINAL_PREFIX}${terminalToken}`) {
+                recordTerminationFailure({
+                    kind: "termination",
+                    stage: "relay-terminal-ack-invalid",
+                    replaceFailure: false,
+                });
+                stop();
+                return true;
+            }
+            terminalAcknowledged = true;
+            child.stdin?.end();
+            finishAfterTerminalExit();
+            return true;
+        }
         return false;
     };
 
@@ -478,12 +512,32 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         recordPrimaryFailureIfAbsent("hyper-v-network-elevation-launch-failed");
         finish(requestAttempted ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-spawn-failed");
     });
-    child.once("close", () => {
+    child.once("exit", () => {
+        relayProcessExited = true;
         if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
-        finish(requestAttempted ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-start-failed");
+        if (terminalAcknowledged || forceExpired) finish(normalExitReason());
+    });
+    child.once("close", () => {
+        if (exited) return;
+        relayProcessExited = true;
+        if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
+        if (!terminalAcknowledged) {
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-terminal-ack-missing",
+                replaceFailure: false,
+            });
+        }
+        finish(normalExitReason());
     });
     child.stdin?.on("error", () => {
-        finish(requestAttempted ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-stdin-failed");
+        recordTerminationFailure({
+            kind: "termination",
+            stage: "relay-input-write",
+            replaceFailure: false,
+        });
+        if (relayProcessExited) finish(normalExitReason());
+        else stop();
     });
     child.stdin?.write(`${launchEnvelope}\n`, (error) => {
         if (error) {
