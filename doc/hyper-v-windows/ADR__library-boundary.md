@@ -280,12 +280,19 @@ operation unless an earlier session error has already sealed its correlated
 operation/error pair. A transport write that explicitly reports non-delivery is
 excluded from the delivered-pending count. Fatal protocol rejection is an
 absorbing control-parser state: stdout is still drained, but no later line may
-change failure, progress, or session evidence.
+change failure, progress, or session evidence. The elevated child's explicit
+termination-unconfirmed failure is absorbing as well.
 Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
 primary failure and cannot be erased by a later relay event. Verification covers
-the close-frame-write-before-stdin-EOF ordering, independence from redirected
+exception-contained, single-read decoding of injected failure/completion
+providers and arbitrary callback-result access. Malformed or rejected injected
+completion evidence becomes a bounded termination failure rather than native
+text or success. Session notification is distinct from relay completion: a
+request-write failure releases session callers promptly, then the relay owner
+still waits for exact process exit and stdout drainage under its force bound.
+Verification also covers the close-frame-write-before-stdin-EOF ordering, independence from redirected
 stdin EOF, synchronous request/response forwarding, the 500-millisecond reserve
 under delayed close reads, terminal-ack and process-exit
 arrival in either order, stdout

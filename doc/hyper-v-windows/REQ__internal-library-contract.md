@@ -378,6 +378,8 @@ terminal acknowledgement or exact-process termination requirements.
 A fatal relay-protocol rejection is an absorbing parser state: all later stdout
 lines remain drained for lifecycle completion but MUST NOT be interpreted as
 control or session frames, overwrite the primary failure, or advance progress.
+The authenticated elevated child's explicit termination-unconfirmed failure is
+absorbing under the same rule.
 Requests whose transport write completion explicitly reports non-delivery MUST
 NOT contribute to the delivered-pending count even while their bookkeeping
 entry remains unsettled.
@@ -389,6 +391,16 @@ elevated child's explicit termination-unconfirmed result replaces a primary
 failure and becomes absorbing so later asynchronous relay events cannot erase
 the fail-closed result. This preserves primary/fallback ordering while making
 the authenticated child result authoritative in every event order.
+Every injected relay failure provider and completion value MUST cross an
+exception-contained runtime decoder. Completion fields are read once and must
+form the correlated closed union; rejection, malformed values, throwing
+providers, and invalid codes or stages become bounded fail-closed evidence.
+Arbitrary callback results inspected only to avoid duplicating a surfaced relay
+error follow the same single-read exception boundary, and cannot replace the
+bounded relay failure with a getter or Proxy exception. A relay request-write
+failure may notify the session immediately, but MUST NOT resolve relay
+completion before exact process exit and stdout drainage are observed or the
+existing bounded termination fallback expires.
 Verification MUST prove that
 idle normal close writes the close frame before ending relay stdin, the write
 callback ends stdin without waiting for terminal acknowledgement, a missing
