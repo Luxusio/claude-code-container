@@ -627,8 +627,10 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     const normalExitReason = (): HyperVWindowsSessionErrorCode => requestAttempted
         ? "hyper-v-windows-session-exited"
         : "hyper-v-windows-session-start-failed";
-    const finishAfterTerminalExit = () => {
-        if (terminalAcknowledged && relayProcessExited && relayStdoutDrained) finish(normalExitReason());
+    const finishAfterRelayTermination = () => {
+        if ((terminalAcknowledged || forceExpired) && relayProcessExited && relayStdoutDrained) {
+            finish(normalExitReason());
+        }
     };
     const endRelayInput = () => {
         if (relayInputEnded) return;
@@ -649,8 +651,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 replaceFailure: false,
             });
             endRelayInput();
-            if (relayProcessExited) finish(normalExitReason());
-            else {
+            if (!relayProcessExited) {
                 shutdownMode = "abrupt";
                 child.kill();
             }
@@ -794,7 +795,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 return true;
             }
             terminalAcknowledged = true;
-            finishAfterTerminalExit();
+            finishAfterRelayTermination();
             return true;
         }
         return false;
@@ -833,7 +834,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             buffered = "";
             stop();
         }
-        finishAfterTerminalExit();
+        finishAfterRelayTermination();
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
         relayStderrObserved = true;
@@ -850,8 +851,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     child.once("exit", () => {
         relayProcessExited = true;
         if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
-        if (forceExpired) finish(normalExitReason());
-        else finishAfterTerminalExit();
+        finishAfterRelayTermination();
     });
     child.once("close", () => {
         if (exited) return;

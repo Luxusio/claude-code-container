@@ -545,6 +545,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "premature-ack",
         "abrupt-stdin-error-truncated-eof",
         "graceful-force-timeout",
+        "exit-before-force-late-child-failure",
+        "force-before-exit-late-child-failure",
         "close-write-timeout",
         "close-write-timeout-delayed-success",
         "close-write-timeout-delayed-error",
@@ -555,7 +557,15 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "handles correlated relay terminal protocol (%s) without depending on close for success",
         async (order) => {
             const usesAbruptForceTimer = order === "abrupt-stdin-error-truncated-eof";
-            const usesForceTimer = usesAbruptForceTimer || order === "graceful-force-timeout";
+            const usesLateForceOrdering = order === "exit-before-force-late-child-failure"
+                || order === "force-before-exit-late-child-failure";
+            const usesForceTimer = usesAbruptForceTimer
+                || order === "graceful-force-timeout"
+                || usesLateForceOrdering;
+            const forceKillsProcess = usesAbruptForceTimer
+                || order === "graceful-force-timeout"
+                || order === "force-before-exit-late-child-failure";
+            const autoCompletesForceProcess = forceKillsProcess && !usesLateForceOrdering;
             const usesCloseWriteTimer = order === "close-write-timeout"
                 || order === "close-write-timeout-delayed-success"
                 || order === "close-write-timeout-delayed-error";
@@ -566,7 +576,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const stderr = new EventEmitter();
             const stdout = Object.assign(stdoutEvents, { setEncoding: () => stdout });
             const kill = vi.fn(() => {
-                if (usesForceTimer) {
+                if (autoCompletesForceProcess) {
                     if (usesAbruptForceTimer) stdout.emit("data", "CCC_HYPER_V_ELEVATED_");
                     events.emit("exit", 1, null);
                     stdout.emit("end");
@@ -677,6 +687,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 events.emit("close", 1, null);
                                 return;
                             }
+                            if (order === "exit-before-force-late-child-failure") {
+                                events.emit("exit", 1, null);
+                                return;
+                            }
                             const acknowledge = () => {
                                 expect(stdinEndedAfterCloseWrite).toBe(true);
                                 stdout.emit(
@@ -730,7 +744,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                             }
                         };
                         if (order === "ack-after-stdin-eof") completeAfterStdinEnd = completeRelay;
-                        else if (order !== "graceful-force-timeout") queueMicrotask(completeRelay);
+                        else if (order !== "graceful-force-timeout"
+                            && order !== "force-before-exit-late-child-failure") {
+                            queueMicrotask(completeRelay);
+                        }
                     }
                     index = input.indexOf("\n");
                 }
@@ -797,6 +814,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "premature-ack"
                 || order === "abrupt-stdin-error-truncated-eof"
                 || order === "graceful-force-timeout"
+                || usesLateForceOrdering
                 || order === "close-write-timeout"
                 || order === "close-write-timeout-delayed-success"
                 || order === "close-write-timeout-delayed-error"
@@ -818,6 +836,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         ? "relay-output-drain-timeout"
                         : order === "graceful-force-timeout"
                             ? "relay-terminal-ack-missing"
+                            : usesLateForceOrdering
+                                ? "elevated-child"
                     : "relay-input-write";
             const settledResult = expectsFailure
                 ? resultPromise.then(() => null, (error: unknown) => error)
@@ -826,6 +846,18 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             try {
                 if (usesForceTimer) await vi.advanceTimersByTimeAsync(10_001);
                 else if (usesCloseWriteTimer) await vi.advanceTimersByTimeAsync(1_001);
+                if (usesLateForceOrdering) {
+                    if (order === "force-before-exit-late-child-failure") {
+                        events.emit("exit", 1, null);
+                    }
+                    stdout.emit(
+                        "data",
+                        "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:"
+                        + "hyper-v-network-elevation-termination-unconfirmed\n",
+                    );
+                    stdout.emit("end");
+                    events.emit("close", 1, null);
+                }
                 result = await settledResult;
             } finally {
                 if (usesFakeTimers) vi.useRealTimers();
@@ -840,7 +872,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             );
             expect(stdinEndedAfterCloseWrite).toBe(true);
             expect(stdinEndCalls).toBe(1);
-            if (usesForceTimer) expect(kill).toHaveBeenCalledTimes(1);
+            if (forceKillsProcess) expect(kill).toHaveBeenCalledTimes(1);
             else expect(kill).not.toHaveBeenCalled();
             if (expectsFailure) {
                 expect(result).toMatchObject({
@@ -881,6 +913,19 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                             relay: {
                                 shutdownMode: "abrupt",
                                 closeWriteStatus: "succeeded",
+                                forceExpired: true,
+                            },
+                        },
+                    });
+                }
+                if (usesLateForceOrdering) {
+                    expect(result).toMatchObject({
+                        terminationDiagnostic: {
+                            relay: {
+                                shutdownMode: order === "force-before-exit-late-child-failure"
+                                    ? "abrupt"
+                                    : "graceful",
+                                stdoutDrained: true,
                                 forceExpired: true,
                             },
                         },
