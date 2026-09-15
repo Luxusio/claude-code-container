@@ -264,18 +264,33 @@ confirms the exact native identity before advancing to the next dependency.
 Inspection, UAC, mutation, confirmation, and retry share one bounded transaction
 deadline.
 Closing the callback-scoped administrator executor MUST also be bounded without
-racing termination proof. The medium-integrity PowerShell relay MUST force-stop
-the exact elevated child at scope closure, wait up to five seconds for that
-process to exit, and emit `hyper-v-network-elevation-termination-unconfirmed`
-when the same process remains. The Node parent MUST give that PowerShell relay
-a strictly longer ten-second grace to publish its result and exit before the
-Node parent applies its own kill fallback. This outer shutdown grace MUST start
-at scope closure and MUST NOT be shortened by an exhausted operation deadline.
-A graceful relay completion just after the five-second child-confirmation
-window, including when the operation deadline has already expired, MUST NOT be
-reclassified as termination uncertainty. A relay that never completes MUST
-still fail closed at the ten-second outer bound. These three timing boundaries
-are verification requirements for the elevated-session adapter.
+racing termination proof. The medium-integrity PowerShell relay MUST neither
+assume that closing its standard input propagates cleanly through both
+directions of an asynchronous pipe copy nor rely on its lower-integrity token to
+terminate the elevated child. At normal scope closure, and only when no request
+is pending or queued, the Node parent MUST send an explicit session-close frame
+through the already authenticated pipe while keeping the relay's standard input
+open. A scope closed with unfinished work MUST use the abrupt path so the close
+frame cannot queue behind an unconfirmed mutation or corrupt an in-progress
+relay handshake. The elevated session MUST consume the frame between operations,
+leave its request loop, and close its pipe first; this lets the pipe-to-parent
+copy finish before relay teardown. Abrupt transport, protocol, and deadline
+failures still use the force-stop path.
+
+After requesting graceful close, the medium-integrity PowerShell relay waits up
+to five seconds for the exact elevated process to exit and emits
+`hyper-v-network-elevation-termination-unconfirmed` when the same process
+remains. The Node parent MUST give that PowerShell relay a strictly longer
+ten-second grace to publish its result and exit before the Node parent applies
+its own kill fallback. This outer shutdown grace MUST start at scope closure and
+MUST NOT be shortened or interrupted by an exhausted operation deadline; normal
+close disarms that operation timer while retaining the independent ten-second
+termination fallback. Verification MUST prove that idle normal close writes the
+close frame without first ending relay stdin, unfinished work and abrupt discard
+still kill, the session bootstrap recognizes close before request decoding, the
+operation timer is disarmed before the frame write, completion just after five
+seconds is accepted, and a relay which never completes fails closed at the
+ten-second outer bound.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes
