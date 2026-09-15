@@ -31,6 +31,7 @@ const MAX_RELAY_LINE_BYTES = 256 * 1024;
 const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
 const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000;
 const ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS = 4_500;
+const ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS = 500;
 const RELAY_CLOSE_WRITE_GRACE_MILLISECONDS = 1_000;
 const RELAY_FORCE_GRACE_MILLISECONDS = 10_000;
 const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000;
@@ -262,7 +263,7 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$W.WriteLine($B);$W.Flush();[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY');[Console]::Out.Flush()",
     `$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt ${MAX_RELAY_LINE_BYTES}-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($V-cne '${HYPER_V_WINDOWS_SESSION_READY_MARKER}'){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()`,
     `while($true){$L=[Console]::In.ReadLine();if($null-eq $L){throw 'input'};if($L.Length-gt ${MAX_RELAY_LINE_BYTES}){throw 'protocol'};$K='${ELEVATION_CLOSE_PREFIX}'+$Z+':';if($L.StartsWith($K)){$V=$L.Substring($K.Length);[long]$G=0;if($V-notmatch '^[0-9]{13}$'-or -not [long]::TryParse($V,[ref]$G)-or $G-gt [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}){throw 'protocol'};$W.WriteLine('${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}');$W.Flush();$CL=$true;break};if(-not $L.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}')){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($null-eq $V-or $V.Length-gt ${MAX_RELAY_LINE_BYTES}-or -not $V.StartsWith('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}')){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()}`,
-    `$M=[int][Math]::Min([long]${ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));if($M-gt 0 -and $C -and $CS){try{[void]$C.WaitForExit($M)}catch{}}`,
+    `$M=[int][Math]::Min([long]${ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-${ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS}));if($M-gt 0 -and $C -and $CS){try{[void]$C.WaitForExit($M)}catch{}}`,
     "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}default{'hyper-v-network-elevation-relay-failed'}}",
     `}finally{try{$R.Dispose()}catch{};try{$W.Dispose()}catch{};try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$M=if($G){[int][Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())}else{${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}};if($M-gt 0){[void]$Y.WaitForExit($M)}};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){$F='hyper-v-network-elevation-termination-unconfirmed'}}}`,
     "if($F){Send-Failure $F}",
@@ -664,9 +665,10 @@ function reportsRelayCompletionFailure(
     value: unknown,
     code: HyperVElevatedNetworkNonTerminationErrorCode,
 ): boolean {
-    return typeof value === "object"
-        && value !== null
-        && !Array.isArray(value)
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const status = Reflect.get(value, "status");
+    return (status === null || Number.isInteger(status))
+        && typeof Reflect.get(value, "stdout") === "string"
         && Reflect.get(value, "error") === code;
 }
 

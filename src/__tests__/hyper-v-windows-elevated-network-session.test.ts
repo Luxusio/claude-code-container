@@ -1,6 +1,7 @@
 import { readFileSync } from "fs";
 import { EventEmitter } from "events";
 import { join } from "path";
+import { pathToFileURL } from "url";
 import { describe, expect, it, vi } from "vitest";
 
 const childProcessMocks = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -346,6 +347,53 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         }, (executor) => executor.execute(getVmRequest(), executorContext()))).rejects.toMatchObject({
             code: "hyper-v-network-elevation-relay-failed",
         });
+    });
+
+    it("does not accept an arbitrary callback error property as a surfaced execution failure", async () => {
+        const relay = fakeRelay();
+        const process: HyperVElevatedNetworkRelayProcess = {
+            ...relay.process,
+            completion: Promise.resolve({
+                errorCode: "hyper-v-network-elevation-relay-failed",
+                terminationStage: null,
+            }),
+        };
+
+        await expect(withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                return process;
+            },
+        }, async (executor) => {
+            await executor.execute(getVmRequest(), executorContext());
+            return { error: "hyper-v-network-elevation-relay-failed" };
+        })).rejects.toMatchObject({ code: "hyper-v-network-elevation-relay-failed" });
+    });
+
+    it("preserves a thrown callback failure when relay completion also has a primary failure", async () => {
+        const callbackFailure = new Error("callback-failed");
+        const relay = fakeRelay();
+        const process: HyperVElevatedNetworkRelayProcess = {
+            ...relay.process,
+            completion: Promise.resolve({
+                errorCode: "hyper-v-network-elevation-relay-failed",
+                terminationStage: null,
+            }),
+        };
+
+        await expect(withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                return process;
+            },
+        }, async (executor) => {
+            await executor.execute(getVmRequest(), executorContext());
+            throw callbackFailure;
+        })).rejects.toBe(callbackFailure);
     });
 
     it("lets relay completion settle after its force window and before the wrapper timeout", async () => {
@@ -806,6 +854,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $L){throw 'input'}");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $V-or $V.Length-gt");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("[long]::TryParse($V,[ref]$G)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
+            "$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-500",
+        );
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain(
             "$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+5000",
         );
@@ -822,12 +873,39 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         ), "utf8");
 
         expect(validator).toContain("HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP");
-        expect(validator).toContain("typescript-source-loader.mjs");
+        expect(validator).toContain('"--import", "tsx"');
         expect(validator).toContain("if (requireParser && useFullAssetSet && !elevatedRelayBootstrap)");
         expect(command.indexOf("const parsed = runNodeTool(")).toBeLessThan(
             command.indexOf("return runNodeTool(esbuildPath"),
         );
         expect(command).toContain('process.platform === "win32" ? ["--require-parser"] : []');
+    });
+
+    it("materializes the generated relay without native TypeScript stripping", async () => {
+        const { spawnSync } = await vi.importActual<typeof import("child_process")>("child_process");
+        const module = pathToFileURL(join(
+            process.cwd(),
+            "src",
+            "device-lab",
+            "broker",
+            "hyper-v",
+            "elevated-network-session.ts",
+        )).href;
+        const supportsStripTypesFlag = Number(process.versions.node.split(".")[0]) >= 22;
+        const result = spawnSync(process.execPath, [
+            ...(supportsStripTypesFlag ? ["--no-experimental-strip-types"] : []),
+            "--import",
+            "tsx",
+            "-e",
+            `import(${JSON.stringify(module)}).then((m) => process.stdout.write(typeof m.HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP))`,
+        ], {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            windowsHide: true,
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("string");
     });
 
     it("keeps the terminal token out of the elevated child and accepts it only during close", () => {

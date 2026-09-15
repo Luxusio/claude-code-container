@@ -121,10 +121,9 @@ async function bootstrapSource() {
 }
 
 async function elevatedRelayBootstrapSource() {
-    const loader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
     const module = pathToFileURL(join(repoRoot, "src", "device-lab", "broker", "hyper-v", "elevated-network-session.ts")).href;
     const probe = spawnSync(process.execPath, [
-        "--import", loader,
+        "--import", "tsx",
         "-e", `import(${JSON.stringify(module)}).then((m) => process.stdout.write(JSON.stringify(m.HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP)))`,
     ], { cwd: repoRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true });
     if (probe.error || probe.status !== 0) return null;
@@ -144,14 +143,13 @@ async function elevatedRelayBootstrapSource() {
 // bootstrap does — a TypeScript string array joined at runtime — so they are on no disk path the
 // walker above can find, and PSScriptAnalyzer's directory walk misses them for the same reason.
 // Until this they were checked only by string-containment assertions, which cannot see an
-// unterminated string or an unbalanced brace. Loaded through the repo's source loader because the
-// module is TypeScript importing further TypeScript by `.js` specifier; plain node resolves those
-// to files that do not exist.
+// unterminated string or an unbalanced brace. Loaded through the installed TypeScript transformer
+// because the module imports further TypeScript by `.js` specifier and the supported Node 20 range
+// has no native TypeScript stripping.
 async function setupDiagnosticsSources() {
-    const loader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
     const module = pathToFileURL(join(repoRoot, "scripts", "real-tests", "hyper-v-windows-setup-diagnostics.ts")).href;
     const probe = spawnSync(process.execPath, [
-        "--import", loader,
+        "--import", "tsx",
         "-e", `import(${JSON.stringify(module)}).then((m) => process.stdout.write(JSON.stringify(m.hyperVWindowsSetupDiagnosticsPrograms())))`,
     ], { cwd: repoRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
     if (probe.error || probe.status !== 0) return null;
