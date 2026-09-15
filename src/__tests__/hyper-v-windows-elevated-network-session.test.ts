@@ -294,6 +294,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "elevated-child",
         "relay-terminal-ack-missing",
         "relay-process-exit-timeout",
+        "relay-output-drain-timeout",
         "relay-input-write",
     ] satisfies Exclude<HyperVElevatedNetworkTerminationStage, "relay-completion-timeout">[])(
         "fails a successful callback when termination is unconfirmed at %s",
@@ -361,7 +362,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "exit-before-ack",
         "invalid-ack",
         "duplicate-ack",
+        "exit-before-duplicate-ack",
         "ack-close-without-exit",
+        "ack-exit-close-without-stdout-end",
         "ack-stdin-error",
     ] as const)(
         "handles correlated relay terminal protocol (%s) without depending on close for success",
@@ -420,6 +423,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         queueMicrotask(() => {
                             if (order === "invalid-ack") {
                                 stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:invalid\n");
+                                stdout.emit("end");
                                 events.emit("exit", 1, null);
                                 events.emit("close", 1, null);
                                 return;
@@ -430,16 +434,31 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                             );
                             if (order === "ack-close-without-exit") {
                                 acknowledge();
+                                stdout.emit("end");
                                 events.emit("close", 0, null);
+                            } else if (order === "ack-exit-close-without-stdout-end") {
+                                acknowledge();
+                                events.emit("exit", 0, null);
+                                events.emit("close", 0, null);
+                            } else if (order === "exit-before-duplicate-ack") {
+                                events.emit("exit", 0, null);
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`
+                                    + `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
+                                );
+                                stdout.emit("end");
                             } else if (order === "ack-before-exit"
                                 || order === "ack-stdin-error"
                                 || order === "duplicate-ack") {
                                 acknowledge();
                                 if (order === "duplicate-ack") acknowledge();
+                                stdout.emit("end");
                                 events.emit("exit", 0, null);
                             } else {
                                 events.emit("exit", 0, null);
                                 acknowledge();
+                                stdout.emit("end");
                             }
                         });
                     }
@@ -479,12 +498,18 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             }, (executor) => executor.execute(getVmRequest(), executorContext()));
             const expectsFailure = order === "invalid-ack"
                 || order === "duplicate-ack"
+                || order === "exit-before-duplicate-ack"
                 || order === "ack-close-without-exit"
+                || order === "ack-exit-close-without-stdout-end"
                 || order === "ack-stdin-error";
-            const expectedTerminationStage = order === "invalid-ack" || order === "duplicate-ack"
+            const expectedTerminationStage = order === "invalid-ack"
+                || order === "duplicate-ack"
+                || order === "exit-before-duplicate-ack"
                 ? "relay-terminal-ack-invalid"
                 : order === "ack-close-without-exit"
                     ? "relay-process-exit-timeout"
+                    : order === "ack-exit-close-without-stdout-end"
+                        ? "relay-output-drain-timeout"
                     : "relay-input-write";
             const result = expectsFailure
                 ? await resultPromise.then(() => null, (error: unknown) => error)
