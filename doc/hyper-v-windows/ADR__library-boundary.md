@@ -219,7 +219,10 @@ result and misclassify it as a different termination uncertainty. The stable
 error retains a bounded stage (`elevated-child`, `relay-force-timeout`,
 `relay-input-write`, or `relay-completion-timeout`) rather than native text.
 The standalone proof prints that stage separately while its failure text stays
-stable. Verification covers the close-frame-before-stdin-EOF ordering, completion after
+stable. Existing primary relay failures outrank later input-write or force
+fallbacks, while a primary failure decoded after a fallback replaces it; only
+the authenticated elevated child's explicit termination result outranks a
+primary failure. Verification covers the close-frame-before-stdin-EOF ordering, completion after
 the ten-second force window, disarming the relay operation timer, idle gating,
 abrupt discard, stage correlation, and fail-closed termination at the
 fifteen-second wrapper bound.

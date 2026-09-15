@@ -298,6 +298,11 @@ stage MUST distinguish `elevated-child`, `relay-force-timeout`,
 `relay-input-write`, and `relay-completion-timeout`; no native exception text,
 path, PID, or unbounded output may be included. The standalone real-host proof
 MUST report that stage separately without changing the stable failure text.
+An already-recorded bounded primary relay failure takes precedence over the
+later `relay-input-write` and `relay-force-timeout` fallbacks, and a primary
+failure decoded afterward replaces an earlier fallback. Only the authenticated
+elevated child's explicit termination-unconfirmed result replaces a primary
+failure. This preserves the existing single-error ordering in both event races.
 Verification MUST prove that
 idle normal close writes the close frame without first ending relay stdin,
 unfinished work and abrupt discard still kill, the session bootstrap recognizes
