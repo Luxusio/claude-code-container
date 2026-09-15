@@ -319,6 +319,22 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
                 throw new HyperVElevatedNetworkSessionError(
                     "hyper-v-network-elevation-termination-unconfirmed",
                     "relay-process-exit-timeout",
+                    {
+                        relay: {
+                            shutdownMode: "abrupt",
+                            progressStage: "request-forwarded",
+                            closeWriteStatus: "not-started",
+                            processExited: false,
+                            stdoutDrained: false,
+                            stderrObserved: true,
+                            forceExpired: true,
+                        },
+                        execution: {
+                            lastOperation: "Get-NetNat",
+                            lastSessionError: "hyper-v-windows-session-queue-timeout",
+                            activeExecutions: 1,
+                        },
+                    },
                 );
             }) as any,
             runScenarioImpl: vi.fn() as any,
@@ -328,6 +344,12 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
         expect(status).toBe(1);
         expect(sink.read().stderr).toContain(
             "DIAGNOSTIC Hyper-V elevated network termination stage=relay-process-exit-timeout",
+        );
+        expect(sink.read().stderr).toContain(
+            "DIAGNOSTIC Hyper-V elevated network relay shutdown=abrupt progress=request-forwarded"
+            + " closeWrite=not-started processExited=false stdoutDrained=false stderrObserved=true"
+            + " forceExpired=true activeExecutions=1 lastOperation=Get-NetNat"
+            + " lastSessionError=hyper-v-windows-session-queue-timeout",
         );
         expect(sink.read().stderr).toContain(
             "FAIL Hyper-V Windows typed network real-host proof: hyper-v-network-elevation-termination-unconfirmed",

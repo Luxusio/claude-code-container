@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { readFileSync } from "fs";
 
 import {
+    getHyperVElevatedNetworkTerminationDiagnostic,
     getHyperVElevatedNetworkTerminationStage,
     withElevatedHyperVNetworkExecutor,
 } from "./hyper-v-windows-network-elevation-runtime.mjs";
@@ -125,6 +126,20 @@ export async function runHyperVWindowsNetworkHost(
     } catch (error) {
         const stage = getHyperVElevatedNetworkTerminationStage(error);
         if (stage) stderr.write(`DIAGNOSTIC Hyper-V elevated network termination stage=${stage}\n`);
+        const diagnostic = getHyperVElevatedNetworkTerminationDiagnostic(error);
+        if (diagnostic) {
+            stderr.write("DIAGNOSTIC Hyper-V elevated network relay"
+                + ` shutdown=${diagnostic.relay.shutdownMode}`
+                + ` progress=${diagnostic.relay.progressStage ?? "none"}`
+                + ` closeWrite=${diagnostic.relay.closeWriteStatus}`
+                + ` processExited=${String(diagnostic.relay.processExited)}`
+                + ` stdoutDrained=${String(diagnostic.relay.stdoutDrained)}`
+                + ` stderrObserved=${String(diagnostic.relay.stderrObserved)}`
+                + ` forceExpired=${String(diagnostic.relay.forceExpired)}`
+                + ` activeExecutions=${String(diagnostic.execution.activeExecutions)}`
+                + ` lastOperation=${diagnostic.execution.lastOperation ?? "none"}`
+                + ` lastSessionError=${diagnostic.execution.lastSessionError ?? "none"}\n`);
+        }
         const code = error instanceof Error ? error.message : "hyper-v-network-real-unexpected-failure";
         stderr.write(`FAIL Hyper-V Windows typed network real-host proof: ${code}\n`);
         stderr.write("SUMMARY real-tests total=1 pass=0 skip=0 fail=1 failOnSkip=false\n");
