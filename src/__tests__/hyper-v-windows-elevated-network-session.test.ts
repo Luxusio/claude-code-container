@@ -359,6 +359,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
 
     it.each([
         "ack-before-exit",
+        "ack-after-stdin-eof",
         "exit-before-ack",
         "invalid-ack",
         "duplicate-ack",
@@ -394,8 +395,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             let terminalToken = "";
             let launchObserved = false;
             let closeObserved = false;
-            let stdinEndedAfterTerminal = false;
+            let stdinEndedAfterCloseWrite = false;
             let stdinEndCalls = 0;
+            let completeAfterStdinEnd: (() => void) | null = null;
             let simulationError: unknown = null;
 
             const acceptInput = (chunk: string) => {
@@ -452,8 +454,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         });
                     } else if (line === HYPER_V_WINDOWS_SESSION_CLOSE_MARKER) {
                         closeObserved = true;
-                        expect(stdinEndedAfterTerminal).toBe(false);
-                        queueMicrotask(() => {
+                        expect(stdinEndedAfterCloseWrite).toBe(false);
+                        const completeRelay = () => {
                             if (order === "invalid-ack") {
                                 stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:invalid\n");
                                 stdout.emit("end");
@@ -475,10 +477,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 events.emit("close", 1, null);
                                 return;
                             }
-                            const acknowledge = () => stdout.emit(
-                                "data",
-                                `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
-                            );
+                            const acknowledge = () => {
+                                expect(stdinEndedAfterCloseWrite).toBe(true);
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
+                                );
+                            };
                             if (order === "ack-close-without-exit") {
                                 acknowledge();
                                 stdout.emit("end");
@@ -523,7 +528,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 acknowledge();
                                 stdout.emit("end");
                             }
-                        });
+                        };
+                        if (order === "ack-after-stdin-eof") completeAfterStdinEnd = completeRelay;
+                        else queueMicrotask(completeRelay);
                     }
                     index = input.indexOf("\n");
                 }
@@ -543,8 +550,11 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 },
                 end() {
                     stdinEndCalls += 1;
-                    stdinEndedAfterTerminal = true;
+                    stdinEndedAfterCloseWrite = true;
                     stdinEvents.emit("finish");
+                    const deferred = completeAfterStdinEnd;
+                    completeAfterStdinEnd = null;
+                    if (deferred) queueMicrotask(deferred);
                     if (order === "ack-stdin-error" && stdinEndCalls === 1) {
                         stdinEvents.emit("error", new Error("simulated stdin close failure"));
                     }
@@ -601,7 +611,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             expect(simulationError).toBeNull();
             expect(launchObserved).toBe(true);
             expect(closeObserved).toBe(order !== "premature-ack" && !usesForceTimer);
-            expect(stdinEndedAfterTerminal).toBe(true);
+            expect(stdinEndedAfterCloseWrite).toBe(true);
+            expect(stdinEndCalls).toBe(1);
             if (usesForceTimer) expect(kill).toHaveBeenCalledTimes(1);
             else expect(kill).not.toHaveBeenCalled();
             if (expectsFailure) {
@@ -711,7 +722,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("startTicks");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("administrator");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("CopyToAsync");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$Y.WaitForExit(5000)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$TP.Wait($M)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("[void]$Y.WaitForExit($M)");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("terminalToken");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
             "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:",
@@ -722,10 +734,20 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(requestIndex).toBeGreaterThanOrEqual(0);
         expect(approvalIndex).toBeGreaterThan(requestIndex);
         expect(runAsIndex).toBeGreaterThan(approvalIndex);
+        const inputCompletion = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            "$TC.GetAwaiter().GetResult();$Q.Flush()",
+        );
+        const outputDrain = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$TP.Wait($M)");
+        const pipeDisposal = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$Q.Dispose()");
+        const terminalOutput = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("if($SO-and $F)");
+        expect(inputCompletion).toBeGreaterThanOrEqual(0);
+        expect(inputCompletion).toBeLessThan(outputDrain);
+        expect(outputDrain).toBeLessThan(pipeDisposal);
+        expect(pipeDisposal).toBeLessThan(terminalOutput);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toMatch(/(?:Get|New|Set|Remove)-(?:VM|Net)/);
     });
 
-    it("keeps the terminal token out of the elevated child and ends stdin only after validation", () => {
+    it("keeps the terminal token out of the elevated child and accepts it only during close", () => {
         const source = readFileSync(join(
             process.cwd(),
             "src",
@@ -746,12 +768,12 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(elevatedSource).not.toContain("terminalToken");
         expect(terminalHandlerStart).toBeGreaterThanOrEqual(0);
         expect(terminalHandlerEnd).toBeGreaterThan(terminalHandlerStart);
-        expect(terminalHandler.indexOf("line !== `${ELEVATION_TERMINAL_PREFIX}${terminalToken}`")).toBeLessThan(
-            terminalHandler.indexOf("child.stdin?.end()"),
-        );
+        expect(terminalHandler).toContain("!closing");
+        expect(terminalHandler).toContain("line !== `${ELEVATION_TERMINAL_PREFIX}${terminalToken}`");
+        expect(terminalHandler).not.toContain("endRelayInput()");
     });
 
-    it("sends graceful close through the relay without ending relay stdin first", () => {
+    it("ends relay stdin only after the graceful close frame write completes", () => {
         const source = readFileSync(join(
             process.cwd(),
             "src",
@@ -767,11 +789,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(closeStart).toBeGreaterThanOrEqual(0);
         expect(closeEnd).toBeGreaterThan(closeStart);
         expect(closeSource).toContain("child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\\n`");
-        expect(closeSource).not.toContain("child.stdin?.end()");
+        expect(closeSource).toContain("endRelayInput()");
         const clearDeadline = closeSource.indexOf("clearTimeout(deadlineTimer)");
         const writeClose = closeSource.indexOf("child.stdin?.write");
+        const endStdin = closeSource.indexOf("endRelayInput()");
         expect(clearDeadline).toBeGreaterThanOrEqual(0);
         expect(clearDeadline).toBeLessThan(writeClose);
+        expect(writeClose).toBeLessThan(endStdin);
     });
 
     it("preserves relay failure precedence in both event orderings", () => {
