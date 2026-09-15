@@ -346,6 +346,16 @@ stage MUST distinguish `elevated-child`, `relay-terminal-ack-missing`,
 `relay-completion-timeout`; no native exception text,
 path, PID, or unbounded output may be included. The standalone real-host proof
 MUST report that stage separately without changing the stable failure text.
+When that stage is a relay fallback, the proof MUST also report a bounded,
+typed diagnostic snapshot that distinguishes graceful close from abrupt
+discard, names only the last known operation and session error from their
+existing closed sets, records the last token-correlated relay progress stage,
+and states whether the close write, relay exit, stdout drain, stderr presence,
+and force timer were observed. It MUST NOT include the correlation token,
+native stderr, exception text, a path, or a PID. Progress frames are diagnostic
+only: they MUST be authenticated by the relay terminal token, filtered from the
+session response stream, bounded to a closed stage set, and MUST NOT relax the
+terminal acknowledgement or exact-process termination requirements.
 An already-recorded bounded primary relay failure takes precedence over the
 later `relay-input-write`, `relay-terminal-ack-missing`, and
 `relay-process-exit-timeout` fallbacks, and a primary
@@ -373,6 +383,9 @@ unfinished work and abrupt discard still kill, the session bootstrap recognizes
 close before request decoding, the operation timer is disarmed before the frame
 write, completion after the ten-second relay force window can still settle, and
 a relay which never completes fails closed at the fifteen-second wrapper bound.
+Verification MUST separately cover an abrupt discard with a queued/session
+failure and a graceful close that stalls or exits inside the relay finalizer, so
+neither can collapse back into an unactionable acknowledgement-only diagnostic.
 The Windows static job MUST materialize and parse the exact runtime relay
 bootstrap as well as the elevated session bootstrap; substring assertions alone
 do not prove PowerShell 5.1 syntax. A source-checkout real-host command MUST run

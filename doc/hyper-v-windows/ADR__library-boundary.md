@@ -257,7 +257,16 @@ error retains a bounded stage (`elevated-child`, `relay-terminal-ack-missing`,
 `relay-output-drain-timeout`, `relay-input-write`, or
 `relay-completion-timeout`) rather than native text.
 The standalone proof prints that stage separately while its failure text stays
-stable. Existing primary relay failures outrank later input-write or force
+stable. Because an abrupt discard intentionally sends no close-control frame
+and therefore cannot produce a terminal acknowledgement, an acknowledgement
+fallback alone does not identify the failed boundary. The Node owner retains a
+bounded diagnostic snapshot: graceful versus abrupt shutdown, the last closed-set
+operation/session error, close-write state, relay exit/stdout/stderr/force-event
+booleans, and the last token-correlated closed-set relay progress stage. Relay
+progress frames are filtered control traffic and never contain native output,
+paths, PIDs, or the token in reported diagnostics. This keeps real-host
+investigation actionable without treating progress as success evidence or
+weakening the acknowledgement and exact-process checks. Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
 primary failure and cannot be erased by a later relay event. Verification covers
