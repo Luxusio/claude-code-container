@@ -508,7 +508,17 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     child.stdout?.once("end", () => {
         relayStdoutDrained = true;
         if (buffered.length > 0) {
-            recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
+            if (closing || terminalAcknowledged || buffered.startsWith(ELEVATION_TERMINAL_PREFIX)) {
+                recordTerminationFailure({
+                    kind: "termination",
+                    stage: "relay-terminal-ack-invalid",
+                    replaceFailure: false,
+                });
+            } else {
+                recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
+            }
+            buffered = "";
+            stop();
         }
         finishAfterTerminalExit();
     });
