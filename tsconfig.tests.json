@@ -23,7 +23,8 @@
     "src/__tests__/hyper-v-windows-session-pool.test.ts",
     "src/__tests__/hyper-v-windows-session.test.ts",
     "src/__tests__/hyper-v-windows-session-adapter.test.ts",
-    "src/__tests__/hyper-v-windows-session-property.test.ts"
+    "src/__tests__/hyper-v-windows-session-property.test.ts",
+    "src/__tests__/hyper-v-windows-elevated-network-session-type-contracts.ts"
   ],
   "exclude": []
 }

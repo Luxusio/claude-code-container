@@ -22,8 +22,10 @@ import {
     type HyperVWindowsSessionErrorCode,
 } from "../hyper-v-windows/index.js";
 import {
+    HYPER_V_ELEVATED_NETWORK_ERROR_CODES,
     HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES,
     HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
+    HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES,
     HyperVElevatedNetworkSessionError,
     getHyperVElevatedNetworkTerminationDiagnostic,
     getHyperVElevatedNetworkTerminationStage,
@@ -34,7 +36,6 @@ import {
     type HyperVElevatedNetworkRelayFailureEvent,
     type HyperVElevatedNetworkRelayProcess,
     type HyperVElevatedNetworkRelaySpawn,
-    type HyperVElevatedNetworkTerminationDiagnostic,
     type HyperVElevatedNetworkTerminationStage,
 } from "../device-lab/broker/hyper-v/elevated-network-session.js";
 
@@ -545,6 +546,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "abrupt-stdin-error-truncated-eof",
         "graceful-force-timeout",
         "close-write-timeout",
+        "close-write-timeout-delayed-success",
+        "close-write-timeout-delayed-error",
         "ack-close-without-exit",
         "ack-exit-close-without-stdout-end",
         "ack-stdin-error",
@@ -553,7 +556,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         async (order) => {
             const usesAbruptForceTimer = order === "abrupt-stdin-error-truncated-eof";
             const usesForceTimer = usesAbruptForceTimer || order === "graceful-force-timeout";
-            const usesCloseWriteTimer = order === "close-write-timeout";
+            const usesCloseWriteTimer = order === "close-write-timeout"
+                || order === "close-write-timeout-delayed-success"
+                || order === "close-write-timeout-delayed-error";
             const usesFakeTimers = usesForceTimer || usesCloseWriteTimer;
             if (usesFakeTimers) vi.useFakeTimers();
             const events = new EventEmitter();
@@ -576,6 +581,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             let stdinEndedAfterCloseWrite = false;
             let stdinEndCalls = 0;
             let completeAfterStdinEnd: (() => void) | null = null;
+            let closeWriteSettled: ((error?: Error) => void) | null = null;
             let simulationError: unknown = null;
 
             const acceptInput = (chunk: string) => {
@@ -735,6 +741,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     try {
                         if (usesCloseWriteTimer && chunk.startsWith(elevationClosePrefix)) {
                             closeObserved = true;
+                            closeWriteSettled = settled ?? null;
                             return true;
                         }
                         acceptInput(chunk);
@@ -754,6 +761,12 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     completeAfterStdinEnd = null;
                     if (deferred) queueMicrotask(deferred);
                     if (usesCloseWriteTimer) {
+                        const delayedSettlement = closeWriteSettled;
+                        closeWriteSettled = null;
+                        if (order === "close-write-timeout-delayed-success") delayedSettlement?.();
+                        if (order === "close-write-timeout-delayed-error") {
+                            delayedSettlement?.(new Error("simulated delayed close-write failure"));
+                        }
                         queueMicrotask(() => {
                             stdout.emit("end");
                             events.emit("exit", 1, null);
@@ -785,6 +798,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "abrupt-stdin-error-truncated-eof"
                 || order === "graceful-force-timeout"
                 || order === "close-write-timeout"
+                || order === "close-write-timeout-delayed-success"
+                || order === "close-write-timeout-delayed-error"
                 || order === "ack-close-without-exit"
                 || order === "ack-exit-close-without-stdout-end"
                 || order === "ack-stdin-error";
@@ -848,7 +863,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         },
                     });
                 }
-                if (order === "close-write-timeout") {
+                if (order === "close-write-timeout"
+                    || order === "close-write-timeout-delayed-success"
+                    || order === "close-write-timeout-delayed-error") {
                     expect(result).toMatchObject({
                         terminationDiagnostic: {
                             relay: {
@@ -1016,6 +1033,22 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             execution: { lastSessionError: "hyper-v-windows-session-queue-timeout" },
         });
 
+        const invalidStage = new HyperVElevatedNetworkSessionError(
+            "hyper-v-network-elevation-termination-unconfirmed",
+            "relay-terminal-ack-missing",
+            {
+                relay: null,
+                execution: {
+                    lastOperation: "Get-VM",
+                    lastSessionError: null,
+                    activeExecutions: 0,
+                },
+            },
+        );
+        Reflect.set(invalidStage, "terminationStage", "native-secret");
+        expect(getHyperVElevatedNetworkTerminationStage(invalidStage)).toBeNull();
+        expect(getHyperVElevatedNetworkTerminationDiagnostic(invalidStage)).toBeNull();
+
         const invalidDiagnostic = new HyperVElevatedNetworkSessionError(
             "hyper-v-network-elevation-termination-unconfirmed",
             "relay-terminal-ack-missing",
@@ -1099,6 +1132,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(getHyperVElevatedNetworkTerminationDiagnostic(revoked)).toBeNull();
 
         expect(Object.isFrozen(HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES)).toBe(true);
+        expect(Object.isFrozen(HYPER_V_ELEVATED_NETWORK_ERROR_CODES)).toBe(true);
+        expect(Object.isFrozen(HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES)).toBe(true);
         expect(Reflect.set(
             HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES,
             HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES.length,
@@ -1110,19 +1145,6 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(getHyperVElevatedNetworkTerminationStage(unrelated)).toBeNull();
         expect(getHyperVElevatedNetworkTerminationDiagnostic(unrelated)).toBeNull();
         expect(getHyperVElevatedNetworkTerminationStage(new Error("native secret"))).toBeNull();
-    });
-
-    it("makes a session error impossible without its correlated operation", () => {
-        // @ts-expect-error A session error requires the operation from that same execution.
-        const impossible: HyperVElevatedNetworkTerminationDiagnostic = {
-            relay: null,
-            execution: {
-                lastOperation: null,
-                lastSessionError: "hyper-v-windows-session-queue-timeout",
-                activeExecutions: 1,
-            },
-        };
-        expect(impossible.execution.lastSessionError).toBe("hyper-v-windows-session-queue-timeout");
     });
 
     it("pins the line-framed relay and its authentication controls", () => {

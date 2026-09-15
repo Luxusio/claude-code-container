@@ -355,11 +355,13 @@ closed sets, and records the last token-correlated relay progress stage,
 and states whether the close write, relay exit, stdout drain, stderr presence,
 and force timer were observed. It MUST NOT include the correlation token,
 native stderr, exception text, a path, or a PID. The exported unknown-error
-extractor and any injected relay diagnostic provider MUST validate and copy the
+extractor and any optional injected relay diagnostic provider MUST validate and copy the
 snapshot at runtime against private immutable membership tables. An invalid or
 throwing provider yields a null relay snapshot (while retaining a valid typed
 execution snapshot),
 rather than replacing the stable termination error or exposing its exception.
+Adding diagnostics MUST NOT make the relay injection contract incompatible with
+an otherwise valid relay that does not expose a diagnostic provider.
 Progress frames are diagnostic
 only: they MUST be authenticated by the relay terminal token, filtered from the
 session response stream, bounded to a closed stage set, and MUST NOT relax the
