@@ -23,7 +23,7 @@ import type {
 // `frameError`, which is the function that manufactures the string the adapter reads; a review
 // found a misspelling there compiled clean. It is typed now. The lesson worth keeping is that
 // "the producers" is a claim to re-check whenever one is added, not a property of the union.
-export const HYPER_V_WINDOWS_SESSION_ERROR_CODES = [
+export const HYPER_V_WINDOWS_SESSION_ERROR_CODES = Object.freeze([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
     "hyper-v-windows-session-start-failed",
@@ -39,7 +39,7 @@ export const HYPER_V_WINDOWS_SESSION_ERROR_CODES = [
     "hyper-v-windows-session-response-too-large",
     "hyper-v-windows-session-response-invalid",
     "hyper-v-windows-session-response-uncorrelated",
-] as const;
+] as const);
 
 export type HyperVWindowsSessionErrorCode = typeof HYPER_V_WINDOWS_SESSION_ERROR_CODES[number];
 

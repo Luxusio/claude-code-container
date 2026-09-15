@@ -655,6 +655,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 shutdownMode = "abrupt";
                 child.kill();
             }
+            finishAfterRelayTermination();
         }, RELAY_FORCE_GRACE_MILLISECONDS);
         forcedKill.unref?.();
     };
@@ -884,8 +885,8 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             stage: "relay-input-write",
             replaceFailure: false,
         });
-        if (relayProcessExited) finish(normalExitReason());
-        else stop();
+        stop();
+        finishAfterRelayTermination();
     });
     child.stdin?.write(`${launchEnvelope}\n`, (error) => {
         if (error) {

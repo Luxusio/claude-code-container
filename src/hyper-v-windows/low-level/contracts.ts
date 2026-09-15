@@ -13,7 +13,7 @@ import type {
     HyperVVirtualSwitchSelector,
 } from "./network-contracts.js";
 
-export const HYPER_V_WINDOWS_OPERATIONS = [
+export const HYPER_V_WINDOWS_OPERATIONS = Object.freeze([
     "Get-VM",
     "Get-VMHardDiskDrive",
     "Get-VMDvdDrive",
@@ -36,7 +36,7 @@ export const HYPER_V_WINDOWS_OPERATIONS = [
     "Get-NetNat",
     "New-NetNat",
     "Remove-NetNat",
-] as const;
+] as const);
 
 export type HyperVWindowsOperation = typeof HYPER_V_WINDOWS_OPERATIONS[number];
 

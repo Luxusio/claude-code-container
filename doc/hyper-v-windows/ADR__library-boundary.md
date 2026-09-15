@@ -269,7 +269,8 @@ paths, PIDs, or the token in reported diagnostics. This keeps real-host
 investigation actionable without treating progress as success evidence or
 weakening the acknowledgement and exact-process checks. Unknown-error extraction
 and optional injected diagnostic providers are runtime-validated and copied against
-private immutable membership tables; invalid or throwing providers contribute a
+private immutable membership tables backed by declaration-frozen authoritative
+operation and session-error tuples; invalid or throwing providers contribute a
 null relay snapshot, retain valid typed execution evidence, and cannot replace
 the stable error. Relays without that optional provider remain type-compatible.
 Existing primary relay failures outrank later input-write or force
