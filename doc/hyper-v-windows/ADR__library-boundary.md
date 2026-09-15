@@ -292,6 +292,9 @@ completion evidence becomes a bounded termination failure rather than native
 text or success. Session notification is distinct from relay completion: a
 request-write failure releases session callers promptly, then the relay owner
 still waits for exact process exit and stdout drainage under its force bound.
+The wrapper watchdog remains referenced only while its completion race is
+pending, is cleared on the other branch, and best-effort kills the exact relay
+before surfacing invalid, rejected, or timed-out completion evidence.
 Verification also covers the close-frame-write-before-stdin-EOF ordering, independence from redirected
 stdin EOF, synchronous request/response forwarding, the 500-millisecond reserve
 under delayed close reads, terminal-ack and process-exit

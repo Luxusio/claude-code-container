@@ -357,6 +357,14 @@ function safeRelayFailureCode(
     }
 }
 
+function bestEffortRelayKill(provider: (() => unknown) | null): void {
+    try {
+        provider?.();
+    } catch {
+        // Invalid completion evidence remains bounded even when an injected cleanup hook is hostile.
+    }
+}
+
 export type HyperVElevatedNetworkRelayFailureEvent =
     | {
         readonly kind: "replace-primary";
@@ -1071,6 +1079,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         | { readonly kind: "rejected" };
     let relayCompletion: Promise<ObservedRelayCompletion> | null = null;
     let relayFailureCode: (() => unknown) | null = null;
+    let relayKill: (() => unknown) | null = null;
     let relayTerminationStage: (() => unknown) | null = null;
     let relayDiagnostic: (() => unknown) | null = null;
     const currentRelayCompletion = () => relayCompletion;
@@ -1114,6 +1123,14 @@ export async function withElevatedHyperVNetworkExecutor<T>(
                         : () => undefined;
                 } catch {
                     relayFailureCode = () => undefined;
+                }
+                try {
+                    const provider = spawnedRelay.kill;
+                    relayKill = typeof provider === "function"
+                        ? () => provider.call(spawnedRelay)
+                        : null;
+                } catch {
+                    relayKill = null;
                 }
                 try {
                     const provider = spawnedRelay.terminationStage;
@@ -1193,19 +1210,29 @@ export async function withElevatedHyperVNetworkExecutor<T>(
     let terminationStage: HyperVElevatedNetworkTerminationStage | null = null;
     const completionPromise = currentRelayCompletion();
     if (completionPromise) {
-        const completion = await Promise.race([
-            completionPromise,
-            new Promise<{ readonly kind: "timeout" }>((resolve) => {
-                const timer = setTimeout(() => resolve({ kind: "timeout" }), RELAY_COMPLETION_GRACE_MILLISECONDS);
-                timer.unref?.();
-            }),
-        ]);
+        let completionTimer: ReturnType<typeof setTimeout> | null = null;
+        let completion: ObservedRelayCompletion | { readonly kind: "timeout" };
+        try {
+            completion = await Promise.race([
+                completionPromise,
+                new Promise<{ readonly kind: "timeout" }>((resolve) => {
+                    completionTimer = setTimeout(
+                        () => resolve({ kind: "timeout" }),
+                        RELAY_COMPLETION_GRACE_MILLISECONDS,
+                    );
+                }),
+            ]);
+        } finally {
+            if (completionTimer) clearTimeout(completionTimer);
+        }
         if (completion.kind === "timeout" || completion.kind === "rejected") {
+            bestEffortRelayKill(relayKill);
             terminationStage = safeRelayTerminationStage(currentRelayTerminationStage())
                 ?? "relay-completion-timeout";
         } else {
             const decodedCompletion = safeRelayCompletion(completion.value);
             if (!decodedCompletion) {
+                bestEffortRelayKill(relayKill);
                 terminationStage = safeRelayTerminationStage(currentRelayTerminationStage())
                     ?? "relay-completion-timeout";
             } else if (decodedCompletion.errorCode === TERMINATION_UNCONFIRMED_CODE) {

@@ -401,6 +401,9 @@ bounded relay failure with a getter or Proxy exception. A relay request-write
 failure may notify the session immediately, but MUST NOT resolve relay
 completion before exact process exit and stdout drainage are observed or the
 existing bounded termination fallback expires.
+The wrapper completion watchdog remains a referenced event-loop handle while
+awaited, is cleared when completion wins, and makes a bounded best-effort relay
+kill before reporting timeout or malformed/rejected completion evidence.
 Verification MUST prove that
 idle normal close writes the close frame before ending relay stdin, the write
 callback ends stdin without waiting for terminal acknowledgement, a missing
