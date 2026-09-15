@@ -363,6 +363,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "invalid-ack",
         "duplicate-ack",
         "exit-before-duplicate-ack",
+        "exit-before-truncated-duplicate-ack",
+        "truncated-invalid-ack",
         "ack-close-without-exit",
         "ack-exit-close-without-stdout-end",
         "ack-stdin-error",
@@ -428,6 +430,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 events.emit("close", 1, null);
                                 return;
                             }
+                            if (order === "truncated-invalid-ack") {
+                                stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:invalid");
+                                events.emit("exit", 1, null);
+                                stdout.emit("end");
+                                events.emit("close", 1, null);
+                                return;
+                            }
                             const acknowledge = () => stdout.emit(
                                 "data",
                                 `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
@@ -446,6 +455,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     "data",
                                     `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`
                                     + `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
+                                );
+                                stdout.emit("end");
+                            } else if (order === "exit-before-truncated-duplicate-ack") {
+                                events.emit("exit", 0, null);
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`
+                                    + `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}`,
                                 );
                                 stdout.emit("end");
                             } else if (order === "ack-before-exit"
@@ -499,12 +516,16 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const expectsFailure = order === "invalid-ack"
                 || order === "duplicate-ack"
                 || order === "exit-before-duplicate-ack"
+                || order === "exit-before-truncated-duplicate-ack"
+                || order === "truncated-invalid-ack"
                 || order === "ack-close-without-exit"
                 || order === "ack-exit-close-without-stdout-end"
                 || order === "ack-stdin-error";
             const expectedTerminationStage = order === "invalid-ack"
                 || order === "duplicate-ack"
                 || order === "exit-before-duplicate-ack"
+                || order === "exit-before-truncated-duplicate-ack"
+                || order === "truncated-invalid-ack"
                 ? "relay-terminal-ack-invalid"
                 : order === "ack-close-without-exit"
                     ? "relay-process-exit-timeout"
