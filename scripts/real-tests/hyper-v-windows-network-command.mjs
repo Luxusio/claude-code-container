@@ -10,6 +10,7 @@ const sourcePath = join(repositoryRoot, "src", "hyper-v-windows");
 const hostEntryPath = join(scriptsDirectory, "hyper-v-windows-network-host.ts");
 const compilerPath = join(repositoryRoot, "node_modules", "typescript", "bin", "tsc");
 const esbuildPath = join(repositoryRoot, "node_modules", "esbuild-wasm", "bin", "esbuild");
+const powerShellValidatorPath = join(repositoryRoot, "scripts", "validate-hyper-v-powershell.mjs");
 const compiledLibraryPath = join(repositoryRoot, "dist", "hyper-v-windows", "index.js");
 const compiledHostPath = join(repositoryRoot, "dist", "real-tests", "hyper-v-windows-network-host.mjs");
 
@@ -29,6 +30,12 @@ function runNodeTool(toolPath, args, label) {
 function prepareSourceCheckout() {
     const compiled = runNodeTool(compilerPath, ["-p", configPath], "compile the Hyper-V Windows library");
     if (compiled !== 0) return compiled;
+    const parsed = runNodeTool(
+        powerShellValidatorPath,
+        process.platform === "win32" ? ["--require-parser"] : [],
+        "parse the Hyper-V Windows PowerShell programs",
+    );
+    if (parsed !== 0) return parsed;
     return runNodeTool(esbuildPath, [
         hostEntryPath,
         "--bundle",

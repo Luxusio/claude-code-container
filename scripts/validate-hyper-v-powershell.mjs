@@ -93,7 +93,7 @@ if (!executable) {
     // a passing build had no way to know their PowerShell edit was unverified. The real gate is the
     // windows-latest CI job, which builds and then runs this with --require-parser.
     console.log("SKIP Hyper-V PowerShell parser: no PowerShell on this host.");
-    console.log("     .ps1 assets, the session bootstrap and the Windows Setup diagnostics programs");
+    console.log("     .ps1 assets, the session and elevation-relay bootstraps, and the Windows Setup diagnostics programs");
     console.log("     were NOT syntax-checked by this build.");
     console.log("     They are checked by the hyper-v-powershell-static job on windows-latest.");
     process.exit(0);
@@ -117,6 +117,26 @@ async function bootstrapSource() {
     if (typeof HYPER_V_WINDOWS_SESSION_BOOTSTRAP !== "string") return null;
     const path = join(mkdtempSync(join(tmpdir(), "ccc-hyper-v-bootstrap-")), "session-bootstrap.ps1");
     writeFileSync(path, HYPER_V_WINDOWS_SESSION_BOOTSTRAP, "utf8");
+    return path;
+}
+
+async function elevatedRelayBootstrapSource() {
+    const loader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
+    const module = pathToFileURL(join(repoRoot, "src", "device-lab", "broker", "hyper-v", "elevated-network-session.ts")).href;
+    const probe = spawnSync(process.execPath, [
+        "--import", loader,
+        "-e", `import(${JSON.stringify(module)}).then((m) => process.stdout.write(JSON.stringify(m.HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP)))`,
+    ], { cwd: repoRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true });
+    if (probe.error || probe.status !== 0) return null;
+    let source;
+    try {
+        source = JSON.parse(String(probe.stdout || ""));
+    } catch {
+        return null;
+    }
+    if (typeof source !== "string" || !source) return null;
+    const path = join(mkdtempSync(join(tmpdir(), "ccc-hyper-v-relay-bootstrap-")), "elevated-network-relay.ps1");
+    writeFileSync(path, source, "utf8");
     return path;
 }
 
@@ -155,6 +175,7 @@ async function setupDiagnosticsSources() {
 // be three chances to disagree.
 const useFullAssetSet = !libraryFixtureOnly;
 const bootstrap = useFullAssetSet ? await bootstrapSource() : null;
+const elevatedRelayBootstrap = useFullAssetSet ? await elevatedRelayBootstrapSource() : null;
 const setupDiagnostics = useFullAssetSet ? await setupDiagnosticsSources() : null;
 // `--library-fixture-only` narrows the file set to the library fixture ON PURPOSE, so a null
 // bootstrap there is the mode working, not evidence of a missing build. Before this distinction
@@ -166,6 +187,7 @@ const files = (useFullAssetSet ? [
     ...filesUnder(assetRoot),
     libraryFixture,
     ...(bootstrap ? [bootstrap] : []),
+    ...(elevatedRelayBootstrap ? [elevatedRelayBootstrap] : []),
     ...(setupDiagnostics || []),
 ] : [libraryFixture]).filter((candidate) => /\.ps(?:1|m1)$/i.test(candidate));
 // Keyed on the same flag that decided whether to fetch a bootstrap at all, so this asks "a source
@@ -191,6 +213,13 @@ if (requireParser && useFullAssetSet && !bootstrap) {
         "session bootstrap unavailable for parsing: dist/hyper-v-windows/low-level/powershell-session.js"
         + " is missing or exports no HYPER_V_WINDOWS_SESSION_BOOTSTRAP string."
         + " Run `npm run build:hyper-v:windows:library` (or any tsc build) before --require-parser.",
+    );
+}
+if (requireParser && useFullAssetSet && !elevatedRelayBootstrap) {
+    throw new Error(
+        "elevated relay bootstrap unavailable for parsing:"
+        + " src/device-lab/broker/hyper-v/elevated-network-session.ts"
+        + " did not yield HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP through the source loader.",
     );
 }
 const parser = [

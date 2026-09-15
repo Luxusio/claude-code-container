@@ -35,6 +35,7 @@ import {
 } from "../device-lab/broker/hyper-v/elevated-network-session.js";
 
 const executable = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const elevationClosePrefix = "CCC_HYPER_V_ELEVATED_NETWORK_CLOSE:";
 const vmId = "11111111-2222-3333-4444-555555555555";
 
 function getVmRequest(): HyperVWindowsExecutionRequest {
@@ -325,6 +326,28 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         },
     );
 
+    it("rejects a successful callback when relay completion carries a primary failure", async () => {
+        const relay = fakeRelay();
+        const process: HyperVElevatedNetworkRelayProcess = {
+            ...relay.process,
+            completion: Promise.resolve({
+                errorCode: "hyper-v-network-elevation-relay-failed",
+                terminationStage: null,
+            }),
+        };
+
+        await expect(withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                return process;
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()))).rejects.toMatchObject({
+            code: "hyper-v-network-elevation-relay-failed",
+        });
+    });
+
     it("lets relay completion settle after its force window and before the wrapper timeout", async () => {
         vi.useFakeTimers();
         try {
@@ -455,7 +478,11 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 stdinEvents.emit("error", new Error("simulated abrupt stdin failure"));
                             }
                         });
-                    } else if (line === HYPER_V_WINDOWS_SESSION_CLOSE_MARKER) {
+                    } else if (line.startsWith(`${elevationClosePrefix}${terminalToken}:`)) {
+                        const closeDeadline = line.slice(`${elevationClosePrefix}${terminalToken}:`.length);
+                        expect(closeDeadline).toMatch(/^[0-9]{13}$/);
+                        expect(Number(closeDeadline)).toBeGreaterThanOrEqual(Date.now());
+                        expect(Number(closeDeadline)).toBeLessThanOrEqual(Date.now() + 5_000);
                         closeObserved = true;
                         expect(stdinEndedAfterCloseWrite).toBe(false);
                         const completeRelay = () => {
@@ -542,7 +569,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const stdin = Object.assign(stdinEvents, {
                 write(chunk: string, settled?: (error?: Error) => void) {
                     try {
-                        if (usesCloseWriteTimer && chunk === `${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`) {
+                        if (usesCloseWriteTimer && chunk.startsWith(elevationClosePrefix)) {
                             closeObserved = true;
                             return true;
                         }
@@ -760,7 +787,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             `-not $V.StartsWith('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}'))`,
         );
         const closeForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
-            `if($L-ceq '${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}'){$W.WriteLine($L);$W.Flush();$CL=$true;break}`,
+            `$K='${elevationClosePrefix}'+$Z+':'`,
+        );
+        const childCloseForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            `$W.WriteLine('${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}');$W.Flush();$CL=$true;break`,
         );
         const childExitWait = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$C.WaitForExit($M)");
         const pipeDisposal = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$Q.Dispose()");
@@ -769,12 +799,35 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(assetForward).toBeLessThan(requestValidation);
         expect(requestValidation).toBeLessThan(responseForward);
         expect(closeForward).toBeGreaterThanOrEqual(0);
-        expect(closeForward).toBeLessThan(childExitWait);
+        expect(closeForward).toBeLessThan(childCloseForward);
+        expect(childCloseForward).toBeLessThan(childExitWait);
         expect(childExitWait).toBeLessThan(pipeDisposal);
         expect(pipeDisposal).toBeLessThan(terminalOutput);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $L){throw 'input'}");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $V-or $V.Length-gt");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("[long]::TryParse($V,[ref]$G)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain(
+            "$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+5000",
+        );
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toMatch(/(?:Get|New|Set|Remove)-(?:VM|Net)/);
+    });
+
+    it("routes the exact generated relay through the Windows parser gate before UAC", () => {
+        const validator = readFileSync(join(process.cwd(), "scripts", "validate-hyper-v-powershell.mjs"), "utf8");
+        const command = readFileSync(join(
+            process.cwd(),
+            "scripts",
+            "real-tests",
+            "hyper-v-windows-network-command.mjs",
+        ), "utf8");
+
+        expect(validator).toContain("HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP");
+        expect(validator).toContain("typescript-source-loader.mjs");
+        expect(validator).toContain("if (requireParser && useFullAssetSet && !elevatedRelayBootstrap)");
+        expect(command.indexOf("const parsed = runNodeTool(")).toBeLessThan(
+            command.indexOf("return runNodeTool(esbuildPath"),
+        );
+        expect(command).toContain('process.platform === "win32" ? ["--require-parser"] : []');
     });
 
     it("keeps the terminal token out of the elevated child and accepts it only during close", () => {
@@ -822,7 +875,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(source).toContain("const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000");
         expect(closeStart).toBeGreaterThanOrEqual(0);
         expect(closeEnd).toBeGreaterThan(closeStart);
-        expect(closeSource).toContain("child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\\n`");
+        expect(closeSource).toContain("const finalizationDeadline = Date.now()");
+        expect(closeSource).toContain("child.stdin?.write(`${ELEVATION_CLOSE_PREFIX}${terminalToken}:${finalizationDeadline}\\n`");
         expect(closeSource).toContain("endRelayInput()");
         const clearDeadline = closeSource.indexOf("clearTimeout(deadlineTimer)");
         const writeClose = closeSource.indexOf("child.stdin?.write");

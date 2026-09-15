@@ -24,6 +24,7 @@ import {
 const ELEVATION_REQUEST_MARKER = "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST";
 const ELEVATION_READY_MARKER = "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY";
 const ELEVATION_FAILURE_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:";
+const ELEVATION_CLOSE_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_CLOSE:";
 const ELEVATION_TERMINAL_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:";
 const ELEVATION_APPROVAL = "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE";
 const MAX_RELAY_LINE_BYTES = 256 * 1024;
@@ -260,8 +261,8 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "if([string]$AJ.nonce-cne $N-or [uint32]$AJ.pid-ne [uint32]$C.Id-or [long]$AJ.startTicks-ne [long]$CS){throw 'authentication'};if(-not [bool]$AJ.administrator){throw 'administrator'}",
     "$W.WriteLine($B);$W.Flush();[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY');[Console]::Out.Flush()",
     `$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt ${MAX_RELAY_LINE_BYTES}-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($V-cne '${HYPER_V_WINDOWS_SESSION_READY_MARKER}'){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()`,
-    `while($true){$L=[Console]::In.ReadLine();if($null-eq $L){throw 'input'};if($L.Length-gt ${MAX_RELAY_LINE_BYTES}){throw 'protocol'};if($L-ceq '${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}'){$W.WriteLine($L);$W.Flush();$CL=$true;break};if(-not $L.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}')){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($null-eq $V-or $V.Length-gt ${MAX_RELAY_LINE_BYTES}-or -not $V.StartsWith('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}')){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()}`,
-    `$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS};$M=[int][Math]::Min([long]${ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));if($M-gt 0 -and $C -and $CS){try{[void]$C.WaitForExit($M)}catch{}}`,
+    `while($true){$L=[Console]::In.ReadLine();if($null-eq $L){throw 'input'};if($L.Length-gt ${MAX_RELAY_LINE_BYTES}){throw 'protocol'};$K='${ELEVATION_CLOSE_PREFIX}'+$Z+':';if($L.StartsWith($K)){$V=$L.Substring($K.Length);[long]$G=0;if($V-notmatch '^[0-9]{13}$'-or -not [long]::TryParse($V,[ref]$G)-or $G-gt [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}){throw 'protocol'};$W.WriteLine('${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}');$W.Flush();$CL=$true;break};if(-not $L.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}')){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($null-eq $V-or $V.Length-gt ${MAX_RELAY_LINE_BYTES}-or -not $V.StartsWith('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}')){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()}`,
+    `$M=[int][Math]::Min([long]${ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));if($M-gt 0 -and $C -and $CS){try{[void]$C.WaitForExit($M)}catch{}}`,
     "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}default{'hyper-v-network-elevation-relay-failed'}}",
     `}finally{try{$R.Dispose()}catch{};try{$W.Dispose()}catch{};try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$M=if($G){[int][Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())}else{${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}};if($M-gt 0){[void]$Y.WaitForExit($M)}};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){$F='hyper-v-network-elevation-termination-unconfirmed'}}}`,
     "if($F){Send-Failure $F}",
@@ -430,7 +431,8 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             stop();
         }, RELAY_CLOSE_WRITE_GRACE_MILLISECONDS);
         closeWriteTimer.unref?.();
-        child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`, (error) => {
+        const finalizationDeadline = Date.now() + ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS;
+        child.stdin?.write(`${ELEVATION_CLOSE_PREFIX}${terminalToken}:${finalizationDeadline}\n`, (error) => {
             if (closeWriteTimer) {
                 clearTimeout(closeWriteTimer);
                 closeWriteTimer = null;
@@ -658,6 +660,16 @@ function failedExecution(code: HyperVElevatedNetworkErrorCode): HyperVWindowsExe
     return { status: null, stdout: "", error: code };
 }
 
+function reportsRelayCompletionFailure(
+    value: unknown,
+    code: HyperVElevatedNetworkNonTerminationErrorCode,
+): boolean {
+    return typeof value === "object"
+        && value !== null
+        && !Array.isArray(value)
+        && Reflect.get(value, "error") === code;
+}
+
 export async function withElevatedHyperVNetworkExecutor<T>(
     options: WithElevatedHyperVNetworkExecutorOptions,
     operation: (executor: HyperVWindowsExecutor) => T | Promise<T>,
@@ -725,6 +737,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         session.close();
     }
 
+    let completionError: HyperVElevatedNetworkNonTerminationErrorCode | null = null;
     let terminationStage: HyperVElevatedNetworkTerminationStage | null = null;
     const completionPromise = currentRelayCompletion();
     if (completionPromise) {
@@ -735,16 +748,23 @@ export async function withElevatedHyperVNetworkExecutor<T>(
                 timer.unref?.();
             }),
         ]);
-        terminationStage = completion === null
-            ? "relay-completion-timeout"
-            : completion.errorCode === TERMINATION_UNCONFIRMED_CODE
-                ? completion.terminationStage
-                : null;
+        if (completion === null) {
+            terminationStage = "relay-completion-timeout";
+        } else {
+            if (completion.errorCode === TERMINATION_UNCONFIRMED_CODE) {
+                terminationStage = completion.terminationStage;
+            } else {
+                completionError = completion.errorCode;
+            }
+        }
     }
     if (terminationStage) {
         throw new HyperVElevatedNetworkSessionError(TERMINATION_UNCONFIRMED_CODE, terminationStage);
     }
     if (!outcome) throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-relay-failed");
     if ("error" in outcome) throw outcome.error;
+    if (completionError && !reportsRelayCompletionFailure(outcome.value, completionError)) {
+        throw new HyperVElevatedNetworkSessionError(completionError);
+    }
     return outcome.value;
 }
