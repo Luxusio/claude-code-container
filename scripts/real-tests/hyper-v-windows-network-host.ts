@@ -3,7 +3,10 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync } from "fs";
 
-import { withElevatedHyperVNetworkExecutor } from "./hyper-v-windows-network-elevation-runtime.mjs";
+import {
+    getHyperVElevatedNetworkTerminationStage,
+    withElevatedHyperVNetworkExecutor,
+} from "./hyper-v-windows-network-elevation-runtime.mjs";
 import {
     createBoundedPowerShellFileRunner,
     resolveTrustedWindowsSystemExecutables,
@@ -120,6 +123,8 @@ export async function runHyperVWindowsNetworkHost(
         stdout.write("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false\n");
         return 0;
     } catch (error) {
+        const stage = getHyperVElevatedNetworkTerminationStage(error);
+        if (stage) stderr.write(`DIAGNOSTIC Hyper-V elevated network termination stage=${stage}\n`);
         const code = error instanceof Error ? error.message : "hyper-v-network-real-unexpected-failure";
         stderr.write(`FAIL Hyper-V Windows typed network real-host proof: ${code}\n`);
         stderr.write("SUMMARY real-tests total=1 pass=0 skip=0 fail=1 failOnSkip=false\n");

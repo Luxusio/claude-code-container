@@ -26,7 +26,9 @@ const ELEVATION_APPROVAL = "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE";
 const MAX_RELAY_LINE_BYTES = 256 * 1024;
 const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
 const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000;
-const RELAY_TERMINATION_GRACE_MILLISECONDS = 10_000;
+const RELAY_FORCE_GRACE_MILLISECONDS = 10_000;
+const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000;
+const TERMINATION_UNCONFIRMED_CODE = "hyper-v-network-elevation-termination-unconfirmed";
 
 export const HYPER_V_ELEVATED_NETWORK_ERROR_CODES = [
     "hyper-v-network-elevation-cancelled",
@@ -38,25 +40,74 @@ export const HYPER_V_ELEVATED_NETWORK_ERROR_CODES = [
     "hyper-v-network-elevation-protocol-invalid",
     "hyper-v-network-elevation-relay-failed",
     "hyper-v-network-elevation-request-failed",
-    "hyper-v-network-elevation-termination-unconfirmed",
+    TERMINATION_UNCONFIRMED_CODE,
     "hyper-v-network-elevation-scope-closed",
 ] as const;
 
 export type HyperVElevatedNetworkErrorCode = typeof HYPER_V_ELEVATED_NETWORK_ERROR_CODES[number];
+type HyperVElevatedNetworkNonTerminationErrorCode = Exclude<
+    HyperVElevatedNetworkErrorCode,
+    typeof TERMINATION_UNCONFIRMED_CODE
+>;
+
+export const HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES = [
+    "elevated-child",
+    "relay-force-timeout",
+    "relay-input-write",
+    "relay-completion-timeout",
+] as const;
+
+export type HyperVElevatedNetworkTerminationStage =
+    typeof HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES[number];
+type HyperVElevatedNetworkRelayTerminationStage = Exclude<
+    HyperVElevatedNetworkTerminationStage,
+    "relay-completion-timeout"
+>;
+
+export type HyperVElevatedNetworkRelayCompletion =
+    | {
+        readonly errorCode: HyperVElevatedNetworkNonTerminationErrorCode | null;
+        readonly terminationStage: null;
+    }
+    | {
+        readonly errorCode: typeof TERMINATION_UNCONFIRMED_CODE;
+        readonly terminationStage: HyperVElevatedNetworkRelayTerminationStage;
+    };
 
 export class HyperVElevatedNetworkSessionError extends Error {
     readonly code: HyperVElevatedNetworkErrorCode;
+    readonly terminationStage: HyperVElevatedNetworkTerminationStage | null;
 
-    constructor(code: HyperVElevatedNetworkErrorCode) {
+    constructor(code: HyperVElevatedNetworkNonTerminationErrorCode);
+    constructor(
+        code: typeof TERMINATION_UNCONFIRMED_CODE,
+        terminationStage: HyperVElevatedNetworkTerminationStage,
+    );
+    constructor(
+        code: HyperVElevatedNetworkErrorCode,
+        terminationStage: HyperVElevatedNetworkTerminationStage | null = null,
+    ) {
         super(code);
         this.name = "HyperVElevatedNetworkSessionError";
         this.code = code;
+        this.terminationStage = terminationStage;
     }
+}
+
+export function getHyperVElevatedNetworkTerminationStage(
+    error: unknown,
+): HyperVElevatedNetworkTerminationStage | null {
+    if (!(error instanceof HyperVElevatedNetworkSessionError)) return null;
+    if (error.code !== TERMINATION_UNCONFIRMED_CODE) return null;
+    const stage = error.terminationStage;
+    return stage !== null && HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES.includes(stage)
+        ? stage
+        : null;
 }
 
 export type HyperVElevatedNetworkRelayProcess = HyperVWindowsSessionProcess & {
     readonly close: () => void;
-    readonly completion: Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>;
+    readonly completion: Promise<HyperVElevatedNetworkRelayCompletion>;
     readonly failureCode: () => HyperVElevatedNetworkErrorCode | null;
 };
 
@@ -220,15 +271,16 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let relayReady = false;
     let elevationRequested = false;
     let requestAttempted = false;
-    let failureCode: HyperVElevatedNetworkErrorCode | null = null;
+    let failureCode: HyperVElevatedNetworkNonTerminationErrorCode | null = null;
+    let terminationStage: HyperVElevatedNetworkRelayTerminationStage | null = null;
     let exited = false;
     let exitReason: HyperVWindowsSessionErrorCode = "hyper-v-windows-session-exited";
     let closing = false;
     let killed = false;
     let forcedKill: ReturnType<typeof setTimeout> | null = null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-    let resolveCompletion = (_result: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) => undefined as void;
-    const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
+    let resolveCompletion = (_result: HyperVElevatedNetworkRelayCompletion) => undefined as void;
+    const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
         resolveCompletion = resolve;
     });
 
@@ -242,15 +294,20 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         if (forcedKill) clearTimeout(forcedKill);
         failQueued(new Error(reason));
         for (const listener of [...exitListeners]) listener(reason);
-        resolveCompletion({ errorCode: failureCode });
+        resolveCompletion(terminationStage
+            ? { errorCode: TERMINATION_UNCONFIRMED_CODE, terminationStage }
+            : { errorCode: failureCode, terminationStage: null });
+    };
+    const recordTerminationFailure = (stage: HyperVElevatedNetworkRelayTerminationStage) => {
+        terminationStage ??= stage;
     };
     const armForcedKill = () => {
         if (forcedKill) return;
         forcedKill = setTimeout(() => {
-            failureCode ??= "hyper-v-network-elevation-termination-unconfirmed";
+            recordTerminationFailure("relay-force-timeout");
             child.stdin?.end();
             child.kill();
-        }, RELAY_TERMINATION_GRACE_MILLISECONDS);
+        }, RELAY_FORCE_GRACE_MILLISECONDS);
         forcedKill.unref?.();
     };
     const stop = () => {
@@ -268,7 +325,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         }
         child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`, (error) => {
             if (!error || exited) return;
-            failureCode ??= "hyper-v-network-elevation-termination-unconfirmed";
+            recordTerminationFailure("relay-input-write");
             stop();
         });
         armForcedKill();
@@ -286,7 +343,11 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     const handleControlLine = (line: string): boolean => {
         const observedFailure = parseElevationFailure(line);
         if (observedFailure) {
-            failureCode = observedFailure;
+            if (observedFailure === TERMINATION_UNCONFIRMED_CODE) {
+                recordTerminationFailure("elevated-child");
+            } else {
+                failureCode = observedFailure;
+            }
             return true;
         }
         if (line === ELEVATION_REQUEST_MARKER) {
@@ -375,7 +436,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
 
     return {
         completion,
-        failureCode: () => failureCode,
+        failureCode: () => terminationStage ? TERMINATION_UNCONFIRMED_CODE : failureCode,
         close,
         write(line, settled) {
             if (exited || closing || killed) {
@@ -473,24 +534,26 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         session.close();
     }
 
-    let terminationFailure: HyperVElevatedNetworkErrorCode | null = null;
+    let terminationStage: HyperVElevatedNetworkTerminationStage | null = null;
     const completionPromise = currentRelayCompletion();
     if (completionPromise) {
         const completion = await Promise.race([
             completionPromise,
             new Promise<null>((resolve) => {
-                const timer = setTimeout(() => resolve(null), RELAY_TERMINATION_GRACE_MILLISECONDS);
+                const timer = setTimeout(() => resolve(null), RELAY_COMPLETION_GRACE_MILLISECONDS);
                 timer.unref?.();
             }),
         ]);
-        terminationFailure = completion === null
-            ? "hyper-v-network-elevation-termination-unconfirmed"
-            : completion.errorCode === "hyper-v-network-elevation-termination-unconfirmed"
-                ? completion.errorCode
+        terminationStage = completion === null
+            ? "relay-completion-timeout"
+            : completion.errorCode === TERMINATION_UNCONFIRMED_CODE
+                ? completion.terminationStage
                 : null;
     }
-    if (terminationFailure) throw new HyperVElevatedNetworkSessionError(terminationFailure);
+    if (terminationStage) {
+        throw new HyperVElevatedNetworkSessionError(TERMINATION_UNCONFIRMED_CODE, terminationStage);
+    }
     if (!outcome) throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-relay-failed");
-    if (!outcome.ok) throw outcome.error;
+    if ("error" in outcome) throw outcome.error;
     return outcome.value;
 }
