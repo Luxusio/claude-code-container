@@ -271,7 +271,10 @@ terminate the elevated child. At normal scope closure, only when no request is
 pending or queued and before the operation deadline timer has fired, the Node
 parent MUST disarm that relay timer and send an explicit session-close frame
 through the already authenticated pipe. Once the close-frame write callback
-confirms that the ordered bytes were accepted, Node MUST end relay stdin. A
+confirms that the ordered bytes were accepted, Node MUST end relay stdin. That
+write handoff has its own one-second bound; expiry records `relay-input-write`
+and enters the abrupt path, so a delayed callback cannot consume the margin
+between the inner and outer shutdown owners. A
 scope closed with unfinished work, or after deadline handling has begun,
 MUST use the abrupt path so the close frame cannot queue behind an unconfirmed
 mutation or corrupt an in-progress relay handshake. The elevated session MUST
@@ -282,8 +285,10 @@ bounded finalization window; stdin EOF alone MUST NOT dispose the authenticated
 pipe. After pipe disposal and exact elevated-child termination reinspection, the
 relay MUST emit one terminal acknowledgement correlated by a separate random
 token that is not present in the elevated child source. The pipe-to-stdout copy
-MUST be complete before the relay writes any terminal failure or
-acknowledgement line; if it cannot settle after pipe disposal, the relay omits
+MUST have settled before the relay writes any terminal failure or
+acknowledgement line, and only `RanToCompletion` proves successful drainage.
+Faulted and cancelled tasks report `relay-output-drain-timeout`; if the task
+cannot settle after pipe disposal, the relay omits
 the acknowledgement and lets Node fail closed. An acknowledgement before normal
 scope closure, or any stdout protocol line after the acknowledgement, is
 invalid. Successful relay completion requires the terminal acknowledgement,
@@ -297,10 +302,17 @@ transport, protocol, and deadline failures still use the force-stop path.
 Once either asynchronous pipe-copy direction completes and relay finalization
 begins, the medium-integrity PowerShell relay uses one five-second window to
 finish the other output direction and confirm the exact elevated process exit.
-It emits
+When its pipe-to-stdout wait expires but that task settles after forced pipe
+disposal, it MUST emit the bounded relay-owned stage
+`relay-output-drain-timeout` before the terminal acknowledgement. If the output
+task remains unsettled, it MUST emit neither line, because concurrent writers
+would make the framing ambiguous; Node then reports
+`relay-terminal-ack-missing`. The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
 remains. The Node-owned relay process then has a strictly longer ten-second
-grace from scope closure before its force fallback. A missing or invalid
+grace from scope closure before its force fallback. Normal close can enter the
+inner window no later than the separate one-second write-handoff bound, leaving
+strict margin before that force fallback. A missing or invalid
 terminal token, undrained relay stdout, and a terminal acknowledgement without
 process exit fail closed as separate bounded stages. The callback wrapper MUST
 wait a third, strictly longer fifteen-second window for that force fallback to
@@ -327,9 +339,12 @@ the fail-closed result. This preserves primary/fallback ordering while making
 the authenticated child result authoritative in every event order.
 Verification MUST prove that
 idle normal close writes the close frame before ending relay stdin, the write
-callback ends stdin without waiting for terminal acknowledgement, relay stdin
+callback ends stdin without waiting for terminal acknowledgement, a missing
+write callback fails at the one-second bound, relay stdin
 EOF cannot dispose the authenticated pipe before its output direction settles,
 terminal output is never written concurrently with that output direction,
+the relay-owned output-drain stage is distinct from the elevated child's
+termination result, task fault/cancellation cannot count as successful drainage,
 acknowledgement and exit work in either arrival order, completion waits for
 stdout EOF without requiring stdio close, malformed or duplicate
 acknowledgements fail closed even when process exit arrives before stdout

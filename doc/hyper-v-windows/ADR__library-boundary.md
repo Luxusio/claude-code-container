@@ -199,7 +199,9 @@ trusted to force-stop a higher-integrity process. Idle normal scope closure that
 begins before deadline handling therefore disarms the relay's operation timer
 and sends an explicit close frame through the authenticated session pipe. Node
 ends relay stdin only after the close-frame write callback confirms the ordered
-bytes were accepted. If that EOF completes the stdin-to-pipe copy first, the
+bytes were accepted. A separate one-second handoff bound fails as
+`relay-input-write` and enters abrupt shutdown if that callback stalls, preserving
+margin before the ten-second relay owner. If that EOF completes the stdin-to-pipe copy first, the
 relay flushes those bytes and continues waiting within its bounded window for
 the pipe-to-stdout direction; EOF alone does not dispose the authenticated pipe.
 After pipe cleanup and exact elevated-child
@@ -207,7 +209,9 @@ termination reinspection, the relay emits a terminal acknowledgement carrying a
 separate random token unavailable to the elevated child. Terminal failure and
 acknowledgement lines are emitted only after the pipe-to-stdout task settles; an
 unsettled task suppresses the acknowledgement and therefore fails closed without
-two writers racing on relay stdout. A terminal
+two writers racing on relay stdout. Settled is not success: only
+`RanToCompletion` proves drainage, while fault and cancellation use the typed
+relay output-drain failure. A terminal
 acknowledgement is accepted only after normal scope closure begins, and no later
 stdout line is permitted.
 Any unterminated stdout bytes at EOF enter the typed termination-failure path
@@ -224,10 +228,16 @@ or entering an unfinished handshake without extending an orphaned administrator
 process beyond its existing watchdog contract. After either pipe-copy direction
 finishes and relay finalization begins, the medium-integrity PowerShell relay
 uses one five-second window to finish the output direction and confirm the exact
-elevated process exit, and emits
+elevated process exit. A pipe-to-stdout timeout that settles after forced pipe
+disposal is reported through a relay-owned typed stage frame as
+`relay-output-drain-timeout`, distinct from the elevated child's termination
+result. If it remains unsettled, the relay suppresses terminal output and Node
+reports the missing acknowledgement. The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` if the same process remains.
 The Node parent independently gives the PowerShell relay a strictly longer
-ten-second grace from scope closure before forcing the Node-owned relay process.
+ten-second grace from scope closure before forcing the Node-owned relay process;
+the one-second close-write handoff ensures a normal five-second inner window
+cannot start too late to fit.
 The callback wrapper waits a third, strictly longer fifteen-second window so
 that asynchronous process-close delivery after the ten-second force fallback
 can publish its terminal result. Once graceful close has begun, these windows
