@@ -234,7 +234,7 @@ function elevatedChildSource(pipeName: string, nonce: string, deadlineUnixMillis
 // bootstrap, so no Hyper-V operation logic is duplicated here.
 export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$ErrorActionPreference='Stop'",
-    "$F=$null;$P=$null;$C=$null;$CS=$null;$Q=$null;$R=$null;$W=$null;$Z=$null",
+    "$F=$null;$P=$null;$C=$null;$CS=$null;$Q=$null;$R=$null;$W=$null;$Z=$null;$G=$null;$TC=$null;$TP=$null;$SO=$true",
     "function Send-Failure([string]$Code){[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:'+$Code);[Console]::Out.Flush()}",
     "try{",
     "$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt 349528-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}",
@@ -254,12 +254,13 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$AL=$R.ReadLine();if(-not $AL-or $AL.Length-gt 4096-or -not $AL.StartsWith('AUTH:')){throw 'authentication'};$AJ=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($AL.Substring(5)))|ConvertFrom-Json -ErrorAction Stop",
     "if([string]$AJ.nonce-cne $N-or [uint32]$AJ.pid-ne [uint32]$C.Id-or [long]$AJ.startTicks-ne [long]$CS){throw 'authentication'};if(-not [bool]$AJ.administrator){throw 'administrator'}",
     "$W.WriteLine($B);$W.Flush();$R.Dispose();$W.Dispose();[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY');[Console]::Out.Flush()",
-    "$U=[Console]::OpenStandardInput();$O=[Console]::OpenStandardOutput();$TC=$U.CopyToAsync($Q);$TP=$Q.CopyToAsync($O);$Done=[Threading.Tasks.Task]::WhenAny(@($TC,$TP)).GetAwaiter().GetResult()",
-    "if($Done-eq $TP){$TP.GetAwaiter().GetResult()}else{$TC.GetAwaiter().GetResult();$Q.Flush()}",
-    "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}default{'hyper-v-network-elevation-relay-failed'}};Send-Failure $F",
-    `}finally{try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$Y.WaitForExit(${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS})};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Send-Failure 'hyper-v-network-elevation-termination-unconfirmed';$F='termination'}}}`,
-    `if($Z-match '^[a-f0-9]{64}$'){[Console]::Out.WriteLine('${ELEVATION_TERMINAL_PREFIX}'+$Z);[Console]::Out.Flush()}`,
-    "if($F){exit 1}",
+    `$U=[Console]::OpenStandardInput();$O=[Console]::OpenStandardOutput();$TC=$U.CopyToAsync($Q);$TP=$Q.CopyToAsync($O);$Done=[Threading.Tasks.Task]::WhenAny(@($TC,$TP)).GetAwaiter().GetResult();$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}`,
+    `if($Done-eq $TP){$TP.GetAwaiter().GetResult()}else{$TC.GetAwaiter().GetResult();$Q.Flush();$M=[int][Math]::Min([long]${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));if(-not $TP.Wait($M)){throw 'termination'};$TP.GetAwaiter().GetResult()}`,
+    "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}'termination'{'hyper-v-network-elevation-termination-unconfirmed'}default{'hyper-v-network-elevation-relay-failed'}}",
+    `}finally{try{$Q.Dispose()}catch{};$SO=(-not $TP)-or $TP.IsCompleted;if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$M=if($G){[int][Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())}else{${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}};if($M-gt 0){[void]$Y.WaitForExit($M)}};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){$F='hyper-v-network-elevation-termination-unconfirmed'}}}`,
+    "if($SO-and $F){Send-Failure $F}",
+    `if($SO-and $Z-match '^[a-f0-9]{64}$'){[Console]::Out.WriteLine('${ELEVATION_TERMINAL_PREFIX}'+$Z);[Console]::Out.Flush()}`,
+    "if($F-or -not $SO){exit 1}",
 ].join(";");
 
 function parseElevationFailure(line: string): HyperVElevatedNetworkErrorCode | null {
@@ -330,6 +331,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let relayProcessExited = false;
     let relayStdoutDrained = child.stdout === null;
     let forceExpired = false;
+    let relayInputEnded = false;
     let forcedKill: ReturnType<typeof setTimeout> | null = null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     let resolveCompletion = (_result: HyperVElevatedNetworkRelayCompletion) => undefined as void;
@@ -372,6 +374,11 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     const finishAfterTerminalExit = () => {
         if (terminalAcknowledged && relayProcessExited && relayStdoutDrained) finish(normalExitReason());
     };
+    const endRelayInput = () => {
+        if (relayInputEnded) return;
+        relayInputEnded = true;
+        child.stdin?.end();
+    };
     const armForcedKill = () => {
         if (forcedKill) return;
         forcedKill = setTimeout(() => {
@@ -385,7 +392,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                         : "relay-output-drain-timeout",
                 replaceFailure: false,
             });
-            child.stdin?.end();
+            endRelayInput();
             if (relayProcessExited) finish(normalExitReason());
             else child.kill();
         }, RELAY_FORCE_GRACE_MILLISECONDS);
@@ -394,7 +401,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     const stop = () => {
         if (killed) return;
         killed = true;
-        child.stdin?.end();
+        endRelayInput();
         armForcedKill();
     };
     const close = () => {
@@ -405,13 +412,17 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             deadlineTimer = null;
         }
         child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`, (error) => {
-            if (!error || exited) return;
-            recordTerminationFailure({
-                kind: "termination",
-                stage: "relay-input-write",
-                replaceFailure: false,
-            });
-            stop();
+            if (exited) return;
+            if (error) {
+                recordTerminationFailure({
+                    kind: "termination",
+                    stage: "relay-input-write",
+                    replaceFailure: false,
+                });
+                stop();
+                return;
+            }
+            endRelayInput();
         });
         armForcedKill();
     };
@@ -460,7 +471,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 child.stdin?.write(`${ELEVATION_APPROVAL}\n`);
             } catch {
                 recordPrimaryFailure("hyper-v-network-elevation-request-failed");
-                child.stdin?.end();
+                endRelayInput();
             }
             return true;
         }
@@ -485,7 +496,6 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 return true;
             }
             terminalAcknowledged = true;
-            child.stdin?.end();
             finishAfterTerminalExit();
             return true;
         }
