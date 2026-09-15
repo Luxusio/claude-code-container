@@ -9,7 +9,9 @@ import {
 import {
     createHyperVWindowsPowerShellSession,
     HYPER_V_WINDOWS_SESSION_CLOSE_MARKER,
+    HYPER_V_WINDOWS_SESSION_READY_MARKER,
     HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX,
+    HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
     type HyperVWindowsExecutionContext,
     type HyperVWindowsExecutionRequest,
     type HyperVWindowsExecutionResult,
@@ -22,13 +24,12 @@ import {
 const ELEVATION_REQUEST_MARKER = "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST";
 const ELEVATION_READY_MARKER = "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY";
 const ELEVATION_FAILURE_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:";
-const ELEVATION_TERMINATION_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_TERMINATION:";
 const ELEVATION_TERMINAL_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:";
 const ELEVATION_APPROVAL = "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE";
 const MAX_RELAY_LINE_BYTES = 256 * 1024;
 const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
 const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000;
-const RELAY_PIPE_OUTPUT_DRAIN_MILLISECONDS = 4_500;
+const ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS = 4_500;
 const RELAY_CLOSE_WRITE_GRACE_MILLISECONDS = 1_000;
 const RELAY_FORCE_GRACE_MILLISECONDS = 10_000;
 const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000;
@@ -232,12 +233,13 @@ function elevatedChildSource(pipeName: string, nonce: string, deadlineUnixMillis
     ].join(";");
 }
 
-// This process remains medium-integrity. It owns the administrator-only pipe and performs exactly
-// one ShellExecute/RunAs transition; the elevated child then runs the existing correlated session
-// bootstrap, so no Hyper-V operation logic is duplicated here.
+// This process remains medium-integrity. It owns the administrator-only pipe, performs exactly one
+// ShellExecute/RunAs transition, and synchronously forwards the existing one-in-flight session
+// frames. The elevated child still runs the correlated session bootstrap, so no Hyper-V operation
+// logic is duplicated here and redirected-stdin EOF is not a transport completion signal.
 export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$ErrorActionPreference='Stop'",
-    "$F=$null;$P=$null;$C=$null;$CS=$null;$Q=$null;$R=$null;$W=$null;$Z=$null;$G=$null;$TC=$null;$TP=$null;$OW=$true;$OD=$true",
+    "$F=$null;$P=$null;$C=$null;$CS=$null;$Q=$null;$R=$null;$W=$null;$Z=$null;$G=$null;$CL=$false",
     "function Send-Failure([string]$Code){[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:'+$Code);[Console]::Out.Flush()}",
     "try{",
     "$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt 349528-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}",
@@ -256,14 +258,15 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$R=[IO.StreamReader]::new($Q,[Text.UTF8Encoding]::new($false),$false,4096,$true);$W=[IO.StreamWriter]::new($Q,[Text.UTF8Encoding]::new($false),4096,$true)",
     "$AL=$R.ReadLine();if(-not $AL-or $AL.Length-gt 4096-or -not $AL.StartsWith('AUTH:')){throw 'authentication'};$AJ=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($AL.Substring(5)))|ConvertFrom-Json -ErrorAction Stop",
     "if([string]$AJ.nonce-cne $N-or [uint32]$AJ.pid-ne [uint32]$C.Id-or [long]$AJ.startTicks-ne [long]$CS){throw 'authentication'};if(-not [bool]$AJ.administrator){throw 'administrator'}",
-    "$W.WriteLine($B);$W.Flush();$R.Dispose();$W.Dispose();[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY');[Console]::Out.Flush()",
-    `$U=[Console]::OpenStandardInput();$O=[Console]::OpenStandardOutput();$TC=$U.CopyToAsync($Q);$TP=$Q.CopyToAsync($O);$Done=[Threading.Tasks.Task]::WhenAny(@($TC,$TP)).GetAwaiter().GetResult();$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}`,
-    `if($Done-eq $TP){try{$TP.GetAwaiter().GetResult()}catch{throw 'termination'}}else{$TC.GetAwaiter().GetResult();$Q.Flush();$M=[int][Math]::Min([long]${RELAY_PIPE_OUTPUT_DRAIN_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));try{$OK=$TP.Wait($M)}catch{throw 'termination'};if(-not $OK){throw 'termination'};try{$TP.GetAwaiter().GetResult()}catch{throw 'termination'}}`,
-    "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}'termination'{'relay-output-drain-timeout'}default{'hyper-v-network-elevation-relay-failed'}}",
-    `}finally{try{$Q.Dispose()}catch{};if($TP-and -not $TP.IsCompleted){$M=if($G){[int][Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())}else{${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}};if($M-gt 0){try{[void]$TP.Wait($M)}catch{}}};$OW=(-not $TP)-or $TP.IsCompleted;$OD=(-not $TP)-or ($TP.Status-eq [Threading.Tasks.TaskStatus]::RanToCompletion);if($OW-and -not $OD-and -not $F){$F='relay-output-drain-timeout'};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$M=if($G){[int][Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())}else{${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}};if($M-gt 0){[void]$Y.WaitForExit($M)}};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){$F='hyper-v-network-elevation-termination-unconfirmed'}}}`,
-    `if($OW-and $F){if($F-eq 'relay-output-drain-timeout'){[Console]::Out.WriteLine('${ELEVATION_TERMINATION_PREFIX}'+$Z+':'+$F);[Console]::Out.Flush()}else{Send-Failure $F}}`,
-    `if($OW-and $Z-match '^[a-f0-9]{64}$'){[Console]::Out.WriteLine('${ELEVATION_TERMINAL_PREFIX}'+$Z);[Console]::Out.Flush()}`,
-    "if($F-or -not $OW){exit 1}",
+    "$W.WriteLine($B);$W.Flush();[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY');[Console]::Out.Flush()",
+    `$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt ${MAX_RELAY_LINE_BYTES}-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($V-cne '${HYPER_V_WINDOWS_SESSION_READY_MARKER}'){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()`,
+    `while($true){$L=[Console]::In.ReadLine();if($null-eq $L){throw 'input'};if($L.Length-gt ${MAX_RELAY_LINE_BYTES}){throw 'protocol'};if($L-ceq '${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}'){$W.WriteLine($L);$W.Flush();$CL=$true;break};if(-not $L.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}')){throw 'protocol'};$W.WriteLine($L);$W.Flush();$V=$R.ReadLine();if($null-eq $V-or $V.Length-gt ${MAX_RELAY_LINE_BYTES}-or -not $V.StartsWith('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}')){throw 'protocol'};[Console]::Out.WriteLine($V);[Console]::Out.Flush()}`,
+    `$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS};$M=[int][Math]::Min([long]${ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS},[Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));if($M-gt 0 -and $C -and $CS){try{[void]$C.WaitForExit($M)}catch{}}`,
+    "}catch{$M=[string]$_.Exception.Message;$F=switch($M){'cancelled'{'hyper-v-network-elevation-cancelled'}'launch'{'hyper-v-network-elevation-launch-failed'}'handshake'{'hyper-v-network-elevation-handshake-timeout'}'authentication'{'hyper-v-network-elevation-authentication-failed'}'administrator'{'hyper-v-network-elevation-administrator-required'}'deadline'{'hyper-v-network-elevation-deadline-exceeded'}'request'{'hyper-v-network-elevation-request-failed'}'protocol'{'hyper-v-network-elevation-protocol-invalid'}default{'hyper-v-network-elevation-relay-failed'}}",
+    `}finally{try{$R.Dispose()}catch{};try{$W.Dispose()}catch{};try{$Q.Dispose()}catch{};if($C-and $CS){$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){Stop-Process -Id $C.Id -Force -ErrorAction SilentlyContinue;$M=if($G){[int][Math]::Max([long]0,$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())}else{${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}};if($M-gt 0){[void]$Y.WaitForExit($M)}};$Y=Get-Process -Id $C.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $CS){$F='hyper-v-network-elevation-termination-unconfirmed'}}}`,
+    "if($F){Send-Failure $F}",
+    `if($CL-and $Z-match '^[a-f0-9]{64}$'){[Console]::Out.WriteLine('${ELEVATION_TERMINAL_PREFIX}'+$Z);[Console]::Out.Flush()}`,
+    "if($F-or -not $CL){exit 1}",
 ].join(";");
 
 function parseElevationFailure(line: string): HyperVElevatedNetworkErrorCode | null {
@@ -271,14 +274,6 @@ function parseElevationFailure(line: string): HyperVElevatedNetworkErrorCode | n
     const code = line.slice(ELEVATION_FAILURE_PREFIX.length);
     return HYPER_V_ELEVATED_NETWORK_ERROR_CODES.find((candidate) => candidate === code)
         ?? "hyper-v-network-elevation-protocol-invalid";
-}
-
-function parseRelayTerminationStage(
-    line: string,
-    terminalToken: string,
-): "relay-output-drain-timeout" | null {
-    if (line !== `${ELEVATION_TERMINATION_PREFIX}${terminalToken}:relay-output-drain-timeout`) return null;
-    return "relay-output-drain-timeout";
 }
 
 function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): HyperVElevatedNetworkRelayProcess {
@@ -472,24 +467,6 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 replaceFailure: false,
             });
             stop();
-            return true;
-        }
-        if (line.startsWith(ELEVATION_TERMINATION_PREFIX)) {
-            const stage = parseRelayTerminationStage(line, terminalToken);
-            if (stage) {
-                recordTerminationFailure({
-                    kind: "termination",
-                    stage,
-                    replaceFailure: false,
-                });
-            } else {
-                recordTerminationFailure({
-                    kind: "termination",
-                    stage: "relay-terminal-ack-invalid",
-                    replaceFailure: false,
-                });
-                stop();
-            }
             return true;
         }
         const observedFailure = parseElevationFailure(line);

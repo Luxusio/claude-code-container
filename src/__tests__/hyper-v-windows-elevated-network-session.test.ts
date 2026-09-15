@@ -368,8 +368,6 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "truncated-invalid-ack",
         "truncated-short-prefix",
         "exit-before-ack-with-extra-line",
-        "relay-output-copy-timeout",
-        "uncorrelated-output-copy-timeout",
         "premature-ack",
         "abrupt-stdin-error-truncated-eof",
         "close-write-timeout",
@@ -521,18 +519,6 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     + "unexpected-after-terminal\n",
                                 );
                                 stdout.emit("end");
-                            } else if (order === "relay-output-copy-timeout"
-                                || order === "uncorrelated-output-copy-timeout") {
-                                stdout.emit(
-                                    "data",
-                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINATION:${
-                                        order === "relay-output-copy-timeout" ? terminalToken : "0".repeat(64)
-                                    }:relay-output-drain-timeout\n`,
-                                );
-                                if (order === "relay-output-copy-timeout") acknowledge();
-                                stdout.emit("end");
-                                events.emit("exit", 1, null);
-                                events.emit("close", 1, null);
                             } else if (order === "ack-before-exit"
                                 || order === "ack-stdin-error"
                                 || order === "duplicate-ack") {
@@ -604,8 +590,6 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "truncated-invalid-ack"
                 || order === "truncated-short-prefix"
                 || order === "exit-before-ack-with-extra-line"
-                || order === "relay-output-copy-timeout"
-                || order === "uncorrelated-output-copy-timeout"
                 || order === "premature-ack"
                 || order === "abrupt-stdin-error-truncated-eof"
                 || order === "close-write-timeout"
@@ -619,11 +603,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "truncated-invalid-ack"
                 || order === "truncated-short-prefix"
                 || order === "exit-before-ack-with-extra-line"
-                || order === "uncorrelated-output-copy-timeout"
                 || order === "premature-ack"
                 ? "relay-terminal-ack-invalid"
-                : order === "relay-output-copy-timeout"
-                    ? "relay-output-drain-timeout"
                 : order === "ack-close-without-exit"
                     ? "relay-process-exit-timeout"
                     : order === "ack-exit-close-without-stdout-end"
@@ -742,7 +723,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(getHyperVElevatedNetworkTerminationStage(new Error("native secret"))).toBeNull();
     });
 
-    it("keeps the production relay generic and pins the authentication controls", () => {
+    it("pins the line-framed relay and its authentication controls", () => {
         const requestIndex = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
             "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST",
         );
@@ -756,8 +737,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("GetNamedPipeClientProcessId");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("startTicks");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("administrator");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("CopyToAsync");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$TP.Wait($M)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain("CopyToAsync");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain("OpenStandardInput");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("[void]$Y.WaitForExit($M)");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("terminalToken");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
@@ -769,23 +750,30 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(requestIndex).toBeGreaterThanOrEqual(0);
         expect(approvalIndex).toBeGreaterThan(requestIndex);
         expect(runAsIndex).toBeGreaterThan(approvalIndex);
-        const inputCompletion = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
-            "$TC.GetAwaiter().GetResult();$Q.Flush()",
+        const assetForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            "$W.WriteLine($L);$W.Flush();$V=$R.ReadLine()",
         );
-        const outputDrain = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$TP.Wait($M)");
+        const requestValidation = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            `if(-not $L.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}'))`,
+        );
+        const responseForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            `-not $V.StartsWith('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}'))`,
+        );
+        const closeForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            `if($L-ceq '${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}'){$W.WriteLine($L);$W.Flush();$CL=$true;break}`,
+        );
+        const childExitWait = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$C.WaitForExit($M)");
         const pipeDisposal = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$Q.Dispose()");
-        const terminalOutput = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("if($OW-and $F)");
-        expect(inputCompletion).toBeGreaterThanOrEqual(0);
-        expect(inputCompletion).toBeLessThan(outputDrain);
-        expect(outputDrain).toBeLessThan(pipeDisposal);
+        const terminalOutput = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("if($CL-and $Z-match");
+        expect(assetForward).toBeGreaterThanOrEqual(0);
+        expect(assetForward).toBeLessThan(requestValidation);
+        expect(requestValidation).toBeLessThan(responseForward);
+        expect(closeForward).toBeGreaterThanOrEqual(0);
+        expect(closeForward).toBeLessThan(childExitWait);
+        expect(childExitWait).toBeLessThan(pipeDisposal);
         expect(pipeDisposal).toBeLessThan(terminalOutput);
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
-            "$TP.Status-eq [Threading.Tasks.TaskStatus]::RanToCompletion",
-        );
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
-            "CCC_HYPER_V_ELEVATED_NETWORK_TERMINATION:",
-        );
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$Z+':'+$F");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $L){throw 'input'}");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $V-or $V.Length-gt");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toMatch(/(?:Get|New|Set|Remove)-(?:VM|Net)/);
     });
 
