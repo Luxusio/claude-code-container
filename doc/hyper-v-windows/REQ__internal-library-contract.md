@@ -267,30 +267,32 @@ Closing the callback-scoped administrator executor MUST also be bounded without
 racing termination proof. The medium-integrity PowerShell relay MUST neither
 assume that closing its standard input propagates cleanly through both
 directions of an asynchronous pipe copy nor rely on its lower-integrity token to
-terminate the elevated child. At normal scope closure, and only when no request
-is pending or queued, the Node parent MUST send an explicit session-close frame
+terminate the elevated child. At normal scope closure, only when no request is
+pending or queued and before the operation deadline timer has fired, the Node
+parent MUST disarm that relay timer and send an explicit session-close frame
 through the already authenticated pipe while keeping the relay's standard input
-open. A scope closed with unfinished work MUST use the abrupt path so the close
-frame cannot queue behind an unconfirmed mutation or corrupt an in-progress
-relay handshake. The elevated session MUST consume the frame between operations,
-leave its request loop, and close its pipe first; this lets the pipe-to-parent
-copy finish before relay teardown. Abrupt transport, protocol, and deadline
-failures still use the force-stop path.
+open. A scope closed with unfinished work, or after deadline handling has begun,
+MUST use the abrupt path so the close frame cannot queue behind an unconfirmed
+mutation or corrupt an in-progress relay handshake. The elevated session MUST
+consume the frame between operations, leave its request loop, and close its pipe
+first; this lets the pipe-to-parent copy finish before relay teardown. The
+elevated watchdog remains bound to the transaction deadline, so this contract
+does not promise graceful shutdown after that deadline has expired. Abrupt
+transport, protocol, and deadline failures still use the force-stop path.
 
-After requesting graceful close, the medium-integrity PowerShell relay waits up
-to five seconds for the exact elevated process to exit and emits
+Once either asynchronous pipe-copy direction completes and relay finalization
+begins, the medium-integrity PowerShell relay waits up to five seconds for the
+exact elevated process to exit and emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
-remains. The Node parent MUST give that PowerShell relay a strictly longer
-ten-second grace to publish its result and exit before the Node parent applies
-its own kill fallback. This outer shutdown grace MUST start at scope closure and
-MUST NOT be shortened or interrupted by an exhausted operation deadline; normal
-close disarms that operation timer while retaining the independent ten-second
-termination fallback. Verification MUST prove that idle normal close writes the
-close frame without first ending relay stdin, unfinished work and abrupt discard
-still kill, the session bootstrap recognizes close before request decoding, the
-operation timer is disarmed before the frame write, completion just after five
-seconds is accepted, and a relay which never completes fails closed at the
-ten-second outer bound.
+remains. Independently, the Node parent MUST bound a stuck graceful copy or
+relay finalization with a ten-second grace from scope closure before applying
+its own kill fallback. Once normal graceful close has begun, that Node grace is
+not recomputed from the operation deadline. Verification MUST prove that idle
+normal close writes the close frame without first ending relay stdin, unfinished
+work and abrupt discard still kill, the session bootstrap recognizes close
+before request decoding, the operation timer is disarmed before the frame write,
+completion just after five seconds is accepted, and a relay which never
+completes fails closed at the ten-second outer bound.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes
