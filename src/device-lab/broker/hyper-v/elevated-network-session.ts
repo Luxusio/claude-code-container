@@ -519,9 +519,14 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     });
     child.once("close", () => {
         if (exited) return;
-        relayProcessExited = true;
         if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
-        if (!terminalAcknowledged) {
+        if (terminalAcknowledged) {
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-process-exit-timeout",
+                replaceFailure: false,
+            });
+        } else {
             recordTerminationFailure({
                 kind: "termination",
                 stage: "relay-terminal-ack-missing",
