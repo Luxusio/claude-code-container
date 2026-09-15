@@ -365,6 +365,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "exit-before-duplicate-ack",
         "exit-before-truncated-duplicate-ack",
         "truncated-invalid-ack",
+        "truncated-short-prefix",
+        "exit-before-ack-with-extra-line",
         "ack-close-without-exit",
         "ack-exit-close-without-stdout-end",
         "ack-stdin-error",
@@ -437,6 +439,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 events.emit("close", 1, null);
                                 return;
                             }
+                            if (order === "truncated-short-prefix") {
+                                stdout.emit("data", "CCC_HYPER_V_ELEVATED_");
+                                events.emit("exit", 1, null);
+                                stdout.emit("end");
+                                events.emit("close", 1, null);
+                                return;
+                            }
                             const acknowledge = () => stdout.emit(
                                 "data",
                                 `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
@@ -463,6 +472,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     "data",
                                     `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`
                                     + `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}`,
+                                );
+                                stdout.emit("end");
+                            } else if (order === "exit-before-ack-with-extra-line") {
+                                events.emit("exit", 0, null);
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`
+                                    + "unexpected-after-terminal\n",
                                 );
                                 stdout.emit("end");
                             } else if (order === "ack-before-exit"
@@ -518,6 +535,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "exit-before-duplicate-ack"
                 || order === "exit-before-truncated-duplicate-ack"
                 || order === "truncated-invalid-ack"
+                || order === "truncated-short-prefix"
+                || order === "exit-before-ack-with-extra-line"
                 || order === "ack-close-without-exit"
                 || order === "ack-exit-close-without-stdout-end"
                 || order === "ack-stdin-error";
@@ -526,6 +545,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "exit-before-duplicate-ack"
                 || order === "exit-before-truncated-duplicate-ack"
                 || order === "truncated-invalid-ack"
+                || order === "truncated-short-prefix"
+                || order === "exit-before-ack-with-extra-line"
                 ? "relay-terminal-ack-invalid"
                 : order === "ack-close-without-exit"
                     ? "relay-process-exit-timeout"
