@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import * as library from "../../src/hyper-v-windows/index.ts";
+import { HyperVElevatedNetworkSessionError } from "../../src/device-lab/broker/hyper-v/elevated-network-session.ts";
 import { runHyperVWindowsNetworkHost } from "./hyper-v-windows-network-host.ts";
 import { runHyperVWindowsNetworkRealScenario } from "./hyper-v-windows-network-real.ts";
 
@@ -298,5 +299,39 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
         expect(sink.read().stdout).toContain('"coldWallTimeMilliseconds":40');
         expect(sink.read().stdout).toContain('"warmWallTimeMilliseconds":20');
         expect(sink.read().stdout).toContain("pass=1 skip=0 fail=0");
+    });
+
+    it("reports a bounded termination stage without changing the stable failure text", async () => {
+        const sink = output();
+        const runtime = {
+            createHyperVWindowsPowerShellExecutor: vi.fn(() => ({ execute: vi.fn() })),
+            createHyperVWindowsNetworkClient: vi.fn(() => ({ marker: "client" })),
+        };
+
+        const status = await runHyperVWindowsNetworkHost({
+            platform: "win32",
+            windowsSystemRoot: "C:\\Windows",
+            stdout: sink.stdout as any,
+            stderr: sink.stderr as any,
+            importLibraryImpl: async () => runtime as any,
+            withElevatedExecutorImpl: (async (options: any) => {
+                options.onBeforeElevation();
+                throw new HyperVElevatedNetworkSessionError(
+                    "hyper-v-network-elevation-termination-unconfirmed",
+                    "relay-force-timeout",
+                );
+            }) as any,
+            runScenarioImpl: vi.fn() as any,
+            withExclusiveRunImpl: async (operation) => operation(),
+        });
+
+        expect(status).toBe(1);
+        expect(sink.read().stderr).toContain(
+            "DIAGNOSTIC Hyper-V elevated network termination stage=relay-force-timeout",
+        );
+        expect(sink.read().stderr).toContain(
+            "FAIL Hyper-V Windows typed network real-host proof: hyper-v-network-elevation-termination-unconfirmed",
+        );
+        expect(sink.read().stderr).not.toContain("native secret");
     });
 });

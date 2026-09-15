@@ -14,10 +14,13 @@ import {
 import {
     HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
     HyperVElevatedNetworkSessionError,
+    getHyperVElevatedNetworkTerminationStage,
     withElevatedHyperVNetworkExecutor,
     type HyperVElevatedNetworkErrorCode,
+    type HyperVElevatedNetworkRelayCompletion,
     type HyperVElevatedNetworkRelayProcess,
     type HyperVElevatedNetworkRelaySpawn,
+    type HyperVElevatedNetworkTerminationStage,
 } from "../device-lab/broker/hyper-v/elevated-network-session.js";
 
 const executable = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -47,19 +50,22 @@ function fakeRelay(): FakeRelay {
     const lineListeners: Array<(line: string) => void> = [];
     const exitListeners: Array<(reason: HyperVWindowsSessionErrorCode) => void> = [];
     const requests: HyperVWindowsExecutionRequest[] = [];
-    let errorCode: HyperVElevatedNetworkErrorCode | null = null;
+    let completionResult: HyperVElevatedNetworkRelayCompletion = {
+        errorCode: null,
+        terminationStage: null,
+    };
     let closed = false;
     let graceful = false;
     let forced = false;
     let closeReason: HyperVWindowsSessionErrorCode = "hyper-v-windows-session-exited";
-    let resolveCompletion = (_value: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) => undefined as void;
-    const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
+    let resolveCompletion = (_value: HyperVElevatedNetworkRelayCompletion) => undefined as void;
+    const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
         resolveCompletion = resolve;
     });
     const close = () => {
         if (closed) return;
         closed = true;
-        resolveCompletion({ errorCode });
+        resolveCompletion(completionResult);
     };
     return {
         requests,
@@ -67,7 +73,7 @@ function fakeRelay(): FakeRelay {
         forceKilled: () => forced,
         process: {
             completion,
-            failureCode: () => errorCode,
+            failureCode: () => completionResult.errorCode,
             write(line, settled) {
                 if (closed) {
                     settled?.(new Error("closed"));
@@ -115,7 +121,9 @@ function fakeRelay(): FakeRelay {
             },
         },
         fail(code, reason = "hyper-v-windows-session-exited") {
-            errorCode = code;
+            completionResult = code === "hyper-v-network-elevation-termination-unconfirmed"
+                ? { errorCode: code, terminationStage: "elevated-child" }
+                : { errorCode: code, terminationStage: null };
             closeReason = reason;
             for (const listener of [...exitListeners]) listener(reason);
             close();
@@ -271,41 +279,52 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(beforeElevation).not.toHaveBeenCalled();
     });
 
-    it("fails a successful callback when elevated termination is unconfirmed", async () => {
-        const relay = fakeRelay();
-        const originalKill = relay.process.kill;
-        const process: HyperVElevatedNetworkRelayProcess = {
-            ...relay.process,
-            completion: Promise.resolve({ errorCode: "hyper-v-network-elevation-termination-unconfirmed" }),
-            kill: originalKill,
-        };
+    it.each([
+        "elevated-child",
+        "relay-force-timeout",
+        "relay-input-write",
+    ] satisfies Exclude<HyperVElevatedNetworkTerminationStage, "relay-completion-timeout">[])(
+        "fails a successful callback when termination is unconfirmed at %s",
+        async (terminationStage) => {
+            const relay = fakeRelay();
+            const originalKill = relay.process.kill;
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                completion: Promise.resolve({
+                    errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+                    terminationStage,
+                }),
+                kill: originalKill,
+            };
 
-        await expect(withElevatedHyperVNetworkExecutor({
-            executable,
-            deadlineUnixMilliseconds: Date.now() + 30_000,
-            spawnRelay: async (request) => {
-                request.onBeforeElevation();
-                return process;
-            },
-        }, (executor) => executor.execute(getVmRequest(), executorContext()))).rejects.toMatchObject({
-            code: "hyper-v-network-elevation-termination-unconfirmed",
-        });
-    });
+            await expect(withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, (executor) => executor.execute(getVmRequest(), executorContext()))).rejects.toMatchObject({
+                code: "hyper-v-network-elevation-termination-unconfirmed",
+                message: "hyper-v-network-elevation-termination-unconfirmed",
+                terminationStage,
+            });
+        },
+    );
 
-    it("lets the inner child termination window settle before the outer relay fallback", async () => {
+    it("lets relay completion settle after its force window and before the wrapper timeout", async () => {
         vi.useFakeTimers();
         try {
             const relay = fakeRelay();
-            let resolveCompletion = (_value: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) =>
-                undefined as void;
-            const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
+            let resolveCompletion = (_value: HyperVElevatedNetworkRelayCompletion) => undefined as void;
+            const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
                 resolveCompletion = resolve;
             });
             const process: HyperVElevatedNetworkRelayProcess = {
                 ...relay.process,
                 completion,
                 close() {
-                    setTimeout(() => resolveCompletion({ errorCode: null }), 5_001);
+                    setTimeout(() => resolveCompletion({ errorCode: null, terminationStage: null }), 10_001);
                 },
             };
 
@@ -318,7 +337,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 },
             }, (executor) => executor.execute(getVmRequest(), executorContext()));
 
-            await vi.advanceTimersByTimeAsync(5_001);
+            await vi.advanceTimersByTimeAsync(10_001);
             await expect(result).resolves.toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
         } finally {
             vi.useRealTimers();
@@ -347,12 +366,49 @@ describe("callback-scoped elevated Hyper-V network session", () => {
 
             const rejection = expect(result).rejects.toMatchObject({
                 code: "hyper-v-network-elevation-termination-unconfirmed",
+                message: "hyper-v-network-elevation-termination-unconfirmed",
+                terminationStage: "relay-completion-timeout",
             });
-            await vi.advanceTimersByTimeAsync(10_000);
+            await vi.advanceTimersByTimeAsync(14_999);
+            expect(vi.getTimerCount()).toBeGreaterThan(0);
+            await vi.advanceTimersByTimeAsync(1);
             await rejection;
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it("makes relay termination code and stage impossible to separate", () => {
+        const valid: HyperVElevatedNetworkRelayCompletion = {
+            errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+            terminationStage: "elevated-child",
+        };
+        expect(valid.terminationStage).toBe("elevated-child");
+
+        // @ts-expect-error Termination uncertainty requires its correlated bounded stage.
+        const missingStage: HyperVElevatedNetworkRelayCompletion = {
+            errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+            terminationStage: null,
+        };
+        // @ts-expect-error Non-termination failures cannot carry a termination stage.
+        const unrelatedStage: HyperVElevatedNetworkRelayCompletion = {
+            errorCode: "hyper-v-network-elevation-cancelled",
+            terminationStage: "relay-force-timeout",
+        };
+        expect([missingStage, unrelatedStage]).toHaveLength(2);
+    });
+
+    it("extracts diagnostics only from a correlated termination error", () => {
+        const termination = new HyperVElevatedNetworkSessionError(
+            "hyper-v-network-elevation-termination-unconfirmed",
+            "relay-force-timeout",
+        );
+        expect(getHyperVElevatedNetworkTerminationStage(termination)).toBe("relay-force-timeout");
+
+        const unrelated = new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-cancelled");
+        Reflect.set(unrelated, "terminationStage", "relay-input-write");
+        expect(getHyperVElevatedNetworkTerminationStage(unrelated)).toBeNull();
+        expect(getHyperVElevatedNetworkTerminationStage(new Error("native secret"))).toBeNull();
     });
 
     it("keeps the production relay generic and pins the authentication controls", () => {
