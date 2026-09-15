@@ -1391,6 +1391,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "array",
         "throwing-getter",
         "revoked-proxy",
+        "invalid-stage-provider",
+        "wrapper-stage-provider",
     ] as const)(
         "fails closed for a %s injected relay completion",
         async (completionKind) => {
@@ -1403,7 +1405,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     request.onBeforeElevation();
                     const process = { ...relay.process };
                     let completion: unknown;
-                    if (completionKind === "rejected") {
+                    if (completionKind === "rejected"
+                        || completionKind === "invalid-stage-provider"
+                        || completionKind === "wrapper-stage-provider") {
                         completion = Promise.reject(new Error(secret));
                     } else if (completionKind === "unknown-code") {
                         completion = Promise.resolve({ errorCode: secret, terminationStage: null });
@@ -1445,6 +1449,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         completion = Promise.resolve(value);
                     }
                     Object.defineProperty(process, "completion", { value: completion });
+                    if (completionKind === "invalid-stage-provider"
+                        || completionKind === "wrapper-stage-provider") {
+                        Object.defineProperty(process, "terminationStage", {
+                            value: () => completionKind === "invalid-stage-provider"
+                                ? secret
+                                : "relay-completion-timeout",
+                        });
+                    }
                     return process;
                 },
             }, (executor) => executor.execute(getVmRequest(), executorContext()));
@@ -1468,6 +1480,26 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 throw new Error(secret);
             },
         };
+
+        const observed = await withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                return process;
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()))
+            .then(() => null, (error: unknown) => error);
+
+        expect(observed).toMatchObject({ code: "hyper-v-network-elevation-protocol-invalid" });
+        expect(JSON.stringify(observed)).not.toContain(secret);
+    });
+
+    it("bounds an unknown injected relay failure code", async () => {
+        const relay = fakeRelay();
+        const secret = "native unknown failure code";
+        const process = { ...relay.process };
+        Object.defineProperty(process, "failureCode", { value: () => secret });
 
         const observed = await withElevatedHyperVNetworkExecutor({
             executable,
