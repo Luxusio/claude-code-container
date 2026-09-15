@@ -746,6 +746,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "unknown-progress-stage",
         "protocol-failure-followed-by-control",
         "elevated-child-failure-followed-by-control",
+        "premature-session-output",
         "request-write-error-before-exit",
         "abrupt-stdin-error-truncated-eof",
         "graceful-force-timeout",
@@ -769,6 +770,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "unknown-progress-stage";
             const usesAbsorbingFailure = order === "protocol-failure-followed-by-control"
                 || order === "elevated-child-failure-followed-by-control";
+            const usesPrematureSessionOutput = order === "premature-session-output";
             const usesRequestWriteError = order === "request-write-error-before-exit";
             const usesLateForceOrdering = order === "exit-before-force-late-child-failure"
                 || order === "force-before-exit-late-child-failure";
@@ -781,6 +783,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || usesPreForceEvidence
                 || usesInvalidProgress
                 || usesAbsorbingFailure
+                || usesPrematureSessionOutput
                 || usesRequestWriteError
                 || usesWrapperOutputDrain;
             const forceKillsProcess = usesAbruptForceTimer
@@ -789,6 +792,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const forceKillsRelay = forceKillsProcess
                 || usesInvalidProgress
                 || usesAbsorbingFailure
+                || usesPrematureSessionOutput
                 || usesRequestWriteError;
             const autoCompletesForceProcess = forceKillsRelay && !usesLateForceOrdering;
             const usesCloseWriteTimer = order === "close-write-timeout"
@@ -835,7 +839,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         if (typeof observedToken !== "string") throw new Error("missing terminal token");
                         terminalToken = observedToken;
                         launchObserved = true;
-                        queueMicrotask(() => stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST\n"));
+                        queueMicrotask(() => stdout.emit(
+                            "data",
+                            (usesPrematureSessionOutput
+                                ? `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}premature\n`
+                                : "")
+                                + "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST\n",
+                        ));
                     } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE") {
                         queueMicrotask(() => {
                             if (order === "premature-ack") {
@@ -1180,13 +1190,16 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     && !usesAbruptForceTimer
                     && !usesInvalidProgress
                     && !usesAbsorbingFailure
+                    && !usesPrematureSessionOutput
                     && !usesRequestWriteError,
             );
             expect(stdinEndedAfterCloseWrite).toBe(true);
             expect(stdinEndCalls).toBe(1);
             if (forceKillsRelay) expect(kill).toHaveBeenCalledTimes(1);
             else expect(kill).not.toHaveBeenCalled();
-            if (usesInvalidProgress || order === "protocol-failure-followed-by-control") {
+            if (usesInvalidProgress
+                || usesPrematureSessionOutput
+                || order === "protocol-failure-followed-by-control") {
                 expect(result).toMatchObject({
                     status: null,
                     stdout: "",

@@ -380,6 +380,9 @@ lines remain drained for lifecycle completion but MUST NOT be interpreted as
 control or session frames, overwrite the primary failure, or advance progress.
 The authenticated elevated child's explicit termination-unconfirmed failure is
 absorbing under the same rule.
+Before relay readiness, every stdout line other than the expected control
+handshake is a fatal absorbing protocol rejection; ordinary or session output
+MUST NOT be silently discarded and followed by privileged execution.
 Requests whose transport write completion explicitly reports non-delivery MUST
 NOT contribute to the delivered-pending count even while their bookkeeping
 entry remains unsettled.

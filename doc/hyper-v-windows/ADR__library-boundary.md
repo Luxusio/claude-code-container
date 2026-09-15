@@ -282,6 +282,8 @@ excluded from the delivered-pending count. Fatal protocol rejection is an
 absorbing control-parser state: stdout is still drained, but no later line may
 change failure, progress, or session evidence. The elevated child's explicit
 termination-unconfirmed failure is absorbing as well.
+Non-control stdout before relay readiness is also absorbing rather than
+discarded, so a desynchronized transcript cannot continue into privileged work.
 Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a

@@ -916,8 +916,15 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 rejectSessionOutput();
                 return;
             }
-            if (!handleControlLine(line) && relayReady && !sessionOutputRejected) {
-                for (const listener of [...lineListeners]) listener(line);
+            if (!handleControlLine(line)) {
+                if (!relayReady) {
+                    recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
+                    rejectSessionOutput();
+                    return;
+                }
+                if (!sessionOutputRejected) {
+                    for (const listener of [...lineListeners]) listener(line);
+                }
             }
             if (sessionOutputRejected) return;
             index = buffered.indexOf("\n");

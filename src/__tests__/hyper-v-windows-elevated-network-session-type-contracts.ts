@@ -32,6 +32,11 @@ if (false) {
         // @ts-expect-error non-termination failures cannot carry a termination stage
         terminationStage: "relay-terminal-ack-missing",
     };
+    const wrapperOnlyStage: HyperVElevatedNetworkRelayCompletion = {
+        errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+        // @ts-expect-error relay producers cannot report the wrapper-owned completion timeout
+        terminationStage: "relay-completion-timeout",
+    };
     const invalidFallbackOverride: HyperVElevatedNetworkRelayFailureEvent = {
         kind: "termination",
         stage: "relay-terminal-ack-missing",
@@ -58,6 +63,7 @@ if (false) {
     void validCompletion;
     void missingStage;
     void unrelatedStage;
+    void wrapperOnlyStage;
     void invalidFallbackOverride;
     void invalidChildPrecedence;
 }
