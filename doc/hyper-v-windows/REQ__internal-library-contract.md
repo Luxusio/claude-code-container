@@ -348,11 +348,17 @@ path, PID, or unbounded output may be included. The standalone real-host proof
 MUST report that stage separately without changing the stable failure text.
 When that stage is a relay fallback, the proof MUST also report a bounded,
 typed diagnostic snapshot that distinguishes graceful close from abrupt
-discard, names only the last known operation and session error from their
-existing closed sets, records the last token-correlated relay progress stage,
+discard. Any transition from a graceful close attempt into force-stop MUST be
+reported as abrupt. The snapshot names only the last known operation or the
+operation/error pair from the same failed execution, using their existing
+closed sets, and records the last token-correlated relay progress stage,
 and states whether the close write, relay exit, stdout drain, stderr presence,
 and force timer were observed. It MUST NOT include the correlation token,
-native stderr, exception text, a path, or a PID. Progress frames are diagnostic
+native stderr, exception text, a path, or a PID. The exported unknown-error
+extractor and any injected relay diagnostic provider MUST validate and copy the
+snapshot at runtime; an invalid or throwing provider yields no relay details
+rather than replacing the stable termination error or exposing its exception.
+Progress frames are diagnostic
 only: they MUST be authenticated by the relay terminal token, filtered from the
 session response stream, bounded to a closed stage set, and MUST NOT relax the
 terminal acknowledgement or exact-process termination requirements.

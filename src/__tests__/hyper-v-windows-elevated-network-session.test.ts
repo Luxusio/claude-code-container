@@ -48,6 +48,14 @@ function getVmRequest(): HyperVWindowsExecutionRequest {
     };
 }
 
+function getVmSwitchRequest(): HyperVWindowsExecutionRequest {
+    return {
+        schemaVersion: 1,
+        operation: "Get-VMSwitch",
+        selector: { kind: "all" },
+    };
+}
+
 function successEnvelope(operation: HyperVWindowsExecutionRequest["operation"]): string {
     return JSON.stringify({ schemaVersion: 1, operation, ok: true, items: [] });
 }
@@ -490,7 +498,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 },
             }, async (executor) => {
                 void executor.execute(getVmRequest(), executorContext());
-                const queued = await executor.execute(getVmRequest(), executorContext());
+                const queued = await executor.execute(getVmSwitchRequest(), executorContext());
                 if (queued.error) throw new Error(queued.error);
                 return queued;
             });
@@ -507,7 +515,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         closeWriteStatus: "not-started",
                     },
                     execution: {
-                        lastOperation: "Get-VM",
+                        lastOperation: "Get-VMSwitch",
                         lastSessionError: "hyper-v-windows-session-queue-timeout",
                     },
                 },
@@ -630,6 +638,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         closeObserved = true;
                         expect(stdinEndedAfterCloseWrite).toBe(false);
                         const completeRelay = () => {
+                            if (order === "ack-close-without-exit"
+                                || order === "ack-exit-close-without-stdout-end") {
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:finalizer-entered\n`
+                                    + `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:terminal-write-entered\n`,
+                                );
+                            }
                             if (order === "invalid-ack") {
                                 stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:invalid\n");
                                 stdout.emit("end");
@@ -827,8 +843,19 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     expect(result).toMatchObject({
                         terminationDiagnostic: {
                             relay: {
-                                shutdownMode: "graceful",
+                                shutdownMode: "abrupt",
                                 closeWriteStatus: "timed-out",
+                            },
+                        },
+                    });
+                }
+                if (order === "ack-close-without-exit"
+                    || order === "ack-exit-close-without-stdout-end") {
+                    expect(result).toMatchObject({
+                        terminationDiagnostic: {
+                            relay: {
+                                shutdownMode: "graceful",
+                                progressStage: "terminal-write-entered",
                             },
                         },
                     });
@@ -846,6 +873,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const process: HyperVElevatedNetworkRelayProcess = {
                 ...relay.process,
                 completion: new Promise(() => undefined),
+                diagnostic() {
+                    throw new Error("native secret");
+                },
                 close() {},
                 kill() {},
             };
@@ -863,6 +893,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 code: "hyper-v-network-elevation-termination-unconfirmed",
                 message: "hyper-v-network-elevation-termination-unconfirmed",
                 terminationStage: "relay-completion-timeout",
+                terminationDiagnostic: {
+                    relay: {
+                        shutdownMode: "not-started",
+                        progressStage: null,
+                        closeWriteStatus: "not-started",
+                    },
+                },
             });
             await vi.advanceTimersByTimeAsync(14_999);
             expect(vi.getTimerCount()).toBeGreaterThan(0);
@@ -939,6 +976,33 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             relay: { shutdownMode: "abrupt", progressStage: "request-forwarded" },
             execution: { lastSessionError: "hyper-v-windows-session-queue-timeout" },
         });
+
+        const invalidDiagnostic = new HyperVElevatedNetworkSessionError(
+            "hyper-v-network-elevation-termination-unconfirmed",
+            "relay-terminal-ack-missing",
+            {
+                relay: {
+                    shutdownMode: "C:\\secret\nINJECT",
+                    progressStage: "token=abc",
+                    closeWriteStatus: "not-started",
+                    processExited: false,
+                    stdoutDrained: false,
+                    stderrObserved: false,
+                    forceExpired: true,
+                },
+                execution: {
+                    lastOperation: "Get-VM",
+                    lastSessionError: "native text",
+                    activeExecutions: 1,
+                },
+            } as never,
+        );
+        expect(getHyperVElevatedNetworkTerminationDiagnostic(invalidDiagnostic)).toBeNull();
+        Reflect.set(diagnostic, "terminationDiagnostic", {
+            relay: { shutdownMode: "native secret" },
+            execution: {},
+        });
+        expect(getHyperVElevatedNetworkTerminationDiagnostic(diagnostic)).toBeNull();
 
         const unrelated = new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-cancelled");
         Reflect.set(unrelated, "terminationStage", "relay-input-write");
