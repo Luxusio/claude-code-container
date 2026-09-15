@@ -308,7 +308,9 @@ success and MUST NOT depend on the later stdio `close` event. The
 Node wrapper MUST reject an otherwise successful callback when relay completion
 contains any bounded primary failure; primary shutdown failure cannot be
 discarded merely because it is not a termination-stage failure. A direct
-execution result already carrying that exact bounded failure counts as surfaced.
+execution result with valid `status` and `stdout` fields already carrying that
+exact bounded failure counts as surfaced; an arbitrary callback object with a
+matching `error` property does not.
 A callback that already threw retains its own error unless termination identity
 is uncertain.
 The
@@ -318,8 +320,10 @@ transport, protocol, and deadline failures still use the force-stop path.
 
 After the close line is flushed, the medium-integrity PowerShell relay uses the
 remaining part of Node's absolute five-second window to confirm the exact
-elevated process exit. It reserves the end of that window for exact-process
-force-stop reinspection rather than giving the entire window to graceful exit.
+elevated process exit. It always subtracts a 500-millisecond exact-process
+force-stop confirmation reserve from the remaining budget before calculating
+the graceful wait, including when relay scheduling has already consumed part of
+the window.
 The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
 remains. The Node-owned relay process then has a strictly longer ten-second
@@ -373,7 +377,9 @@ The Windows static job MUST materialize and parse the exact runtime relay
 bootstrap as well as the elevated session bootstrap; substring assertions alone
 do not prove PowerShell 5.1 syntax. A source-checkout real-host command MUST run
 that parser gate before requesting UAC, so malformed relay source cannot reach
-the privileged proof.
+the privileged proof. Runtime TypeScript materialization MUST use the installed
+transformer supported by the package's Node `>=20.19.0` range and MUST NOT depend
+on Node's newer native type stripping.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes

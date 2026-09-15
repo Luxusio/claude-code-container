@@ -229,7 +229,9 @@ exit in either order. Waiting for stdout EOF validates every terminal protocol
 line without depending on the later stdio-close event. Any bounded primary
 relay-completion failure rejects an otherwise successful callback; an existing
 thrown callback failure or direct execution result carrying the same bounded
-code is preserved unless termination identity is uncertain. Pending or queued work,
+code and a valid execution-result shape is preserved unless termination identity
+is uncertain. A generic object with a coincidental `error` property is not an
+execution result. Pending or queued work,
 an expired deadline, and every abrupt failure
 retain the force-stop path; the elevated watchdog remains transaction-deadline
 bound. This prevents a close frame from sitting behind an unconfirmed mutation
@@ -237,8 +239,8 @@ or entering an unfinished handshake without extending an orphaned administrator
 process beyond its existing watchdog contract. After the child close line is
 flushed, the medium-integrity PowerShell relay uses the remaining part of the
 Node-authored absolute five-second window to confirm the exact elevated process
-exit, reserving its final portion for force-stop
-reinspection. The relay emits
+exit. The relay subtracts a fixed 500-millisecond force-stop confirmation reserve
+before every graceful-wait calculation, including after delayed relay reads. The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` if the same process remains.
 The Node parent independently gives the PowerShell relay a strictly longer
 ten-second grace from the same scope-closure instant before forcing the
@@ -260,7 +262,8 @@ fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
 primary failure and cannot be erased by a later relay event. Verification covers
 the close-frame-write-before-stdin-EOF ordering, independence from redirected
-stdin EOF, synchronous request/response forwarding, terminal-ack and process-exit
+stdin EOF, synchronous request/response forwarding, the 500-millisecond reserve
+under delayed close reads, terminal-ack and process-exit
 arrival in either order, stdout
 drainage before success including exit-before-duplicate-ack, rejection of
 premature and post-terminal lines, independence from stdio close, completion after the
