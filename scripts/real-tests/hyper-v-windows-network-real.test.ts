@@ -318,7 +318,7 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
                 options.onBeforeElevation();
                 throw new HyperVElevatedNetworkSessionError(
                     "hyper-v-network-elevation-termination-unconfirmed",
-                    "relay-force-timeout",
+                    "relay-process-exit-timeout",
                 );
             }) as any,
             runScenarioImpl: vi.fn() as any,
@@ -327,7 +327,7 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
 
         expect(status).toBe(1);
         expect(sink.read().stderr).toContain(
-            "DIAGNOSTIC Hyper-V elevated network termination stage=relay-force-timeout",
+            "DIAGNOSTIC Hyper-V elevated network termination stage=relay-process-exit-timeout",
         );
         expect(sink.read().stderr).toContain(
             "FAIL Hyper-V Windows typed network real-host proof: hyper-v-network-elevation-termination-unconfirmed",

@@ -1,6 +1,15 @@
 import { readFileSync } from "fs";
+import { EventEmitter } from "events";
 import { join } from "path";
 import { describe, expect, it, vi } from "vitest";
+
+const childProcessMocks = vi.hoisted(() => ({ spawn: vi.fn() }));
+
+vi.mock("child_process", () => ({ spawn: childProcessMocks.spawn }));
+vi.mock("../windows-system-powershell.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../windows-system-powershell.js")>(),
+    canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+}));
 
 import {
     HYPER_V_WINDOWS_SESSION_CLOSE_MARKER,
@@ -283,7 +292,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
 
     it.each([
         "elevated-child",
-        "relay-force-timeout",
+        "relay-terminal-ack-missing",
+        "relay-process-exit-timeout",
         "relay-input-write",
     ] satisfies Exclude<HyperVElevatedNetworkTerminationStage, "relay-completion-timeout">[])(
         "fails a successful callback when termination is unconfirmed at %s",
@@ -346,6 +356,148 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         }
     });
 
+    it.each([
+        "ack-before-exit",
+        "exit-before-ack",
+        "invalid-ack",
+        "duplicate-ack",
+        "ack-stdin-error",
+    ] as const)(
+        "handles correlated relay terminal protocol (%s) without depending on close for success",
+        async (order) => {
+            const events = new EventEmitter();
+            const stdoutEvents = new EventEmitter();
+            const stderr = new EventEmitter();
+            const stdout = Object.assign(stdoutEvents, { setEncoding: () => stdout });
+            const kill = vi.fn(() => true);
+            let input = "";
+            let terminalToken = "";
+            let launchObserved = false;
+            let closeObserved = false;
+            let stdinEndedAfterTerminal = false;
+            let stdinEndCalls = 0;
+            let simulationError: unknown = null;
+
+            const acceptInput = (chunk: string) => {
+                input += chunk;
+                let index = input.indexOf("\n");
+                while (index >= 0) {
+                    const line = input.slice(0, index);
+                    input = input.slice(index + 1);
+                    if (!launchObserved) {
+                        const envelope: unknown = JSON.parse(Buffer.from(line, "base64").toString("utf8"));
+                        if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+                            throw new Error("invalid launch envelope");
+                        }
+                        const observedToken = Reflect.get(envelope, "terminalToken");
+                        if (typeof observedToken !== "string") throw new Error("missing terminal token");
+                        terminalToken = observedToken;
+                        launchObserved = true;
+                        queueMicrotask(() => stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST\n"));
+                    } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE") {
+                        queueMicrotask(() => stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n"));
+                    } else if (line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) {
+                        const encoded = line.slice(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX.length);
+                        const frame: unknown = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+                        if (!frame || typeof frame !== "object" || Array.isArray(frame)) {
+                            throw new Error("invalid request frame");
+                        }
+                        const id = Reflect.get(frame, "id");
+                        if (typeof id !== "string") throw new Error("missing request id");
+                        const reply = Buffer.from(JSON.stringify({
+                            id,
+                            code: 0,
+                            stdout: successEnvelope("Get-VM"),
+                        }), "utf8").toString("base64");
+                        queueMicrotask(() => stdout.emit(
+                            "data",
+                            `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${reply}\n`,
+                        ));
+                    } else if (line === HYPER_V_WINDOWS_SESSION_CLOSE_MARKER) {
+                        closeObserved = true;
+                        expect(stdinEndedAfterTerminal).toBe(false);
+                        queueMicrotask(() => {
+                            if (order === "invalid-ack") {
+                                stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:invalid\n");
+                                events.emit("exit", 1, null);
+                                events.emit("close", 1, null);
+                                return;
+                            }
+                            const acknowledge = () => stdout.emit(
+                                "data",
+                                `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
+                            );
+                            if (order === "ack-before-exit" || order === "ack-stdin-error" || order === "duplicate-ack") {
+                                acknowledge();
+                                if (order === "duplicate-ack") acknowledge();
+                                events.emit("exit", 0, null);
+                            } else {
+                                events.emit("exit", 0, null);
+                                acknowledge();
+                            }
+                        });
+                    }
+                    index = input.indexOf("\n");
+                }
+            };
+            const stdinEvents = new EventEmitter();
+            const stdin = Object.assign(stdinEvents, {
+                write(chunk: string, settled?: (error?: Error) => void) {
+                    try {
+                        acceptInput(chunk);
+                        settled?.();
+                        return true;
+                    } catch (error) {
+                        simulationError = error;
+                        settled?.(error instanceof Error ? error : new Error("simulation failed"));
+                        return false;
+                    }
+                },
+                end() {
+                    stdinEndCalls += 1;
+                    stdinEndedAfterTerminal = true;
+                    stdinEvents.emit("finish");
+                    if (order === "ack-stdin-error" && stdinEndCalls === 1) {
+                        stdinEvents.emit("error", new Error("simulated stdin close failure"));
+                    }
+                    return stdin;
+                },
+            });
+            const child = Object.assign(events, { stdin, stdout, stderr, kill });
+            childProcessMocks.spawn.mockReset();
+            childProcessMocks.spawn.mockReturnValueOnce(child);
+
+            const resultPromise = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+            }, (executor) => executor.execute(getVmRequest(), executorContext()));
+            const expectsFailure = order === "invalid-ack"
+                || order === "duplicate-ack"
+                || order === "ack-stdin-error";
+            const result = expectsFailure
+                ? await resultPromise.then(() => null, (error: unknown) => error)
+                : await resultPromise;
+
+            expect(childProcessMocks.spawn).toHaveBeenCalledTimes(1);
+            expect(childProcessMocks.spawn.mock.results[0]?.value).toBe(child);
+            expect(simulationError).toBeNull();
+            expect(launchObserved).toBe(true);
+            expect(closeObserved).toBe(true);
+            expect(stdinEndedAfterTerminal).toBe(true);
+            expect(kill).not.toHaveBeenCalled();
+            if (expectsFailure) {
+                expect(result).toMatchObject({
+                    code: "hyper-v-network-elevation-termination-unconfirmed",
+                    terminationStage: order === "invalid-ack" || order === "duplicate-ack"
+                        ? "relay-terminal-ack-invalid"
+                        : "relay-input-write",
+                });
+            } else {
+                expect(result).toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
+            }
+        },
+    );
+
     it("still fails closed when the outer relay never confirms termination", async () => {
         vi.useFakeTimers();
         try {
@@ -395,14 +547,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         // @ts-expect-error Non-termination failures cannot carry a termination stage.
         const unrelatedStage: HyperVElevatedNetworkRelayCompletion = {
             errorCode: "hyper-v-network-elevation-cancelled",
-            terminationStage: "relay-force-timeout",
+            terminationStage: "relay-terminal-ack-missing",
         };
         expect([missingStage, unrelatedStage]).toHaveLength(2);
 
         // @ts-expect-error Relay fallbacks cannot replace an existing primary failure.
         const invalidFallbackOverride: HyperVElevatedNetworkRelayFailureEvent = {
             kind: "termination",
-            stage: "relay-force-timeout",
+            stage: "relay-terminal-ack-missing",
             replaceFailure: true,
         };
         // @ts-expect-error The authenticated elevated-child result must replace earlier failures.
@@ -417,9 +569,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
     it("extracts diagnostics only from a correlated termination error", () => {
         const termination = new HyperVElevatedNetworkSessionError(
             "hyper-v-network-elevation-termination-unconfirmed",
-            "relay-force-timeout",
+            "relay-process-exit-timeout",
         );
-        expect(getHyperVElevatedNetworkTerminationStage(termination)).toBe("relay-force-timeout");
+        expect(getHyperVElevatedNetworkTerminationStage(termination)).toBe("relay-process-exit-timeout");
 
         const unrelated = new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-cancelled");
         Reflect.set(unrelated, "terminationStage", "relay-input-write");
@@ -443,6 +595,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("administrator");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("CopyToAsync");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$Y.WaitForExit(5000)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("terminalToken");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
+            "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:",
+        );
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain("\0");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.length).toBeLessThan(8_000);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.match(/-Verb RunAs/g)).toHaveLength(1);
@@ -450,6 +606,32 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(approvalIndex).toBeGreaterThan(requestIndex);
         expect(runAsIndex).toBeGreaterThan(approvalIndex);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toMatch(/(?:Get|New|Set|Remove)-(?:VM|Net)/);
+    });
+
+    it("keeps the terminal token out of the elevated child and ends stdin only after validation", () => {
+        const source = readFileSync(join(
+            process.cwd(),
+            "src",
+            "device-lab",
+            "broker",
+            "hyper-v",
+            "elevated-network-session.ts",
+        ), "utf8");
+        const elevatedSourceStart = source.indexOf("function elevatedChildSource(");
+        const elevatedSourceEnd = source.indexOf("// This process remains medium-integrity", elevatedSourceStart);
+        const elevatedSource = source.slice(elevatedSourceStart, elevatedSourceEnd);
+        const terminalHandlerStart = source.indexOf("if (line.startsWith(ELEVATION_TERMINAL_PREFIX))");
+        const terminalHandlerEnd = source.indexOf("\n        return false;", terminalHandlerStart);
+        const terminalHandler = source.slice(terminalHandlerStart, terminalHandlerEnd);
+
+        expect(elevatedSourceStart).toBeGreaterThanOrEqual(0);
+        expect(elevatedSourceEnd).toBeGreaterThan(elevatedSourceStart);
+        expect(elevatedSource).not.toContain("terminalToken");
+        expect(terminalHandlerStart).toBeGreaterThanOrEqual(0);
+        expect(terminalHandlerEnd).toBeGreaterThan(terminalHandlerStart);
+        expect(terminalHandler.indexOf("line !== `${ELEVATION_TERMINAL_PREFIX}${terminalToken}`")).toBeLessThan(
+            terminalHandler.indexOf("child.stdin?.end()"),
+        );
     });
 
     it("sends graceful close through the relay without ending relay stdin first", () => {
@@ -486,13 +668,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         });
         expect(transitionHyperVElevatedNetworkRelayFailure(primary, {
             kind: "termination",
-            stage: "relay-force-timeout",
+            stage: "relay-terminal-ack-missing",
             replaceFailure: false,
         })).toEqual(primary);
 
         const fallback = transitionHyperVElevatedNetworkRelayFailure(empty, {
             kind: "termination",
-            stage: "relay-force-timeout",
+            stage: "relay-terminal-ack-missing",
             replaceFailure: false,
         });
         expect(transitionHyperVElevatedNetworkRelayFailure(fallback, {
