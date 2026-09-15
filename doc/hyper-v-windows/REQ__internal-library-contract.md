@@ -264,10 +264,16 @@ confirms the exact native identity before advancing to the next dependency.
 Inspection, UAC, mutation, confirmation, and retry share one bounded transaction
 deadline.
 Closing the callback-scoped administrator executor MUST also be bounded without
-racing termination proof. The medium-integrity PowerShell relay MUST neither
-assume that closing its standard input propagates cleanly through both
-directions of an asynchronous pipe copy nor rely on its lower-integrity token to
-terminate the elevated child. At normal scope closure, only when no request is
+racing termination proof. The medium-integrity PowerShell relay MUST NOT use an
+asynchronous copy from its redirected standard input: Windows anonymous pipes
+do not support overlapped read/write, so PowerShell 5.1 cannot make completion
+of that copy a portable shutdown signal. Instead, after authentication the
+relay MUST synchronously forward the existing bounded line protocol. It writes
+one request line to the administrator pipe, forwards its one response line to
+Node, and flushes both directions before accepting the next request. This is
+valid because the session transport permits only one in-flight request. The
+relay also MUST NOT rely on its lower-integrity token to terminate the elevated
+child. At normal scope closure, only when no request is
 pending or queued and before the operation deadline timer has fired, the Node
 parent MUST disarm that relay timer and send an explicit session-close frame
 through the already authenticated pipe. Once the close-frame write callback
@@ -277,19 +283,18 @@ and enters the abrupt path, so a delayed callback cannot consume the margin
 between the inner and outer shutdown owners. A
 scope closed with unfinished work, or after deadline handling has begun,
 MUST use the abrupt path so the close frame cannot queue behind an unconfirmed
-mutation or corrupt an in-progress relay handshake. The elevated session MUST
-consume the frame between operations and leave its request loop. When the
-stdin-to-pipe copy observes that EOF first, the relay MUST flush the ordered
-close bytes and continue waiting for pipe-to-stdout completion within its
-bounded finalization window; stdin EOF alone MUST NOT dispose the authenticated
-pipe. After pipe disposal and exact elevated-child termination reinspection, the
+mutation or corrupt an in-progress relay handshake. The relay MUST recognize
+the exact close line, synchronously write and flush it to the administrator
+pipe, and stop accepting input without depending on redirected-stdin EOF. The
+elevated session MUST consume the frame between operations and leave its request
+loop. After exact elevated-child termination reinspection and pipe disposal, the
 relay MUST emit one terminal acknowledgement correlated by a separate random
-token that is not present in the elevated child source. The pipe-to-stdout copy
-MUST have settled before the relay writes any terminal failure or
-acknowledgement line, and only `RanToCompletion` proves successful drainage.
-Faulted and cancelled tasks report `relay-output-drain-timeout`; if the task
-cannot settle after pipe disposal, the relay omits
-the acknowledgement and lets Node fail closed. An acknowledgement before normal
+token that is not present in the elevated child source. The relay MUST NOT use
+a pipe-to-stdout asynchronous copy: the same thread that forwards a bounded
+response line and flushes standard output owns terminal failure and
+acknowledgement output. This
+single-writer rule makes the last response observably ordered before terminal
+output without an asynchronous drainage race. An acknowledgement before normal
 scope closure, or any stdout protocol line after the acknowledgement, is
 invalid. Successful relay completion requires the terminal acknowledgement,
 complete relay-stdout drainage, and the exact Node-owned relay process `exit`
@@ -299,15 +304,10 @@ elevated watchdog remains bound to the transaction deadline, so this contract
 does not promise graceful shutdown after that deadline has expired. Abrupt
 transport, protocol, and deadline failures still use the force-stop path.
 
-Once either asynchronous pipe-copy direction completes and relay finalization
-begins, the medium-integrity PowerShell relay uses one five-second window to
-finish the other output direction and confirm the exact elevated process exit.
-When its pipe-to-stdout wait expires but that task settles after forced pipe
-disposal, it MUST emit the bounded relay-owned stage
-`relay-output-drain-timeout` before the terminal acknowledgement. If the output
-task remains unsettled, it MUST emit neither line, because concurrent writers
-would make the framing ambiguous; Node then reports
-`relay-terminal-ack-missing`. The relay emits
+After the close line is flushed, the medium-integrity PowerShell relay uses one
+five-second window to confirm the exact elevated process exit. It reserves the
+end of that window for exact-process force-stop reinspection rather than giving
+the entire window to graceful exit. The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
 remains. The Node-owned relay process then has a strictly longer ten-second
 grace from scope closure before its force fallback. Normal close can enter the
@@ -340,11 +340,11 @@ the authenticated child result authoritative in every event order.
 Verification MUST prove that
 idle normal close writes the close frame before ending relay stdin, the write
 callback ends stdin without waiting for terminal acknowledgement, a missing
-write callback fails at the one-second bound, relay stdin
-EOF cannot dispose the authenticated pipe before its output direction settles,
-terminal output is never written concurrently with that output direction,
-the relay-owned output-drain stage is distinct from the elevated child's
-termination result, task fault/cancellation cannot count as successful drainage,
+write callback fails at the one-second bound, relay completion does not depend
+on redirected-stdin EOF, every request has exactly one flushed response before
+the next input line is accepted, the exact close line is flushed before child
+termination is inspected, and one synchronous writer owns response and terminal
+output,
 acknowledgement and exit work in either arrival order, completion waits for
 stdout EOF without requiring stdio close, malformed or duplicate
 acknowledgements fail closed even when process exit arrives before stdout
