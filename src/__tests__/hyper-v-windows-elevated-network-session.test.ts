@@ -368,8 +368,11 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "truncated-invalid-ack",
         "truncated-short-prefix",
         "exit-before-ack-with-extra-line",
+        "relay-output-copy-timeout",
+        "uncorrelated-output-copy-timeout",
         "premature-ack",
         "abrupt-stdin-error-truncated-eof",
+        "close-write-timeout",
         "ack-close-without-exit",
         "ack-exit-close-without-stdout-end",
         "ack-stdin-error",
@@ -377,7 +380,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "handles correlated relay terminal protocol (%s) without depending on close for success",
         async (order) => {
             const usesForceTimer = order === "abrupt-stdin-error-truncated-eof";
-            if (usesForceTimer) vi.useFakeTimers();
+            const usesCloseWriteTimer = order === "close-write-timeout";
+            const usesFakeTimers = usesForceTimer || usesCloseWriteTimer;
+            if (usesFakeTimers) vi.useFakeTimers();
             const events = new EventEmitter();
             const stdoutEvents = new EventEmitter();
             const stderr = new EventEmitter();
@@ -516,6 +521,18 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     + "unexpected-after-terminal\n",
                                 );
                                 stdout.emit("end");
+                            } else if (order === "relay-output-copy-timeout"
+                                || order === "uncorrelated-output-copy-timeout") {
+                                stdout.emit(
+                                    "data",
+                                    `CCC_HYPER_V_ELEVATED_NETWORK_TERMINATION:${
+                                        order === "relay-output-copy-timeout" ? terminalToken : "0".repeat(64)
+                                    }:relay-output-drain-timeout\n`,
+                                );
+                                if (order === "relay-output-copy-timeout") acknowledge();
+                                stdout.emit("end");
+                                events.emit("exit", 1, null);
+                                events.emit("close", 1, null);
                             } else if (order === "ack-before-exit"
                                 || order === "ack-stdin-error"
                                 || order === "duplicate-ack") {
@@ -539,6 +556,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const stdin = Object.assign(stdinEvents, {
                 write(chunk: string, settled?: (error?: Error) => void) {
                     try {
+                        if (usesCloseWriteTimer && chunk === `${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`) {
+                            closeObserved = true;
+                            return true;
+                        }
                         acceptInput(chunk);
                         settled?.();
                         return true;
@@ -555,6 +576,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     const deferred = completeAfterStdinEnd;
                     completeAfterStdinEnd = null;
                     if (deferred) queueMicrotask(deferred);
+                    if (usesCloseWriteTimer) {
+                        queueMicrotask(() => {
+                            stdout.emit("end");
+                            events.emit("exit", 1, null);
+                            events.emit("close", 1, null);
+                        });
+                    }
                     if (order === "ack-stdin-error" && stdinEndCalls === 1) {
                         stdinEvents.emit("error", new Error("simulated stdin close failure"));
                     }
@@ -576,8 +604,11 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "truncated-invalid-ack"
                 || order === "truncated-short-prefix"
                 || order === "exit-before-ack-with-extra-line"
+                || order === "relay-output-copy-timeout"
+                || order === "uncorrelated-output-copy-timeout"
                 || order === "premature-ack"
                 || order === "abrupt-stdin-error-truncated-eof"
+                || order === "close-write-timeout"
                 || order === "ack-close-without-exit"
                 || order === "ack-exit-close-without-stdout-end"
                 || order === "ack-stdin-error";
@@ -588,8 +619,11 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "truncated-invalid-ack"
                 || order === "truncated-short-prefix"
                 || order === "exit-before-ack-with-extra-line"
+                || order === "uncorrelated-output-copy-timeout"
                 || order === "premature-ack"
                 ? "relay-terminal-ack-invalid"
+                : order === "relay-output-copy-timeout"
+                    ? "relay-output-drain-timeout"
                 : order === "ack-close-without-exit"
                     ? "relay-process-exit-timeout"
                     : order === "ack-exit-close-without-stdout-end"
@@ -601,9 +635,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             let result: unknown;
             try {
                 if (usesForceTimer) await vi.advanceTimersByTimeAsync(10_001);
+                else if (usesCloseWriteTimer) await vi.advanceTimersByTimeAsync(1_001);
                 result = await settledResult;
             } finally {
-                if (usesForceTimer) vi.useRealTimers();
+                if (usesFakeTimers) vi.useRealTimers();
             }
 
             expect(childProcessMocks.spawn).toHaveBeenCalledTimes(1);
@@ -739,11 +774,18 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         );
         const outputDrain = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$TP.Wait($M)");
         const pipeDisposal = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$Q.Dispose()");
-        const terminalOutput = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("if($SO-and $F)");
+        const terminalOutput = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("if($OW-and $F)");
         expect(inputCompletion).toBeGreaterThanOrEqual(0);
         expect(inputCompletion).toBeLessThan(outputDrain);
         expect(outputDrain).toBeLessThan(pipeDisposal);
         expect(pipeDisposal).toBeLessThan(terminalOutput);
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
+            "$TP.Status-eq [Threading.Tasks.TaskStatus]::RanToCompletion",
+        );
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
+            "CCC_HYPER_V_ELEVATED_NETWORK_TERMINATION:",
+        );
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$Z+':'+$F");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toMatch(/(?:Get|New|Set|Remove)-(?:VM|Net)/);
     });
 
@@ -786,6 +828,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         const closeEnd = source.indexOf("\n    };\n    const flushQueued", closeStart);
         const closeSource = source.slice(closeStart, closeEnd);
 
+        expect(source).toContain("const RELAY_CLOSE_WRITE_GRACE_MILLISECONDS = 1_000");
+        expect(source).toContain("const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000");
+        expect(source).toContain("const RELAY_FORCE_GRACE_MILLISECONDS = 10_000");
+        expect(source).toContain("const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000");
         expect(closeStart).toBeGreaterThanOrEqual(0);
         expect(closeEnd).toBeGreaterThan(closeStart);
         expect(closeSource).toContain("child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\\n`");
