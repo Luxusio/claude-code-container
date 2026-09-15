@@ -298,7 +298,16 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             ? { errorCode: TERMINATION_UNCONFIRMED_CODE, terminationStage }
             : { errorCode: failureCode, terminationStage: null });
     };
-    const recordTerminationFailure = (stage: HyperVElevatedNetworkRelayTerminationStage) => {
+    const recordTerminationFailure = (
+        stage: HyperVElevatedNetworkRelayTerminationStage,
+        replaceFailure = false,
+    ) => {
+        if (failureCode !== null && !replaceFailure) return;
+        if (replaceFailure) {
+            failureCode = null;
+            terminationStage = stage;
+            return;
+        }
         terminationStage ??= stage;
     };
     const armForcedKill = () => {
@@ -344,7 +353,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         const observedFailure = parseElevationFailure(line);
         if (observedFailure) {
             if (observedFailure === TERMINATION_UNCONFIRMED_CODE) {
-                recordTerminationFailure("elevated-child");
+                recordTerminationFailure("elevated-child", true);
             } else {
                 failureCode = observedFailure;
             }
