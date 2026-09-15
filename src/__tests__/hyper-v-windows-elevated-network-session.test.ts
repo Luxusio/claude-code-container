@@ -15,6 +15,7 @@ import {
     HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
     HyperVElevatedNetworkSessionError,
     getHyperVElevatedNetworkTerminationStage,
+    transitionHyperVElevatedNetworkRelayFailure,
     withElevatedHyperVNetworkExecutor,
     type HyperVElevatedNetworkErrorCode,
     type HyperVElevatedNetworkRelayCompletion,
@@ -459,25 +460,42 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(clearDeadline).toBeLessThan(writeClose);
     });
 
-    it("preserves a primary relay failure across fallback termination handling", () => {
-        const source = readFileSync(join(
-            process.cwd(),
-            "src",
-            "device-lab",
-            "broker",
-            "hyper-v",
-            "elevated-network-session.ts",
-        ), "utf8");
-        const recorderStart = source.indexOf("const recordTerminationFailure = (");
-        const recorderEnd = source.indexOf("\n    };\n    const armForcedKill", recorderStart);
-        const recorderSource = source.slice(recorderStart, recorderEnd);
+    it("preserves relay failure precedence in both event orderings", () => {
+        const empty: HyperVElevatedNetworkRelayCompletion = {
+            errorCode: null,
+            terminationStage: null,
+        };
+        const primary = transitionHyperVElevatedNetworkRelayFailure(empty, {
+            kind: "replace-primary",
+            code: "hyper-v-network-elevation-deadline-exceeded",
+        });
+        expect(transitionHyperVElevatedNetworkRelayFailure(primary, {
+            kind: "termination",
+            stage: "relay-force-timeout",
+            replaceFailure: false,
+        })).toEqual(primary);
 
-        expect(recorderStart).toBeGreaterThanOrEqual(0);
-        expect(recorderEnd).toBeGreaterThan(recorderStart);
-        expect(recorderSource).toContain("if (failureCode !== null && !replaceFailure) return;");
-        expect(source).toContain('recordTerminationFailure("elevated-child", true);');
-        expect(source).toContain('recordTerminationFailure("relay-force-timeout");');
-        expect(source).toContain('recordTerminationFailure("relay-input-write");');
+        const fallback = transitionHyperVElevatedNetworkRelayFailure(empty, {
+            kind: "termination",
+            stage: "relay-force-timeout",
+            replaceFailure: false,
+        });
+        expect(transitionHyperVElevatedNetworkRelayFailure(fallback, {
+            kind: "replace-primary",
+            code: "hyper-v-network-elevation-protocol-invalid",
+        })).toEqual({
+            errorCode: "hyper-v-network-elevation-protocol-invalid",
+            terminationStage: null,
+        });
+
+        expect(transitionHyperVElevatedNetworkRelayFailure(primary, {
+            kind: "termination",
+            stage: "elevated-child",
+            replaceFailure: true,
+        })).toEqual({
+            errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+            terminationStage: "elevated-child",
+        });
     });
 
     it("does not widen the executor result when a callback throws", async () => {
