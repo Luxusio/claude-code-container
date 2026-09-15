@@ -274,8 +274,14 @@ through the already authenticated pipe while keeping the relay's standard input
 open. A scope closed with unfinished work, or after deadline handling has begun,
 MUST use the abrupt path so the close frame cannot queue behind an unconfirmed
 mutation or corrupt an in-progress relay handshake. The elevated session MUST
-consume the frame between operations, leave its request loop, and close its pipe
-first; this lets the pipe-to-parent copy finish before relay teardown. The
+consume the frame between operations and leave its request loop. After pipe
+disposal and exact elevated-child termination reinspection, the relay MUST emit
+one terminal acknowledgement correlated by a separate random token that is not
+present in the elevated child source. Only after validating that acknowledgement
+may Node end relay stdin, allowing an outstanding stdin-to-pipe `CopyToAsync` to
+finish. Successful relay completion requires both the terminal acknowledgement
+and the exact Node-owned relay process `exit` event; it MUST NOT depend on the later
+stdio `close` event. The
 elevated watchdog remains bound to the transaction deadline, so this contract
 does not promise graceful shutdown after that deadline has expired. Abrupt
 transport, protocol, and deadline failures still use the force-stop path.
@@ -285,7 +291,9 @@ begins, the medium-integrity PowerShell relay waits up to five seconds for the
 exact elevated process to exit and emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
 remains. The Node-owned relay process then has a strictly longer ten-second
-grace from scope closure before its force fallback. The callback wrapper MUST
+grace from scope closure before its force fallback. A missing or invalid
+terminal token and a terminal acknowledgement without process exit fail closed
+as separate bounded stages. The callback wrapper MUST
 wait a third, strictly longer fifteen-second window for that force fallback to
 publish and close the relay; equal adjacent windows are invalid because process
 close delivery occurs asynchronously after the force timer fires. Once normal
@@ -294,12 +302,14 @@ operation deadline.
 
 The stable error code remains
 `hyper-v-network-elevation-termination-unconfirmed`. Its bounded diagnostic
-stage MUST distinguish `elevated-child`, `relay-force-timeout`,
+stage MUST distinguish `elevated-child`, `relay-terminal-ack-missing`,
+`relay-terminal-ack-invalid`, `relay-process-exit-timeout`,
 `relay-input-write`, and `relay-completion-timeout`; no native exception text,
 path, PID, or unbounded output may be included. The standalone real-host proof
 MUST report that stage separately without changing the stable failure text.
 An already-recorded bounded primary relay failure takes precedence over the
-later `relay-input-write` and `relay-force-timeout` fallbacks, and a primary
+later `relay-input-write`, `relay-terminal-ack-missing`, and
+`relay-process-exit-timeout` fallbacks, and a primary
 failure decoded afterward replaces an earlier fallback. Only the authenticated
 elevated child's explicit termination-unconfirmed result replaces a primary
 failure and becomes absorbing so later asynchronous relay events cannot erase
@@ -307,6 +317,9 @@ the fail-closed result. This preserves primary/fallback ordering while making
 the authenticated child result authoritative in every event order.
 Verification MUST prove that
 idle normal close writes the close frame without first ending relay stdin,
+only a valid one-time terminal token ends stdin, acknowledgement and exit work
+in either arrival order, completion does not require stdio close, malformed or
+duplicate acknowledgements fail closed,
 unfinished work and abrupt discard still kill, the session bootstrap recognizes
 close before request decoding, the operation timer is disarmed before the frame
 write, completion after the ten-second relay force window can still settle, and

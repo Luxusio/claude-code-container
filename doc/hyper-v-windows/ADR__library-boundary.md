@@ -198,9 +198,14 @@ does not prove its own termination, and the medium-integrity relay cannot be
 trusted to force-stop a higher-integrity process. Idle normal scope closure that
 begins before deadline handling therefore disarms the relay's operation timer
 and sends an explicit close frame through the authenticated session pipe without
-first closing relay stdin. The elevated request loop consumes that frame and
-closes its side of the pipe, so the pipe-to-parent copy completes before relay
-teardown. Pending or queued work, an expired deadline, and every abrupt failure
+first closing relay stdin. After pipe cleanup and exact elevated-child
+termination reinspection, the relay emits a terminal acknowledgement carrying a
+separate random token unavailable to the elevated child. Node validates that
+one-time acknowledgement before ending relay stdin, which releases the
+outstanding stdin-to-pipe copy. Successful completion then requires both the
+acknowledgement and the exact relay process exit in either order, rather than
+waiting for the later stdio-close event. Pending or queued work, an expired
+deadline, and every abrupt failure
 retain the force-stop path; the elevated watchdog remains transaction-deadline
 bound. This prevents a close frame from sitting behind an unconfirmed mutation
 or entering an unfinished handshake without extending an orphaned administrator
@@ -216,15 +221,17 @@ can publish its terminal result. Once graceful close has begun, these windows
 are not recomputed from the operation deadline. Equal adjacent windows are
 invalid: timer jitter can let an outer owner erase the inner owner's terminal
 result and misclassify it as a different termination uncertainty. The stable
-error retains a bounded stage (`elevated-child`, `relay-force-timeout`,
+error retains a bounded stage (`elevated-child`, `relay-terminal-ack-missing`,
+`relay-terminal-ack-invalid`, `relay-process-exit-timeout`,
 `relay-input-write`, or `relay-completion-timeout`) rather than native text.
 The standalone proof prints that stage separately while its failure text stays
 stable. Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
 primary failure and cannot be erased by a later relay event. Verification covers
-the close-frame-before-stdin-EOF ordering, completion after
-the ten-second force window, disarming the relay operation timer, idle gating,
+the close-frame-before-terminal-ack-before-stdin-EOF ordering, terminal-ack and
+process-exit arrival in either order, independence from stdio close, completion
+after the ten-second force window, disarming the relay operation timer, idle gating,
 abrupt discard, stage correlation, and fail-closed termination at the
 fifteen-second wrapper bound.
 
