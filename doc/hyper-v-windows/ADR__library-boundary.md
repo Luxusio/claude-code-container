@@ -203,8 +203,11 @@ the administrator pipe and its one response is flushed to Node before the next
 input line. The session already permits only one in-flight request, so this
 removes concurrency without reducing supported throughput. Idle normal scope closure that
 begins before deadline handling therefore disarms the relay's operation timer
-and sends an explicit close frame through the authenticated session pipe. Node
-ends relay stdin only after the close-frame write callback confirms the ordered
+and sends the relay a close-control frame containing its private terminal token
+and an absolute five-second finalization deadline computed at scope close. The
+relay validates both and forwards only the existing child close marker through
+the authenticated session pipe, keeping its token out of the elevated child.
+Node ends relay stdin only after the control-frame write callback confirms the ordered
 bytes were accepted. A separate one-second handoff bound fails as
 `relay-input-write` and enters abrupt shutdown if that callback stalls, preserving
 margin before the ten-second relay owner. The relay recognizes and flushes the
@@ -223,20 +226,24 @@ failure with an ignorable primary failure.
 Successful completion then requires the
 acknowledgement, complete relay-stdout drainage, and the exact relay process
 exit in either order. Waiting for stdout EOF validates every terminal protocol
-line without depending on the later stdio-close event. Pending or queued work,
+line without depending on the later stdio-close event. Any bounded primary
+relay-completion failure rejects an otherwise successful callback; an existing
+thrown callback failure or direct execution result carrying the same bounded
+code is preserved unless termination identity is uncertain. Pending or queued work,
 an expired deadline, and every abrupt failure
 retain the force-stop path; the elevated watchdog remains transaction-deadline
 bound. This prevents a close frame from sitting behind an unconfirmed mutation
 or entering an unfinished handshake without extending an orphaned administrator
-process beyond its existing watchdog contract. After the close line is flushed,
-the medium-integrity PowerShell relay uses one five-second window to confirm the
-exact elevated process exit, reserving its final portion for force-stop
+process beyond its existing watchdog contract. After the child close line is
+flushed, the medium-integrity PowerShell relay uses the remaining part of the
+Node-authored absolute five-second window to confirm the exact elevated process
+exit, reserving its final portion for force-stop
 reinspection. The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` if the same process remains.
 The Node parent independently gives the PowerShell relay a strictly longer
-ten-second grace from scope closure before forcing the Node-owned relay process;
-the one-second close-write handoff ensures a normal five-second inner window
-cannot start too late to fit.
+ten-second grace from the same scope-closure instant before forcing the
+Node-owned relay process. The absolute inner deadline cannot slide when relay
+scheduling or pipe reads are delayed.
 The callback wrapper waits a third, strictly longer fifteen-second window so
 that asynchronous process-close delivery after the ten-second force fallback
 can publish its terminal result. Once graceful close has begun, these windows

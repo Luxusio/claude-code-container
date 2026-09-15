@@ -276,7 +276,11 @@ relay also MUST NOT rely on its lower-integrity token to terminate the elevated
 child. At normal scope closure, only when no request is
 pending or queued and before the operation deadline timer has fired, the Node
 parent MUST disarm that relay timer and send an explicit session-close frame
-through the already authenticated pipe. Once the close-frame write callback
+to the relay. This control frame MUST contain the relay-only terminal token and
+an absolute five-second finalization deadline computed by Node when scope close
+begins. The relay validates both, forwards only the existing child session-close
+marker through the already authenticated administrator pipe, and never exposes
+the relay token to the elevated child. Once the control-frame write callback
 confirms that the ordered bytes were accepted, Node MUST end relay stdin. That
 write handoff has its own one-second bound; expiry records `relay-input-write`
 and enters the abrupt path, so a delayed callback cannot consume the margin
@@ -284,7 +288,8 @@ between the inner and outer shutdown owners. A
 scope closed with unfinished work, or after deadline handling has begun,
 MUST use the abrupt path so the close frame cannot queue behind an unconfirmed
 mutation or corrupt an in-progress relay handshake. The relay MUST recognize
-the exact close line, synchronously write and flush it to the administrator
+the exact correlated close-control line, synchronously write and flush the
+child's existing close marker to the administrator
 pipe, and stop accepting input without depending on redirected-stdin EOF. The
 elevated session MUST consume the frame between operations and leave its request
 loop. After exact elevated-child termination reinspection and pipe disposal, the
@@ -300,19 +305,27 @@ invalid. Successful relay completion requires the terminal acknowledgement,
 complete relay-stdout drainage, and the exact Node-owned relay process `exit`
 event. This ensures every terminal protocol line has been validated before
 success and MUST NOT depend on the later stdio `close` event. The
+Node wrapper MUST reject an otherwise successful callback when relay completion
+contains any bounded primary failure; primary shutdown failure cannot be
+discarded merely because it is not a termination-stage failure. A direct
+execution result already carrying that exact bounded failure counts as surfaced.
+A callback that already threw retains its own error unless termination identity
+is uncertain.
+The
 elevated watchdog remains bound to the transaction deadline, so this contract
 does not promise graceful shutdown after that deadline has expired. Abrupt
 transport, protocol, and deadline failures still use the force-stop path.
 
-After the close line is flushed, the medium-integrity PowerShell relay uses one
-five-second window to confirm the exact elevated process exit. It reserves the
-end of that window for exact-process force-stop reinspection rather than giving
-the entire window to graceful exit. The relay emits
+After the close line is flushed, the medium-integrity PowerShell relay uses the
+remaining part of Node's absolute five-second window to confirm the exact
+elevated process exit. It reserves the end of that window for exact-process
+force-stop reinspection rather than giving the entire window to graceful exit.
+The relay emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
 remains. The Node-owned relay process then has a strictly longer ten-second
-grace from scope closure before its force fallback. Normal close can enter the
-inner window no later than the separate one-second write-handoff bound, leaving
-strict margin before that force fallback. A missing or invalid
+grace from the same scope-closure instant before its force fallback. The
+absolute inner deadline cannot slide when relay scheduling or pipe reads are
+delayed, leaving strict margin before that force fallback. A missing or invalid
 terminal token, undrained relay stdout, and a terminal acknowledgement without
 process exit fail closed as separate bounded stages. The callback wrapper MUST
 wait a third, strictly longer fifteen-second window for that force fallback to
@@ -342,7 +355,8 @@ idle normal close writes the close frame before ending relay stdin, the write
 callback ends stdin without waiting for terminal acknowledgement, a missing
 write callback fails at the one-second bound, relay completion does not depend
 on redirected-stdin EOF, every request has exactly one flushed response before
-the next input line is accepted, the exact close line is flushed before child
+the next input line is accepted, the token-correlated absolute close deadline is
+validated, the exact child close line is flushed before child
 termination is inspected, and one synchronous writer owns response and terminal
 output,
 acknowledgement and exit work in either arrival order, completion waits for
@@ -355,6 +369,11 @@ unfinished work and abrupt discard still kill, the session bootstrap recognizes
 close before request decoding, the operation timer is disarmed before the frame
 write, completion after the ten-second relay force window can still settle, and
 a relay which never completes fails closed at the fifteen-second wrapper bound.
+The Windows static job MUST materialize and parse the exact runtime relay
+bootstrap as well as the elevated session bootstrap; substring assertions alone
+do not prove PowerShell 5.1 syntax. A source-checkout real-host command MUST run
+that parser gate before requesting UAC, so malformed relay source cannot reach
+the privileged proof.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes
