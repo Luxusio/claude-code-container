@@ -279,10 +279,12 @@ disposal and exact elevated-child termination reinspection, the relay MUST emit
 one terminal acknowledgement correlated by a separate random token that is not
 present in the elevated child source. Only after validating that acknowledgement
 may Node end relay stdin, allowing an outstanding stdin-to-pipe `CopyToAsync` to
-finish. Successful relay completion requires the terminal acknowledgement,
-complete relay-stdout drainage, and the exact Node-owned relay process `exit`
-event. This ensures every terminal protocol line has been validated before
-success and MUST NOT depend on the later stdio `close` event. The
+finish. An acknowledgement before normal scope closure, or any stdout protocol
+line after the acknowledgement, is invalid. Successful relay completion requires
+the terminal acknowledgement, complete relay-stdout drainage, and the exact
+Node-owned relay process `exit` event. This ensures every terminal protocol line
+has been validated before success and MUST NOT depend on the later stdio `close`
+event. The
 elevated watchdog remains bound to the transaction deadline, so this contract
 does not promise graceful shutdown after that deadline has expired. Abrupt
 transport, protocol, and deadline failures still use the force-stop path.
@@ -322,7 +324,9 @@ idle normal close writes the close frame without first ending relay stdin,
 only a valid one-time terminal token ends stdin, acknowledgement and exit work
 in either arrival order, completion waits for stdout EOF without requiring stdio
 close, malformed or duplicate acknowledgements fail closed even when process
-exit arrives before stdout drains,
+exit arrives before stdout drains, and premature or post-terminal lines fail
+closed. Any unterminated stdout bytes remaining at EOF are a terminal
+acknowledgement failure in both graceful and abrupt shutdown,
 unfinished work and abrupt discard still kill, the session bootstrap recognizes
 close before request decoding, the operation timer is disarmed before the frame
 write, completion after the ten-second relay force window can still settle, and

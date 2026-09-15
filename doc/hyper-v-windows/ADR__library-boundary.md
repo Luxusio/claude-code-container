@@ -202,11 +202,16 @@ first closing relay stdin. After pipe cleanup and exact elevated-child
 termination reinspection, the relay emits a terminal acknowledgement carrying a
 separate random token unavailable to the elevated child. Node validates that
 one-time acknowledgement before ending relay stdin, which releases the
-outstanding stdin-to-pipe copy. Successful completion then requires the
+outstanding stdin-to-pipe copy. A terminal acknowledgement is accepted only
+after normal scope closure begins, and no later stdout line is permitted.
+Any unterminated stdout bytes at EOF are classified as invalid terminal
+acknowledgement evidence even during abrupt shutdown, so they cannot replace a
+previous termination failure with an ignorable primary failure.
+Successful completion then requires the
 acknowledgement, complete relay-stdout drainage, and the exact relay process
 exit in either order. Waiting for stdout EOF validates every terminal protocol
-line without depending on the later stdio-close event. Pending or queued work, an expired
-deadline, and every abrupt failure
+line without depending on the later stdio-close event. Pending or queued work,
+an expired deadline, and every abrupt failure
 retain the force-stop path; the elevated watchdog remains transaction-deadline
 bound. This prevents a close frame from sitting behind an unconfirmed mutation
 or entering an unfinished handshake without extending an orphaned administrator
@@ -233,7 +238,8 @@ the authenticated elevated child's explicit termination result outranks a
 primary failure and cannot be erased by a later relay event. Verification covers
 the close-frame-before-terminal-ack-before-stdin-EOF ordering, terminal-ack and
 process-exit arrival in either order, stdout drainage before success including
-exit-before-duplicate-ack, independence from stdio close, completion after the
+exit-before-duplicate-ack, rejection of premature and post-terminal lines,
+independence from stdio close, completion after the
 ten-second force window, disarming the relay operation timer, idle gating,
 abrupt discard, stage correlation, and fail-closed termination at the
 fifteen-second wrapper bound.
