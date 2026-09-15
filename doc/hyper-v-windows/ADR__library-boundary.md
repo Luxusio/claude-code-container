@@ -197,13 +197,19 @@ Administrator-session shutdown uses nested bounded windows. The elevated child
 does not prove its own termination, and the medium-integrity relay cannot be
 trusted to force-stop a higher-integrity process. Idle normal scope closure that
 begins before deadline handling therefore disarms the relay's operation timer
-and sends an explicit close frame through the authenticated session pipe without
-first closing relay stdin. After pipe cleanup and exact elevated-child
+and sends an explicit close frame through the authenticated session pipe. Node
+ends relay stdin only after the close-frame write callback confirms the ordered
+bytes were accepted. If that EOF completes the stdin-to-pipe copy first, the
+relay flushes those bytes and continues waiting within its bounded window for
+the pipe-to-stdout direction; EOF alone does not dispose the authenticated pipe.
+After pipe cleanup and exact elevated-child
 termination reinspection, the relay emits a terminal acknowledgement carrying a
-separate random token unavailable to the elevated child. Node validates that
-one-time acknowledgement before ending relay stdin, which releases the
-outstanding stdin-to-pipe copy. A terminal acknowledgement is accepted only
-after normal scope closure begins, and no later stdout line is permitted.
+separate random token unavailable to the elevated child. Terminal failure and
+acknowledgement lines are emitted only after the pipe-to-stdout task settles; an
+unsettled task suppresses the acknowledgement and therefore fails closed without
+two writers racing on relay stdout. A terminal
+acknowledgement is accepted only after normal scope closure begins, and no later
+stdout line is permitted.
 Any unterminated stdout bytes at EOF enter the typed termination-failure path
 even during abrupt shutdown, so they cannot replace a previous termination
 failure with an ignorable primary failure.
@@ -217,7 +223,8 @@ bound. This prevents a close frame from sitting behind an unconfirmed mutation
 or entering an unfinished handshake without extending an orphaned administrator
 process beyond its existing watchdog contract. After either pipe-copy direction
 finishes and relay finalization begins, the medium-integrity PowerShell relay
-waits up to five seconds for the exact elevated process exit and emits
+uses one five-second window to finish the output direction and confirm the exact
+elevated process exit, and emits
 `hyper-v-network-elevation-termination-unconfirmed` if the same process remains.
 The Node parent independently gives the PowerShell relay a strictly longer
 ten-second grace from scope closure before forcing the Node-owned relay process.
@@ -236,10 +243,10 @@ stable. Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
 primary failure and cannot be erased by a later relay event. Verification covers
-the close-frame-before-terminal-ack-before-stdin-EOF ordering, terminal-ack and
-process-exit arrival in either order, stdout drainage before success including
-exit-before-duplicate-ack, rejection of premature and post-terminal lines,
-independence from stdio close, completion after the
+the close-frame-write-before-stdin-EOF ordering, continued output drainage after
+stdin EOF, terminal-ack and process-exit arrival in either order, stdout
+drainage before success including exit-before-duplicate-ack, rejection of
+premature and post-terminal lines, independence from stdio close, completion after the
 ten-second force window, disarming the relay operation timer, idle gating,
 abrupt discard, stage correlation, and fail-closed termination at the
 fifteen-second wrapper bound.

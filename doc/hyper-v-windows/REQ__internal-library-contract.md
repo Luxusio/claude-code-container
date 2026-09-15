@@ -270,28 +270,34 @@ directions of an asynchronous pipe copy nor rely on its lower-integrity token to
 terminate the elevated child. At normal scope closure, only when no request is
 pending or queued and before the operation deadline timer has fired, the Node
 parent MUST disarm that relay timer and send an explicit session-close frame
-through the already authenticated pipe while keeping the relay's standard input
-open. A scope closed with unfinished work, or after deadline handling has begun,
+through the already authenticated pipe. Once the close-frame write callback
+confirms that the ordered bytes were accepted, Node MUST end relay stdin. A
+scope closed with unfinished work, or after deadline handling has begun,
 MUST use the abrupt path so the close frame cannot queue behind an unconfirmed
 mutation or corrupt an in-progress relay handshake. The elevated session MUST
-consume the frame between operations and leave its request loop. After pipe
-disposal and exact elevated-child termination reinspection, the relay MUST emit
-one terminal acknowledgement correlated by a separate random token that is not
-present in the elevated child source. Only after validating that acknowledgement
-may Node end relay stdin, allowing an outstanding stdin-to-pipe `CopyToAsync` to
-finish. An acknowledgement before normal scope closure, or any stdout protocol
-line after the acknowledgement, is invalid. Successful relay completion requires
-the terminal acknowledgement, complete relay-stdout drainage, and the exact
-Node-owned relay process `exit` event. This ensures every terminal protocol line
-has been validated before success and MUST NOT depend on the later stdio `close`
-event. The
+consume the frame between operations and leave its request loop. When the
+stdin-to-pipe copy observes that EOF first, the relay MUST flush the ordered
+close bytes and continue waiting for pipe-to-stdout completion within its
+bounded finalization window; stdin EOF alone MUST NOT dispose the authenticated
+pipe. After pipe disposal and exact elevated-child termination reinspection, the
+relay MUST emit one terminal acknowledgement correlated by a separate random
+token that is not present in the elevated child source. The pipe-to-stdout copy
+MUST be complete before the relay writes any terminal failure or
+acknowledgement line; if it cannot settle after pipe disposal, the relay omits
+the acknowledgement and lets Node fail closed. An acknowledgement before normal
+scope closure, or any stdout protocol line after the acknowledgement, is
+invalid. Successful relay completion requires the terminal acknowledgement,
+complete relay-stdout drainage, and the exact Node-owned relay process `exit`
+event. This ensures every terminal protocol line has been validated before
+success and MUST NOT depend on the later stdio `close` event. The
 elevated watchdog remains bound to the transaction deadline, so this contract
 does not promise graceful shutdown after that deadline has expired. Abrupt
 transport, protocol, and deadline failures still use the force-stop path.
 
 Once either asynchronous pipe-copy direction completes and relay finalization
-begins, the medium-integrity PowerShell relay waits up to five seconds for the
-exact elevated process to exit and emits
+begins, the medium-integrity PowerShell relay uses one five-second window to
+finish the other output direction and confirm the exact elevated process exit.
+It emits
 `hyper-v-network-elevation-termination-unconfirmed` when the same process
 remains. The Node-owned relay process then has a strictly longer ten-second
 grace from scope closure before its force fallback. A missing or invalid
@@ -320,14 +326,16 @@ failure and becomes absorbing so later asynchronous relay events cannot erase
 the fail-closed result. This preserves primary/fallback ordering while making
 the authenticated child result authoritative in every event order.
 Verification MUST prove that
-idle normal close writes the close frame without first ending relay stdin,
-only a valid one-time terminal token ends stdin, acknowledgement and exit work
-in either arrival order, completion waits for stdout EOF without requiring stdio
-close, malformed or duplicate acknowledgements fail closed even when process
-exit arrives before stdout drains, and premature or post-terminal lines fail
-closed. Any unterminated stdout bytes remaining at EOF enter the typed
-termination-failure path in both graceful and abrupt shutdown without erasing an
-earlier termination stage,
+idle normal close writes the close frame before ending relay stdin, the write
+callback ends stdin without waiting for terminal acknowledgement, relay stdin
+EOF cannot dispose the authenticated pipe before its output direction settles,
+terminal output is never written concurrently with that output direction,
+acknowledgement and exit work in either arrival order, completion waits for
+stdout EOF without requiring stdio close, malformed or duplicate
+acknowledgements fail closed even when process exit arrives before stdout
+drains, and premature or post-terminal lines fail closed. Any unterminated
+stdout bytes remaining at EOF enter the typed termination-failure path in both
+graceful and abrupt shutdown without erasing an earlier termination stage,
 unfinished work and abrupt discard still kill, the session bootstrap recognizes
 close before request decoding, the operation timer is disarmed before the frame
 write, completion after the ten-second relay force window can still settle, and
