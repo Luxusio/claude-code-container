@@ -302,7 +302,9 @@ An already-recorded bounded primary relay failure takes precedence over the
 later `relay-input-write` and `relay-force-timeout` fallbacks, and a primary
 failure decoded afterward replaces an earlier fallback. Only the authenticated
 elevated child's explicit termination-unconfirmed result replaces a primary
-failure. This preserves the existing single-error ordering in both event races.
+failure and becomes absorbing so later asynchronous relay events cannot erase
+the fail-closed result. This preserves primary/fallback ordering while making
+the authenticated child result authoritative in every event order.
 Verification MUST prove that
 idle normal close writes the close frame without first ending relay stdin,
 unfinished work and abrupt discard still kill, the session bootstrap recognizes

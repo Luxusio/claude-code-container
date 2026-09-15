@@ -222,7 +222,8 @@ The standalone proof prints that stage separately while its failure text stays
 stable. Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
-primary failure. Verification covers the close-frame-before-stdin-EOF ordering, completion after
+primary failure and cannot be erased by a later relay event. Verification covers
+the close-frame-before-stdin-EOF ordering, completion after
 the ten-second force window, disarming the relay operation timer, idle gating,
 abrupt discard, stage correlation, and fail-closed termination at the
 fifteen-second wrapper bound.
