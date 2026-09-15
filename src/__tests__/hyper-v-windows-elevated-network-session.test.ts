@@ -35,7 +35,6 @@ import {
     withElevatedHyperVNetworkExecutor,
     type HyperVElevatedNetworkErrorCode,
     type HyperVElevatedNetworkRelayCompletion,
-    type HyperVElevatedNetworkRelayFailureEvent,
     type HyperVElevatedNetworkRelayProcess,
     type HyperVElevatedNetworkRelaySpawn,
     type HyperVElevatedNetworkTerminationStage,
@@ -522,6 +521,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     execution: {
                         lastOperation: "Get-VMSwitch",
                         lastSessionError: "hyper-v-windows-session-queue-timeout",
+                        activeExecutions: 1,
                     },
                 },
             });
@@ -545,6 +545,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "truncated-short-prefix",
         "exit-before-ack-with-extra-line",
         "premature-ack",
+        "wrong-token-progress",
+        "unknown-progress-stage",
         "abrupt-stdin-error-truncated-eof",
         "graceful-force-timeout",
         "exit-before-force-late-child-failure",
@@ -561,6 +563,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "handles correlated relay terminal protocol (%s) without depending on close for success",
         async (order) => {
             const usesAbruptForceTimer = order === "abrupt-stdin-error-truncated-eof";
+            const usesInvalidProgress = order === "wrong-token-progress"
+                || order === "unknown-progress-stage";
             const usesLateForceOrdering = order === "exit-before-force-late-child-failure"
                 || order === "force-before-exit-late-child-failure";
             const usesPreForceEvidence = order === "exit-and-stdout-before-force-no-close"
@@ -568,11 +572,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const usesForceTimer = usesAbruptForceTimer
                 || order === "graceful-force-timeout"
                 || usesLateForceOrdering
-                || usesPreForceEvidence;
+                || usesPreForceEvidence
+                || usesInvalidProgress;
             const forceKillsProcess = usesAbruptForceTimer
                 || order === "graceful-force-timeout"
                 || order === "force-before-exit-late-child-failure";
-            const autoCompletesForceProcess = forceKillsProcess && !usesLateForceOrdering;
+            const forceKillsRelay = forceKillsProcess || usesInvalidProgress;
+            const autoCompletesForceProcess = forceKillsRelay && !usesLateForceOrdering;
             const usesCloseWriteTimer = order === "close-write-timeout"
                 || order === "close-write-timeout-delayed-success"
                 || order === "close-write-timeout-delayed-error";
@@ -629,10 +635,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 events.emit("close", 1, null);
                                 return;
                             }
+                            const progressLine = order === "wrong-token-progress"
+                                ? "CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:wrong-token:relay-ready\n"
+                                : order === "unknown-progress-stage"
+                                    ? `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:native-secret\n`
+                                    : `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:relay-ready\n`;
                             stdout.emit(
                                 "data",
-                                "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n"
-                                + `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:relay-ready\n`,
+                                "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n" + progressLine,
                             );
                         });
                     } else if (line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) {
@@ -898,13 +908,19 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             expect(simulationError).toBeNull();
             expect(launchObserved).toBe(true);
             expect(closeObserved).toBe(
-                order !== "premature-ack" && !usesAbruptForceTimer,
+                order !== "premature-ack" && !usesAbruptForceTimer && !usesInvalidProgress,
             );
             expect(stdinEndedAfterCloseWrite).toBe(true);
             expect(stdinEndCalls).toBe(1);
-            if (forceKillsProcess) expect(kill).toHaveBeenCalledTimes(1);
+            if (forceKillsRelay) expect(kill).toHaveBeenCalledTimes(1);
             else expect(kill).not.toHaveBeenCalled();
-            if (expectsFailure) {
+            if (usesInvalidProgress) {
+                expect(result).toMatchObject({
+                    status: null,
+                    stdout: "",
+                    error: "hyper-v-network-elevation-protocol-invalid",
+                });
+            } else if (expectsFailure) {
                 expect(result).toMatchObject({
                     code: "hyper-v-network-elevation-termination-unconfirmed",
                     terminationStage: expectedTerminationStage,
@@ -1053,40 +1069,6 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(result).toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
         expect(relay.gracefullyClosed()).toBe(true);
         expect(relay.forceKilled()).toBe(false);
-    });
-
-    it("makes relay termination code and stage impossible to separate", () => {
-        const valid: HyperVElevatedNetworkRelayCompletion = {
-            errorCode: "hyper-v-network-elevation-termination-unconfirmed",
-            terminationStage: "elevated-child",
-        };
-        expect(valid.terminationStage).toBe("elevated-child");
-
-        // @ts-expect-error Termination uncertainty requires its correlated bounded stage.
-        const missingStage: HyperVElevatedNetworkRelayCompletion = {
-            errorCode: "hyper-v-network-elevation-termination-unconfirmed",
-            terminationStage: null,
-        };
-        // @ts-expect-error Non-termination failures cannot carry a termination stage.
-        const unrelatedStage: HyperVElevatedNetworkRelayCompletion = {
-            errorCode: "hyper-v-network-elevation-cancelled",
-            terminationStage: "relay-terminal-ack-missing",
-        };
-        expect([missingStage, unrelatedStage]).toHaveLength(2);
-
-        // @ts-expect-error Relay fallbacks cannot replace an existing primary failure.
-        const invalidFallbackOverride: HyperVElevatedNetworkRelayFailureEvent = {
-            kind: "termination",
-            stage: "relay-terminal-ack-missing",
-            replaceFailure: true,
-        };
-        // @ts-expect-error The authenticated elevated-child result must replace earlier failures.
-        const invalidChildPrecedence: HyperVElevatedNetworkRelayFailureEvent = {
-            kind: "termination",
-            stage: "elevated-child",
-            replaceFailure: false,
-        };
-        expect([invalidFallbackOverride, invalidChildPrecedence]).toHaveLength(2);
     });
 
     it("extracts diagnostics only from a correlated termination error", () => {

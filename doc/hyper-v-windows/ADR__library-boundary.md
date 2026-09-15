@@ -263,7 +263,8 @@ fallback alone does not identify the failed boundary. The Node owner retains a
 bounded diagnostic snapshot: graceful versus abrupt shutdown (including escalation
 from graceful handoff to abrupt force-stop), the last closed-set operation or a
 correlated operation/session-error pair, close-write state, relay exit/stdout/stderr/force-event
-booleans, and the last token-correlated closed-set relay progress stage. Relay
+booleans, the scope-close-time active-execution count, and the last
+token-correlated closed-set relay progress stage. Relay
 progress frames are filtered control traffic and never contain native output,
 paths, PIDs, or the token in reported diagnostics. This keeps real-host
 investigation actionable without treating progress as success evidence or

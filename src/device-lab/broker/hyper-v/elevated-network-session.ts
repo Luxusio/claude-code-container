@@ -973,6 +973,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
     let lastOperation: HyperVWindowsOperation | null = null;
     let lastSessionError: HyperVWindowsSessionErrorCode | "non-session-error" | null = null;
     let activeExecutions = 0;
+    let activeExecutionsAtClose = 0;
     const session = createHyperVWindowsPowerShellSession({
         maximumStarts: 1,
         ...(options.operationAsset ? { operationAsset: options.operationAsset } : {}),
@@ -1049,6 +1050,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         outcome = { ok: false, error };
     } finally {
         active = false;
+        activeExecutionsAtClose = Math.max(0, Math.min(999, activeExecutions));
         session.close();
     }
 
@@ -1080,7 +1082,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
             execution: {
                 lastOperation,
                 lastSessionError,
-                activeExecutions: Math.max(0, Math.min(999, activeExecutions)),
+                activeExecutions: activeExecutionsAtClose,
             },
         });
     }

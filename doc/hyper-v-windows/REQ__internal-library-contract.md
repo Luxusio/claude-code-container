@@ -353,7 +353,9 @@ reported as abrupt. The snapshot names only the last known operation or the
 operation/error pair from the same failed execution, using their existing
 closed sets, and records the last token-correlated relay progress stage,
 and states whether the close write, relay exit, stdout drain, stderr presence,
-and force timer were observed. It MUST NOT include the correlation token,
+and force timer were observed. The active-execution count MUST be captured when
+scope closure selects graceful or abrupt shutdown, before closing the session
+settles outstanding work. It MUST NOT include the correlation token,
 native stderr, exception text, a path, or a PID. The exported unknown-error
 extractor and any optional injected relay diagnostic provider MUST validate and copy the
 snapshot at runtime against private immutable membership tables whose exported
