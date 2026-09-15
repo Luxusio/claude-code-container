@@ -204,9 +204,9 @@ separate random token unavailable to the elevated child. Node validates that
 one-time acknowledgement before ending relay stdin, which releases the
 outstanding stdin-to-pipe copy. A terminal acknowledgement is accepted only
 after normal scope closure begins, and no later stdout line is permitted.
-Any unterminated stdout bytes at EOF are classified as invalid terminal
-acknowledgement evidence even during abrupt shutdown, so they cannot replace a
-previous termination failure with an ignorable primary failure.
+Any unterminated stdout bytes at EOF enter the typed termination-failure path
+even during abrupt shutdown, so they cannot replace a previous termination
+failure with an ignorable primary failure.
 Successful completion then requires the
 acknowledgement, complete relay-stdout drainage, and the exact relay process
 exit in either order. Waiting for stdout EOF validates every terminal protocol

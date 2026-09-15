@@ -325,8 +325,9 @@ only a valid one-time terminal token ends stdin, acknowledgement and exit work
 in either arrival order, completion waits for stdout EOF without requiring stdio
 close, malformed or duplicate acknowledgements fail closed even when process
 exit arrives before stdout drains, and premature or post-terminal lines fail
-closed. Any unterminated stdout bytes remaining at EOF are a terminal
-acknowledgement failure in both graceful and abrupt shutdown,
+closed. Any unterminated stdout bytes remaining at EOF enter the typed
+termination-failure path in both graceful and abrupt shutdown without erasing an
+earlier termination stage,
 unfinished work and abrupt discard still kill, the session bootstrap recognizes
 close before request decoding, the operation timer is disarmed before the frame
 write, completion after the ten-second relay force window can still settle, and
