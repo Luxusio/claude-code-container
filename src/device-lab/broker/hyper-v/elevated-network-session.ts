@@ -74,6 +74,39 @@ export type HyperVElevatedNetworkRelayCompletion =
         readonly terminationStage: HyperVElevatedNetworkRelayTerminationStage;
     };
 
+export type HyperVElevatedNetworkRelayFailureEvent =
+    | {
+        readonly kind: "replace-primary";
+        readonly code: HyperVElevatedNetworkNonTerminationErrorCode;
+    }
+    | {
+        readonly kind: "primary-if-absent";
+        readonly code: HyperVElevatedNetworkNonTerminationErrorCode;
+    }
+    | {
+        readonly kind: "termination";
+        readonly stage: HyperVElevatedNetworkRelayTerminationStage;
+        readonly replaceFailure: boolean;
+    };
+
+export function transitionHyperVElevatedNetworkRelayFailure(
+    current: HyperVElevatedNetworkRelayCompletion,
+    event: HyperVElevatedNetworkRelayFailureEvent,
+): HyperVElevatedNetworkRelayCompletion {
+    switch (event.kind) {
+        case "replace-primary":
+            return { errorCode: event.code, terminationStage: null };
+        case "primary-if-absent":
+            return current.errorCode === null
+                ? { errorCode: event.code, terminationStage: null }
+                : current;
+        case "termination":
+            return current.errorCode !== null && !event.replaceFailure
+                ? current
+                : { errorCode: TERMINATION_UNCONFIRMED_CODE, terminationStage: event.stage };
+    }
+}
+
 export class HyperVElevatedNetworkSessionError extends Error {
     readonly code: HyperVElevatedNetworkErrorCode;
     readonly terminationStage: HyperVElevatedNetworkTerminationStage | null;
@@ -271,8 +304,10 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let relayReady = false;
     let elevationRequested = false;
     let requestAttempted = false;
-    let failureCode: HyperVElevatedNetworkNonTerminationErrorCode | null = null;
-    let terminationStage: HyperVElevatedNetworkRelayTerminationStage | null = null;
+    let relayFailure: HyperVElevatedNetworkRelayCompletion = {
+        errorCode: null,
+        terminationStage: null,
+    };
     let exited = false;
     let exitReason: HyperVWindowsSessionErrorCode = "hyper-v-windows-session-exited";
     let closing = false;
@@ -294,21 +329,29 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         if (forcedKill) clearTimeout(forcedKill);
         failQueued(new Error(reason));
         for (const listener of [...exitListeners]) listener(reason);
-        resolveCompletion(terminationStage
-            ? { errorCode: TERMINATION_UNCONFIRMED_CODE, terminationStage }
-            : { errorCode: failureCode, terminationStage: null });
+        resolveCompletion(relayFailure);
+    };
+    const recordPrimaryFailure = (code: HyperVElevatedNetworkNonTerminationErrorCode) => {
+        relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, {
+            kind: "replace-primary",
+            code,
+        });
+    };
+    const recordPrimaryFailureIfAbsent = (code: HyperVElevatedNetworkNonTerminationErrorCode) => {
+        relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, {
+            kind: "primary-if-absent",
+            code,
+        });
     };
     const recordTerminationFailure = (
         stage: HyperVElevatedNetworkRelayTerminationStage,
         replaceFailure = false,
     ) => {
-        if (failureCode !== null && !replaceFailure) return;
-        if (replaceFailure) {
-            failureCode = null;
-            terminationStage = stage;
-            return;
-        }
-        terminationStage ??= stage;
+        relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, {
+            kind: "termination",
+            stage,
+            replaceFailure,
+        });
     };
     const armForcedKill = () => {
         if (forcedKill) return;
@@ -355,13 +398,13 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             if (observedFailure === TERMINATION_UNCONFIRMED_CODE) {
                 recordTerminationFailure("elevated-child", true);
             } else {
-                failureCode = observedFailure;
+                recordPrimaryFailure(observedFailure);
             }
             return true;
         }
         if (line === ELEVATION_REQUEST_MARKER) {
             if (elevationRequested) {
-                failureCode = "hyper-v-network-elevation-protocol-invalid";
+                recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
                 stop();
                 return true;
             }
@@ -370,14 +413,14 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 request.onBeforeElevation();
                 child.stdin?.write(`${ELEVATION_APPROVAL}\n`);
             } catch {
-                failureCode = "hyper-v-network-elevation-request-failed";
+                recordPrimaryFailure("hyper-v-network-elevation-request-failed");
                 child.stdin?.end();
             }
             return true;
         }
         if (line === ELEVATION_READY_MARKER) {
             if (!elevationRequested || relayReady) {
-                failureCode = "hyper-v-network-elevation-protocol-invalid";
+                recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
                 stop();
                 return true;
             }
@@ -396,7 +439,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             const line = buffered.slice(0, index).replace(/\r$/, "");
             buffered = buffered.slice(index + 1);
             if (Buffer.byteLength(line, "utf8") > MAX_RELAY_LINE_BYTES) {
-                failureCode = "hyper-v-network-elevation-protocol-invalid";
+                recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
                 stop();
                 return;
             }
@@ -406,23 +449,23 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             index = buffered.indexOf("\n");
         }
         if (Buffer.byteLength(buffered, "utf8") > MAX_RELAY_LINE_BYTES) {
-            failureCode = "hyper-v-network-elevation-protocol-invalid";
+            recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
             stop();
         }
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
         stderrBytes += Buffer.byteLength(chunk);
         if (stderrBytes > MAX_RELAY_LINE_BYTES) {
-            failureCode = "hyper-v-network-elevation-protocol-invalid";
+            recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
             stop();
         }
     });
     child.once("error", () => {
-        failureCode ??= "hyper-v-network-elevation-launch-failed";
+        recordPrimaryFailureIfAbsent("hyper-v-network-elevation-launch-failed");
         finish(requestAttempted ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-spawn-failed");
     });
     child.once("close", () => {
-        if (!relayReady) failureCode ??= "hyper-v-network-elevation-relay-failed";
+        if (!relayReady) recordPrimaryFailureIfAbsent("hyper-v-network-elevation-relay-failed");
         finish(requestAttempted ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-start-failed");
     });
     child.stdin?.on("error", () => {
@@ -430,12 +473,12 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     });
     child.stdin?.write(`${launchEnvelope}\n`, (error) => {
         if (error) {
-            failureCode ??= "hyper-v-network-elevation-launch-failed";
+            recordPrimaryFailureIfAbsent("hyper-v-network-elevation-launch-failed");
             finish("hyper-v-windows-session-stdin-failed");
         }
     });
     deadlineTimer = setTimeout(() => {
-        failureCode ??= "hyper-v-network-elevation-deadline-exceeded";
+        recordPrimaryFailureIfAbsent("hyper-v-network-elevation-deadline-exceeded");
         stop();
     }, Math.max(1, Math.min(2_147_483_647, request.deadlineUnixMilliseconds - Date.now())));
     deadlineTimer.unref?.();
@@ -445,7 +488,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
 
     return {
         completion,
-        failureCode: () => terminationStage ? TERMINATION_UNCONFIRMED_CODE : failureCode,
+        failureCode: () => relayFailure.errorCode,
         close,
         write(line, settled) {
             if (exited || closing || killed) {
