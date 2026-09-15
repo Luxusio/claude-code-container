@@ -426,6 +426,15 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         }
     };
     const handleControlLine = (line: string): boolean => {
+        if (terminalAcknowledged) {
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-terminal-ack-invalid",
+                replaceFailure: false,
+            });
+            stop();
+            return true;
+        }
         const observedFailure = parseElevationFailure(line);
         if (observedFailure) {
             if (observedFailure === TERMINATION_UNCONFIRMED_CODE) {
@@ -466,7 +475,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             return true;
         }
         if (line.startsWith(ELEVATION_TERMINAL_PREFIX)) {
-            if (terminalAcknowledged || line !== `${ELEVATION_TERMINAL_PREFIX}${terminalToken}`) {
+            if (!closing || line !== `${ELEVATION_TERMINAL_PREFIX}${terminalToken}`) {
                 recordTerminationFailure({
                     kind: "termination",
                     stage: "relay-terminal-ack-invalid",
@@ -508,15 +517,11 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     child.stdout?.once("end", () => {
         relayStdoutDrained = true;
         if (buffered.length > 0) {
-            if (closing || terminalAcknowledged || buffered.startsWith(ELEVATION_TERMINAL_PREFIX)) {
-                recordTerminationFailure({
-                    kind: "termination",
-                    stage: "relay-terminal-ack-invalid",
-                    replaceFailure: false,
-                });
-            } else {
-                recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-            }
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-terminal-ack-invalid",
+                replaceFailure: false,
+            });
             buffered = "";
             stop();
         }
