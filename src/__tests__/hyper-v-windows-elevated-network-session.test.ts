@@ -459,6 +459,27 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(clearDeadline).toBeLessThan(writeClose);
     });
 
+    it("preserves a primary relay failure across fallback termination handling", () => {
+        const source = readFileSync(join(
+            process.cwd(),
+            "src",
+            "device-lab",
+            "broker",
+            "hyper-v",
+            "elevated-network-session.ts",
+        ), "utf8");
+        const recorderStart = source.indexOf("const recordTerminationFailure = (");
+        const recorderEnd = source.indexOf("\n    };\n    const armForcedKill", recorderStart);
+        const recorderSource = source.slice(recorderStart, recorderEnd);
+
+        expect(recorderStart).toBeGreaterThanOrEqual(0);
+        expect(recorderEnd).toBeGreaterThan(recorderStart);
+        expect(recorderSource).toContain("if (failureCode !== null && !replaceFailure) return;");
+        expect(source).toContain('recordTerminationFailure("elevated-child", true);');
+        expect(source).toContain('recordTerminationFailure("relay-force-timeout");');
+        expect(source).toContain('recordTerminationFailure("relay-input-write");');
+    });
+
     it("does not widen the executor result when a callback throws", async () => {
         const expected = new Error("callback-failed");
         const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>();
