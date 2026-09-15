@@ -85,8 +85,13 @@ export type HyperVElevatedNetworkRelayFailureEvent =
     }
     | {
         readonly kind: "termination";
-        readonly stage: HyperVElevatedNetworkRelayTerminationStage;
-        readonly replaceFailure: boolean;
+        readonly stage: "elevated-child";
+        readonly replaceFailure: true;
+    }
+    | {
+        readonly kind: "termination";
+        readonly stage: Exclude<HyperVElevatedNetworkRelayTerminationStage, "elevated-child">;
+        readonly replaceFailure: false;
     };
 
 export function transitionHyperVElevatedNetworkRelayFailure(
@@ -95,7 +100,9 @@ export function transitionHyperVElevatedNetworkRelayFailure(
 ): HyperVElevatedNetworkRelayCompletion {
     switch (event.kind) {
         case "replace-primary":
-            return { errorCode: event.code, terminationStage: null };
+            return current.terminationStage === "elevated-child"
+                ? current
+                : { errorCode: event.code, terminationStage: null };
         case "primary-if-absent":
             return current.errorCode === null
                 ? { errorCode: event.code, terminationStage: null }
@@ -344,19 +351,18 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         });
     };
     const recordTerminationFailure = (
-        stage: HyperVElevatedNetworkRelayTerminationStage,
-        replaceFailure = false,
+        event: Extract<HyperVElevatedNetworkRelayFailureEvent, { readonly kind: "termination" }>,
     ) => {
-        relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, {
-            kind: "termination",
-            stage,
-            replaceFailure,
-        });
+        relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, event);
     };
     const armForcedKill = () => {
         if (forcedKill) return;
         forcedKill = setTimeout(() => {
-            recordTerminationFailure("relay-force-timeout");
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-force-timeout",
+                replaceFailure: false,
+            });
             child.stdin?.end();
             child.kill();
         }, RELAY_FORCE_GRACE_MILLISECONDS);
@@ -377,7 +383,11 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         }
         child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\n`, (error) => {
             if (!error || exited) return;
-            recordTerminationFailure("relay-input-write");
+            recordTerminationFailure({
+                kind: "termination",
+                stage: "relay-input-write",
+                replaceFailure: false,
+            });
             stop();
         });
         armForcedKill();
@@ -396,7 +406,11 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         const observedFailure = parseElevationFailure(line);
         if (observedFailure) {
             if (observedFailure === TERMINATION_UNCONFIRMED_CODE) {
-                recordTerminationFailure("elevated-child", true);
+                recordTerminationFailure({
+                    kind: "termination",
+                    stage: "elevated-child",
+                    replaceFailure: true,
+                });
             } else {
                 recordPrimaryFailure(observedFailure);
             }
