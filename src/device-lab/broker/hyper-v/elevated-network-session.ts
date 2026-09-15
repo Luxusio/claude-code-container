@@ -74,7 +74,7 @@ export const HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES = [
 export type HyperVElevatedNetworkTerminationStage =
     typeof HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES[number];
 
-export const HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES = [
+export const HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES = Object.freeze([
     "approval-received",
     "runas-returned",
     "pipe-connected",
@@ -95,24 +95,24 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES = [
     "child-force-wait-finished",
     "child-reinspection-finished",
     "terminal-write-entered",
-] as const;
+] as const);
 
 export type HyperVElevatedNetworkRelayProgressStage =
     typeof HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES[number];
 
-export const HYPER_V_ELEVATED_NETWORK_SHUTDOWN_MODES = [
+export const HYPER_V_ELEVATED_NETWORK_SHUTDOWN_MODES = Object.freeze([
     "not-started",
     "graceful",
     "abrupt",
-] as const;
+] as const);
 
-export const HYPER_V_ELEVATED_NETWORK_CLOSE_WRITE_STATUSES = [
+export const HYPER_V_ELEVATED_NETWORK_CLOSE_WRITE_STATUSES = Object.freeze([
     "not-started",
     "pending",
     "succeeded",
     "failed",
     "timed-out",
-] as const;
+] as const);
 
 export type HyperVElevatedNetworkRelayDiagnostic = {
     readonly shutdownMode: typeof HYPER_V_ELEVATED_NETWORK_SHUTDOWN_MODES[number];
@@ -124,100 +124,150 @@ export type HyperVElevatedNetworkRelayDiagnostic = {
     readonly forceExpired: boolean;
 };
 
-export type HyperVElevatedNetworkTerminationDiagnostic = {
-    readonly relay: HyperVElevatedNetworkRelayDiagnostic;
-    readonly execution: {
-        readonly lastOperation: HyperVWindowsOperation | null;
+export type HyperVElevatedNetworkExecutionDiagnostic = {
+    readonly activeExecutions: number;
+} & (
+    | {
+        readonly lastOperation: null;
+        readonly lastSessionError: null;
+    }
+    | {
+        readonly lastOperation: HyperVWindowsOperation;
         readonly lastSessionError: HyperVWindowsSessionErrorCode | "non-session-error" | null;
-        readonly activeExecutions: number;
-    };
+    }
+);
+
+export type HyperVElevatedNetworkTerminationDiagnostic = {
+    readonly relay: HyperVElevatedNetworkRelayDiagnostic | null;
+    readonly execution: HyperVElevatedNetworkExecutionDiagnostic;
 };
+
+const RELAY_PROGRESS_STAGE_SET: ReadonlySet<string> = new Set(
+    HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES,
+);
+const SHUTDOWN_MODE_SET: ReadonlySet<string> = new Set(HYPER_V_ELEVATED_NETWORK_SHUTDOWN_MODES);
+const CLOSE_WRITE_STATUS_SET: ReadonlySet<string> = new Set(
+    HYPER_V_ELEVATED_NETWORK_CLOSE_WRITE_STATUSES,
+);
+const WINDOWS_OPERATION_SET: ReadonlySet<string> = new Set(HYPER_V_WINDOWS_OPERATIONS);
+const WINDOWS_SESSION_ERROR_SET: ReadonlySet<string> = new Set(HYPER_V_WINDOWS_SESSION_ERROR_CODES);
+const TERMINATION_STAGE_SET: ReadonlySet<string> = new Set(HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isRelayProgressStage(value: unknown): value is HyperVElevatedNetworkRelayProgressStage {
+    return typeof value === "string" && RELAY_PROGRESS_STAGE_SET.has(value);
+}
+
+function isShutdownMode(
+    value: unknown,
+): value is HyperVElevatedNetworkRelayDiagnostic["shutdownMode"] {
+    return typeof value === "string" && SHUTDOWN_MODE_SET.has(value);
+}
+
+function isCloseWriteStatus(
+    value: unknown,
+): value is HyperVElevatedNetworkRelayDiagnostic["closeWriteStatus"] {
+    return typeof value === "string" && CLOSE_WRITE_STATUS_SET.has(value);
+}
+
+function isWindowsOperation(value: unknown): value is HyperVWindowsOperation {
+    return typeof value === "string" && WINDOWS_OPERATION_SET.has(value);
+}
+
+function isWindowsSessionError(value: unknown): value is HyperVWindowsSessionErrorCode {
+    return typeof value === "string" && WINDOWS_SESSION_ERROR_SET.has(value);
+}
+
+function isTerminationStage(value: unknown): value is HyperVElevatedNetworkTerminationStage {
+    return typeof value === "string" && TERMINATION_STAGE_SET.has(value);
+}
+
 function decodeRelayDiagnostic(value: unknown): HyperVElevatedNetworkRelayDiagnostic | null {
     if (!isRecord(value)) return null;
-    const shutdownMode = HYPER_V_ELEVATED_NETWORK_SHUTDOWN_MODES.find(
-        (candidate) => candidate === value.shutdownMode,
-    );
-    const progressStage = value.progressStage === null
-        ? null
-        : HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES.find(
-            (candidate) => candidate === value.progressStage,
-        );
-    const closeWriteStatus = HYPER_V_ELEVATED_NETWORK_CLOSE_WRITE_STATUSES.find(
-        (candidate) => candidate === value.closeWriteStatus,
-    );
-    if (!shutdownMode
-        || progressStage === undefined
-        || !closeWriteStatus
-        || typeof value.processExited !== "boolean"
-        || typeof value.stdoutDrained !== "boolean"
-        || typeof value.stderrObserved !== "boolean"
-        || typeof value.forceExpired !== "boolean") {
+    const shutdownMode = value.shutdownMode;
+    const progressStage = value.progressStage;
+    const closeWriteStatus = value.closeWriteStatus;
+    const processExited = value.processExited;
+    const stdoutDrained = value.stdoutDrained;
+    const stderrObserved = value.stderrObserved;
+    const forceExpired = value.forceExpired;
+    let decodedProgressStage: HyperVElevatedNetworkRelayProgressStage | null;
+    if (progressStage === null) decodedProgressStage = null;
+    else if (isRelayProgressStage(progressStage)) decodedProgressStage = progressStage;
+    else return null;
+    if (!isShutdownMode(shutdownMode)
+        || !isCloseWriteStatus(closeWriteStatus)
+        || typeof processExited !== "boolean"
+        || typeof stdoutDrained !== "boolean"
+        || typeof stderrObserved !== "boolean"
+        || typeof forceExpired !== "boolean") {
         return null;
     }
     return {
         shutdownMode,
-        progressStage,
+        progressStage: decodedProgressStage,
         closeWriteStatus,
-        processExited: value.processExited,
-        stdoutDrained: value.stdoutDrained,
-        stderrObserved: value.stderrObserved,
-        forceExpired: value.forceExpired,
+        processExited,
+        stdoutDrained,
+        stderrObserved,
+        forceExpired,
     };
 }
 
 function decodeTerminationDiagnostic(value: unknown): HyperVElevatedNetworkTerminationDiagnostic | null {
-    if (!isRecord(value) || !isRecord(value.execution)) return null;
-    const relay = decodeRelayDiagnostic(value.relay);
-    const { lastOperation, lastSessionError, activeExecutions } = value.execution;
-    const operation = lastOperation === null
-        ? null
-        : HYPER_V_WINDOWS_OPERATIONS.find((candidate) => candidate === lastOperation);
-    const sessionError: HyperVWindowsSessionErrorCode | "non-session-error" | null | undefined =
-        lastSessionError === null
-            ? null
-            : lastSessionError === "non-session-error"
-                ? "non-session-error"
-                : HYPER_V_WINDOWS_SESSION_ERROR_CODES.find(
-                    (candidate) => candidate === lastSessionError,
-                );
-    if (!relay
-        || operation === undefined
-        || sessionError === undefined
+    if (!isRecord(value)) return null;
+    const relayValue = value.relay;
+    const executionValue = value.execution;
+    if (!isRecord(executionValue)) return null;
+    const relay = relayValue === null ? null : decodeRelayDiagnostic(relayValue);
+    const lastOperation = executionValue.lastOperation;
+    const lastSessionError = executionValue.lastSessionError;
+    const activeExecutions = executionValue.activeExecutions;
+    if ((relayValue !== null && !relay)
         || typeof activeExecutions !== "number"
         || !Number.isInteger(activeExecutions)
         || activeExecutions < 0
         || activeExecutions > 999) {
         return null;
     }
+    if (lastOperation === null) {
+        if (lastSessionError !== null) return null;
+        return {
+            relay,
+            execution: { lastOperation: null, lastSessionError: null, activeExecutions },
+        };
+    }
+    let decodedSessionError: HyperVWindowsSessionErrorCode | "non-session-error" | null;
+    if (lastSessionError === null) decodedSessionError = null;
+    else if (lastSessionError === "non-session-error") decodedSessionError = "non-session-error";
+    else if (isWindowsSessionError(lastSessionError)) decodedSessionError = lastSessionError;
+    else return null;
+    if (!isWindowsOperation(lastOperation)) return null;
     return {
         relay,
-        execution: { lastOperation: operation, lastSessionError: sessionError, activeExecutions },
+        execution: { lastOperation, lastSessionError: decodedSessionError, activeExecutions },
     };
 }
 
-const emptyRelayDiagnostic = (): HyperVElevatedNetworkRelayDiagnostic => ({
-    shutdownMode: "not-started",
-    progressStage: null,
-    closeWriteStatus: "not-started",
-    processExited: false,
-    stdoutDrained: false,
-    stderrObserved: false,
-    forceExpired: false,
-});
+function safeTerminationDiagnostic(value: unknown): HyperVElevatedNetworkTerminationDiagnostic | null {
+    try {
+        return decodeTerminationDiagnostic(value);
+    } catch {
+        return null;
+    }
+}
 
 function safeRelayDiagnostic(
     provider: (() => HyperVElevatedNetworkRelayDiagnostic) | null,
-): HyperVElevatedNetworkRelayDiagnostic {
-    if (!provider) return emptyRelayDiagnostic();
+): HyperVElevatedNetworkRelayDiagnostic | null {
+    if (!provider) return null;
     try {
-        return decodeRelayDiagnostic(provider()) ?? emptyRelayDiagnostic();
+        return decodeRelayDiagnostic(provider());
     } catch {
-        return emptyRelayDiagnostic();
+        return null;
     }
 }
 type HyperVElevatedNetworkRelayTerminationStage = Exclude<
@@ -296,7 +346,7 @@ export class HyperVElevatedNetworkSessionError extends Error {
         this.code = code;
         this.terminationStage = terminationStage;
         this.terminationDiagnostic = code === TERMINATION_UNCONFIRMED_CODE
-            ? decodeTerminationDiagnostic(terminationDiagnostic)
+            ? safeTerminationDiagnostic(terminationDiagnostic)
             : null;
     }
 }
@@ -304,20 +354,26 @@ export class HyperVElevatedNetworkSessionError extends Error {
 export function getHyperVElevatedNetworkTerminationDiagnostic(
     error: unknown,
 ): HyperVElevatedNetworkTerminationDiagnostic | null {
-    if (!(error instanceof HyperVElevatedNetworkSessionError)) return null;
-    if (error.code !== TERMINATION_UNCONFIRMED_CODE) return null;
-    return decodeTerminationDiagnostic(error.terminationDiagnostic);
+    try {
+        if (!(error instanceof HyperVElevatedNetworkSessionError)) return null;
+        if (error.code !== TERMINATION_UNCONFIRMED_CODE) return null;
+        return safeTerminationDiagnostic(error.terminationDiagnostic);
+    } catch {
+        return null;
+    }
 }
 
 export function getHyperVElevatedNetworkTerminationStage(
     error: unknown,
 ): HyperVElevatedNetworkTerminationStage | null {
-    if (!(error instanceof HyperVElevatedNetworkSessionError)) return null;
-    if (error.code !== TERMINATION_UNCONFIRMED_CODE) return null;
-    const stage = error.terminationStage;
-    return stage !== null && HYPER_V_ELEVATED_NETWORK_TERMINATION_STAGES.includes(stage)
-        ? stage
-        : null;
+    try {
+        if (!(error instanceof HyperVElevatedNetworkSessionError)) return null;
+        if (error.code !== TERMINATION_UNCONFIRMED_CODE) return null;
+        const stage = error.terminationStage;
+        return isTerminationStage(stage) ? stage : null;
+    } catch {
+        return null;
+    }
 }
 
 export type HyperVElevatedNetworkRelayProcess = HyperVWindowsSessionProcess & {
@@ -588,7 +644,10 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             });
             endRelayInput();
             if (relayProcessExited) finish(normalExitReason());
-            else child.kill();
+            else {
+                shutdownMode = "abrupt";
+                child.kill();
+            }
         }, RELAY_FORCE_GRACE_MILLISECONDS);
         forcedKill.unref?.();
     };
@@ -913,16 +972,24 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         spawn: async (sessionBootstrap) => {
             if (relay) throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-relay-failed");
             try {
-                relay = await spawnRelay({
+                const spawnedRelay = await spawnRelay({
                     executable: options.executable,
                     sessionBootstrap,
                     deadlineUnixMilliseconds: options.deadlineUnixMilliseconds,
                     onBeforeElevation: options.onBeforeElevation ?? (() => undefined),
                 });
-                relayCompletion = relay.completion;
-                relayFailureCode = relay.failureCode;
-                relayDiagnostic = relay.diagnostic;
-                return relay;
+                relay = spawnedRelay;
+                relayCompletion = spawnedRelay.completion;
+                relayFailureCode = spawnedRelay.failureCode;
+                try {
+                    const provider = spawnedRelay.diagnostic;
+                    relayDiagnostic = typeof provider === "function"
+                        ? () => provider.call(spawnedRelay)
+                        : null;
+                } catch {
+                    relayDiagnostic = null;
+                }
+                return spawnedRelay;
             } catch (error) {
                 startupFailure = boundedElevationCode(error);
                 throw error;

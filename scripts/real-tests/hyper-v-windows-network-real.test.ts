@@ -355,5 +355,37 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
             "FAIL Hyper-V Windows typed network real-host proof: hyper-v-network-elevation-termination-unconfirmed",
         );
         expect(sink.read().stderr).not.toContain("native secret");
+
+        const missingRelaySink = output();
+        const missingRelayStatus = await runHyperVWindowsNetworkHost({
+            platform: "win32",
+            windowsSystemRoot: "C:\\Windows",
+            stdout: missingRelaySink.stdout as any,
+            stderr: missingRelaySink.stderr as any,
+            importLibraryImpl: async () => runtime as any,
+            withElevatedExecutorImpl: (async () => {
+                throw new HyperVElevatedNetworkSessionError(
+                    "hyper-v-network-elevation-termination-unconfirmed",
+                    "relay-completion-timeout",
+                    {
+                        relay: null,
+                        execution: {
+                            lastOperation: "Get-VM",
+                            lastSessionError: null,
+                            activeExecutions: 0,
+                        },
+                    },
+                );
+            }) as any,
+            runScenarioImpl: vi.fn() as any,
+            withExclusiveRunImpl: async (operation) => operation(),
+        });
+
+        expect(missingRelayStatus).toBe(1);
+        expect(missingRelaySink.read().stderr).toContain(
+            "DIAGNOSTIC Hyper-V elevated network execution activeExecutions=0"
+            + " lastOperation=Get-VM lastSessionError=none",
+        );
+        expect(missingRelaySink.read().stderr).not.toContain("relay shutdown=");
     });
 });

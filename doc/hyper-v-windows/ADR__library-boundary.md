@@ -268,8 +268,10 @@ progress frames are filtered control traffic and never contain native output,
 paths, PIDs, or the token in reported diagnostics. This keeps real-host
 investigation actionable without treating progress as success evidence or
 weakening the acknowledgement and exact-process checks. Unknown-error extraction
-and injected diagnostic providers are runtime-validated and copied; invalid or
-throwing providers contribute no details and cannot replace the stable error.
+and injected diagnostic providers are runtime-validated and copied against
+private immutable membership tables; invalid or throwing providers contribute a
+null relay snapshot, retain valid typed execution evidence, and cannot replace
+the stable error.
 Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a

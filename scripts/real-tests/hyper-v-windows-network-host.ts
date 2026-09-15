@@ -127,7 +127,7 @@ export async function runHyperVWindowsNetworkHost(
         const stage = getHyperVElevatedNetworkTerminationStage(error);
         if (stage) stderr.write(`DIAGNOSTIC Hyper-V elevated network termination stage=${stage}\n`);
         const diagnostic = getHyperVElevatedNetworkTerminationDiagnostic(error);
-        if (diagnostic) {
+        if (diagnostic?.relay) {
             stderr.write("DIAGNOSTIC Hyper-V elevated network relay"
                 + ` shutdown=${diagnostic.relay.shutdownMode}`
                 + ` progress=${diagnostic.relay.progressStage ?? "none"}`
@@ -136,6 +136,11 @@ export async function runHyperVWindowsNetworkHost(
                 + ` stdoutDrained=${String(diagnostic.relay.stdoutDrained)}`
                 + ` stderrObserved=${String(diagnostic.relay.stderrObserved)}`
                 + ` forceExpired=${String(diagnostic.relay.forceExpired)}`
+                + ` activeExecutions=${String(diagnostic.execution.activeExecutions)}`
+                + ` lastOperation=${diagnostic.execution.lastOperation ?? "none"}`
+                + ` lastSessionError=${diagnostic.execution.lastSessionError ?? "none"}\n`);
+        } else if (diagnostic) {
+            stderr.write("DIAGNOSTIC Hyper-V elevated network execution"
                 + ` activeExecutions=${String(diagnostic.execution.activeExecutions)}`
                 + ` lastOperation=${diagnostic.execution.lastOperation ?? "none"}`
                 + ` lastSessionError=${diagnostic.execution.lastSessionError ?? "none"}\n`);

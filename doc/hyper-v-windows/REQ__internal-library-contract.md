@@ -356,7 +356,9 @@ and states whether the close write, relay exit, stdout drain, stderr presence,
 and force timer were observed. It MUST NOT include the correlation token,
 native stderr, exception text, a path, or a PID. The exported unknown-error
 extractor and any injected relay diagnostic provider MUST validate and copy the
-snapshot at runtime; an invalid or throwing provider yields no relay details
+snapshot at runtime against private immutable membership tables. An invalid or
+throwing provider yields a null relay snapshot (while retaining a valid typed
+execution snapshot),
 rather than replacing the stable termination error or exposing its exception.
 Progress frames are diagnostic
 only: they MUST be authenticated by the relay terminal token, filtered from the
