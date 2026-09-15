@@ -361,6 +361,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "exit-before-ack",
         "invalid-ack",
         "duplicate-ack",
+        "ack-close-without-exit",
         "ack-stdin-error",
     ] as const)(
         "handles correlated relay terminal protocol (%s) without depending on close for success",
@@ -427,7 +428,12 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 "data",
                                 `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
                             );
-                            if (order === "ack-before-exit" || order === "ack-stdin-error" || order === "duplicate-ack") {
+                            if (order === "ack-close-without-exit") {
+                                acknowledge();
+                                events.emit("close", 0, null);
+                            } else if (order === "ack-before-exit"
+                                || order === "ack-stdin-error"
+                                || order === "duplicate-ack") {
                                 acknowledge();
                                 if (order === "duplicate-ack") acknowledge();
                                 events.emit("exit", 0, null);
@@ -473,7 +479,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             }, (executor) => executor.execute(getVmRequest(), executorContext()));
             const expectsFailure = order === "invalid-ack"
                 || order === "duplicate-ack"
+                || order === "ack-close-without-exit"
                 || order === "ack-stdin-error";
+            const expectedTerminationStage = order === "invalid-ack" || order === "duplicate-ack"
+                ? "relay-terminal-ack-invalid"
+                : order === "ack-close-without-exit"
+                    ? "relay-process-exit-timeout"
+                    : "relay-input-write";
             const result = expectsFailure
                 ? await resultPromise.then(() => null, (error: unknown) => error)
                 : await resultPromise;
@@ -488,9 +500,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             if (expectsFailure) {
                 expect(result).toMatchObject({
                     code: "hyper-v-network-elevation-termination-unconfirmed",
-                    terminationStage: order === "invalid-ack" || order === "duplicate-ack"
-                        ? "relay-terminal-ack-invalid"
-                        : "relay-input-write",
+                    terminationStage: expectedTerminationStage,
                 });
             } else {
                 expect(result).toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
