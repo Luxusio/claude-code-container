@@ -19,6 +19,7 @@ import {
     withElevatedHyperVNetworkExecutor,
     type HyperVElevatedNetworkErrorCode,
     type HyperVElevatedNetworkRelayCompletion,
+    type HyperVElevatedNetworkRelayFailureEvent,
     type HyperVElevatedNetworkRelayProcess,
     type HyperVElevatedNetworkRelaySpawn,
     type HyperVElevatedNetworkTerminationStage,
@@ -397,6 +398,20 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             terminationStage: "relay-force-timeout",
         };
         expect([missingStage, unrelatedStage]).toHaveLength(2);
+
+        // @ts-expect-error Relay fallbacks cannot replace an existing primary failure.
+        const invalidFallbackOverride: HyperVElevatedNetworkRelayFailureEvent = {
+            kind: "termination",
+            stage: "relay-force-timeout",
+            replaceFailure: true,
+        };
+        // @ts-expect-error The authenticated elevated-child result must replace earlier failures.
+        const invalidChildPrecedence: HyperVElevatedNetworkRelayFailureEvent = {
+            kind: "termination",
+            stage: "elevated-child",
+            replaceFailure: false,
+        };
+        expect([invalidFallbackOverride, invalidChildPrecedence]).toHaveLength(2);
     });
 
     it("extracts diagnostics only from a correlated termination error", () => {
@@ -488,14 +503,19 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             terminationStage: null,
         });
 
-        expect(transitionHyperVElevatedNetworkRelayFailure(primary, {
+        const authoritativeChild = transitionHyperVElevatedNetworkRelayFailure(primary, {
             kind: "termination",
             stage: "elevated-child",
             replaceFailure: true,
-        })).toEqual({
+        });
+        expect(authoritativeChild).toEqual({
             errorCode: "hyper-v-network-elevation-termination-unconfirmed",
             terminationStage: "elevated-child",
         });
+        expect(transitionHyperVElevatedNetworkRelayFailure(authoritativeChild, {
+            kind: "replace-primary",
+            code: "hyper-v-network-elevation-protocol-invalid",
+        })).toEqual(authoritativeChild);
     });
 
     it("does not widen the executor result when a callback throws", async () => {
