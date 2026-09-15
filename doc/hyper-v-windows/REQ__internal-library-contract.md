@@ -379,7 +379,10 @@ do not prove PowerShell 5.1 syntax. A source-checkout real-host command MUST run
 that parser gate before requesting UAC, so malformed relay source cannot reach
 the privileged proof. Runtime TypeScript materialization MUST use the installed
 transformer supported by the package's Node `>=20.19.0` range and MUST NOT depend
-on Node's newer native type stripping.
+on Node's newer native type stripping. A verification-only flag that disables
+native type stripping MUST be enabled through runtime capability detection, not
+from the Node major version, because supported early Node 22 releases do not
+recognize that flag.
 
 Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes

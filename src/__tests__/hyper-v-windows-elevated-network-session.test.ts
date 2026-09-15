@@ -891,7 +891,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             "hyper-v",
             "elevated-network-session.ts",
         )).href;
-        const supportsStripTypesFlag = Number(process.versions.node.split(".")[0]) >= 22;
+        const supportsStripTypesFlag = process.allowedNodeEnvironmentFlags.has("--no-experimental-strip-types");
         const result = spawnSync(process.execPath, [
             ...(supportsStripTypesFlag ? ["--no-experimental-strip-types"] : []),
             "--import",
