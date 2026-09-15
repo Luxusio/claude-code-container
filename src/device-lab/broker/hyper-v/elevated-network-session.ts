@@ -696,6 +696,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     };
     const rejectSessionOutput = () => {
         sessionOutputRejected = true;
+        buffered = "";
         stop();
     };
     const close = () => {
@@ -836,6 +837,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
+        if (sessionOutputRejected) return;
         buffered += chunk;
         let index = buffered.indexOf("\n");
         while (index >= 0) {
@@ -849,6 +851,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             if (!handleControlLine(line) && relayReady && !sessionOutputRejected) {
                 for (const listener of [...lineListeners]) listener(line);
             }
+            if (sessionOutputRejected) return;
             index = buffered.indexOf("\n");
         }
         if (Buffer.byteLength(buffered, "utf8") > MAX_RELAY_LINE_BYTES) {
@@ -1054,12 +1057,12 @@ export async function withElevatedHyperVNetworkExecutor<T>(
             context: HyperVWindowsExecutionContext,
         ): Promise<HyperVWindowsExecutionResult> {
             if (!active) return failedExecution("hyper-v-network-elevation-scope-closed");
+            if (lastSessionError === null) lastOperation = request.operation;
             if (options.signal?.aborted || context.signal?.aborted) {
                 return failedExecution("hyper-v-network-elevation-cancelled");
             }
             const remaining = options.deadlineUnixMilliseconds - Date.now();
             if (remaining <= 0) return failedExecution("hyper-v-network-elevation-deadline-exceeded");
-            if (lastSessionError === null) lastOperation = request.operation;
             activeExecutions += 1;
             let result: HyperVWindowsExecutionResult;
             try {

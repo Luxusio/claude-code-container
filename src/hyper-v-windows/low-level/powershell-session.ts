@@ -584,7 +584,11 @@ export function createHyperVWindowsPowerShellSession(
             return starts;
         },
         outstanding() {
-            return { pendingRequests: pending.size, queueDepth };
+            let deliveredPendingRequests = 0;
+            for (const entry of pending.values()) {
+                if (entry.delivered) deliveredPendingRequests += 1;
+            }
+            return { pendingRequests: deliveredPendingRequests, queueDepth };
         },
     };
 }

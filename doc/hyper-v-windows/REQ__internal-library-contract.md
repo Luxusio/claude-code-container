@@ -349,8 +349,9 @@ MUST report that stage separately without changing the stable failure text.
 When that stage is a relay fallback, the proof MUST also report a bounded,
 typed diagnostic snapshot that distinguishes graceful close from abrupt
 discard. Any transition from a graceful close attempt into force-stop MUST be
-reported as abrupt. The snapshot names only the last known operation or the
-operation/error pair from the same failed execution, using their existing
+reported as abrupt. The snapshot names only the last known operation—including
+an admitted call that returns locally for cancellation or deadline expiry—or
+the operation/error pair from the same failed execution, using their existing
 closed sets, and records the last token-correlated relay progress stage,
 and states whether the close write, relay exit, stdout drain, stderr presence,
 and force timer were observed. Exact non-negative safe-integer counts for
@@ -374,6 +375,12 @@ Progress frames are diagnostic
 only: they MUST be authenticated by the relay terminal token, filtered from the
 session response stream, bounded to a closed stage set, and MUST NOT relax the
 terminal acknowledgement or exact-process termination requirements.
+A fatal relay-protocol rejection is an absorbing parser state: all later stdout
+lines remain drained for lifecycle completion but MUST NOT be interpreted as
+control or session frames, overwrite the primary failure, or advance progress.
+Requests whose transport write completion explicitly reports non-delivery MUST
+NOT contribute to the delivered-pending count even while their bookkeeping
+entry remains unsettled.
 An already-recorded bounded primary relay failure takes precedence over the
 later `relay-input-write`, `relay-terminal-ack-missing`, and
 `relay-process-exit-timeout` fallbacks, and a primary

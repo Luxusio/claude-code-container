@@ -275,6 +275,12 @@ private immutable membership tables backed by declaration-frozen authoritative
 operation and session-error tuples; invalid or throwing providers contribute a
 null relay snapshot, retain valid typed execution evidence, and cannot replace
 the stable error. Relays without that optional provider remain type-compatible.
+An admitted cancellation or deadline-expired call becomes the last known
+operation unless an earlier session error has already sealed its correlated
+operation/error pair. A transport write that explicitly reports non-delivery is
+excluded from the delivered-pending count. Fatal protocol rejection is an
+absorbing control-parser state: stdout is still drained, but no later line may
+change failure, progress, or session evidence.
 Existing primary relay failures outrank later input-write or force
 fallbacks, while a primary failure decoded after a fallback replaces it; only
 the authenticated elevated child's explicit termination result outranks a
