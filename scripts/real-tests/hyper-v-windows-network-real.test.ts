@@ -333,6 +333,7 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
                             lastOperation: "Get-NetNat",
                             lastSessionError: "hyper-v-windows-session-queue-timeout",
                             activeExecutions: 1,
+                            pendingExecutions: 1,
                         },
                     },
                 );
@@ -348,7 +349,7 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
         expect(sink.read().stderr).toContain(
             "DIAGNOSTIC Hyper-V elevated network relay shutdown=abrupt progress=request-forwarded"
             + " closeWrite=not-started processExited=false stdoutDrained=false stderrObserved=true"
-            + " forceExpired=true activeExecutions=1 lastOperation=Get-NetNat"
+            + " forceExpired=true activeExecutions=1 pendingExecutions=1 lastOperation=Get-NetNat"
             + " lastSessionError=hyper-v-windows-session-queue-timeout",
         );
         expect(sink.read().stderr).toContain(
@@ -373,6 +374,7 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
                             lastOperation: "Get-VM",
                             lastSessionError: null,
                             activeExecutions: 0,
+                            pendingExecutions: 0,
                         },
                     },
                 );
@@ -383,7 +385,7 @@ describe("Hyper-V Windows network real-host entrypoint", () => {
 
         expect(missingRelayStatus).toBe(1);
         expect(missingRelaySink.read().stderr).toContain(
-            "DIAGNOSTIC Hyper-V elevated network execution activeExecutions=0"
+            "DIAGNOSTIC Hyper-V elevated network execution activeExecutions=0 pendingExecutions=0"
             + " lastOperation=Get-VM lastSessionError=none",
         );
         expect(missingRelaySink.read().stderr).not.toContain("relay shutdown=");

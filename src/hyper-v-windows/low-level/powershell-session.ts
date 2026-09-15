@@ -170,6 +170,10 @@ export type HyperVWindowsSession = HyperVWindowsExecutor & {
     close(): void;
     // Observability for the invariant that matters: one process serving many primitives.
     starts(): number;
+    outstanding(): {
+        readonly pendingRequests: number;
+        readonly queueDepth: number;
+    };
 };
 
 type Pending = {
@@ -578,6 +582,9 @@ export function createHyperVWindowsPowerShellSession(
         },
         starts() {
             return starts;
+        },
+        outstanding() {
+            return { pendingRequests: pending.size, queueDepth };
         },
     };
 }

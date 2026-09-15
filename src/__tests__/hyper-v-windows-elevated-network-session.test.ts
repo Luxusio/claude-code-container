@@ -522,12 +522,86 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         lastOperation: "Get-VMSwitch",
                         lastSessionError: "hyper-v-windows-session-queue-timeout",
                         activeExecutions: 1,
+                        pendingExecutions: 1,
                     },
                 },
             });
             expect(killed).toBe(true);
             expect(lineListeners).toHaveLength(1);
             expect(exitListeners).toHaveLength(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("separates caller-active work from a delivered request still pending at scope close", async () => {
+        vi.useFakeTimers();
+        try {
+            let resolveCompletion = (_value: HyperVElevatedNetworkRelayCompletion) => undefined as void;
+            const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
+                resolveCompletion = resolve;
+            });
+            let killed = false;
+            const process: HyperVElevatedNetworkRelayProcess = {
+                completion,
+                failureCode: () => null,
+                diagnostic: () => ({
+                    shutdownMode: killed ? "abrupt" : "not-started",
+                    progressStage: "request-forwarded",
+                    closeWriteStatus: "not-started",
+                    processExited: killed,
+                    stdoutDrained: killed,
+                    stderrObserved: false,
+                    forceExpired: killed,
+                }),
+                write(_line, settled) {
+                    settled?.();
+                },
+                onLine() {},
+                onExit() {},
+                close() {
+                    throw new Error("pending delivered work must not close gracefully");
+                },
+                kill() {
+                    killed = true;
+                    resolveCompletion({
+                        errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+                        terminationStage: "relay-terminal-ack-missing",
+                    });
+                },
+            };
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, async (executor) => {
+                const timedOut = await executor.execute(getVmRequest(), {
+                    timeoutMilliseconds: 100,
+                    maximumOutputBytes: 64 * 1024,
+                });
+                if (timedOut.error) throw new Error(timedOut.error);
+                return timedOut;
+            });
+            const settled = result.then(() => null, (error: unknown) => error);
+
+            await vi.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(100);
+            expect(await settled).toMatchObject({
+                code: "hyper-v-network-elevation-termination-unconfirmed",
+                terminationDiagnostic: {
+                    execution: {
+                        lastOperation: "Get-VM",
+                        lastSessionError: "hyper-v-windows-session-timeout",
+                        activeExecutions: 0,
+                        pendingExecutions: 1,
+                    },
+                },
+            });
+            expect(killed).toBe(true);
         } finally {
             vi.useRealTimers();
         }
@@ -553,6 +627,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "force-before-exit-late-child-failure",
         "exit-and-stdout-before-force-no-close",
         "exit-stdin-error-late-child-failure",
+        "ack-exit-wrapper-output-drain-timeout",
         "close-write-timeout",
         "close-write-timeout-delayed-success",
         "close-write-timeout-delayed-error",
@@ -569,11 +644,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "force-before-exit-late-child-failure";
             const usesPreForceEvidence = order === "exit-and-stdout-before-force-no-close"
                 || order === "exit-stdin-error-late-child-failure";
+            const usesWrapperOutputDrain = order === "ack-exit-wrapper-output-drain-timeout";
             const usesForceTimer = usesAbruptForceTimer
                 || order === "graceful-force-timeout"
                 || usesLateForceOrdering
                 || usesPreForceEvidence
-                || usesInvalidProgress;
+                || usesInvalidProgress
+                || usesWrapperOutputDrain;
             const forceKillsProcess = usesAbruptForceTimer
                 || order === "graceful-force-timeout"
                 || order === "force-before-exit-late-child-failure";
@@ -605,6 +682,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             let stdinEndCalls = 0;
             let completeAfterStdinEnd: (() => void) | null = null;
             let closeWriteSettled: ((error?: Error) => void) | null = null;
+            let deferredInvalidProgressResponse = "";
             let simulationError: unknown = null;
 
             const acceptInput = (chunk: string) => {
@@ -635,14 +713,22 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 events.emit("close", 1, null);
                                 return;
                             }
+                            if (usesInvalidProgress) {
+                                stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n");
+                            }
+                            const differentToken = terminalToken.startsWith("0")
+                                ? `1${terminalToken.slice(1)}`
+                                : `0${terminalToken.slice(1)}`;
                             const progressLine = order === "wrong-token-progress"
-                                ? "CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:wrong-token:relay-ready\n"
+                                ? `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${differentToken}:relay-ready\n`
                                 : order === "unknown-progress-stage"
                                     ? `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:native-secret\n`
                                     : `CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:${terminalToken}:relay-ready\n`;
                             stdout.emit(
                                 "data",
-                                "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n" + progressLine,
+                                (usesInvalidProgress ? "" : "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n")
+                                + progressLine
+                                + deferredInvalidProgressResponse,
                             );
                         });
                     } else if (line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) {
@@ -658,11 +744,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                             code: 0,
                             stdout: successEnvelope("Get-VM"),
                         }), "utf8").toString("base64");
-                        queueMicrotask(() => {
-                            stdout.emit(
-                                "data",
-                                `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${reply}\n`,
-                            );
+                        const responseLine = `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${reply}\n`;
+                        if (usesInvalidProgress) deferredInvalidProgressResponse = responseLine;
+                        else queueMicrotask(() => {
+                            stdout.emit("data", responseLine);
                             if (usesAbruptForceTimer) {
                                 stdinEvents.emit("error", new Error("simulated abrupt stdin failure"));
                             }
@@ -733,6 +818,11 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`,
                                 );
                             };
+                            if (order === "ack-exit-wrapper-output-drain-timeout") {
+                                acknowledge();
+                                events.emit("exit", 0, null);
+                                return;
+                            }
                             if (order === "ack-close-without-exit") {
                                 acknowledge();
                                 stdout.emit("end");
@@ -851,6 +941,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "graceful-force-timeout"
                 || usesLateForceOrdering
                 || usesPreForceEvidence
+                || usesWrapperOutputDrain
                 || order === "close-write-timeout"
                 || order === "close-write-timeout-delayed-success"
                 || order === "close-write-timeout-delayed-error"
@@ -870,6 +961,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     ? "relay-process-exit-timeout"
                     : order === "ack-exit-close-without-stdout-end"
                         ? "relay-output-drain-timeout"
+                        : usesWrapperOutputDrain
+                            ? "relay-output-drain-timeout"
                         : order === "graceful-force-timeout"
                             ? "relay-terminal-ack-missing"
                             : usesLateForceOrdering
@@ -884,7 +977,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 : resultPromise;
             let result: unknown;
             try {
-                if (usesForceTimer) await vi.advanceTimersByTimeAsync(10_001);
+                if (usesWrapperOutputDrain) await vi.advanceTimersByTimeAsync(15_001);
+                else if (usesForceTimer) await vi.advanceTimersByTimeAsync(10_001);
                 else if (usesCloseWriteTimer) await vi.advanceTimersByTimeAsync(1_001);
                 if (usesLateForceOrdering) {
                     if (order === "force-before-exit-late-child-failure") {
@@ -950,6 +1044,18 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     : "graceful",
                                 processExited: true,
                                 stdoutDrained: true,
+                                forceExpired: true,
+                            },
+                        },
+                    });
+                }
+                if (usesWrapperOutputDrain) {
+                    expect(result).toMatchObject({
+                        terminationDiagnostic: {
+                            relay: {
+                                shutdownMode: "graceful",
+                                processExited: true,
+                                stdoutDrained: false,
                                 forceExpired: true,
                             },
                         },
@@ -1096,12 +1202,30 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     lastOperation: "Get-VM",
                     lastSessionError: "hyper-v-windows-session-queue-timeout",
                     activeExecutions: 1,
+                    pendingExecutions: 1,
                 },
             },
         );
         expect(getHyperVElevatedNetworkTerminationDiagnostic(diagnostic)).toMatchObject({
             relay: { shutdownMode: "abrupt", progressStage: "request-forwarded" },
             execution: { lastSessionError: "hyper-v-windows-session-queue-timeout" },
+        });
+
+        const highCount = new HyperVElevatedNetworkSessionError(
+            "hyper-v-network-elevation-termination-unconfirmed",
+            "relay-terminal-ack-missing",
+            {
+                relay: null,
+                execution: {
+                    lastOperation: "Get-VM",
+                    lastSessionError: null,
+                    activeExecutions: 1_000,
+                    pendingExecutions: 1_000,
+                },
+            },
+        );
+        expect(getHyperVElevatedNetworkTerminationDiagnostic(highCount)).toMatchObject({
+            execution: { activeExecutions: 1_000, pendingExecutions: 1_000 },
         });
 
         const invalidStage = new HyperVElevatedNetworkSessionError(
@@ -1113,6 +1237,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     lastOperation: "Get-VM",
                     lastSessionError: null,
                     activeExecutions: 0,
+                    pendingExecutions: 0,
                 },
             },
         );
@@ -1137,6 +1262,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                     lastOperation: "Get-VM",
                     lastSessionError: "native text",
                     activeExecutions: 1,
+                    pendingExecutions: 0,
                 },
             } as never,
         );
@@ -1186,6 +1312,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 lastOperation: "Get-VM",
                 lastSessionError: null,
                 activeExecutions: 0,
+                pendingExecutions: 0,
             },
         });
         expect(getHyperVElevatedNetworkTerminationDiagnostic(changing)).toMatchObject({

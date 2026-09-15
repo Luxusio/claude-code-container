@@ -126,6 +126,7 @@ export type HyperVElevatedNetworkRelayDiagnostic = {
 
 export type HyperVElevatedNetworkExecutionDiagnostic = {
     readonly activeExecutions: number;
+    readonly pendingExecutions: number;
 } & (
     | {
         readonly lastOperation: null;
@@ -231,18 +232,26 @@ function decodeTerminationDiagnostic(value: unknown): HyperVElevatedNetworkTermi
     const lastOperation = executionValue.lastOperation;
     const lastSessionError = executionValue.lastSessionError;
     const activeExecutions = executionValue.activeExecutions;
+    const pendingExecutions = executionValue.pendingExecutions;
     if ((relayValue !== null && !relay)
         || typeof activeExecutions !== "number"
-        || !Number.isInteger(activeExecutions)
+        || !Number.isSafeInteger(activeExecutions)
         || activeExecutions < 0
-        || activeExecutions > 999) {
+        || typeof pendingExecutions !== "number"
+        || !Number.isSafeInteger(pendingExecutions)
+        || pendingExecutions < 0) {
         return null;
     }
     if (lastOperation === null) {
         if (lastSessionError !== null) return null;
         return {
             relay,
-            execution: { lastOperation: null, lastSessionError: null, activeExecutions },
+            execution: {
+                lastOperation: null,
+                lastSessionError: null,
+                activeExecutions,
+                pendingExecutions,
+            },
         };
     }
     let decodedSessionError: HyperVWindowsSessionErrorCode | "non-session-error" | null;
@@ -253,7 +262,12 @@ function decodeTerminationDiagnostic(value: unknown): HyperVElevatedNetworkTermi
     if (!isWindowsOperation(lastOperation)) return null;
     return {
         relay,
-        execution: { lastOperation, lastSessionError: decodedSessionError, activeExecutions },
+        execution: {
+            lastOperation,
+            lastSessionError: decodedSessionError,
+            activeExecutions,
+            pendingExecutions,
+        },
     };
 }
 
@@ -279,6 +293,18 @@ type HyperVElevatedNetworkRelayTerminationStage = Exclude<
     HyperVElevatedNetworkTerminationStage,
     "relay-completion-timeout"
 >;
+
+function safeRelayTerminationStage(
+    provider: (() => unknown) | null,
+): HyperVElevatedNetworkRelayTerminationStage | null {
+    if (!provider) return null;
+    try {
+        const stage = provider();
+        return isTerminationStage(stage) && stage !== "relay-completion-timeout" ? stage : null;
+    } catch {
+        return null;
+    }
+}
 
 export type HyperVElevatedNetworkRelayCompletion =
     | {
@@ -387,6 +413,7 @@ export type HyperVElevatedNetworkRelayProcess = HyperVWindowsSessionProcess & {
     readonly close: () => void;
     readonly completion: Promise<HyperVElevatedNetworkRelayCompletion>;
     readonly failureCode: () => HyperVElevatedNetworkErrorCode | null;
+    readonly terminationStage?: () => unknown;
     readonly diagnostic?: () => unknown;
 };
 
@@ -577,6 +604,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     let closeWriteStatus: HyperVElevatedNetworkRelayDiagnostic["closeWriteStatus"] = "not-started";
     let relayStderrObserved = false;
     let relayInputEnded = false;
+    let sessionOutputRejected = false;
     let forcedKill: ReturnType<typeof setTimeout> | null = null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     let closeWriteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -666,6 +694,10 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         endRelayInput();
         armForcedKill();
     };
+    const rejectSessionOutput = () => {
+        sessionOutputRejected = true;
+        stop();
+    };
     const close = () => {
         if (closing || killed || exited) return;
         shutdownMode = "graceful";
@@ -683,7 +715,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 stage: "relay-input-write",
                 replaceFailure: false,
             });
-            stop();
+            rejectSessionOutput();
         }, RELAY_CLOSE_WRITE_GRACE_MILLISECONDS);
         closeWriteTimer.unref?.();
         const finalizationDeadline = Date.now() + ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS;
@@ -702,7 +734,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                     stage: "relay-input-write",
                     replaceFailure: false,
                 });
-                stop();
+                rejectSessionOutput();
                 return;
             }
             closeWriteStatus = "succeeded";
@@ -727,7 +759,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 stage: "relay-terminal-ack-invalid",
                 replaceFailure: false,
             });
-            stop();
+            rejectSessionOutput();
             return true;
         }
         if (line.startsWith(ELEVATION_PROGRESS_PREFIX)) {
@@ -740,7 +772,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             ) ?? null;
             if (!progress) {
                 recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-                stop();
+                rejectSessionOutput();
                 return true;
             }
             relayProgressStage = progress;
@@ -762,7 +794,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         if (line === ELEVATION_REQUEST_MARKER) {
             if (elevationRequested) {
                 recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-                stop();
+                rejectSessionOutput();
                 return true;
             }
             elevationRequested = true;
@@ -778,7 +810,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         if (line === ELEVATION_READY_MARKER) {
             if (!elevationRequested || relayReady) {
                 recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-                stop();
+                rejectSessionOutput();
                 return true;
             }
             relayReady = true;
@@ -792,7 +824,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                     stage: "relay-terminal-ack-invalid",
                     replaceFailure: false,
                 });
-                stop();
+                rejectSessionOutput();
                 return true;
             }
             terminalAcknowledged = true;
@@ -811,17 +843,17 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
             buffered = buffered.slice(index + 1);
             if (Buffer.byteLength(line, "utf8") > MAX_RELAY_LINE_BYTES) {
                 recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-                stop();
+                rejectSessionOutput();
                 return;
             }
-            if (!handleControlLine(line) && relayReady) {
+            if (!handleControlLine(line) && relayReady && !sessionOutputRejected) {
                 for (const listener of [...lineListeners]) listener(line);
             }
             index = buffered.indexOf("\n");
         }
         if (Buffer.byteLength(buffered, "utf8") > MAX_RELAY_LINE_BYTES) {
             recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-            stop();
+            rejectSessionOutput();
         }
     });
     child.stdout?.once("end", () => {
@@ -833,7 +865,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 replaceFailure: false,
             });
             buffered = "";
-            stop();
+            rejectSessionOutput();
         }
         finishAfterRelayTermination();
     });
@@ -842,7 +874,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         stderrBytes += Buffer.byteLength(chunk);
         if (stderrBytes > MAX_RELAY_LINE_BYTES) {
             recordPrimaryFailure("hyper-v-network-elevation-protocol-invalid");
-            stop();
+            rejectSessionOutput();
         }
     });
     child.once("error", () => {
@@ -906,6 +938,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     return {
         completion,
         failureCode: () => relayFailure.errorCode,
+        terminationStage: () => relayFailure.terminationStage,
         diagnostic,
         close,
         write(line, settled) {
@@ -966,14 +999,17 @@ export async function withElevatedHyperVNetworkExecutor<T>(
     let relay: HyperVElevatedNetworkRelayProcess | null = null;
     let relayCompletion: HyperVElevatedNetworkRelayProcess["completion"] | null = null;
     let relayFailureCode: (() => HyperVElevatedNetworkErrorCode | null) | null = null;
+    let relayTerminationStage: (() => unknown) | null = null;
     let relayDiagnostic: (() => unknown) | null = null;
     const currentRelayCompletion = () => relayCompletion;
+    const currentRelayTerminationStage = () => relayTerminationStage;
     const currentRelayDiagnostic = () => relayDiagnostic;
     let startupFailure: HyperVElevatedNetworkErrorCode | null = null;
     let lastOperation: HyperVWindowsOperation | null = null;
     let lastSessionError: HyperVWindowsSessionErrorCode | "non-session-error" | null = null;
     let activeExecutions = 0;
     let activeExecutionsAtClose = 0;
+    let pendingExecutionsAtClose = 0;
     const session = createHyperVWindowsPowerShellSession({
         maximumStarts: 1,
         ...(options.operationAsset ? { operationAsset: options.operationAsset } : {}),
@@ -989,6 +1025,14 @@ export async function withElevatedHyperVNetworkExecutor<T>(
                 relay = spawnedRelay;
                 relayCompletion = spawnedRelay.completion;
                 relayFailureCode = spawnedRelay.failureCode;
+                try {
+                    const provider = spawnedRelay.terminationStage;
+                    relayTerminationStage = typeof provider === "function"
+                        ? () => provider.call(spawnedRelay)
+                        : null;
+                } catch {
+                    relayTerminationStage = null;
+                }
                 try {
                     const provider = spawnedRelay.diagnostic;
                     relayDiagnostic = typeof provider === "function"
@@ -1050,7 +1094,8 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         outcome = { ok: false, error };
     } finally {
         active = false;
-        activeExecutionsAtClose = Math.max(0, Math.min(999, activeExecutions));
+        activeExecutionsAtClose = activeExecutions;
+        pendingExecutionsAtClose = session.outstanding().pendingRequests;
         session.close();
     }
 
@@ -1066,7 +1111,8 @@ export async function withElevatedHyperVNetworkExecutor<T>(
             }),
         ]);
         if (completion === null) {
-            terminationStage = "relay-completion-timeout";
+            terminationStage = safeRelayTerminationStage(currentRelayTerminationStage())
+                ?? "relay-completion-timeout";
         } else {
             if (completion.errorCode === TERMINATION_UNCONFIRMED_CODE) {
                 terminationStage = completion.terminationStage;
@@ -1083,6 +1129,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
                 lastOperation,
                 lastSessionError,
                 activeExecutions: activeExecutionsAtClose,
+                pendingExecutions: pendingExecutionsAtClose,
             },
         });
     }

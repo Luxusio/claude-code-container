@@ -51,6 +51,7 @@ if (false) {
             // @ts-expect-error a session error requires the operation from that same execution
             lastSessionError: "hyper-v-windows-session-queue-timeout",
             activeExecutions: 1,
+            pendingExecutions: 0,
         },
     };
     void uncorrelatedDiagnostic;

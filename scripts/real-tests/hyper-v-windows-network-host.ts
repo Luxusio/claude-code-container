@@ -137,11 +137,13 @@ export async function runHyperVWindowsNetworkHost(
                 + ` stderrObserved=${String(diagnostic.relay.stderrObserved)}`
                 + ` forceExpired=${String(diagnostic.relay.forceExpired)}`
                 + ` activeExecutions=${String(diagnostic.execution.activeExecutions)}`
+                + ` pendingExecutions=${String(diagnostic.execution.pendingExecutions)}`
                 + ` lastOperation=${diagnostic.execution.lastOperation ?? "none"}`
                 + ` lastSessionError=${diagnostic.execution.lastSessionError ?? "none"}\n`);
         } else if (diagnostic) {
             stderr.write("DIAGNOSTIC Hyper-V elevated network execution"
                 + ` activeExecutions=${String(diagnostic.execution.activeExecutions)}`
+                + ` pendingExecutions=${String(diagnostic.execution.pendingExecutions)}`
                 + ` lastOperation=${diagnostic.execution.lastOperation ?? "none"}`
                 + ` lastSessionError=${diagnostic.execution.lastSessionError ?? "none"}\n`);
         }
