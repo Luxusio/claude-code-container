@@ -1,6 +1,9 @@
+import { readFileSync } from "fs";
+import { join } from "path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+    HYPER_V_WINDOWS_SESSION_CLOSE_MARKER,
     HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX,
     HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
     type HyperVWindowsExecutionRequest,
@@ -35,6 +38,8 @@ function successEnvelope(operation: HyperVWindowsExecutionRequest["operation"]):
 type FakeRelay = {
     readonly process: HyperVElevatedNetworkRelayProcess;
     readonly requests: HyperVWindowsExecutionRequest[];
+    readonly gracefullyClosed: () => boolean;
+    readonly forceKilled: () => boolean;
     fail(code: HyperVElevatedNetworkErrorCode, reason?: HyperVWindowsSessionErrorCode): void;
 };
 
@@ -44,6 +49,8 @@ function fakeRelay(): FakeRelay {
     const requests: HyperVWindowsExecutionRequest[] = [];
     let errorCode: HyperVElevatedNetworkErrorCode | null = null;
     let closed = false;
+    let graceful = false;
+    let forced = false;
     let closeReason: HyperVWindowsSessionErrorCode = "hyper-v-windows-session-exited";
     let resolveCompletion = (_value: { readonly errorCode: HyperVElevatedNetworkErrorCode | null }) => undefined as void;
     const completion = new Promise<{ readonly errorCode: HyperVElevatedNetworkErrorCode | null }>((resolve) => {
@@ -56,6 +63,8 @@ function fakeRelay(): FakeRelay {
     };
     return {
         requests,
+        gracefullyClosed: () => graceful,
+        forceKilled: () => forced,
         process: {
             completion,
             failureCode: () => errorCode,
@@ -96,7 +105,14 @@ function fakeRelay(): FakeRelay {
                 exitListeners.push(listener);
                 if (closed) queueMicrotask(() => listener(closeReason));
             },
-            kill: close,
+            close() {
+                graceful = true;
+                close();
+            },
+            kill() {
+                forced = true;
+                close();
+            },
         },
         fail(code, reason = "hyper-v-windows-session-exited") {
             errorCode = code;
@@ -117,6 +133,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         const relay = fakeRelay();
         const spawnRelay: HyperVElevatedNetworkRelaySpawn = vi.fn(async (request) => {
             expect(request.sessionBootstrap).toContain(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX);
+            expect(request.sessionBootstrap).toContain(HYPER_V_WINDOWS_SESSION_CLOSE_MARKER);
             request.onBeforeElevation();
             return relay.process;
         });
@@ -138,6 +155,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(spawnRelay).toHaveBeenCalledTimes(1);
         expect(beforeElevation).toHaveBeenCalledTimes(1);
         expect(relay.requests).toHaveLength(2);
+        expect(relay.gracefullyClosed()).toBe(true);
+        expect(relay.forceKilled()).toBe(false);
     });
 
     it("does not request UAC when the callback performs no administrator operation", async () => {
@@ -285,7 +304,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const process: HyperVElevatedNetworkRelayProcess = {
                 ...relay.process,
                 completion,
-                kill() {
+                close() {
                     setTimeout(() => resolveCompletion({ errorCode: null }), 5_001);
                 },
             };
@@ -313,6 +332,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const process: HyperVElevatedNetworkRelayProcess = {
                 ...relay.process,
                 completion: new Promise(() => undefined),
+                close() {},
                 kill() {},
             };
 
@@ -347,7 +367,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const process: HyperVElevatedNetworkRelayProcess = {
                 ...relay.process,
                 completion,
-                kill() {
+                close() {
                     setTimeout(() => resolveCompletion({ errorCode: null }), 5_001);
                 },
             };
@@ -396,6 +416,29 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(approvalIndex).toBeGreaterThan(requestIndex);
         expect(runAsIndex).toBeGreaterThan(approvalIndex);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toMatch(/(?:Get|New|Set|Remove)-(?:VM|Net)/);
+    });
+
+    it("sends graceful close through the relay without ending relay stdin first", () => {
+        const source = readFileSync(join(
+            process.cwd(),
+            "src",
+            "device-lab",
+            "broker",
+            "hyper-v",
+            "elevated-network-session.ts",
+        ), "utf8");
+        const closeStart = source.indexOf("const close = () => {");
+        const closeEnd = source.indexOf("\n    };\n    const flushQueued", closeStart);
+        const closeSource = source.slice(closeStart, closeEnd);
+
+        expect(closeStart).toBeGreaterThanOrEqual(0);
+        expect(closeEnd).toBeGreaterThan(closeStart);
+        expect(closeSource).toContain("child.stdin?.write(`${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}\\n`");
+        expect(closeSource).not.toContain("child.stdin?.end()");
+        const clearDeadline = closeSource.indexOf("clearTimeout(deadlineTimer)");
+        const writeClose = closeSource.indexOf("child.stdin?.write");
+        expect(clearDeadline).toBeGreaterThanOrEqual(0);
+        expect(clearDeadline).toBeLessThan(writeClose);
     });
 
     it("does not widen the executor result when a callback throws", async () => {

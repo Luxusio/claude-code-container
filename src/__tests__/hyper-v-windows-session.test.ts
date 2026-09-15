@@ -7,6 +7,7 @@ import {
     HYPER_V_WINDOWS_POWERSHELL_ASSET,
     HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP,
     HYPER_V_WINDOWS_SESSION_BOOTSTRAP,
+    HYPER_V_WINDOWS_SESSION_CLOSE_MARKER,
     HYPER_V_WINDOWS_SESSION_READY_MARKER,
     HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX,
     HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
@@ -126,7 +127,9 @@ describe("Hyper-V Windows PowerShell session", () => {
 
     it("matches responses by id rather than by arrival order", async () => {
         const child = fakeChild();
-        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        const gracefulClose = vi.fn();
+        const process: HyperVWindowsSessionProcess = { ...child, close: gracefulClose };
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => process });
         queueMicrotask(() => child.ready());
 
         const first = session.execute(REQUEST, CONTEXT);
@@ -137,6 +140,7 @@ describe("Hyper-V Windows PowerShell session", () => {
 
         expect((await first).error).toBe("hyper-v-windows-session-response-uncorrelated");
         expect(child.killed()).toBe(true);
+        expect(gracefulClose).not.toHaveBeenCalled();
     });
 
     it("frees the pipe when building the frame throws, instead of wedging every later caller", async () => {
@@ -575,6 +579,34 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-unavailable");
     });
 
+    it("uses a process graceful-close capability without invoking abrupt kill", async () => {
+        const child = autoReplyChild(() => "before-close");
+        const gracefulClose = vi.fn();
+        const process: HyperVWindowsSessionProcess = { ...child, close: gracefulClose };
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => process });
+
+        expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("before-close");
+        session.close();
+
+        expect(gracefulClose).toHaveBeenCalledTimes(1);
+        expect(child.killed()).toBe(false);
+    });
+
+    it("uses abrupt kill when close finds an unfinished request", async () => {
+        const child = fakeChild();
+        const gracefulClose = vi.fn();
+        const process: HyperVWindowsSessionProcess = { ...child, close: gracefulClose };
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => process });
+        const unresolved = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60_000 });
+
+        await vi.waitFor(() => expect(child.written).toHaveLength(2));
+        session.close();
+
+        expect((await unresolved).error).toBe("hyper-v-windows-session-closed");
+        expect(gracefulClose).not.toHaveBeenCalled();
+        expect(child.killed()).toBe(true);
+    });
+
     it("bounds the request frame", async () => {
         const child = autoReplyChild(() => "unused");
         const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
@@ -692,6 +724,7 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain("$Operation = [ScriptBlock]::Create($ScriptSource)");
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain("$global:CccHyperVJsonInput = [string]$Envelope.input");
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain(HYPER_V_WINDOWS_SESSION_READY_MARKER);
+        expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain(HYPER_V_WINDOWS_SESSION_CLOSE_MARKER);
     });
 
     it("announces itself before its read loop, which is what makes the never-ran latch sound", () => {
@@ -713,6 +746,18 @@ describe("Hyper-V Windows PowerShell session", () => {
         const flush = HYPER_V_WINDOWS_SESSION_BOOTSTRAP.indexOf("[Console]::Out.Flush()");
         expect(flush).toBeGreaterThan(announce);
         expect(flush).toBeLessThan(loop);
+    });
+
+    it("recognizes graceful close before attempting to decode a request frame", () => {
+        const close = HYPER_V_WINDOWS_SESSION_BOOTSTRAP.indexOf(
+            `$Line -ceq '${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}'`,
+        );
+        const request = HYPER_V_WINDOWS_SESSION_BOOTSTRAP.indexOf(
+            `$Line.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}')`,
+        );
+
+        expect(close).toBeGreaterThanOrEqual(0);
+        expect(request).toBeGreaterThan(close);
     });
 
     it("keeps `exit` out of the asset, because it would take the session down with it", () => {
