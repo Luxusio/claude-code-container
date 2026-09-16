@@ -12,25 +12,25 @@ import {
 
 describe("Hyper-V host setup CLI", () => {
     const roots: string[] = [];
+    // Setup no longer reconciles the network itself; it delegates to the same typed
+    // host-fabric path the broker uses on device create. These tests therefore inject
+    // that call rather than asserting on an embedded PowerShell ensure — the adoption,
+    // repair and rollback policy it used to duplicate is covered by the broker suite.
     const setupNetwork = {
-        ok: true,
+        ok: true as const,
         switchName: "CCC Device Lab",
-        switchId: "11111111-2222-4333-8444-555555555555",
-        natName: "CCCDeviceLab",
-        natInstanceId: "ccc-network-instance-1",
-        prefix: "172.29.0.0/24",
         gateway: "172.29.0.1",
-        interfaceIndex: 42,
-        createdSwitch: true,
-        createdNat: true,
+        prefix: "172.29.0.0/24",
+        outboundPolicy: "nat" as const,
     };
+    const ensureHostNetwork = () => Promise.resolve(setupNetwork);
 
     afterEach(() => {
         vi.restoreAllMocks();
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     });
 
-    it("converts a verified extended DOS executable path into a spawn-compatible path", () => {
+    it("converts a verified extended DOS executable path into a spawn-compatible path", async () => {
         expect(spawnableWindowsExecutablePath("\\\\?\\C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"))
             .toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
         expect(spawnableWindowsExecutablePath("D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"))
@@ -40,7 +40,7 @@ describe("Hyper-V host setup CLI", () => {
         expect(spawnableWindowsExecutablePath("\\\\?\\UNC\\server\\share\\powershell.exe")).toBeNull();
     });
 
-    it("runs diagnostics without enabling Windows features when confirmation is absent", () => {
+    it("runs diagnostics without enabling Windows features when confirmation is absent", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-diagnostic-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         const runner = vi.fn(() => ({
@@ -65,7 +65,7 @@ describe("Hyper-V host setup CLI", () => {
             stderr: "",
         }));
 
-        const result = setupHyperVHost(false, {
+        const result = await setupHyperVHost(false, {
             platform: "win32",
             powershell: "powershell.exe",
             stateRoot: root,
@@ -85,22 +85,17 @@ describe("Hyper-V host setup CLI", () => {
         expect(encodedScript).not.toContain("Enable-WindowsOptionalFeature");
     });
 
-    it("records explicit Windows evaluation license acceptance and reports it later", () => {
+    it("records explicit Windows evaluation license acceptance and reports it later", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-license-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         const mutationLockFile = join(root, "host-locks", "hyper-v.mutation.lock");
         const runner = vi.fn((_command: string, args: string[], _timeoutMs: number, input?: string) => {
             expect(existsSync(mutationLockFile)).toBe(true);
-            expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
             const outer = input
                 ? Buffer.from(input, "base64").toString("utf8")
                 : Buffer.from(args.at(-1) || "", "base64").toString("utf16le");
-            const networkProgramEncoded = outer.match(/\$NetworkProgramEncoded = '([^']+)'/)?.[1];
-            expect(networkProgramEncoded).toBeTruthy();
-            const networkProgram = Buffer.from(networkProgramEncoded!, "base64").toString("utf8");
-            expect(networkProgram).toContain("$AllowExistingNat = $false");
-            expect(networkProgram).toContain("$ExpectedSwitchId = ''");
-            expect(networkProgram).toContain("$ExpectedNatInstanceId = ''");
+            // The elevated setup script must no longer carry a network program of its own.
+            expect(outer).toContain("$NetworkProgramEncoded = ''");
             return {
                 command: "powershell.exe",
                 status: 0,
@@ -112,17 +107,17 @@ describe("Hyper-V host setup CLI", () => {
                     changed: false,
                     elevated: true,
                     rebootRequired: false,
-                    network: setupNetwork,
                 }),
                 stderr: "",
             };
         });
 
-        const accepted = setupHyperVHost(true, {
+        const accepted = await setupHyperVHost(true, {
             platform: "win32",
             powershell: "powershell.exe",
             stateRoot: root,
             commandRunner: runner,
+            ensureHostNetwork,
             acceptWindowsEvaluationLicense: true,
         });
 
@@ -130,13 +125,8 @@ describe("Hyper-V host setup CLI", () => {
         expect(accepted.text).toContain("windowsEvaluationLicenseAccepted: true");
         expect(accepted.text).toContain("windowsEvaluationImageSourceTrust: microsoft-evaluation-https-tofu-v1");
         expect(accepted.text).toContain("networkPrepared: true");
+        expect(accepted.text).toContain(`networkSwitch: ${setupNetwork.switchName}`);
         expect(existsSync(mutationLockFile)).toBe(false);
-        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
-            switchId: setupNetwork.switchId,
-            natInstanceId: setupNetwork.natInstanceId,
-            managedNat: false,
-            allocations: [],
-        });
         const receiptPath = join(root, "hyper-v-windows-evaluation-license.json");
         expect(existsSync(receiptPath)).toBe(true);
         expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
@@ -147,7 +137,7 @@ describe("Hyper-V host setup CLI", () => {
         });
     });
 
-    it("preserves an existing evaluation-license acceptance after the trust label was clarified", () => {
+    it("preserves an existing evaluation-license acceptance after the trust label was clarified", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-legacy-license-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         mkdirSync(root, { recursive: true });
@@ -164,150 +154,6 @@ describe("Hyper-V host setup CLI", () => {
             sourceTrustId: "microsoft-evaluation-https-tofu-v1",
             acceptedAt: "2026-07-01T00:00:00.000Z",
         }));
-    });
-
-    it("does not overwrite a matching network identity with malformed allocations", () => {
-        const root = join(tmpdir(), `ccc-hyper-v-network-state-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-        roots.push(root);
-        const networkRoot = join(root, "network");
-        const stateFile = join(networkRoot, "hyper-v.json");
-        mkdirSync(networkRoot, { recursive: true });
-        writeFileSync(stateFile, JSON.stringify({
-            version: 1,
-            switchName: setupNetwork.switchName,
-            switchId: setupNetwork.switchId,
-            marker: "ccc-device-lab:hyper-v-network:v1",
-            natName: setupNetwork.natName,
-            natInstanceId: setupNetwork.natInstanceId,
-            prefix: setupNetwork.prefix,
-            gateway: setupNetwork.gateway,
-            outboundPolicy: "nat",
-            managedNat: false,
-            allocations: [{ ownerId: "../outside" }],
-        }));
-        const original = readFileSync(stateFile, "utf8");
-        const runner = vi.fn();
-
-        const result = setupHyperVHost(true, {
-            platform: "win32",
-            powershell: "powershell.exe",
-            stateRoot: root,
-            commandRunner: runner,
-        });
-
-        expect(result).toEqual({
-            ok: false,
-            text: "CCC Hyper-V setup failed: hyper-v-network-state-identity-conflict",
-        });
-        expect(runner).not.toHaveBeenCalled();
-        expect(readFileSync(stateFile, "utf8")).toBe(original);
-    });
-
-    it("rejects setup state whose token marker and NAT name do not share an identity", () => {
-        const root = join(tmpdir(), `ccc-hyper-v-network-pair-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-        roots.push(root);
-        const networkRoot = join(root, "network");
-        const stateFile = join(networkRoot, "hyper-v.json");
-        mkdirSync(networkRoot, { recursive: true });
-        writeFileSync(stateFile, JSON.stringify({
-            version: 1,
-            switchName: setupNetwork.switchName,
-            switchId: setupNetwork.switchId,
-            marker: `ccc-device-lab:hyper-v-network:${"a".repeat(24)}`,
-            natName: `CCCDeviceLab-${"b".repeat(24)}`,
-            natInstanceId: setupNetwork.natInstanceId,
-            prefix: setupNetwork.prefix,
-            gateway: setupNetwork.gateway,
-            outboundPolicy: "nat",
-            managedNat: true,
-            allocations: [],
-        }));
-        const runner = vi.fn();
-
-        expect(setupHyperVHost(true, {
-            platform: "win32",
-            powershell: "powershell.exe",
-            stateRoot: root,
-            commandRunner: runner,
-        })).toEqual({
-            ok: false,
-            text: "CCC Hyper-V setup failed: hyper-v-network-state-identity-conflict",
-        });
-        expect(runner).not.toHaveBeenCalled();
-    });
-
-    it("preserves valid existing network allocations while refreshing setup identity", () => {
-        const root = join(tmpdir(), `ccc-hyper-v-network-preserve-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-        roots.push(root);
-        const networkRoot = join(root, "network");
-        const stateFile = join(networkRoot, "hyper-v.json");
-        mkdirSync(networkRoot, { recursive: true });
-        writeFileSync(stateFile, JSON.stringify({
-            version: 1,
-            switchName: setupNetwork.switchName,
-            switchId: setupNetwork.switchId,
-            marker: "ccc-device-lab:hyper-v-network:v1",
-            natName: setupNetwork.natName,
-            natInstanceId: setupNetwork.natInstanceId,
-            prefix: setupNetwork.prefix,
-            gateway: setupNetwork.gateway,
-            outboundPolicy: "nat",
-            managedNat: false,
-            allocations: [{
-                ownerId: "0123456789abcdef",
-                deviceId: "windows-vm-1",
-                incarnationId: "0123456789abcdef0123456789abcdef",
-                address: "172.29.0.10",
-                allocatedAt: "2026-07-23T00:00:00.000Z",
-                unexpected: "discard-me",
-            }],
-        }));
-        const runner = vi.fn((_command: string, args: string[], _timeoutMs: number, input?: string) => {
-            const outer = input
-                ? Buffer.from(input, "base64").toString("utf8")
-                : Buffer.from(args.at(-1) || "", "base64").toString("utf16le");
-            const networkProgramEncoded = outer.match(/\$NetworkProgramEncoded = '([^']+)'/)?.[1];
-            expect(networkProgramEncoded).toBeTruthy();
-            const networkProgram = Buffer.from(networkProgramEncoded!, "base64").toString("utf8");
-            expect(networkProgram).toContain("$AllowExistingNat = $true");
-            expect(networkProgram).toContain("$AllowPersistedCccIdentityRepair = $true");
-            expect(networkProgram).toContain(`$ExpectedSwitchId = '${setupNetwork.switchId}'`);
-            expect(networkProgram).toContain(`$ExpectedNatInstanceId = '${setupNetwork.natInstanceId}'`);
-            return {
-                command: "powershell.exe",
-                status: 0,
-                stdout: JSON.stringify({
-                    ok: true,
-                    featureName: "Microsoft-Hyper-V-All",
-                    beforeState: "Enabled",
-                    afterState: "Enabled",
-                    changed: false,
-                    elevated: true,
-                    rebootRequired: false,
-                    network: setupNetwork,
-                }),
-                stderr: "",
-            };
-        });
-
-        const result = setupHyperVHost(true, {
-            platform: "win32",
-            powershell: "powershell.exe",
-            stateRoot: root,
-            commandRunner: runner,
-        });
-
-        expect(result.ok).toBe(true);
-        expect(JSON.parse(readFileSync(stateFile, "utf8")).allocations).toEqual([
-            {
-                ownerId: "0123456789abcdef",
-                deviceId: "windows-vm-1",
-                incarnationId: "0123456789abcdef0123456789abcdef",
-                address: "172.29.0.10",
-                macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/),
-                allocatedAt: "2026-07-23T00:00:00.000Z",
-            },
-        ]);
     });
 
     it.each([
@@ -336,7 +182,7 @@ describe("Hyper-V host setup CLI", () => {
         expect(() => readHyperVWindowsEvaluationReceipt(root)).toThrow(/hyper-v-windows-evaluation-license/);
     });
 
-    it("does not suggest feature installation for a VMMS-only failure", () => {
+    it("does not suggest feature installation for a VMMS-only failure", async () => {
         const runner = vi.fn(() => ({
             command: "powershell.exe",
             status: 0,
@@ -356,14 +202,14 @@ describe("Hyper-V host setup CLI", () => {
             stderr: "",
         }));
 
-        const result = setupHyperVHost(false, { platform: "win32", powershell: "powershell.exe", commandRunner: runner });
+        const result = await setupHyperVHost(false, { platform: "win32", powershell: "powershell.exe", commandRunner: runner });
 
         expect(result.ok).toBe(true);
         expect(result.text).toContain("start the Hyper-V Virtual Machine Management (vmms) service");
         expect(result.text).not.toContain("verify that the Windows edition supports Hyper-V");
     });
 
-    it("enables Hyper-V only through the confirmed setup path and reports a pending reboot", () => {
+    it("enables Hyper-V only through the confirmed setup path and reports a pending reboot", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-setup-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         mkdirSync(root, { recursive: true });
@@ -378,12 +224,11 @@ describe("Hyper-V host setup CLI", () => {
                 changed: true,
                 elevated: true,
                 rebootRequired: true,
-                network: setupNetwork,
             }),
             stderr: "",
         }));
 
-        const result = setupHyperVHost(true, { platform: "win32", powershell: "powershell.exe", stateRoot: root, commandRunner: runner });
+        const result = await setupHyperVHost(true, { platform: "win32", powershell: "powershell.exe", stateRoot: root, commandRunner: runner, ensureHostNetwork });
 
         expect(result.ok).toBe(true);
         expect(result.text).toContain("mode: confirmed");
@@ -397,10 +242,10 @@ describe("Hyper-V host setup CLI", () => {
         expect(encodedScript).not.toContain("Restart-Computer");
     });
 
-    it("reduces raw PowerShell setup failures to bounded categories", () => {
+    it("reduces raw PowerShell setup failures to bounded categories", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-errors-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
-        const rawFailure = setupHyperVHost(true, {
+        const rawFailure = await setupHyperVHost(true, {
             platform: "win32",
             powershell: "powershell.exe",
             stateRoot: root,
@@ -414,7 +259,7 @@ describe("Hyper-V host setup CLI", () => {
         expect(rawFailure).toEqual({ ok: false, text: "CCC Hyper-V setup failed: hyper-v-setup-host-operation-failed" });
         expect(rawFailure.text).not.toContain("C:\\Users\\private");
 
-        const categorized = setupHyperVHost(true, {
+        const categorized = await setupHyperVHost(true, {
             platform: "win32",
             powershell: "powershell.exe",
             stateRoot: root,
@@ -427,7 +272,7 @@ describe("Hyper-V host setup CLI", () => {
         });
         expect(categorized).toEqual({ ok: false, text: "CCC Hyper-V setup failed: hyper-v-setup-pipe-client-mismatch" });
 
-        const wrapped = setupHyperVHost(true, {
+        const wrapped = await setupHyperVHost(true, {
             platform: "win32",
             powershell: "powershell.exe",
             stateRoot: root,
@@ -440,7 +285,7 @@ describe("Hyper-V host setup CLI", () => {
         });
         expect(wrapped).toEqual({ ok: false, text: "CCC Hyper-V setup failed: hyper-v-setup-pipe-handshake-timeout" });
 
-        const partial = setupHyperVHost(true, {
+        const partial = await setupHyperVHost(true, {
             platform: "win32",
             powershell: "powershell.exe",
             stateRoot: root,
@@ -449,7 +294,7 @@ describe("Hyper-V host setup CLI", () => {
         expect(partial).toEqual({ ok: false, text: "CCC Hyper-V setup failed: hyper-v-setup-host-operation-failed" });
 
         for (const stderr of ["hyper-v-setup-pipe-handshake-timeout-extra", "prefixhyper-v-setup-enable-failedsuffix"]) {
-            const extended = setupHyperVHost(true, {
+            const extended = await setupHyperVHost(true, {
                 platform: "win32",
                 powershell: "powershell.exe",
                 stateRoot: root,
@@ -459,7 +304,7 @@ describe("Hyper-V host setup CLI", () => {
         }
     });
 
-    it("pins elevated setup module resolution to the canonical Windows PowerShell modules", () => {
+    it("pins elevated setup module resolution to the canonical Windows PowerShell modules", async () => {
         const originalModulePath = process.env.PSModulePath;
         process.env.PSModulePath = "C:\\Users\\attacker\\Documents\\WindowsPowerShell\\Modules";
         try {
@@ -520,7 +365,7 @@ describe("Hyper-V host setup CLI", () => {
         }
     });
 
-    it("uses only the canonical system PowerShell path at the UAC elevation boundary", () => {
+    it("uses only the canonical system PowerShell path at the UAC elevation boundary", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-system-powershell-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         const powershell = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -541,23 +386,23 @@ describe("Hyper-V host setup CLI", () => {
                 membershipChanged: false,
                 managementAccess: true,
                 sessionRefreshRequired: false,
-                network: setupNetwork,
             }),
             stderr: "",
         }));
 
-        const result = setupHyperVHost(true, {
+        const result = await setupHyperVHost(true, {
             platform: "win32",
             systemRoot: root,
             stateRoot: join(root, "state"),
             commandRunner: runner,
+            ensureHostNetwork,
         });
 
         expect(result.ok).toBe(true);
         expect(runner).toHaveBeenCalledWith(powershell, expect.any(Array), 900_000, expect.any(String));
     });
 
-    it("does not trust spoofed SystemRoot or WINDIR values at the UAC elevation boundary", () => {
+    it("does not trust spoofed SystemRoot or WINDIR values at the UAC elevation boundary", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-spoofed-system-root-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         const fakePowerShell = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -569,7 +414,7 @@ describe("Hyper-V host setup CLI", () => {
         process.env.WINDIR = root;
         const runner = vi.fn();
         try {
-            const result = setupHyperVHost(true, {
+            const result = await setupHyperVHost(true, {
                 platform: "win32",
                 stateRoot: join(root, "state"),
                 commandRunner: runner,
@@ -584,7 +429,7 @@ describe("Hyper-V host setup CLI", () => {
         }
     });
 
-    it("rejects a reparse-like setup root before elevated execution", () => {
+    it("rejects a reparse-like setup root before elevated execution", async () => {
         const parent = join(tmpdir(), `ccc-hyper-v-reparse-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         const target = join(parent, "target");
         const linked = join(parent, "linked");
@@ -593,7 +438,7 @@ describe("Hyper-V host setup CLI", () => {
         symlinkSync(target, linked, "dir");
         const runner = vi.fn();
 
-        const result = setupHyperVHost(true, { platform: "win32", powershell: "powershell.exe", stateRoot: linked, commandRunner: runner });
+        const result = await setupHyperVHost(true, { platform: "win32", powershell: "powershell.exe", stateRoot: linked, commandRunner: runner });
 
         expect(result).toEqual(expect.objectContaining({ ok: false }));
         expect(result.text).toContain("hyper-v-setup-root-path-invalid");

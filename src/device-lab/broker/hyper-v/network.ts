@@ -1062,6 +1062,48 @@ async function cleanupTypedHyperVHostNetwork(
     };
 }
 
+type HyperVNetworkAllocationRequest = {
+    readonly ownerId: string;
+    readonly deviceId: string;
+    readonly incarnationId: string;
+};
+
+type HyperVNetworkEnsureFailure = {
+    ok: false;
+    status: number;
+    error: string;
+    detail?: string;
+    execution?: Record<string, unknown>;
+    preserveEvidence?: boolean;
+};
+
+export type HyperVNetworkFabricResult =
+    | { ok: true; switchName: string; gateway: string; prefix: string; outboundPolicy: "nat" }
+    | HyperVNetworkEnsureFailure;
+
+/**
+ * Ensure the host fabric (switch, gateway, NAT) without reserving an address.
+ *
+ * `ccc devices setup hyper-v` needs the fabric to exist but owns no device, so
+ * it takes this entry. It runs the same reconciliation, ownership and state
+ * persistence as an allocation — the allocation list is simply left untouched —
+ * so setup cannot drift from the broker the way a separate implementation did.
+ */
+export async function ensureHyperVHostNetworkFabric(
+    runtime: HyperVNetworkRuntime,
+    deadlineAt = Number.POSITIVE_INFINITY,
+): Promise<HyperVNetworkFabricResult> {
+    const result = await ensureHyperVNetwork(runtime, null, deadlineAt);
+    if (!result.ok) return result;
+    return {
+        ok: true,
+        switchName: result.switchName,
+        gateway: result.gateway,
+        prefix: result.prefix,
+        outboundPolicy: "nat",
+    };
+}
+
 export async function ensureHyperVNetworkAllocation(
     runtime: HyperVNetworkRuntime,
     ownerId: string,
@@ -1072,11 +1114,37 @@ export async function ensureHyperVNetworkAllocation(
     | { ok: true; switchName: string; address: string; macAddress: string; gateway: string; prefix: string; outboundPolicy: "nat" }
     | { ok: false; status: number; error: string; detail?: string; execution?: Record<string, unknown>; preserveEvidence?: boolean }
 > {
+    const result = await ensureHyperVNetwork(runtime, { ownerId, deviceId, incarnationId }, deadlineAt);
+    if (!result.ok) return result;
+    if (typeof result.address !== "string" || typeof result.macAddress !== "string") {
+        return { ok: false, status: 500, error: "hyper-v-network-allocation-failed", detail: "hyper-v-network-allocation-missing" };
+    }
+    return {
+        ok: true,
+        switchName: result.switchName,
+        address: result.address,
+        macAddress: result.macAddress,
+        gateway: result.gateway,
+        prefix: result.prefix,
+        outboundPolicy: "nat",
+    };
+}
+
+async function ensureHyperVNetwork(
+    runtime: HyperVNetworkRuntime,
+    allocationRequest: HyperVNetworkAllocationRequest | null,
+    deadlineAt = Number.POSITIVE_INFINITY,
+): Promise<
+    | { ok: true; switchName: string; address?: string; macAddress?: string; gateway: string; prefix: string; outboundPolicy: "nat" }
+    | HyperVNetworkEnsureFailure
+> {
     const powershell = runtime.resolveExecutable("powershell.exe")
         || runtime.resolveExecutable("pwsh")
         || runtime.resolveExecutable("powershell");
     if (!powershell) return { ok: false, status: 503, error: "missing-provider-command", detail: "powershell" };
-    if (!validHyperVIncarnationId(incarnationId)) return { ok: false, status: 409, error: "hyper-v-network-incarnation-invalid" };
+    if (allocationRequest && !validHyperVIncarnationId(allocationRequest.incarnationId)) {
+        return { ok: false, status: 409, error: "hyper-v-network-incarnation-invalid" };
+    }
     let current: HyperVNetworkState | null;
     let intent: HyperVNetworkIntent | null = null;
     try {
@@ -1250,9 +1318,12 @@ export async function ensureHyperVNetworkAllocation(
             || current.natInstanceId !== observation.natInstanceId
         ));
         const allocations = current?.allocations || [];
-        const existing = allocations.find((allocation) => allocation.ownerId === ownerId && allocation.deviceId === deviceId);
-        if (existing) {
-            if (existing.incarnationId !== incarnationId) throw new Error("hyper-v-network-allocation-incarnation-conflict");
+        const existing = allocationRequest
+            ? allocations.find((allocation) => allocation.ownerId === allocationRequest.ownerId
+                && allocation.deviceId === allocationRequest.deviceId)
+            : undefined;
+        if (allocationRequest && existing) {
+            if (existing.incarnationId !== allocationRequest.incarnationId) throw new Error("hyper-v-network-allocation-incarnation-conflict");
             if (current && (current.marker !== observedMarker || current.natName !== observation.natName)) {
                 ensureStateRoot(runtime);
                 writeJsonFileAtomically(stateFile(runtime), {
@@ -1273,16 +1344,21 @@ export async function ensureHyperVNetworkAllocation(
                 outboundPolicy: "nat",
             };
         }
-        const used = new Set(allocations.map((allocation) => allocation.address));
-        const address = hyperVDeterministicNetworkAddresses(ownerId, deviceId).find((candidate) => !used.has(candidate));
-        if (!address) throw new Error("hyper-v-network-address-space-exhausted");
-        const usedMacs = new Set(allocations.map((allocation) => allocation.macAddress));
-        let macSalt = 0;
-        let macAddress = hyperVDeterministicMacAddress(ownerId, deviceId, macSalt);
-        while (usedMacs.has(macAddress) && macSalt < 1024) {
-            macAddress = hyperVDeterministicMacAddress(ownerId, deviceId, ++macSalt);
+        let address: string | undefined;
+        let macAddress: string | undefined;
+        if (allocationRequest) {
+            const used = new Set(allocations.map((allocation) => allocation.address));
+            address = hyperVDeterministicNetworkAddresses(allocationRequest.ownerId, allocationRequest.deviceId)
+                .find((candidate) => !used.has(candidate));
+            if (!address) throw new Error("hyper-v-network-address-space-exhausted");
+            const usedMacs = new Set(allocations.map((allocation) => allocation.macAddress));
+            let macSalt = 0;
+            macAddress = hyperVDeterministicMacAddress(allocationRequest.ownerId, allocationRequest.deviceId, macSalt);
+            while (usedMacs.has(macAddress) && macSalt < 1024) {
+                macAddress = hyperVDeterministicMacAddress(allocationRequest.ownerId, allocationRequest.deviceId, ++macSalt);
+            }
+            if (usedMacs.has(macAddress)) throw new Error("hyper-v-network-mac-space-exhausted");
         }
-        if (usedMacs.has(macAddress)) throw new Error("hyper-v-network-mac-space-exhausted");
         const legacyFreshIntentOwnsObservedIdentity = !typedHostFabric(runtime) && !current && intent
             ? intentOwnsDedicatedNat({ ...intent, marker: observedMarker, natName: observation.natName })
             : false;
@@ -1322,10 +1398,19 @@ export async function ensureHyperVNetworkAllocation(
                 || typedIntentOwnership.managedNat
                 || typedFreshIntentOwnsObservedIdentity
                 || legacyFreshIntentOwnsObservedIdentity,
-            allocations: [
-                ...allocations,
-                { ownerId, deviceId, incarnationId, address, macAddress, allocatedAt: new Date().toISOString() },
-            ],
+            allocations: allocationRequest && address && macAddress
+                ? [
+                    ...allocations,
+                    {
+                        ownerId: allocationRequest.ownerId,
+                        deviceId: allocationRequest.deviceId,
+                        incarnationId: allocationRequest.incarnationId,
+                        address,
+                        macAddress,
+                        allocatedAt: new Date().toISOString(),
+                    },
+                ]
+                : allocations,
         };
         ensureStateRoot(runtime);
         writeJsonFileAtomically(stateFile(runtime), next);
@@ -1333,8 +1418,8 @@ export async function ensureHyperVNetworkAllocation(
         return {
             ok: true,
             switchName: observation.switchName,
-            address,
-            macAddress,
+            ...(address ? { address } : {}),
+            ...(macAddress ? { macAddress } : {}),
             gateway: observation.gateway,
             prefix: observation.prefix,
             outboundPolicy: "nat",

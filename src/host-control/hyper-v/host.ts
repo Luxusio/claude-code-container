@@ -72,10 +72,17 @@ export function hyperVRebootCommand(options: HyperVRebootOptions): HyperVProvide
     ]));
 }
 
-export function hyperVSetupCommand(executable: string, networkOptions?: Omit<HyperVNetworkOptions, "executable" | "elevated" | "elevatedDeadlineUnixMs">): HyperVProviderCommand {
-    const networkProgramEncoded = networkOptions
-        ? Buffer.from(hyperVEnsureNetworkScript({ ...networkOptions, executable }), "utf8").toString("base64")
-        : "";
+/**
+ * Enable the Hyper-V feature and grant Hyper-V Administrators membership.
+ *
+ * Host networking is deliberately not part of this command. It used to be:
+ * the caller passed network options and this script ran a hand-written ensure
+ * inside the same elevation, which made the host's adoption, repair and
+ * rollback policy exist in a second place that could drift from the broker's.
+ * The network is now reconciled through the typed library instead.
+ */
+export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
+    const networkProgramEncoded = "";
     const trustedModulePrelude = [
         "$TrustedModuleRoot = Join-Path $PSHOME 'Modules'",
         "$env:PSModulePath = $TrustedModuleRoot",

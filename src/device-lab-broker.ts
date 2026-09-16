@@ -27,8 +27,10 @@ import {
 } from "./device-lab/broker/hyper-v/image-store.js";
 import {
     cachedHyperVOwnerDevicesReader,
+    ensureHyperVHostNetworkFabric as ensureHyperVHostNetworkFabricWithRuntime,
     ensureHyperVNetworkAllocation as ensureHyperVNetworkAllocationWithRuntime,
     hyperVNetworkAllocationReferenced,
+    type HyperVNetworkFabricResult,
     reconcileHyperVLinuxSshHostIdentity as reconcileHyperVLinuxSshHostIdentityWithRuntime,
     releaseHyperVNetworkAllocationAndCleanup as releaseHyperVNetworkAllocationAndCleanupWithRuntime,
     validateHyperVLinuxSshHostIdentity as validateHyperVLinuxSshHostIdentityWithRuntime,
@@ -9459,6 +9461,24 @@ function hyperVNetworkRuntime(
                 kind: "unavailable",
             },
     };
+}
+
+/**
+ * Ensure the Hyper-V host fabric for `ccc devices setup hyper-v`.
+ *
+ * Setup used to carry its own hand-written PowerShell ensure, which meant the
+ * host's adoption, repair and rollback policy existed twice and could drift.
+ * It now takes the same typed path the broker takes on device create, against
+ * the same state file, so there is one implementation of that policy.
+ */
+export type { HyperVNetworkFabricResult };
+
+export async function ensureHyperVHostNetworkForSetup(
+    options: DeviceBrokerOptions = {},
+    deadlineAt = Number.POSITIVE_INFINITY,
+): Promise<HyperVNetworkFabricResult> {
+    const normalized = normalizeBrokerOptions(options);
+    return ensureHyperVHostNetworkFabricWithRuntime(hyperVNetworkRuntime(normalized, deadlineAt), deadlineAt);
 }
 
 function ensureHyperVNetworkAllocation(
