@@ -527,8 +527,16 @@ export function planHyperVHostNetworkCleanup(
         && (provenance.switch.kind === "managed"
             || provenance.gateway.kind === "managed"
             || provenance.nat.kind === "managed")) {
+        // Management OS adapters are excluded because they are the switch's own host endpoint,
+        // not a tenant of it. Creating an Internal switch creates `vEthernet (<name>)` in the
+        // management OS, `Get-VMNetworkAdapter -All` returns it, and `Remove-VMSwitch` removes it
+        // with the switch — it is also the adapter this transaction's own gateway address sits on.
+        // Counting it as an attachment made every Internal switch defer forever, which is what the
+        // real host proved: the fakes only ever modelled VM adapters, so nothing caught it here.
+        // The deferral exists to protect a VM that would lose its connection; that is still exact.
         const attachments = observation.vmNetworkAdapters.filter((adapter) =>
-            adapter.switchId === namedSwitch.id || adapter.switchName === namedSwitch.name);
+            !adapter.managementOperatingSystem
+            && (adapter.switchId === namedSwitch.id || adapter.switchName === namedSwitch.name));
         if (attachments.length > 0) {
             return {
                 kind: "settled",

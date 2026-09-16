@@ -6,6 +6,7 @@ import type {
     HyperVWindowsOperation,
 } from "./contracts.js";
 import { HyperVWindowsError } from "./errors.js";
+import { HYPER_V_WINDOWS_SESSION_ERROR_CODES } from "./powershell-session.js";
 import {
     parseHyperVInterfaceIndex,
     parseHyperVNatInstanceId,
@@ -44,7 +45,12 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const EXECUTION_TIMEOUT_MILLISECONDS = 120 * 1000;
 const MAX_NATIVE_STRING_LENGTH = 32 * 1024;
 const NATIVE_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// Executor error strings that may reach a caller verbatim. Both sources are closed, exported
+// unions, so nothing host-authored or attacker-shaped is forwarded; every other string collapses
+// to `executor-failed`. Session codes are included because the real-host proof otherwise reports
+// a caller deadline, a health-floor discard and a torn-down child identically.
 const FORWARDED_EXECUTOR_ERROR_CODES: ReadonlySet<string> = new Set([
+    ...HYPER_V_WINDOWS_SESSION_ERROR_CODES,
     "hyper-v-network-elevation-cancelled",
     "hyper-v-network-elevation-launch-failed",
     "hyper-v-network-elevation-handshake-timeout",

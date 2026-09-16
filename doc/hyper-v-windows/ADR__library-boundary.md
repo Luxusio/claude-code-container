@@ -501,6 +501,118 @@ one-shot. A caller whose frame *was* written keeps
 `hyper-v-windows-session-timeout` and still fails outright, because the host may
 already have done the work. The pipe blocks; the other callers do not.
 
+That fraction is sized for pipe contention between runnable primitives, and
+the callback-scoped administrator executor is the one place it was measured
+against something else. Its first primitive starts the relay and therefore
+holds the pipe through UAC consent, elevated-child start, pipe handshake, and
+session bootstrap. The real network proof issues five inspection primitives
+concurrently, so four sat in the queue behind that start; on a consent slower
+than roughly twenty seconds one of them expired at the thirty-second queue
+fraction, the inspection rejected, and the scope closed abruptly with work
+pending — reported honestly as `relay-terminal-ack-missing` with
+`lastSessionError=hyper-v-windows-session-queue-timeout`, `activeExecutions=4`,
+`pendingExecutions=1`, and relay progress stopped at `runas-returned`. The
+broker adapter issues the same concurrent inspection, so this was a product
+defect, not a proof artifact. Gating only the primitives behind the first was
+not enough: the next real run failed as
+`hyper-v-windows-transport:Get-VMSwitch:executor-failed` with no termination
+diagnostic, which is the starting primitive itself expiring at its own
+120-second ceiling — its caller deadline and the health floor both begin at
+`execute`, and the session starts its child only from a request, so the first
+primitive of a scope was paying for the consent. The resolution keeps every
+per-primitive budget and moves the start out of them: the session exposes a
+request-free `start()`, the scope calls it and then awaits the relay's readiness
+promise (settled on the relay-ready marker or on completion), and no primitive
+enters the session before that. The wait is bounded by the relay's own
+deadline and the abort signals, and the elevation deadline is re-checked after
+it, so no primitive gains budget. Once the relay is ready every budget,
+including the queue fraction, applies unchanged. Session error codes are
+forwarded through the network client as bounded transport codes for the same
+reason the termination stage is printed: a failure that reads only
+`executor-failed` cannot be distinguished on the next run.
+
+With both budgets out of the way the next real run reported the relay's own
+`hyper-v-network-elevation-handshake-timeout`: consent was granted, the child
+was launched, and it never connected to the pipe. The pipe, ACL and child
+source were unchanged since the feature commit, so the elevated child had
+never connected on any run; every earlier `relay-terminal-ack-missing` was
+the concurrent inspection expiring behind a relay that was still waiting for
+a child that had already died. The cause was the loader that `-EncodedCommand`
+hands the child: `[IO.MemoryStream]::new(,$bytes)` is the `New-Object`
+-ArgumentList idiom, and on a method call it wraps the byte array in
+`object[]`, so overload binding fails before any pipe code runs. The proven
+elevation loader in the standalone library proof passes the array directly,
+and the child loader now does the same. A binding failure is invisible to a
+parser, so the loader shape is pinned by test, and both generated child
+programs — the loader and the decompressed child — now enter the Windows
+parser gate beside the relay bootstrap, because a hidden, non-interactive,
+elevated program that fails before the pipe presents on a Windows host only as
+a handshake timeout.
+
+Two further consequences of that opacity. The relay classified a declined or
+timed-out UAC prompt as `hyper-v-network-elevation-launch-failed`, because
+`Start-Process` wraps the ShellExecute `Win32Exception` in an
+`InvalidOperationException` and the relay tested only the outer exception for
+`ERROR_CANCELLED` (1223); it now walks the `InnerException` chain. And because
+each real run through UAC yields exactly one bounded code, the standalone
+proof gains a companion diagnostic,
+`scripts/real-tests/hyper-v-windows-network-child-probe.mjs`, which runs the
+exact generated child loader as a visible child of an already elevated
+console against a pipe server with the production name, ACL, and handshake.
+It executes no Hyper-V operation — the bootstrap it hands the child only
+echoes a line — and exists so that a child failure is read from the child's
+own output in one run rather than inferred from which timer fired.
+
+Its first run did exactly that. With the loader fixed, the child connected and
+authenticated as administrator, then died on `[Console]::Out.AutoFlush=$true`:
+`Console.SetOut` wraps the supplied writer in a synchronized `TextWriter`, so
+`Console.Out` has no `AutoFlush` property and the assignment throws. The child
+now sets `AutoFlush` on the `StreamWriter` before handing it to `SetOut`. The
+relay could only have reported this as a protocol failure or a timeout; the
+probe reported it as the PowerShell error it was.
+
+The run after that reached the first Hyper-V mutation and failed as
+`hyper-v-network-real-ensure-mutation-unconfirmed`, with the library's bounded
+cause discarded by the proof's own assertion. The proof now reports
+`…-mutation-unconfirmed:<action>:<category>:<operation>:<code>`, every part a
+bounded token, and on an unconfirmed ensure mutation it reinspects and adopts
+only resources carrying this run's token exactly once — switch by exact name
+and notes, gateway by the switch adapter owning the gateway address, NAT by
+exact name — so an applied-but-unanswered mutation is cleaned up rather than
+left on the host. It never replays the mutation, and ambiguity is left alone.
+
+The first run with that reporting named the primitive:
+`create-gateway:native:New-NetIPAddress:net-ip-address-create-result-ambiguous`.
+`New-NetIPAddress` emits the one address it created twice, once for the
+ActiveStore and once for the PersistentStore, so the asset's "exactly one
+result" check rejected every successful creation. Ambiguity is now defined as
+more than one distinct interface/address/prefix identity among the outputs,
+and the ActiveStore object is reported because that is the store
+`Get-NetIPAddress` reads back by default. The asset digest pin moved with it.
+
+Ensure then completed and the run failed in cleanup as
+`hyper-v-network-real-cleanup-deferred`. The switch-in-use deferral counted the
+switch's own management OS host vNIC as a tenant. Creating an Internal switch
+creates `vEthernet (<name>)` in the management OS, `Get-VMNetworkAdapter -All`
+returns it, the managed gateway address sits on it, and `Remove-VMSwitch`
+removes it — so every Internal switch deferred forever. The deferral now counts
+only virtual machine adapters. Every fake modelled VM adapters and none
+modelled the host vNIC, which is why the whole suite passed while the host
+could not: the real-host fake now creates and removes it with the switch, so
+the gap is closed where it was open.
+
+With that the standalone proof passed on the real host at token
+`0246763dc4ae037b`: one UAC prompt, two administrator callback scopes over one
+reused elevated session, exact-ID cleanup of switch, gateway and NAT in both
+the cold and warm attempts, and no unrelated resource mutated. Cold cost 71
+elevated native calls in 28.3s, warm 81 in 13.4s, six mutations each; warm
+issues more calls because the host adapter takes longer to appear and each
+`gateway-transitioning` retry re-inspects. The eight defects this sequence
+uncovered were all invisible to the suite, and seven of the eight were in the
+elevated child, the generated PowerShell, or a fake that did not model the
+host. That is the boundary's real lesson: everything below the typed contract
+needs a host, and the child probe is how a host answers in one run.
+
 For the same reason the caller's deadline starts in `execute`, before the queue
 wait, not inside the write. Timing it from the write gave a queued caller no
 deadline at all — it waited out the health floor, which is exactly the "a

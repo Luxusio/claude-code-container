@@ -263,6 +263,26 @@ consent is stale. It then executes one prepared primitive, reinspects, and
 confirms the exact native identity before advancing to the next dependency.
 Inspection, UAC, mutation, confirmation, and retry share one bounded transaction
 deadline.
+No primitive issued into the callback-scoped administrator executor MAY enter
+the one-in-flight session until the relay has been started and has reported
+readiness (or can never do so). The session therefore exposes a request-free
+`start()` that the scope uses to start the relay; UAC consent, elevated-child
+start, pipe handshake, and session bootstrap are paid there, before any
+primitive's caller deadline, health floor, or never-ran queue fraction begins.
+Those per-primitive budgets measure running primitives and MUST NOT be consumed
+by interactive consent latency. The acquisition wait is bounded by the
+transaction deadline and the abort signals, the elevation deadline is
+re-checked after it, and a relay that exposes no readiness signal is admitted
+as soon as the session has started it.
+Session error codes are a closed exported union and the network client MUST
+forward them verbatim as bounded transport codes; only strings outside that
+union and the elevation union collapse to `executor-failed`.
+The generated elevated child program and the loader that `-EncodedCommand`
+hands it MUST enter the Windows PowerShell parser gate beside the relay
+bootstrap, and the loader MUST pass its decoded byte array to the stream
+constructor directly (never through the `New-Object` comma idiom), because a
+child that fails before reaching the pipe is observable on a host only as a
+handshake timeout.
 Closing the callback-scoped administrator executor MUST also be bounded without
 racing termination proof. The medium-integrity PowerShell relay MUST NOT use an
 asynchronous copy from its redirected standard input: Windows anonymous pipes
@@ -444,7 +464,11 @@ Cleanup decodes provenance, inspects exact identities and VM adapter
 attachments, and repeats both checks after privilege transition. It removes
 only confirmed managed identities in dependency-reverse order: NAT, gateway,
 then switch. A switch still in use is deferred with enough state for a later
-attempt. If an attachment is present at the initial ordinary inspection,
+attempt. "In use" means a virtual machine's adapter. Management OS adapters
+MUST NOT defer cleanup: an Internal switch's own `vEthernet (<name>)` host
+endpoint is created with the switch, returned by `Get-VMNetworkAdapter -All`,
+carries the managed gateway address, and is removed by `Remove-VMSwitch`, so
+counting it defers every Internal switch permanently. If an attachment is present at the initial ordinary inspection,
 cleanup does not request administrator access and preserves NAT, gateway, and
 switch. If an attachment first appears after NAT removal, that confirmed NAT
 removal remains recorded while gateway and switch are preserved for a later

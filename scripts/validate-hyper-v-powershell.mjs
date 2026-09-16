@@ -139,6 +139,34 @@ async function elevatedRelayBootstrapSource() {
     return path;
 }
 
+// The elevated child and the loader that -EncodedCommand hands it are generated the same way and
+// were never parse-checked: the child runs hidden, non-interactive, and elevated, so a program that
+// fails before it reaches the pipe is indistinguishable from a handshake timeout on a Windows host.
+async function elevatedChildSources() {
+    const module = pathToFileURL(join(repoRoot, "src", "device-lab", "broker", "hyper-v", "elevated-network-session.ts")).href;
+    const probe = spawnSync(process.execPath, [
+        "--import", "tsx",
+        "-e", `import(${JSON.stringify(module)}).then((m) => process.stdout.write(JSON.stringify(m.hyperVElevatedNetworkChildPrograms())))`,
+    ], { cwd: repoRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true });
+    if (probe.error || probe.status !== 0) return null;
+    let programs;
+    try {
+        programs = JSON.parse(String(probe.stdout || ""));
+    } catch {
+        return null;
+    }
+    if (!programs || typeof programs.loader !== "string" || !programs.loader
+        || typeof programs.child !== "string" || !programs.child) {
+        return null;
+    }
+    const directory = mkdtempSync(join(tmpdir(), "ccc-hyper-v-elevated-child-"));
+    const loaderPath = join(directory, "elevated-network-child-loader.ps1");
+    const childPath = join(directory, "elevated-network-child.ps1");
+    writeFileSync(loaderPath, programs.loader, "utf8");
+    writeFileSync(childPath, programs.child, "utf8");
+    return [loaderPath, childPath];
+}
+
 // The Windows Setup diagnostics module emits three PowerShell programs the same way the session
 // bootstrap does — a TypeScript string array joined at runtime — so they are on no disk path the
 // walker above can find, and PSScriptAnalyzer's directory walk misses them for the same reason.
@@ -174,6 +202,7 @@ async function setupDiagnosticsSources() {
 const useFullAssetSet = !libraryFixtureOnly;
 const bootstrap = useFullAssetSet ? await bootstrapSource() : null;
 const elevatedRelayBootstrap = useFullAssetSet ? await elevatedRelayBootstrapSource() : null;
+const elevatedChild = useFullAssetSet ? await elevatedChildSources() : null;
 const setupDiagnostics = useFullAssetSet ? await setupDiagnosticsSources() : null;
 // `--library-fixture-only` narrows the file set to the library fixture ON PURPOSE, so a null
 // bootstrap there is the mode working, not evidence of a missing build. Before this distinction
@@ -186,6 +215,7 @@ const files = (useFullAssetSet ? [
     libraryFixture,
     ...(bootstrap ? [bootstrap] : []),
     ...(elevatedRelayBootstrap ? [elevatedRelayBootstrap] : []),
+    ...(elevatedChild || []),
     ...(setupDiagnostics || []),
 ] : [libraryFixture]).filter((candidate) => /\.ps(?:1|m1)$/i.test(candidate));
 // Keyed on the same flag that decided whether to fetch a bootstrap at all, so this asks "a source
@@ -218,6 +248,13 @@ if (requireParser && useFullAssetSet && !elevatedRelayBootstrap) {
         "elevated relay bootstrap unavailable for parsing:"
         + " src/device-lab/broker/hyper-v/elevated-network-session.ts"
         + " did not yield HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP through the source loader.",
+    );
+}
+if (requireParser && useFullAssetSet && !elevatedChild) {
+    throw new Error(
+        "elevated child programs unavailable for parsing:"
+        + " src/device-lab/broker/hyper-v/elevated-network-session.ts"
+        + " did not yield hyperVElevatedNetworkChildPrograms() through the source loader.",
     );
 }
 const parser = [

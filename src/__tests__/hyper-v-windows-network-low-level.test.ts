@@ -323,6 +323,18 @@ describe("Hyper-V Windows network low-level client", () => {
             category: "transport",
             code: "executor-failed",
         });
+
+        // Session codes are a closed exported union, so they pass through and name the failure
+        // that the real-host proof would otherwise report only as `executor-failed`.
+        const sessionTimeout = createHyperVWindowsNetworkClient(executorUsing(() => ({
+            status: null,
+            stdout: "",
+            error: "hyper-v-windows-session-timeout",
+        })));
+        await expect(sessionTimeout.getVMSwitches({ kind: "all" })).rejects.toMatchObject({
+            category: "transport",
+            code: "hyper-v-windows-session-timeout",
+        });
     });
 });
 
@@ -364,6 +376,12 @@ describe("Hyper-V Windows network PowerShell asset", () => {
         expect(source).not.toContain("Import-Module NetAdapter");
         expect(source).not.toContain("Import-Module NetTCPIP");
         expect(source).not.toContain("Import-Module NetNat");
+
+        // New-NetIPAddress emits the created address once per policy store; ambiguity is more
+        // than one distinct identity, and the ActiveStore object is the one reported.
+        expect(source).not.toContain('if ($Created.Count -ne 1) { throw "net-ip-address-create-result-ambiguous" }');
+        expect(source).toContain('if ($Created.Count -lt 1 -or $CreatedIdentities.Count -ne 1) { throw "net-ip-address-create-result-ambiguous" }');
+        expect(source).toContain('Where-Object { [string]$_.Store -eq "ActiveStore" }');
         expect(source).toContain("-ErrorVariable +QueryErrors");
         expect(source).toContain('$QueryError.CategoryInfo.Category -ne "ObjectNotFound"');
         expect(source).toContain('"ObjectNotFound,Microsoft.HyperV.PowerShell.Commands.GetVM"');

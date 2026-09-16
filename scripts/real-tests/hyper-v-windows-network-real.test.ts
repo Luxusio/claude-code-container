@@ -8,7 +8,12 @@ import { runHyperVWindowsNetworkRealScenario } from "./hyper-v-windows-network-r
 const FOREIGN_SWITCH_ID = "11111111-1111-1111-1111-111111111111";
 const FOREIGN_VM_ID = "22222222-2222-2222-2222-222222222222";
 
-function fakeHost(options: { readonly mutateForeignDuringCold?: boolean } = {}) {
+function fakeHost(options: {
+    readonly mutateForeignDuringCold?: boolean;
+    // The switch is created on the host but the response is lost: the library reports the
+    // mutation as indeterminate with the transport error as its cause.
+    readonly loseCreateSwitchResponse?: boolean;
+} = {}) {
     let generation = 0;
     const switches: any[] = [{
         id: library.parseHyperVVirtualSwitchId(FOREIGN_SWITCH_ID),
@@ -30,6 +35,18 @@ function fakeHost(options: { readonly mutateForeignDuringCold?: boolean } = {}) 
         addressState: "Preferred",
     }];
     const hostAdapters: any[] = [];
+    // Creating an Internal switch also creates the management OS host vNIC, and
+    // `Get-VMNetworkAdapter -All` returns it. Modelling it is what makes cleanup's attachment
+    // check answerable here: without it the fake could never reproduce a real deferral.
+    const vmNetworkAdapters: any[] = [{
+        vmId: library.parseHyperVVirtualMachineId(FOREIGN_VM_ID),
+        vmName: "unrelated-vm",
+        name: "Network Adapter",
+        switchId: library.parseHyperVVirtualSwitchId(FOREIGN_SWITCH_ID),
+        switchName: "unrelated-switch",
+        status: "Ok",
+        managementOperatingSystem: false,
+    }];
     const removals: Array<{ readonly kind: string; readonly identity: string }> = [];
     let mutatedForeign = false;
 
@@ -46,6 +63,22 @@ function fakeHost(options: { readonly mutateForeignDuringCold?: boolean } = {}) 
                 status: "Up",
                 interfaceDescription: "Hyper-V Virtual Ethernet Adapter",
             });
+            vmNetworkAdapters.push({
+                vmId: null,
+                vmName: null,
+                name: `vEthernet (${String(request.name)})`,
+                switchId: id,
+                switchName: request.name,
+                status: "Ok",
+                managementOperatingSystem: true,
+            });
+            if (options.loseCreateSwitchResponse) {
+                throw new library.HyperVWindowsError({
+                    category: "transport",
+                    operation: "New-VMSwitch",
+                    code: "hyper-v-windows-session-timeout",
+                });
+            }
             return created;
         },
         async setVMSwitchNotes(request: any) {
@@ -61,17 +94,13 @@ function fakeHost(options: { readonly mutateForeignDuringCold?: boolean } = {}) 
             const adapterIndex = hostAdapters.findIndex((candidate) =>
                 candidate.name === `vEthernet (${String(request.identity.name)})`);
             if (adapterIndex >= 0) hostAdapters.splice(adapterIndex, 1);
+            // Remove-VMSwitch takes the management OS host vNIC with the switch.
+            const managementIndex = vmNetworkAdapters.findIndex((candidate) =>
+                candidate.switchId === request.identity.id && candidate.managementOperatingSystem);
+            if (managementIndex >= 0) vmNetworkAdapters.splice(managementIndex, 1);
         },
         async getAllVMNetworkAdapters() {
-            return [{
-                vmId: library.parseHyperVVirtualMachineId(FOREIGN_VM_ID),
-                vmName: "unrelated-vm",
-                name: "Network Adapter",
-                switchId: library.parseHyperVVirtualSwitchId(FOREIGN_SWITCH_ID),
-                switchName: "unrelated-switch",
-                status: "Ok",
-                managementOperatingSystem: false,
-            }];
+            return [...vmNetworkAdapters];
         },
         async getVMsByExactNames() { return []; },
         async getHostNetworkAdapters(request: any) {
@@ -185,6 +214,22 @@ describe("Hyper-V Windows network real-host scenario orchestration", () => {
             withAdministratorClient: scope,
         })).rejects.toThrow("hyper-v-network-real-unrelated-resource-mutated");
         expect(scope).toHaveBeenCalledTimes(1);
+    });
+
+    it("names the failed primitive on an unconfirmed mutation and cleans the token switch it left behind", async () => {
+        const host = fakeHost({ loseCreateSwitchResponse: true });
+        await expect(runHyperVWindowsNetworkRealScenario({
+            library,
+            ordinaryClient: host.client,
+            randomToken: () => "0123456789abcdef",
+            withAdministratorClient: async (_attempt, operation) => operation(host.client, "session-1"),
+        })).rejects.toThrow(
+            "hyper-v-network-real-ensure-mutation-unconfirmed:create-switch:transport:New-VMSwitch:hyper-v-windows-session-timeout",
+        );
+        // The switch was created before the response was lost; reinspection adopted it by exact
+        // token name and notes, and cleanup removed it without touching the foreign switch.
+        expect(host.removals).toEqual([{ kind: "switch", identity: "aaaaaaaa-aaaa-aaaa-aaaa-000000000001" }]);
+        expect(host.switches).toEqual([expect.objectContaining({ id: FOREIGN_SWITCH_ID, notes: "unrelated" })]);
     });
 
     it("records that legacy execution was intentionally not run by the standalone destructive proof", async () => {

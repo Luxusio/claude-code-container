@@ -17,7 +17,20 @@ const relayWithoutDiagnostics: HyperVElevatedNetworkRelayProcess = {
     kill: () => undefined,
 };
 
+declare const relayReadiness: Promise<void>;
+
+const relayWithReadiness: HyperVElevatedNetworkRelayProcess = {
+    ...relayWithoutDiagnostics,
+    ready: relayReadiness,
+};
+
 if (false) {
+    const readinessIsNotAProvider: HyperVElevatedNetworkRelayProcess = {
+        ...relayWithoutDiagnostics,
+        // @ts-expect-error readiness is awaited as a promise, never polled through a callback
+        ready: () => undefined,
+    };
+    void readinessIsNotAProvider;
     const validCompletion: HyperVElevatedNetworkRelayCompletion = {
         errorCode: "hyper-v-network-elevation-termination-unconfirmed",
         terminationStage: "elevated-child",
@@ -69,3 +82,4 @@ if (false) {
 }
 
 void relayWithoutDiagnostics;
+void relayWithReadiness;

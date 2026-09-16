@@ -464,6 +464,9 @@ export type HyperVElevatedNetworkRelayProcess = HyperVWindowsSessionProcess & {
     readonly failureCode: () => HyperVElevatedNetworkErrorCode | null;
     readonly terminationStage?: () => unknown;
     readonly diagnostic?: () => unknown;
+    // Settles once the relay can forward session frames (the relay-ready marker) or once it can
+    // never do so. It never rejects: an unready relay fails through the session's own codes.
+    readonly ready?: Promise<void>;
 };
 
 export type HyperVElevatedNetworkRelaySpawnRequest = {
@@ -501,9 +504,14 @@ function encodedPowerShell(source: string): string {
 
 function compressedPowerShellLoader(source: string): string {
     const compressed = gzipSync(Buffer.from(source, "utf8"), { level: 9 }).toString("base64");
+    // The byte array is the constructor argument itself. `::new(,$bytes)` is the New-Object
+    // -ArgumentList idiom; on a method call it wraps the array in object[] and overload binding
+    // fails, which killed the elevated child before it ever reached the pipe. The parser gate
+    // cannot see a binding failure, so the shape is pinned by test and matches the proven loader
+    // in scripts/real-tests/hyper-v-windows-library-elevation.mjs.
     return [
         `$B='${compressed}'`,
-        "$M=[IO.MemoryStream]::new(,[Convert]::FromBase64String($B))",
+        "$M=[IO.MemoryStream]::new([Convert]::FromBase64String($B),$false)",
         "$G=[IO.Compression.GzipStream]::new($M,[IO.Compression.CompressionMode]::Decompress)",
         "$R=[IO.StreamReader]::new($G,[Text.UTF8Encoding]::new($false))",
         "& ([ScriptBlock]::Create($R.ReadToEnd()))",
@@ -534,7 +542,11 @@ function elevatedChildSource(pipeName: string, nonce: string, deadlineUnixMillis
         "if(-not $A){throw 'administrator'}",
         "$L=$R.ReadLine();if(-not $L-or $L.Length-gt 131072-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'bootstrap'}",
         "$C=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($L))",
-        "$R.Dispose();$W.Dispose();[Console]::SetIn([IO.StreamReader]::new($Q,[Text.UTF8Encoding]::new($false),$false,4096,$true));[Console]::SetOut([IO.StreamWriter]::new($Q,[Text.UTF8Encoding]::new($false),4096,$true));[Console]::Out.AutoFlush=$true",
+        // AutoFlush is set on the StreamWriter before SetOut: Console.SetOut wraps the writer in a
+        // synchronized TextWriter, and Console.Out therefore has no AutoFlush property. Assigning it
+        // there threw inside the elevated child after a successful handshake, which the relay could
+        // only report as a protocol failure or timeout. Found by the child probe, not by inference.
+        "$R.Dispose();$W.Dispose();[Console]::SetIn([IO.StreamReader]::new($Q,[Text.UTF8Encoding]::new($false),$false,4096,$true));$O=[IO.StreamWriter]::new($Q,[Text.UTF8Encoding]::new($false),4096,$true);$O.AutoFlush=$true;[Console]::SetOut($O)",
         "& ([ScriptBlock]::Create($C))",
         "}finally{try{$Q.Dispose()}catch{};if($K-and $KT){$Y=Get-Process -Id $K.Id -ErrorAction SilentlyContinue;if($Y-and $Y.StartTime.ToUniversalTime().Ticks-eq $KT){Stop-Process -Id $K.Id -Force -ErrorAction SilentlyContinue}}}",
     ].join(";");
@@ -542,6 +554,18 @@ function elevatedChildSource(pipeName: string, nonce: string, deadlineUnixMillis
 
 function relayProgress(stage: HyperVElevatedNetworkRelayProgressStage): string {
     return `Send-Progress '${stage}'`;
+}
+
+// The exact PowerShell the elevated child runs, shaped for the Windows parser gate: the loader is
+// what -EncodedCommand receives, the child is what the loader decompresses and invokes. Sample
+// correlation values only; the runtime generates fresh ones per scope.
+export function hyperVElevatedNetworkChildPrograms(): { readonly loader: string; readonly child: string } {
+    const child = elevatedChildSource(
+        `ccc-hyper-v-network-${"0".repeat(32)}`,
+        "0".repeat(64),
+        2_000_000_000_000,
+    );
+    return { loader: compressedPowerShellLoader(child), child };
 }
 
 // This process remains medium-integrity. It owns the administrator-only pipe, performs exactly one
@@ -564,7 +588,10 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$Q=[IO.Pipes.NamedPipeServerStream]::new($P,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,[IO.Pipes.PipeOptions]::Asynchronous,4096,4096,$S)",
     `[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_REQUEST');[Console]::Out.Flush();if([Console]::In.ReadLine()-cne 'CCC_HYPER_V_ELEVATED_NETWORK_APPROVE'){throw 'request'};${relayProgress("approval-received")}`,
     "$H=$Q.BeginWaitForConnection($null,$null)",
-    `try{$C=Start-Process -FilePath $X -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$I) -WindowStyle Hidden -PassThru -ErrorAction Stop}catch{if($_.Exception-is [ComponentModel.Win32Exception]-and $_.Exception.NativeErrorCode-eq 1223){throw 'cancelled'};throw 'launch'};${relayProgress("runas-returned")}`,
+    // Start-Process wraps the ShellExecute Win32Exception in an InvalidOperationException, so the
+    // 1223 (ERROR_CANCELLED) test walks the InnerException chain; testing only the outer exception
+    // reported a declined or timed-out UAC prompt as a launch failure.
+    `try{$C=Start-Process -FilePath $X -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$I) -WindowStyle Hidden -PassThru -ErrorAction Stop}catch{$UE=$_.Exception;while($UE-and -not ($UE-is [ComponentModel.Win32Exception])){$UE=$UE.InnerException};if($UE-and $UE.NativeErrorCode-eq 1223){throw 'cancelled'};throw 'launch'};${relayProgress("runas-returned")}`,
     `$CS=$C.StartTime.ToUniversalTime().Ticks;$M=[int][Math]::Min([long]120000,[Math]::Max([long]1,$D-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()));if(-not $H.AsyncWaitHandle.WaitOne($M)){throw 'handshake'};$Q.EndWaitForConnection($H);${relayProgress("pipe-connected")}`,
     "[uint32]$CP=0;if(-not [CccHvPipe]::GetNamedPipeClientProcessId($Q.SafePipeHandle.DangerousGetHandle(),[ref]$CP)-or $CP-ne [uint32]$C.Id){throw 'authentication'}",
     "$R=[IO.StreamReader]::new($Q,[Text.UTF8Encoding]::new($false),$false,4096,$true);$W=[IO.StreamWriter]::new($Q,[Text.UTF8Encoding]::new($false),4096,$true)",
@@ -662,6 +689,10 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
     const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
         resolveCompletion = resolve;
     });
+    let resolveReady = () => undefined as void;
+    const ready = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+    });
     const diagnostic = (): HyperVElevatedNetworkRelayDiagnostic => ({
         shutdownMode,
         progressStage: relayProgressStage,
@@ -688,6 +719,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         if (closeWriteTimer) clearTimeout(closeWriteTimer);
         failQueued(new Error(reason));
         notifySessionExit(reason);
+        resolveReady();
         resolveCompletion(relayFailure);
     };
     const recordPrimaryFailure = (code: HyperVElevatedNetworkNonTerminationErrorCode) => {
@@ -883,6 +915,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
                 return true;
             }
             relayReady = true;
+            resolveReady();
             flushQueued();
             return true;
         }
@@ -1015,6 +1048,7 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
 
     return {
         completion,
+        ready,
         failureCode: () => relayFailure.errorCode,
         terminationStage: () => relayFailure.terminationStage,
         diagnostic,
@@ -1098,6 +1132,67 @@ export async function withElevatedHyperVNetworkExecutor<T>(
     let activeExecutions = 0;
     let activeExecutionsAtClose = 0;
     let pendingExecutionsAtClose = 0;
+    // Acquisition gate. Every per-primitive budget in the session — the caller deadline, the
+    // health floor, and the fraction a queued caller may wait — is sized for running primitives.
+    // The elevation start is not one: UAC consent, elevated child start, pipe handshake and
+    // bootstrap take as long as the person takes. Measured twice on the real host: a concurrent
+    // inspection expired in the queue at the 30-second fraction behind the primitive that started
+    // the relay, and after that was gated, the starting primitive itself expired at its own
+    // 120-second ceiling on a slow consent. So no primitive enters the session until the relay
+    // has been started through the session and has reported readiness (or can never do so). The
+    // wait is bounded by the relay's own deadline and by the abort signals, and the elevation
+    // deadline is re-checked after it, so no primitive gains budget.
+    let relayAcquisition: Promise<void> | null = null;
+    let settleRelayReadiness = () => undefined as void;
+    const relayReadiness = new Promise<void>((resolve) => {
+        settleRelayReadiness = resolve;
+    });
+    const adoptRelayReadiness = (spawnedRelay: HyperVElevatedNetworkRelayProcess) => {
+        let readiness: unknown;
+        try {
+            readiness = spawnedRelay.ready;
+        } catch {
+            readiness = undefined;
+        }
+        if (readiness === undefined) {
+            settleRelayReadiness();
+            return;
+        }
+        try {
+            Promise.resolve(readiness).then(
+                () => settleRelayReadiness(),
+                () => settleRelayReadiness(),
+            );
+        } catch {
+            settleRelayReadiness();
+        }
+    };
+    const acquireRelay = async () => {
+        let started = false;
+        try {
+            started = await session.start();
+        } catch {
+            // The session reports its own start failure through the next execute.
+        }
+        if (!started) settleRelayReadiness();
+        await relayReadiness;
+    };
+    const awaitRelayAcquisition = async (context: HyperVWindowsExecutionContext) => {
+        relayAcquisition ??= acquireRelay();
+        const gate = relayAcquisition;
+        const signals = [options.signal, context.signal].filter(
+            (signal): signal is AbortSignal => signal !== undefined,
+        );
+        if (signals.some((signal) => signal.aborted)) return;
+        await new Promise<void>((resolve) => {
+            const done = () => {
+                for (const signal of signals) signal.removeEventListener("abort", done);
+                resolve();
+            };
+            for (const signal of signals) signal.addEventListener("abort", done, { once: true });
+            gate.then(done, done);
+        });
+    };
     const session = createHyperVWindowsPowerShellSession({
         maximumStarts: 1,
         ...(options.operationAsset ? { operationAsset: options.operationAsset } : {}),
@@ -1111,6 +1206,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
                     onBeforeElevation: options.onBeforeElevation ?? (() => undefined),
                 });
                 relay = spawnedRelay;
+                adoptRelayReadiness(spawnedRelay);
                 try {
                     const completion: unknown = spawnedRelay.completion;
                     relayCompletion = Promise.resolve(completion).then<
@@ -1155,9 +1251,11 @@ export async function withElevatedHyperVNetworkExecutor<T>(
                 } catch {
                     relayDiagnostic = null;
                 }
+                if (relayCompletion) relayCompletion.then(() => settleRelayReadiness(), () => settleRelayReadiness());
                 return spawnedRelay;
             } catch (error) {
                 startupFailure = boundedElevationCode(error);
+                settleRelayReadiness();
                 throw error;
             }
         },
@@ -1169,6 +1267,16 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         ): Promise<HyperVWindowsExecutionResult> {
             if (!active) return failedExecution("hyper-v-network-elevation-scope-closed");
             if (lastSessionError === null) lastOperation = request.operation;
+            if (options.signal?.aborted || context.signal?.aborted) {
+                return failedExecution("hyper-v-network-elevation-cancelled");
+            }
+            activeExecutions += 1;
+            try {
+                await awaitRelayAcquisition(context);
+            } finally {
+                activeExecutions -= 1;
+            }
+            if (!active) return failedExecution("hyper-v-network-elevation-scope-closed");
             if (options.signal?.aborted || context.signal?.aborted) {
                 return failedExecution("hyper-v-network-elevation-cancelled");
             }
@@ -1210,6 +1318,7 @@ export async function withElevatedHyperVNetworkExecutor<T>(
         active = false;
         activeExecutionsAtClose = activeExecutions;
         pendingExecutionsAtClose = session.outstanding().pendingRequests;
+        settleRelayReadiness();
         session.close();
     }
 

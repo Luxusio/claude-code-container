@@ -168,6 +168,12 @@ export type HyperVWindowsSessionOptions = {
 
 export type HyperVWindowsSession = HyperVWindowsExecutor & {
     close(): void;
+    // Starts the child without a request, so an owner whose child start is expensive or
+    // interactive (an elevated relay waiting on UAC consent) can pay for it before any primitive's
+    // budget begins. Resolves true when a child is adopted, false when the start budget refuses or
+    // the start fails; a later execute then reports the session's own codes. Idempotent while a
+    // child is alive or a start is in flight.
+    start(): Promise<boolean>;
     // Observability for the invariant that matters: one process serving many primitives.
     starts(): number;
     outstanding(): {
@@ -579,6 +585,9 @@ export function createHyperVWindowsPowerShellSession(
         close() {
             closed = true;
             discard("hyper-v-windows-session-closed", true);
+        },
+        async start() {
+            return (await ensureChild()) !== null;
         },
         starts() {
             return starts;

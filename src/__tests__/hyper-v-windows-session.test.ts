@@ -107,6 +107,34 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(children[0]!.written.filter((line) => line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX))).toHaveLength(5);
     });
 
+    it("starts the child on demand without a request and serves later primitives from it", async () => {
+        const children: FakeChild[] = [];
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            spawn: () => {
+                const child = autoReplyChild((index) => `reply-${index}`);
+                children.push(child);
+                return child;
+            },
+        });
+
+        await expect(session.start()).resolves.toBe(true);
+        await expect(session.start()).resolves.toBe(true);
+        expect(children).toHaveLength(1);
+        expect(session.starts()).toBe(1);
+        // The asset reached the child at start time; no request frame was manufactured for it.
+        expect(children[0]!.written).toEqual([Buffer.from(ASSET.scriptSource, "utf8").toString("base64")]);
+
+        const result = await session.execute(REQUEST, CONTEXT);
+        expect(result.stdout).toBe("reply-0");
+        expect(children).toHaveLength(1);
+        expect(session.starts()).toBe(1);
+
+        session.close();
+        await expect(session.start()).resolves.toBe(false);
+        expect(children).toHaveLength(1);
+    });
+
     it("verifies the pinned asset before any source reaches the child", async () => {
         // Counted, not thrown. A spawn that throws is converted by ensureChild into the same
         // hyper-v-windows-session-unavailable a tampered asset produces, so asserting the error

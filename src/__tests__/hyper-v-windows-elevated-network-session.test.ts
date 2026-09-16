@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { gunzipSync } from "zlib";
 import { EventEmitter } from "events";
 import { join } from "path";
 import { pathToFileURL } from "url";
@@ -31,6 +32,7 @@ import {
     HyperVElevatedNetworkSessionError,
     getHyperVElevatedNetworkTerminationDiagnostic,
     getHyperVElevatedNetworkTerminationStage,
+    hyperVElevatedNetworkChildPrograms,
     transitionHyperVElevatedNetworkRelayFailure,
     withElevatedHyperVNetworkExecutor,
     type HyperVElevatedNetworkErrorCode,
@@ -529,6 +531,201 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             expect(killed).toBe(true);
             expect(lineListeners).toHaveLength(1);
             expect(exitListeners).toHaveLength(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("holds concurrent primitives out of the session queue until the relay reports readiness", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            let isReady = false;
+            let resolveReady = () => undefined as void;
+            const ready = new Promise<void>((resolve) => {
+                resolveReady = resolve;
+            });
+            const held: Array<() => void> = [];
+            let writesBeforeReady = 0;
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                ready,
+                write(line, settled) {
+                    if (isReady) {
+                        relay.process.write(line, settled);
+                        return;
+                    }
+                    writesBeforeReady += 1;
+                    held.push(() => relay.process.write(line, settled));
+                },
+            };
+            const context = { timeoutMilliseconds: 120_000, maximumOutputBytes: 64 * 1024 } as const;
+            const outcomes: Array<HyperVWindowsExecutionResult | null> = [null, null, null, null, null];
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 5 * 60_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, (executor) => Promise.all(outcomes.map(async (_value, index) => {
+                const outcome = await executor.execute(getVmRequest(), context);
+                outcomes[index] = outcome;
+                return outcome;
+            })));
+
+            // Longer than the 25% queue fraction of a 120s primitive budget: a slow UAC consent.
+            await vi.advanceTimersByTimeAsync(45_000);
+            expect(outcomes).toEqual([null, null, null, null, null]);
+            // Only the session's asset line reaches the relay before readiness; no primitive does.
+            expect(writesBeforeReady).toBe(1);
+
+            isReady = true;
+            resolveReady();
+            for (const flush of held.splice(0)) flush();
+            await vi.advanceTimersByTimeAsync(0);
+
+            await expect(result).resolves.toEqual(Array.from({ length: 5 }, () => ({
+                status: 0,
+                stdout: successEnvelope("Get-VM"),
+            })));
+            expect(relay.requests).toHaveLength(5);
+            expect(relay.gracefullyClosed()).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not charge the first primitive's own budget for the elevation start", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            let isReady = false;
+            let resolveReady = () => undefined as void;
+            const ready = new Promise<void>((resolve) => {
+                resolveReady = resolve;
+            });
+            const held: Array<() => void> = [];
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                ready,
+                write(line, settled) {
+                    if (isReady) {
+                        relay.process.write(line, settled);
+                        return;
+                    }
+                    held.push(() => relay.process.write(line, settled));
+                },
+            };
+            let outcome: HyperVWindowsExecutionResult | null = null;
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 5 * 60_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, async (executor) => {
+                outcome = await executor.execute(getVmRequest(), {
+                    timeoutMilliseconds: 120_000,
+                    maximumOutputBytes: 64 * 1024,
+                });
+                return outcome;
+            });
+
+            // Longer than the primitive's whole 120s ceiling: the consent alone took this long.
+            await vi.advanceTimersByTimeAsync(130_000);
+            expect(outcome).toBeNull();
+            expect(relay.requests).toHaveLength(0);
+
+            isReady = true;
+            resolveReady();
+            for (const flush of held.splice(0)) flush();
+            await vi.advanceTimersByTimeAsync(0);
+
+            await expect(result).resolves.toEqual({ status: 0, stdout: successEnvelope("Get-VM") });
+            expect(relay.requests).toHaveLength(1);
+            expect(relay.gracefullyClosed()).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("still expires a queued primitive in its queue fraction once the relay is ready", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                ready: Promise.resolve(),
+                write(_line, settled) {
+                    settled?.();
+                },
+            };
+
+            const queued = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, async (executor) => {
+                void executor.execute(getVmRequest(), executorContext());
+                return executor.execute(getVmSwitchRequest(), executorContext());
+            });
+
+            await vi.advanceTimersByTimeAsync(1_251);
+            await expect(queued).resolves.toEqual({
+                status: null,
+                stdout: "",
+                error: "hyper-v-windows-session-queue-timeout",
+            });
+            expect(relay.forceKilled()).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("cancels a primitive waiting for relay readiness when its signal aborts", async () => {
+        vi.useFakeTimers();
+        try {
+            const relay = fakeRelay();
+            const process: HyperVElevatedNetworkRelayProcess = {
+                ...relay.process,
+                ready: new Promise<void>(() => undefined),
+                write(_line, settled) {
+                    settled?.();
+                },
+            };
+            const controller = new AbortController();
+
+            const cancelled = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 5 * 60_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, async (executor) => {
+                void executor.execute(getVmRequest(), executorContext());
+                return executor.execute(getVmSwitchRequest(), { ...executorContext(), signal: controller.signal });
+            });
+
+            await vi.advanceTimersByTimeAsync(100);
+            controller.abort();
+            await vi.advanceTimersByTimeAsync(0);
+            await expect(cancelled).resolves.toEqual({
+                status: null,
+                stdout: "",
+                error: "hyper-v-network-elevation-cancelled",
+            });
+            // Nothing entered the session, so nothing is pending and the scope closes gracefully.
+            expect(relay.requests).toHaveLength(0);
+            expect(relay.gracefullyClosed()).toBe(true);
+            expect(relay.forceKilled()).toBe(false);
         } finally {
             vi.useRealTimers();
         }
@@ -1826,12 +2023,55 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         ), "utf8");
 
         expect(validator).toContain("HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP");
+        expect(validator).toContain("hyperVElevatedNetworkChildPrograms()");
         expect(validator).toContain('"--import", "tsx"');
         expect(validator).toContain("if (requireParser && useFullAssetSet && !elevatedRelayBootstrap)");
+        expect(validator).toContain("if (requireParser && useFullAssetSet && !elevatedChild)");
         expect(command.indexOf("const parsed = runNodeTool(")).toBeLessThan(
             command.indexOf("return runNodeTool(esbuildPath"),
         );
         expect(command).toContain('process.platform === "win32" ? ["--require-parser"] : []');
+    });
+
+    it("classifies a declined UAC prompt from the wrapped Win32 exception, not the outer one", () => {
+        const launch = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP
+            .split(";")
+            .find((statement) => statement.includes("-Verb RunAs"));
+        const relayCatch = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.slice(
+            HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("-Verb RunAs"),
+            HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("throw 'launch'"),
+        );
+
+        expect(launch).toBeTruthy();
+        // Start-Process wraps the ShellExecute Win32Exception; the outer exception never has 1223.
+        expect(relayCatch).toContain("$UE=$_.Exception;while($UE-and -not ($UE-is [ComponentModel.Win32Exception])){$UE=$UE.InnerException}");
+        expect(relayCatch).toContain("if($UE-and $UE.NativeErrorCode-eq 1223){throw 'cancelled'}");
+        expect(relayCatch).not.toContain("$_.Exception-is [ComponentModel.Win32Exception]");
+    });
+
+    it("hands the elevated child loader its byte array directly and exposes both programs for parsing", () => {
+        const { loader, child } = hyperVElevatedNetworkChildPrograms();
+
+        // `::new(,$bytes)` is the New-Object idiom; on a method call it wraps the array and binding
+        // fails, which is how the elevated child died before reaching the pipe on every real run.
+        expect(loader).not.toContain("::new(,");
+        expect(loader).toContain("$M=[IO.MemoryStream]::new([Convert]::FromBase64String($B),$false)");
+        expect(loader).toContain("[IO.Compression.GzipStream]::new($M,[IO.Compression.CompressionMode]::Decompress)");
+        expect(loader).toContain("& ([ScriptBlock]::Create($R.ReadToEnd()))");
+        expect(loader).not.toContain("\n");
+
+        // The loader carries exactly the child, gzip-compressed, and the child is what connects.
+        const compressed = /\$B='([A-Za-z0-9+/=]+)'/.exec(loader)?.[1];
+        expect(compressed).toBeTruthy();
+        expect(gunzipSync(Buffer.from(compressed!, "base64")).toString("utf8")).toBe(child);
+        expect(child).toContain("[IO.Pipes.NamedPipeClientStream]::new('.',$P,[IO.Pipes.PipeDirection]::InOut)");
+        expect(child).toContain("$Q.Connect(");
+        expect(child).not.toContain("::new(,");
+        expect(child).not.toContain("terminalToken");
+        // Console.SetOut wraps the writer, so AutoFlush must be set on the StreamWriter beforehand;
+        // `[Console]::Out.AutoFlush` throws in the elevated child after a successful handshake.
+        expect(child).toContain("$O.AutoFlush=$true;[Console]::SetOut($O)");
+        expect(child).not.toContain("[Console]::Out.AutoFlush");
     });
 
     it("materializes the generated relay without native TypeScript stripping", async () => {

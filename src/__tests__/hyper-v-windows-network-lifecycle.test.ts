@@ -328,6 +328,26 @@ describe("Hyper-V host-network cleanup reconciliation", () => {
         });
     });
 
+    it("does not defer for the switch's own management OS host adapter", () => {
+        // An Internal switch always has `vEthernet (<name>)` in the management OS, and it is the
+        // adapter the gateway address sits on. Counting it deferred every cleanup forever.
+        const outcome = planHyperVHostNetworkCleanup(cleanupObservation({
+            nats: [],
+            ipv4Addresses: [],
+            vmNetworkAdapters: [{
+                vmId: null,
+                vmName: null,
+                name: `vEthernet (${SWITCH_NAME})`,
+                switchId: SWITCH_ID,
+                switchName: SWITCH_NAME,
+                status: "Ok",
+                managementOperatingSystem: true,
+            }],
+        }), network(), cleanupProvenance());
+
+        expect(outcomeLabel(outcome)).toBe("execute:remove-switch");
+    });
+
     it("fences same-name successors before destructive cleanup", () => {
         const switchSuccessor = planHyperVHostNetworkCleanup(cleanupObservation({
             nats: [],

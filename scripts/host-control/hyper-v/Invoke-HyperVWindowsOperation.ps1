@@ -509,8 +509,17 @@ try {
         }
         "New-NetIPAddress" {
             $Created = @(NetTCPIP\New-NetIPAddress -InterfaceIndex ([int]$Request.interfaceIndex) -IPAddress ([string]$Request.address) -PrefixLength ([int]$Request.prefixLength) -AddressFamily IPv4 -ErrorAction Stop)
-            if ($Created.Count -ne 1) { throw "net-ip-address-create-result-ambiguous" }
-            Write-HyperVWindowsSuccess $Operation @(Convert-HyperVWindowsNetIPAddress $Created[0])
+            # New-NetIPAddress emits the one address it created twice, once per policy store
+            # (ActiveStore and PersistentStore). Those are the same identity, not two results:
+            # ambiguity is more than one distinct interface/address/prefix, and the ActiveStore
+            # object is reported because that is the store Get-NetIPAddress reads back by default.
+            $CreatedIdentities = @($Created | ForEach-Object {
+                [string]([int]$_.InterfaceIndex) + "|" + [string]$_.IPAddress + "|" + [string]([int]$_.PrefixLength)
+            } | Sort-Object -Unique)
+            if ($Created.Count -lt 1 -or $CreatedIdentities.Count -ne 1) { throw "net-ip-address-create-result-ambiguous" }
+            $CreatedActive = @($Created | Where-Object { [string]$_.Store -eq "ActiveStore" })
+            $CreatedAddress = if ($CreatedActive.Count -ge 1) { $CreatedActive[0] } else { $Created[0] }
+            Write-HyperVWindowsSuccess $Operation @(Convert-HyperVWindowsNetIPAddress $CreatedAddress)
         }
         "Remove-NetIPAddress" {
             $Address = Get-HyperVWindowsNetIPAddressByIdentity $Request

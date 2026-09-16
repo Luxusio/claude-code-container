@@ -54,6 +54,32 @@ function assert(condition: unknown, code: string): asserts condition {
     if (!condition) throw new Error(code);
 }
 
+const BOUNDED_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+// The library's own error is `category:operation:code`, every part a bounded token; anything else
+// is reported only as not being one. A real run yields exactly one failure line, so an
+// unconfirmed mutation must name the primitive that failed and why, not just that one did.
+function boundedCause(cause: unknown): string {
+    if (!(cause instanceof Error) || cause.name !== "HyperVWindowsError") return "non-library-error";
+    const parts = ["category", "operation", "code"].map((key) => Reflect.get(cause, key));
+    if (!parts.every((part) => typeof part === "string" && BOUNDED_CODE_PATTERN.test(part))) {
+        return "non-library-error";
+    }
+    return parts.join(":");
+}
+
+const MUTATION_UNCONFIRMED_PREFIX = "hyper-v-network-real-ensure-mutation-unconfirmed";
+
+function mutationUnconfirmed(
+    operation: "ensure" | "cleanup",
+    execution: { readonly kind: string; readonly actionKind?: string; readonly cause?: unknown },
+): never {
+    const actionKind = typeof execution.actionKind === "string" && BOUNDED_CODE_PATTERN.test(execution.actionKind)
+        ? execution.actionKind
+        : String(execution.kind);
+    throw new Error(`hyper-v-network-real-${operation}-mutation-unconfirmed:${actionKind}:${boundedCause(execution.cause)}`);
+}
+
 function aborted(signal: AbortSignal | undefined): void {
     if (signal?.aborted) throw new Error("hyper-v-network-real-scenario-cancelled");
 }
@@ -200,7 +226,7 @@ async function ensureNetwork(
             throw new Error("hyper-v-network-real-gateway-ownership-unproven");
         }
         const execution = await library.executeHyperVHostNetworkAction(client, outcome, signal ? { signal } : undefined);
-        assert(execution.kind === "mutation-completed", "hyper-v-network-real-ensure-mutation-unconfirmed");
+        if (execution.kind !== "mutation-completed") mutationUnconfirmed("ensure", execution);
         if (execution.actionKind === "create-switch" || execution.actionKind === "repair-switch-notes") {
             if (receipts.switchIdentity) assert(receipts.switchIdentity.id === execution.switchIdentity.id, "hyper-v-network-real-switch-successor");
             receipts.switchIdentity = execution.switchIdentity;
@@ -211,6 +237,35 @@ async function ensureNetwork(
         }
     }
     throw new Error("hyper-v-network-real-ensure-step-limit");
+}
+
+async function recoverTokenScopedReceipts(
+    library: HyperVWindowsNetworkLibraryModule,
+    client: HyperVWindowsNetworkClient,
+    network: HyperVHostNetworkSpec,
+    notes: string,
+    switchName: string,
+    natName: string,
+    receipts: PartialNetworkIdentity,
+    signal?: AbortSignal,
+): Promise<void> {
+    const observation = await inspect(library, client, "administrator", { kind: "fresh", expectedSwitchNotes: notes }, network, signal);
+    if (!receipts.switchIdentity) {
+        const switches = observation.virtualSwitches.filter((item) => item.name === switchName);
+        if (switches.length === 1 && switches[0]!.notes === notes) {
+            receipts.switchIdentity = { id: switches[0]!.id, name: switches[0]!.name };
+        }
+    }
+    if (receipts.switchIdentity && receipts.interfaceIndex === undefined && observation.hostAdapters.length === 1) {
+        const adapter = observation.hostAdapters[0]!;
+        const owned = observation.ipv4Addresses.some((item) => item.interfaceIndex === adapter.interfaceIndex
+            && item.address === network.gateway);
+        if (owned) receipts.interfaceIndex = adapter.interfaceIndex;
+    }
+    if (receipts.switchIdentity && !receipts.natIdentity) {
+        const nats = observation.nats.filter((item) => item.name === natName);
+        if (nats.length === 1) receipts.natIdentity = { instanceId: nats[0]!.instanceId, name: nats[0]!.name };
+    }
 }
 
 async function cleanupNetwork(
@@ -260,7 +315,7 @@ async function cleanupNetwork(
         }
         assert(outcome.kind === "execute", `hyper-v-network-real-cleanup-${String(outcome.kind)}`);
         const execution = await library.executeHyperVHostNetworkAction(client, outcome, signal ? { signal } : undefined);
-        assert(execution.kind === "mutation-completed", "hyper-v-network-real-cleanup-mutation-unconfirmed");
+        if (execution.kind !== "mutation-completed") mutationUnconfirmed("cleanup", execution);
         if (execution.actionKind === "remove-switch") {
             assert(execution.switchIdentity.id === identity.switchIdentity.id, "hyper-v-network-real-cleanup-switch-id-mismatch");
         } else if (execution.actionKind === "remove-nat" && identity.natIdentity !== undefined) {
@@ -341,6 +396,17 @@ export async function runHyperVWindowsNetworkRealScenario(
                 const ownershipUnproven = error instanceof Error
                     && (error.message === "hyper-v-network-real-ownership-receipt-missing"
                         || error.message === "hyper-v-network-real-gateway-ownership-unproven");
+                // A mutation whose response was lost may still have applied. The library never
+                // replays it; the proof reinspects and adopts only resources that carry this
+                // run's token exactly once, so the host is left clean without touching anything
+                // else. Ambiguity (two token-named switches) is left for the person.
+                if (error instanceof Error && error.message.startsWith(MUTATION_UNCONFIRMED_PREFIX)) {
+                    try {
+                        await recoverTokenScopedReceipts(library, elevated, network, notes, switchName, natName, receipts, dependencies.signal);
+                    } catch (recoveryError) {
+                        throw new AggregateError([error, recoveryError], "hyper-v-network-real-ensure-and-recovery-failed");
+                    }
+                }
                 if (receipts.switchIdentity && !ownershipUnproven) {
                     try {
                         await cleanupNetwork(library, elevated, network, {
