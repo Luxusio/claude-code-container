@@ -1383,6 +1383,171 @@ describe("assertWorkspaceBranch", () => {
         }
     });
 
+    // Measured from a real workspace: another tool deleted `.git/worktrees/<name>` in a nested
+    // repository's SOURCE, and every `ccc @<branch>` afterwards died with "not owned by its
+    // parent or a registered worktree" — naming a submodule-ownership problem that did not
+    // exist, over a checkout whose files were entirely intact, and taking the healthy sibling
+    // repositories in the same workspace down with it.
+    it("skips a nested worktree whose registration was deleted instead of failing the workspace", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-orphan");
+        spawnSync("git", ["branch", "feature-orphan"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-orphan"], { cwd: repoPath, stdio: "pipe" });
+
+        // Two nested repositories, as in the workspace this came from: one stays healthy so the
+        // test can prove the scan still reaches it, one loses its registration. They live inside
+        // the source root, because that is what makes the workspace copies owned — the layout
+        // the reported failure actually had.
+        const sources: Record<string, string> = {};
+        for (const name of ["api", "webapp"]) {
+            const source = join(repoPath, name);
+            sources[name] = source;
+            mkdirSync(source, { recursive: true });
+            for (const args of [
+                ["init"],
+                ["config", "user.email", "t@example.com"],
+                ["config", "user.name", "t"],
+                ["commit", "--allow-empty", "-m", "init"],
+            ]) spawnSync("git", args, { cwd: source, stdio: "pipe" });
+            spawnSync("git", ["worktree", "add", join(workspace, name), "-b", "feature-orphan"], {
+                cwd: source, stdio: "pipe",
+            });
+        }
+
+        // Exactly what the other tool did: remove the administrative directory outright. The
+        // gitfile in the workspace survives and still names it, which is the whole defect.
+        const registrations = join(sources.webapp, ".git", "worktrees");
+        const orphaned = join(registrations, readdirSync(registrations)[0]);
+        expect(existsSync(orphaned), "the nested worktree must really be registered first").toBe(true);
+        rmSync(orphaned, { recursive: true, force: true });
+        expect(existsSync(join(workspace, "webapp", ".git")), "its gitfile must survive").toBe(true);
+
+        const stderr: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+        let detected: unknown;
+        try {
+            detected = detectWorktreeWorkspaceBranch(workspace);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+
+        // The point of the fix: the workspace still resolves.
+        expect(detected, "one orphaned checkout must not take the workspace down").toBeTruthy();
+        const notice = stderr.join("");
+        expect(notice, "the operator has to be told which directory was dropped").toContain("Skipping nested Git repository");
+        expect(notice).toContain(join(workspace, "webapp"));
+        expect(notice, "and must not be told it is an ownership problem")
+            .not.toContain("not owned by its parent");
+        expect(notice, "the healthy sibling must not be dropped").not.toContain(join(workspace, "api"));
+    });
+
+    // The sibling case, reported from the same machine: a submodule whose gitdir under
+    // `.git/modules/` was deleted. Different cause, identical shape — a gitfile naming a
+    // directory that is not there — and it must degrade the same way rather than abort.
+    it("skips a nested repository whose submodule gitdir was deleted", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-submodule");
+        spawnSync("git", ["branch", "feature-submodule"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-submodule"], { cwd: repoPath, stdio: "pipe" });
+
+        // A healthy sibling alongside the broken one, as the reported workspace had: without
+        // it the workspace has no usable nested repository at all, which is a different
+        // failure and not the one under test.
+        for (const name of ["api", "webapp"]) {
+            const source = join(repoPath, name);
+            mkdirSync(source, { recursive: true });
+            for (const args of [
+                ["init"],
+                ["config", "user.email", "t@example.com"],
+                ["config", "user.name", "t"],
+                ["commit", "--allow-empty", "-m", "init"],
+            ]) spawnSync("git", args, { cwd: source, stdio: "pipe" });
+            spawnSync("git", ["worktree", "add", join(workspace, name), "-b", "feature-submodule"], {
+                cwd: source, stdio: "pipe",
+            });
+        }
+
+        // Point the gitfile at a modules/ path under the workspace's own `.git` FILE. That is
+        // what a removed submodule gitdir leaves behind, and reaching through a file yields
+        // ENOTDIR rather than ENOENT — the second shape, and the one `gitLinkKind` turns into
+        // a throw instead of a classification.
+        const missingModuleGitDir = join(workspace, ".git", "modules", "webapp");
+        expect(existsSync(missingModuleGitDir)).toBe(false);
+        writeFileSync(join(workspace, "webapp", ".git"), `gitdir: ${missingModuleGitDir}\n`);
+        // The source must stop claiming the path too. While it still registers a worktree
+        // here, ccc refuses the workspace as damaged — correctly, and that is a different
+        // case from the one under test.
+        const registrations = join(repoPath, "webapp", ".git", "worktrees");
+        rmSync(join(registrations, readdirSync(registrations)[0]), { recursive: true, force: true });
+
+        const stderr: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+        let detected: unknown;
+        try {
+            detected = detectWorktreeWorkspaceBranch(workspace);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+
+        expect(detected, "a deleted submodule gitdir must not take the workspace down").toBeTruthy();
+        const notice = stderr.join("");
+        expect(notice).toContain("Skipping nested Git repository");
+        expect(notice).toContain(join(workspace, "webapp"));
+        expect(notice).not.toContain("not owned by its parent");
+    });
+
+    // A refusal with no way out is the same defect as a refusal that names the wrong cause.
+    // This pins both halves: that the error identifies the checkout, and that the command it
+    // prescribes actually repairs it — asserted by running that command and reopening.
+    it("names the damaged checkout and prescribes a repair that works", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-damaged");
+        spawnSync("git", ["branch", "feature-damaged"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-damaged"], { cwd: repoPath, stdio: "pipe" });
+
+        const source = join(repoPath, "webapp");
+        mkdirSync(source, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: source, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", join(workspace, "webapp"), "-b", "feature-damaged"], {
+            cwd: source, stdio: "pipe",
+        });
+
+        // Registration intact, gitfile broken — the state `git worktree prune` cannot clear.
+        writeFileSync(join(workspace, "webapp", ".git"), "gitdir: /nonexistent/modules/webapp\n");
+
+        let message = "";
+        try {
+            detectWorktreeWorkspaceBranch(workspace);
+        } catch (error) {
+            message = (error as Error).message;
+        }
+        expect(message).toContain("Workspace Git metadata is missing or damaged.");
+        expect(message, "the operator must learn which checkout to repair")
+            .toContain(join(workspace, "webapp"));
+        expect(message).toContain("git worktree repair");
+
+        // Prune is deliberately not prescribed, because it does nothing here.
+        const pruned = spawnSync("git", ["worktree", "prune", "-v"], {
+            cwd: source, encoding: "utf-8", stdio: "pipe",
+        });
+        expect((pruned.stdout || "").trim(), "prune must be a no-op in this state").toBe("");
+
+        // The prescribed command, run exactly as the message gives it.
+        const repaired = spawnSync("git", ["worktree", "repair", join(workspace, "webapp")], {
+            cwd: source, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(repaired.status, "the prescribed repair must succeed").toBe(0);
+
+        expect(
+            detectWorktreeWorkspaceBranch(workspace),
+            "and the workspace must open afterwards",
+        ).toBe("feature-damaged");
+    });
+
     // Everything in that NOTE is repository-controlled. `git ls-files -z` is unquoted by design,
     // so a submodule name carries whatever bytes its author chose straight to the terminal of
     // whoever opens the workspace — including the ESC sequences that rewrite what they see and

@@ -2292,6 +2292,37 @@ export function repairWorkspaceRootOwnership(
     }
 }
 
+/**
+ * "Workspace Git metadata is missing or damaged." on its own is a dead end: it says something
+ * is broken, names nothing, and offers no way out — which is the same defect as refusing an
+ * orphaned checkout with an ownership message.
+ *
+ * The remedy is measured, not assumed. With the registration intact and the checkout's `.git`
+ * file naming a directory that is gone, `git worktree prune` removes nothing — it only drops
+ * registrations whose directory is missing, and this one is present. `git worktree repair`
+ * reports `.git file broken` and rewrites the file to the real administrative directory.
+ */
+function damagedWorkspaceMetadataError(
+    workspacePath: string,
+    registeredPaths: readonly string[],
+): Error {
+    const listed = (registeredPaths.length > 0 ? registeredPaths : [workspacePath])
+        .map((path) => `\n  ${terminalSafe(path)}`)
+        .join("");
+    return new Error(
+        "Workspace Git metadata is missing or damaged."
+        + `\n\nA source repository still registers a linked worktree at:${listed}`
+        + "\n\nbut the checkout there cannot be used — usually its `.git` file names a Git"
+        + "\ndirectory that no longer exists. Your working files are untouched; only the"
+        + "\nlink to the repository is broken."
+        + "\n\nRepair it by running this in the source repository:"
+        + "\n  git worktree repair <path>"
+        + "\n\nIf the registration itself was deleted, `git worktree repair` has nothing to"
+        + "\nrelink; recreate the workspace with `ccc @<branch>` from the source repository"
+        + "\ninstead, then copy back anything that was never committed.",
+    );
+}
+
 export function detectWorktreeWorkspaceBranch(
     workspacePath: string,
     runner: typeof spawnSync = spawnSync,
@@ -2320,7 +2351,10 @@ export function detectWorktreeWorkspaceBranch(
         const worktrees = kinds.filter(({ kind }) => kind === "worktree");
         if (worktrees.length === 0) {
             if (siblingSourceRegistersWorkspace(workspacePath)) {
-                throw new Error("Workspace Git metadata is missing or damaged.");
+                throw damagedWorkspaceMetadataError(
+                    workspacePath,
+                    siblingRegisteredWorkspacePaths(workspacePath),
+                );
             }
             return null;
         }
@@ -2330,10 +2364,13 @@ export function detectWorktreeWorkspaceBranch(
         repositories = worktrees.map(({ entry: { name, path } }) => ({ name, path }));
     }
     const registeredPaths = siblingRegisteredWorkspacePaths(workspacePath);
-    if (registeredPaths.some((registeredPath) => (
+    // Named, not counted: the operator has to know WHICH checkout to repair, and a workspace
+    // with a dozen nested repositories gives no clue otherwise.
+    const unusableRegisteredPaths = registeredPaths.filter((registeredPath) => (
         !repositories.some(({ path }) => sameObservedPath(path, registeredPath))
-    ))) {
-        throw new Error("Workspace Git metadata is missing or damaged.");
+    ));
+    if (unusableRegisteredPaths.length > 0) {
+        throw damagedWorkspaceMetadataError(workspacePath, unusableRegisteredPaths);
     }
     if (repositories.length === 0) return null;
 
@@ -2514,6 +2551,25 @@ export function unreachableRecordedGitPath(error: unknown): string | null {
 
 const UNREACHABLE_PATH_CODES: readonly string[] = ["ENOENT", "ENOTDIR"];
 
+/**
+ * The Git directory a `.git` FILE points at, or null when the file is unreadable or is not
+ * a gitfile at all. Resolution matches Git's own: the recorded path is taken relative to the
+ * directory holding the gitfile.
+ */
+function gitFileRecordedDirectory(gitPath: string): string | null {
+    let content: string;
+    try {
+        content = readFileSync(gitPath, "utf-8").trim();
+    } catch {
+        return null;
+    }
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) return null;
+    const recorded = match[1].trim();
+    if (!recorded) return null;
+    return resolve(dirname(gitPath), recorded);
+}
+
 function nestedRepositoryCandidateIsSafe(
     parentRepository: string,
     candidateName: string,
@@ -2542,6 +2598,36 @@ function nestedRepositoryCandidateIsSafe(
         }
         if (gitMetadata.isDirectory()) return true;
         if (!gitMetadata.isFile()) return false;
+        // A nested checkout whose Git directory was deleted out from under it — `git worktree
+        // remove` run elsewhere, a pruned source, a cleanup that swept `.git/worktrees/`, a
+        // deleted `.git/modules/<name>` — leaves a gitfile naming a path that is simply gone.
+        // This is asked BEFORE `gitLinkKind`, which cannot answer it: a missing worktree
+        // administrative directory it reports as a gitlink (a submodule's gitdir is the other
+        // thing with no `commondir`), and a gitdir under a `.git` FILE fails ENOTDIR rather
+        // than ENOENT and it throws. Two different fatal endings for one condition, which is
+        // why the reachability of the recorded path is tested first and directly.
+        // This matters because the refusal is fatal to the WHOLE workspace: one orphaned
+        // checkout among healthy siblings aborted every `ccc @<branch>` with a message that
+        // named the wrong cause and offered no remedy. The recorded-path skip below already
+        // handles "metadata names somewhere that is not here", warns with the path, and
+        // points at `ccc @<branch>` — which is in fact what re-creates the worktree. Route
+        // orphans into it rather than inventing a second diagnosis.
+        const recordedGitDirectory = gitFileRecordedDirectory(join(candidatePath, ".git"));
+        if (recordedGitDirectory !== null && !existsSync(recordedGitDirectory)) {
+            // `code` is deliberately left off this error and carried only by the cause: the
+            // catch below returns silently for a top-level errno, and silence is what this
+            // fix exists to remove.
+            throw Object.assign(
+                // The message deliberately does not begin with "Nested Git repository ":
+                // the catch rethrows that prefix verbatim under `strict`, which is the
+                // fatal path this is routing around.
+                new Error(
+                    `Orphaned Git worktree metadata names a Git directory that does not exist: ${candidatePath}`,
+                    { cause: Object.assign(new Error("recorded Git directory is absent"), { code: "ENOENT" }) },
+                ),
+                { recordedGitPath: recordedGitDirectory },
+            );
+        }
         const kind = gitLinkKind(join(candidatePath, ".git"));
         if (kind === "worktree" && allowRegisteredWorktrees) return true;
         if (kind === "gitlink"
