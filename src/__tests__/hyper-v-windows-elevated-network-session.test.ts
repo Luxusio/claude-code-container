@@ -597,6 +597,76 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         }
     });
 
+    it("reports no active executions for primitives still parked at the elevation gate", async () => {
+        vi.useFakeTimers();
+        try {
+            let resolveCompletion = (_value: HyperVElevatedNetworkRelayCompletion) => undefined as void;
+            const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
+                resolveCompletion = resolve;
+            });
+            let killed = false;
+            const process: HyperVElevatedNetworkRelayProcess = {
+                completion,
+                // Never resolves: the human has not answered the UAC prompt yet.
+                ready: new Promise<void>(() => undefined),
+                failureCode: () => null,
+                diagnostic: () => ({
+                    shutdownMode: killed ? "abrupt" : "not-started",
+                    progressStage: "runas-returned",
+                    closeWriteStatus: "not-started",
+                    processExited: killed,
+                    stdoutDrained: killed,
+                    stderrObserved: false,
+                    forceExpired: killed,
+                }),
+                write(_line, settled) {
+                    settled?.();
+                },
+                onLine() {},
+                onExit() {},
+                close() {
+                    throw new Error("a scope closed under a pending prompt must not close gracefully");
+                },
+                kill() {
+                    killed = true;
+                    resolveCompletion({
+                        errorCode: "hyper-v-network-elevation-termination-unconfirmed",
+                        terminationStage: "relay-terminal-ack-missing",
+                    });
+                },
+            };
+
+            const result = withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                spawnRelay: async (request) => {
+                    request.onBeforeElevation();
+                    return process;
+                },
+            }, async (executor) => {
+                // Two primitives parked at the gate, neither of which has written a frame.
+                void executor.execute(getVmRequest(), executorContext());
+                void executor.execute(getVmSwitchRequest(), executorContext());
+                return null;
+            });
+            const settled = result.then(() => null, (error: unknown) => error);
+
+            await vi.advanceTimersByTimeAsync(10_001);
+
+            // The whole point: a reader uses this field to judge whether a privileged mutation
+            // may have been half applied. Counting the wait reported two in flight when zero
+            // frames had been sent.
+            expect(await settled).toMatchObject({
+                code: "hyper-v-network-elevation-termination-unconfirmed",
+                terminationDiagnostic: {
+                    execution: { activeExecutions: 0, pendingExecutions: 0 },
+                },
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("does not charge the first primitive's own budget for the elevation start", async () => {
         vi.useFakeTimers();
         try {
@@ -943,6 +1013,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         "unknown-progress-stage",
         "protocol-failure-followed-by-control",
         "elevated-child-failure-followed-by-control",
+        "bootstrap-failure-after-ready",
         "premature-session-output",
         "request-write-error-before-exit",
         "abrupt-stdin-error-truncated-eof",
@@ -966,7 +1037,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 || order === "wrong-token-progress-followed-by-control"
                 || order === "unknown-progress-stage";
             const usesAbsorbingFailure = order === "protocol-failure-followed-by-control"
-                || order === "elevated-child-failure-followed-by-control";
+                || order === "elevated-child-failure-followed-by-control"
+                || order === "bootstrap-failure-after-ready";
             const usesPrematureSessionOutput = order === "premature-session-output";
             const usesRequestWriteError = order === "request-write-error-before-exit";
             const usesLateForceOrdering = order === "exit-before-force-late-child-failure"
@@ -1072,6 +1144,14 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                     + "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:"
                                     + "hyper-v-network-elevation-termination-unconfirmed\n"
                                 : "";
+                            // A code the relay can only reach before it announces readiness,
+                            // arriving after it. Reachable today only by a relay that lies;
+                            // pinned so a future second elevation attempt cannot quietly turn
+                            // a may-have-run mutation into a proven-not-run one.
+                            const bootstrapFailureAfterReady = order === "bootstrap-failure-after-ready"
+                                ? "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:"
+                                    + "hyper-v-network-elevation-cancelled\n"
+                                : "";
                             const absorbingFailureLines = order === "protocol-failure-followed-by-control"
                                 ? "CCC_HYPER_V_ELEVATED_NETWORK_FAILURE:"
                                     + "hyper-v-network-elevation-protocol-invalid\n"
@@ -1090,6 +1170,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 (usesInvalidProgress ? "" : "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n")
                                 + progressLine
                                 + postRejectionControlLines
+                                + bootstrapFailureAfterReady
                                 + absorbingFailureLines
                                 + deferredInvalidProgressResponse,
                             );
@@ -1394,7 +1475,15 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             expect(stdinEndCalls).toBe(1);
             if (forceKillsRelay) expect(kill).toHaveBeenCalledTimes(1);
             else expect(kill).not.toHaveBeenCalled();
-            if (usesInvalidProgress
+            if (order === "bootstrap-failure-after-ready") {
+                // Not `protocol-invalid`, which is itself a proven-not-started code and would
+                // preserve the claim being rejected. `relay-failed` is indeterminate.
+                expect(result).toMatchObject({
+                    status: null,
+                    stdout: "",
+                    error: "hyper-v-network-elevation-relay-failed",
+                });
+            } else if (usesInvalidProgress
                 || usesPrematureSessionOutput
                 || order === "protocol-failure-followed-by-control") {
                 expect(result).toMatchObject({
@@ -1974,6 +2063,33 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(requestIndex).toBeGreaterThanOrEqual(0);
         expect(approvalIndex).toBeGreaterThan(requestIndex);
         expect(runAsIndex).toBeGreaterThan(approvalIndex);
+
+        // Three invariants the elevation's safety rests on, none of which was pinned. Each
+        // holds in the source today; a later edit could drop any of them silently, and the
+        // failure would be a privilege escalation rather than a broken test.
+        const pipeConstruction = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            "[IO.Pipes.NamedPipeServerStream]::new($P,",
+        );
+        const clientProcessCheck = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
+            "GetNamedPipeClientProcessId",
+        );
+        const authenticationRead = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$AL=$R.ReadLine()");
+        expect(pipeConstruction, "the pipe must exist before anything can connect to it")
+            .toBeGreaterThanOrEqual(0);
+        expect(pipeConstruction, "and must be created before UAC launches the child")
+            .toBeLessThan(runAsIndex);
+        expect(clientProcessCheck, "the kernel-supplied peer identity is the primary check")
+            .toBeGreaterThanOrEqual(0);
+        expect(authenticationRead).toBeGreaterThanOrEqual(0);
+        expect(
+            clientProcessCheck,
+            "it must be evaluated before any bytes from the peer are trusted",
+        ).toBeLessThan(authenticationRead);
+        // maxNumberOfServerInstances. One instance is what makes the name unsquattable: a
+        // second CreateNamedPipe of it fails rather than racing for the connection.
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
+            "[IO.Pipes.NamedPipeServerStream]::new($P,[IO.Pipes.PipeDirection]::InOut,1,",
+        );
         const assetForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
             "$W.WriteLine($L);$W.Flush();Send-Progress 'operation-asset-forwarded';$V=$R.ReadLine()",
         );

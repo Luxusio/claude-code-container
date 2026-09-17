@@ -1141,9 +1141,53 @@ untouched. The new internal modules and assets can then be removed without data
 migration. This source-level rollback is sufficient for the bounded vertical
 slice; a runtime feature flag is not required.
 
+## What the asset digest pin does and does not protect
+
+`powershell-transport.ts` pins a SHA-256 of `Invoke-HyperVWindowsOperation.ps1`
+and refuses to run a source that does not match, before `spawn` and therefore
+before UAC is ever raised. That defends one thing: a tampered asset **on disk**.
+
+It does not cross the privilege boundary, and reading it as though it does
+would be a mistake. The elevated child's first act is to receive a PowerShell
+program over the pipe from the unelevated broker and run it — `ScriptBlock`
+from a base64 line, with no digest check on the elevated side. The verification
+happens in the medium-integrity Node process, which is the process an attacker
+would already control in any scenario where this mattered.
+
+So anything with same-user code execution — control of the broker, or a handle
+to the relay's stdin — can ride one legitimate UAC consent to Administrator.
+That is the standard position that UAC is not a security boundary, and it is
+not specific to this design; it is stated here so the pin is not mistaken for
+a stronger guarantee than it makes.
+
+Closing the narrow case, where only the relay's stdin is controlled and the
+broker's code is not, would mean having the elevated child re-verify the digest
+against a constant baked into its own `-EncodedCommand`. Not done, because the
+capability it defends against is a strict subset of one that already wins.
+
+What the boundary does defend, and what is pinned by test: the pipe exists
+before UAC launches the child, the peer's identity comes from
+`GetNamedPipeClientProcessId` and is checked before any byte the peer sent is
+trusted, and the pipe allows a single server instance so its name cannot be
+squatted.
+
 ## Follow-up
 
 After the first reconciliation slice passes focused Linux checks and Windows
 hardware validation, migrate additional Hyper-V operations behind the same
 boundary. Publish only after the API surface, compatibility/versioning policy,
 default Windows transport, package assets, and support matrix are explicit.
+
+The relay's own check on the executable it elevates is a `$`-anchored regex
+whose middle character class excludes only control characters, so it admits
+interior backslashes — `C:\Users\<user>\writable\System32\WindowsPowerShell\
+v1.0\powershell.exe` passes it. On the Node side this is harmless, because the
+regex is ANDed with equality against a `realpath` of the object-manager alias
+for System32. Inside the relay it stands alone. Deriving the expected path from
+`[Environment]::SystemDirectory` and comparing for equality, as the asset
+already does for its module root, would close it. Deliberately not done in this
+slice: it only matters to an attacker who already controls the relay's stdin
+envelope — who, per the section above, has won regardless — and it is a change
+to generated elevated PowerShell in the exact code that produced eight
+real-host defects here, so the risk outweighs the gain until it can be carried
+on a real host.

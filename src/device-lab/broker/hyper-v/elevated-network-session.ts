@@ -36,6 +36,19 @@ const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
 const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000;
 const ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS = 4_500;
 const ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS = 500;
+/**
+ * The relay's bootstrap-only failure vocabulary: each of these is thrown between launching the
+ * elevated child and announcing readiness, never from the request loop. Kept as a set so the
+ * decoder can reject one that arrives after readiness instead of trusting it.
+ */
+const RELAY_BOOTSTRAP_ONLY_FAILURES: ReadonlySet<string> = new Set([
+    "hyper-v-network-elevation-cancelled",
+    "hyper-v-network-elevation-launch-failed",
+    "hyper-v-network-elevation-handshake-timeout",
+    "hyper-v-network-elevation-authentication-failed",
+    "hyper-v-network-elevation-administrator-required",
+    "hyper-v-network-elevation-deadline-exceeded",
+]);
 const RELAY_CLOSE_WRITE_GRACE_MILLISECONDS = 1_000;
 const RELAY_FORCE_GRACE_MILLISECONDS = 10_000;
 const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000;
@@ -877,6 +890,24 @@ function defaultSpawnRelay(request: HyperVElevatedNetworkRelaySpawnRequest): Hyp
         }
         const observedFailure = parseElevationFailure(line);
         if (observedFailure) {
+            // Every code in this set is the relay saying the elevated child never ran, and the
+            // adapter believes it: `ELEVATED_MUTATION_PROVEN_NOT_STARTED` aborts the
+            // transaction on them rather than treating the mutation as indeterminate. The
+            // relay can only reach them during bootstrap, before it announces readiness — so
+            // today this guard cannot fire. That is exactly why it is here. The safety of a
+            // privileged mutation currently rests on an accident of the relay's control flow,
+            // and a later second elevation attempt would silently turn a may-have-run mutation
+            // into a proven-not-run one with nothing to catch it.
+            //
+            // Downgraded to `relay-failed` rather than `protocol-invalid`, which looks like the
+            // natural choice and is wrong: `protocol-invalid` is itself in the proven-not-started
+            // set, so it would preserve the very claim being rejected. `relay-failed` is not,
+            // and therefore reads as indeterminate — the conservative direction.
+            if (relayReady && RELAY_BOOTSTRAP_ONLY_FAILURES.has(observedFailure)) {
+                recordPrimaryFailure("hyper-v-network-elevation-relay-failed");
+                rejectSessionOutput();
+                return true;
+            }
             if (observedFailure === TERMINATION_UNCONFIRMED_CODE) {
                 recordTerminationFailure({
                     kind: "termination",
@@ -1270,12 +1301,13 @@ export async function withElevatedHyperVNetworkExecutor<T>(
             if (options.signal?.aborted || context.signal?.aborted) {
                 return failedExecution("hyper-v-network-elevation-cancelled");
             }
-            activeExecutions += 1;
-            try {
-                await awaitRelayAcquisition(context);
-            } finally {
-                activeExecutions -= 1;
-            }
+            // Deliberately not counted in `activeExecutions`. A primitive parked here has
+            // written nothing to the host — it is waiting for a human to answer UAC — and the
+            // only consumer of that counter is the termination diagnostic, which a reader uses
+            // to judge whether a privileged mutation may have been half applied. Counting the
+            // wait made a declined prompt report two primitives in flight when zero frames had
+            // been sent, which is the opposite of what that field exists to tell them.
+            await awaitRelayAcquisition(context);
             if (!active) return failedExecution("hyper-v-network-elevation-scope-closed");
             if (options.signal?.aborted || context.signal?.aborted) {
                 return failedExecution("hyper-v-network-elevation-cancelled");
