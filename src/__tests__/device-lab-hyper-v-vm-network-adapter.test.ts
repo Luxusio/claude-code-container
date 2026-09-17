@@ -91,10 +91,11 @@ describe("Device Lab bootstrap MAC derivation", () => {
 
 describe("Device Lab bootstrap discovery", () => {
     it("reports the guest's address in the legacy observation shape", async () => {
+        // No diagnostic key at all when nothing went wrong, matching the legacy shape the
+        // broker consumes: it tests for presence, not for a null.
         await expect(discoverDeviceLabHyperVBootstrapNetwork(client(), OWNED_VM)).resolves.toEqual({
             ok: true,
             addresses: ["172.20.0.9"],
-            diagnosticCode: null,
         });
     });
 

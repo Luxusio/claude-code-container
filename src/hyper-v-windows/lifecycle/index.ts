@@ -55,6 +55,6 @@ export type {
     HyperVBootstrapContainmentOutcome,
     HyperVBootstrapDiscoveryDiagnostic,
     HyperVBootstrapDiscoveryOutcome,
-    HyperVBootstrapNetworkObservation,
+    HyperVBootstrapHostObservation,
     HyperVBootstrapTeardownDecision,
 } from "./vm-network-contracts.js";

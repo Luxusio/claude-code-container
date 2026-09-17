@@ -3,7 +3,8 @@ import {
     discoverHyperVBootstrapAddresses,
     planHyperVBootstrapTeardown,
     type HyperVBootstrapAdapterExpectation,
-    type HyperVBootstrapNetworkObservation,
+    type HyperVBootstrapDiscoveryDiagnostic,
+    type HyperVBootstrapHostObservation,
 } from "../../../hyper-v-windows/lifecycle/index.js";
 import {
     parseHyperVMacAddress,
@@ -36,8 +37,11 @@ export type DeviceLabHyperVOwnedVm = {
 // today, so their shape and their diagnostic spellings are a compatibility surface.
 export type DeviceLabHyperVBootstrapNetworkObservation = {
     readonly ok: true;
-    readonly addresses: readonly string[];
-    readonly diagnosticCode: string | null;
+    readonly addresses: string[];
+    // Optional rather than nullable, and drawn from a closed union, because that is the shape
+    // the broker already consumes. The typed path can raise a strict subset of the codes the
+    // generated PowerShell could, so nothing downstream sees a spelling it did not before.
+    readonly diagnosticCode?: HyperVBootstrapDiscoveryDiagnostic;
 };
 
 export type DeviceLabHyperVBootstrapCleanupObservation = {
@@ -97,7 +101,7 @@ async function resolveOwnedVm(
 async function observe(
     client: HyperVWindowsNetworkClient,
     selector: HyperVVirtualMachineSelector,
-): Promise<HyperVBootstrapNetworkObservation> {
+): Promise<HyperVBootstrapHostObservation> {
     const switchName = parseHyperVVirtualSwitchName(BOOTSTRAP_SWITCH_NAME);
     const [vmAdapters, managementAdapters, hostIPv4Addresses] = await Promise.all([
         client.getVMNetworkAdapters({ selector }),
@@ -136,7 +140,11 @@ export async function discoverDeviceLabHyperVBootstrapNetwork(
 ): Promise<DeviceLabHyperVBootstrapNetworkObservation> {
     const selector = await resolveOwnedVm(client, vm);
     const outcome = discoverHyperVBootstrapAddresses(await observe(client, selector), BOOTSTRAP_EXPECTATION);
-    return { ok: true, addresses: outcome.addresses, diagnosticCode: outcome.diagnosticCode };
+    return {
+        ok: true,
+        addresses: [...outcome.addresses],
+        ...(outcome.diagnosticCode ? { diagnosticCode: outcome.diagnosticCode } : {}),
+    };
 }
 
 /**

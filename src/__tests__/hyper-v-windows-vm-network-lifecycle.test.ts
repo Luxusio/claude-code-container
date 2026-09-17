@@ -8,7 +8,7 @@ import {
 } from "../hyper-v-windows/lifecycle/vm-network-reconcile.js";
 import type {
     HyperVBootstrapAdapterExpectation,
-    HyperVBootstrapNetworkObservation,
+    HyperVBootstrapHostObservation,
 } from "../hyper-v-windows/lifecycle/vm-network-contracts.js";
 import {
     parseHyperVInterfaceIndex,
@@ -65,7 +65,7 @@ function neighbor(address: string, linkLayerAddress: HyperVMacAddress | null, in
     };
 }
 
-function observation(overrides: Partial<HyperVBootstrapNetworkObservation> = {}): HyperVBootstrapNetworkObservation {
+function observation(overrides: Partial<HyperVBootstrapHostObservation> = {}): HyperVBootstrapHostObservation {
     return {
         vmAdapters: [adapter()],
         managementAdapters: [adapter({ managementOperatingSystem: true, ipAddresses: ["172.20.0.1"] })],

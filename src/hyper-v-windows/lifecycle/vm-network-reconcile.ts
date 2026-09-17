@@ -10,7 +10,7 @@ import type {
     HyperVBootstrapAdapterExpectation,
     HyperVBootstrapContainmentOutcome,
     HyperVBootstrapDiscoveryOutcome,
-    HyperVBootstrapNetworkObservation,
+    HyperVBootstrapHostObservation,
     HyperVBootstrapTeardownDecision,
 } from "./vm-network-contracts.js";
 
@@ -109,7 +109,7 @@ function hostPrefixesFrom(
 }
 
 function bootstrapAdaptersOf(
-    observation: HyperVBootstrapNetworkObservation,
+    observation: HyperVBootstrapHostObservation,
     expectation: HyperVBootstrapAdapterExpectation,
 ): readonly HyperVVMNetworkAdapter[] {
     return observation.vmAdapters.filter((adapter) => adapter.name === expectation.adapterName);
@@ -124,7 +124,7 @@ function bootstrapAdaptersOf(
  * services are up, so neither alone is sufficient to find a booting guest.
  */
 export function discoverHyperVBootstrapAddresses(
-    observation: HyperVBootstrapNetworkObservation,
+    observation: HyperVBootstrapHostObservation,
     expectation: HyperVBootstrapAdapterExpectation,
 ): HyperVBootstrapDiscoveryOutcome {
     const adapters = bootstrapAdaptersOf(observation, expectation);
@@ -178,7 +178,7 @@ export function discoverHyperVBootstrapAddresses(
  * from a VM the caller owns, and an adapter that is not the one expected is someone else's.
  */
 export function planHyperVBootstrapTeardown(
-    observation: HyperVBootstrapNetworkObservation,
+    observation: HyperVBootstrapHostObservation,
     expectation: HyperVBootstrapAdapterExpectation,
     expectedMacAddress: HyperVMacAddress,
 ): HyperVBootstrapTeardownDecision {

@@ -7,8 +7,10 @@ import type {
 } from "../low-level/network-contracts.js";
 
 // Everything one bootstrap discovery pass needs to reach a decision, gathered by the caller
-// so that the decision itself stays a function of its inputs and runs anywhere.
-export type HyperVBootstrapNetworkObservation = {
+// so that the decision itself stays a function of its inputs and runs anywhere. This is what
+// was seen of the host; what the broker reports to its caller is a different, public shape
+// that happens to describe the same moment.
+export type HyperVBootstrapHostObservation = {
     // The adapters of the one VM being discovered, not the host-wide set.
     readonly vmAdapters: readonly HyperVVMNetworkAdapter[];
     // The host management adapters on the bootstrap switch. Their addresses, together with
