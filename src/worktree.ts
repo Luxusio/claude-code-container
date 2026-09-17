@@ -937,6 +937,25 @@ export function assertWorkspaceBranch(
 
 type GitLinkKind = "directory" | "worktree" | "gitlink";
 
+/**
+ * A worktree's two-way link is broken: the checkout and its administrative directory no longer
+ * agree. Distinct from an ownership judgement, and the difference matters — this is repairable
+ * by `git worktree repair`, whereas an unowned nested repository is a refusal on purpose.
+ * Marked rather than message-matched so the classification survives rewording.
+ */
+const BROKEN_WORKTREE_LINK = Symbol.for("ccc.brokenWorktreeLink");
+
+function brokenWorktreeLink(message: string): Error {
+    return Object.assign(new Error(message), { [BROKEN_WORKTREE_LINK]: true });
+}
+
+function isBrokenWorktreeLink(error: unknown): boolean {
+    for (const link of errorChain(error)) {
+        if (link[BROKEN_WORKTREE_LINK as unknown as string] === true) return true;
+    }
+    return false;
+}
+
 function gitLinkKind(gitPath: string): GitLinkKind {
     let observed;
     try {
@@ -963,10 +982,10 @@ function gitLinkKind(gitPath: string): GitLinkKind {
         if (!commonDir) throw new Error("empty commondir");
         const gitDirObserved = lstatSync(gitDir);
         if (!gitDirObserved.isDirectory() || gitDirObserved.isSymbolicLink()) {
-            throw new Error("worktree management entry is not a real directory");
+            throw brokenWorktreeLink("worktree management entry is not a real directory");
         }
         const registeredGitFile = readFileSync(join(gitDir, "gitdir"), "utf-8").trim();
-        if (!registeredGitFile) throw new Error("empty gitdir registration");
+        if (!registeredGitFile) throw brokenWorktreeLink("empty gitdir registration");
         let registeredRealPath: string;
         try {
             registeredRealPath = realpathSync(registeredGitFile);
@@ -982,16 +1001,16 @@ function gitLinkKind(gitPath: string): GitLinkKind {
             );
         }
         if (registeredRealPath !== realpathSync(gitPath)) {
-            throw new Error("worktree registration does not point back to workspace");
+            throw brokenWorktreeLink("worktree registration does not point back to workspace");
         }
         const commonGitDir = resolve(gitDir, commonDir);
         if (!lstatSync(commonGitDir).isDirectory()) {
-            throw new Error("worktree common directory is not a directory");
+            throw brokenWorktreeLink("worktree common directory is not a directory");
         }
         const managementRootPath = join(realpathSync(commonGitDir), "worktrees");
         const managementRootObserved = lstatSync(managementRootPath);
         if (!managementRootObserved.isDirectory() || managementRootObserved.isSymbolicLink()) {
-            throw new Error("worktree management root is not a real directory");
+            throw brokenWorktreeLink("worktree management root is not a real directory");
         }
         if (dirname(realpathSync(gitDir)) !== realpathSync(managementRootPath)) {
             throw new Error("worktree management entry is outside its source repository");
@@ -2736,6 +2755,18 @@ function nestedRepositoryCandidateIsSafe(
         // later delete. Only the top-level error, never a cause: an errno reached through a
         // wrapper came from inside an ownership judgement, and that is the case this must not
         // swallow.
+        // A worktree whose two-way link is broken: the administrative directory is there, but
+        // it and the checkout no longer agree about each other. That is not an ownership
+        // problem and must not be reported as one, and it is not fatal to the workspace —
+        // `git worktree repair` relinks it, and every sibling repository is still usable. One
+        // checkout with a stale registration used to abort every `ccc @<branch>` for the whole
+        // workspace, with a message whose innermost cause named the real fault and whose
+        // outermost said only "Unable to inspect".
+        if (isBrokenWorktreeLink(error)) {
+            warnBrokenWorktreeLink(candidatePath);
+            unreachable?.push(candidatePath);
+            return false;
+        }
         const rawCode = (error as NodeJS.ErrnoException)?.code;
         if (typeof rawCode === "string" && UNREACHABLE_PATH_CODES.includes(rawCode)) return false;
         const recorded = unreachableRecordedGitPath(error);
@@ -2764,6 +2795,19 @@ function nestedRepositoryCandidateIsSafe(
 }
 
 const warnedUnreachableNestedRepositories = new Set<string>();
+
+function warnBrokenWorktreeLink(candidatePath: string): void {
+    // The scan runs more than once per invocation; one line per directory, not per scan.
+    if (warnedUnreachableNestedRepositories.has(`broken-link:${candidatePath}`)) return;
+    warnedUnreachableNestedRepositories.add(`broken-link:${candidatePath}`);
+    process.stderr.write(
+        `[ccc] NOTE: Skipping nested Git repository ${terminalSafe(candidatePath)}: it is a linked\n`
+        + "      worktree whose registration no longer points back to it. Your files are\n"
+        + "      untouched; only the link is broken, and `git worktree repair` relinks it.\n"
+        + "      Run `ccc @<branch>` from the source repository and ccc will offer to do it.\n",
+    );
+}
+
 
 type PathContent = "absent" | "empty" | "unreadable" | "content" | "repository";
 

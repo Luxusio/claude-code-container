@@ -1498,6 +1498,57 @@ describe("assertWorkspaceBranch", () => {
         expect(notice).not.toContain("not owned by its parent");
     });
 
+    // Third variant reported from the same machine, and the one whose message hid the cause
+    // deepest: `Unable to inspect nested Git repository` wrapping `Unable to inspect worktree
+    // common directory` wrapping `worktree registration does not point back to workspace`.
+    // The administrative directory is present; it and the checkout simply disagree.
+    it("skips a nested worktree whose registration no longer points back to it", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-backlink");
+        spawnSync("git", ["branch", "feature-backlink"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-backlink"], { cwd: repoPath, stdio: "pipe" });
+
+        const sources: Record<string, string> = {};
+        for (const name of ["api", "webapp"]) {
+            const source = join(repoPath, name);
+            sources[name] = source;
+            mkdirSync(source, { recursive: true });
+            for (const args of [
+                ["init"],
+                ["config", "user.email", "t@example.com"],
+                ["config", "user.name", "t"],
+                ["commit", "--allow-empty", "-m", "init"],
+            ]) spawnSync("git", args, { cwd: source, stdio: "pipe" });
+            spawnSync("git", ["worktree", "add", join(workspace, name), "-b", "feature-backlink"], {
+                cwd: source, stdio: "pipe",
+            });
+        }
+
+        // Point the registration at some other checkout. The admin directory still exists, so
+        // none of the earlier reachability checks fire; only the back-link comparison does.
+        const registrations = join(sources.api, ".git", "worktrees");
+        const registration = join(registrations, readdirSync(registrations)[0], "gitdir");
+        writeFileSync(registration, `${join(workspace, "webapp", ".git")}\n`);
+
+        const stderr: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+        let detected: unknown;
+        try {
+            detected = detectWorktreeWorkspaceBranch(workspace);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+
+        expect(detected, "a stale registration must not take the workspace down").toBeTruthy();
+        const notice = stderr.join("");
+        expect(notice).toContain("Skipping nested Git repository");
+        expect(notice).toContain(join(workspace, "api"));
+        expect(notice, "the cause must be named, not buried under \"Unable to inspect\"")
+            .toContain("no longer points back");
+        expect(notice, "and the remedy must be named").toContain("git worktree repair");
+        expect(notice).not.toContain("not owned by its parent");
+    });
+
     // A refusal with no way out is the same defect as a refusal that names the wrong cause.
     // This pins both halves: that the error identifies the checkout, and that the command it
     // prescribes actually repairs it — asserted by running that command and reopening.
