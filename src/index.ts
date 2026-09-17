@@ -61,6 +61,8 @@ import {
     workspaceExists,
     needsSubmoduleSetup,
     initWithSubmodules,
+    DamagedWorkspaceMetadataError,
+    repairWorkspaceWorktree,
 } from "./worktree.js";
 import {
     getContainerName,
@@ -1188,10 +1190,40 @@ async function prepareWorktreeUnlocked(
 async function prepareWorktree(cwd: string, branch: string): Promise<string> {
     const workspacePath = getWorkspacePath(cwd, branch);
     const projectId = getProjectId(workspacePath);
-    return withProjectFamilyLifecycleLockAsync(
+    const run = () => withProjectFamilyLifecycleLockAsync(
         projectId,
         () => prepareWorktreeUnlocked(cwd, branch),
     );
+    try {
+        return await run();
+    } catch (error) {
+        // ccc knows the repository, the checkout and the command. Printing the command and
+        // making the operator retype it is not a remedy — offer to run it.
+        if (!(error instanceof DamagedWorkspaceMetadataError) || error.repairs.length === 0) throw error;
+        console.error((error as Error).message);
+        console.error("");
+        for (const repair of error.repairs) {
+            console.error(`  git worktree repair ${repair.checkoutPath}`);
+            console.error(`    in ${repair.sourcePath}`);
+        }
+        const answer = await prompt(
+            `Run ${error.repairs.length === 1 ? "this" : "these"} now? (y/N) `,
+            true,
+        );
+        if (answer !== "y" && answer !== "yes") throw error;
+        let repairedAny = false;
+        for (const repair of error.repairs) {
+            const outcome = repairWorkspaceWorktree(repair);
+            console.error(outcome.ok
+                ? `  repaired ${repair.checkoutPath}`
+                : `  could not repair ${repair.checkoutPath}${outcome.detail ? `: ${outcome.detail}` : ""}`);
+            repairedAny ||= outcome.ok;
+        }
+        // Retried only when something actually changed, so a failed repair surfaces the
+        // original diagnosis instead of an identical second one.
+        if (!repairedAny) throw error;
+        return await run();
+    }
 }
 
 export function withWorkspaceRemovalLifecycleLock<T>(

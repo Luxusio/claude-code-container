@@ -28,6 +28,8 @@ import {
     createWorkspace,
     removeWorkspace,
     unreachableRecordedGitPath,
+    DamagedWorkspaceMetadataError,
+    repairWorkspaceWorktree,
     unmanagedPathRefusal,
     relayNestedRemovalError,
     strandedBranchRegistrations,
@@ -1520,15 +1522,25 @@ describe("assertWorkspaceBranch", () => {
         writeFileSync(join(workspace, "webapp", ".git"), "gitdir: /nonexistent/modules/webapp\n");
 
         let message = "";
+        let thrown: unknown;
         try {
             detectWorktreeWorkspaceBranch(workspace);
         } catch (error) {
+            thrown = error;
             message = (error as Error).message;
         }
         expect(message).toContain("Workspace Git metadata is missing or damaged.");
         expect(message, "the operator must learn which checkout to repair")
             .toContain(join(workspace, "webapp"));
-        expect(message).toContain("git worktree repair");
+        // ccc offers to run it; it does not hand the operator a command to retype.
+        expect(message).toContain("ccc can run that for you");
+        expect(thrown, "the caller needs a repair plan, not prose").toBeInstanceOf(
+            DamagedWorkspaceMetadataError,
+        );
+        expect((thrown as DamagedWorkspaceMetadataError).repairs).toEqual([{
+            checkoutPath: join(workspace, "webapp"),
+            sourcePath: source,
+        }]);
 
         // Prune is deliberately not prescribed, because it does nothing here.
         const pruned = spawnSync("git", ["worktree", "prune", "-v"], {
@@ -1536,11 +1548,11 @@ describe("assertWorkspaceBranch", () => {
         });
         expect((pruned.stdout || "").trim(), "prune must be a no-op in this state").toBe("");
 
-        // The prescribed command, run exactly as the message gives it.
-        const repaired = spawnSync("git", ["worktree", "repair", join(workspace, "webapp")], {
-            cwd: source, encoding: "utf-8", stdio: "pipe",
-        });
-        expect(repaired.status, "the prescribed repair must succeed").toBe(0);
+        // The repair ccc would run on approval, driven through the exported entry point.
+        const repaired = repairWorkspaceWorktree(
+            (thrown as DamagedWorkspaceMetadataError).repairs[0],
+        );
+        expect(repaired.ok, `repair failed: ${repaired.detail}`).toBe(true);
 
         expect(
             detectWorktreeWorkspaceBranch(workspace),

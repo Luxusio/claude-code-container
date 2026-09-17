@@ -2302,24 +2302,106 @@ export function repairWorkspaceRootOwnership(
  * registrations whose directory is missing, and this one is present. `git worktree repair`
  * reports `.git file broken` and rewrites the file to the real administrative directory.
  */
+export type WorkspaceWorktreeRepair = {
+    /** The checkout inside the workspace whose `.git` file no longer resolves. */
+    readonly checkoutPath: string;
+    /** The repository that still registers it, and the only place `repair` can run. */
+    readonly sourcePath: string;
+};
+
+/**
+ * Carries what a caller needs to offer the repair rather than dictate it. Printing a command
+ * and making the operator retype it is not a remedy; ccc knows the repository, the checkout
+ * and the command, so it can ask for consent and run it.
+ */
+export class DamagedWorkspaceMetadataError extends Error {
+    readonly repairs: readonly WorkspaceWorktreeRepair[];
+    constructor(message: string, repairs: readonly WorkspaceWorktreeRepair[]) {
+        super(message);
+        this.name = "DamagedWorkspaceMetadataError";
+        this.repairs = repairs;
+    }
+}
+
+/** Map each unusable checkout back to the sibling source repository that still registers it. */
+function workspaceWorktreeRepairPlan(
+    workspacePath: string,
+    unusablePaths: readonly string[],
+): WorkspaceWorktreeRepair[] {
+    const repairs: WorkspaceWorktreeRepair[] = [];
+    const remaining = new Set(unusablePaths);
+    const workspaceName = basename(workspacePath);
+    let separatorIndex = workspaceName.indexOf(WORKTREE_SEPARATOR);
+    while (separatorIndex > 0) {
+        const sourcePath = join(dirname(workspacePath), workspaceName.slice(0, separatorIndex));
+        if (pathExistsStrict(sourcePath)) {
+            const consider = (owner: string, checkoutPath: string) => {
+                if (!remaining.has(checkoutPath)) return;
+                if (!hasGitMetadata(owner)) return;
+                if (!registryContainsWorktree(owner, checkoutPath)) return;
+                remaining.delete(checkoutPath);
+                repairs.push({ checkoutPath, sourcePath: owner });
+            };
+            consider(sourcePath, workspacePath);
+            try {
+                for (const entry of scanUnifiedNestedRepositories(
+                    sourcePath,
+                    { strict: true, allowRegisteredWorktrees: true },
+                )) {
+                    if (entry.isGitRepo) consider(entry.path, join(workspacePath, entry.name));
+                }
+            } catch {
+                // A source that cannot be scanned simply offers no repair for these paths.
+            }
+        }
+        separatorIndex = workspaceName.indexOf(
+            WORKTREE_SEPARATOR,
+            separatorIndex + WORKTREE_SEPARATOR.length,
+        );
+    }
+    return repairs;
+}
+
+/**
+ * Run `git worktree repair` for one damaged checkout, from the repository that owns it.
+ * Measured: with the registration intact and the checkout's `.git` file naming a directory
+ * that is gone, `prune` removes nothing and `repair` relinks it.
+ */
+export function repairWorkspaceWorktree(
+    repair: WorkspaceWorktreeRepair,
+    runner: typeof spawnSync = spawnSync,
+): { ok: boolean; detail: string } {
+    const result = runner("git", ["worktree", "repair", repair.checkoutPath], {
+        cwd: repair.sourcePath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+    if (result.error) return { ok: false, detail: result.error.message };
+    const detail = [(result.stdout ?? "").trim(), (result.stderr ?? "").trim()]
+        .filter(Boolean)
+        .join(" ");
+    return { ok: result.status === 0, detail };
+}
+
 function damagedWorkspaceMetadataError(
     workspacePath: string,
     registeredPaths: readonly string[],
 ): Error {
-    const listed = (registeredPaths.length > 0 ? registeredPaths : [workspacePath])
-        .map((path) => `\n  ${terminalSafe(path)}`)
-        .join("");
-    return new Error(
+    const paths = registeredPaths.length > 0 ? registeredPaths : [workspacePath];
+    const listed = paths.map((path) => `\n  ${terminalSafe(path)}`).join("");
+    const repairs = workspaceWorktreeRepairPlan(workspacePath, paths);
+    return new DamagedWorkspaceMetadataError(
         "Workspace Git metadata is missing or damaged."
         + `\n\nA source repository still registers a linked worktree at:${listed}`
         + "\n\nbut the checkout there cannot be used — usually its `.git` file names a Git"
         + "\ndirectory that no longer exists. Your working files are untouched; only the"
         + "\nlink to the repository is broken."
-        + "\n\nRepair it by running this in the source repository:"
-        + "\n  git worktree repair <path>"
-        + "\n\nIf the registration itself was deleted, `git worktree repair` has nothing to"
-        + "\nrelink; recreate the workspace with `ccc @<branch>` from the source repository"
-        + "\ninstead, then copy back anything that was never committed.",
+        + (repairs.length > 0
+            ? "\n\n`git worktree repair` relinks it. ccc can run that for you."
+            : "\n\nNo source repository offers a repair for it — the registration itself is"
+                + "\ngone. Recreate the workspace with `ccc @<branch>` from the source"
+                + "\nrepository, then copy back anything that was never committed."),
+        repairs,
     );
 }
 
