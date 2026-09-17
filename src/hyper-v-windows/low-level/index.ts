@@ -3,7 +3,10 @@ export { createHyperVWindowsNetworkClient } from "./network-client.js";
 export {
     createHyperVHostNetworkSpec,
     HyperVWindowsNetworkValueError,
+    hyperVMacAddressColonForm,
+    hyperVMacAddressNativeHex,
     parseHyperVInterfaceIndex,
+    parseHyperVMacAddress,
     parseHyperVNatInstanceId,
     parseHyperVNatName,
     parseHyperVNetworkAdapterName,
@@ -75,6 +78,7 @@ export type {
     HyperVNatIdentity,
     HyperVNatInstanceId,
     HyperVNatName,
+    HyperVMacAddress,
     HyperVNatSelector,
     HyperVNetIPAddress,
     HyperVNetIPAddressSelector,

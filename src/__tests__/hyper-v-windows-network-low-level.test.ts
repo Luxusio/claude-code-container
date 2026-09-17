@@ -7,7 +7,10 @@ import {
     createHyperVWindowsNetworkClient,
     HyperVWindowsError,
     HyperVWindowsNetworkValueError,
+    hyperVMacAddressColonForm,
+    hyperVMacAddressNativeHex,
     parseHyperVInterfaceIndex,
+    parseHyperVMacAddress,
     parseHyperVNatInstanceId,
     parseHyperVNatName,
     parseHyperVNetworkAdapterName,
@@ -91,6 +94,51 @@ describe("Hyper-V Windows network values", () => {
         ["unsupported host prefix", () => createHyperVHostNetworkSpec({ switchName, natName, cidr: "10.0.0.0/8", gateway: "10.0.0.1" }), "hyper-v-host-network-prefix-length-unsupported"],
         ["reserved gateway", () => createHyperVHostNetworkSpec({ switchName, natName, cidr: "172.31.240.0/24", gateway: "172.31.240.255" }), "hyper-v-host-network-gateway-reserved-or-outside-cidr"],
     ])("rejects %s with a named value error", (_label, action, code) => {
+        expect(action).toThrowError(HyperVWindowsNetworkValueError);
+        expect(action).toThrow(code);
+    });
+});
+
+describe("Hyper-V Windows MAC address value", () => {
+    // Every spelling below is one native cmdlet's or one ccc record's idea of the same
+    // address. They must land on one value, because destructive adapter selection compares
+    // these and a spelling that compared unequal would silently match no adapter.
+    it.each([
+        ["Get-VMNetworkAdapter bare uppercase hex", "00155D011A2C"],
+        ["bare lowercase hex", "00155d011a2c"],
+        ["Get-NetNeighbor hyphen groups", "00-15-5D-01-1A-2C"],
+        ["ccc colon form", "00:15:5d:01:1a:2c"],
+        ["mixed case colon form", "00:15:5D:01:1a:2C"],
+    ])("parses %s to the same canonical value", (_label, spelling) => {
+        expect(parseHyperVMacAddress(spelling)).toBe(parseHyperVMacAddress("00155D011A2C"));
+    });
+
+    it("renders both external spellings from the canonical value", () => {
+        const mac = parseHyperVMacAddress("00-15-5D-01-1A-2C");
+        expect(hyperVMacAddressNativeHex(mac)).toBe("00155D011A2C");
+        expect(hyperVMacAddressColonForm(mac)).toBe("00:15:5d:01:1a:2c");
+    });
+
+    it("round-trips every rendering back to the same value", () => {
+        const mac = parseHyperVMacAddress("02:15:5d:01:1a:2c");
+        expect(parseHyperVMacAddress(hyperVMacAddressNativeHex(mac))).toBe(mac);
+        expect(parseHyperVMacAddress(hyperVMacAddressColonForm(mac))).toBe(mac);
+    });
+
+    it.each([
+        ["too short", "00155D011A2", "hyper-v-mac-address-invalid"],
+        ["too long", "00155D011A2CF", "hyper-v-mac-address-invalid"],
+        ["non-hex", "00155D011AZZ", "hyper-v-mac-address-invalid"],
+        ["empty", "", "hyper-v-mac-address-invalid"],
+        ["wrong group count", "0015:5D01:1A2C", "hyper-v-mac-address-invalid"],
+        ["mixed separators", "00-15:5D-01-1A-2C", "hyper-v-mac-address-invalid"],
+        ["trailing separator", "00:15:5d:01:1a:2c:", "hyper-v-mac-address-invalid"],
+        ["embedded whitespace", "00 15 5D 01 1A 2C", "hyper-v-mac-address-invalid"],
+        // Hyper-V reports this for an adapter whose dynamic address is not yet assigned.
+        // It must never become a value that a removal could match against.
+        ["unassigned all-zero address", "000000000000", "hyper-v-mac-address-unassigned"],
+    ])("rejects %s with a named value error", (_label, spelling, code) => {
+        const action = () => parseHyperVMacAddress(spelling);
         expect(action).toThrowError(HyperVWindowsNetworkValueError);
         expect(action).toThrow(code);
     });

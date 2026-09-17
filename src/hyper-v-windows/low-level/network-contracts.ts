@@ -11,6 +11,7 @@ const ipv4PrefixLengthBrand: unique symbol = Symbol("IPv4PrefixLength");
 const virtualMachineNameBrand: unique symbol = Symbol("HyperVVirtualMachineName");
 const virtualMachineIdBrand: unique symbol = Symbol("HyperVVirtualMachineId");
 const networkAdapterNameBrand: unique symbol = Symbol("HyperVNetworkAdapterName");
+const macAddressBrand: unique symbol = Symbol("HyperVMacAddress");
 
 type Opaque<Value, Token extends symbol> = Value & { readonly [Key in Token]: true };
 
@@ -25,6 +26,12 @@ export type IPv4PrefixLength = Opaque<number, typeof ipv4PrefixLengthBrand>;
 export type HyperVVirtualMachineName = Opaque<string, typeof virtualMachineNameBrand>;
 export type HyperVVirtualMachineId = Opaque<string, typeof virtualMachineIdBrand>;
 export type HyperVNetworkAdapterName = Opaque<string, typeof networkAdapterNameBrand>;
+
+// One canonical MAC value behind two external spellings. Native Hyper-V reports twelve
+// uppercase hex characters; ccc carries its own as colon-separated lowercase. Reconciling
+// those two by hand at each call site is how a destructive adapter removal silently selects
+// the wrong adapter, so the canonical form is the only thing destructive code compares.
+export type HyperVMacAddress = Opaque<string, typeof macAddressBrand>;
 
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAT_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -178,6 +185,32 @@ export function parseHyperVVirtualMachineId(value: string): HyperVVirtualMachine
 export function parseHyperVNetworkAdapterName(value: string): HyperVNetworkAdapterName {
     if (!validNativeName(value, 256)) fail("hyper-v-network-adapter-name-invalid");
     return opaque(value, networkAdapterNameBrand);
+}
+
+// Native spells a MAC three ways depending on which cmdlet produced it: bare hex from
+// `Get-VMNetworkAdapter`, hyphen groups from `Get-NetNeighbor`, and ccc's own records use
+// colons. One tolerant parser covers all three, because the alternative — a parser per
+// spelling — puts the choice of parser at the call site, which is the mistake this value
+// exists to remove. Separators may not be mixed, so `00-15:5D...` is rejected rather than
+// quietly accepted.
+export function parseHyperVMacAddress(value: string): HyperVMacAddress {
+    const separator = value.includes(":") ? ":" : value.includes("-") ? "-" : "";
+    const digits = separator === "" ? value : value.split(separator).length === 6 ? value.split(separator).join("") : "";
+    if (!/^[0-9a-fA-F]{12}$/.test(digits)) fail("hyper-v-mac-address-invalid");
+    const canonical = digits.toLowerCase();
+    // Hyper-V reports all zeroes for an adapter whose dynamic address is not yet assigned.
+    // That is an absent address, not an address of zero, and callers must handle it as
+    // absent before they get here rather than comparing against it.
+    if (canonical === "000000000000") fail("hyper-v-mac-address-unassigned");
+    return opaque(canonical, macAddressBrand);
+}
+
+export function hyperVMacAddressNativeHex(value: HyperVMacAddress): string {
+    return value.toUpperCase();
+}
+
+export function hyperVMacAddressColonForm(value: HyperVMacAddress): string {
+    return (value.match(/../g) ?? []).join(":");
 }
 
 export type HyperVHostNetworkSpec = {
