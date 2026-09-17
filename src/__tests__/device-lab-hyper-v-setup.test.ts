@@ -209,6 +209,117 @@ describe("Hyper-V host setup CLI", () => {
         expect(result.text).not.toContain("verify that the Windows edition supports Hyper-V");
     });
 
+    // Setup's own network ensure was deleted in favour of the typed host-fabric path.
+    // These four pin the replacement contract: the ensure is actually called, it runs
+    // while the host mutation lock is held, its failure fails the command, and it never
+    // runs when the elevated step that must precede it did not succeed. Without them a
+    // setup that silently stopped preparing the network would still pass.
+    const confirmedSetupRunner = (overrides: Record<string, unknown> = {}) => vi.fn(() => ({
+        command: "powershell.exe",
+        status: 0,
+        stdout: JSON.stringify({
+            ok: true,
+            featureName: "Microsoft-Hyper-V-All",
+            beforeState: "Enabled",
+            afterState: "Enabled",
+            changed: false,
+            elevated: true,
+            rebootRequired: false,
+            ...overrides,
+        }),
+        stderr: "",
+    }));
+
+    it("reconciles the host fabric through the typed path after the elevated step", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-fabric-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const runner = confirmedSetupRunner();
+        const ensure = vi.fn(() => Promise.resolve(setupNetwork));
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: runner,
+            ensureHostNetwork: ensure,
+        });
+
+        expect(result.ok).toBe(true);
+        expect(ensure).toHaveBeenCalledTimes(1);
+        expect(runner.mock.invocationCallOrder[0]).toBeLessThan(ensure.mock.invocationCallOrder[0]);
+        expect(result.text).toContain("networkPrepared: true");
+        expect(result.text).toContain(`networkSwitch: ${setupNetwork.switchName}`);
+        expect(result.text).toContain(`networkGateway: ${setupNetwork.gateway}`);
+    });
+
+    it("holds the host mutation lock across the typed fabric reconciliation", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-fabric-lock-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const mutationLockFile = join(root, "host-locks", "hyper-v.mutation.lock");
+        let lockedDuringEnsure: boolean | null = null;
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: confirmedSetupRunner(),
+            ensureHostNetwork: () => {
+                lockedDuringEnsure = existsSync(mutationLockFile);
+                return Promise.resolve(setupNetwork);
+            },
+        });
+
+        expect(result.ok).toBe(true);
+        expect(lockedDuringEnsure).toBe(true);
+        expect(existsSync(mutationLockFile)).toBe(false);
+    });
+
+    it("fails the command with a bounded detail when the typed fabric reconciliation fails", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-fabric-fail-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const mutationLockFile = join(root, "host-locks", "hyper-v.mutation.lock");
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: confirmedSetupRunner(),
+            ensureHostNetwork: () => Promise.resolve({
+                ok: false as const,
+                status: 502,
+                error: "hyper-v-network-setup-failed",
+                detail: "hyper-v-network-switch-identity-conflict",
+            }),
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.text).toContain("hyper-v-network-switch-identity-conflict");
+        expect(result.text).not.toContain("networkPrepared: true");
+        expect(existsSync(mutationLockFile)).toBe(false);
+    });
+
+    it("does not reconcile the host fabric when the elevated setup step failed", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-fabric-skip-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const ensure = vi.fn(() => Promise.resolve(setupNetwork));
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: vi.fn(() => ({
+                command: "powershell.exe",
+                status: 1,
+                stdout: "",
+                stderr: "hyper-v-setup-enable-failed",
+            })),
+            ensureHostNetwork: ensure,
+        });
+
+        expect(result.ok).toBe(false);
+        expect(ensure).not.toHaveBeenCalled();
+    });
+
     it("enables Hyper-V only through the confirmed setup path and reports a pending reboot", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-setup-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
