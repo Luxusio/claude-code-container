@@ -50,40 +50,34 @@ describe("ensureTools (npm tools)", () => {
         expect(console.log).not.toHaveBeenCalled();
     });
 
-    it("installs missing tools and creates wrappers", () => {
+    it("installs missing tools independently and creates each wrapper", () => {
         // Combined check returns all 3 missing
+        spawnSyncMock.mockReturnValue(makeResult(0));
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // mise reshim
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper gemini
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper opencode
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 2 cleanups + 1 install + 1 reshim + 3 wrappers = 8 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(8);
+        const installCalls = spawnSyncMock.mock.calls.filter(([, args]) =>
+            (args as string[]).at(-1)!.includes("npm install -g"),
+        );
+        expect(installCalls.map(([, args]) => (args as string[]).at(-1))).toEqual([
+            "~/.local/bin/mise exec node@22 -- npm install -g @google/gemini-cli",
+            "~/.local/bin/mise exec node@22 -- npm install -g @openai/codex",
+            "~/.local/bin/mise exec node@22 -- npm install -g opencode-ai",
+        ]);
+        for (const [cli, args] of installCalls) {
+            expect(cli).toBe("docker");
+            expect(args).toEqual(expect.arrayContaining(["exec", container]));
+        }
 
-        // Verify install command uses mise exec node@22 (index 3 after cleanup)
-        const installCall = spawnSyncMock.mock.calls[3];
-        expect(installCall[0]).toBe("docker");
-        const installArgs = installCall[1] as string[];
-        expect(installArgs).toContain("exec");
-        expect(installArgs).toContain(container);
-        const shCmd = installArgs[installArgs.length - 1];
-        expect(shCmd).toContain("mise exec node@22");
-        expect(shCmd).toContain("@google/gemini-cli");
-        expect(shCmd).toContain("@openai/codex");
-        expect(shCmd).toContain("opencode-ai");
-
-        // Verify wrapper creation
-        const wrapperCall = spawnSyncMock.mock.calls[5];
-        const wrapperArgs = wrapperCall[1] as string[];
-        const wrapperCmd = wrapperArgs[wrapperArgs.length - 1];
-        expect(wrapperCmd).toContain("mise exec node@22 -- gemini");
-        expect(wrapperCmd).toContain("chmod +x");
+        const wrapperCommands = spawnSyncMock.mock.calls
+            .map(([, args]) => (args as string[]).at(-1)!)
+            .filter((script) => script.includes("cat > /home/ccc/.local/bin/"));
+        expect(wrapperCommands).toHaveLength(3);
+        for (const cmd of ["gemini", "codex", "opencode"]) {
+            expect(wrapperCommands).toContainEqual(expect.stringContaining(`mise exec node@22 -- ${cmd}`));
+            expect(wrapperCommands).toContainEqual(expect.stringContaining(`chmod +x /home/ccc/.local/bin/${cmd}`));
+        }
 
         expect(console.log).toHaveBeenCalledWith("Installing gemini, codex, opencode...");
     });
@@ -113,20 +107,27 @@ describe("ensureTools (npm tools)", () => {
         expect(console.log).toHaveBeenCalledWith("Installing codex...");
     });
 
-    it("warns and skips wrappers on install failure", () => {
-        // Combined check returns all 3 missing
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
-        spawnSyncMock.mockReturnValueOnce(makeResult(1)); // npm install FAIL
+    it("fails active installation while preserving independent tool wrappers", () => {
+        spawnSyncMock.mockImplementation((_cli, args) => {
+            const script = (args as string[]).at(-1)!;
+            if (script.startsWith("[ -x ")) return makeResult(0, "gemini\ncodex\nopencode\n");
+            if (script === "~/.local/bin/mise exec node@22 -- npm install -g @google/gemini-cli") {
+                return { ...makeResult(1), stderr: "npm error EACCES" };
+            }
+            return makeResult(0);
+        });
 
-        ensureTools(container, getToolByName("gemini")!);
+        expect(() => ensureTools(container, getToolByName("gemini")!))
+            .toThrow(/install gemini \(@google\/gemini-cli\).*EACCES/);
 
-        // 1 check + 2 cleanups + 1 install = 4 calls (no reshim/wrapper calls)
-        expect(spawnSyncMock).toHaveBeenCalledTimes(4);
-        expect(console.warn).toHaveBeenCalledWith(
-            "Warning: Failed to install some global npm tools (non-fatal)",
-        );
+        const wrapperCommands = spawnSyncMock.mock.calls
+            .map(([, args]) => (args as string[]).at(-1)!)
+            .filter((script) => script.includes("cat > /home/ccc/.local/bin/"));
+        expect(wrapperCommands).toHaveLength(2);
+        expect(wrapperCommands).toContainEqual(expect.stringContaining("mise exec node@22 -- codex"));
+        expect(wrapperCommands).toContainEqual(expect.stringContaining("mise exec node@22 -- opencode"));
+        expect(wrapperCommands).not.toContainEqual(expect.stringContaining("mise exec node@22 -- gemini"));
+        expect(console.warn).not.toHaveBeenCalled();
     });
 
     it("checks all tools in single docker exec", () => {

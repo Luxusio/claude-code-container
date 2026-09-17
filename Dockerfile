@@ -43,6 +43,7 @@ RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
 # LAYER 1: Base packages (절대 안 바뀜)
 # ============================================================
 RUN apt-get update && apt-get install -y \
+    acl \
     ca-certificates \
     curl \
     gnupg \

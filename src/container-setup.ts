@@ -3,7 +3,7 @@
 // Extracted from index.ts for separation of concerns.
 // Contains: claude binary caching, npm tools installation, mise shim detection.
 
-import { spawnSync } from "child_process";
+import { spawnSync, type SpawnSyncReturns } from "child_process";
 import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry.js";
 import { runtimeCli } from "./container-runtime.js";
 
@@ -135,26 +135,40 @@ echo INSTALL`.trim();
  * - Claude: curl install + volume caching (only when activeTool is claude)
  * - npm tools (gemini, codex, opencode): npm install -g from registry
  */
-export function ensureTools(containerName: string, activeTool: ToolDefinition): void {
+export function ensureTools(
+    containerName: string,
+    activeTool: ToolDefinition,
+    options: { activeOnly?: boolean } = {},
+): void {
     if (activeTool.name === "claude") {
         ensureClaudeInContainer(containerName);
     }
-    ensureNpmTools(containerName);
+    ensureNpmTools(containerName, activeTool, options.activeOnly ?? false);
+}
+
+function npmSetupFailureReason(result: SpawnSyncReturns<string | Buffer>): string {
+    return result.error?.message
+        || result.stderr?.toString().trim()
+        || (result.signal ? `terminated by ${result.signal}` : `exit code ${result.status ?? "unknown"}`);
 }
 
 /**
- * Ensure npm-based tools from registry are installed.
+ * Ensure npm-based tools from registry are installed independently.
  */
-function ensureNpmTools(containerName: string): void {
-    const tools = getNpmTools();
+function ensureNpmTools(containerName: string, activeTool: ToolDefinition, activeOnly: boolean): void {
+    const tools = getNpmTools().filter((tool) => !activeOnly || tool.cmd === activeTool.name);
+    if (tools.length === 0) return;
 
-    // Single docker exec to check all tools at once (instead of one per tool)
+    // Single docker exec to check all relevant tools at once.
     const checkResult = spawnSync(
         runtimeCli(),
         ["exec", containerName, "sh", "-c",
          tools.map((t) => `[ -x /home/ccc/.local/bin/${t.cmd} ] || echo ${t.cmd}`).join("; ")],
         { encoding: "utf-8" },
     );
+    if (checkResult.error || checkResult.status !== 0) {
+        throw new Error(`Failed to check npm tool readiness for ${activeTool.name} in container: ${npmSetupFailureReason(checkResult)}`);
+    }
     const missingCmds = new Set((checkResult.stdout ?? "").trim().split("\n").filter(Boolean));
     const missing = tools.filter((t) => missingCmds.has(t.cmd));
 
@@ -162,8 +176,13 @@ function ensureNpmTools(containerName: string): void {
         return;
     }
 
-    const pkgs = missing.map((t) => t.pkg).join(" ");
     console.log(`Installing ${missing.map((t) => t.cmd).join(", ")}...`);
+
+    const run = (script: string, stdio: "ignore" | "inherit" | "pipe") => spawnSync(
+        runtimeCli(),
+        ["exec", "-w", "/home/ccc", containerName, "sh", "-c", script],
+        { stdio },
+    );
 
     const cleanupPatterns = missing.map((t) => {
         const name = t.pkg.split("/").pop();
@@ -171,13 +190,9 @@ function ensureNpmTools(containerName: string): void {
         return `"$gdir/${scope}.${name}-"*`;
     }).join(" ");
 
-    spawnSync(
-        runtimeCli(),
-        [
-            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
-        ],
-        { stdio: "ignore" },
+    run(
+        `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
+        "ignore",
     );
 
     // Drop any stale mise shims for the missing tools BEFORE install. If the
@@ -185,44 +200,37 @@ function ensureNpmTools(containerName: string): void {
     // package no longer matches, the shim throws "not a valid shim" — and PATH
     // would hit it if the wrapper at /home/ccc/.local/bin/<cmd> is gone.
     const shimNuke = missing.map((t) => `rm -f ~/.local/share/mise/shims/${t.cmd}`).join("; ");
-    spawnSync(
-        runtimeCli(),
-        ["exec", "-w", "/home/ccc", containerName, "sh", "-c", `${shimNuke}; true`],
-        { stdio: "ignore" },
-    );
+    run(`${shimNuke}; true`, "ignore");
 
-    const installResult = spawnSync(
-        runtimeCli(),
-        [
-            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
-        ],
-        { stdio: "inherit" },
-    );
-    if (installResult.status !== 0) {
-        console.warn("Warning: Failed to install some global npm tools (non-fatal)");
-        return;
-    }
-
-    // Regenerate mise shims so they reflect the freshly-installed binaries.
-    // Without this, an outdated shim from a prior install can shadow the new
-    // binary on PATH lookups that bypass the wrapper at /home/ccc/.local/bin.
-    spawnSync(
-        runtimeCli(),
-        ["exec", "-w", "/home/ccc", containerName, "sh", "-c", "~/.local/bin/mise reshim 2>/dev/null; true"],
-        { stdio: "ignore" },
-    );
-
+    let activeFailure: Error | undefined;
+    let installedAny = false;
     for (const t of missing) {
-        spawnSync(
-            runtimeCli(),
-            [
-                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-                `cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nchmod +x /home/ccc/.local/bin/${t.cmd}`,
-            ],
-            { stdio: "pipe" },
-        );
+        const installResult = run(`~/.local/bin/mise exec node@22 -- npm install -g ${t.pkg}`, "inherit");
+        let failure: Error | undefined;
+        if (installResult.error || installResult.status !== 0) {
+            failure = new Error(`Failed to install ${t.cmd} (${t.pkg}) in container: ${npmSetupFailureReason(installResult)}`);
+        } else {
+            installedAny = true;
+            // A failed write or chmod must not leave an executable broken wrapper.
+            const wrapperResult = run(
+                `if cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nthen\n    chmod +x /home/ccc/.local/bin/${t.cmd} && exit 0\nfi\nrm -f /home/ccc/.local/bin/${t.cmd}\nexit 1`,
+                "pipe",
+            );
+            if (wrapperResult.error || wrapperResult.status !== 0) {
+                failure = new Error(`Failed to create wrapper for ${t.cmd} (${t.pkg}) in container: ${npmSetupFailureReason(wrapperResult)}`);
+            }
+        }
+        if (failure) {
+            if (t.cmd === activeTool.name) activeFailure = failure;
+            else console.warn(`Warning: ${failure.message} (optional tool)`);
+        }
     }
+
+    // Refresh shims for every successful package, even if another tool failed.
+    if (installedAny) {
+        run("~/.local/bin/mise reshim 2>/dev/null; true", "ignore");
+    }
+    if (activeFailure) throw activeFailure;
 }
 
 /**

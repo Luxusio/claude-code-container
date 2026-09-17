@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
@@ -21,7 +24,8 @@ const {
     ensureTools,
 } = await import("../container-setup.js");
 
-const { getDefaultTool, getToolByName } = await import("../tool-registry.js");
+const toolRegistry = await import("../tool-registry.js");
+const { getDefaultTool, getToolByName } = toolRegistry;
 
 function makeResult(status: number, stdout = ""): SpawnSyncReturns<string> {
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
@@ -244,99 +248,171 @@ describe("container-setup.ts module", () => {
     });
 
     describe("ensureTools", () => {
-        // The new implementation uses a single docker exec to check all tools at once.
+        const codexTool = getToolByName("codex")!;
+        const npmPrefix = "~/.local/bin/mise exec node@22 -- npm install -g ";
 
-        it("should be exported as a function", () => {
-            expect(typeof ensureTools).toBe("function");
-        });
+        function scripts(): string[] {
+            return spawnSyncMock.mock.calls.map(([, args]) => (args as string[]).at(-1)!);
+        }
+
+        function mockNpmSetup(
+            missing: string[],
+            failure?: { command: string; result: SpawnSyncReturns<string> },
+        ): void {
+            spawnSyncMock.mockImplementation((_cli, args) => {
+                const script = (args as string[]).at(-1)!;
+                if (script.startsWith("[ -x ")) return makeResult(0, missing.join("\n"));
+                if (failure && script.includes(failure.command)) return failure.result;
+                return makeResult(0);
+            });
+        }
 
         it("calls ensureClaudeInContainer when activeTool is claude", () => {
-            const claudeTool = getDefaultTool();
-            // ensureClaudeInContainer: combined probe returns VALID
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n"));
-            // ensureNpmTools: combined check returns empty (all present)
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
-            ensureTools(container, claudeTool);
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            ensureTools(container, getDefaultTool());
             expect(spawnSyncMock).toHaveBeenCalledTimes(2);
         });
 
-        it("skips ensureClaudeInContainer when activeTool is not claude", () => {
-            const geminiTool = getToolByName("gemini")!;
-            // ensureNpmTools: combined check returns empty (all present)
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
-            ensureTools(container, geminiTool);
-            // Only 1 combined check, no claude install
+        it("does nothing beyond readiness when all npm tools are present", () => {
+            mockNpmSetup([]);
+            ensureTools(container, codexTool);
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+            expect(scripts()[0]).toContain("/home/ccc/.local/bin/codex");
+        });
+
+        it("installs missing packages in separate commands and creates each wrapper", () => {
+            mockNpmSetup(["gemini", "codex", "opencode"]);
+            ensureTools(container, codexTool);
+            expect(scripts().filter((script) => script.startsWith(npmPrefix))).toEqual([
+                `${npmPrefix}@google/gemini-cli`,
+                `${npmPrefix}@openai/codex`,
+                `${npmPrefix}opencode-ai`,
+            ]);
+            for (const cmd of ["gemini", "codex", "opencode"]) {
+                expect(scripts().some((script) => script.includes(`cat > /home/ccc/.local/bin/${cmd}`))).toBe(true);
+            }
+        });
+
+        it.each([false, true])("retains Codex when OpenCode fails (OpenCode first: %s)", (opencodeFirst) => {
+            if (opencodeFirst) {
+                vi.spyOn(toolRegistry, "getNpmTools").mockReturnValue([
+                    { cmd: "opencode", pkg: "opencode-ai" },
+                    { cmd: "codex", pkg: "@openai/codex" },
+                ]);
+            }
+            mockNpmSetup(["codex", "opencode"], {
+                command: `${npmPrefix}opencode-ai`,
+                result: { ...makeResult(1), stderr: "npm error EBADPLATFORM" },
+            });
+
+            expect(() => ensureTools(container, codexTool)).not.toThrow();
+
+            expect(scripts().filter((script) => script.startsWith(npmPrefix))).toEqual(
+                (opencodeFirst ? ["opencode-ai", "@openai/codex"] : ["@openai/codex", "opencode-ai"])
+                    .map((pkg) => `${npmPrefix}${pkg}`),
+            );
+            expect(scripts().some((script) => script.includes("cat > /home/ccc/.local/bin/codex"))).toBe(true);
+            expect(scripts().some((script) => script.includes("cat > /home/ccc/.local/bin/opencode"))).toBe(false);
+            expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/install opencode \(opencode-ai\).*EBADPLATFORM/));
+        });
+
+        it("reports active installation failure after preserving independent successes", () => {
+            mockNpmSetup(["codex", "opencode"], {
+                command: `${npmPrefix}@openai/codex`,
+                result: { ...makeResult(1), stderr: "npm error EACCES" },
+            });
+
+            expect(() => ensureTools(container, codexTool)).toThrow(/install codex \(@openai\/codex\).*EACCES/);
+            expect(scripts().some((script) => script.includes("cat > /home/ccc/.local/bin/codex"))).toBe(false);
+            expect(scripts().some((script) => script.includes("cat > /home/ccc/.local/bin/opencode"))).toBe(true);
+        });
+
+        it.each([
+            { ...makeResult(1), stderr: "container is not running" },
+            { ...makeResult(0), status: null, error: new Error("spawn docker ENOENT") },
+        ])("rejects failed readiness instead of assuming empty stdout means ready", (result) => {
+            spawnSyncMock.mockReturnValue(result);
+            expect(() => ensureTools(container, codexTool)).toThrow(/check.*codex.*(container is not running|spawn docker ENOENT)/);
             expect(spawnSyncMock).toHaveBeenCalledTimes(1);
         });
 
-        it("installs all missing npm tools when none are installed", () => {
-            const geminiTool = getToolByName("gemini")!;
-            // Combined check returns all missing
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
-            // cleanup partial install dirs
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // stale shim nuke
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // npm install succeeds
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // mise reshim
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // wrapper scripts
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            ensureTools(container, geminiTool);
-            // check + cleanup + shim-nuke + install + reshim + 2 wrappers = 7
-            expect(spawnSyncMock).toHaveBeenCalledTimes(7);
-            // Verify wrapper script calls reference the tool names
-            const geminiWrapperCall = spawnSyncMock.mock.calls[5];
-            const geminiCmd = (geminiWrapperCall[1] as string[]).at(-1) as string;
-            expect(geminiCmd).toContain("gemini");
-            const codexWrapperCall = spawnSyncMock.mock.calls[6];
-            const codexCmd = (codexWrapperCall[1] as string[]).at(-1) as string;
-            expect(codexCmd).toContain("codex");
+        it("includes the spawn cause when active package installation cannot launch", () => {
+            mockNpmSetup(["codex"], {
+                command: `${npmPrefix}@openai/codex`,
+                result: { ...makeResult(0), status: null, error: new Error("spawn docker ENOENT") },
+            });
+            expect(() => ensureTools(container, codexTool)).toThrow(/install codex \(@openai\/codex\).*spawn docker ENOENT/);
         });
 
-        it("logs warning but does not throw when npm install fails", () => {
-            const geminiTool = getToolByName("gemini")!;
-            // Combined check returns both missing
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
-            // cleanup
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // stale shim nuke
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // npm install fails
-            spawnSyncMock.mockReturnValueOnce(makeResult(1));
-            expect(() => ensureTools(container, geminiTool)).not.toThrow();
-            expect(console.warn).toHaveBeenCalledWith(
-                "Warning: Failed to install some global npm tools (non-fatal)",
-            );
-            // check + cleanup + shim-nuke + failed install — early return, no reshim/wrappers
-            expect(spawnSyncMock).toHaveBeenCalledTimes(4);
+        it("fails active setup when its wrapper cannot be created", () => {
+            mockNpmSetup(["codex"], {
+                command: "cat > /home/ccc/.local/bin/codex",
+                result: { ...makeResult(1), stderr: "Permission denied" },
+            });
+            expect(() => ensureTools(container, codexTool)).toThrow(/wrapper.*codex \(@openai\/codex\).*Permission denied/);
         });
 
-        it("only installs missing tools when some are already present", () => {
-            const geminiTool = getToolByName("gemini")!;
-            // Combined check returns only codex missing
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, "codex\n"));
-            // cleanup
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // stale shim nuke
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // npm install succeeds
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // mise reshim
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            // wrapper for codex
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            ensureTools(container, geminiTool);
-            expect(console.log).toHaveBeenCalledWith("Installing codex...");
-            // check + cleanup + shim-nuke + install + reshim + 1 wrapper = 6 calls
-            expect(spawnSyncMock).toHaveBeenCalledTimes(6);
-            // Verify the npm install call (index 3) contains only the missing package
-            const installCall = spawnSyncMock.mock.calls[3];
-            const installCmd = (installCall[1] as string[]).at(-1) as string;
-            expect(installCmd).toContain("@openai/codex");
-            expect(installCmd).not.toContain("@google/gemini-cli");
+        it.skipIf(process.platform === "win32").each(["write", "chmod", "success"])(
+            "runs wrapper shell with correct cleanup when outcome is %s",
+            async (outcome) => {
+                mockNpmSetup(["codex"]);
+                ensureTools(container, codexTool);
+                const script = scripts().find((command) => command.includes("cat > /home/ccc/.local/bin/codex"))!;
+                const { spawnSync: actualSpawnSync } = await vi.importActual<typeof import("child_process")>("child_process");
+                const directory = mkdtempSync(join(tmpdir(), "ccc-wrapper-test-"));
+                const wrapper = join(directory, "codex");
+                const failure = outcome === "write"
+                    ? "cat() { printf partial; return 1; }\n"
+                    : outcome === "chmod" ? "chmod() { return 1; }\n" : "";
+                try {
+                    const result = actualSpawnSync("sh", ["-c", failure + script.replaceAll("/home/ccc/.local/bin/codex", '"$CCC_TEST_WRAPPER_PATH"')], {
+                        encoding: "utf-8",
+                        env: { ...process.env, CCC_TEST_WRAPPER_PATH: wrapper },
+                    });
+                    expect(result.error).toBeUndefined();
+                    if (outcome === "success") {
+                        expect(result.status).toBe(0);
+                        expect(readFileSync(wrapper, "utf-8")).toBe('#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- codex "$@"\n');
+                        expect(statSync(wrapper).mode & 0o111).not.toBe(0);
+                    } else {
+                        expect(result.status).not.toBe(0);
+                        expect(existsSync(wrapper)).toBe(false);
+                    }
+                } finally {
+                    rmSync(directory, { recursive: true, force: true });
+                }
+            },
+        );
+
+        it("warns and continues when an optional wrapper cannot be created", () => {
+            mockNpmSetup(["gemini", "codex"], {
+                command: "cat > /home/ccc/.local/bin/gemini",
+                result: { ...makeResult(1), stderr: "No space left on device" },
+            });
+            expect(() => ensureTools(container, codexTool)).not.toThrow();
+            expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/wrapper.*gemini \(@google\/gemini-cli\).*No space left on device/));
+            expect(scripts().some((script) => script.includes("cat > /home/ccc/.local/bin/codex"))).toBe(true);
+        });
+
+        it("only installs missing tools", () => {
+            mockNpmSetup(["codex"]);
+            ensureTools(container, codexTool);
+            expect(scripts().filter((script) => script.startsWith(npmPrefix))).toEqual([`${npmPrefix}@openai/codex`]);
+        });
+
+        it("only checks and repairs the selected npm tool in active-only mode", () => {
+            mockNpmSetup(["codex"]);
+            ensureTools(container, codexTool, { activeOnly: true });
+            expect(scripts()[0]).toContain("/home/ccc/.local/bin/codex");
+            expect(scripts()[0]).not.toMatch(/gemini|opencode/);
+            expect(scripts().filter((script) => script.startsWith(npmPrefix))).toEqual([`${npmPrefix}@openai/codex`]);
+        });
+
+        it("skips npm checks for Claude in active-only mode", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n"));
+            ensureTools(container, getDefaultTool(), { activeOnly: true });
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
         });
     });
 });

@@ -100,7 +100,7 @@ import {
     isBuiltinProfile,
     ensureProfile,
 } from "./profile.js";
-import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
+import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, getNpmTools, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
 import { devicesCliAsync } from "./device-lab-admin.js";
@@ -466,9 +466,10 @@ async function exec(
                 try {
                     ensureTools(containerName, setupTool);
                     break;
-                } catch {
+                } catch (error) {
                     if (attempt === 1) {
-                        console.error("Failed to install tools in container");
+                        console.error(`Failed to install tools in container: ${error instanceof Error ? error.message : String(error)}`);
+                        cleanupSession();
                         process.exit(1);
                     }
                 }
@@ -500,7 +501,18 @@ async function exec(
             startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
         }
     } else {
-        // Container already running — only rebuild MCP config (lightweight, may have changed)
+        // A previous optional install failure may have left the requested tool
+        // missing even though another session kept this container running.
+        if (shouldEnsureTool && getNpmTools().some((tool) => tool.cmd === setupTool.name)) {
+            progress(`Checking ${setupTool.name}...`);
+            try {
+                ensureTools(containerName, setupTool, { activeOnly: true });
+            } catch (error) {
+                cleanupSession();
+                throw error;
+            }
+        }
+        // Rebuild MCP config because host settings may have changed.
         const forwardedMcp = await buildMcpConfig(profile);
         if (forwardedMcp.length > 0) {
             console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
@@ -659,7 +671,16 @@ async function exec(
             runMiseInstall();
         }
         if (commandTool?.name === "codex") {
-            prepareCodexConfigForContainer(containerName);
+            try {
+                prepareCodexConfigForContainer(containerName);
+            } catch (error) {
+                // Preparation can fail before Codex runs. Preserve that cause
+                // and release session state without entering its retry ladder.
+                restoreCodexConfigHostOwnership(containerName);
+                try { unlinkSync(envFile); } catch { /* ignore cleanup error */ }
+                cleanupSession();
+                throw error;
+            }
         }
         execArgs.push(...resolvedCmd);
     }
@@ -1102,7 +1123,7 @@ export function informationalCommand(args: string[]): "help" | "version" | null 
 }
 
 // === Main ===
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
     const args = process.argv.slice(2);
 
     // Unified parsing: @branch and remaining args
