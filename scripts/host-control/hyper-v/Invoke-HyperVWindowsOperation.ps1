@@ -304,18 +304,29 @@ try {
         "Start-VM", "Stop-VM", "Remove-VM",
         "Checkpoint-VM", "Remove-VMSnapshot", "Restore-VMSnapshot",
         "Get-VMSwitch", "New-VMSwitch", "Set-VMSwitch", "Remove-VMSwitch",
-        "Get-VMNetworkAdapter", "Get-NetAdapter",
-        "Get-NetIPAddress", "New-NetIPAddress", "Remove-NetIPAddress",
+        "Get-VMNetworkAdapter", "Remove-VMNetworkAdapter", "Get-NetAdapter",
+        "Get-NetIPAddress", "New-NetIPAddress", "Remove-NetIPAddress", "Get-NetNeighbor",
         "Get-NetNat", "New-NetNat", "Remove-NetNat"
     )) {
         throw "operation-invalid"
     }
     $VmSelectorOperations = @(
         "Get-VMHardDiskDrive", "Get-VMDvdDrive", "Get-VMSnapshot", "Start-VM", "Stop-VM",
-        "Remove-VM", "Checkpoint-VM", "Remove-VMSnapshot", "Restore-VMSnapshot"
+        "Remove-VM", "Checkpoint-VM", "Remove-VMSnapshot", "Restore-VMSnapshot",
+        "Remove-VMNetworkAdapter"
     )
     $GetVmByNames = $Operation -eq "Get-VM" -and $null -ne $Request.names
-    if (($Operation -in $VmSelectorOperations -or ($Operation -eq "Get-VM" -and -not $GetVmByNames)) -and
+    # Get-VMNetworkAdapter carries three shapes: host-wide (no selector, no switch name), one
+    # VM's adapters (selector), and the management OS side of one switch (switch name). They
+    # are mutually exclusive, so a request carrying both is a caller that cannot be trusted
+    # about which scope it meant.
+    $GetAdaptersByVm = $Operation -eq "Get-VMNetworkAdapter" -and $null -ne $Request.selector
+    $GetAdaptersByManagementSwitch = $Operation -eq "Get-VMNetworkAdapter" -and $null -ne $Request.managementSwitchName
+    if ($GetAdaptersByVm -and $GetAdaptersByManagementSwitch) { throw "adapter-scope-ambiguous" }
+    $NeedsVmSelector = $Operation -in $VmSelectorOperations -or
+        ($Operation -eq "Get-VM" -and -not $GetVmByNames) -or
+        $GetAdaptersByVm
+    if ($NeedsVmSelector -and
         ($null -eq $Request.selector -or [string]$Request.selector.kind -notin @("id", "name"))) {
         throw "selector-invalid"
     }
@@ -327,17 +338,18 @@ try {
     if ($Operation -in @(
         "Get-VM", "Get-VMHardDiskDrive", "Get-VMDvdDrive", "Get-VMSnapshot", "Start-VM", "Stop-VM",
         "Remove-VM", "Checkpoint-VM", "Remove-VMSnapshot", "Restore-VMSnapshot",
-        "Get-VMSwitch", "New-VMSwitch", "Set-VMSwitch", "Remove-VMSwitch", "Get-VMNetworkAdapter"
+        "Get-VMSwitch", "New-VMSwitch", "Set-VMSwitch", "Remove-VMSwitch", "Get-VMNetworkAdapter",
+        "Remove-VMNetworkAdapter"
     )) { Import-HyperVWindowsTrustedModule "Hyper-V" }
     if ($Operation -eq "Get-NetAdapter") { Import-HyperVWindowsTrustedModule "NetAdapter" }
-    if ($Operation -in @("Get-NetIPAddress", "New-NetIPAddress", "Remove-NetIPAddress")) {
+    if ($Operation -in @("Get-NetIPAddress", "New-NetIPAddress", "Remove-NetIPAddress", "Get-NetNeighbor")) {
         Import-HyperVWindowsTrustedModule "NetTCPIP"
     }
     if ($Operation -in @("Get-NetNat", "New-NetNat", "Remove-NetNat")) {
         Import-HyperVWindowsTrustedModule "NetNat"
     }
 
-    $VirtualMachines = if ($Operation -in $VmSelectorOperations -or ($Operation -eq "Get-VM" -and -not $GetVmByNames)) {
+    $VirtualMachines = if ($NeedsVmSelector) {
         @(Get-HyperVWindowsVirtualMachines $Request.selector)
     } else { @() }
     switch ($Operation) {
@@ -488,8 +500,49 @@ try {
             Write-HyperVWindowsSuccess $Operation @()
         }
         "Get-VMNetworkAdapter" {
-            $Items = @(Hyper-V\Get-VMNetworkAdapter -All -ErrorAction Stop | ForEach-Object {
-                Convert-HyperVWindowsVMNetworkAdapter $_
+            $Adapters = if ($GetAdaptersByVm) {
+                $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
+                @(Hyper-V\Get-VMNetworkAdapter -VM $VirtualMachine -ErrorAction Stop)
+            } elseif ($GetAdaptersByManagementSwitch) {
+                @(Hyper-V\Get-VMNetworkAdapter -ManagementOS -SwitchName ([string]$Request.managementSwitchName) -ErrorAction Stop)
+            } else {
+                @(Hyper-V\Get-VMNetworkAdapter -All -ErrorAction Stop)
+            }
+            $Items = @($Adapters | ForEach-Object { Convert-HyperVWindowsVMNetworkAdapter $_ })
+            Write-HyperVWindowsSuccess $Operation $Items
+        }
+        "Remove-VMNetworkAdapter" {
+            $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
+            $ExpectedAdapterName = [string]$Request.adapterName
+            $ExpectedMac = ([string]$Request.macAddress -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+            if ($ExpectedMac -notmatch '^[0-9A-F]{12}$' -or $ExpectedMac -eq '000000000000') {
+                throw "vm-network-adapter-mac-invalid"
+            }
+            # Re-resolve the target here rather than trusting the caller's choice. Hyper-V lets
+            # two adapters on one VM share a name, so name and address together must identify
+            # exactly one adapter or nothing is removed. The caller has already decided; this
+            # is the native side refusing to act on an ambiguous or stale decision.
+            $AdapterMatches = @(Hyper-V\Get-VMNetworkAdapter -VM $VirtualMachine -ErrorAction Stop | Where-Object {
+                [string]$_.Name -ceq $ExpectedAdapterName -and
+                (([string]$_.MacAddress -replace '[^0-9A-Fa-f]', '').ToUpperInvariant() -eq $ExpectedMac)
+            })
+            if ($AdapterMatches.Count -eq 0) { throw "vm-network-adapter-not-found" }
+            if ($AdapterMatches.Count -ne 1) { throw "vm-network-adapter-ambiguous" }
+            Hyper-V\Remove-VMNetworkAdapter -VMNetworkAdapter $AdapterMatches[0] -Confirm:$false -ErrorAction Stop
+            Write-HyperVWindowsSuccess $Operation @()
+        }
+        "Get-NetNeighbor" {
+            # SilentlyContinue because the Net* CIM cmdlets throw when nothing matches, and an
+            # interface with no neighbours is the ordinary case, not a failure. Neighbours are
+            # only ever an additional source of address candidates -- the adapter's own
+            # reported addresses are the primary one -- so degrading to empty is correct here.
+            $Items = @(NetTCPIP\Get-NetNeighbor -AddressFamily IPv4 -InterfaceIndex ([int]$Request.interfaceIndex) -ErrorAction SilentlyContinue | ForEach-Object {
+                [ordered]@{
+                    interfaceIndex = [int]$_.InterfaceIndex
+                    address = [string]$_.IPAddress
+                    linkLayerAddress = if ([string]::IsNullOrEmpty([string]$_.LinkLayerAddress)) { $null } else { [string]$_.LinkLayerAddress }
+                    state = if ($null -eq $_.State) { "" } else { [string]$_.State }
+                }
             })
             Write-HyperVWindowsSuccess $Operation $Items
         }

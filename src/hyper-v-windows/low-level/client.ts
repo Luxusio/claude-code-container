@@ -45,7 +45,11 @@ function error(
     return new HyperVWindowsError({ category, operation, code, ...(nativeStatus === undefined ? {} : { nativeStatus }) });
 }
 
-function normalizeSelector(
+// Exported for the network client, which addresses VMs the same way and must not carry a
+// second copy of this: it validates the target of Remove-VMNetworkAdapter, and two copies of
+// destructive-target validation are two things that can drift apart. Not re-exported from
+// the package index -- it is internal to the low-level layer.
+export function normalizeSelector(
     operation: HyperVWindowsOperation,
     selector: HyperVVirtualMachineSelector,
 ): HyperVVirtualMachineSelector {

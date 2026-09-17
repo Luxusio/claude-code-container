@@ -1,10 +1,12 @@
 import type {
+    HyperVVirtualMachineSelector,
     HyperVWindowsCallOptions,
     HyperVWindowsExecutionRequest,
     HyperVWindowsExecutionResult,
     HyperVWindowsExecutor,
     HyperVWindowsOperation,
 } from "./contracts.js";
+import { normalizeSelector } from "./client.js";
 import { HyperVWindowsError } from "./errors.js";
 import { HYPER_V_WINDOWS_SESSION_ERROR_CODES } from "./powershell-session.js";
 import {
@@ -17,6 +19,7 @@ import {
     parseHyperVVirtualMachineName,
     parseHyperVVirtualSwitchId,
     parseHyperVVirtualSwitchName,
+    parseHyperVVMNetworkAdapterName,
     parseIPv4Address,
     parseIPv4Cidr,
     parseIPv4PrefixLength,
@@ -26,13 +29,18 @@ import {
     type HyperVExactNameVirtualMachine,
     type HyperVExactNameVMInventoryRequest,
     type HyperVGetHostNetworkAdaptersRequest,
+    type HyperVGetManagementNetworkAdaptersRequest,
+    type HyperVGetNetNeighborsRequest,
+    type HyperVGetVMNetworkAdaptersRequest,
     type HyperVHostNetworkAdapter,
     type HyperVNatSelector,
     type HyperVNetIPAddress,
     type HyperVNetIPAddressSelector,
     type HyperVNetNat,
+    type HyperVNetNeighbor,
     type HyperVRemoveNetIPAddressRequest,
     type HyperVRemoveNetNatRequest,
+    type HyperVRemoveVMNetworkAdapterRequest,
     type HyperVRemoveVMSwitchRequest,
     type HyperVSetVMSwitchNotesRequest,
     type HyperVVirtualSwitch,
@@ -163,6 +171,31 @@ function decodeVMNetworkAdapter(value: unknown): HyperVVMNetworkAdapter | null {
         // and absent is the one value no identity comparison can match.
         macAddress: rawMacAddress === null ? null : parsed(() => parseHyperVMacAddress(rawMacAddress)),
         ipAddresses: Object.freeze([...rawIpAddresses as readonly string[]]),
+    };
+}
+
+function decodeNetNeighbor(value: unknown): HyperVNetNeighbor | null {
+    const item = record(value);
+    if (!item || !hasExactKeys(item, ["interfaceIndex", "address", "linkLayerAddress", "state"])) return null;
+    if (typeof item.interfaceIndex !== "number" || !boundedString(item.address, false) || !boundedString(item.state)) {
+        return null;
+    }
+    const rawInterfaceIndex = item.interfaceIndex;
+    const rawAddress = item.address;
+    const interfaceIndex = parsed(() => parseHyperVInterfaceIndex(rawInterfaceIndex));
+    const address = parsed(() => parseIPv4Address(rawAddress));
+    if (interfaceIndex === null || address === null) return null;
+    const rawLinkLayerAddress = item.linkLayerAddress;
+    if (rawLinkLayerAddress !== null && !boundedString(rawLinkLayerAddress, false)) return null;
+    return {
+        interfaceIndex,
+        address,
+        // An incomplete neighbour entry has no usable link-layer address, and the same rule
+        // as the adapter MAC applies: absent, so that nothing can match on it.
+        linkLayerAddress: rawLinkLayerAddress === null
+            ? null
+            : parsed(() => parseHyperVMacAddress(rawLinkLayerAddress)),
+        state: item.state,
     };
 }
 
@@ -490,6 +523,69 @@ export function createHyperVWindowsNetworkClient(executor: HyperVWindowsExecutor
             const operation = "Get-VMNetworkAdapter";
             const envelope = await execute(executor, { schemaVersion: 1, operation }, options);
             return decodeItems(operation, envelope, 4096, decodeVMNetworkAdapter);
+        },
+        async getVMNetworkAdapters(request: HyperVGetVMNetworkAdaptersRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Get-VMNetworkAdapter";
+            const candidate = record(request);
+            if (!candidate || !hasExactKeys(candidate, ["selector"])) throw error("validation", operation, "request-invalid");
+            const envelope = await execute(executor, {
+                schemaVersion: 1,
+                operation,
+                selector: normalizeSelector(operation, candidate.selector as HyperVVirtualMachineSelector),
+            }, options);
+            // One VM cannot hold anywhere near the host-wide bound; keeping a tighter one
+            // here means a native answer about the wrong scope fails instead of decoding.
+            return decodeItems(operation, envelope, 64, decodeVMNetworkAdapter);
+        },
+        async getManagementNetworkAdapters(request: HyperVGetManagementNetworkAdaptersRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Get-VMNetworkAdapter";
+            const candidate = record(request);
+            if (!candidate || !hasExactKeys(candidate, ["managementSwitchName"])) {
+                throw error("validation", operation, "request-invalid");
+            }
+            const rawSwitchName = candidate.managementSwitchName;
+            const managementSwitchName = typeof rawSwitchName === "string"
+                ? parsed(() => parseHyperVVirtualSwitchName(rawSwitchName))
+                : null;
+            if (!managementSwitchName) throw error("validation", operation, "request-invalid");
+            const envelope = await execute(executor, { schemaVersion: 1, operation, managementSwitchName }, options);
+            return decodeItems(operation, envelope, 64, decodeVMNetworkAdapter);
+        },
+        async getNetNeighbors(request: HyperVGetNetNeighborsRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Get-NetNeighbor";
+            const candidate = record(request);
+            if (!candidate || !hasExactKeys(candidate, ["interfaceIndex"]) || typeof candidate.interfaceIndex !== "number") {
+                throw error("validation", operation, "request-invalid");
+            }
+            const rawInterfaceIndex = candidate.interfaceIndex;
+            const interfaceIndex = parsed(() => parseHyperVInterfaceIndex(rawInterfaceIndex));
+            if (interfaceIndex === null) throw error("validation", operation, "request-invalid");
+            const envelope = await execute(executor, { schemaVersion: 1, operation, interfaceIndex }, options);
+            return decodeItems(operation, envelope, 4096, decodeNetNeighbor);
+        },
+        async removeVMNetworkAdapter(request: HyperVRemoveVMNetworkAdapterRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Remove-VMNetworkAdapter";
+            const candidate = record(request);
+            if (!candidate || !hasExactKeys(candidate, ["selector", "adapterName", "macAddress"])) {
+                throw error("validation", operation, "request-invalid");
+            }
+            const rawAdapterName = candidate.adapterName;
+            const rawMacAddress = candidate.macAddress;
+            const adapterName = typeof rawAdapterName === "string"
+                ? parsed(() => parseHyperVVMNetworkAdapterName(rawAdapterName))
+                : null;
+            const macAddress = typeof rawMacAddress === "string"
+                ? parsed(() => parseHyperVMacAddress(rawMacAddress))
+                : null;
+            if (!adapterName || !macAddress) throw error("validation", operation, "request-invalid");
+            const envelope = await execute(executor, {
+                schemaVersion: 1,
+                operation,
+                selector: normalizeSelector(operation, candidate.selector as HyperVVirtualMachineSelector),
+                adapterName,
+                macAddress,
+            }, options);
+            expectNoItems(operation, envelope);
         },
         async getVMsByExactNames(request: HyperVExactNameVMInventoryRequest, options?: HyperVWindowsCallOptions) {
             const operation = "Get-VM";

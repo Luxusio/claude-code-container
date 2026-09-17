@@ -1,4 +1,4 @@
-import type { HyperVWindowsCallOptions } from "./contracts.js";
+import type { HyperVVirtualMachineSelector, HyperVWindowsCallOptions } from "./contracts.js";
 
 const virtualSwitchIdBrand: unique symbol = Symbol("HyperVVirtualSwitchId");
 const virtualSwitchNameBrand: unique symbol = Symbol("HyperVVirtualSwitchName");
@@ -11,6 +11,7 @@ const ipv4PrefixLengthBrand: unique symbol = Symbol("IPv4PrefixLength");
 const virtualMachineNameBrand: unique symbol = Symbol("HyperVVirtualMachineName");
 const virtualMachineIdBrand: unique symbol = Symbol("HyperVVirtualMachineId");
 const networkAdapterNameBrand: unique symbol = Symbol("HyperVNetworkAdapterName");
+const vmNetworkAdapterNameBrand: unique symbol = Symbol("HyperVVMNetworkAdapterName");
 const macAddressBrand: unique symbol = Symbol("HyperVMacAddress");
 
 type Opaque<Value, Token extends symbol> = Value & { readonly [Key in Token]: true };
@@ -26,6 +27,13 @@ export type IPv4PrefixLength = Opaque<number, typeof ipv4PrefixLengthBrand>;
 export type HyperVVirtualMachineName = Opaque<string, typeof virtualMachineNameBrand>;
 export type HyperVVirtualMachineId = Opaque<string, typeof virtualMachineIdBrand>;
 export type HyperVNetworkAdapterName = Opaque<string, typeof networkAdapterNameBrand>;
+
+// A VM's adapter name and a host adapter's name live in different namespaces and address
+// different things; only one of them can name a target for Remove-VMNetworkAdapter. They are
+// deliberately not assignable to each other. Note this brands the name a caller *commands*
+// with. The name native *reports* on a decoded adapter stays an opaque string, because
+// host-wide inventory must keep reporting adapters whose names this library would refuse.
+export type HyperVVMNetworkAdapterName = Opaque<string, typeof vmNetworkAdapterNameBrand>;
 
 // One canonical MAC value behind two external spellings. Native Hyper-V reports twelve
 // uppercase hex characters; ccc carries its own as colon-separated lowercase. Reconciling
@@ -187,6 +195,11 @@ export function parseHyperVNetworkAdapterName(value: string): HyperVNetworkAdapt
     return opaque(value, networkAdapterNameBrand);
 }
 
+export function parseHyperVVMNetworkAdapterName(value: string): HyperVVMNetworkAdapterName {
+    if (!validNativeName(value, 256)) fail("hyper-v-vm-network-adapter-name-invalid");
+    return opaque(value, vmNetworkAdapterNameBrand);
+}
+
 // Native spells a MAC three ways depending on which cmdlet produced it: bare hex from
 // `Get-VMNetworkAdapter`, hyphen groups from `Get-NetNeighbor`, and ccc's own records use
 // colons. One tolerant parser covers all three, because the alternative — a parser per
@@ -324,6 +337,41 @@ export type HyperVNetNat = HyperVNatIdentity & {
     readonly internalAddressPrefix: IPv4Cidr;
 };
 
+// One IPv4 neighbour-table entry. `state` stays an opaque native string: which states count
+// as a usable answer is a reconciliation policy, not a decoding fact.
+export type HyperVNetNeighbor = {
+    readonly interfaceIndex: HyperVInterfaceIndex;
+    readonly address: IPv4Address;
+    readonly linkLayerAddress: HyperVMacAddress | null;
+    readonly state: string;
+};
+
+// Reads a single VM's adapters rather than the whole host. The host-wide request stays
+// selector-free, so asking for one VM's adapters is impossible without naming the VM.
+export type HyperVGetVMNetworkAdaptersRequest = {
+    readonly selector: HyperVVirtualMachineSelector;
+};
+
+// Reads the management operating system's adapter on one switch -- the host side of the
+// connection, not any VM's side.
+export type HyperVGetManagementNetworkAdaptersRequest = {
+    readonly managementSwitchName: HyperVVirtualSwitchName;
+};
+
+export type HyperVGetNetNeighborsRequest = {
+    readonly interfaceIndex: HyperVInterfaceIndex;
+};
+
+// The one destructive primitive in this slice. It names the VM, the adapter, and the address
+// the adapter must already carry, and the native side removes only when all three identify
+// exactly one adapter. Hyper-V permits two adapters on one VM to share a name, so a name
+// alone cannot be an identity here.
+export type HyperVRemoveVMNetworkAdapterRequest = {
+    readonly selector: HyperVVirtualMachineSelector;
+    readonly adapterName: HyperVVMNetworkAdapterName;
+    readonly macAddress: HyperVMacAddress;
+};
+
 export type HyperVCreateVMSwitchRequest = {
     readonly name: HyperVVirtualSwitchName;
     readonly notes: string;
@@ -369,6 +417,10 @@ export type HyperVWindowsNetworkClient = {
     setVMSwitchNotes(request: HyperVSetVMSwitchNotesRequest, options?: HyperVWindowsCallOptions): Promise<void>;
     removeVMSwitch(request: HyperVRemoveVMSwitchRequest, options?: HyperVWindowsCallOptions): Promise<void>;
     getAllVMNetworkAdapters(options?: HyperVWindowsCallOptions): Promise<readonly HyperVVMNetworkAdapter[]>;
+    getVMNetworkAdapters(request: HyperVGetVMNetworkAdaptersRequest, options?: HyperVWindowsCallOptions): Promise<readonly HyperVVMNetworkAdapter[]>;
+    getManagementNetworkAdapters(request: HyperVGetManagementNetworkAdaptersRequest, options?: HyperVWindowsCallOptions): Promise<readonly HyperVVMNetworkAdapter[]>;
+    getNetNeighbors(request: HyperVGetNetNeighborsRequest, options?: HyperVWindowsCallOptions): Promise<readonly HyperVNetNeighbor[]>;
+    removeVMNetworkAdapter(request: HyperVRemoveVMNetworkAdapterRequest, options?: HyperVWindowsCallOptions): Promise<void>;
     getVMsByExactNames(request: HyperVExactNameVMInventoryRequest, options?: HyperVWindowsCallOptions): Promise<readonly HyperVExactNameVirtualMachine[]>;
     getHostNetworkAdapters(request: HyperVGetHostNetworkAdaptersRequest, options?: HyperVWindowsCallOptions): Promise<readonly HyperVHostNetworkAdapter[]>;
     getNetIPAddresses(selector: HyperVNetIPAddressSelector, options?: HyperVWindowsCallOptions): Promise<readonly HyperVNetIPAddress[]>;

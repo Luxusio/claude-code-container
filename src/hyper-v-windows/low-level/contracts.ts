@@ -4,10 +4,14 @@ import type {
     HyperVCreateVMSwitchRequest,
     HyperVExactNameVMInventoryRequest,
     HyperVGetHostNetworkAdaptersRequest,
+    HyperVGetManagementNetworkAdaptersRequest,
+    HyperVGetNetNeighborsRequest,
+    HyperVGetVMNetworkAdaptersRequest,
     HyperVNatSelector,
     HyperVNetIPAddressSelector,
     HyperVRemoveNetIPAddressRequest,
     HyperVRemoveNetNatRequest,
+    HyperVRemoveVMNetworkAdapterRequest,
     HyperVRemoveVMSwitchRequest,
     HyperVSetVMSwitchNotesRequest,
     HyperVVirtualSwitchSelector,
@@ -29,7 +33,9 @@ export const HYPER_V_WINDOWS_OPERATIONS = Object.freeze([
     "Set-VMSwitch",
     "Remove-VMSwitch",
     "Get-VMNetworkAdapter",
+    "Remove-VMNetworkAdapter",
     "Get-NetAdapter",
+    "Get-NetNeighbor",
     "Get-NetIPAddress",
     "New-NetIPAddress",
     "Remove-NetIPAddress",
@@ -137,7 +143,11 @@ export type HyperVWindowsExecutionRequest =
     | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Set-VMSwitch"> & HyperVSetVMSwitchNotesRequest)
     | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Remove-VMSwitch"> & HyperVRemoveVMSwitchRequest)
     | HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-VMNetworkAdapter">
+    | (HyperVWindowsHostExecutionRequestBase<"Get-VMNetworkAdapter"> & HyperVGetVMNetworkAdaptersRequest)
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-VMNetworkAdapter"> & HyperVGetManagementNetworkAdaptersRequest)
+    | (HyperVWindowsHostExecutionRequestBase<"Remove-VMNetworkAdapter"> & HyperVRemoveVMNetworkAdapterRequest)
     | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-NetAdapter"> & HyperVGetHostNetworkAdaptersRequest)
+    | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-NetNeighbor"> & HyperVGetNetNeighborsRequest)
     | (HyperVWindowsHostExecutionRequestBase<"Get-NetIPAddress"> & {
         readonly selector: HyperVNetIPAddressSelector;
     })

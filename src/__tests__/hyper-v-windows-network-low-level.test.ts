@@ -17,6 +17,7 @@ import {
     parseHyperVVirtualMachineName,
     parseHyperVVirtualSwitchId,
     parseHyperVVirtualSwitchName,
+    parseHyperVVMNetworkAdapterName,
     parseIPv4Address,
     parseIPv4Cidr,
     parseIPv4PrefixLength,
@@ -96,6 +97,98 @@ describe("Hyper-V Windows network values", () => {
     ])("rejects %s with a named value error", (_label, action, code) => {
         expect(action).toThrowError(HyperVWindowsNetworkValueError);
         expect(action).toThrow(code);
+    });
+});
+
+describe("Hyper-V Windows slice 2B primitives", () => {
+    const adapterName = parseHyperVVMNetworkAdapterName("CCC Bootstrap DHCP");
+    const bootstrapMac = parseHyperVMacAddress("06:15:5d:01:1a:2c");
+
+    it("scopes an adapter read to one VM without changing the host-wide request", async () => {
+        const requests: HyperVWindowsExecutionRequest[] = [];
+        const client = createHyperVWindowsNetworkClient(executorUsing((request) => {
+            requests.push(request);
+            return response(request.operation, []);
+        }));
+
+        await client.getAllVMNetworkAdapters();
+        await client.getVMNetworkAdapters({ selector: { kind: "id", id: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" } });
+        await client.getManagementNetworkAdapters({ managementSwitchName: parseHyperVVirtualSwitchName("Default Switch") });
+
+        expect(requests).toEqual([
+            // The host-wide read stays selector-free, so no caller can reach one VM's
+            // adapters without saying which VM it means.
+            { schemaVersion: 1, operation: "Get-VMNetworkAdapter" },
+            { schemaVersion: 1, operation: "Get-VMNetworkAdapter", selector: { kind: "id", id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" } },
+            { schemaVersion: 1, operation: "Get-VMNetworkAdapter", managementSwitchName: "Default Switch" },
+        ]);
+    });
+
+    it("sends the neighbour read bounded to one interface", async () => {
+        const requests: HyperVWindowsExecutionRequest[] = [];
+        const client = createHyperVWindowsNetworkClient(executorUsing((request) => {
+            requests.push(request);
+            return response(request.operation, [{
+                interfaceIndex: 42,
+                address: "172.31.240.9",
+                linkLayerAddress: "06-15-5D-01-1A-2C",
+                state: "Reachable",
+            }, {
+                // An incomplete entry: a real row of the table with no usable address.
+                interfaceIndex: 42,
+                address: "172.31.240.10",
+                linkLayerAddress: null,
+                state: "Incomplete",
+            }]);
+        }));
+
+        await expect(client.getNetNeighbors({ interfaceIndex })).resolves.toEqual([
+            { interfaceIndex, address: "172.31.240.9", linkLayerAddress: bootstrapMac, state: "Reachable" },
+            { interfaceIndex, address: "172.31.240.10", linkLayerAddress: null, state: "Incomplete" },
+        ]);
+        expect(requests).toEqual([{ schemaVersion: 1, operation: "Get-NetNeighbor", interfaceIndex: 42 }]);
+    });
+
+    it("names the VM, the adapter and the address on every removal", async () => {
+        const requests: HyperVWindowsExecutionRequest[] = [];
+        const client = createHyperVWindowsNetworkClient(executorUsing((request) => {
+            requests.push(request);
+            return response(request.operation, []);
+        }));
+
+        await client.removeVMNetworkAdapter({
+            selector: { kind: "id", id: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" },
+            adapterName,
+            macAddress: bootstrapMac,
+        });
+
+        // All three travel together. The native side re-resolves from them and refuses
+        // unless they identify exactly one adapter, so a request that dropped any one of
+        // them would be asking the host to guess.
+        expect(requests).toEqual([{
+            schemaVersion: 1,
+            operation: "Remove-VMNetworkAdapter",
+            selector: { kind: "id", id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+            adapterName: "CCC Bootstrap DHCP",
+            macAddress: "06155d011a2c",
+        }]);
+    });
+
+    it.each([
+        ["a missing selector", { adapterName, macAddress: bootstrapMac }],
+        ["an unknown selector kind", { selector: { kind: "mac" }, adapterName, macAddress: bootstrapMac }],
+        ["a malformed VM id", { selector: { kind: "id", id: "not-a-guid" }, adapterName, macAddress: bootstrapMac }],
+        ["no adapter name", { selector: { kind: "id", id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }, macAddress: bootstrapMac }],
+        ["no MAC address", { selector: { kind: "id", id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }, adapterName }],
+        ["an extra field", { selector: { kind: "id", id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }, adapterName, macAddress: bootstrapMac, force: true }],
+    ])("refuses a removal with %s before invoking the executor", async (_label, request) => {
+        const execute = vi.fn(() => response("Remove-VMNetworkAdapter"));
+        const client = createHyperVWindowsNetworkClient(executorUsing(execute));
+
+        await expect(
+            client.removeVMNetworkAdapter(request as never),
+        ).rejects.toMatchObject({ category: "validation" });
+        expect(execute).not.toHaveBeenCalled();
     });
 });
 
