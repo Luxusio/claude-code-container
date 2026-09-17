@@ -331,6 +331,10 @@ export type HyperVNetIPAddress = {
     readonly prefixOrigin: string;
     readonly suffixOrigin: string;
     readonly addressState: string;
+    // The host's own name for the interface, e.g. "vEthernet (Default Switch)". Kept because
+    // it identifies a host network interface when the adapter-side lookup for that same
+    // interface is unavailable, and there is no other field that can stand in for it.
+    readonly interfaceAlias: string;
 };
 
 export type HyperVNetNat = HyperVNatIdentity & {

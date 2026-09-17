@@ -227,6 +227,7 @@ function decodeNetIPAddress(value: unknown): HyperVNetIPAddress | null {
     const item = record(value);
     if (!item || !hasExactKeys(item, [
         "interfaceIndex", "address", "prefixLength", "prefixOrigin", "suffixOrigin", "addressState",
+        "interfaceAlias",
     ])) return null;
     const rawInterfaceIndex = item.interfaceIndex;
     const rawAddress = item.address;
@@ -241,7 +242,8 @@ function decodeNetIPAddress(value: unknown): HyperVNetIPAddress | null {
     if (!interfaceIndex || !address || prefixLength === null
         || !boundedString(item.prefixOrigin)
         || !boundedString(item.suffixOrigin)
-        || !boundedString(item.addressState)) return null;
+        || !boundedString(item.addressState)
+        || !boundedString(item.interfaceAlias)) return null;
     return {
         interfaceIndex,
         address,
@@ -249,6 +251,7 @@ function decodeNetIPAddress(value: unknown): HyperVNetIPAddress | null {
         prefixOrigin: item.prefixOrigin,
         suffixOrigin: item.suffixOrigin,
         addressState: item.addressState,
+        interfaceAlias: item.interfaceAlias,
     };
 }
 

@@ -5,6 +5,12 @@ export {
     reconcileHyperVHostNetwork,
 } from "./network-reconcile.js";
 export { reconcileHyperVVirtualMachine } from "./reconcile.js";
+export {
+    confirmHyperVBootstrapContainment,
+    discoverHyperVBootstrapAddresses,
+    planHyperVBootstrapTeardown,
+    selectHyperVBootstrapAddresses,
+} from "./vm-network-reconcile.js";
 export { retryHyperVLifecycle } from "./retry.js";
 export type {
     HyperVAbsentOutcome,
@@ -44,3 +50,11 @@ export type {
     HyperVHostNetworkExecutionResult,
     HyperVHostNetworkReconciliationOutcome,
 } from "./network-reconcile.js";
+export type {
+    HyperVBootstrapAdapterExpectation,
+    HyperVBootstrapContainmentOutcome,
+    HyperVBootstrapDiscoveryDiagnostic,
+    HyperVBootstrapDiscoveryOutcome,
+    HyperVBootstrapNetworkObservation,
+    HyperVBootstrapTeardownDecision,
+} from "./vm-network-contracts.js";

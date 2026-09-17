@@ -49,6 +49,7 @@ const addressItem = {
     prefixOrigin: "FuturePrefixOrigin",
     suffixOrigin: "FutureSuffixOrigin",
     addressState: "FutureAddressState",
+    interfaceAlias: "vEthernet (ccc-internal)",
 };
 const natItem = {
     instanceId: "nat-instance-1",

@@ -246,6 +246,7 @@ function Convert-HyperVWindowsNetIPAddress([object]$Address) {
         prefixOrigin = if ($null -eq $Address.PrefixOrigin) { "" } else { [string]$Address.PrefixOrigin }
         suffixOrigin = if ($null -eq $Address.SuffixOrigin) { "" } else { [string]$Address.SuffixOrigin }
         addressState = if ($null -eq $Address.AddressState) { "" } else { [string]$Address.AddressState }
+        interfaceAlias = if ($null -eq $Address.InterfaceAlias) { "" } else { [string]$Address.InterfaceAlias }
     }
 }
 
