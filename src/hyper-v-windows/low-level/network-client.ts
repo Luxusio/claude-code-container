@@ -169,7 +169,7 @@ function decodeVMNetworkAdapter(value: unknown): HyperVVMNetworkAdapter | null {
         // An address native cannot spell is absent, not a decode failure: an adapter with a
         // malformed MAC is still a real adapter that host-wide inventory must keep reporting,
         // and absent is the one value no identity comparison can match.
-        macAddress: rawMacAddress === null ? null : parsed(() => parseHyperVMacAddress(rawMacAddress)),
+        macAddress: typeof rawMacAddress === "string" ? parsed(() => parseHyperVMacAddress(rawMacAddress)) : null,
         ipAddresses: Object.freeze([...rawIpAddresses as readonly string[]]),
     };
 }
@@ -192,9 +192,9 @@ function decodeNetNeighbor(value: unknown): HyperVNetNeighbor | null {
         address,
         // An incomplete neighbour entry has no usable link-layer address, and the same rule
         // as the adapter MAC applies: absent, so that nothing can match on it.
-        linkLayerAddress: rawLinkLayerAddress === null
-            ? null
-            : parsed(() => parseHyperVMacAddress(rawLinkLayerAddress)),
+        linkLayerAddress: typeof rawLinkLayerAddress === "string"
+            ? parsed(() => parseHyperVMacAddress(rawLinkLayerAddress))
+            : null,
         state: item.state,
     };
 }

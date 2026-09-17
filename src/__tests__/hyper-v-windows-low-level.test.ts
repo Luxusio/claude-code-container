@@ -281,9 +281,12 @@ describe("Hyper-V Windows PowerShell transport", () => {
         expect(source).not.toContain("CommandNotFoundException");
         expect(source).toContain("Get-VMHardDiskDrive -VM $VirtualMachine -ErrorAction Stop");
         expect(source).toContain("Get-VMDvdDrive -VM $VirtualMachine -ErrorAction Stop");
-        // Every operation except Get-VM itself resolves exactly one virtual machine first.
+        // Every VM-scoped operation resolves exactly one virtual machine before touching it,
+        // and Get-VM itself is the only exception. The count rises with each such operation:
+        // the disk, DVD and snapshot reads, start, stop, remove, checkpoint, snapshot removal
+        // and restore, plus the VM-scoped adapter read and the adapter removal.
         expect(source.match(/\$VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine \$VirtualMachines/g))
-            .toHaveLength(9);
+            .toHaveLength(11);
         expect(source).toContain("Get-VMSnapshot -VM $VirtualMachine -ErrorAction Stop");
         expect(source).toContain("Checkpoint-VM -VM $VirtualMachine -SnapshotName $SnapshotName -Passthru -ErrorAction Stop");
         expect(source).toContain("Remove-VMSnapshot -VMSnapshot $Snapshot -Confirm:$false -ErrorAction Stop");

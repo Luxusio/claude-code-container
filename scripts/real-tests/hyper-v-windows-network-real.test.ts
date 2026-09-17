@@ -145,6 +145,21 @@ function fakeHost(options: {
             removals.push({ kind: "nat", identity: String(request.identity.instanceId) });
             nats.splice(index, 1);
         },
+        // This host models the slice 2A fabric only. The VM-scoped operations throw rather
+        // than returning something empty so that a scenario which starts reaching for them
+        // fails loudly here instead of quietly proving nothing.
+        async getVMNetworkAdapters(): Promise<never> {
+            throw new Error("vm-scoped-adapter-read-not-modelled");
+        },
+        async getManagementNetworkAdapters(): Promise<never> {
+            throw new Error("management-adapter-read-not-modelled");
+        },
+        async getNetNeighbors(): Promise<never> {
+            throw new Error("neighbor-read-not-modelled");
+        },
+        async removeVMNetworkAdapter(): Promise<never> {
+            throw new Error("vm-network-adapter-removal-not-modelled");
+        },
     };
     return { client, switches, nats, addresses, removals };
 }

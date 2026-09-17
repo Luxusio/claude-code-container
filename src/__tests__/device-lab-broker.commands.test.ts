@@ -1077,6 +1077,8 @@ describe("device-lab host broker lifecycle commands", () => {
                                 switchName: "CCC Device Lab",
                                 status: "Ok",
                                 managementOperatingSystem: false,
+                                macAddress: "02155D011A2C",
+                                ipAddresses: [],
                             }],
                         }),
                         stderr: "",

@@ -73,6 +73,7 @@ export function createTypedHyperVNetworkOperationSimulator(options: TypedHyperVN
                 prefixOrigin: "Manual",
                 suffixOrigin: "Manual",
                 addressState: "Preferred",
+                interfaceAlias: `vEthernet (${state.switchName})`,
             });
         }
         if (typeof state.natInstanceId === "string" && typeof state.natName === "string") {
@@ -145,6 +146,7 @@ export function createTypedHyperVNetworkOperationSimulator(options: TypedHyperVN
                     prefixOrigin: "Manual",
                     suffixOrigin: "Manual",
                     addressState: "Preferred",
+                    interfaceAlias: `vEthernet (${String(switches[0]?.name ?? "")})`,
                 };
                 addresses.push(item);
                 return success(request.operation, [item]);
