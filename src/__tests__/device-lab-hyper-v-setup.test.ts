@@ -320,6 +320,27 @@ describe("Hyper-V host setup CLI", () => {
         expect(ensure).not.toHaveBeenCalled();
     });
 
+    // Everything above injects the fabric call, so none of it would notice the default
+    // wiring being dropped. Left uninjected, setup must reach the real broker entry —
+    // on a host without PowerShell that entry fails closed with a bounded code before
+    // it reads or writes any state, which is exactly what makes this safe to assert
+    // here. Skipped on Windows, where the same call would reconcile the real host.
+    it.skipIf(process.platform === "win32")("reaches the real broker fabric entry when no ensure is injected", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-fabric-wiring-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: confirmedSetupRunner(),
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.text).toContain("powershell");
+        expect(result.text).not.toContain("is not a function");
+    });
+
     it("enables Hyper-V only through the confirmed setup path and reports a pending reboot", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-setup-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);

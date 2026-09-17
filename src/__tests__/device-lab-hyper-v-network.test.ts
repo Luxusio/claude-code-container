@@ -28,6 +28,7 @@ import {
 import {
     adoptHyperVLinuxSshHostIdentity,
     cachedHyperVOwnerDevicesReader,
+    ensureHyperVHostNetworkFabric,
     ensureHyperVNetworkAllocation,
     hyperVDeterministicMacAddress,
     hyperVDeterministicNetworkAddresses,
@@ -481,6 +482,67 @@ describe("Hyper-V network module", () => {
         expect(state.natName).toBe(`CCCDeviceLab-${state.marker.slice(-24)}`);
         expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(false);
         expect(run).toHaveBeenCalledTimes(2);
+    });
+
+    // `ccc devices setup hyper-v` no longer carries its own PowerShell ensure; it takes
+    // this entry instead. These cover what a real host would otherwise be the only
+    // witness to: that the fabric-only path really creates the fabric, that it leaves
+    // the allocation list alone, and that a device create on top of it behaves exactly
+    // as if setup had never run.
+    it("creates the host fabric without reserving an allocation", async () => {
+        const root = privateRoot();
+        const { network, mutations, legacyRun } = typedHostFabricRuntime(root);
+
+        const prepared = await ensureHyperVHostNetworkFabric(network);
+
+        expect(prepared).toMatchObject({
+            ok: true,
+            switchName: "CCC Device Lab",
+            gateway: "172.29.0.1",
+            prefix: "172.29.0.0/24",
+            outboundPolicy: "nat",
+        });
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        expect(legacyRun).not.toHaveBeenCalled();
+        const state = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
+        expect(state.allocations).toEqual([]);
+        expect(state.managedSwitch).toBe(true);
+        expect(state.managedNat).toBe(true);
+        expect(existsSync(join(root, "network", "hyper-v-intent.json"))).toBe(false);
+    });
+
+    it("hands a setup-prepared fabric to a later device create without rebuilding it", async () => {
+        const root = privateRoot();
+        const { network, mutations } = typedHostFabricRuntime(root);
+
+        expect((await ensureHyperVHostNetworkFabric(network)).ok).toBe(true);
+        const afterSetup = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+
+        const allocated = await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+
+        expect(allocated).toMatchObject({ ok: true, switchName: "CCC Device Lab", outboundPolicy: "nat" });
+        // The create must adopt what setup built rather than mutate the host again.
+        expect(mutations).toEqual(["create-switch", "create-gateway", "create-nat"]);
+        const afterCreate = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
+        expect(afterCreate.switchId).toBe(afterSetup.switchId);
+        expect(afterCreate.natInstanceId).toBe(afterSetup.natInstanceId);
+        expect(afterCreate.marker).toBe(afterSetup.marker);
+        expect(afterCreate.allocations).toMatchObject([{ ownerId: OWNER_ID, deviceId: DEVICE_ID }]);
+    });
+
+    it("preserves existing allocations when setup reconciles an already-populated fabric", async () => {
+        const root = privateRoot();
+        const { network } = typedHostFabricRuntime(root);
+
+        expect((await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID)).ok).toBe(true);
+        const allocated = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations;
+        expect(allocated).toHaveLength(1);
+
+        expect((await ensureHyperVHostNetworkFabric(network)).ok).toBe(true);
+
+        const state = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
+        expect(state.allocations).toEqual(allocated);
     });
 
     it("routes production-style host-fabric ensure and cleanup through the typed client only", async () => {
