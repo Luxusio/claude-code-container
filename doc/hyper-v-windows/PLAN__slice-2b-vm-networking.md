@@ -166,3 +166,41 @@ does and none of which this slice may weaken.
 The porting risk is that the TypeScript selection silently disagrees with the
 PowerShell it replaces. That is what criterion 4 is for: the parity table is
 written from the psm1 source and must fail if either side is changed alone.
+
+## Step 6 status — routing attempted and reverted
+
+Steps 1-5 are complete and committed. Step 6, routing the broker's three call
+sites through the typed path, was implemented, hit a test-harness problem that
+is not yet explained, and was **reverted rather than shipped**. Everything on
+the branch today is additive: the typed path exists and is tested, and the
+broker still calls the legacy generators.
+
+The routing itself was straightforward — a `HyperVBootstrapNetworkSeam` closed
+union mirroring `hostFabric`, plus two helpers that both paths answer through.
+What stopped it was `device-lab-hyper-v-linux-broker.test.ts`'s end-to-end test.
+
+What is established by measurement:
+
+- The seam composes the typed client and `options.run` is called; the requests
+  it emits are correct (`{"operation":"Get-VM","names":["ccc-<owner>-<device>-<incarnation>"]}`).
+- Those nine requests never reach the test's own `commandRunner`, which logged
+  all forty-six other commands of the same run.
+- They are nonetheless answered, with a well-formed empty envelope.
+- `configureTypedHyperVNetworkOperations` wraps the runner with a fabric
+  simulator that intercepts typed operations before the test's body sees them,
+  and its `Get-VM`-by-names case answers from a VM list built only from network
+  allocations. That explains the empty answer.
+- Making the simulator defer what it does not model fixed the bootstrap path
+  and broke `device-lab-broker.commands.test.ts`, where "no such VM" is the
+  correct fabric answer. Moving the device VM into the test's own
+  `beforeOperation` hook then produced a hook that never observed a `names`
+  request at all, which contradicts the measurement above and is the part that
+  is still unexplained.
+
+Deliberately not resolved by weakening the end-to-end test. It is a real
+regression guard for the whole Linux create/boot/cleanup lane, and degrading it
+to land routing would trade a proven check for an unproven one.
+
+The next attempt should give the typed bootstrap path its own broker-level test
+with a runner that is not behind the fabric simulator, prove the three call
+sites against that, and only then decide what the end-to-end test should model.
