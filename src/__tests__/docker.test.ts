@@ -11,6 +11,7 @@ vi.mock("child_process", async (importOriginal) => {
 
 // Mock fs for startProjectContainer
 const mockExistsSync = vi.fn().mockReturnValue(true);
+const mockAccessSync = vi.fn();
 const mockLstatSync = vi.fn();
 const mockMkdirSync = vi.fn();
 const mockReadFileSync = vi.fn();
@@ -19,6 +20,7 @@ vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
         ...actual,
+        accessSync: (...args: unknown[]) => mockAccessSync(...args),
         existsSync: (...args: unknown[]) => mockExistsSync(...args),
         lstatSync: (...args: unknown[]) => mockLstatSync(...args),
         mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
@@ -132,6 +134,7 @@ describe("docker.ts module exports", () => {
         spawnSyncMock.mockReturnValue(makeResult(0));
         mockCleanupOwnerDevices.mockReset();
         mockExistsSync.mockReset().mockReturnValue(true);
+        mockAccessSync.mockReset();
         mockLstatSync.mockReset().mockReturnValue({
             isFile: () => true,
             isSymbolicLink: () => false,
@@ -298,9 +301,10 @@ describe("docker.ts module exports", () => {
     });
 
     describe("Codex config ownership helpers", () => {
-        it("does not restore mounted Codex config ownership", () => {
+        it("does not change ownership when the host already has config access", () => {
             restoreCodexConfigHostOwnership("ccc-test");
 
+            expect(mockAccessSync).toHaveBeenCalledTimes(1);
             expect(spawnSyncMock).not.toHaveBeenCalled();
         });
 
@@ -309,29 +313,19 @@ describe("docker.ts module exports", () => {
 
             prepareCodexConfigForContainer("ccc-test");
 
-            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-            expect(spawnSyncMock).toHaveBeenCalledWith(
-                "docker",
-                expect.arrayContaining(["exec", "ccc-test"]),
-                { stdio: "ignore" },
-            );
-        });
-
-        it("prepares mounted Codex config for the in-container ccc user only after access check fails", () => {
-            spawnSyncMock
-                .mockReturnValueOnce(makeResult(1))
-                .mockReturnValueOnce(makeResult(0));
-
-            prepareCodexConfigForContainer("ccc-test");
-
             expect(spawnSyncMock).toHaveBeenCalledTimes(2);
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
-                expect.arrayContaining(["exec", "--user", "root", "ccc-test"]),
-                { stdio: "ignore" },
+                expect.arrayContaining(["exec", "ccc-test"]),
+                { encoding: "utf-8", timeout: 10000 },
             );
-            const args = spawnSyncMock.mock.calls[1][1] as string[];
-            expect(args.at(-1)).toContain("chown ccc:docker /home/ccc/.codex/config.toml");
+        });
+
+        it("does not change permissions after a runtime access-probe error", () => {
+            spawnSyncMock.mockReturnValueOnce({ ...makeResult(125), stderr: "container stopped" });
+            expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(/directory access check failed.*container stopped/);
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+            expect(mockLstatSync).not.toHaveBeenCalled();
         });
     });
 

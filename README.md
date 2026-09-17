@@ -50,6 +50,35 @@ ccc shell                  # Open bash shell
 ccc npm test               # Run arbitrary command
 ```
 
+### Codex startup recovery
+
+`ccc codex login` installs missing npm tools independently. An optional tool's
+installation failure, such as OpenCode's `EBADPLATFORM` error, is reported with
+the tool name and does not prevent a successful Codex installation from being
+used. If Codex itself cannot be installed or its wrapper cannot be created,
+CCC stops with the setup error. Retrying the command also checks and repairs a
+missing Codex installation in an already-running container.
+
+Before generating MCP settings, CCC checks host access to
+`~/.ccc/codex/config.toml`. If access is denied, it attempts to restore access
+only for that regular file, using its host-owned parent directory as the
+owner reference. It preserves configuration content, the file group and group
+permissions, and verifies access after repair. Symlinks and directories owned
+by a different host user require manual inspection; CCC does not recursively
+change credential ownership. Failed repair warns, and unresolved MCP access
+still fails explicitly. Ownership handoff does not guarantee simultaneous
+config access by host and container users with different UIDs.
+
+Before launching Codex, CCC also checks whether its container user can write the
+credential directory. When host and container UIDs differ, it can grant that
+user access to the directory through a POSIX ACL while retaining the host owner
+and existing group/other access. Images include the `acl` utilities; older
+containers install them on demand when this repair is needed. Unsafe paths,
+custom ACLs requiring changes, unsupported filesystems, and failed repairs stop
+startup with an error. This repair does not change permissions on existing
+private credential files or plugin directories. Those may still need manual
+inspection if they were created by another user.
+
 ## Commands
 
 ```bash

@@ -7,14 +7,15 @@
 
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     getProjectId,
     getClaudeDir,
     getClaudeJsonFile,
+    getCodexConfigFile,
     IMAGE_NAME,
     CONTAINER_PID_LIMIT,
     MISE_VOLUME_NAME,
@@ -314,22 +315,123 @@ export function resolveCredentialHostPath(mount: CredentialMount, profile?: stri
 }
 
 export function restoreCodexConfigHostOwnership(containerName: string): void {
-    void containerName;
+    const configFile = getCodexConfigFile();
+    const accessMode = constants.R_OK | constants.W_OK;
+    const warn = (reason: unknown): void => {
+        console.warn(`[ccc] Unable to restore host access to ${configFile}: ${reason instanceof Error ? reason.message : String(reason)}`);
+    };
+    try {
+        accessSync(configFile, accessMode);
+        return;
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") return;
+        if (code !== "EACCES" && code !== "EPERM") {
+            warn(error);
+            return;
+        }
+    }
+
+    // Repair only an inaccessible file, never the credential tree. The parent
+    // must represent the invoking host user before it can be our owner reference.
+    // Raw host IDs cannot be used inside rootless Podman's user namespace.
+    try {
+        if (typeof process.getuid !== "function") {
+            throw new Error("host user identity is unavailable; automatic ownership repair skipped");
+        }
+        const parent = lstatSync(dirname(configFile));
+        const config = lstatSync(configFile);
+        if (!parent.isDirectory() || parent.uid !== process.getuid() || !config.isFile()) {
+            throw new Error("automatic repair requires a regular config file in a non-symlink directory owned by the host user");
+        }
+        const repaired = spawnSync(runtimeCli(), [
+            "exec", "--user", "root", containerName, "sh", "-c",
+            'dir=/home/ccc/.codex; file="$dir/config.toml"; '
+            + '[ ! -L "$dir" ] && [ -d "$dir" ] && [ ! -L "$file" ] && [ -f "$file" ] '
+            + '&& owner=$(stat -c %u "$dir") && chown --no-dereference "$owner" "$file" && chmod u+rw "$file"',
+        ], { encoding: "utf-8", timeout: 10000 });
+        if (repaired.error || repaired.status !== 0) {
+            throw new Error(`container ownership repair failed (${repaired.error?.message ?? `exit ${repaired.status ?? "unknown"}`})`);
+        }
+        accessSync(configFile, accessMode);
+    } catch (error) {
+        // MCP generation still reports an actionable error if access is denied.
+        // A post-exit repair failure must not prevent session/env-file cleanup.
+        warn(error);
+    }
 }
 
 export function prepareCodexConfigForContainer(containerName: string): void {
-    const accessCheck = spawnSync(runtimeCli(), [
-        "exec", containerName,
-        "sh", "-c",
-        "test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml",
-    ], { stdio: "ignore" });
-    if (accessCheck.status === 0) return;
+    const configFile = getCodexConfigFile();
+    const directoryGuard = 'dir=/home/ccc/.codex; [ ! -L "$dir" ] && [ -d "$dir" ]';
+    const directoryProbe = `${directoryGuard} && [ -r "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]`;
+    const configGuard = `${directoryGuard} && file="$dir/config.toml" && [ ! -L "$file" ]`;
+    const configProbe = `${configGuard} && { [ ! -e "$file" ] || { [ -f "$file" ] && [ -r "$file" ] && [ -w "$file" ]; }; }`;
+    const run = (operation: string, script: string, root = false, probe = false, timeout = 10000) => {
+        const result = spawnSync(runtimeCli(), [
+            "exec", ...(root ? ["--user", "root"] : []), containerName, "sh", "-c", script,
+        ], { encoding: "utf-8", timeout });
+        if (result.error || (result.status !== 0 && !(probe && result.status === 1))) {
+            throw new Error(`Unable to prepare Codex credentials at ${dirname(configFile)}: ${operation} failed (${result.error?.message ?? (result.stderr?.trim() || `exit ${result.status ?? "unknown"}`)})`);
+        }
+        return result;
+    };
+    const validateHostDirectory = (): void => {
+        if (typeof process.getuid !== "function") {
+            throw new Error("Unable to prepare Codex credentials: host user identity is unavailable");
+        }
+        const parent = lstatSync(dirname(configFile));
+        if (!parent.isDirectory() || parent.uid !== process.getuid()) {
+            throw new Error("Unable to prepare Codex credentials: automatic repair requires a non-symlink directory owned by the host user");
+        }
+    };
+    const validateHostConfig = (allowAbsent = false): void => {
+        try {
+            if (!lstatSync(configFile).isFile()) {
+                throw new Error("Unable to prepare Codex credentials: automatic repair requires a regular non-symlink config file");
+            }
+        } catch (error) {
+            if (allowAbsent && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+            throw error;
+        }
+    };
+    let containerUid: string | undefined;
+    const getContainerUid = (): string => {
+        if (containerUid === undefined) {
+            containerUid = run("container user lookup", "id -u").stdout.trim();
+            if (!/^\d+$/.test(containerUid)) {
+                throw new Error("Unable to prepare Codex credentials: invalid container user identity");
+            }
+        }
+        return containerUid;
+    };
 
-    spawnSync(runtimeCli(), [
-        "exec", "--user", "root", containerName,
-        "sh", "-c",
-        "if [ -e /home/ccc/.codex/config.toml ]; then chown ccc:docker /home/ccc/.codex/config.toml 2>/dev/null || chown ccc:ccc /home/ccc/.codex/config.toml 2>/dev/null || true; chmod 600 /home/ccc/.codex/config.toml 2>/dev/null || true; fi",
-    ], { stdio: "ignore" });
+    // Check the parent first: an inaccessible 0700 directory can make a
+    // config-only existence test incorrectly report that config.toml is absent.
+    if (run("directory access check", directoryProbe, false, true).status !== 0) {
+        validateHostDirectory();
+        validateHostConfig(true);
+        const uid = getContainerUid();
+        if (run("ACL tools check", "if command -v getfacl >/dev/null && command -v setfacl >/dev/null; then exit 0; else exit 1; fi", true, true).status !== 0) {
+            console.error("[ccc] Installing ACL tools for Codex credential directory access...");
+            run("ACL tools installation", `${directoryGuard} && timeout 90 sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && apt-get install -y --no-install-recommends acl'`, true, false, 100000);
+        }
+        // A mask can hide permissions on existing entries. Recalculating it
+        // could grant other users new access, so only accept a plain mode ACL.
+        run("directory ACL grant", `${directoryGuard} && acl=$(getfacl -cpn -- "$dir") && { `
+            + 'if printf "%s\\n" "$acl" | grep -Ev "^(user|group|other)::[r-][w-][x-]$|^$" >/dev/null; then '
+            + 'echo "existing named, masked or default ACL requires manual inspection" >&2; exit 1; fi; '
+            + `setfacl -m "u:${uid}:rwx" -- "$dir"; }`, true);
+        run("directory access verification", directoryProbe);
+    }
+
+    if (run("config access check", configProbe, false, true).status !== 0) {
+        validateHostDirectory();
+        validateHostConfig();
+        const uid = getContainerUid();
+        run("config ownership handoff", `${configGuard} && [ -f "$file" ] && chown --no-dereference "${uid}" "$file" && chmod u+rw "$file"`, true);
+        run("config access verification", configProbe);
+    }
 }
 
 export function isDockerRunning(): boolean {
