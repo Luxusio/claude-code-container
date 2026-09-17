@@ -9,6 +9,7 @@ import { HyperVWindowsError } from "./errors.js";
 import { HYPER_V_WINDOWS_SESSION_ERROR_CODES } from "./powershell-session.js";
 import {
     parseHyperVInterfaceIndex,
+    parseHyperVMacAddress,
     parseHyperVNatInstanceId,
     parseHyperVNatName,
     parseHyperVNetworkAdapterName,
@@ -44,6 +45,10 @@ import {
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const EXECUTION_TIMEOUT_MILLISECONDS = 120 * 1000;
 const MAX_NATIVE_STRING_LENGTH = 32 * 1024;
+// A guest reports one address per configured family per adapter; anything beyond this is a
+// host that has stopped making sense, and the bound keeps a hostile guest from growing the
+// decoded record without limit.
+const MAX_ADAPTER_IP_ADDRESSES = 64;
 const NATIVE_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // Executor error strings that may reach a caller verbatim. Both sources are closed, exported
 // unions, so nothing host-authored or attacker-shaped is forwarded; every other string collapses
@@ -121,6 +126,7 @@ function decodeVMNetworkAdapter(value: unknown): HyperVVMNetworkAdapter | null {
     const item = record(value);
     if (!item || !hasExactKeys(item, [
         "vmId", "vmName", "name", "switchId", "switchName", "status", "managementOperatingSystem",
+        "macAddress", "ipAddresses",
     ])) return null;
     const rawVmId = item.vmId;
     const vmId = rawVmId === null
@@ -139,6 +145,11 @@ function decodeVMNetworkAdapter(value: unknown): HyperVVMNetworkAdapter | null {
         || (rawSwitchName !== null && !boundedString(rawSwitchName, false))
         || !boundedString(item.status)
         || typeof item.managementOperatingSystem !== "boolean") return null;
+    const rawMacAddress = item.macAddress;
+    if (rawMacAddress !== null && !boundedString(rawMacAddress, false)) return null;
+    const rawIpAddresses = item.ipAddresses;
+    if (!Array.isArray(rawIpAddresses) || rawIpAddresses.length > MAX_ADAPTER_IP_ADDRESSES) return null;
+    if (!rawIpAddresses.every((entry) => boundedString(entry, false))) return null;
     return {
         vmId,
         vmName: typeof rawVmName === "string" ? rawVmName : null,
@@ -147,6 +158,11 @@ function decodeVMNetworkAdapter(value: unknown): HyperVVMNetworkAdapter | null {
         switchName: typeof rawSwitchName === "string" ? rawSwitchName : null,
         status: item.status,
         managementOperatingSystem: item.managementOperatingSystem,
+        // An address native cannot spell is absent, not a decode failure: an adapter with a
+        // malformed MAC is still a real adapter that host-wide inventory must keep reporting,
+        // and absent is the one value no identity comparison can match.
+        macAddress: rawMacAddress === null ? null : parsed(() => parseHyperVMacAddress(rawMacAddress)),
+        ipAddresses: Object.freeze([...rawIpAddresses as readonly string[]]),
     };
 }
 

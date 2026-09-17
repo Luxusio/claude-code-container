@@ -202,6 +202,8 @@ describe("Hyper-V Windows network low-level client", () => {
                 switchName: switchItem.name,
                 status: "FutureStatus",
                 managementOperatingSystem: false,
+                macAddress: "00155D011A2C",
+                ipAddresses: ["172.31.240.9", "fe80::1"],
             }]],
             ["Get-VM", [{ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", name: "vm-a", notes: "opaque" }]],
             ["Get-NetAdapter", [{ interfaceIndex: 42, name: "vEthernet (ccc-internal)", status: "FutureStatus", interfaceDescription: "FutureDescription" }]],
@@ -218,7 +220,14 @@ describe("Hyper-V Windows network low-level client", () => {
             id: switchId,
         }]);
         await expect(client.getAllVMNetworkAdapters()).resolves.toEqual([
-            expect.objectContaining({ status: "FutureStatus", switchId }),
+            expect.objectContaining({
+                status: "FutureStatus",
+                switchId,
+                macAddress: parseHyperVMacAddress("00155D011A2C"),
+                // Both families survive decoding unchanged: which one matters is a
+                // reconciliation decision, not a decoding one.
+                ipAddresses: ["172.31.240.9", "fe80::1"],
+            }),
         ]);
         await expect(client.getVMsByExactNames({ names: [parseHyperVVirtualMachineName("vm-a")] })).resolves.toEqual([
             { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", name: "vm-a", notes: "opaque" },
@@ -230,6 +239,32 @@ describe("Hyper-V Windows network low-level client", () => {
             expect.objectContaining({ address: gateway, prefixOrigin: "FuturePrefixOrigin" }),
         ]);
         await expect(client.getNetNats({ kind: "name", name: natName })).resolves.toEqual([natItem]);
+    });
+
+    // A VM adapter with no usable address is still a real adapter, and host-wide inventory
+    // has to keep reporting it -- dropping the record would hide an adapter that is holding
+    // a switch in use. Absent is the safe representation because no identity comparison can
+    // match it, which is what keeps a removal from selecting an adapter by accident.
+    it.each([
+        ["not yet assigned by the host", "000000000000"],
+        ["unparseable", "not-a-mac"],
+        ["reported as absent", null],
+    ])("decodes a VM adapter whose MAC is %s without dropping the adapter", async (_label, macAddress) => {
+        const client = createHyperVWindowsNetworkClient(executorUsing((request) => response(request.operation, [{
+            vmId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            vmName: "vm-a",
+            name: "Network Adapter",
+            switchId: switchItem.id,
+            switchName: switchItem.name,
+            status: "Ok",
+            managementOperatingSystem: false,
+            macAddress,
+            ipAddresses: [],
+        }])));
+
+        await expect(client.getAllVMNetworkAdapters()).resolves.toEqual([
+            expect.objectContaining({ name: "Network Adapter", macAddress: null }),
+        ]);
     });
 
     it("rejects invalid runtime input before invoking the executor", async () => {

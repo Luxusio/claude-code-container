@@ -222,6 +222,10 @@ function Convert-HyperVWindowsVMNetworkAdapter([object]$Adapter) {
         switchName = if ([string]::IsNullOrEmpty([string]$Adapter.SwitchName)) { $null } else { [string]$Adapter.SwitchName }
         status = if ($null -eq $Adapter.Status) { "" } else { [string]$Adapter.Status }
         managementOperatingSystem = [bool]$Adapter.IsManagementOs
+        macAddress = if ([string]::IsNullOrEmpty([string]$Adapter.MacAddress)) { $null } else { [string]$Adapter.MacAddress }
+        # Force an array even for the one-element and empty cases, which PowerShell would
+        # otherwise serialise as a bare string and as null. The decoder demands an array.
+        ipAddresses = @(@($Adapter.IPAddresses) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) } | ForEach-Object { [string]$_ })
     }
 }
 

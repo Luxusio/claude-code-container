@@ -288,6 +288,14 @@ export type HyperVVMNetworkAdapter = {
     readonly switchName: string | null;
     readonly status: string;
     readonly managementOperatingSystem: boolean;
+    // Absent until the adapter has an address: native reports all zeroes for a dynamic
+    // address the VM has not yet been assigned, and an unparseable address is absent too
+    // rather than a value, so that identity comparisons can never match on garbage.
+    readonly macAddress: HyperVMacAddress | null;
+    // Only the addresses the guest integration services report, IPv4 and IPv6 alike. The
+    // library stays native-faithful here; which family and which subnet matter is a
+    // reconciliation decision, not a decoding one.
+    readonly ipAddresses: readonly string[];
 };
 
 export type HyperVExactNameVirtualMachine = {
