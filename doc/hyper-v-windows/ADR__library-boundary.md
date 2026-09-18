@@ -126,8 +126,8 @@ are not Hyper-V operations and would contradict this boundary.
 |---|---|---|
 | 1. Snapshots (done) | `hyperVSnapshotCreateCommand`, `hyperVSnapshotDeleteCommand`, `hyperVSnapshotRestoreCommand` | `Get-VMSnapshot`, `Checkpoint-VM`, `Remove-VMSnapshot`, `Restore-VMSnapshot` |
 | 2A. Host networking | host-fabric portions of `hyperVEnsureNetworkCommand`, `hyperVCleanupNetworkCommand`, and `hyperVInspectNetworkAllocationsCommand` | switch, host-adapter/interface, gateway, NAT, attachment, and bounded exact-name VM inventory primitives |
-| 2B. VM networking | `hyperVBootstrapNetworkCommand`, `hyperVBootstrapNetworkCleanupCommand` | VM network-adapter connection and guest bootstrap primitives |
-| 2C. Setup-network retirement | private network ensure logic embedded in the Windows setup command | reuse the typed 2A/2B adapter; no second host-fabric implementation |
+| 2B. VM networking (done) | `hyperVBootstrapNetworkCommand`, `hyperVBootstrapNetworkCleanupCommand` | VM-scoped and management-OS `Get-VMNetworkAdapter`, `Get-NetNeighbor`, `Remove-VMNetworkAdapter` |
+| 2C. Setup-network retirement (done) | private network ensure logic embedded in the Windows setup command | reuses the typed 2A adapter; no second host-fabric implementation |
 | 3. Creation and VHD | `hyperVCreateCommand`, the VHD portion of `hyperVPrepareBaseImageCommand` | `New-VM`, `Set-VMMemory`, `Set-VMProcessor`, `Set-VMFirmware`, `Add-VMHardDiskDrive`, `Add-VMDvdDrive`, `New-VHD`, `Convert-VHD`, `Optimize-VHD` |
 | 4. Guest PowerShell Direct | `hyperVGuestExecCommand`, `hyperVGuestUploadCommand`, `hyperVGuestDownloadCommand`, `hyperVGuestReadyCommand`, `hyperVGuestBootDiagnosticCommand`, `hyperVGuestProvisionCommand` | PowerShell Direct session primitives |
 | 5. Lifecycle residue | `hyperVStatusCommand`, `hyperVRebootCommand`, `hyperVDeleteCommand`, `hyperVRecoverOrphanCommand` | `Restart-VM`, plus adapter migration onto the existing operations |
@@ -165,11 +165,52 @@ owner/device/incarnation policy, persistence, UAC presentation, and public
 error/status mapping. “Network reconciliation” does not alter VM start/stop
 timing or the general VM lifecycle policy.
 
-Slice 2B connects VM adapters and generates guest bootstrap operations. Slice
-2C then removes the private network ensure implementation embedded in Windows
+Slice 2B (done) moved the two bootstrap commands the roadmap names. Slice 2C
+(done) removed the private network ensure implementation embedded in Windows
 setup. Image acquisition and the Linux SSH/cloud-init paths remain in
 host-control: they are not Hyper-V primitives and are not part of any slice 2
 claim.
+
+### What slice 2B settled
+
+**The VM adapter work inside VM creation is not slice 2B.** Every adapter
+mutation in `hyperVCreateCommand` sits between `New-VM` and a single `catch`
+whose rollback is one `Remove-VM`, which takes the adapters with it. Extracting
+those calls into N typed round trips would trade Hyper-V's free all-or-nothing
+rollback for a half-configured VM that ccc must reconcile itself. That cost is
+only worth paying when the whole creation transaction moves, which is slice 3.
+The bootstrap read embedded in the cloud-init seed stays out for the same reason
+the rest of that path does.
+
+**Slice 2B inherits none of 2A's elevation machinery.** Both commands ran at
+ordinary privilege and still do: the VM already exists and its adapters belong
+to it. No part of this path may construct an administrator-scoped executor, and
+a test asserts that against the source, because the invariant is about what the
+code may reach rather than about a value. Teardown is contained to one adapter
+on one owned VM, so it needs no crash-recovery intent journal either. What it
+does keep is the host-wide containment re-check after removal: that is the
+property proving the address is free for the next device that derives it.
+
+**A MAC address is an opaque value with one canonical form.** Native spells it
+three ways depending on the cmdlet — bare hex from `Get-VMNetworkAdapter`,
+hyphen groups from `Get-NetNeighbor` — and ccc records its own with colons.
+Reconciling those per call site is how a destructive adapter removal silently
+selects the wrong adapter, because a spelling mismatch does not fail loudly. The
+all-zero address native reports for an unassigned adapter decodes to absent, not
+to a value: absent is the one representation no identity comparison can match.
+
+**Ownership is proved with the same marker the PowerShell embedded**, not a
+second copy of the format, because two copies can drift and a drifted marker
+makes the check fail or — worse — pass wrongly. `Get-VM` by exact name already
+returns id, name and notes, so this needed no new primitive.
+
+**Two deliberate departures from the PowerShell, both losing less.** A candidate
+address with an octet above 255 reached `[Net.IPAddress]::Parse` and threw,
+which failed the whole discovery pass and reported no addresses at all; it is
+now skipped, which cannot lose a valid address. And host prefixes are still
+found by interface alias when the management adapter read comes back empty —
+that branch existed in the PowerShell, and dropping it would have turned a
+recoverable gap into failed discovery.
 
 Host-network values that are easy to confuse are opaque validated values, not
 interchangeable strings or numbers. PowerShell and persisted JSON enter as

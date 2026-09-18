@@ -1,3 +1,6 @@
+import { readFileSync } from "fs";
+import { join } from "path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -237,5 +240,36 @@ describe("Device Lab bootstrap teardown", () => {
             MANAGED_MAC,
         )).rejects.toThrow("hyper-v-bootstrap-network-adapter-identity-mismatch");
         expect(removeVMNetworkAdapter).not.toHaveBeenCalled();
+    });
+});
+
+// Slice 2B must never grow a UAC prompt: the VM already exists and its adapters belong to it,
+// so every operation here runs at ordinary privilege. This is asserted against the source
+// rather than a value, because the invariant is about what the code may reach -- elevation
+// enters this codebase only through these two names, and neither may appear on this path.
+describe("Device Lab bootstrap privilege", () => {
+    const root = join(__dirname, "..");
+
+    it.each([
+        ["the bootstrap adapter", join("device-lab", "broker", "hyper-v", "vm-network-adapter.ts")],
+        ["the bootstrap reconciliation", join("hyper-v-windows", "lifecycle", "vm-network-reconcile.ts")],
+    ])("never reaches elevation from %s", (_label, relativePath) => {
+        const source = readFileSync(join(root, relativePath), "utf8");
+        expect(source).not.toContain("withAdministratorClient");
+        expect(source).not.toContain("withElevatedHyperVNetworkExecutor");
+        expect(source).not.toContain("elevated-network-session");
+    });
+
+    it("composes the broker seam without an administrator client", () => {
+        const source = readFileSync(join(root, "device-lab-broker.ts"), "utf8");
+        const seam = source.slice(
+            source.indexOf("function hyperVBootstrapNetworkSeam("),
+            source.indexOf("type HyperVBootstrapVmIdentity"),
+        );
+        expect(seam).not.toBe("");
+        expect(seam).not.toContain("withAdministratorClient");
+        expect(seam).not.toContain("withElevatedHyperVNetworkExecutor");
+        expect(seam).not.toContain("resolveElevationExecutable");
+        expect(seam).not.toContain("hyperVElevationExecutable");
     });
 });

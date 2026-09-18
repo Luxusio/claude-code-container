@@ -538,6 +538,24 @@ a request ID inside every response envelope.
 - `Remove-VM` removes only the VM object. VHD/VHDX/AVHDX files, ISO media,
   credentials, journals, Device Lab inventory, and network allocations are not
   low-level side effects.
+- A value native spells more than one way gets one opaque type with one
+  canonical form, one tolerant parser, and a renderer per external spelling. A
+  parser per spelling is not acceptable, because it puts the choice of parser at
+  the call site. MAC addresses are the worked example: `Get-VMNetworkAdapter`
+  reports bare hex, `Get-NetNeighbor` reports hyphen groups, and Device Lab
+  records colons. Separators may not be mixed within one value.
+- A native value that cannot be parsed, and a native placeholder standing for
+  "not assigned yet", both decode to absent rather than to a value or a dropped
+  record. The all-zero MAC of an adapter awaiting a dynamic address is the case
+  to reason from: dropping the record would hide an adapter that is holding a
+  switch in use, and absent is the one representation no identity comparison can
+  match — which is what stops a removal selecting a target by accident.
+- A destructive primitive names every part of its target's identity and the
+  native side re-resolves from all of them, acting only on exactly one match.
+  `Remove-VMNetworkAdapter` carries VM, adapter name and MAC together because
+  Hyper-V permits two adapters on one VM to share a name, so a name alone is not
+  an identity. This is a second fence behind reconciliation's decision, never a
+  substitute for it.
 
 ## Failure contract
 
