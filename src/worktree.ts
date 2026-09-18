@@ -2913,7 +2913,7 @@ function warnBrokenWorktreeLink(candidatePath: string): void {
 }
 
 
-type PathContent = "absent" | "empty" | "unreadable" | "content" | "repository";
+type PathContent = "absent" | "empty" | "unreadable" | "content" | "repository" | "broken-worktree";
 
 // One rule for reading the path, used by both the decision to refuse and the sentence
 // explaining it. It replaced two functions that classified the same errors differently.
@@ -2930,7 +2930,30 @@ type PathContent = "absent" | "empty" | "unreadable" | "content" | "repository";
 // something worth protecting: a directory readable only by another user — mode 0111 passes the
 // existence check and fails the read — reported empty. Not knowing is the strongest reason to
 // refuse, not a reason to proceed.
-function pathContent(path: string): PathContent {
+/**
+ * Whether this directory is a linked worktree's checkout rather than a repository of its own.
+ *
+ * Decided from what the `.git` file records, not from whether that target resolves: a checkout
+ * whose administrative directory is missing is still a linked worktree, and it is precisely
+ * the case where saying otherwise would mislead.
+ */
+function isLinkedWorktreeCheckout(path: string): boolean {
+    const gitPath = join(path, ".git");
+    try {
+        // Not load-bearing -- reading a directory fails below and reaches the same answer --
+        // but it states the shape being looked for instead of leaning on that.
+        if (!lstatSync(gitPath).isFile()) return false;
+    } catch {
+        return false;
+    }
+    const recorded = gitFileRecordedDirectory(gitPath);
+    return recorded !== null && basename(dirname(recorded)) === "worktrees";
+}
+
+// Exported alongside the refusal it feeds: the classification is what decides which sentence
+// an operator gets, and telling a broken worktree link apart from a repository of its own is
+// the distinction that decides whether they are told to repair or to delete.
+export function pathContent(path: string): PathContent {
     try {
         const entries = readdirSync(path);
         if (entries.length === 0) return "empty";
@@ -2938,7 +2961,12 @@ function pathContent(path: string): PathContent {
         // because the refusal below called every non-empty path "a nested Git repository" —
         // false for the shape that actually blocked `ccc rm -f`, which is a tracked
         // submodule's path holding ordinary files and no `.git` at all.
-        return entries.includes(".git") ? "repository" : "content";
+        if (!entries.includes(".git")) return "content";
+        // A linked worktree records its administrative directory in a `.git` FILE. The scan
+        // has already told the operator when such a checkout's registration no longer points
+        // back to it, and calling the same directory unmanaged two lines later contradicts
+        // that: it is ccc's own worktree with a broken link, not a stranger's repository.
+        return isLinkedWorktreeCheckout(path) ? "broken-worktree" : "repository";
     } catch (error) {
         return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
     }
@@ -2975,6 +3003,17 @@ export function unmanagedPathRefusal(path: string, content: PathContent): string
         case "content":
             return `workspace holds files where a tracked submodule belongs: ${where}`
                 + " — move them out of the workspace to keep them" + anyway;
+        case "broken-worktree":
+            // Says what is knowable here and no more. This function is given a path, not the
+            // repository the worktree belongs to, so it cannot tell one ccc made from a
+            // stranger's -- but either way it is a linked worktree whose link is broken, not
+            // an unmanaged repository. The old wording contradicted the NOTE printed moments
+            // earlier and left -f as the only apparent way out, which deletes a checkout that
+            // repairing would have kept.
+            return `workspace holds a linked Git worktree whose registration is broken: ${where}`
+                + " — your files are there and only the link is broken;"
+                + " `git worktree repair` relinks it, and ccc offers to do that when the"
+                + " worktree is its own — move it out of the workspace to keep it" + anyway;
         case "absent":
             // Not reachable from either veto — both guard with `existsSync` first — but this
             // function is exported and enumerable, and without this arm `absent` fell through

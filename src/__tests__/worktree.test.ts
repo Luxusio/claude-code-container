@@ -30,6 +30,7 @@ import {
     unreachableRecordedGitPath,
     DamagedWorkspaceMetadataError,
     repairWorkspaceWorktree,
+    pathContent,
     unmanagedPathRefusal,
     relayNestedRemovalError,
     strandedBranchRegistrations,
@@ -1335,7 +1336,12 @@ describe("assertWorkspaceBranch", () => {
             // Without -f: the operator's one chance to know, before anything is lost.
             warned = removeWorkspace(repoPath, "feature-login");
             expect(warned.removed, "nothing is removed while the operator has not said so").toEqual([]);
-            expect(warned.errors.join(" ")).toContain("does not manage");
+            // Named for what it is. This one is a linked worktree of an unrelated repository
+            // whose back-link was broken above, and calling that "a repository ccc does not
+            // manage" told the operator their only option was -f -- which deletes a checkout
+            // that relinking would have kept.
+            expect(warned.errors.join(" ")).toContain("linked Git worktree whose registration is broken");
+            expect(warned.errors.join(" ")).toContain("git worktree repair");
             expect(warned.errors.join(" ")).toContain("nested-api");
             expect(warned.errors.join(" "), "the warning reaches a terminal too")
                 .not.toContain(String.fromCharCode(0x1b));
@@ -7564,7 +7570,7 @@ describe("unmanagedPathRefusal", () => {
     // Every branch, because the two assertions that pinned "-f" both happened to land on the
     // same one: stripping the advice from the others left the whole suite green.
     it("names -f in every state that has something to force past, and differs in each", () => {
-        const states = ["empty", "unreadable", "content", "repository", "absent"] as const;
+        const states = ["empty", "unreadable", "content", "repository", "absent", "broken-worktree"] as const;
         const said = states.map((state) => unmanagedPathRefusal("/w/services/api", state));
         for (const [index, message] of said.entries()) {
             expect(message, `${states[index]} must name the path`)
@@ -9129,5 +9135,65 @@ describe("workspace created inside another repository", () => {
         expect(enclosingGitWorkingTree(deep)).toBe(inner);
         expect(enclosingGitWorkingTree(outer)).toBe(outer);
         expect(enclosingGitWorkingTree(tmpDir)).toBeNull();
+    });
+});
+
+// The scan and the removal refusal describe the same directory, and they disagreed: the scan
+// said "a linked worktree whose registration no longer points back to it -- your files are
+// untouched", and the refusal two lines later called it "a nested Git repository ccc does not
+// manage", whose only stated way out was -f. Deleting is exactly what must not follow from a
+// broken link.
+describe("unmanagedPathRefusal classification", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    function refusalFor(path: string): string {
+        return unmanagedPathRefusal(path, pathContent(path));
+    }
+
+    it("tells a broken worktree link apart from a repository of its own", () => {
+        const worktreeCheckout = join(tmpDir, "checkout");
+        mkdirSync(worktreeCheckout, { recursive: true });
+        writeFileSync(
+            join(worktreeCheckout, ".git"),
+            `gitdir: ${join(tmpDir, "source", ".git", "worktrees", "checkout")}\n`,
+        );
+
+        const refusal = refusalFor(worktreeCheckout);
+        expect(refusal).toContain("linked Git worktree whose registration is broken");
+        expect(refusal).toContain("only the link is broken");
+        expect(refusal).not.toContain("does not manage");
+        // Still the way through, because a workspace removal takes what is inside it.
+        expect(refusal).toContain("re-run with -f");
+    });
+
+    // A repository that genuinely is not ccc's keeps the old refusal. Softening that would be
+    // the opposite mistake: offering to relink something with no link to repair.
+    it("still refuses a repository of its own as unmanaged", () => {
+        const ownRepository = join(tmpDir, "standalone");
+        mkdirSync(join(ownRepository, ".git"), { recursive: true });
+
+        const refusal = refusalFor(ownRepository);
+        expect(refusal).toContain("does not manage");
+        expect(refusal).not.toContain("registration is broken");
+    });
+
+    // The recorded target is deliberately absent above and here: a checkout whose
+    // administrative directory is gone is still a linked worktree, and that is precisely the
+    // case where calling it a repository of its own misleads.
+    it("does not mistake an ordinary gitlink file for a worktree link", () => {
+        const submodule = join(tmpDir, "submodule");
+        mkdirSync(submodule, { recursive: true });
+        writeFileSync(join(submodule, ".git"), `gitdir: ${join(tmpDir, "parent", ".git", "modules", "submodule")}\n`);
+
+        expect(refusalFor(submodule)).toContain("does not manage");
     });
 });
