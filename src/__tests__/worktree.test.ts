@@ -39,6 +39,8 @@ import {
     isValidWorktree,
     detectBrokenWorktrees,
     fixBrokenWorktree,
+    setAsideConflictingContent,
+    WorktreeContentConflictError,
     getWorktreeGitMounts,
     containerGitSourceMountPath,
     portableWorktreeGitDirectory,
@@ -5245,6 +5247,96 @@ describe("fixBrokenWorktree", () => {
         expect(existsSync(wsResult.workspacePath + ".ccc-backup")).toBe(false);
     });
 
+    // The operator has already said yes to the repair by this point. A file that exists on
+    // both sides with different bytes is the one thing the repair cannot decide for them, so
+    // it has to hand back every such path at once -- being told about one, fixing it, and
+    // re-running only to be told about the next is the loop this replaces.
+    it("reports every conflicting file at once and changes nothing", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        const committed = { "one.json": "branch one", "two.json": "branch two", "same.txt": "identical" };
+        for (const [name, content] of Object.entries(committed)) {
+            writeFileSync(join(tmpDir, "frontend", name), content);
+        }
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add files"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        const wsResult = createWorkspace(tmpDir, "conflict");
+        spawnSync("git", ["worktree", "remove", "--force", join(wsResult.workspacePath, "frontend")], {
+            cwd: join(tmpDir, "frontend"), stdio: "pipe",
+        });
+        const checkout = join(wsResult.workspacePath, "frontend");
+        mkdirSync(checkout);
+        writeFileSync(join(checkout, "one.json"), "local one");
+        writeFileSync(join(checkout, "two.json"), "local two");
+        // Identical on both sides, so not a conflict -- and neither is a file only we have.
+        writeFileSync(join(checkout, "same.txt"), "identical");
+        writeFileSync(join(checkout, "wip.ts"), "work in progress");
+
+        let raised: unknown;
+        try {
+            fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "conflict", true);
+        } catch (error) {
+            raised = error;
+        }
+
+        expect(raised).toBeInstanceOf(WorktreeContentConflictError);
+        const conflicts = (raised as WorktreeContentConflictError).conflicts;
+        expect([...conflicts].sort()).toEqual([join(checkout, "one.json"), join(checkout, "two.json")]);
+
+        // Rolled all the way back: the operator's content is exactly as they left it.
+        expect(readFileSync(join(checkout, "one.json"), "utf-8")).toBe("local one");
+        expect(readFileSync(join(checkout, "two.json"), "utf-8")).toBe("local two");
+        expect(readFileSync(join(checkout, "wip.ts"), "utf-8")).toBe("work in progress");
+        expect(existsSync(join(checkout, ".git"))).toBe(false);
+    });
+
+    it("repairs after the conflicting versions are set aside, losing neither side", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        mkdirSync(join(tmpDir, "frontend", "nested"), { recursive: true });
+        writeFileSync(join(tmpDir, "frontend", "nested", "message.json"), "branch version");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add message"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        const wsResult = createWorkspace(tmpDir, "set-aside");
+        spawnSync("git", ["worktree", "remove", "--force", join(wsResult.workspacePath, "frontend")], {
+            cwd: join(tmpDir, "frontend"), stdio: "pipe",
+        });
+        const checkout = join(wsResult.workspacePath, "frontend");
+        mkdirSync(join(checkout, "nested"), { recursive: true });
+        writeFileSync(join(checkout, "nested", "message.json"), "local version");
+
+        let conflicts: readonly string[] = [];
+        try {
+            fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "set-aside", true);
+        } catch (error) {
+            conflicts = (error as WorktreeContentConflictError).conflicts;
+        }
+        expect(conflicts).toEqual([join(checkout, "nested", "message.json")]);
+
+        const preserved = setAsideConflictingContent(checkout, conflicts, () => new Date(0));
+
+        // Moved, never deleted: the local version is the only copy not already in Git.
+        expect(readFileSync(join(preserved, "nested", "message.json"), "utf-8")).toBe("local version");
+        expect(existsSync(join(checkout, "nested", "message.json"))).toBe(false);
+
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "set-aside", true);
+        expect(result).not.toBeNull();
+        expect(readFileSync(join(checkout, "nested", "message.json"), "utf-8")).toBe("branch version");
+        expect(readFileSync(join(preserved, "nested", "message.json"), "utf-8")).toBe("local version");
+    });
+
+    it("refuses to set aside a path outside the checkout", () => {
+        const checkout = join(tmpDir, "checkout");
+        mkdirSync(checkout, { recursive: true });
+        writeFileSync(join(tmpDir, "outside.txt"), "outside");
+
+        expect(() => setAsideConflictingContent(checkout, [join(tmpDir, "outside.txt")]))
+            .toThrow("Refusing to set aside a path outside the worktree");
+        expect(existsSync(join(tmpDir, "outside.txt"))).toBe(true);
+    });
+
     it("repairs a broken worktree without merging an ignored pnpm dependency tree", () => {
         initRepo(tmpDir);
         const repoName = "front\u202eend";
@@ -5652,7 +5744,7 @@ describe("fixBrokenWorktree", () => {
             "frontend",
             "stale-atomic",
             true,
-        )).toThrow("Workspace content conflicts");
+        )).toThrow("Preserved content conflicts with the branch");
 
         expect(readFileSync(join(wsFrontend, "app.ts"), "utf-8")).toBe("user work");
         const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
@@ -5730,7 +5822,7 @@ describe("fixBrokenWorktree", () => {
             "frontend",
             "conflict",
             true,
-        )).toThrow("Workspace content conflicts");
+        )).toThrow("Preserved content conflicts with the branch");
         expect(readFileSync(join(wsFrontend, "app.ts"), "utf-8"))
             .toBe("uncommitted-user-work");
         expect(existsSync(join(wsFrontend, ".git"))).toBe(false);
@@ -5757,7 +5849,7 @@ describe("fixBrokenWorktree", () => {
             "frontend",
             "new-conflict",
             true,
-        )).toThrow("Workspace content conflicts");
+        )).toThrow("Preserved content conflicts with the branch");
         expect(branchExistsInRepo(nestedRepo, "new-conflict")).toBe("none");
         expect(readFileSync(join(wsFrontend, "app.ts"), "utf-8"))
             .toBe("uncommitted-user-work");

@@ -29,6 +29,7 @@ import {
     posix,
     relative,
     resolve,
+    sep,
     win32,
 } from "path";
 
@@ -66,7 +67,29 @@ type CapturedIgnoredDependencyTree = {
 type PreservedContentMerge = {
     readonly worktreeRoot: string;
     readonly skippedIgnoredDependencyTrees: CapturedIgnoredDependencyTree[];
+    // Every path where the preserved content and the freshly checked-out branch disagree.
+    // Collected rather than thrown on, because a caller told about one conflict fixes it,
+    // re-runs, and is told about the next one: the whole set is what lets them decide once.
+    readonly conflicts: string[];
 };
+
+// A repair that could not merge the preserved content back over the new worktree. The
+// workspace is unchanged when this is raised -- the caller rolls the whole attempt back --
+// so it names what disagreed rather than what was lost.
+export class WorktreeContentConflictError extends Error {
+    readonly conflicts: readonly string[];
+    readonly worktreeRoot: string;
+
+    constructor(worktreeRoot: string, conflicts: readonly string[]) {
+        super(
+            `Preserved content conflicts with the branch's own version of ${conflicts.length === 1 ? "this file" : `these ${conflicts.length} files`}: `
+            + conflicts.join(", "),
+        );
+        this.name = "WorktreeContentConflictError";
+        this.worktreeRoot = worktreeRoot;
+        this.conflicts = conflicts;
+    }
+}
 
 function captureIgnoredDependencyTree(
     sourcePath: string,
@@ -183,7 +206,10 @@ function mergePreservingContent(src: string, dest: string, merge: PreservedConte
         } else {
             const destination = lstatSync(dest);
             if (destination.isSymbolicLink() || !destination.isDirectory()) {
-                throw new Error(`Workspace content conflicts with checked-out worktree content: ${dest}`);
+                // One side is a directory and the other is not. Nothing below it can be
+                // merged, so record this subtree and stop descending into it.
+                merge.conflicts.push(dest);
+                return;
             }
         }
         for (const entry of readdirSync(src)) {
@@ -204,7 +230,42 @@ function mergePreservingContent(src: string, dest: string, merge: PreservedConte
         && readFileSync(src).equals(readFileSync(dest))) {
         return;
     }
-    throw new Error(`Workspace content conflicts with checked-out worktree content: ${dest}`);
+    merge.conflicts.push(dest);
+}
+
+/**
+ * Moves conflicting files out of a workspace checkout so a repair can be retried.
+ *
+ * The files are moved, never deleted: the local version is the only copy that is not already
+ * in Git, so it is the one that must survive. What is left behind is the branch's own version,
+ * which the retry can then merge cleanly.
+ *
+ * Returns the directory the files were moved into.
+ */
+export function setAsideConflictingContent(
+    worktreeRoot: string,
+    conflicts: readonly string[],
+    now: () => Date = () => new Date(),
+): string {
+    const stamp = now().toISOString().replace(/[:.]/g, "-");
+    const preserved = `${worktreeRoot}.ccc-conflict-${stamp}`;
+    if (pathExistsStrict(preserved)) {
+        throw new Error(`Conflict backup directory already exists: ${preserved}`);
+    }
+    mkdirSync(preserved, { recursive: true });
+    for (const conflict of conflicts) {
+        const relativePath = relative(worktreeRoot, conflict);
+        // A path outside the checkout is not this repair's to move. Nothing should produce
+        // one, which is exactly why it is worth refusing rather than trusting.
+        if (!relativePath || isAbsolute(relativePath) || relativePath.split(sep).includes("..")) {
+            throw new Error(`Refusing to set aside a path outside the worktree: ${conflict}`);
+        }
+        if (!pathExistsStrict(conflict)) continue;
+        const destination = join(preserved, relativePath);
+        mkdirSync(dirname(destination), { recursive: true });
+        renameSync(conflict, destination);
+    }
+    return preserved;
 }
 
 export const WORKTREE_SEPARATOR = "--";
@@ -7372,6 +7433,7 @@ function fixBrokenWorktreeSanitized(
         const preservedContentMerge: PreservedContentMerge = {
             worktreeRoot: destPath,
             skippedIgnoredDependencyTrees: [],
+            conflicts: [],
         };
         try {
             operationGuard();
@@ -7387,6 +7449,9 @@ function fixBrokenWorktreeSanitized(
                     join(destPath, name),
                     preservedContentMerge,
                 );
+            }
+            if (preservedContentMerge.conflicts.length > 0) {
+                throw new WorktreeContentConflictError(destPath, preservedContentMerge.conflicts);
             }
         } catch (error) {
             if (pathExistsStrict(destPath)) {

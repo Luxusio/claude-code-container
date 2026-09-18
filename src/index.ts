@@ -8,7 +8,7 @@ import {
     readFileSync,
     unlinkSync,
 } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     formatScannedFiles,
@@ -62,6 +62,8 @@ import {
     needsSubmoduleSetup,
     initWithSubmodules,
     DamagedWorkspaceMetadataError,
+    WorktreeContentConflictError,
+    setAsideConflictingContent,
     repairWorkspaceWorktree,
 } from "./worktree.js";
 import {
@@ -1068,6 +1070,58 @@ function handleWorktreeList(cwd: string): void {
  * Prepare worktree workspace (create or reuse), return the workspace path.
  * Does NOT execute any command — the caller runs the standard command dispatch.
  */
+/**
+ * Repairs one broken worktree, and when the repair cannot merge the content, says why and
+ * offers the one mechanical step that unblocks it.
+ *
+ * Choosing which version of a file wins is the operator's call, so ccc does not make it. What
+ * it can do is move the local versions somewhere safe so the branch's versions can be checked
+ * out, which loses nothing and is undone by moving them back.
+ */
+async function repairBrokenWorktree(
+    cwd: string,
+    wsPath: string,
+    name: string,
+    branch: string,
+): Promise<void> {
+    try {
+        const fixed = fixBrokenWorktree(cwd, wsPath, name, branch, true);
+        console.log(fixed
+            ? `  ${name}: fixed (content preserved)`
+            : `  ${name}: failed to fix (content unchanged)`);
+        return;
+    } catch (error) {
+        if (!(error instanceof WorktreeContentConflictError)) {
+            // Not a disagreement about content. The repair already rolled itself back, so the
+            // directory is as it was; report it and leave the rest of the workspace alone.
+            console.log(`  ${name}: failed to fix (content unchanged) - ${(error as Error).message}`);
+            return;
+        }
+        const relativeConflicts = error.conflicts.map((path) => relative(error.worktreeRoot, path));
+        console.log(`  ${name}: cannot merge - these files differ between your copy and branch '${branch}':`);
+        for (const conflict of relativeConflicts) console.log(`      ${conflict}`);
+        console.log("      Nothing was changed or lost; the directory is exactly as it was.");
+        console.log("      ccc can move your versions aside so the branch's versions can be checked out.");
+        console.log("      Your versions stay on disk and can be moved back or merged by hand.");
+        const answer = await prompt("  Move them aside and repair? (y/N) ", true);
+        if (answer !== "y" && answer !== "yes") {
+            console.log(`  ${name}: left unrepaired (content unchanged)`);
+            return;
+        }
+        const preserved = setAsideConflictingContent(error.worktreeRoot, error.conflicts);
+        console.log(`  ${name}: your versions moved to ${preserved}`);
+        try {
+            const fixed = fixBrokenWorktree(cwd, wsPath, name, branch, true);
+            console.log(fixed
+                ? `  ${name}: fixed (remaining content preserved)`
+                : `  ${name}: failed to fix (content unchanged)`);
+        } catch (retryError) {
+            console.log(`  ${name}: failed to fix (content unchanged) - ${(retryError as Error).message}`);
+            console.log(`      Your set-aside versions remain in ${preserved}`);
+        }
+    }
+}
+
 async function prepareWorktreeUnlocked(
     cwd: string,
     branch: string,
@@ -1122,12 +1176,7 @@ async function prepareWorktreeUnlocked(
             );
             if (answer === "y" || answer === "yes") {
                 for (const entry of broken) {
-                    const fixed = fixBrokenWorktree(cwd, wsPath, entry.name, branch, true);
-                    if (fixed) {
-                        console.log(`  ${entry.name}: fixed (content preserved)`);
-                    } else {
-                        console.log(`  ${entry.name}: failed to fix (content unchanged)`);
-                    }
+                    await repairBrokenWorktree(cwd, wsPath, entry.name, branch);
                 }
             }
         }
