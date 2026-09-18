@@ -35,7 +35,10 @@ export {
     type HyperVVmObservation,
     type HyperVSnapshotRepairObservation,
 } from "./contracts.js";
-export { hyperVSnapshotName, hyperVVmName } from "./core.js";
+// The typed bootstrap path proves VM ownership with the same marker the generated PowerShell
+// embedded. It has to be this function and not a second copy of the format: two copies can
+// drift, and a drifted marker makes the ownership check fail -- or, worse, pass wrongly.
+export { hyperVSnapshotName, hyperVVmName, ownershipMarker } from "./core.js";
 export { hyperVReadinessCommand, hyperVRebootCommand, hyperVSetupCommand, hyperVEnsureNetworkCommand, hyperVCleanupNetworkCommand } from "./host.js";
 export { hyperVInspectNetworkAllocationsCommand } from "./network-allocations.js";
 export { hyperVCreateCommand } from "./vm-create.js";

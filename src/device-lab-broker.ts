@@ -55,6 +55,8 @@ import {
     reconcileDeviceLabHyperVOperation,
 } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { createDeviceLabHyperVWindowsNetworkClient } from "./device-lab/broker/hyper-v/network-adapter.js";
+import { discoverDeviceLabHyperVBootstrapNetwork, teardownDeviceLabHyperVBootstrapNetwork, type DeviceLabHyperVOwnedVm } from "./device-lab/broker/hyper-v/vm-network-adapter.js";
+import type { HyperVWindowsNetworkClient } from "./hyper-v-windows/low-level/index.js";
 import { withElevatedHyperVNetworkExecutor } from "./device-lab/broker/hyper-v/elevated-network-session.js";
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
@@ -69,7 +71,7 @@ import {
     type DeviceLabHyperVSnapshotObservation,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT, hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotName, hyperVSnapshotRepairCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotRepairObservation, parseHyperVVmObservation } from "./host-control/hyper-v/index.js";
+import { HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT, hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotName, hyperVSnapshotRepairCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotRepairObservation, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
@@ -11383,6 +11385,143 @@ function commandSucceeded(result: ProviderCommandResult) {
     return result.status === 0 && !result.error;
 }
 
+// The slice 2B routing seam, shaped like the host-fabric one: a closed union, so a runtime
+// carries the typed client or the legacy generators but never both, and nothing dual-runs.
+type HyperVBootstrapNetworkSeam =
+    | { readonly kind: "typed"; readonly client: HyperVWindowsNetworkClient }
+    | { readonly kind: "legacy-compatibility"; readonly executable: string };
+
+function hyperVBootstrapNetworkSeam(
+    normalized: NormalizedBrokerOptions,
+    executable: string,
+    deadlineAt: number,
+): HyperVBootstrapNetworkSeam {
+    const powershell = providerExecutable("powershell.exe", normalized)
+        || providerExecutable("pwsh", normalized)
+        || providerExecutable("powershell", normalized);
+    if (!powershell) return { kind: "legacy-compatibility", executable };
+    return {
+        kind: "typed",
+        client: createDeviceLabHyperVWindowsNetworkClient({
+            executable: powershell,
+            timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 30_000),
+            run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+            // Only when this broker owns process execution, for the same reason as every other
+            // session here: an injected runner means the caller owns execution, and a long-lived
+            // child behind that seam would run work the caller never saw.
+            ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
+        }),
+    };
+}
+
+type HyperVBootstrapVmIdentity = {
+    readonly executable: string;
+    readonly ownerId: string;
+    readonly deviceId: string;
+    readonly incarnationId: string;
+    readonly vmName: string;
+    readonly vmId: string | null | undefined;
+    readonly deadlineAt: number;
+};
+
+function hyperVOwnedVmIdentity(identity: HyperVBootstrapVmIdentity): DeviceLabHyperVOwnedVm {
+    return {
+        vmId: identity.vmId || "",
+        vmName: identity.vmName,
+        ownershipMarker: ownershipMarker(identity.ownerId, identity.deviceId, identity.incarnationId),
+    };
+}
+
+/**
+ * One bootstrap discovery probe, through whichever path this runtime is composed with.
+ *
+ * Both paths answer in the same shape, and a failure on either becomes a null observation
+ * alongside the execution that produced it, because the caller's retry loop reads both.
+ */
+async function hyperVProbeBootstrapNetwork(
+    normalized: NormalizedBrokerOptions,
+    identity: HyperVBootstrapVmIdentity,
+): Promise<{ execution: ProviderCommandResult; observation: HyperVBootstrapNetworkObservation | null }> {
+    const seam = hyperVBootstrapNetworkSeam(normalized, identity.executable, identity.deadlineAt);
+    if (seam.kind === "typed") {
+        try {
+            const observation = await discoverDeviceLabHyperVBootstrapNetwork(
+                seam.client,
+                hyperVOwnedVmIdentity(identity),
+            );
+            return { execution: { mode: "exec", provider: "hyper-v", status: 0 }, observation };
+        } catch (error) {
+            const code = error instanceof Error ? error.message : String(error);
+            return { execution: { mode: "exec", provider: "hyper-v", status: 1, error: code }, observation: null };
+        }
+    }
+    const command = hyperVBootstrapNetworkCommand({
+        executable: seam.executable,
+        ownerId: identity.ownerId,
+        deviceId: identity.deviceId,
+        incarnationId: identity.incarnationId,
+        vmName: identity.vmName,
+        vmId: identity.vmId ?? undefined,
+    });
+    const execution = await hyperVProviderCommandRunner(normalized, command, {
+        timeoutMs: hyperVRemainingTimeout(identity.deadlineAt, 15000),
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    return {
+        execution,
+        observation: commandSucceeded(execution)
+            ? parseHyperVBootstrapNetworkObservation(execution.stdout || "")
+            : null,
+    };
+}
+
+/**
+ * Removes the bootstrap adapter and proves its address is free again.
+ *
+ * A null observation means the address may still be held, which both callers treat as a
+ * reason to stop the VM rather than leave it running on a bootstrap network it should have
+ * left -- so a typed failure has to collapse to null exactly as a command failure does.
+ */
+async function hyperVCleanupBootstrapNetwork(
+    normalized: NormalizedBrokerOptions,
+    identity: HyperVBootstrapVmIdentity,
+    managedMacAddress: string,
+): Promise<{ execution: ProviderCommandResult; observation: HyperVBootstrapNetworkCleanupObservation | null }> {
+    const seam = hyperVBootstrapNetworkSeam(normalized, identity.executable, identity.deadlineAt);
+    if (seam.kind === "typed") {
+        try {
+            const observation = await teardownDeviceLabHyperVBootstrapNetwork(
+                seam.client,
+                hyperVOwnedVmIdentity(identity),
+                managedMacAddress,
+            );
+            return { execution: { mode: "exec", provider: "hyper-v", status: 0 }, observation };
+        } catch (error) {
+            const code = error instanceof Error ? error.message : String(error);
+            return { execution: { mode: "exec", provider: "hyper-v", status: 1, error: code }, observation: null };
+        }
+    }
+    const command = hyperVBootstrapNetworkCleanupCommand({
+        executable: seam.executable,
+        ownerId: identity.ownerId,
+        deviceId: identity.deviceId,
+        incarnationId: identity.incarnationId,
+        vmName: identity.vmName,
+        vmId: identity.vmId ?? undefined,
+        managedMacAddress,
+    });
+    const execution = await hyperVProviderCommandRunner(normalized, command, {
+        timeoutMs: hyperVRemainingTimeout(identity.deadlineAt, 30000),
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    return {
+        execution,
+        observation: commandSucceeded(execution)
+            ? parseHyperVBootstrapNetworkCleanupObservation(execution.stdout || "")
+            : null,
+    };
+}
+
 function providerFailureDetail(result: ProviderCommandResult): string {
     const parts = [
         result.error ? `error: ${result.error}` : "",
@@ -13487,23 +13626,18 @@ async function lifecycleCommandInvokeUnlocked(
                     }
                     if (!bootstrapFinalizationAttempted && Date.now() < deadline) {
                         bootstrapProbeAttempts += 1;
-                        const bootstrapCommand = hyperVBootstrapNetworkCommand({
-                            executable: providerCommand.executable || "powershell.exe",
-                            ownerId,
-                            deviceId: parsed.deviceId,
-                            incarnationId: hyperVDeviceIncarnationId(device) || "",
-                            vmName: field(device, "vmName") || "",
-                            vmId: field(device, "vmId"),
-                        });
-                        const bootstrapExecution = await hyperVProviderCommandRunner(normalized, bootstrapCommand, {
-                            timeoutMs: hyperVRemainingTimeout(deadline, 15000),
-                            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                        });
+                        const { execution: bootstrapExecution, observation: bootstrap } =
+                            await hyperVProbeBootstrapNetwork(normalized, {
+                                executable: providerCommand.executable || "powershell.exe",
+                                ownerId,
+                                deviceId: parsed.deviceId,
+                                incarnationId: hyperVDeviceIncarnationId(device) || "",
+                                vmName: field(device, "vmName") || "",
+                                vmId: field(device, "vmId"),
+                                deadlineAt: deadline,
+                            });
                         bootstrapProbeLastStatus = typeof bootstrapExecution.status === "number"
                             ? bootstrapExecution.status
-                            : null;
-                        const bootstrap = commandSucceeded(bootstrapExecution)
-                            ? parseHyperVBootstrapNetworkObservation(bootstrapExecution.stdout || "")
                             : null;
                         if (bootstrap && !bootstrap.diagnosticCode) {
                             bootstrapProbeSuccesses += 1;
@@ -13609,22 +13743,16 @@ async function lifecycleCommandInvokeUnlocked(
                     networkAddress: field(device, "networkAddress") || undefined,
                 } : null;
                 if (success) {
-                    const cleanupCommand = hyperVBootstrapNetworkCleanupCommand({
-                        executable: providerCommand.executable || "powershell.exe",
-                        ownerId,
-                        deviceId: parsed.deviceId,
-                        incarnationId: hyperVDeviceIncarnationId(device) || "",
-                        vmName: field(device, "vmName") || "",
-                        vmId: field(device, "vmId"),
-                        managedMacAddress: field(device, "macAddress") || "",
-                    });
-                    const cleanupExecution = await hyperVProviderCommandRunner(normalized, cleanupCommand, {
-                        timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 30000),
-                        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                    });
-                    const cleanupObservation = commandSucceeded(cleanupExecution)
-                        ? parseHyperVBootstrapNetworkCleanupObservation(cleanupExecution.stdout || "")
-                        : null;
+                    const { execution: cleanupExecution, observation: cleanupObservation } =
+                        await hyperVCleanupBootstrapNetwork(normalized, {
+                            executable: providerCommand.executable || "powershell.exe",
+                            ownerId,
+                            deviceId: parsed.deviceId,
+                            incarnationId: hyperVDeviceIncarnationId(device) || "",
+                            vmName: field(device, "vmName") || "",
+                            vmId: field(device, "vmId"),
+                            deadlineAt: hyperVDeadlineAt,
+                        }, field(device, "macAddress") || "");
                     if (!cleanupObservation) {
                         hyperVGuestReadyExecution = {
                             ...cleanupExecution,
@@ -13670,21 +13798,16 @@ async function lifecycleCommandInvokeUnlocked(
         const device = payload.result?.device as Record<string, unknown>;
         let bootstrapContained = false;
         try {
-            const cleanupCommand = hyperVBootstrapNetworkCleanupCommand({
+            const { observation: cleanupObservation } = await hyperVCleanupBootstrapNetwork(normalized, {
                 executable: providerCommand.executable || "powershell.exe",
                 ownerId,
                 deviceId: parsed.deviceId,
                 incarnationId: hyperVDeviceIncarnationId(device) || "",
                 vmName: field(device, "vmName") || "",
                 vmId: field(device, "vmId"),
-                managedMacAddress: field(device, "macAddress") || "",
-            });
-            const cleanupExecution = await hyperVProviderCommandRunner(normalized, cleanupCommand, {
-                timeoutMs: hyperVRemainingTimeout(hyperVCleanupDeadlineAt, 30000),
-                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-            });
-            bootstrapContained = commandSucceeded(cleanupExecution)
-                && Boolean(parseHyperVBootstrapNetworkCleanupObservation(cleanupExecution.stdout || ""));
+                deadlineAt: hyperVCleanupDeadlineAt,
+            }, field(device, "macAddress") || "");
+            bootstrapContained = Boolean(cleanupObservation);
         } catch {
             bootstrapContained = false;
         }

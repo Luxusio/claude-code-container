@@ -1908,6 +1908,7 @@ describe("device-lab Hyper-V broker", () => {
         let managedReadinessFailure = false;
         let bootstrapAddressAvailable = false;
         let bootstrapAddresses = ["172.20.1.8"];
+        let bootstrapMacAddress = "";
         let bootstrapSshFailure = false;
         let bootstrapHostKeyRejectionsRemaining = 0;
         let bootstrapHostKeyRejectedPersistently = false;
@@ -1989,6 +1990,43 @@ describe("device-lab Hyper-V broker", () => {
                         : operationRequest.selector.name === vmName;
                     return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, vmExists && selectorMatches ? [virtualMachine] : []) };
                 }
+                // The bootstrap adapter as this host reports it. It exists for as long as the
+                // VM does, which is what the program this replaced modelled: each scenario
+                // drives the guest's reachability through bootstrapAddressAvailable, not
+                // through whether a previous teardown ran.
+                const bootstrapAdapter = {
+                    vmId,
+                    vmName,
+                    name: "CCC Bootstrap DHCP",
+                    switchId: null,
+                    switchName: "Default Switch",
+                    status: "Ok",
+                    managementOperatingSystem: false,
+                    macAddress: bootstrapMacAddress ? bootstrapMacAddress.replaceAll(":", "").toUpperCase() : null,
+                    ipAddresses: bootstrapAddressAvailable ? bootstrapAddresses : [],
+                };
+                if (operationRequest.operation === "Get-VMNetworkAdapter") {
+                    if (operationRequest.managementSwitchName) {
+                        return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, [{
+                            ...bootstrapAdapter,
+                            vmId: null,
+                            vmName: null,
+                            name: "Default Switch",
+                            managementOperatingSystem: true,
+                            macAddress: "00155D000001",
+                            ipAddresses: ["172.20.0.1"],
+                        }]) };
+                    }
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, vmExists ? [bootstrapAdapter] : []) };
+                }
+                if (operationRequest.operation === "Get-NetNeighbor") {
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, []) };
+                }
+                if (operationRequest.operation === "Remove-VMNetworkAdapter") {
+                    bootstrapNetworkCleanups += 1;
+                    if (bootstrapCleanupFailure) return { ...command, status: 1, stdout: "", stderr: "cleanup failed" };
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation) };
+                }
                 if (operationRequest.operation === "Get-VMHardDiskDrive") {
                     return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, vmExists ? [{
                         vmId,
@@ -2064,6 +2102,10 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("New-VM @VmArgs")) {
                 vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
                 vmExists = true;
+                // The create program is where the bootstrap address is assigned, so this is the
+                // only place this host learns it. Everything the typed bootstrap path asks
+                // about afterwards is keyed on it.
+                bootstrapMacAddress = powerShellString(script, "BootstrapMacAddress");
             }
             const imagePrepare = script.includes("hyper-v-base-image-profile-conflict");
             const imageAcquire = script.includes("function Save-BoundedDownload");
@@ -2131,6 +2173,20 @@ describe("device-lab Hyper-V broker", () => {
             return { ...command, status: 0, stdout: JSON.stringify(result), stderr: "" };
         });
         configureTypedHyperVNetworkOperations(commandRunner, {
+            // The device's own VM is this test's to model: the fabric simulator only knows the
+            // VMs that hold network allocations, and the bootstrap path proves ownership
+            // against this one by name, id and marker.
+            beforeOperation(request) {
+                if (request.operation !== "Get-VM" || !request.names) return null;
+                const named = vmExists && request.names.includes(vmName)
+                    ? [{
+                        id: vmId,
+                        name: vmName,
+                        notes: `ccc-device-lab:${ownerId}:${deviceId}:${activeIncarnationId || "missing-incarnation"}`,
+                    }]
+                    : [];
+                return hyperVWindowsOperationSuccess("Get-VM", named);
+            },
             onOperation(request) {
                 if (request.operation === "New-VMSwitch") elevatedNetworkSetups += 1;
                 if (request.operation === "Remove-NetNat") elevatedNetworkCleanups += 1;

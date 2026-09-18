@@ -52,7 +52,19 @@ function success(operation: string, items: readonly NativeItem[] = []) {
 
 export function createTypedHyperVNetworkOperationSimulator(options: TypedHyperVNetworkSimulationOptions = {}) {
     const switches: NativeItem[] = [];
-    const addresses: NativeItem[] = [];
+    // Every Hyper-V host with the Default Switch carries an address on its own side of it, so
+    // a simulator that omitted one would be modelling a host that cannot exist -- and the
+    // bootstrap path, which judges a guest address by whether the host shares its subnet,
+    // would have nothing to judge against.
+    const addresses: NativeItem[] = [{
+        interfaceIndex: 20,
+        address: "172.20.0.1",
+        prefixLength: 16,
+        prefixOrigin: "Manual",
+        suffixOrigin: "Manual",
+        addressState: "Preferred",
+        interfaceAlias: "vEthernet (Default Switch)",
+    }];
     const nats: NativeItem[] = [];
     const virtualMachines: NativeItem[] = [];
     let nextSwitchId = 1;
@@ -126,7 +138,12 @@ export function createTypedHyperVNetworkOperationSimulator(options: TypedHyperVN
                 if (index >= 0) switches.splice(index, 1);
                 return success(request.operation);
             }
-            case "Get-VMNetworkAdapter": return success(request.operation);
+            // This simulator models the host network fabric, not any VM. A VM-scoped or
+            // management-scoped adapter read asks about something it does not know, so it
+            // defers to the caller's own host rather than answering "none" -- an empty answer
+            // here is a claim, and a wrong one, that would hide whatever the caller models.
+            case "Get-VMNetworkAdapter":
+                return request.selector || request.managementSwitchName ? null : success(request.operation);
             case "Get-VM": return request.names ? success(
                 request.operation,
                 virtualMachines.filter((item) => request.names?.includes(String(item.name))),
