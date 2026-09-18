@@ -33,9 +33,28 @@ const ELEVATION_PROGRESS_PREFIX = "CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:";
 const ELEVATION_APPROVAL = "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE";
 const MAX_RELAY_LINE_BYTES = 256 * 1024;
 const MAX_LAUNCH_ENVELOPE_BYTES = 256 * 1024;
-const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000;
-const ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS = 4_500;
+/**
+ * The shutdown ladder, innermost rung first.
+ *
+ * Every bound here contains the one before it, and each is derived from what it contains plus
+ * a named margin rather than written as a number. The reason is a specific failure: when one
+ * rung was raised on its own, an outer timer fired while an inner stage was still legitimately
+ * running, and the failure was then reported under the outer stage — so the diagnosis named
+ * the wrong layer, which is the most expensive kind of wrong a message here can be. Derivation
+ * makes that impossible to express: raising an inner bound carries the outer ones with it.
+ *
+ * The margins below reproduce the values this path was proven with on a real host. Retuning
+ * any of them is a behaviour change to a destructive elevated path and belongs in its own
+ * change, not in a refactor.
+ */
 const ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS = 500;
+const ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS = 4_500;
+// What the relay is given for the whole child shutdown, and the deadline it is sent. The
+// graceful wait is capped at `deadline - now - reserve`, so the reserve is only real if the
+// budget is exactly the two added together: any more and the child gets a wait it was not
+// promised, any less and there is nothing left to confirm the kill with.
+const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS =
+    ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS + ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS;
 /**
  * The relay's bootstrap-only failure vocabulary: each of these is thrown between launching the
  * elevated child and announcing readiness, never from the request loop. Kept as a set so the
@@ -50,8 +69,34 @@ const RELAY_BOOTSTRAP_ONLY_FAILURES: ReadonlySet<string> = new Set([
     "hyper-v-network-elevation-deadline-exceeded",
 ]);
 const RELAY_CLOSE_WRITE_GRACE_MILLISECONDS = 1_000;
-const RELAY_FORCE_GRACE_MILLISECONDS = 10_000;
-const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000;
+// Force-killing the relay has to stay behind the close frame reaching it plus the entire child
+// shutdown it then performs. Cross that and the parent kills a relay that is still doing what
+// it was told to, and the run is reported as a relay exit timeout rather than as whatever the
+// child was actually stuck on.
+const RELAY_FORCE_MARGIN_MILLISECONDS = 4_000;
+const RELAY_FORCE_GRACE_MILLISECONDS = ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS
+    + RELAY_CLOSE_WRITE_GRACE_MILLISECONDS
+    + RELAY_FORCE_MARGIN_MILLISECONDS;
+// The caller waits for the relay's completion record. It has to outlast the force-kill, or the
+// caller gives up before the path that produces the verdict has produced one.
+const RELAY_COMPLETION_MARGIN_MILLISECONDS = 5_000;
+const RELAY_COMPLETION_GRACE_MILLISECONDS =
+    RELAY_FORCE_GRACE_MILLISECONDS + RELAY_COMPLETION_MARGIN_MILLISECONDS;
+
+/**
+ * The shutdown ladder as measured values, exported so the ordering can be asserted and so a
+ * retune is a visible, deliberate change rather than a number edited in place.
+ */
+export const HYPER_V_ELEVATED_NETWORK_SHUTDOWN_LADDER = Object.freeze({
+    childForceConfirmationReserveMilliseconds: ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS,
+    childGracefulExitMilliseconds: ELEVATED_CHILD_GRACEFUL_EXIT_MILLISECONDS,
+    childTerminationConfirmationMilliseconds: ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS,
+    relayCloseWriteGraceMilliseconds: RELAY_CLOSE_WRITE_GRACE_MILLISECONDS,
+    relayForceMarginMilliseconds: RELAY_FORCE_MARGIN_MILLISECONDS,
+    relayForceGraceMilliseconds: RELAY_FORCE_GRACE_MILLISECONDS,
+    relayCompletionMarginMilliseconds: RELAY_COMPLETION_MARGIN_MILLISECONDS,
+    relayCompletionGraceMilliseconds: RELAY_COMPLETION_GRACE_MILLISECONDS,
+});
 const TERMINATION_UNCONFIRMED_CODE = "hyper-v-network-elevation-termination-unconfirmed";
 
 export const HYPER_V_ELEVATED_NETWORK_ERROR_CODES = Object.freeze([

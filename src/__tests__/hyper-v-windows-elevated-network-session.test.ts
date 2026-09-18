@@ -25,6 +25,7 @@ import {
     type HyperVWindowsSessionErrorCode,
 } from "../hyper-v-windows/index.js";
 import {
+    HYPER_V_ELEVATED_NETWORK_SHUTDOWN_LADDER,
     HYPER_V_ELEVATED_NETWORK_ERROR_CODES,
     HYPER_V_ELEVATED_NETWORK_RELAY_PROGRESS_STAGES,
     HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
@@ -2333,10 +2334,6 @@ try {
         const closeEnd = source.indexOf("\n    };\n    const flushQueued", closeStart);
         const closeSource = source.slice(closeStart, closeEnd);
 
-        expect(source).toContain("const RELAY_CLOSE_WRITE_GRACE_MILLISECONDS = 1_000");
-        expect(source).toContain("const ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS = 5_000");
-        expect(source).toContain("const RELAY_FORCE_GRACE_MILLISECONDS = 10_000");
-        expect(source).toContain("const RELAY_COMPLETION_GRACE_MILLISECONDS = 15_000");
         expect(closeStart).toBeGreaterThanOrEqual(0);
         expect(closeEnd).toBeGreaterThan(closeStart);
         expect(closeSource).toContain("const finalizationDeadline = Date.now()");
@@ -2405,5 +2402,57 @@ try {
             throw expected;
         })).rejects.toBe(expected);
         expect(spawnRelay).not.toHaveBeenCalled();
+    });
+});
+
+// The bounds of the shutdown sequence nest: the child's own termination happens inside the
+// relay's lifetime, which happens inside the caller's wait for a completion record. When one
+// rung was raised alone, an outer timer fired while an inner stage was still legitimately
+// running and the failure was reported under the outer stage -- naming the wrong layer, which
+// is the most expensive kind of wrong a message here can be. The derivation makes that
+// unexpressible; these assertions state the property the derivation exists to hold, and pin
+// the values the path was proven with so a retune has to be deliberate.
+describe("elevated network shutdown ladder", () => {
+    const ladder = HYPER_V_ELEVATED_NETWORK_SHUTDOWN_LADDER;
+
+    it("keeps every rung strictly inside the one that contains it", () => {
+        expect(ladder.childGracefulExitMilliseconds)
+            .toBeLessThan(ladder.childTerminationConfirmationMilliseconds);
+        expect(ladder.childTerminationConfirmationMilliseconds + ladder.relayCloseWriteGraceMilliseconds)
+            .toBeLessThan(ladder.relayForceGraceMilliseconds);
+        expect(ladder.relayForceGraceMilliseconds)
+            .toBeLessThan(ladder.relayCompletionGraceMilliseconds);
+    });
+
+    // The relay caps the graceful wait at `deadline - now - reserve`. If the budget were
+    // anything other than the two added together, the reserve would either be spent on the
+    // wait or would silently grant the child time it was never promised.
+    it("spends the child's whole budget on the graceful wait plus the confirmation reserve", () => {
+        expect(ladder.childTerminationConfirmationMilliseconds).toBe(
+            ladder.childGracefulExitMilliseconds + ladder.childForceConfirmationReserveMilliseconds,
+        );
+    });
+
+    it.each([
+        ["child force confirmation reserve", "childForceConfirmationReserveMilliseconds"],
+        ["relay force margin", "relayForceMarginMilliseconds"],
+        ["relay completion margin", "relayCompletionMarginMilliseconds"],
+    ] as const)("keeps the %s positive", (_label, key) => {
+        expect(ladder[key]).toBeGreaterThan(0);
+    });
+
+    // Changing any of these changes how a destructive elevated path behaves on a real host.
+    // That is a decision, not a refactor, so it has to break this test on its way through.
+    it("matches the timings this path was proven with", () => {
+        expect(ladder).toEqual({
+            childForceConfirmationReserveMilliseconds: 500,
+            childGracefulExitMilliseconds: 4_500,
+            childTerminationConfirmationMilliseconds: 5_000,
+            relayCloseWriteGraceMilliseconds: 1_000,
+            relayForceMarginMilliseconds: 4_000,
+            relayForceGraceMilliseconds: 10_000,
+            relayCompletionMarginMilliseconds: 5_000,
+            relayCompletionGraceMilliseconds: 15_000,
+        });
     });
 });
