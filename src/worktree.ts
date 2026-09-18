@@ -940,6 +940,49 @@ export function parseWorktreeArg(
  * Created as a sibling directory: /projects → /projects--feature
  * Branch `/` chars are replaced with `-` in the directory name.
  */
+/**
+ * The nearest ancestor of `startPath` that is a Git working tree, or null.
+ *
+ * `.git` may be a directory or a file — a submodule or linked worktree checkout is still a
+ * working tree, and content dropped inside one is just as untracked as in any other.
+ */
+export function enclosingGitWorkingTree(startPath: string): string | null {
+    let current = resolve(startPath);
+    for (;;) {
+        if (pathExistsStrict(join(current, ".git"))) return current;
+        const parent = dirname(current);
+        if (parent === current) return null;
+        current = parent;
+    }
+}
+
+const warnedEnclosedWorkspaces = new Set<string>();
+
+/**
+ * Says so when a workspace is about to be created inside another repository's working tree.
+ *
+ * ccc puts a workspace beside its source, so running it from a repository that is itself
+ * nested — a submodule, or any checkout inside another checkout — lands the workspace inside
+ * the outer repository. That is legal and sometimes intended, so it is not refused. It is
+ * said out loud because the consequences surface much later and somewhere else: the outer
+ * repository reports the workspace as untracked content, and ccc's own nested-repository scan
+ * finds the checkouts inside it and has to work out that they belong to someone else.
+ */
+function warnWorkspaceInsideRepository(workspacePath: string, enclosing: string): void {
+    if (warnedEnclosedWorkspaces.has(workspacePath)) return;
+    warnedEnclosedWorkspaces.add(workspacePath);
+    process.stderr.write(
+        `[ccc] NOTE: Creating this workspace inside another Git repository.\n`
+        + `      Workspace: ${terminalSafe(workspacePath)}\n`
+        + `      Inside:    ${terminalSafe(enclosing)}\n`
+        + "      ccc places a workspace beside its source, and this source is itself nested,\n"
+        + "      so the workspace lands in the outer repository's working tree. It will show\n"
+        + "      there as untracked content, and ccc's own scans of that repository have to\n"
+        + "      recognise it as someone else's workspace rather than a repository of its own.\n"
+        + "      To keep them apart, run ccc from the outer repository instead.\n",
+    );
+}
+
 export function getWorkspacePath(sourcePath: string, branch: string): string {
     const resolved = resolve(sourcePath);
     const parent = dirname(resolved);
@@ -5556,6 +5599,11 @@ export function createWorkspace(
 
     const resolved = resolve(sourcePath);
     const wsPath = getWorkspacePath(resolved, branch);
+
+    // Checked from the workspace's parent, which is the source's parent, so a hit is always
+    // some other repository: the source itself is never its own ancestor here.
+    const enclosing = enclosingGitWorkingTree(dirname(wsPath));
+    if (enclosing) warnWorkspaceInsideRepository(wsPath, enclosing);
 
     // Unified mode: top-level is a git repo
     if (hasGitMetadata(resolved)) {

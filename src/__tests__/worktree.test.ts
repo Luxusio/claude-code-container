@@ -39,6 +39,7 @@ import {
     isValidWorktree,
     detectBrokenWorktrees,
     fixBrokenWorktree,
+    enclosingGitWorkingTree,
     setAsideConflictingContent,
     WorktreeContentConflictError,
     getWorktreeGitMounts,
@@ -9064,5 +9065,69 @@ describe("pasteableArgument", () => {
     it("does not put an expanding value inside double quotes", () => {
         // The specific shape that made the previous comment false. Single quotes, not double.
         expect(pasteableArgument("/project/$(id)/api")).toBe("'/project/$(id)/api'");
+    });
+});
+
+// Running ccc from a repository that is itself nested puts the workspace inside the outer
+// repository, because ccc places a workspace beside its source. The consequences show up much
+// later and somewhere else -- untracked content in the outer repository, and checkouts that
+// its nested-repository scan has to attribute to someone else -- so it is said at the moment
+// it happens rather than discovered afterwards.
+describe("workspace created inside another repository", () => {
+    let tmpDir: string;
+    let warnings: string[];
+    let writeSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+        warnings = [];
+        writeSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+            warnings.push(String(chunk));
+            return true;
+        });
+    });
+
+    afterEach(() => {
+        writeSpy.mockRestore();
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("says so, naming the workspace and the repository that will contain it", () => {
+        const outer = join(tmpDir, "outer");
+        const inner = join(outer, "inner");
+        mkdirSync(inner, { recursive: true });
+        initRepo(outer);
+        initRepo(inner);
+
+        createWorkspace(inner, "nested-branch");
+
+        const note = warnings.join("");
+        expect(note).toContain("Creating this workspace inside another Git repository");
+        expect(note).toContain(join(outer, `inner${WORKTREE_SEPARATOR}nested-branch`));
+        expect(note).toContain(outer);
+    });
+
+    it("stays quiet when the workspace lands outside every repository", () => {
+        const source = join(tmpDir, "source");
+        mkdirSync(source, { recursive: true });
+        initRepo(source);
+
+        createWorkspace(source, "plain-branch");
+
+        expect(warnings.join("")).not.toContain("inside another Git repository");
+    });
+
+    it("finds the nearest enclosing working tree, and none above the root", () => {
+        const outer = join(tmpDir, "outer");
+        const inner = join(outer, "inner");
+        const deep = join(inner, "a", "b");
+        mkdirSync(deep, { recursive: true });
+        initRepo(outer);
+        initRepo(inner);
+
+        expect(enclosingGitWorkingTree(deep)).toBe(inner);
+        expect(enclosingGitWorkingTree(outer)).toBe(outer);
+        expect(enclosingGitWorkingTree(tmpDir)).toBeNull();
     });
 });
