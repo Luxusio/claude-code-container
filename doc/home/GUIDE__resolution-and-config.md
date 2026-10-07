@@ -21,6 +21,11 @@ accepted by the legacy void contract. Serialization yielding undefined reaches
 native write rejection. Failures retain original propagation and partial temp
 state, with no added cleanup/retries/locks.
 
+Native join, directory creation and config write capabilities select the native
+callee when the core reads the port, before evaluating arguments. Home resolution
+or JSON serialization can change builtin exports; this call still uses the
+already selected function, and subsequent calls observe the new function.
+
 Test fresh/nested lookup order, getters/receivers, default provenance, native
 link/error distinctions, mutation/serialization/publication failures and emitted
 types. Both shipped payloads exercise actual factories and native public facade.

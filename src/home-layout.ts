@@ -60,11 +60,17 @@ const DEFAULT_PROFILE_ENTRIES = ["claude", "claude.json", "codex"];
 
 const layoutPaths = createHomeLayoutPaths({
     homeDirectory: () => homedir(),
-    joinHostPath: (...parts) => join(...parts),
+    // Select the native callee before evaluating the core call's arguments.
+    get joinHostPath() {
+        return ((join: (...parts: string[]) => string) => (...parts: string[]) => join(...parts))(join);
+    },
     entryExists: (path) => exists(path),
-    createDirectory: (path, options) => {
-        mkdirSync(path, options);
-        return undefined;
+    get createDirectory() {
+        return ((mkdirSync: typeof import("fs").mkdirSync) =>
+            (path: string, options: { readonly recursive: true; readonly mode: number }): undefined => {
+                mkdirSync(path, options);
+                return undefined;
+            })(mkdirSync);
     },
     writeMarker: (path, content, options) => {
         writeFileSync(path, content, options);
@@ -75,16 +81,23 @@ const layoutPaths = createHomeLayoutPaths({
 const cccConfig = createCccConfig({
     resolveConfigPath: () => configFile(),
     resolveHomePath: () => cccHome(),
-    createDirectory: (path, options) => {
-        mkdirSync(path, options);
-        return undefined;
+    get createDirectory() {
+        return ((mkdirSync: typeof import("fs").mkdirSync) =>
+            (path: string, options: { readonly recursive: true; readonly mode: number }): undefined => {
+                mkdirSync(path, options);
+                return undefined;
+            })(mkdirSync);
     },
     fileExists: (path) => existsSync(path),
     readText: (path) => readFileSync(path, "utf-8"),
     processId: () => process.pid,
-    writeText: (path, data, options) => {
-        writeFileSync(path, data as string, options);
-        return undefined;
+    get writeText() {
+        // JSON serialization may change a builtin export; retain this call's writer.
+        return ((writeFileSync: typeof import("fs").writeFileSync) =>
+            (path: string, data: string | undefined, options: { readonly mode: number }): undefined => {
+                writeFileSync(path, data as string, options);
+                return undefined;
+            })(writeFileSync);
     },
     replaceFile: (tempPath, path) => {
         renameSync(tempPath, path);

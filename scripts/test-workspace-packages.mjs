@@ -2844,7 +2844,7 @@ async function verifyCodexHostAccessDelivery(applicationUrl, facadeUrl, runtimeU
 async function verifyHomeResolutionConfigDelivery(pathsUrl, configUrl, facadeUrl) {
     const assert=(await import("node:assert/strict")).default;
     const fs=(await import("node:fs")).default, os=(await import("node:os")).default;
-    const path=await import("node:path");
+    const path=(await import("node:path")).default;
     const {syncBuiltinESMExports}=await import("node:module");
     const {createHomeLayoutPaths}=await import(pathsUrl);
     const {createCccConfig}=await import(configUrl);
@@ -2887,13 +2887,28 @@ async function verifyHomeResolutionConfigDelivery(pathsUrl, configUrl, facadeUrl
     assert.deepEqual(trace,["path","home","mkdir","exists","read"]);
 
     const fixture=fs.mkdtempSync(path.join(process.cwd(),"home-resolution-"));
-    const savedHome=os.homedir;
+    const savedHome=os.homedir, savedJoin=path.join, savedMkdir=fs.mkdirSync;
     const saved=[];
     const replace=(owner,name,value)=>{saved.push([owner,name,owner[name]]);owner[name]=value;};
     const owned=selected=>assert.ok(typeof selected==="string"&&(selected===fixture||selected.startsWith(fixture+path.sep)),"outside private home fixture");
     try {
         os.homedir=()=>fixture;syncBuiltinESMExports();
         const native=await import(facadeUrl);
+        // Real builtin mutation during argument evaluation distinguishes the
+        // historical selected callee from a delayed native-wrapper lookup.
+        os.homedir=()=>{path.join=()=>"unexpected delayed join";syncBuiltinESMExports();return fixture;};
+        syncBuiltinESMExports();
+        assert.equal(native.cccHome(),savedJoin(fixture,".ccc"));
+        path.join=savedJoin;os.homedir=()=>fixture;syncBuiltinESMExports();
+        let homeReads=0;
+        const mkdirFailure=new Error("unexpected delayed mkdir");
+        os.homedir=()=>{if(++homeReads===2){fs.mkdirSync=()=>{throw mkdirFailure;};syncBuiltinESMExports();}return fixture;};
+        syncBuiltinESMExports();
+        native.updateCccConfig(value=>{value.bindingProof=true;});
+        assert.throws(()=>native.updateCccConfig(()=>{}),value=>value===mkdirFailure);
+        fs.mkdirSync=savedMkdir;os.homedir=()=>fixture;syncBuiltinESMExports();
+        fs.unlinkSync(native.configFile());
+
         for(const name of ["accessSync","existsSync","lstatSync","statSync","mkdirSync","readFileSync","writeFileSync","renameSync","unlinkSync","rmdirSync","readdirSync"]){
             const original=fs[name];replace(fs,name,(...args)=>{owned(args[0]);if(name==="renameSync")owned(args[1]);return original(...args);});
         }
@@ -2907,6 +2922,12 @@ async function verifyHomeResolutionConfigDelivery(pathsUrl, configUrl, facadeUrl
         native.updateCccConfig(value=>{value.kept=true;});
         const selected=native.configFile();assert.equal(fs.readFileSync(selected,"utf8"),'{\n  "kept": true\n}');
         assert.deepEqual(native.readCccConfig(),{kept:true});
+        const selectedWriter=fs.writeFileSync, writerFailure=new Error("unexpected delayed writer");
+        native.updateCccConfig(value=>{value.toJSON=()=>{fs.writeFileSync=()=>{throw writerFailure;};syncBuiltinESMExports();return {kept:true,captured:true};};});
+        assert.deepEqual(native.readCccConfig(),{kept:true,captured:true});
+        assert.throws(()=>native.updateCccConfig(()=>{}),value=>value===writerFailure);
+        fs.writeFileSync=selectedWriter;syncBuiltinESMExports();
+
         if(process.platform!=="win32"){assert.equal(fs.statSync(selected).mode&511,384);assert.equal(fs.statSync(marker).mode&511,384);}
         fs.writeFileSync(selected,"malformed");assert.deepEqual(native.readCccConfig(),{});
         assert.throws(()=>native.updateCccConfig(()=>{}),/not a valid JSON object/);assert.equal(fs.readFileSync(selected,"utf8"),"malformed");
@@ -2919,7 +2940,7 @@ async function verifyHomeResolutionConfigDelivery(pathsUrl, configUrl, facadeUrl
         for(const name of ["profileClaudeDir","profileClaudeJsonFile","profileCodexDir","updateCccConfig"]){assert.equal(native[name].name,name);assert.equal(native[name].length,1);}
     } finally {
         for(const [owner,name,original] of saved.reverse())owner[name]=original;
-        os.homedir=savedHome;syncBuiltinESMExports();fs.rmSync(fixture,{recursive:true,force:true});
+        os.homedir=savedHome;path.join=savedJoin;fs.mkdirSync=savedMkdir;syncBuiltinESMExports();fs.rmSync(fixture,{recursive:true,force:true});
     }
 }
 
