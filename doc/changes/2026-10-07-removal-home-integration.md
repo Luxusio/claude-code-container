@@ -17,18 +17,36 @@ The home commit replayed without conflict onto removal as `3ba7ea6c`; its stable
 patch ID matches `0464d81a535930f9ba7bd196338d1ed58ffb09d0`. Every lane-specific
 file matches its accepted source blob. Shared verifier helper bodies, complete
 probe/consumer blocks and both guide additions survive the composition.
-Fresh combined review and full-project QA remain required before delivery.
+Fresh combined review and full-project QA acceptance are recorded below.
 
 The first full combined run passed 10,087 tests but failed 44 clipboard-state
 cases. Their real daemon fixture copied `home-layout` without its new application
 dependency, so Node reported a missing fixture module. The fixture's explicit
 dependency closure now includes `application/home-layout-migration`; assertions,
 timeouts, daemon controls and production behavior are unchanged. The failed run
-and unchanged 1,704-file snapshot are retained. Focused and fresh full acceptance
-remain required after this correction.
+and unchanged 1,704-file snapshot are retained. Focused acceptance passed 46 tests with two conditional skips; fresh full
+acceptance after the correction is recorded below.
 
 ## Known ceiling
 
 Existing partial workspace-removal retry refusal and one-way home migration
 remain unchanged. Full M11–M14 and native macOS/Windows acceptance remain
 unfinished. Source QA and prior CI results cover their own revisions only.
+
+## Verified integration acceptance
+
+Independent code/security/docs review and fresh QA passed at `f65e49ee`. The
+default full suite passed 367 files and 10,132 tests, with 10 files and 151 tests
+conditionally skipped. All five TypeScript configurations and scoped lint
+passed. The single shipping verifier passed both extracted npm and materialized
+install forms, including removal and home application/facade/declaration proofs.
+Guarded compiled public and CLI probes passed expected success and refusal
+paths without operating real providers or containers. All 1,704 tracked and
+emitted artifact hashes stayed identical, including 674 emitted artifacts.
+Harness verification returned PASS and the integration task closed normally.
+
+When extracting a runtime dependency used by a fixture's real child process,
+update that fixture's explicit transpilation closure too. Verify both the
+focused child-process suite and the default full collection; type checking
+alone cannot prove the isolated runtime module exists. The clipboard fixture
+correction and both failed/successful QA evidence preserve this distinction.
