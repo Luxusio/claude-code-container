@@ -1,5 +1,14 @@
 # Implementing the CCC architecture migration
 
+## Unified workspace removal application
+
+The [unified removal guide](../workspaces/GUIDE__unified-removal.md) describes
+the complete operation boundary in `application/workspace/unified-removal.ts`
+and its 27 required ports. Native ownership, registration and quarantine helpers
+remain authoritative. Lazy status decoding and exact force/catch order are
+compatibility requirements. Outer dispatch and repair remain pending; this
+operation alone does not complete M11.
+
 Follow the [target architecture](ADR__ccc-target-architecture.md),
 [contracts](SPEC__ccc-architecture-contracts.md) and
 [work packets](PLAN__ccc-architecture-migration.md). The checked

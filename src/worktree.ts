@@ -2,6 +2,7 @@
 
 import { spawnSync } from "child_process";
 import { createWorkspaceBranchValidation } from "./application/workspace-branch-validation.js";
+import { createUnifiedWorkspaceRemoval } from "./application/workspace/unified-removal.js";
 import { createMultiWorkspaceRemoval } from "./application/workspace/multi-removal.js";
 import type { RemoveResult } from "./domain/workspace/removal-result.js";
 import { createMultiWorkspaceCreation } from "./application/workspace/multi-creation.js";
@@ -7859,7 +7860,12 @@ export function removeWorkspace(
 
     // Unified mode: top-level is a git repo → remove single worktree
     if (hasGitMetadata(resolved)) {
-        return removeUnifiedWorkspace(resolved, wsPath, branch, workspaceIdentity, opts);
+        return removeUnifiedWorkspace({
+            repositoryPath: resolved,
+            destinationPath: wsPath,
+            branch,
+            options: opts,
+        }, workspaceIdentity);
     }
 
     // Multi-repo mode
@@ -7871,367 +7877,89 @@ export function removeWorkspace(
     }, workspaceIdentity);
 }
 
-function removeUnifiedWorkspace(
-    resolved: string,
-    wsPath: string,
-    branch: string,
-    workspaceIdentity: DirectoryIdentity,
-    opts?: { force?: boolean },
-): RemoveResult {
-    const removed: string[] = [];
-    const errors: string[] = [];
-
-    const sourceEntries = scanUnifiedNestedRepositories(
-        resolved,
-        {
-            strict: true,
-            allowRegisteredWorktrees: Boolean(
-                primarySourceRepositoryForWorktree(resolved),
-            ),
-        },
-    );
-    const inspectRootStatus = (path = wsPath) => spawnSync(
-        "git",
-        [
+const removeUnifiedWorkspace = createUnifiedWorkspaceRemoval<
+    DirectoryIdentity,
+    NestedRepositoryIdentity,
+    ReturnType<typeof ensureNestedWorktreeParent>,
+    WorktreeRegistrationFence,
+    string
+>({
+    scanSource: (request) => scanUnifiedNestedRepositories(request.repositoryPath, {
+        strict: true,
+        allowRegisteredWorktrees: Boolean(primarySourceRepositoryForWorktree(request.repositoryPath)),
+    }),
+    destinationPath: (request, name) => join(request.destinationPath, name),
+    pathExists: existsSync,
+    captureSourceIdentity: captureNestedRepositoryIdentity,
+    captureDestinationFence: (request, destination) => ensureNestedWorktreeParent(
+        request.destinationPath, destination, new Map<string, DirectoryIdentity>(), false,
+    ),
+    assertWorkspaceIdentity: (request, identity) => assertDirectoryIdentity(request.destinationPath, identity),
+    assertSourceIdentity: assertNestedRepositoryIdentity,
+    assertDestinationFence: (request, destination, fence) => assertNestedWorktreeDestinationFence(
+        request.destinationPath, destination, fence,
+    ),
+    metadataExists: (destination) => existsSync(join(destination, ".git")),
+    metadataKind: (destination) => gitLinkKind(join(destination, ".git")),
+    unreachableRecordedPath: unreachableRecordedGitPath,
+    isTrackedGitlink: (request, repositories, entry) => isNestedTrackedGitlink(
+        request.destinationPath, repositories, entry,
+    ),
+    inspectNestedStatus: (destination) => {
+        const status = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+            cwd: destination, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        });
+        return status.error || status.status !== 0
+            ? { kind: "failed", readDetail: () => (status.stderr ?? "").trim() || status.error?.message || "" }
+            : { kind: "observed", readContent: () => (status.stdout ?? "").trim() };
+    },
+    worktreeMatches: (source, destination) => isValidWorktree(destination, source),
+    pathContent,
+    unmanagedPathRefusal,
+    unreadablePathRefusal: (destination) => `ccc cannot delete a directory it cannot read: ${terminalSafe(destination)}`
+        + " — make it readable, then re-run with -f",
+    captureDirectoryIdentity,
+    captureRegistration: (request, source, destination, identity) => captureExistingWorktreeRegistrationFence(
+        source, destination, request.branch, identity,
+    ),
+    removeRegisteredNested: (request, source, destination, identity, registration, force, sourceIdentity, guard) => removeRegisteredWorktree(
+        source, destination, identity, force, dirname(request.destinationPath), registration,
+        pinnedNestedRepositoryEnvironment(sourceIdentity), guard,
+    ),
+    relayEntryError: relayNestedRemovalError,
+    assertRootOwnership: (request) => assertWorkspaceRootOwnership(request.destinationPath, request.repositoryPath),
+    inspectRootBranch: (request) => {
+        const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd: request.destinationPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        });
+        const observedBranch = (result.stdout ?? "").trim();
+        return { failed: Boolean(result.error || result.status !== 0), observedBranch };
+    },
+    inspectRootStatus: (request, sourceEntries, target, mode) => {
+        const status = spawnSync("git", [
             "status",
             "--porcelain=v1",
+            ...(mode === "ignored" ? ["--ignored"] : []),
             "--untracked-files=all",
-            "--ignore-submodules=all",
+            ...(mode === "ordinary" ? ["--ignore-submodules=all"] : []),
             "--",
             ".",
             ...sourceEntries.map(({ name }) => `:(exclude,literal)${name}`),
-        ],
-        { cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const inspectIgnoredRootStatus = (path = wsPath) => spawnSync(
-        "git",
-        [
-            "status",
-            "--porcelain=v1",
-            "--ignored",
-            "--untracked-files=all",
-            "--",
-            ".",
-            ...sourceEntries.map(({ name }) => `:(exclude,literal)${name}`),
-        ],
-        { cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const rootStatus = inspectRootStatus();
-    if (rootStatus.error || rootStatus.status !== 0) {
-        return {
-            removed,
-            errors: [
-                (rootStatus.stderr ?? "").trim()
-                || rootStatus.error?.message
-                || "unable to inspect root worktree status",
-            ],
-        };
-    }
-    if (opts?.force !== true && (rootStatus.stdout ?? "").trim()) {
-        return {
-            removed,
-            errors: [
-                "root worktree contains modified or untracked files, use --force to delete it",
-            ],
-        };
-    }
-    const ignoredRootStatus = inspectIgnoredRootStatus();
-    if (ignoredRootStatus.error || ignoredRootStatus.status !== 0) {
-        return {
-            removed,
-            errors: [
-                (ignoredRootStatus.stderr ?? "").trim()
-                || ignoredRootStatus.error?.message
-                || "unable to inspect ignored root worktree content",
-            ],
-        };
-    }
-    if (opts?.force !== true && (ignoredRootStatus.stdout ?? "").trim()) {
-        return {
-            removed,
-            errors: [
-                "root worktree contains ignored files, use --force to delete it",
-            ],
-        };
-    }
-
-    // Remove every linked nested worktree before removing the parent.
-    const workspaceRepositoryEntries = sourceEntries.map((sourceEntry) => ({
-        ...sourceEntry,
-        path: join(wsPath, sourceEntry.name),
-    }));
-    const sourceRepositoryIdentities = new Map(
-        sourceEntries
-            .filter((entry) => entry.isGitRepo)
-            .map((entry) => [
-                entry.name,
-                captureNestedRepositoryIdentity(entry.path),
-            ]),
-    );
-    for (const entry of [...sourceEntries].reverse()) {
-        if (!entry.isGitRepo) continue;
-
-        const nestedPath = join(wsPath, entry.name);
-        if (!existsSync(nestedPath)) continue;
-        const sourceIdentity = sourceRepositoryIdentities.get(entry.name);
-        if (!sourceIdentity) {
-            errors.push(`${entry.name}: missing source repository fence`);
-            continue;
-        }
-        let destinationFence: ReturnType<typeof ensureNestedWorktreeParent>;
-        try {
-            destinationFence = ensureNestedWorktreeParent(
-                wsPath,
-                nestedPath,
-                new Map<string, DirectoryIdentity>(),
-                false,
-            );
-        } catch (error) {
-            errors.push(`${entry.name}: ${(error as Error).message}`);
-            continue;
-        }
-        const operationGuard = (): void => {
-            assertDirectoryIdentity(wsPath, workspaceIdentity);
-            assertNestedRepositoryIdentity(entry.path, sourceIdentity);
-            assertNestedWorktreeDestinationFence(
-                wsPath,
-                nestedPath,
-                destinationFence,
-            );
-        };
-        operationGuard();
-        const nestedGitPath = join(nestedPath, ".git");
-        // `gitLinkKind` THROWS on metadata that names a path it cannot resolve here — which
-        // is the container boundary, the state this whole task exists to handle. Calling it
-        // raw made `ccc rm -f` die with `Unable to inspect worktree common directory '<path>'`
-        // and exit 1, on the exact workspace whose no-force refusal had just told the operator
-        // to re-run with -f. A message that sends someone to a command that crashes is the
-        // defect this file keeps relearning, so the classification is answered rather than
-        // raised: unreadable-from-here is not a tracked gitlink, and the checks below decide
-        // what happens to it.
-        let nestedKind: GitLinkKind | null = null;
-        if (existsSync(nestedGitPath)) {
-            try {
-                nestedKind = gitLinkKind(nestedGitPath);
-            } catch (error) {
-                if (unreachableRecordedGitPath(error) === null) throw error;
-            }
-        }
-        if (nestedKind === "gitlink"
-            && isNestedTrackedGitlink(
-                wsPath,
-                workspaceRepositoryEntries,
-                {
-                    ...entry,
-                    path: nestedPath,
-                },
-            )) {
-            const nestedStatus = spawnSync(
-                "git",
-                ["status", "--porcelain=v1", "--untracked-files=all"],
-                {
-                    cwd: nestedPath,
-                    encoding: "utf-8",
-                    stdio: ["pipe", "pipe", "pipe"],
-                },
-            );
-            if (nestedStatus.error || nestedStatus.status !== 0) {
-                errors.push(
-                    `${entry.name}: ${
-                        (nestedStatus.stderr ?? "").trim()
-                        || nestedStatus.error?.message
-                        || "unable to inspect tracked submodule status"
-                    }`,
-                );
-            } else if (
-                opts?.force !== true
-                && (nestedStatus.stdout ?? "").trim()
-            ) {
-                errors.push(
-                    `${entry.name}: tracked submodule contains modified or untracked files, use --force to delete it`,
-                );
-            }
-            continue;
-        }
-        if (!isValidWorktree(nestedPath, entry.path)) {
-            // The SECOND veto. Lifting the first one and stopping there left `ccc rm -f`
-            // refusing exactly the shape the change was written for: a tracked submodule's
-            // path holding a directory with files and no `.git`. Measured before and after
-            // that change, the result was identical — blocked, and now blocked with a
-            // sentence that named no path, no cause and no remedy.
-            //
-            // There is no registration to deregister here, only files. Under -f the
-            // workspace deletion below takes them with everything else, which is what -f
-            // means. Without it, refuse in the same words as the other guard: naming the
-            // path and naming -f is the whole safety story.
-            const content = pathContent(nestedPath);
-            // One state survives -f, and not as policy. A directory with no read bit cannot
-            // be enumerated, so `rm -rf` cannot empty it — measured. Letting -f through
-            // anyway does not delete the workspace; it deletes as far as this directory and
-            // stops, and what it gets through first is the workspace root: `.git`, the
-            // tracked files, and any uncommitted work the operator had there. Measured on
-            // this exact fixture, the operator was left with a gutted directory that ccc then
-            // refused to touch at all, from a command that had printed an error and looked
-            // like it had done nothing.
-            //
-            // So the refusal here is arithmetic, not a veto: the sequence cannot succeed, and
-            // starting it costs work. The owner's decision is untouched — unmanaged is still
-            // deletable under -f everywhere deletion can actually happen.
-            if (opts?.force !== true || content === "unreadable") {
-                errors.push(
-                    content === "unreadable"
-                        ? `ccc cannot delete a directory it cannot read: ${terminalSafe(nestedPath)}`
-                            + " — make it readable, then re-run with -f"
-                        : unmanagedPathRefusal(nestedPath, content),
-                );
-            }
-            continue;
-        }
-        const nestedIdentity = captureDirectoryIdentity(nestedPath);
-        try {
-            operationGuard();
-            const registrationFence = captureExistingWorktreeRegistrationFence(
-                entry.path,
-                nestedPath,
-                branch,
-                nestedIdentity,
-            );
-            removeRegisteredWorktree(
-                entry.path,
-                nestedPath,
-                nestedIdentity,
-                opts?.force === true,
-                dirname(wsPath),
-                registrationFence,
-                pinnedNestedRepositoryEnvironment(sourceIdentity),
-                operationGuard,
-            );
-            operationGuard();
-            removed.push(entry.name);
-        } catch (error) {
-            errors.push(relayNestedRemovalError(entry.name, nestedPath, error));
-        }
-    }
-
-    if (errors.length > 0) return { removed, errors };
-    assertDirectoryIdentity(wsPath, workspaceIdentity);
-    assertWorkspaceRootOwnership(wsPath, resolved);
-    const branchResult = spawnSync(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const observedBranch = (branchResult.stdout ?? "").trim();
-    if (branchResult.error || branchResult.status !== 0 || observedBranch !== branch) {
-        throw new Error(
-            observedBranch
-                ? `Workspace belongs to branch '${observedBranch}', not '${branch}'.`
-                : `Unable to determine worktree branch in '${basename(wsPath)}'.`,
-        );
-    }
-    const finalRootStatus = inspectRootStatus();
-    if (finalRootStatus.error || finalRootStatus.status !== 0) {
-        return {
-            removed,
-            errors: [
-                (finalRootStatus.stderr ?? "").trim()
-                || finalRootStatus.error?.message
-                || "unable to re-inspect root worktree status",
-            ],
-        };
-    }
-    if (opts?.force !== true && (finalRootStatus.stdout ?? "").trim()) {
-        return {
-            removed,
-            errors: [
-                "root worktree changed during removal, use --force to delete it",
-            ],
-        };
-    }
-    const finalIgnoredRootStatus = inspectIgnoredRootStatus();
-    if (finalIgnoredRootStatus.error || finalIgnoredRootStatus.status !== 0) {
-        return {
-            removed,
-            errors: [
-                (finalIgnoredRootStatus.stderr ?? "").trim()
-                || finalIgnoredRootStatus.error?.message
-                || "unable to re-inspect ignored root worktree content",
-            ],
-        };
-    }
-    if (
-        opts?.force !== true
-        && (finalIgnoredRootStatus.stdout ?? "").trim()
-    ) {
-        return {
-            removed,
-            errors: [
-                "root worktree gained ignored files during removal, use --force to delete it",
-            ],
-        };
-    }
-    try {
-        const registrationFence = captureExistingWorktreeRegistrationFence(
-            resolved,
-            wsPath,
-            branch,
-            workspaceIdentity,
-        );
-        removeRegisteredWorktree(
-            resolved,
-            wsPath,
-            workspaceIdentity,
-            true,
-            dirname(wsPath),
-            registrationFence,
-            undefined,
-            undefined,
-            opts?.force === true
-                ? undefined
-                : (quarantinedPath) => {
-                    const quarantinedStatus = inspectRootStatus(quarantinedPath);
-                    if (
-                        quarantinedStatus.error
-                        || quarantinedStatus.status !== 0
-                    ) {
-                        throw new Error(
-                            (quarantinedStatus.stderr ?? "").trim()
-                            || quarantinedStatus.error?.message
-                            || "unable to inspect quarantined root worktree status",
-                        );
-                    }
-                    if ((quarantinedStatus.stdout ?? "").trim()) {
-                        throw new Error(
-                            "root worktree changed during removal, use --force to delete it",
-                        );
-                    }
-                    const quarantinedIgnoredStatus = inspectIgnoredRootStatus(
-                        quarantinedPath,
-                    );
-                    if (
-                        quarantinedIgnoredStatus.error
-                        || quarantinedIgnoredStatus.status !== 0
-                    ) {
-                        throw new Error(
-                            (quarantinedIgnoredStatus.stderr ?? "").trim()
-                            || quarantinedIgnoredStatus.error?.message
-                            || "unable to inspect quarantined ignored root worktree content",
-                        );
-                    }
-                    if ((quarantinedIgnoredStatus.stdout ?? "").trim()) {
-                        throw new Error(
-                            "root worktree gained ignored files during removal, use --force to delete it",
-                        );
-                    }
-                },
-        );
-        removed.push(basename(resolved));
-    } catch (error) {
-        errors.push((error as Error).message);
-    }
-
-    return { removed, errors };
-}
+        ], {
+            cwd: target.kind === "quarantined" ? target.root : request.destinationPath,
+            encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        });
+        return status.error || status.status !== 0
+            ? { kind: "failed", readDetail: () => (status.stderr ?? "").trim() || status.error?.message || "" }
+            : { kind: "observed", readContent: () => (status.stdout ?? "").trim() };
+    },
+    workspaceName: (request) => basename(request.destinationPath),
+    sourceName: (request) => basename(request.repositoryPath),
+    removeRegisteredRoot: (request, identity, registration, veto) => removeRegisteredWorktree(
+        request.repositoryPath, request.destinationPath, identity, true,
+        dirname(request.destinationPath), registration, undefined, undefined, veto,
+    ),
+});
 
 const removeMultiRepoWorkspace = createMultiWorkspaceRemoval<
     DirectoryIdentity, DirectoryIdentity, WorktreeRegistrationFence

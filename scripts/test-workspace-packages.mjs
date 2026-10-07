@@ -2341,6 +2341,92 @@ async function verifyMultiRemovalDelivery(applicationUrl) {
     assert.deepEqual(force(forceRequest, workspace), { removed: [], errors: ["Workspace ownership changed before deletion (foreign)."] });
 }
 
+async function verifyUnifiedRemovalDelivery(applicationUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const fs = await import("node:fs"), path = await import("node:path");
+    const { spawnSync } = await import("node:child_process");
+    const { createUnifiedWorkspaceRemoval } = await import(applicationUrl);
+    const request = { repositoryPath: "source", destinationPath: "workspace", branch: "topic", options: undefined };
+    const identity = Symbol("directory"), receipt = Symbol("registration"), quarantine = Symbol("quarantine");
+    let dirty = false, force = false;
+    const trace = [];
+    const clean = { kind: "observed", readContent: () => "" };
+    const ports = {
+        scanSource: actual => { assert.equal(actual, request); return []; },
+        destinationPath: () => assert.fail("no nested entries"), pathExists: () => true,
+        captureSourceIdentity: () => assert.fail("no nested source"), captureDestinationFence: () => assert.fail("no nested fence"),
+        assertWorkspaceIdentity: (actual, proof) => { assert.equal(actual, request); assert.equal(proof, identity); },
+        assertSourceIdentity: () => assert.fail("no nested source"), assertDestinationFence: () => assert.fail("no nested fence"),
+        metadataExists: () => false, metadataKind: () => "worktree", unreachableRecordedPath: () => null,
+        isTrackedGitlink: () => false, inspectNestedStatus: () => clean, worktreeMatches: () => true,
+        pathContent: () => "empty", unmanagedPathRefusal: () => "unmanaged", unreadablePathRefusal: () => "unreadable",
+        captureDirectoryIdentity: () => identity,
+        captureRegistration: (actual, source, destination, proof) => {
+            assert.equal(actual, request); assert.equal(source, "source"); assert.equal(destination, "workspace");
+            assert.equal(proof, identity); trace.push("registration"); return receipt;
+        },
+        removeRegisteredNested: () => assert.fail("no nested removal"), relayEntryError: () => assert.fail("no entry error"),
+        assertRootOwnership: () => {}, inspectRootBranch: () => ({ failed: false, observedBranch: "topic" }),
+        inspectRootStatus: (_actual, entries, target, mode) => {
+            assert.deepEqual(entries, []); trace.push(`${target.kind}:${mode}`);
+            if (target.kind === "quarantined") {
+                assert.equal(target.root, quarantine);
+                return { kind: "observed", readContent: () => dirty ? "changed" : "" };
+            }
+            return clean;
+        },
+        workspaceName: () => "workspace", sourceName: () => "source",
+        removeRegisteredRoot: (actual, proof, registration, veto) => {
+            assert.equal(actual, request); assert.equal(proof, identity); assert.equal(registration, receipt);
+            assert.equal(veto === undefined, force); trace.push("root"); veto?.(quarantine);
+        },
+    };
+    const remove = createUnifiedWorkspaceRemoval(ports);
+    assert.deepEqual(trace, []);
+    assert.deepEqual(remove(request, identity), { removed: ["source"], errors: [] });
+    assert.deepEqual(trace.slice(-4), ["registration", "root", "quarantined:ordinary", "quarantined:ignored"]);
+    dirty = true;
+    assert.deepEqual(remove(request, identity), { removed: [], errors: ["root worktree changed during removal, use --force to delete it"] });
+    force = true; request.options = { force: true }; trace.length = 0;
+    assert.deepEqual(remove(request, identity), { removed: ["source"], errors: [] });
+    assert.equal(trace.some(value => value.startsWith("quarantined:")), false);
+    assert.throws(() => createUnifiedWorkspaceRemoval({}), TypeError);
+
+    const facade = await import(facadeUrl);
+    const fixture = fs.mkdtempSync(path.join(process.cwd(), "unified-removal-"));
+    const git = (cwd, ...args) => {
+        const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 10000, windowsHide: true });
+        assert.equal(result.status, 0, String(result.error || result.stderr)); return result.stdout;
+    };
+    try {
+        const source = path.join(fixture, "source"), nested = path.join(source, "nested");
+        fs.mkdirSync(nested, { recursive: true });
+        for (const directory of [source, nested]) {
+            git(directory, "init"); git(directory, "config", "user.name", "Fixture");
+            git(directory, "config", "user.email", "fixture@example.invalid");
+            git(directory, "config", "commit.gpgsign", "false");
+            fs.writeFileSync(path.join(directory, "tracked.txt"), "preserved source bytes\n");
+            git(directory, "add", "."); git(directory, "commit", "-m", "fixture");
+        }
+        const created = facade.createWorkspace(source, "topic");
+        const snapshots = [source, nested].map(directory => ({
+            refs: git(directory, "show-ref"), head: git(directory, "rev-parse", "HEAD"),
+            config: fs.readFileSync(path.join(directory, ".git/config")),
+            bytes: fs.readFileSync(path.join(directory, "tracked.txt")),
+        }));
+        const result = facade.removeWorkspace(source, "topic");
+        assert.deepEqual(result, { removed: ["nested", "source"], errors: [] });
+        assert.equal(fs.existsSync(created.workspacePath), false);
+        for (const [index, directory] of [source, nested].entries()) {
+            assert.equal(git(directory, "show-ref"), snapshots[index].refs);
+            assert.equal(git(directory, "rev-parse", "HEAD"), snapshots[index].head);
+            assert.deepEqual(fs.readFileSync(path.join(directory, ".git/config")), snapshots[index].config);
+            assert.deepEqual(fs.readFileSync(path.join(directory, "tracked.txt")), snapshots[index].bytes);
+            assert.equal(git(directory, "worktree", "list", "--porcelain").includes(created.workspacePath), false);
+        }
+    } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2714,6 +2800,38 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", removalContract]);
     } finally { rmSync(removalContract); }
     console.log("PASS multi removal distribution: compiled opaque/refusal/error policy, actual multi Git/copy removal and preserved source refs/config/files, mutable legacy declarations");
+    const unifiedRemovalUrl = pathToFileURL(join(packageRoot, "dist/application/workspace/unified-removal.js")).href;
+    const workspaceFacadeUrl = pathToFileURL(join(packageRoot, "dist/worktree.js")).href;
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyUnifiedRemovalDelivery.toString()})(${JSON.stringify(unifiedRemovalUrl)}, ${JSON.stringify(workspaceFacadeUrl)});`]);
+    const unifiedRemovalContract = join(packageRoot, "unified-removal-consumer.mts");
+    writeFileSync(unifiedRemovalContract, [
+        'import { createUnifiedWorkspaceRemoval } from "./dist/application/workspace/unified-removal.js";',
+        'import type { UnifiedRemovalPorts, UnifiedRemovalRequest } from "./dist/ports/workspace/unified-removal.js";',
+        'import { removeWorkspace, type RemoveResult } from "./dist/worktree.js";',
+        'declare const ports: UnifiedRemovalPorts<{d:"directory"},symbol,{f:"fence"},{r:"registration"},{q:"quarantine"}>;',
+        'declare const request: UnifiedRemovalRequest;',
+        'const result: RemoveResult = createUnifiedWorkspaceRemoval(ports)(request, {d:"directory"});',
+        'result.removed.push("mutable"); result.errors = ["mutable"];',
+        'const facade: (source:string,branch:string,opts?:{force?:boolean})=>RemoveResult = removeWorkspace;',
+        '// @ts-expect-error Every semantic port is required.',
+        'createUnifiedWorkspaceRemoval({});',
+        '// @ts-expect-error Source proofs must support truthy identity lookup.',
+        'type InvalidSource = UnifiedRemovalPorts<object,number,object,object,object>;',
+        '// @ts-expect-error Ports are readonly.',
+        'ports.pathExists = () => true;',
+        '// @ts-expect-error Observations remain synchronous.',
+        'const asyncObservation: UnifiedRemovalPorts<object,symbol,object,object,object>["inspectRootStatus"] = async () => ({kind:"observed",readContent:()=>""});',
+        '// @ts-expect-error Opaque directory proof cannot be replaced.',
+        'createUnifiedWorkspaceRemoval(ports)(request, {d:"other"});',
+        '// @ts-expect-error Removal result remains synchronous.',
+        'const asynchronous: Promise<unknown> = result;',
+        'void [facade,asyncObservation,asynchronous];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", unifiedRemovalContract]);
+    } finally { rmSync(unifiedRemovalContract); }
+    console.log("PASS unified removal distribution: compiled opaque quarantine veto, actual nested native removal with preserved source refs/config/files, required readonly synchronous declarations");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);
