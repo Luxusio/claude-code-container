@@ -2,8 +2,9 @@
 
 The complete directory-before-file preparation operation moves behind explicit
 ports, reusing the existing per-resource policy. Native commands, UID mapping,
-ACL scripts, diagnostics and public callers remain unchanged. Acceptance is
-pending implementation, independent review and QA.
+ACL scripts, diagnostics and public callers remain unchanged. Implementation,
+focused checks and code/security review passed; final acceptance is pending
+documentation review and fresh full QA.
 
 ## Known ceiling
 
