@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import ts from "typescript";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
@@ -6,6 +8,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { assembleWorkspaceRuntime } from "./workspace-build.mjs";
 import { createOwnedImportRead } from "./fixtures/owned-import-read.mjs";
+
+// Independent source/command evidence captured before the installation extraction.
+const CONTAINER_INSTALLATION_BASELINE = {"sourceBaseline":"4d0e62552bcecb54fb5549eff27af174ef644784","commandBaseline":"7422ce7979f5aada6d7c6ef3121195e9bd1137f7","assetHashes":{"shellQuote":"f618b522b616c35e586580d6c0c46ec623b3d58d6767585db1b75aa25ddbf505","boundedContainerMutation":"18048b628a24e45960fec8423217d6de97bb56321a7138986838f4eb53085a9a","boundedShortContainerMutation":"918ed03213458d39ed4e06aff0a6e24db25cf8bec7a9ef3ae4f711d4d5639d5f","buildClaudeProbeScript":"1845f4543e4b624c69bf508a3df74d1195557e990501fef3d4170de4affa4c6f","reportProbeNotes":"3c54c0b219cadda72089ceb3beea5a1fcc58b333ad4606164686962b076a7231","sanitizeForTerminal":"161a85de2d2280671c89d938bd61919876d65521a76429f6dfab508d93ae06b9","probeDiagnostic":"233a519d33f56b49b9dd9500864f4a1b3a64d4efb53c5dc94384d06aaafe2e48","buildClaudeLauncherReportCommand":"2eea4844b16d09dc607f6ee6424acd9ab87c59bfd661d9eb670104276d7a2d11"},"cases":{"claude-valid":{"commands":1,"hashes":["c777e0cb7546a142b3357bee03bcb591ec594bd630d3e7b80f117f567ec5b5da"],"logs":[["removed synthetic-entry"]],"progress":[]},"claude-restored":{"commands":1,"hashes":["c777e0cb7546a142b3357bee03bcb591ec594bd630d3e7b80f117f567ec5b5da"],"logs":[["Reusing claude 1.2.3 from the shared volume."]],"progress":[]},"claude-install":{"commands":3,"hashes":["c777e0cb7546a142b3357bee03bcb591ec594bd630d3e7b80f117f567ec5b5da","c37ecc501223af86545385a1a4293b302927d49d5e6181cc5cfbc2cf27122c27","c777e0cb7546a142b3357bee03bcb591ec594bd630d3e7b80f117f567ec5b5da"],"logs":[["cannot remove synthetic-entry"],["Installing claude (first run)..."]],"progress":[]},"npm-present":{"commands":2,"hashes":["6d4ad72cb4a9e1df665b35a388b9f025d7d1f035f0f0fde9508d982a2ed2039b","4577147c4b0d4bdd337bb8c8a1f5d9b0d26418b26e6990fd56f30b4e8ebd5c61"],"logs":[],"progress":[]},"npm-ready":{"commands":4,"hashes":["6d4ad72cb4a9e1df665b35a388b9f025d7d1f035f0f0fde9508d982a2ed2039b","39c43d19a35dafc7cf0c5a9795c435278622024b3bef0ddae2be0d3ae63558de","1883f6446f152a9fba326c476fc87293a48a8caeb7903eb61629da805461a0ab","4577147c4b0d4bdd337bb8c8a1f5d9b0d26418b26e6990fd56f30b4e8ebd5c61"],"logs":[],"progress":[]},"npm-missing":{"commands":8,"hashes":["6d4ad72cb4a9e1df665b35a388b9f025d7d1f035f0f0fde9508d982a2ed2039b","39c43d19a35dafc7cf0c5a9795c435278622024b3bef0ddae2be0d3ae63558de","450ca03c8724b358c49a552453da1a44e74445db5365168078be53940b00d2a6","3c40343d7c390da6a121eb084fe42b3ce3f8de2e8808da772fe37687f5f0eeca","cc9ef57a74d06dd6c0b1398881ecd042ef67e2cc60526d028b28c69f3a32e21e","c5a83e34740e71f28d49a718c678f3b9c71015a28ccf965a706b44e016b807a1","1883f6446f152a9fba326c476fc87293a48a8caeb7903eb61629da805461a0ab","4577147c4b0d4bdd337bb8c8a1f5d9b0d26418b26e6990fd56f30b4e8ebd5c61"],"logs":[["Installing gemini..."]],"progress":[]},"bubble-present":{"commands":3,"hashes":["1cf28527b8201aea2443944aebd2957bf98aa23240d0b4976e3ce2bde1a9bcac","d0501c3cfbc15c69a58c2d542e48ec61bfc6cc0ede8da3f7c8e6230f7336cc05","094cb7f35aad22e0afb98fdb07128f62a408d125c16bd4e75f12df7d5418a4a9"],"logs":[],"progress":[]},"bubble-missing":{"commands":6,"hashes":["1cf28527b8201aea2443944aebd2957bf98aa23240d0b4976e3ce2bde1a9bcac","d0501c3cfbc15c69a58c2d542e48ec61bfc6cc0ede8da3f7c8e6230f7336cc05","094cb7f35aad22e0afb98fdb07128f62a408d125c16bd4e75f12df7d5418a4a9","7a88b052b2e426eff06226ef55eb9ce026a45ccca9892ca654b669c5b855a467","fa26aa46d9c62d4a802952e20903fc0214d92c90737adee4f114b0ee0c7476b1","094cb7f35aad22e0afb98fdb07128f62a408d125c16bd4e75f12df7d5418a4a9"],"logs":[["Installing bubblewrap for Codex..."]],"progress":[]},"uv-present":{"commands":1,"hashes":["5e6f76ef271a0189abfbb6218efc1e63bf05c4dc8f9846e3ce0d96fb4da2b625"],"logs":[],"progress":[]},"uv-missing":{"commands":2,"hashes":["5e6f76ef271a0189abfbb6218efc1e63bf05c4dc8f9846e3ce0d96fb4da2b625","7577f852f3f8994eb65d99ce7525de730109c1a9226b69cd23c6fd1538932215"],"logs":[],"progress":["\u001b[2m\u25b8 Installing uv (one-time, ~30-60s)...\u001b[0m\n"]}}};
 
 // Independent hashes captured from accepted 9322c7e6 before the credential extraction.
 const HOST_CREDENTIAL_ASSET_BASELINE = {
@@ -2944,6 +2949,49 @@ async function verifyHomeResolutionConfigDelivery(pathsUrl, configUrl, facadeUrl
     }
 }
 
+async function verifyContainerInstallationDelivery(applicationUrl, setupUrl, registryUrl, runtimeUrl, baseline) {
+    const assert=(await import("node:assert/strict")).default;
+    const cp=(await import("node:child_process")).default, os=(await import("node:os")).default;
+    const {createHash}=await import("node:crypto");
+    const {syncBuiltinESMExports}=await import("node:module");
+    const originals=[];const replace=(owner,name,value)=>{originals.push([owner,name,owner[name]]);owner[name]=value;};
+    const forbidden=()=>{throw new Error("unexpected native installation fixture execution");};
+    let outcomes=[],calls=[],logs=[],progress=[];
+    try {
+        for(const name of ["spawn","spawnSync","exec","execSync","execFile","execFileSync","fork"])replace(cp,name,forbidden);
+        replace(cp,"spawnSync",(...args)=>{calls.push(args);assert.ok(outcomes.length,"unexpected additional command");return outcomes.shift();});
+        replace(os,"homedir",()=>process.env.HOME);
+        replace(console,"log",function(...args){assert.equal(this,console);logs.push(args);});
+        replace(process.stderr,"write",function(text){assert.equal(this,process.stderr);progress.push(text);return true;});
+        syncBuiltinESMExports();
+        const {createContainerToolInstallation}=await import(applicationUrl);
+        const setup=await import(setupUrl),registry=await import(registryUrl),runtime=await import(runtimeUrl);
+        const opaque=Symbol("opaque");const touched=[];
+        const core=createContainerToolInstallation({prepareClaudeProbe:()=>{touched.push("prepare");return opaque;},captureClaudeProbe:()=>function(target,handle){assert.equal(target,"target");assert.equal(handle,opaque);touched.push("probe");return {status:0,stdout:"VALID"};},reportProbeNotes:(_stderr,seen)=>{assert.ok(seen instanceof Set);touched.push("notes");return undefined;}});
+        assert.deepEqual(touched,[]);assert.equal(core.ensureClaude("target"),undefined);assert.deepEqual(touched,["prepare","probe","notes"]);
+        const target="asset-target",success={status:0,stdout:"",stderr:""};
+        function capture(name,invoke,steps){
+            calls=[];logs=[];progress=[];outcomes=steps.map(value=>({...success,...value}));runtime._setRuntimeInfoForTest({runtime:"docker"});
+            assert.equal(invoke(),undefined);assert.equal(outcomes.length,0);
+            const actual={commands:calls.length,hashes:calls.map(call=>createHash("sha256").update(JSON.stringify(call)).digest("hex")),logs,progress};
+            assert.deepEqual(actual,baseline[name],name+" old emitted native command/output parity");
+        }
+        capture("claude-valid",()=>setup.ensureClaudeInContainer(target),[{stdout:"VALID",stderr:"removed synthetic-entry\n"}]);
+        capture("claude-restored",()=>setup.ensureClaudeInContainer(target),[{stdout:"RESTORED 1.2.3",stderr:""}]);
+        capture("claude-install",()=>setup.ensureClaudeInContainer(target),[{stdout:"INSTALL",stderr:"cannot remove synthetic-entry\n"},{},{stdout:"VALID",stderr:"cannot remove synthetic-entry\n"}]);
+        const gemini=registry.getToolByName("gemini"),codex=registry.getToolByName("codex");assert.ok(gemini&&codex);
+        capture("npm-present",()=>setup.ensureTools(target,gemini),[{},{}]);
+        capture("npm-ready",()=>setup.ensureTools(target,gemini),[{stdout:"gemini"},{stdout:"READY"},{},{}]);
+        capture("npm-missing",()=>setup.ensureTools(target,gemini),[{stdout:"gemini"},{stdout:"MISSING"},{},{},{},{},{},{}]);
+        capture("bubble-present",()=>setup.ensureTools(target,codex),[{},{},{}]);
+        capture("bubble-missing",()=>setup.ensureTools(target,codex),[{},{},{status:42},{},{},{}]);
+        capture("uv-present",()=>setup.ensureUvAvailable(target),[{}]);
+        capture("uv-missing",()=>setup.ensureUvAvailable(target),[{status:1},{}]);
+        assert.equal(setup.ensureClaudeInContainer.length,1);assert.equal(setup.ensureUvAvailable.length,1);assert.equal(setup.ensureTools.length,2);
+        assert.equal("ensureNpmTool" in setup,false);assert.equal("ensureCodexBubblewrap" in setup,false);
+    } finally {for(const[owner,name,original]of originals.reverse())owner[name]=original;syncBuiltinESMExports();}
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -3775,6 +3823,34 @@ async function smoke(packageRoot) {
             `const createOwnedImportRead = ${createOwnedImportRead.toString()}; await (${verifyToolRegistryLayout.toString()})(...${JSON.stringify(toolLayoutUrls)},${JSON.stringify(first)});`]);
     }
     console.log("PASS requested-tool setup distribution: compiled core success/timeout/throw identity, exact declarations and actual public facade wiring with fenced VALID/INSTALL execution in both import orders");
+    const installationSource=readFileSync(join(root,"src/container-setup.ts"),"utf8").replace(/\r\n/g,"\n");
+    const installationTree=ts.createSourceFile("container-setup.ts",installationSource,ts.ScriptTarget.Latest,true);
+    const foundInstallationAssets={};
+    for(const declaration of installationTree.statements)if(ts.isFunctionDeclaration(declaration)&&declaration.name&&Object.hasOwn(CONTAINER_INSTALLATION_BASELINE.assetHashes,declaration.name.text)){
+        foundInstallationAssets[declaration.name.text]=createHash("sha256").update(declaration.getFullText(installationTree)).digest("hex");
+    }
+    assert.deepEqual(foundInstallationAssets,CONTAINER_INSTALLATION_BASELINE.assetHashes,"unchanged native asset/report source bodies");
+    const installationUrls=["application/tooling/container-installation","container-setup","tool-registry","container-runtime"].map(name=>pathToFileURL(join(packageRoot,`dist/${name}.js`)).href);
+    run(process.execPath,["--input-type=module","-e",`await (${verifyContainerInstallationDelivery.toString()})(...${JSON.stringify(installationUrls)},${JSON.stringify(CONTAINER_INSTALLATION_BASELINE.cases)});`]);
+    const installationContract=join(packageRoot,"container-installation-consumer.mts");
+    writeFileSync(installationContract,[
+        'import {createContainerToolInstallation} from "./dist/application/tooling/container-installation.js";',
+        'import type {ContainerToolInstallationPorts} from "./dist/ports/tooling/container-installation.js";',
+        'import {ensureClaudeInContainer,ensureUvAvailable} from "./dist/container-setup.js";',
+        'declare const ports:ContainerToolInstallationPorts<symbol>;const app=createContainerToolInstallation(ports);',
+        'const effect:undefined=app.ensureClaude("target");const legacy:(target:string)=>void=ensureClaudeInContainer;',
+        '// @ts-expect-error Capabilities required.',
+        'createContainerToolInstallation({});',
+        '// @ts-expect-error Capture synchronous.',
+        'const invalid:ContainerToolInstallationPorts<symbol>["captureUvProbe"]=async()=>()=>({status:0});',
+        '// @ts-expect-error Readonly capability.',
+        'ports.getNpmTools=()=>[];',
+        '// @ts-expect-error Core undefined differs from historical void.',
+        'const strict:undefined=ensureUvAvailable("target");',
+        'void[effect,legacy,invalid,strict];',
+    ].join("\n"));
+    try{run(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"--noEmit","--strict","--skipLibCheck","--target","ES2022","--module","NodeNext","--moduleResolution","NodeNext",installationContract]);}finally{rmSync(installationContract);}
+    console.log("PASS container installation distribution: four complete policies, ten old native golden scenarios/31commands and original output, eight asset bodies and strict emitted contracts");
     const contract = join(packageRoot, "tool-layout-consumer.mts");
     writeFileSync(contract, [
         'import { CLAUDE_BIN_PATH as domain } from "./dist/domain/tool-layout.js";',

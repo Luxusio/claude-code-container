@@ -1,5 +1,11 @@
 # Implementing the CCC architecture migration
 
+The complete Claude/npm/bubblewrap/uv installation policy cutover is in progress.
+The [container installation guide](../tooling/GUIDE__container-installation.md)
+requires native callee capture and unchanged assets, runtime selection and
+installation authority. Implementation and focused checks passed; independent review and full QA
+remain pending.
+
 Home resolution and configuration policy extraction is accepted. The
 [home resolution guide](../home/GUIDE__resolution-and-config.md) specifies complete
 path/default-account/marker and config read/update parity. Acceptance is

@@ -9,6 +9,8 @@ import { prepareOpenCodeDataDirectory } from "./opencode-data-access.js";
 import { runtimeCli } from "./container-runtime.js";
 import { CLAUDE_BIN_PATH } from "./domain/tool-layout.js";
 import { createRequestedToolSetup } from "./application/requested-tool-setup.js";
+import { createContainerToolInstallation } from "./application/tooling/container-installation.js";
+import type { NpmInstallationDefinition } from "./ports/tooling/container-installation.js";
 
 // Claude's native install layout inside the container.
 //
@@ -57,16 +59,7 @@ function boundedShortContainerMutation(command: string): string {
     return boundedContainerMutation(command, 8, 2);
 }
 
-function assertMutationSucceeded(
-    result: ReturnType<typeof spawnSync>,
-    operation: string,
-): void {
-    const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
-        || result.status === 124
-        || result.status === 137;
-    if (timedOut) throw new Error(`${operation} timed out`);
-    if (result.error || result.status !== 0) throw new Error(`${operation} failed`);
-}
+
 
 export interface ClaudeLayoutPaths {
     /** PATH entry the launcher symlink lives at. */
@@ -782,63 +775,16 @@ export function buildClaudeLauncherReportCommand(
     ].join("\n");
 }
 
-/**
- * Ensure claude is available in the container, in the shape the native updater
- * will keep managing: launcher symlink → versions/<v> inside the shared volume.
- *
- * One docker exec on the happy path; a second only on first install, to prove
- * the installer actually produced a usable launcher instead of trusting it.
- */
-export function ensureClaudeInContainer(containerName: string): void {
-    const probeScript = buildClaudeProbeScript(CLAUDE_LAYOUT_PATHS);
-
-    const result = spawnSync(
-        runtimeCli(),
+function nativeContainerToolInstallation() {
+    return createContainerToolInstallation<string>({
+        prepareClaudeProbe: () => buildClaudeProbeScript(CLAUDE_LAYOUT_PATHS),
+        captureClaudeProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, probeScript: string) => spawnSync(cli,
         ["exec", containerName, "sh", "-c", boundedContainerMutation(probeScript, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
         { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS },
-    );
-    if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
-        || result.status === 124
-        || result.status === 137) {
-        throw new Error("Claude readiness probe timed out");
-    }
-    if (result.error || result.status !== 0) {
-        throw new Error(`Claude readiness probe failed${probeDiagnostic(result.stderr)}`);
-    }
-    const status = (result.stdout ?? "").trim();
-    // One set for the whole start: an entry that could not be removed appears
-    // in the confirm probe's stderr as well, and one start should report it
-    // once.
-    const reported = new Set<string>();
-    // Every success path, not only RESTORED. VALID is the common path for a
-    // container that is simply restarting, and INSTALL is the path where the
-    // removal that unblocked the install actually happened — reporting on
-    // neither meant the repair this exists for was the one thing never said.
-    reportProbeNotes(result.stderr, reported);
-
-    if (status === "VALID") return;
-
-    if (status.startsWith("RESTORED")) {
-        // Nothing is copied out of a cache any more — the launcher is pointed at
-        // a version already in the shared volume. Name it, because "why am I on
-        // an old claude" is the question this line exists to answer.
-        const version = sanitizeForTerminal(status.slice("RESTORED".length).trim());
-        console.log(version
-            ? `Reusing claude ${version} from the shared volume.`
-            : "Reusing claude from the shared volume.");
-        return;
-    }
-
-    if (status !== "INSTALL") {
-        throw new Error("Claude readiness probe returned an invalid result");
-    }
-
-    // The data dir is already a symlink into the volume by the time the probe
-    // returns INSTALL, so the installer writes versions/ straight into the
-    // volume and creates the launcher symlink itself. Nothing to copy after.
-    console.log("Installing claude (first run)...");
-    const installResult = spawnSync(
-        runtimeCli(),
+    ))(spawnSync, runtimeCli()),
+        captureClaudeInstall: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string) => spawnSync(cli,
         [
             "exec",
             containerName,
@@ -847,23 +793,124 @@ export function ensureClaudeInContainer(containerName: string): void {
             boundedContainerMutation(getToolByName("claude")!.installCommand),
         ],
         { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
-    );
-    assertMutationSucceeded(installResult, "Claude installation");
+    ))(spawnSync, runtimeCli()),
+        getNpmTools: () => getNpmTools(),
+        captureNpmProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
+        ["exec", containerName, "sh", "-c",
+         `[ -x /home/ccc/.local/bin/${tool.cmd} ] || echo ${tool.cmd}`],
+        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+    ))(spawnSync, runtimeCli()),
+        captureNpmCachedProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli, [
+        "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+        `if [ ! -x /usr/bin/timeout ]; then echo "Tool verification requires timeout" >&2; exit 1; fi
+[ -x ~/.local/bin/mise ] || { echo "mise is unavailable for tool verification" >&2; exit 1; }
+node_installed=false
+for node_binary in "\${MISE_DATA_DIR:-$HOME/.local/share/mise}"/installs/node/22.*/bin/node; do
+    if [ -x "$node_binary" ]; then node_installed=true; break; fi
+done
+if [ "$node_installed" = false ]; then echo MISSING; exit 0; fi
+node_dir=$(MISE_OFFLINE=1 /usr/bin/timeout -k 1s 3s ~/.local/bin/mise where node@22) || exit $?
+[ -x "$node_dir/bin/node" ] || { echo "Installed Node 22 binary is unavailable" >&2; exit 1; }
+if [ ! -x "$node_dir/bin/${tool.cmd}" ]; then echo MISSING; exit 0; fi
+PATH="$node_dir/bin:$PATH" /usr/bin/timeout -k 1s 10s "$node_dir/bin/${tool.cmd}" --version >/dev/null
+status=$?
+case "$status" in
+    0) echo READY ;;
+    124) echo "Timed out verifying persisted ${tool.cmd}" >&2; exit "$status" ;;
+    137) echo "Verification of persisted ${tool.cmd} was killed (exit 137)" >&2; exit "$status" ;;
+    *) echo "Verification of persisted ${tool.cmd} failed (exit $status)" >&2; exit "$status" ;;
+esac`,
+    ], { encoding: "utf-8", timeout: 20_000 }))(spawnSync, runtimeCli()),
+        captureNpmCleanup: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, cleanupPattern: string) => spawnSync(cli,
+            [
+                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+                boundedShortContainerMutation(`gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPattern} 2>/dev/null`),
+            ],
+            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+        ))(spawnSync, runtimeCli()),
+        captureNpmShimCleanup: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
+            ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation(`rm -f ~/.local/share/mise/shims/${tool.cmd}`)],
+            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+        ))(spawnSync, runtimeCli()),
+        captureNpmInstall: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
+            [
+                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+                boundedContainerMutation(`~/.local/bin/mise exec node@22 -- npm install -g ${tool.pkg}`),
+            ],
+            { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
+        ))(spawnSync, runtimeCli()),
+        captureNpmReshim: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string) => spawnSync(cli,
+            ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation("~/.local/bin/mise reshim")],
+            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+        ))(spawnSync, runtimeCli()),
+        captureNpmWrapper: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
+        [
+            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+            boundedShortContainerMutation(`if cat > /home/ccc/.local/bin/${tool.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${tool.cmd} "$@"\nWRAPPER\nthen\n    chmod +x /home/ccc/.local/bin/${tool.cmd} && exit 0\nfi\nrm -f /home/ccc/.local/bin/${tool.cmd}\nexit 1`),
+        ],
+        { stdio: "pipe", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+    ))(spawnSync, runtimeCli()),
+        createBubblewrapSession: (containerName) => {
+            const cli = runtimeCli();
+            return {
+                probe: () => spawnSync(cli, [
+        "exec", containerName, "timeout", "-k", "2s", "8s", "sh", "-c",
+        // Distinguish a missing dependency from runtime/probe failures. Run as
+        // the same unprivileged container user that starts Codex.
+        "command -v bwrap >/dev/null 2>&1 || exit 42; exec bwrap --version",
+    ], { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS }),
+                updatePackageIndex: () => spawnSync(cli, [
+        "exec", "-u", "root", containerName,
+        "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
+        "apt-get", "-o", "APT::Update::Error-Mode=any", "update",
+    ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS }),
+                install: () => spawnSync(cli, [
+        "exec", "-u", "root", containerName,
+        "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
+        "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "--no-install-recommends", "bubblewrap",
+    ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS }),
+            };
+        },
+        captureUvProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string) => spawnSync(cli,
+        ["exec", containerName, "sh", "-c",
+         "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
+        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+    ))(spawnSync, runtimeCli()),
+        captureUvInstall: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
+            (containerName: string) => spawnSync(cli,
+        ["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
+         boundedContainerMutation("~/.local/bin/mise use -g uv@latest")],
+        { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
+    ))(spawnSync, runtimeCli()),
+        reportProbeNotes: (stderr, seen) => { reportProbeNotes(stderr, seen); return undefined; },
+        probeDiagnostic,
+        sanitizeForTerminal,
+        captureLog: () => {
+            const receiver = console;
+            const log = receiver.log;
+            return (message) => { log.call(receiver, message); return undefined; };
+        },
+        reportUvProgress: () => { process.stderr.write("\x1b[2m▸ Installing uv (one-time, ~30-60s)...\x1b[0m\n"); return undefined; },
+    });
+}
 
-    // Re-probe rather than trust the installer: a `curl | bash` that exits 0
-    // without leaving a usable launcher would otherwise surface much later, as
-    // an unexplained "tool is unavailable after setup".
-    const confirm = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "sh", "-c", boundedContainerMutation(probeScript, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
-        { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS },
-    );
-    const confirmStatus = (confirm.stdout ?? "").trim();
-    if (confirm.error || confirm.status !== 0
-        || (confirmStatus !== "VALID" && !confirmStatus.startsWith("RESTORED"))) {
-        throw new Error(`Claude installation left no usable launcher${probeDiagnostic(confirm.stderr)}`);
-    }
-    reportProbeNotes(confirm.stderr, reported);
+/**
+ * Ensure claude is available in the container, in the shape the native updater
+ * will keep managing: launcher symlink → versions/<v> inside the shared volume.
+ *
+ * One docker exec on the happy path; a second only on first install, to prove
+ * the installer actually produced a usable launcher instead of trusting it.
+ */
+export function ensureClaudeInContainer(containerName: string): void {
+    nativeContainerToolInstallation().ensureClaude(containerName);
 }
 
 /**
@@ -886,149 +933,14 @@ export function ensureTools(containerName: string, activeTool: ToolDefinition): 
 }
 
 function ensureCodexBubblewrap(containerName: string): void {
-    const cli = runtimeCli();
-    const probe = () => spawnSync(cli, [
-        "exec", containerName, "timeout", "-k", "2s", "8s", "sh", "-c",
-        // Distinguish a missing dependency from runtime/probe failures. Run as
-        // the same unprivileged container user that starts Codex.
-        "command -v bwrap >/dev/null 2>&1 || exit 42; exec bwrap --version",
-    ], { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS });
-    const existing = probe();
-    if (existing.error || existing.status !== 42) {
-        assertMutationSucceeded(existing, "Codex bubblewrap readiness probe");
-        return;
-    }
-
-    console.log("Installing bubblewrap for Codex...");
-    const update = spawnSync(cli, [
-        "exec", "-u", "root", containerName,
-        "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
-        "apt-get", "-o", "APT::Update::Error-Mode=any", "update",
-    ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS });
-    assertMutationSucceeded(update, "Codex bubblewrap package index update");
-    const install = spawnSync(cli, [
-        "exec", "-u", "root", containerName,
-        "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
-        "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "--no-install-recommends", "bubblewrap",
-    ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS });
-    assertMutationSucceeded(install, "Codex bubblewrap installation");
-    assertMutationSucceeded(probe(), "Codex bubblewrap readiness check after installation");
+    nativeContainerToolInstallation().ensureCodexBubblewrap(containerName);
 }
 
 /**
  * Ensure one npm-based tool from the registry is installed.
  */
 function ensureNpmTool(containerName: string, activeTool: ToolDefinition): void {
-    const configuredBinary = activeTool.binary || activeTool.name;
-    const tool = getNpmTools().find((candidate) =>
-        candidate.cmd === activeTool.name || candidate.cmd === configuredBinary,
-    );
-    if (!tool) {
-        throw new Error(`Requested tool ${activeTool.name} has no npm installation definition`);
-    }
-
-    const checkResult = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "sh", "-c",
-         `[ -x /home/ccc/.local/bin/${tool.cmd} ] || echo ${tool.cmd}`],
-        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-    );
-    if ((checkResult.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
-        throw new Error("Container npm tool probe timed out");
-    }
-    if (checkResult.error || checkResult.status !== 0) {
-        throw new Error("Container npm tool probe failed");
-    }
-    if ((checkResult.stdout ?? "").trim() !== tool.cmd) {
-        return;
-    }
-
-    // A persisted npm binary can survive a recreated container without its wrapper.
-    // Probe the actual Node install offline, bypassing stale mise/PATH shims.
-    const cached = spawnSync(runtimeCli(), [
-        "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-        `if [ ! -x /usr/bin/timeout ]; then echo "Tool verification requires timeout" >&2; exit 1; fi
-[ -x ~/.local/bin/mise ] || { echo "mise is unavailable for tool verification" >&2; exit 1; }
-node_installed=false
-for node_binary in "\${MISE_DATA_DIR:-$HOME/.local/share/mise}"/installs/node/22.*/bin/node; do
-    if [ -x "$node_binary" ]; then node_installed=true; break; fi
-done
-if [ "$node_installed" = false ]; then echo MISSING; exit 0; fi
-node_dir=$(MISE_OFFLINE=1 /usr/bin/timeout -k 1s 3s ~/.local/bin/mise where node@22) || exit $?
-[ -x "$node_dir/bin/node" ] || { echo "Installed Node 22 binary is unavailable" >&2; exit 1; }
-if [ ! -x "$node_dir/bin/${tool.cmd}" ]; then echo MISSING; exit 0; fi
-PATH="$node_dir/bin:$PATH" /usr/bin/timeout -k 1s 10s "$node_dir/bin/${tool.cmd}" --version >/dev/null
-status=$?
-case "$status" in
-    0) echo READY ;;
-    124) echo "Timed out verifying persisted ${tool.cmd}" >&2; exit "$status" ;;
-    137) echo "Verification of persisted ${tool.cmd} was killed (exit 137)" >&2; exit "$status" ;;
-    *) echo "Verification of persisted ${tool.cmd} failed (exit $status)" >&2; exit "$status" ;;
-esac`,
-    ], { encoding: "utf-8", timeout: 20_000 });
-    assertMutationSucceeded(cached, `Container ${tool.cmd} cached executable probe`);
-    const cachedState = cached.stdout.trim();
-    if (cachedState !== "READY" && cachedState !== "MISSING") {
-        throw new Error(`Container ${tool.cmd} cached executable probe returned an invalid result`);
-    }
-    if (cachedState === "MISSING") {
-        console.log(`Installing ${tool.cmd}...`);
-
-        const name = tool.pkg.split("/").pop();
-        const scope = tool.pkg.includes("/") ? tool.pkg.split("/")[0] + "/" : "";
-        const cleanupPattern = `"$gdir/${scope}.${name}-"*`;
-
-        const cleanupResult = spawnSync(
-            runtimeCli(),
-            [
-                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-                boundedShortContainerMutation(`gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPattern} 2>/dev/null`),
-            ],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-        );
-        assertMutationSucceeded(cleanupResult, `Container ${tool.cmd} cleanup`);
-
-        // Drop any stale mise shims for the missing tools BEFORE install. If the
-        // mise volume persisted a shim from an earlier install whose underlying
-        // package no longer matches, the shim throws "not a valid shim" — and PATH
-        // would hit it if the wrapper at /home/ccc/.local/bin/<cmd> is gone.
-        const shimCleanupResult = spawnSync(
-            runtimeCli(),
-            ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation(`rm -f ~/.local/share/mise/shims/${tool.cmd}`)],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-        );
-        assertMutationSucceeded(shimCleanupResult, `Container ${tool.cmd} shim cleanup`);
-
-        const installResult = spawnSync(
-            runtimeCli(),
-            [
-                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-                boundedContainerMutation(`~/.local/bin/mise exec node@22 -- npm install -g ${tool.pkg}`),
-            ],
-            { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
-        );
-        assertMutationSucceeded(installResult, `Container ${tool.cmd} installation`);
-
-        // Regenerate mise shims so they reflect the freshly-installed binaries.
-        // Without this, an outdated shim from a prior install can shadow the new
-        // binary on PATH lookups that bypass the wrapper at /home/ccc/.local/bin.
-        const reshimResult = spawnSync(
-            runtimeCli(),
-            ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation("~/.local/bin/mise reshim")],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-        );
-        assertMutationSucceeded(reshimResult, `Container ${tool.cmd} reshim`);
-    }
-
-    const wrapperResult = spawnSync(
-        runtimeCli(),
-        [
-            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            boundedShortContainerMutation(`if cat > /home/ccc/.local/bin/${tool.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${tool.cmd} "$@"\nWRAPPER\nthen\n    chmod +x /home/ccc/.local/bin/${tool.cmd} && exit 0\nfi\nrm -f /home/ccc/.local/bin/${tool.cmd}\nexit 1`),
-        ],
-        { stdio: "pipe", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-    );
-    assertMutationSucceeded(wrapperResult, `Container ${tool.cmd} wrapper creation`);
+    nativeContainerToolInstallation().ensureNpm(containerName, activeTool);
 }
 
 // saveClaudeBinaryToVolume() used to run on every session exit: it copied
@@ -1044,28 +956,5 @@ esac`,
  * without bash profile activation — they rely on the global mise shim.
  */
 export function ensureUvAvailable(containerName: string): void {
-    const checkResult = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "sh", "-c",
-         "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
-        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-    );
-    if ((checkResult.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
-        throw new Error("Container uv probe timed out");
-    }
-    if (checkResult.error || (checkResult.status !== 0 && checkResult.status !== 1)) {
-        throw new Error("Container uv probe failed");
-    }
-    if (checkResult.status === 0) return;
-
-    process.stderr.write("\x1b[2m▸ Installing uv (one-time, ~30-60s)...\x1b[0m\n");
-    // MISE_VERBOSE=1 forces mise to stream download/build progress so the user
-    // sees activity instead of a silent stall during the install.
-    const installResult = spawnSync(
-        runtimeCli(),
-        ["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
-         boundedContainerMutation("~/.local/bin/mise use -g uv@latest")],
-        { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
-    );
-    assertMutationSucceeded(installResult, "Container uv installation");
+    nativeContainerToolInstallation().ensureUv(containerName);
 }
