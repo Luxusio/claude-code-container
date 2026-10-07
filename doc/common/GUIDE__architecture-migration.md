@@ -1523,3 +1523,16 @@ and mutable arrays remain compatible. See the
 combines boundary/receipt tests, real-Git replacement/rollback regressions and
 compiled nested creation in both shipping forms. Multi-repo orchestration,
 dispatch and repair/removal internals remain separate migration work.
+
+## Multi-repo workspace creation application
+
+Multi creation composes addition with explicit scan, claim, copy and quarantine
+ports. Application-owned bookkeeping preserves candidate publication before
+proof validation and distinct forward repository versus reverse copy rollback.
+Native adapters still own every inode, registration, branch/config and quarantine
+check. See the [multi creation guide](../workspaces/GUIDE__multi-creation.md).
+
+Verification requires deterministic catch/order/opaque-token tests, actual
+private-Git ownership and partial-copy regressions, both compiled shipping forms
+and unchanged legacy mutable type exports. Repair/removal internals, dispatch and
+the broader architecture acceptance remain future work.

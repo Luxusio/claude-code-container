@@ -2,7 +2,8 @@
 
 import { spawnSync } from "child_process";
 import { createWorkspaceBranchValidation } from "./application/workspace-branch-validation.js";
-import { createWorktreeAddition } from "./application/workspace/worktree-addition.js";
+import { createMultiWorkspaceCreation } from "./application/workspace/multi-creation.js";
+import type { WorkspaceEntry } from "./domain/workspace/source-entry.js";
 import { createUnifiedWorkspaceCreation } from "./application/workspace/unified-creation.js";
 import type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
 import type { WorktreeAdditionPorts } from "./ports/workspace/worktree-addition.js";
@@ -284,11 +285,7 @@ export { WORKTREE_SEPARATOR } from "./domain/workspace-naming.js";
 
 // === Types ===
 
-export interface WorkspaceEntry {
-    name: string;
-    path: string;
-    isGitRepo: boolean;
-}
+export type { WorkspaceEntry } from "./domain/workspace/source-entry.js";
 
 export type DirectoryIdentity = {
     realpath: string;
@@ -5940,8 +5937,6 @@ const workspaceWorktreeAdditionPorts: WorktreeAdditionPorts<
     ),
 };
 
-const addWorkspaceWorktree = createWorktreeAddition(workspaceWorktreeAdditionPorts);
-
 const createUnifiedWorkspace = createUnifiedWorkspaceCreation({
     ...workspaceWorktreeAdditionPorts,
     requireRootRegistration: (receipt, request) => requireWorktreeRegistrationFence(
@@ -5968,6 +5963,42 @@ const createUnifiedWorkspace = createUnifiedWorkspaceCreation({
         request.branch,
         action,
         prepared.expectedBranchOid,
+    ),
+});
+
+const createMultiRepoWorkspace = createMultiWorkspaceCreation({
+    ...workspaceWorktreeAdditionPorts,
+    scanSource: (request) => scanDirectory(request.repositoryPath, { strict: true }),
+    destinationPath: (request, name) => join(request.destinationPath, name),
+    ensureWorkspaceParent: (request) => mkdirSync(dirname(request.destinationPath), { recursive: true }),
+    createWorkspaceExclusive: (request) => mkdirSync(request.destinationPath),
+    captureWorkspaceIdentity: (request) => captureDirectoryIdentity(request.destinationPath),
+    requireRegistration: requireWorktreeRegistrationFence,
+    pathExists: pathExistsStrict,
+    worktreeMatches: (source, destination) => isValidWorktree(destination, source),
+    removeRegisteredWorktree: (request, source, destination, receipt) => removeRegisteredWorktree(
+        source,
+        destination,
+        receipt.destinationIdentity,
+        true,
+        dirname(request.destinationPath),
+        receipt,
+    ),
+    rollbackCreatedBranch: (source, branch, action, prepared) => rollbackFailedCreatedBranch(
+        source,
+        branch,
+        action,
+        prepared?.expectedBranchOid ?? null,
+    ),
+    assertWorkspaceIdentity: (request, identity) => assertDirectoryIdentity(request.destinationPath, identity),
+    workspaceEntryCount: (request) => readdirSync(request.destinationPath).length,
+    quarantineWorkspace: (request, identity) => removeDirectoryByQuarantine(request.destinationPath, identity),
+    copyEntry: copyDirRecursive,
+    captureCopiedIdentity: capturePathIdentity,
+    quarantineCopiedEntry: (request, destination, identity) => removePathByQuarantine(
+        destination,
+        identity,
+        dirname(request.destinationPath),
     ),
 });
 
@@ -6009,197 +6040,7 @@ export function createWorkspace(
     }
 
     // Multi-repo mode: scan children
-    return createMultiRepoWorkspace(resolved, wsPath, branch);
-}
-
-function createMultiRepoWorkspace(
-    resolved: string,
-    wsPath: string,
-    branch: string,
-): WorktreeResult {
-    const entries = scanDirectory(resolved, { strict: true });
-    const gitRepos = entries.filter((e) => e.isGitRepo);
-
-    if (gitRepos.length === 0) {
-        throw new Error(
-            "No git repositories found in current directory. Nothing to create worktrees for.",
-        );
-    }
-
-    // Atomic create: ensure parent exists, then non-recursive mkdir
-    const parentDir = dirname(wsPath);
-    mkdirSync(parentDir, { recursive: true });
-    try {
-        mkdirSync(wsPath);
-    } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-            throw new Error(
-                `Workspace already exists or is being created by another process: ${wsPath}`,
-            );
-        }
-        throw e;
-    }
-    const workspaceIdentity = captureDirectoryIdentity(wsPath);
-
-    const created: WorktreeRepoResult[] = [];
-    const rollbackOids = new Map<string, BranchCreationFence | null>();
-    const registrationFences = new Map<string, WorktreeRegistrationFence>();
-    const copied: string[] = [];
-    const copiedIdentities = new Map<string, DirectoryIdentity>();
-
-    // Process git repos → worktree (with rollback on failure)
-    try {
-        for (const repo of gitRepos) {
-            const destPath = join(wsPath, repo.name);
-            const { action, prepared, registrationReceipt: registrationFence } = addWorkspaceWorktree({
-                repositoryPath: repo.path,
-                destinationPath: destPath,
-                branch,
-                failureContext: { kind: "multi-repo", repositoryName: repo.name },
-            });
-            const { expectedBranchOid } = prepared;
-
-            created.push({ name: repo.name, branch, action });
-            rollbackOids.set(repo.name, expectedBranchOid);
-            registrationFences.set(
-                repo.name,
-                requireWorktreeRegistrationFence(registrationFence, destPath),
-            );
-        }
-    } catch (e) {
-        const rollbackErrors: string[] = [];
-        for (const c of created) {
-            const destPath = join(wsPath, c.name);
-            const sourceRepo = gitRepos.find((r) => r.name === c.name);
-            if (!sourceRepo || !pathExistsStrict(destPath)) continue;
-            if (!isValidWorktree(destPath, sourceRepo.path)) {
-                rollbackErrors.push(`${c.name}: worktree ownership changed during rollback`);
-                continue;
-            }
-            try {
-                const registrationFence = registrationFences.get(c.name);
-                if (!registrationFence) {
-                    throw new Error("missing worktree registration fence");
-                }
-                removeRegisteredWorktree(
-                    sourceRepo.path,
-                    destPath,
-                    registrationFence.destinationIdentity,
-                    true,
-                    dirname(wsPath),
-                    registrationFence,
-                );
-                rollbackFailedCreatedBranch(
-                    sourceRepo.path,
-                    branch,
-                    c.action,
-                    rollbackOids.get(c.name) ?? null,
-                );
-            } catch (rollbackError) {
-                rollbackErrors.push(`${c.name}: ${(rollbackError as Error).message}`);
-            }
-        }
-        if (rollbackErrors.length === 0) {
-            try {
-                assertDirectoryIdentity(wsPath, workspaceIdentity);
-                if (readdirSync(wsPath).length !== 0) {
-                    throw new Error("workspace is not empty after worktree rollback");
-                }
-                removeDirectoryByQuarantine(wsPath, workspaceIdentity);
-            } catch (rollbackError) {
-                rollbackErrors.push((rollbackError as Error).message);
-            }
-        }
-        if (rollbackErrors.length > 0) {
-            throw new Error(
-                `${(e as Error).message}; workspace rollback failed: ${rollbackErrors.join("; ")}`,
-                { cause: e },
-            );
-        }
-        throw e;
-    }
-
-    // Process non-repo items → copy (isolated per worktree)
-    const nonRepos = entries.filter((e) => !e.isGitRepo);
-    for (const entry of nonRepos) {
-        const destPath = join(wsPath, entry.name);
-        try {
-            copyDirRecursive(entry.path, destPath);
-            if (!pathExistsStrict(destPath)) {
-                throw new Error(`Source entry could not be copied safely: ${entry.path}`);
-            }
-            copied.push(entry.name);
-            copiedIdentities.set(entry.name, capturePathIdentity(destPath));
-        } catch (e) {
-            const rollbackErrors: string[] = [];
-            for (const createdEntry of [...created].reverse()) {
-                const sourceRepo = gitRepos.find((repo) => (
-                    repo.name === createdEntry.name
-                ));
-                if (!sourceRepo) continue;
-                try {
-                    const registrationFence = registrationFences.get(createdEntry.name);
-                    if (!registrationFence) {
-                        throw new Error("missing worktree registration fence");
-                    }
-                    removeRegisteredWorktree(
-                        sourceRepo.path,
-                        join(wsPath, createdEntry.name),
-                        registrationFence.destinationIdentity,
-                        true,
-                        dirname(wsPath),
-                        registrationFence,
-                    );
-                    rollbackFailedCreatedBranch(
-                        sourceRepo.path,
-                        branch,
-                        createdEntry.action,
-                        rollbackOids.get(createdEntry.name) ?? null,
-                    );
-                } catch (rollbackError) {
-                    rollbackErrors.push(
-                        `${createdEntry.name}: ${(rollbackError as Error).message}`,
-                    );
-                }
-            }
-            for (const copiedName of [...copied].reverse()) {
-                const identity = copiedIdentities.get(copiedName);
-                if (!identity) continue;
-                try {
-                    removePathByQuarantine(
-                        join(wsPath, copiedName),
-                        identity,
-                        dirname(wsPath),
-                    );
-                } catch (rollbackError) {
-                    rollbackErrors.push(
-                        `${copiedName}: ${(rollbackError as Error).message}`,
-                    );
-                }
-            }
-            if (pathExistsStrict(destPath)) {
-                rollbackErrors.push(`${entry.name}: partial copied content was preserved`);
-            } else if (rollbackErrors.length === 0) {
-                try {
-                    assertDirectoryIdentity(wsPath, workspaceIdentity);
-                    if (readdirSync(wsPath).length === 0) {
-                        removeDirectoryByQuarantine(wsPath, workspaceIdentity);
-                    }
-                } catch (rollbackError) {
-                    rollbackErrors.push((rollbackError as Error).message);
-                }
-            }
-            if (rollbackErrors.length > 0) {
-                throw new Error(
-                    `${(e as Error).message}; workspace rollback failed: ${rollbackErrors.join("; ")}`,
-                    { cause: e },
-                );
-            }
-            throw e;
-        }
-    }
-
-    return { workspacePath: wsPath, created, copied };
+    return createMultiRepoWorkspace({ repositoryPath: resolved, destinationPath: wsPath, branch });
 }
 
 /**

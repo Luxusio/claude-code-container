@@ -2042,7 +2042,7 @@ async function verifyProfileRequestDelivery(domainUrl, facadeUrl) {
 
 async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
     const assert = (await import("node:assert/strict")).default;
-    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { spawnSync } = await import("node:child_process");
     const { createWorktreeAddition } = await import(applicationUrl);
@@ -2104,6 +2104,26 @@ async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
             { name: "nested", branch: "nested-topic", action: "worktree-new" },
         ]);
         assert.equal(git(["branch", "--show-current"], join(nested.workspacePath, "nested")), "nested-topic");
+        const multiRoot = join(root, "multi-source");
+        mkdirSync(multiRoot);
+        for (const name of ["repo-a", "repo-b"]) {
+            git(["init", name], multiRoot);
+            const repository = join(multiRoot, name);
+            git(["config", "user.name", "Fixture"], repository);
+            git(["config", "user.email", "fixture@example.invalid"], repository);
+            git(["config", "commit.gpgsign", "false"], repository);
+            writeFileSync(join(repository, "owned.txt"), name);
+            git(["add", "owned.txt"], repository); git(["commit", "-m", "fixture"], repository);
+        }
+        writeFileSync(join(multiRoot, "plain.txt"), "independent copy\n");
+        const multi = facade.createWorkspace(multiRoot, "multi-topic");
+        assert.deepEqual(multi.created, [
+            { name: "repo-a", branch: "multi-topic", action: "worktree-new" },
+            { name: "repo-b", branch: "multi-topic", action: "worktree-new" },
+        ]);
+        assert.deepEqual(multi.copied, ["plain.txt"]);
+        assert.equal(readFileSync(join(multi.workspacePath, "plain.txt"), "utf8"), "independent copy\n");
+        for (const name of ["repo-a", "repo-b"]) assert.equal(git(["branch", "--show-current"], join(multi.workspacePath, name)), "multi-topic");
     } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -2137,6 +2157,62 @@ async function verifyUnifiedCreationDelivery(applicationUrl) {
     assert.throws(() => create(request), error => error === failure);
     assert.deepEqual(trace, ["observe", "prepare", "add", "require", "name", "repair", "match", "remove", "branch"]);
     assert.throws(() => createUnifiedWorkspaceCreation({}), TypeError);
+}
+
+async function verifyMultiCreationDelivery(applicationUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { createMultiWorkspaceCreation } = await import(applicationUrl);
+    const request = { repositoryPath: "source", destinationPath: "workspace", branch: "topic" };
+    const entries = [
+        { name: "one", path: "source/one", isGitRepo: true },
+        { name: "two", path: "source/two", isGitRepo: true },
+        { name: "plain-a", path: "source/plain-a", isGitRepo: false },
+        { name: "plain-b", path: "source/plain-b", isGitRepo: false },
+    ];
+    const workspace = { opaque: "workspace" }, copied = { opaque: "copied" };
+    const prepared = new Map(), registrations = new Map(), trace = [];
+    const copyFailure = new Error("owned copy fixture failure");
+    let mode = "success";
+    const create = createMultiWorkspaceCreation({
+        observeBranch: () => "none",
+        prepareAddition: child => { const token = { opaque: child.repositoryPath }; prepared.set(child.repositoryPath, token); return token; },
+        addPrepared: child => {
+            const token = { opaque: child.repositoryPath }; registrations.set(child.repositoryPath, token);
+            return { status: mode === "repo" && child.repositoryPath.endsWith("two") ? 1 : 0, stderr: "later addition failed", registrationReceipt: token };
+        },
+        compensateFailedAddition: child => { trace.push(`failed-add:${child.repositoryPath}`); },
+        scanSource: actual => { assert.equal(actual, request); return entries; },
+        destinationPath: (_actual, name) => `workspace/${name}`,
+        ensureWorkspaceParent: () => {}, createWorkspaceExclusive: () => {},
+        captureWorkspaceIdentity: () => workspace,
+        requireRegistration: receipt => receipt,
+        pathExists: path => !(mode === "copy" && path === "workspace/plain-b"),
+        worktreeMatches: () => true,
+        removeRegisteredWorktree: (actual, source, _destination, receipt) => {
+            assert.equal(actual, request); assert.equal(receipt, registrations.get(source)); trace.push(`remove:${source}`);
+        },
+        rollbackCreatedBranch: (source, branch, action, token) => {
+            assert.equal(branch, "topic"); assert.equal(action, "worktree-new"); assert.equal(token, prepared.get(source)); trace.push(`branch:${source}`);
+        },
+        assertWorkspaceIdentity: (actual, identity) => { assert.equal(actual, request); assert.equal(identity, workspace); },
+        workspaceEntryCount: () => 0,
+        quarantineWorkspace: (_actual, identity) => { assert.equal(identity, workspace); trace.push("root"); },
+        copyEntry: source => { if (mode === "copy" && source.endsWith("plain-b")) throw copyFailure; },
+        captureCopiedIdentity: () => copied,
+        quarantineCopiedEntry: (_actual, destination, identity) => { assert.equal(identity, copied); trace.push(`copy:${destination}`); },
+    });
+    assert.deepEqual(trace, []);
+    const result = create(request);
+    assert.deepEqual(result.created.map(entry => entry.name), ["one", "two"]);
+    assert.deepEqual(result.copied, ["plain-a", "plain-b"]);
+    assert.equal(result.workspacePath, "workspace");
+    mode = "repo";
+    assert.throws(() => create(request), /^Error: Failed to create worktree for two: later addition failed$/);
+    assert.deepEqual(trace, ["failed-add:source/two", "remove:source/one", "branch:source/one", "root"]);
+    trace.length = 0; mode = "copy";
+    assert.throws(() => create(request), error => error === copyFailure);
+    assert.deepEqual(trace, ["remove:source/two", "branch:source/two", "remove:source/one", "branch:source/one", "copy:workspace/plain-a", "root"]);
+    assert.throws(() => createMultiWorkspaceCreation({}), TypeError);
 }
 
 async function smoke(packageRoot) {
@@ -2420,6 +2496,35 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", unifiedContract]);
     } finally { rmSync(unifiedContract); }
     console.log("PASS unified creation distribution: compiled ordered repair/compensation, actual nested Git facade and mutable legacy/generic declaration consumers");
+    const multiUrl = pathToFileURL(join(packageRoot, "dist/application/workspace/multi-creation.js")).href;
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyMultiCreationDelivery.toString()})(${JSON.stringify(multiUrl)});`]);
+    const multiContract = join(packageRoot, "multi-creation-consumer.mts");
+    writeFileSync(multiContract, [
+        'import { createMultiWorkspaceCreation } from "./dist/application/workspace/multi-creation.js";',
+        'import type { MultiCreationPorts, MultiCreationRequest } from "./dist/ports/workspace/multi-creation.js";',
+        'import { createWorkspace, type WorkspaceEntry, type WorktreeResult } from "./dist/worktree.js";',
+        'import type { WorkspaceEntry as DomainEntry } from "./dist/domain/workspace/source-entry.js";',
+        'type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2)?true:false;',
+        'declare const ports: MultiCreationPorts<{p:"prepared"},{r:"registration"},{w:"workspace"},{c:"copied"}>;',
+        'declare const request: MultiCreationRequest;',
+        'const result: WorktreeResult = createMultiWorkspaceCreation(ports)(request);',
+        'const entry: WorkspaceEntry = {name:"repo",path:"path",isGitRepo:true};',
+        'entry.name="changed"; entry.path="changed"; entry.isGitRepo=false; result.copied.push("plain");',
+        'const same: Equal<WorkspaceEntry,DomainEntry> = true;',
+        'const facade: (source:string,branch:string)=>WorktreeResult = createWorkspace;',
+        '// @ts-expect-error All semantic effects are required.',
+        'createMultiWorkspaceCreation({});',
+        '// @ts-expect-error Ports are readonly.',
+        'ports.pathExists = () => true;',
+        '// @ts-expect-error The factory result is synchronous.',
+        'const asynchronous: Promise<unknown> = result;',
+        'void [entry,same,facade,asynchronous];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", multiContract]);
+    } finally { rmSync(multiContract); }
+    console.log("PASS multi creation distribution: compiled forward/reverse compensation, actual multiple Git/file-copy facade and mutable legacy/opaque declaration consumers");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);
