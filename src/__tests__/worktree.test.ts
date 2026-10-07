@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
     mkdirSync,
+    mkdtempSync,
     readdirSync,
     writeFileSync,
     rmSync,
@@ -16,6 +17,7 @@ import {
 } from "fs";
 import { join, dirname, basename, posix, relative, resolve } from "path";
 import { tmpdir } from "os";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
 import {
@@ -4764,7 +4766,7 @@ describe("isValidWorktree", () => {
         expect(existsSync(ownerManagement)).toBe(false);
     });
 
-    it("recreates a missing root registration through the confirmed CLI prompt", () => {
+    it.each([true, false])("recreates a missing root registration through the confirmed CLI prompt (runtime pinned=%s)", (pinRuntime) => {
         initRepo(tmpDir);
         const branch = "confirmed-cli-root-registration";
         const result = createWorkspace(tmpDir, branch);
@@ -4777,11 +4779,16 @@ describe("isValidWorktree", () => {
         writeFileSync(marker, "keep me\n");
         writeFileSync(join(result.workspacePath, "init.txt"), "modified\n");
         rmSync(managementDirectory, { recursive: true });
-        const cliEnvironment = { ...process.env };
+        const fixtureHome = mkdtempSync(join(tmpdir(), "ccc-worktree-cli-home-"));
+        const cliEnvironment: NodeJS.ProcessEnv = { ...process.env, HOME: fixtureHome, USERPROFILE: fixtureHome,
+            CCC_TEST_WORKTREE_CLI_HOME: fixtureHome, CCC_TEST_WORKTREE_PIN_RUNTIME: pinRuntime ? "1" : "0",
+            CCC_DEVICE_BROKER_AUTO_START: "0" };
         delete cliEnvironment.VITEST;
+        delete cliEnvironment.CCC_PROFILE;
 
         const cli = spawnSync(process.execPath, [
             "--import", import.meta.resolve("tsx"),
+            "--import", fileURLToPath(new URL("./helpers/worktree-cli-runtime-fixture.mjs", import.meta.url)),
             resolve("src/index.ts"),
             "runtime", `@${branch}`,
         ], {
@@ -4793,7 +4800,16 @@ describe("isValidWorktree", () => {
             timeout: 20_000,
         });
         const output = `${cli.stdout ?? ""}${cli.stderr ?? ""}`;
-        expect(cli.status, output).toBe(0);
+        const processEvidence = `status=${cli.status}; signal=${cli.signal}; error=${cli.error?.message ?? "none"}; pid=${cli.pid}`;
+        if (pinRuntime) {
+            expect(cli.status, `${processEvidence}\n${output}`).toBe(0);
+            expect(output).toContain("runtime=docker version=fixture");
+            expect(existsSync(join(fixtureHome, "engine-rejected.jsonl"))).toBe(false);
+        } else {
+            expect(cli.status, `${processEvidence}\n${output}`).toBe(1);
+            expect(output).toContain("must not probe a host container engine");
+            expect(existsSync(join(fixtureHome, "engine-rejected.jsonl"))).toBe(true);
+        }
         expect(output).toContain("Recreated Git worktree registration:");
         expect(output).toContain("Using existing workspace:");
         expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(true);
@@ -4814,6 +4830,7 @@ describe("isValidWorktree", () => {
         expect(status.status, status.stderr).toBe(0);
         expect(status.stdout).toContain(" M init.txt");
         expect(status.stdout).toContain("?? untracked-marker.txt");
+        rmSync(fixtureHome, { recursive: true, force: true });
     });
 
     it("refuses a workspace Git link replaced while confirmation is pending", () => {
