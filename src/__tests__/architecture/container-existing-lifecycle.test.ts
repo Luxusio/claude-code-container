@@ -19,6 +19,7 @@ function fixture() {
         assertProjectSources: () => effect("project"), assertDeviceSources: () => effect("device"),
         assertFilesystemSources: () => effect("filesystem"),
         inspectContract: id => { trace.push(`contract:${id}`); return state.contract; },
+        verifyBeforeSetup: id => effect("live", id),
         safeToDefer: id => { trace.push(`safe:${id}`); return state.safe; },
         isRunning: name => { trace.push(`running:${name}`); return state.running; },
         canExec: id => { trace.push(`exec:${id}`); return state.ready; },
@@ -35,7 +36,7 @@ function fixture() {
     return { trace, state, ports, app: createContainerExistingLifecycle(ports) };
 }
 const pre = ["list:name", "project", "device", "filesystem", "contract:id", "project", "device", "filesystem"];
-const join = ["mcp:id", "ssh:id", "git:id", "matches", "finish:id"];
+const join = ["live:id", "mcp:id", "ssh:id", "git:id", "matches", "finish:id"];
 const guard = (operation: () => void) => { operation(); return true; };
 const replacement = { containerName: "name", reason: "reason", expectedContainerId: "id" };
 
@@ -69,7 +70,7 @@ describe("existing lifecycle explicit construction", () => {
             } });
         }
         expect(f.app.run({ containerName: "name" })).toEqual({ kind: "joined", containerId: "id" });
-        expect(replacementCalls).toEqual(["listContainer", "assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "inspectContract", "assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "isRunning", "canExec", "deviceSourcesMatch", "syncMcp", "fixSsh", "syncGit", "deviceSourcesMatch", "finish"]);
+        expect(replacementCalls).toEqual(["listContainer", "assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "inspectContract", "assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "isRunning", "canExec", "deviceSourcesMatch", "verifyBeforeSetup", "syncMcp", "fixSsh", "syncGit", "deviceSourcesMatch", "finish"]);
     });
 });
 
@@ -167,7 +168,7 @@ describe("running reuse and stopped restart", () => {
         let guardCalls = 0;
         const run = () => f.app.run({ containerName: "name", replacementGuard: operation => { guardCalls++; operation(); return true; } });
         expect(run).toThrow(mode === "before" ? "during validation" : mode === "after" ? "during synchronization" : "destructive recovery was refused");
-        const middle = mode === "unready" ? [] : mode === "before" ? ["matches"] : ["matches", "mcp:id", "ssh:id", "git:id", "matches"];
+        const middle = mode === "unready" ? [] : mode === "before" ? ["matches"] : ["matches", "live:id", "mcp:id", "ssh:id", "git:id", "matches"];
         expect(f.trace).toEqual([...pre, "running:name", "brief:id", ...middle, "identity:name"]);
         expect(guardCalls).toBe(1);
         expect(f.trace.some(event => /^(remove|stop|start|finish):/.test(event))).toBe(false);
@@ -186,7 +187,7 @@ describe("running reuse and stopped restart", () => {
     it.each([false, true])("restarts stopped ID using readiness mode guard=%s", guarded => {
         const f = fixture(); f.state.running = false;
         expect(f.app.run({ containerName: "name", debug: true, ...(guarded ? { replacementGuard: guard } : {}) })).toEqual({ kind: "joined", containerId: "id" });
-        expect(f.trace).toEqual([...pre, "match:name", "running:name", "restart:name", "project", "matches", "start:id", guarded ? "brief:id" : "exec:id", ...join]);
+        expect(f.trace).toEqual([...pre, "match:name", "running:name", "restart:name", "project", "matches", "identity:id", "project", "device", "filesystem", "start:id", guarded ? "brief:id" : "exec:id", ...join]);
     });
     it.each(["allowed", "veto", "missing"])("stopped drift replacement %s", mode => {
         const f = fixture(); f.state.running = false; f.state.devices = [false];
@@ -200,17 +201,17 @@ describe("running reuse and stopped restart", () => {
         const f = fixture(); f.state.running = false; const failure = new Error("Stopped container could not be restarted; automatic replacement was refused.");
         f.ports.start = () => { f.trace.push("start:id"); throw failure; };
         expect(() => f.app.run({ containerName: "name", replacementGuard: guard })).toThrow(failure);
-        expect(f.trace).toEqual([...pre, "running:name", "project", "matches", "start:id"]);
+        expect(f.trace).toEqual([...pre, "running:name", "project", "matches", "identity:id", "project", "device", "filesystem", "start:id"]);
     });
     it("restart unready refuses without replacement", () => {
         const f = fixture(); f.state.running = false; f.state.ready = false;
         expect(() => f.app.run({ containerName: "name", replacementGuard: guard })).toThrow("Restarted container is unavailable");
-        expect(f.trace).toEqual([...pre, "running:name", "project", "matches", "start:id", "brief:id"]);
+        expect(f.trace).toEqual([...pre, "running:name", "project", "matches", "identity:id", "project", "device", "filesystem", "start:id", "brief:id"]);
     });
     it("restart drift after sync refuses without replacement", () => {
         const f = fixture(); f.state.running = false; f.state.devices = [true, false];
         expect(() => f.app.run({ containerName: "name", replacementGuard: guard })).toThrow("during restart");
-        expect(f.trace).toEqual([...pre, "running:name", "project", "matches", "start:id", "brief:id", "mcp:id", "ssh:id", "git:id", "matches"]);
+        expect(f.trace).toEqual([...pre, "running:name", "project", "matches", "identity:id", "project", "device", "filesystem", "start:id", "brief:id", "live:id", "mcp:id", "ssh:id", "git:id", "matches"]);
     });
     it.each(["assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "inspectContract", "isRunning", "canExec", "deviceSourcesMatch", "syncMcp", "fixSsh", "syncGit", "finish"] as const)("propagates %s failure without fabricating a join or recovery", name => {
         const f = fixture(); const failure = { port: name };
@@ -226,6 +227,29 @@ describe("running reuse and stopped restart", () => {
         try { f.app.run({ containerName: "name", debug: true, replacementGuard: guard }); throw new Error("unexpected join"); }
         catch (error) { expect(error).toBe(failure); }
         expect(f.trace.some(event => /^(remove|start|finish):/.test(event))).toBe(false);
+    });
+});
+
+describe("fresh live verification before setup", () => {
+    it.each([true, false])("live verification failure forbids setup/replacement (running=%s)", running => {
+        const f = fixture(); f.state.running = running;
+        f.ports.verifyBeforeSetup = id => { f.trace.push(`live:${id}`); throw new Error("live proof failed"); };
+        expect(() => f.app.run({ containerName: "name", replacementGuard: guard })).toThrow("live proof failed");
+        expect(f.trace).toContain("live:id");
+        expect(f.trace.some(event => /^(mcp|ssh|git|finish|remove|stop):/.test(event))).toBe(false);
+        expect(f.trace.includes("start:id")).toBe(!running);
+    });
+    it("an external start after stopped preflight requires live proof without own start", () => {
+        const f = fixture(); f.state.running = false;
+        f.state.identity = { containerId: "id", running: true };
+        expect(f.app.run({ containerName: "name" })).toEqual({ kind: "joined", containerId: "id" });
+        expect(f.trace).not.toContain("start:id");
+        expect(f.trace.indexOf("live:id")).toBeLessThan(f.trace.indexOf("mcp:id"));
+    });
+    it.each([null, { containerId: "foreign", running: false }])("unknown or foreign pinned identity prevents start: %s", identity => {
+        const f = fixture(); f.state.running = false; f.state.identity = identity;
+        expect(() => f.app.run({ containerName: "name", replacementGuard: guard })).toThrow("identity changed before restart");
+        expect(f.trace.some(event => /^(start|mcp|ssh|git|finish|remove|stop):/.test(event))).toBe(false);
     });
 });
 

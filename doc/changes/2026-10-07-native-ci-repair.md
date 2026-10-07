@@ -97,3 +97,28 @@ The long-name confirmed recovery and native short/expanded/case recovery
 regressions passed (2 passed, 0 failed), including repeated recoveries and
 file preservation. Exact committed full native CI/build and fresh whole QA
 remain pending at this checkpoint.
+
+## Authorized runtime follow-up
+
+The operator requested Colima support while native CI repair was in progress.
+Queued task: `TASK__colima-docker-context-support`. Colima's Docker mode reuses
+the Docker engine/CLI adapter; inspect the selected Docker context's endpoint
+for its socket and VM capabilities rather than adding a separate Colima engine
+or assuming `/var/run/docker.sock`. Current support is not claimed complete.
+Official references: https://colima.run/docs/runtimes/ and
+https://colima.run/docs/faq/. This follow-up keeps the current native failure
+repair focused; real Colima acceptance is a separate environment lane.
+
+## Stopped restart verification order
+
+The b8377ebe CI run passed Windows, general Linux, Podman-forced units and
+Chrome; its two remaining native Podman cases exposed live bind verification
+being attempted before a stopped container restarted. The correction separates
+confirmed stopped metadata/host-identity preflight from mandatory fresh live
+verification after readiness. Static evidence never fabricates live proof.
+Own-start cleanup capture remains immediate; an externally started ID gains no
+own-start authority. Complete live bind and effective UID/GID verification
+precede MCP/SSH/Git helpers and ready publication. Unknown or failed proof
+preserves without replacement or joining. Running safe-defer keeps its existing
+policy. Source/architecture types and focused native failure probes passed;
+corrected-source native CI and final whole QA remain pending.

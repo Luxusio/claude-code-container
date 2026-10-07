@@ -43,6 +43,21 @@ rejects startup while preserving the running container. Failed command execution
 in a running or just-restarted container reports a diagnostic and requires
 explicit inspection/stopping; it does not automatically kill or recreate it.
 
+A confirmed stopped existing container receives a static preflight before start:
+verify the exact inspected ID and stopped state, managed project and immutable
+image/user labels, mount shape/access/sources and aliases, named volumes, current
+host object identities, and device/group/privilege configuration without executing
+inside that container. Unknown inspection blocks startup without replacement.
+Recheck the pinned identity and host sources immediately before start. Successful
+own start immediately publishes the captured ID for cleanup authority; this is
+not a ready/join authorization. After bounded readiness, freshly inspect the exact
+ID and require full live bind proofs and runtime UID/GID before synchronizing MCP,
+SSH or Git helpers or reporting ready. Failures retain captured cleanup authority
+and forbid replacement or joining. If another actor starts the container between
+preflight and startup, require the same live verification before setup without
+claiming own-start cleanup authority. Running and safe-defer verification retain
+their existing policies; static preflight must never synthesize a live proof.
+
 Mise and Codex package cache volumes are scoped to the UID/GID and mapping contract. Existing
 cache volumes remain intact. Any retained per-container writable state must
 become usable by the replacement identity without changing live state or host

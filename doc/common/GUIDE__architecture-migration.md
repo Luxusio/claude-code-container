@@ -455,13 +455,21 @@ contract observations refuse replacement or joining. Effect ports use `undefined
 returns to reject asynchronous implementations in TypeScript; runtime construction
 checks callability only.
 
-Project, device and filesystem assertions remain separate and surround strict
-contract inspection in their original order. A mismatch attempts replacement
+Project, device and filesystem assertions remain separate and surround
+contract preflight. A confirmed stopped container uses inspected metadata and
+current host-source identities without exec; this static result does not claim
+live bind proof. Running containers retain complete live inspection. A mismatch attempts replacement
 through the caller's lifecycle/session guard. A veto can defer an update only
 after the existing safety, running and brief execution-readiness checks. Deferral
 fixes SSH and syncs Git without managed MCP synchronization. Normal running reuse
-and restart retain MCP, SSH and Git ordering and device-source checks before
-handoff. Brief readiness retry is selected only when a guard was supplied;
+and restart require the callable synchronous `verifyBeforeSetup` port after
+readiness and before MCP, SSH and Git ordering. The native port freshly proves
+full live bind identities and effective UID/GID before helpers or handoff.
+Restart rechecks the pinned identity and host sources before starting; an
+external start skips own-start cleanup authority but retains the live gate.
+An invocation's successful own start remains captured immediately through
+`afterStart` before later proof/setup failures, so owned cleanup can stop that
+exact ID. Unknown proof preserves without replacement or ready publication. Brief readiness retry is selected only when a guard was supplied;
 otherwise readiness remains a one-shot observation. A failed start or unready
 restart does not authorize replacement.
 M10k below moves the brief retry loop into its own application; existing

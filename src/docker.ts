@@ -1891,6 +1891,53 @@ function verifyRequiredContainerMountsOnce(
     return verifyMountSet(contracts, observedMounts, evidence, { policy, allowUnexpected });
 }
 
+type StoppedMountPreflight =
+    | { kind: "preflight-verified" }
+    | { kind: "mismatch" | "retryable", reason: string };
+
+/** Static evidence permits starting a stopped container, never executing or joining it. */
+function preflightStoppedContainerMounts(
+    observedMounts: InspectedContainerMount[],
+    requiredMounts: RequiredContainerMount[],
+): StoppedMountPreflight {
+    const shape = validateObservedMountSet(requiredMounts.map(mountContract), observedMounts);
+    if (shape.kind === "mismatch") return shape;
+    const observedByPath = new Map(observedMounts.map(mount => [mount.Destination, mount]));
+    for (const required of requiredMounts) {
+        const observed = observedByPath.get(required.containerPath);
+        const mismatch = (reason: string): StoppedMountPreflight => ({ kind: "mismatch", reason: `${reason} for ${required.containerPath}` });
+        if (!observed) {
+            if (required.presence === "optional") continue;
+            return { kind: "mismatch", reason: `missing mount ${required.containerPath}` };
+        }
+        if (required.type !== undefined && observed.Type !== required.type) return mismatch("mount type changed");
+        if (required.readonly !== undefined && observed.RW !== !required.readonly) return mismatch("mount access changed");
+        if (required.type === "volume") {
+            if (!namedVolumeMatches(observed, required.hostPath)) return mismatch("volume source changed");
+            continue;
+        }
+        const proof = required.sourceProof;
+        if (!proof) continue;
+        if (observed.Type !== "bind" || !observed.Source) return mismatch("bind source missing");
+        if (proof.kind === "filesystem") {
+            const host = observeBindMountSourceIdentity(required.hostPath, proof.identity);
+            if (host.kind !== "verified") return { kind: host.kind, reason: `bind source identity ${host.kind === "mismatch" ? "changed" : "unavailable"} for ${required.containerPath}` };
+            const alias = bindSourceIsTrustedFilesystemAlias(observed.Source, required.hostPath, proof.identity);
+            if (alias === "retryable") return { kind: "retryable", reason: `bind source unreadable for ${required.containerPath}` };
+            if (alias !== "match") return mismatch("bind source changed");
+        } else {
+            let primary: string;
+            try {
+                primary = proof.kind === "path" && proof.canonical ? canonicalHostPath(required.hostPath) : required.hostPath;
+            } catch {
+                return { kind: "retryable", reason: `bind source unreadable for ${required.containerPath}` };
+            }
+            if (![primary, ...(proof.equivalentSources ?? [])].some(candidate => bindSourcePathsEquivalent(observed.Source, candidate))) return mismatch("bind source changed");
+        }
+    }
+    return { kind: "preflight-verified" };
+}
+
 function verifyRequiredContainerMounts(
     containerId: string,
     observedMounts: InspectedContainerMount[],
@@ -2058,6 +2105,7 @@ function containerMatchesRunContract(
     desiredImageId: string,
     identity: ContainerUserIdentity,
     reportMismatch: (reason: string) => void = () => undefined,
+    phase: "preflight" | "live" = "live",
 ): boolean | null {
     const inspectedResult = inspectContainerJsonWithRetry(containerName);
     if (!inspectedResult) {
@@ -2073,10 +2121,19 @@ function containerMatchesRunContract(
         };
         const inspected = inspectedResult as {
             Id?: unknown;
+            State?: { Running?: unknown };
             Mounts?: InspectedContainerMount[];
             Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean; Init?: unknown };
         };
+        if (phase === "preflight" && typeof inspected.State?.Running !== "boolean") {
+            reportMismatch("container running state inspection failed");
+            return null;
+        }
+        if (phase === "live" && inspected.State?.Running !== true) {
+            reportMismatch("container is not confirmed running during live verification");
+            return null;
+        }
         if (normalizeImageId(String(inspectedResult.Image)) !== normalizeImageId(desiredImageId)
             || !Object.entries(getIdentityLabels(identity)).every(([key, value]) => inspected.Config?.Labels?.[key] === value)) {
             return failContract("image or user identity changed");
@@ -2109,17 +2166,15 @@ function containerMatchesRunContract(
         if (inspected.Id !== containerName) {
             return failContract("container identity changed during contract inspection");
         }
-        const mountVerification = verifyRequiredContainerMounts(
-            inspected.Id,
-            mounts,
-            requiredMounts,
-            "strict",
-        );
+        const staticStoppedPreflight = phase === "preflight" && inspected.State?.Running === false;
+        const mountVerification = staticStoppedPreflight
+            ? preflightStoppedContainerMounts(mounts, requiredMounts)
+            : verifyRequiredContainerMounts(inspected.Id, mounts, requiredMounts, "strict");
         if (mountVerification.kind === "retryable") {
             reportMismatch(mountVerification.reason);
             return null;
         }
-        if (mountVerification.kind !== "verified") {
+        if (mountVerification.kind !== "verified" && mountVerification.kind !== "preflight-verified") {
             return failContract(mountVerification.reason);
         }
         const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
@@ -2178,12 +2233,12 @@ function containerRunContractIsSafeToDefer(
         reportUnsafe(reason);
         return false;
     };
-    if (!containerExecIdentityMatches(containerName, identity)) return unsafe("container UID/GID does not match the host identity");
     const inspectedResult = inspectContainerJsonWithRetry(containerName);
     if (!inspectedResult) return unsafe("container contract inspection failed");
     try {
         const inspected = inspectedResult as {
             Id?: unknown;
+            State?: { Running?: unknown };
             Mounts?: InspectedContainerMount[];
             Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
@@ -2208,6 +2263,10 @@ function containerRunContractIsSafeToDefer(
         if (inspected.Id !== containerName) {
             return unsafe("container identity changed during contract inspection");
         }
+        // Preserve safe-defer policy, but never run live probes on a known stopped
+        // or unknown-state object after a static preflight mismatch.
+        if (inspected.State?.Running !== true) return unsafe("container is not confirmed running for safe defer");
+        if (!containerExecIdentityMatches(containerName, identity)) return unsafe("container UID/GID does not match the host identity");
         const mountVerification = verifyRequiredContainerMounts(
             inspected.Id,
             mounts,
@@ -2761,7 +2820,26 @@ function startProjectContainerLocked(
             imageId,
             identity,
             reportReason,
+            "preflight",
         ),
+        verifyBeforeSetup: (id) => {
+            assertPreparedProjectMountSources();
+            assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+            assertRequiredFilesystemMountSources();
+            let reason = "container contract changed";
+            const verified = containerMatchesRunContract(id, requiredMounts, labRunner,
+                preparedDeviceLabSources.contractIdentity, fullPath, projectMountIdentity,
+                imageId, identity, value => { reason = value; }, "live");
+            if (verified !== true) {
+                throw new Error(`Existing container live verification failed (${reason}); preserving it without replacement or join.`);
+            }
+            if (!containerExecIdentityMatches(id, identity)) {
+                throw new Error("Container UID/GID validation failed before setup; refusing a session that could change host project ownership.");
+            }
+            assertPreparedProjectMountSources();
+            assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+            assertRequiredFilesystemMountSources();
+        },
         safeToDefer: (id, reportReason) => containerRunContractIsSafeToDefer(
             id, requiredMounts, labRunner, fullPath, projectMountIdentity, identity, reportReason,
         ),

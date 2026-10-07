@@ -23,6 +23,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
         assertDeviceSources: effect("device"),
         assertFilesystemSources: effect("filesystem"),
         inspectContract: vi.fn(() => true),
+        verifyBeforeSetup: effect("live"),
         safeToDefer: vi.fn(() => true),
         isRunning: vi.fn(() => true),
         canExec: vi.fn(() => true),
@@ -68,7 +69,7 @@ describe("existing container application through native composition", () => {
     it("reuses exact identity through separate synchronization and the shared finish", () => {
         const f = fixture();
         expect(f.lifecycle.run({ containerName: name, debug: true })).toEqual({ kind: "joined", containerId: id });
-        expect(f.order).toEqual(["project", "device", "filesystem", "project", "device", "filesystem", "mcp", "ssh", "git", `finish:${id}`]);
+        expect(f.order).toEqual(["project", "device", "filesystem", "project", "device", "filesystem", "live", "mcp", "ssh", "git", `finish:${id}`]);
         expect(f.ports.canExec).toHaveBeenCalledExactlyOnceWith(id);
         expect(f.ports.canExecAfterBriefRetry).not.toHaveBeenCalled();
         expect(console.error).toHaveBeenCalledExactlyOnceWith(`[ccc:debug] Container ${name} has all required mounts`);
@@ -168,7 +169,7 @@ describe("existing container application through native composition", () => {
         f.context.afterStart = exactId => { f.order.push(`after-start:${exactId}`); };
         native.spawn.mockImplementation(() => { f.order.push("native-start"); return { status: 0 }; });
         expect(f.lifecycle.run({ containerName: name })).toEqual({ kind: "joined", containerId: id });
-        expect(f.order.slice(-7)).toEqual(["before-start", "native-start", `after-start:${id}`, "mcp", "ssh", "git", `finish:${id}`]);
+        expect(f.order.slice(-8)).toEqual(["before-start", "native-start", `after-start:${id}`, "live", "mcp", "ssh", "git", `finish:${id}`]);
         expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit" });
     });
     it("reads required destinations only when reporting a mismatch and safely defers without MCP", () => {

@@ -33,7 +33,10 @@ export interface ContainerExistingLifecyclePorts {
     assertProjectSources(): undefined;
     assertDeviceSources(): undefined;
     assertFilesystemSources(): undefined;
+    // Preflight may use static evidence only for the exact inspected stopped ID.
+    // A match never authorizes setup; verifyBeforeSetup is mandatory before helpers.
     inspectContract(id: string, reportReason: (reason: string) => void): boolean | null;
+    verifyBeforeSetup(id: string): undefined;
     safeToDefer(id: string, reportReason: (reason: string) => void): boolean;
     isRunning(name: string): boolean;
     canExec(id: string): boolean;

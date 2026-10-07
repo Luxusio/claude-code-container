@@ -8,7 +8,7 @@ import type {
 export function createContainerExistingLifecycle(ports: ContainerExistingLifecyclePorts) {
     for (const name of [
         "listContainer", "identity", "managedIdentity", "assertProjectSources",
-        "assertDeviceSources", "assertFilesystemSources", "inspectContract",
+        "assertDeviceSources", "assertFilesystemSources", "inspectContract", "verifyBeforeSetup",
         "safeToDefer", "isRunning", "canExec", "canExecAfterBriefRetry",
         "deviceSourcesMatch", "syncMcp", "fixSsh", "syncGit", "start", "stop",
         "remove", "reportContractMismatch", "reportContractMatch", "reportRestart",
@@ -135,6 +135,7 @@ export function createContainerExistingLifecycle(ports: ContainerExistingLifecyc
                         replace({ containerName, reason: "device-lab mount source identity changed", onRecreate });
                     }
                 } else {
+                    ports.verifyBeforeSetup(lifecycleContainerId);
                     ports.syncMcp(lifecycleContainerId);
                     ports.fixSsh(lifecycleContainerId);
                     ports.syncGit(lifecycleContainerId);
@@ -164,10 +165,20 @@ export function createContainerExistingLifecycle(ports: ContainerExistingLifecyc
                     throw new Error("Device-lab mount source changed; automatic replacement was not authorized.");
                 }
             } else {
-                ports.start(lifecycleContainerId);
+                const beforeStart = ports.identity(lifecycleContainerId);
+                if (!beforeStart || beforeStart.containerId !== lifecycleContainerId) {
+                    throw new Error("Container identity changed before restart; preserving it without start or replacement.");
+                }
+                ports.assertProjectSources();
+                ports.assertDeviceSources();
+                ports.assertFilesystemSources();
+                // An external start grants no own-start cleanup authority. Both paths
+                // must prove the full live contract before any setup helpers.
+                if (!beforeStart.running) ports.start(lifecycleContainerId);
                 if (!readiness(lifecycleContainerId)) {
                     throw new Error("Restarted container is unavailable; preserving it without automatic replacement.");
                 }
+                ports.verifyBeforeSetup(lifecycleContainerId);
                 ports.syncMcp(lifecycleContainerId);
                 ports.fixSsh(lifecycleContainerId);
                 ports.syncGit(lifecycleContainerId);

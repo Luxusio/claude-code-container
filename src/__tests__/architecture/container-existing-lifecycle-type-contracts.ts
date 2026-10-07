@@ -26,7 +26,8 @@ if (result.kind === "joined") {
     const staleId = result.containerId;
     void staleId;
 }
-void [replaced, identity, listed, started, inspected];
+const verifiedBeforeSetup: undefined = ports.verifyBeforeSetup("pinned");
+void [replaced, identity, listed, started, inspected, verifiedBeforeSetup];
 
 type Assert<T extends true> = T;
 type EveryPortRequired = Assert<{
@@ -78,3 +79,8 @@ const invalidJoined: ContainerExistingLifecycleResult = { kind: "joined" };
 // @ts-expect-error No generic successful status replaces the discriminated result.
 const nativeResult: ContainerExistingLifecycleResult = { status: 0 };
 void [invalidJoined, nativeResult];
+
+// @ts-expect-error Live verification cannot return a promise or permissive status.
+createContainerExistingLifecycle({ ...ports, verifyBeforeSetup: async () => undefined });
+// @ts-expect-error A boolean cannot replace required throwing verification.
+createContainerExistingLifecycle({ ...ports, verifyBeforeSetup: () => true });
