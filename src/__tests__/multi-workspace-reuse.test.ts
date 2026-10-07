@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-    chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
-    readdirSync, renameSync, rmSync, symlinkSync, writeFileSync,
+    chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
+    readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync,
 } from "fs";
 import { spawnSync } from "child_process";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
-    createWorkspace, detectWorktreeWorkspaceBranch, getWorkspacePath, listWorkspaces,
+    createWorkspace, DamagedWorkspaceMetadataError, detectWorktreeWorkspaceBranch,
+    getWorkspacePath, listWorkspaces,
 } from "../worktree.js";
 
 const compiledCli = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
@@ -195,7 +196,21 @@ describe.skipIf(process.platform === "win32")("multi workspace registry discover
         const registryBefore = git(join(source, "beta"), ["worktree", "list", "--porcelain"]);
         const addsBefore = additions();
 
-        expect(() => detectWorktreeWorkspaceBranch(workspace)).toThrow("Workspace Git metadata is missing or damaged");
+        let damaged: unknown;
+        try {
+            detectWorktreeWorkspaceBranch(workspace);
+        } catch (error) {
+            damaged = error;
+        }
+        expect(damaged).toBeInstanceOf(DamagedWorkspaceMetadataError);
+        if (!(damaged instanceof DamagedWorkspaceMetadataError)) {
+            throw new Error("Expected the damaged checkout's source-owned repair diagnosis");
+        }
+        expect(damaged.repairs).toEqual([{
+            checkoutPath: join(workspace, "beta"), sourcePath: join(source, "beta"),
+        }]);
+        expect(damaged.message).toContain("Workspace Git metadata is missing or damaged");
+        expect(damaged.message).not.toContain("registration itself is gone");
         const refused = cli(source, ["runtime", `@${branch}`]);
 
         expect(refused.status, refused.output).toBe(1);
@@ -309,5 +324,55 @@ describe.skipIf(process.platform === "win32")("multi workspace registry discover
         expect(additions()).toEqual(addsBefore);
         expect(readFileSync(gitLog, "utf-8")).not.toContain(`${outside} |`);
         expect(readFileSync(join(outside, ".git"), "utf-8")).toBe("malformed outside metadata\n");
+    });
+
+    it("refuses a child metadata symlink to valid external Git metadata before inspecting its registry", () => {
+        const source = multiSource();
+        const workspace = createWorkspace(source, "metadata-symlink").workspacePath;
+        const external = join(root, "external-repository");
+        initRepo(external);
+        const externalCheckout = join(root, "external-checkout");
+        git(external, ["worktree", "add", "-b", "external-work", externalCheckout]);
+        writeFileSync(join(externalCheckout, "untracked.txt"), "external working files\n");
+        const child = join(source, "metadata-alias");
+        mkdirSync(child);
+        writeFileSync(join(child, "keep.txt"), "source working files\n");
+        const metadata = join(child, ".git");
+        const target = join(external, ".git");
+        symlinkSync(target, metadata, "dir");
+        const childBefore = lstatSync(child);
+        const linkBefore = lstatSync(metadata);
+        const workspaceBefore = snapshot(source, workspace);
+        const externalState = () => ({
+            head: git(external, ["rev-parse", "HEAD"]),
+            config: readFileSync(join(target, "config")),
+            index: readFileSync(join(target, "index")),
+            registrations: git(external, ["worktree", "list", "--porcelain"]),
+            backpointers: readdirSync(join(target, "worktrees")).sort().map((entry) => [
+                entry, readFileSync(join(target, "worktrees", entry, "gitdir")),
+                readFileSync(join(target, "worktrees", entry, "HEAD")),
+            ]),
+            tracked: readFileSync(join(external, "tracked.txt")),
+            checkoutTracked: readFileSync(join(externalCheckout, "tracked.txt")),
+            checkoutUntracked: readFileSync(join(externalCheckout, "untracked.txt")),
+        });
+        const externalBefore = externalState();
+        const addsBefore = additions();
+        const beforeLogLength = readFileSync(gitLog, "utf-8").length;
+
+        expect(() => detectWorktreeWorkspaceBranch(workspace))
+            .toThrow(`Nested Git repository metadata is a symbolic link: ${child}`);
+
+        const detectionCalls = readFileSync(gitLog, "utf-8").slice(beforeLogLength);
+        expect(detectionCalls).not.toContain(`${child} |`);
+        expect(detectionCalls).not.toContain(`${external} |`);
+        expect(additions()).toEqual(addsBefore);
+        expect(snapshot(source, workspace)).toEqual(workspaceBefore);
+        expect(externalState()).toEqual(externalBefore);
+        expect(readFileSync(join(child, "keep.txt"), "utf-8")).toBe("source working files\n");
+        expect(readlinkSync(metadata)).toBe(target);
+        expect(lstatSync(metadata).isSymbolicLink()).toBe(true);
+        expect([lstatSync(child).dev, lstatSync(child).ino]).toEqual([childBefore.dev, childBefore.ino]);
+        expect([lstatSync(metadata).dev, lstatSync(metadata).ino]).toEqual([linkBefore.dev, linkBefore.ino]);
     });
 });

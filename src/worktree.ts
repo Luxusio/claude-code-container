@@ -1457,11 +1457,17 @@ function siblingRegisteredWorkspacePaths(workspacePath: string): string[] {
                 )
                 : scanDirectory(sourcePath, { strict: true });
             for (const entry of entries) {
-                if (entry.isGitRepo
-                    && registryContainsWorktree(
-                        entry.path,
-                        join(workspacePath, entry.name),
-                    )) {
+                if (!entry.isGitRepo) continue;
+                if (!sourceIsGitRepository
+                    && lstatSync(join(entry.path, ".git")).isSymbolicLink()) {
+                    throw new Error(
+                        `Nested Git repository metadata is a symbolic link: ${entry.path}`,
+                    );
+                }
+                if (registryContainsWorktree(
+                    entry.path,
+                    join(workspacePath, entry.name),
+                )) {
                     registered.push(join(workspacePath, entry.name));
                 }
             }
@@ -2747,10 +2753,13 @@ function workspaceWorktreeRepairPlan(
             };
             consider(sourcePath, workspacePath);
             try {
-                for (const entry of scanUnifiedNestedRepositories(
-                    sourcePath,
-                    { strict: true, allowRegisteredWorktrees: true },
-                )) {
+                const entries = hasGitMetadata(sourcePath)
+                    ? scanUnifiedNestedRepositories(
+                        sourcePath,
+                        { strict: true, allowRegisteredWorktrees: true },
+                    )
+                    : scanDirectory(sourcePath, { strict: true });
+                for (const entry of entries) {
                     if (entry.isGitRepo) consider(entry.path, join(workspacePath, entry.name));
                 }
             } catch {

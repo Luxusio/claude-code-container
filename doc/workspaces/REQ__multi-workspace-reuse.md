@@ -16,6 +16,12 @@ preserving surviving/foreign content. Source names containing workspace separato
 retain candidate iteration and canonical path deduplication. Symlink children and
 ordinary files do not become owned repositories.
 
+A real child directory with symbolic-link `.git` metadata must be refused before
+Git registry inspection follows that link. When a damaged checkout still has its
+source registration, its diagnostic must identify that exact source and checkout
+as a repair candidate; it must not claim the registration is gone. Offering a
+repair candidate does not change the existing consent or execution policy.
+
 Verification covers actual private-Git multi creation then compiled CLI reuse
 with unchanged file/HEAD/registration snapshots and no repeated add, named partial
 registration failures, foreign preservation, unified nested sources and delegated

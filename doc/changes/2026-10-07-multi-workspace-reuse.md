@@ -7,6 +7,11 @@ and retains strict tracked-submodule inspection for Git-root sources. Both paths
 still require exact Git worktree registrations; discovery does not grant
 ownership or bypass damaged-workspace and foreign-repository refusals.
 
+The same source selection applies when identifying repair candidates for a
+damaged checkout. An intact registration produces the exact repair source and
+checkout rather than a false registration-gone diagnosis. Plain-parent discovery
+also refuses child `.git` symbolic links before invoking Git through them.
+
 The regression checks cover successful reuse without another worktree creation,
 preserved files and registrations, and refusal on damaged metadata or foreign
 replacement. Independent review and compiled CLI verification are required
