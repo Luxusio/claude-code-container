@@ -26,5 +26,13 @@ before reusing the unified worktree for this integration task.
 
 ## Known ceiling
 
+Fresh combined QA at `56f82119` subsequently passed 357 files and 9,947 tests,
+with eight files and 128 tests skipped. Both real shipping forms, five type
+configurations, lint and six compiled CLI scenarios passed; all 1,485 captured
+source/distribution hashes stayed unchanged. Harness verification passed for the
+integration task. CLI probes used isolated private fixtures and a strict fake
+runtime, with no real container/provider invocation. This outcome note adds no
+product or test behavior after the frozen verification.
+
 Full M00–M14 migration and real Mac/Windows VM acceptance remain incomplete.
-The source CI result cannot substitute for the combined candidate's fresh QA.
+The source CI result and combined portable QA cover their declared scopes only.
