@@ -1,6 +1,7 @@
 // src/worktree.ts - Git worktree workspace management for ccc
 
 import { spawnSync } from "child_process";
+import { createWorkspaceBranchValidation } from "./application/workspace-branch-validation.js";
 import { createHash, randomBytes } from "crypto";
 import {
     chmodSync,
@@ -872,75 +873,9 @@ export interface RemoveResult {
  * @returns The validated branch name (unchanged)
  */
 export function validateBranchName(branch: string): string {
-    if (!branch || branch.trim() === "") {
-        throw new Error("Invalid branch name: cannot be empty");
-    }
-
-    // Flag injection prevention
-    if (branch.startsWith("-")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot start with '-'`,
-        );
-    }
-
-    // Path traversal prevention
-    if (branch.includes("..")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot contain '..'`,
-        );
-    }
-
-    // git-check-ref-format forbidden characters:
-    // control chars, space, ~, ^, :, ?, *, [, \, DEL
-    // Also reject @{ (git refspec syntax)
-    const invalidChars = /[\x00-\x1f\x7f ~^:?*[\]\\]/;
-    if (invalidChars.test(branch)) {
-        throw new Error(
-            `Invalid branch name '${branch}': contains forbidden characters`,
-        );
-    }
-
-    if (branch.includes("@{")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot contain '@{'`,
-        );
-    }
-
-    // Cannot start or end with slash, or contain consecutive slashes
-    if (branch.startsWith("/") || branch.endsWith("/")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot start or end with '/'`,
-        );
-    }
-
-    if (branch.includes("//")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot contain consecutive slashes`,
-        );
-    }
-
-    // Cannot end with .lock
-    if (branch.endsWith(".lock")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot end with '.lock'`,
-        );
-    }
-
-    // Cannot end with dot
-    if (branch.endsWith(".")) {
-        throw new Error(
-            `Invalid branch name '${branch}': cannot end with '.'`,
-        );
-    }
-
-    // Length limit
-    if (Buffer.byteLength(branch, "utf-8") > 255) {
-        throw new Error(
-            `Invalid branch name: too long (max 255 bytes)`,
-        );
-    }
-
-    return branch;
+    return createWorkspaceBranchValidation({
+        utf8ByteLength: (value) => Buffer.byteLength(value, "utf-8"),
+    })(branch);
 }
 
 /**
