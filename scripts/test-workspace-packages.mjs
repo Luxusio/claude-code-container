@@ -1261,7 +1261,7 @@ async function verifyToolRegistryLayout(domainUrl, registryUrl, setupUrl, runtim
     }
 }
 
-async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl, runtimeUrl) {
+async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl, runtimeUrl, orderedUrl) {
     const assert = (await import("node:assert/strict")).default;
     const cp = (await import("node:child_process")).default;
     const fs = (await import("node:fs")).default;
@@ -1288,6 +1288,7 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
         replace(os, "homedir", () => process.platform === "win32" ? "C:\\ccc-codex-config-fake\\home" : "/ccc-codex-config-fake/home");
         module.syncBuiltinESMExports();
         const { createCodexConfigPreparation } = await import(applicationUrl);
+        const { createOrderedCodexConfigPreparation } = await import(orderedUrl);
         assert.deepEqual(Object.keys(await import(portsUrl)), [], "Codex config ports must remain type-only");
         const facade = await import(facadeUrl);
         const runtime = await import(runtimeUrl);
@@ -1300,6 +1301,40 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
         for (const [name, value] of Object.entries(fs)) if (typeof value === "function") replace(fs, name, forbidden);
         for (const [name, value] of Object.entries(fs.promises)) if (typeof value === "function") replace(fs.promises, name, forbidden);
         module.syncBuiltinESMExports();
+        const orderedTrace = [];
+        let mappedUid = 0;
+        const orderedPorts = {
+            resolveConfig(profile) { assert.equal(this, orderedPorts); orderedTrace.push(["resolve", profile]); return "resolved-config"; },
+            hasHostIdentity() { orderedTrace.push("identity"); return true; },
+            inspectParent(config) { assert.equal(config,"resolved-config"); orderedTrace.push("parent"); return { uid: 1001, isDirectory() { return true; } }; },
+            inspectConfig(config) { assert.equal(config,"resolved-config"); orderedTrace.push("config"); return { nlink: 1, isFile() { return true; } }; },
+            currentHostUid() { orderedTrace.push("host-uid"); return 1001; },
+            mappedContainerUid(target) { assert.equal(target,"outer-target"); orderedTrace.push("mapped-uid"); return String(++mappedUid); },
+        };
+        for (const name of ["probeDirectory","repairDirectory","verifyDirectory","probeConfig","repairConfig","verifyConfig"]) {
+            orderedPorts[name] = function (target, config, uid) {
+                assert.equal(this,orderedPorts); assert.equal(target,"outer-target"); assert.equal(config,"resolved-config");
+                orderedTrace.push([name,uid]); return { status: name.startsWith("probe") ? 1 : 0 };
+            };
+        }
+        const ordered = createOrderedCodexConfigPreparation(orderedPorts);
+        assert.deepEqual(orderedTrace,[]);
+        for (let invocation = 1; invocation <= 2; invocation++) {
+            orderedTrace.length = 0;
+            assert.equal(ordered.prepare("outer-target","work"),undefined);
+            assert.deepEqual(orderedTrace,[["resolve","work"],["probeDirectory",undefined],"identity","parent","host-uid","config","mapped-uid",
+                ["repairDirectory",String(invocation)],["verifyDirectory",undefined],["probeConfig",undefined],"identity","parent","host-uid","config",
+                ["repairConfig",String(invocation)],["verifyConfig",undefined]]);
+        }
+        const blockedTrace = [];
+        const blockedPorts = { ...orderedPorts,
+            resolveConfig(profile) { assert.equal(this,blockedPorts); assert.equal(profile,"work"); return "resolved-config"; },
+            probeDirectory: () => ({ status: 1 }), hasHostIdentity: () => false,
+            mappedContainerUid: () => { blockedTrace.push("uid"); throw new Error("forbidden uid"); },
+            repairDirectory: () => { blockedTrace.push("repair"); throw new Error("forbidden root repair"); } };
+        const blocked = createOrderedCodexConfigPreparation(blockedPorts);
+        assert.throws(() => blocked.prepare("outer-target","work"),/host user identity is unavailable/);
+        assert.deepEqual(blockedTrace,[]);
         const stages = ["probe", "repair", "finalize"];
         const target = "pinned target;$(ignored)";
         const diagnostic = (stage, timeout = false) => `Codex config ${stage === "probe" ? "access probe" : "repair"} ${timeout ? "timed out" : "failed"}`;
@@ -3365,7 +3400,8 @@ async function smoke(packageRoot) {
     const ownershipHandleDeclarations = readFileSync(join(packageRoot, "dist/ports/session-ownership.d.ts"), "utf8");
     assert.match(ownershipHandleDeclarations, /updateContainer\(containerId: string \| null, runtime: SessionOwnershipRuntime, cleanupEnabled\?: boolean\): Promise<void>;/);
     assert.match(ownershipHandleDeclarations, /cleanupEnabled: boolean;/);
-    assert.match(readFileSync(join(packageRoot, "dist/docker.js"), "utf8"), /import \{ createCodexConfigPreparation \} from ["']\.\/application\/codex-config-preparation\.js["'];/);
+    assert.match(readFileSync(join(packageRoot, "dist/docker.js"), "utf8"), /import \{ createOrderedCodexConfigPreparation \} from ["']\.\/application\/credentials\/codex-config-preparation\.js["'];/);
+    assert.match(readFileSync(join(packageRoot,"dist/application/credentials/codex-config-preparation.js"),"utf8"), /import \{ createCodexConfigPreparation \} from ["']\.\.\/codex-config-preparation\.js["'];/);
     const execPortsDeclarations = readFileSync(join(packageRoot, "dist/ports/container-exec-readiness.d.ts"), "utf8");
     assert.match(execPortsDeclarations, /now\(\): number;/);
     assert.match(execPortsDeclarations, /canExec\(target: string, timeoutMs: number\): boolean;/);
@@ -3712,11 +3748,32 @@ async function smoke(packageRoot) {
         encoding: "utf8", timeout: 120000, windowsHide: true });
     assert.equal(preferenceSmoke.status, 0, String(preferenceSmoke.error || preferenceSmoke.stderr).slice(0, 2000));
     console.log("PASS tool preference distribution: compiled facade saves, preserves keys, refuses invalid config and resolves env/saved/default");
-    const codexConfigUrls = ["application/codex-config-preparation", "ports/codex-config-preparation", "docker", "container-runtime"]
+    const codexConfigUrls = ["application/codex-config-preparation", "ports/codex-config-preparation", "docker", "container-runtime", "application/credentials/codex-config-preparation"]
         .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",
         `const createOwnedImportRead = ${createOwnedImportRead.toString()}; await (${verifyCodexConfigPreparation.toString()})(...${JSON.stringify(codexConfigUrls)});`]);
     console.log("PASS Codex config distribution: compiled core and actual public facade, strict declarations, commands and observation parity");
+    const orderedContract=join(packageRoot,"ordered-codex-config-consumer.mts");
+    writeFileSync(orderedContract,[
+        'import {createOrderedCodexConfigPreparation} from "./dist/application/credentials/codex-config-preparation.js";',
+        'import type {CodexPreparationPorts} from "./dist/ports/credentials/codex-config-preparation.js";',
+        'import {prepareCodexConfigForContainer} from "./dist/docker.js";',
+        'declare const ports:CodexPreparationPorts;',
+        'const result:undefined=createOrderedCodexConfigPreparation(ports).prepare("target","work");',
+        'const legacy:(target:string,profile?:string)=>void=prepareCodexConfigForContainer;',
+        '// @ts-expect-error Every capability is required.',
+        'createOrderedCodexConfigPreparation({});',
+        '// @ts-expect-error Capabilities are readonly.',
+        'ports.currentHostUid=()=>1;',
+        '// @ts-expect-error Native stages synchronous.',
+        'const pending:CodexPreparationPorts["probeDirectory"]=async()=>({status:0});',
+        'void[result,legacy,pending];',
+    ].join("\n"));
+    try {
+        run(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"--noEmit","--strict","--skipLibCheck",
+            "--target","ES2022","--module","NodeNext","--moduleResolution","NodeNext",orderedContract]);
+    } finally { rmSync(orderedContract); }
+    console.log("PASS ordered Codex preparation distribution: compiled complete outer directory/file order, per-call UID reuse/freshness/negative eligibility, actual native facade retained, emitted synchronous readonly contracts");
     const hostAccessUrls = ["application/credentials/codex-host-access", "docker", "container-runtime"]
         .map(name => pathToFileURL(join(packageRoot, `dist/${name}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",

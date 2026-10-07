@@ -29,7 +29,7 @@ import { createContainerSessionHandoff } from "./application/container-session-h
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
-import { createCodexConfigPreparation } from "./application/codex-config-preparation.js";
+import { createOrderedCodexConfigPreparation } from "./application/credentials/codex-config-preparation.js";
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
 import { createNativeContainerExistingLifecycle } from "./composition/container-existing-lifecycle.js";
 import { createNativeContainerCreateLifecycle } from "./composition/container-create-lifecycle.js";
@@ -1274,66 +1274,33 @@ export function resetContainerManagerSocketAccessWarningForTest(): void {
 }
 
 export function prepareCodexConfigForContainer(containerName: string, profile?: string): void {
-    const configFile = getCodexConfigFile(profile);
     const directoryGuard = 'dir=/home/ccc/.codex; [ ! -L "$dir" ] && [ -d "$dir" ]';
     const directoryProbe = `${directoryGuard} && [ -r "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]`;
     const configGuard = `${directoryGuard} && file="$dir/config.toml" && [ ! -L "$file" ]`;
     const configProbe = `${configGuard} && { [ ! -e "$file" ] || { [ -f "$file" ] && [ -r "$file" ] && [ -w "$file" ]; }; }`;
-    const run = (operation: string, script: string, root = false, probe = false, timeout = CODEX_CONFIG_PREPARE_TIMEOUT_MS) => {
+    const run = (target: string, configFile: string, operation: string, script: string, root = false, probe = false, timeout = CODEX_CONFIG_PREPARE_TIMEOUT_MS) => {
         const result = spawnSync(runtimeCli(), [
-            "exec", ...(root ? ["--user", "root"] : []), containerName, "sh", "-c", codexConfigMutation(script),
+            "exec", ...(root ? ["--user", "root"] : []), target, "sh", "-c", codexConfigMutation(script),
         ], { encoding: "utf-8", timeout });
         if (result.error || (result.status !== 0 && !(probe && result.status === 1))) {
             throw new Error(`Unable to prepare Codex credentials at ${dirname(configFile)}: ${operation} failed (${result.error?.message ?? (result.stderr?.trim() || `exit ${result.status ?? "unknown"}`)})`);
         }
         return result;
     };
-    const validateHostDirectory = (): void => {
-        if (typeof process.getuid !== "function") {
-            throw new Error("Unable to prepare Codex credentials: host user identity is unavailable");
-        }
-        const parent = lstatSync(dirname(configFile));
-        if (!parent.isDirectory() || parent.uid !== process.getuid()) {
-            throw new Error("Unable to prepare Codex credentials: automatic repair requires a non-symlink directory owned by the host user");
-        }
-    };
-    const validateHostConfig = (allowAbsent = false): void => {
-        try {
-            const metadata = lstatSync(configFile);
-            if (!metadata.isFile() || metadata.nlink !== 1) {
-                throw new Error("Unable to prepare Codex credentials: automatic repair requires a regular non-symlink, single-link config file");
-            }
-        } catch (error) {
-            if (allowAbsent && (error as NodeJS.ErrnoException).code === "ENOENT") return;
-            throw error;
-        }
-    };
-    let containerUid: string | undefined;
-    const getContainerUid = (): string => {
-        if (containerUid === undefined) {
-            containerUid = getCodexContainerUid(containerName);
-        }
-        return containerUid;
-    };
-
-    // Parent access must be established before a file-only probe can report absence.
-    // Both resources use the existing semantic probe/repair/finalize policy.
-    const prepareAccess = (probeScript: string, repairScript: () => string, allowAbsent: boolean,
-        probeOperation: string, repairOperation: string, verifyOperation: string): void => {
-        createCodexConfigPreparation({
-            probe: () => run(probeOperation, probeScript, false, true),
-            repair: () => {
-                validateHostDirectory();
-                validateHostConfig(allowAbsent);
-                return run(repairOperation, repairScript(), true);
-            },
-            finalize: () => run(verifyOperation, probeScript),
-        }).run(containerName);
-    };
-    prepareAccess(directoryProbe, () => codexConfigDirectoryAclScript(getContainerUid()), true,
-        "directory access check", "directory ACL grant", "directory access verification");
-    prepareAccess(configProbe, () => codexConfigFileAclScript(getContainerUid()), false,
-        "config access check", "config ACL grant", "config access verification");
+    createOrderedCodexConfigPreparation({
+        resolveConfig: getCodexConfigFile,
+        hasHostIdentity: () => typeof process.getuid === "function",
+        inspectParent: configFile => lstatSync(dirname(configFile)),
+        inspectConfig: configFile => lstatSync(configFile),
+        currentHostUid: () => process.getuid!(),
+        mappedContainerUid: getCodexContainerUid,
+        probeDirectory: (target, configFile) => run(target, configFile, "directory access check", directoryProbe, false, true),
+        repairDirectory: (target, configFile, mappedUid) => run(target, configFile, "directory ACL grant", codexConfigDirectoryAclScript(mappedUid), true),
+        verifyDirectory: (target, configFile) => run(target, configFile, "directory access verification", directoryProbe),
+        probeConfig: (target, configFile) => run(target, configFile, "config access check", configProbe, false, true),
+        repairConfig: (target, configFile, mappedUid) => run(target, configFile, "config ACL grant", codexConfigFileAclScript(mappedUid), true),
+        verifyConfig: (target, configFile) => run(target, configFile, "config access verification", configProbe),
+    }).prepare(containerName, profile);
 }
 
 export function isDockerRunning(): boolean {

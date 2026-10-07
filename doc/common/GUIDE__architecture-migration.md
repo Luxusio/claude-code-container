@@ -1,5 +1,11 @@
 # Implementing the CCC architecture migration
 
+The ordered Codex preparation cutover is in progress. Its plan separates the
+whole directory-before-file operation and per-call UID cache while retaining the
+existing per-resource leaf and native ACL authority. See
+[ordered preparation](../credentials/GUIDE__codex-ordered-preparation.md).
+Acceptance remains pending independent review and QA.
+
 ## Codex host access restoration
 
 The [restoration guide](../credentials/GUIDE__codex-host-access.md) maps the full
