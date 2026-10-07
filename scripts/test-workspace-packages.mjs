@@ -1978,6 +1978,68 @@ async function verifyDockerEndpointSelection(applicationUrl, runtimeUrl, dockerU
     }
 }
 
+async function verifyWorkspaceBranchDelivery(applicationUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { createWorkspaceBranchValidation } = await import(applicationUrl);
+    const facade = await import(facadeUrl);
+    let calls = 0;
+    const validate = createWorkspaceBranchValidation({ utf8ByteLength: value => { calls++; return Buffer.byteLength(value, "utf8"); } });
+    assert.equal(calls, 0);
+    assert.throws(() => validate(""), /^Error: Invalid branch name: cannot be empty$/);
+    assert.throws(() => validate("-bad.."), /cannot start with '-'/);
+    assert.equal(calls, 0, "earlier branch guards precede native byte measurement");
+    assert.equal(validate("feature/작업"), "feature/작업");
+    assert.equal(calls, 1);
+    assert.throws(() => createWorkspaceBranchValidation({}), TypeError);
+    const failure = new Error("fixture byte calculation");
+    const broken = createWorkspaceBranchValidation({ utf8ByteLength: () => { throw failure; } });
+    assert.throws(() => broken("allowed"), error => error === failure);
+    for (const branch of ["x".repeat(255), "é".repeat(127) + "a", "💡".repeat(63) + "abc"]) {
+        assert.equal(facade.validateBranchName(branch), branch);
+    }
+    for (const branch of ["x".repeat(256), "é".repeat(128), "💡".repeat(64)]) {
+        assert.throws(() => facade.validateBranchName(branch), /^Error: Invalid branch name: too long \(max 255 bytes\)$/);
+    }
+    assert.equal(facade.validateBranchName("part.lock/child"), "part.lock/child");
+    assert.throws(() => facade.validateBranchName(new String("allowed")), TypeError);
+}
+
+async function verifyProfileRequestDelivery(domainUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const directory = mkdtempSync(join(process.cwd(), "profile-request-"));
+    const saved = [process.env.HOME, process.env.USERPROFILE];
+    process.env.HOME = directory; process.env.USERPROFILE = directory;
+    try {
+        const domain = await import(domainUrl);
+        const facade = await import(facadeUrl);
+        assert.equal(domain.DEFAULT_PROFILE_NAME, "default");
+        assert.equal(facade.DEFAULT_PROFILE_NAME, domain.DEFAULT_PROFILE_NAME);
+        for (const request of [undefined, "", "default"]) {
+            assert.equal(domain.normalizeProfile(request), undefined);
+            assert.equal(facade.normalizeProfile(request), undefined);
+            assert.equal(facade.profileClaudeDir(request), join(directory, ".ccc", "profiles", "default", "claude"));
+        }
+        assert.equal(domain.normalizeProfile(), undefined);
+        assert.equal(facade.normalizeProfile(), undefined);
+        for (const request of ["Work", " spaced ", "../raw", "한글"]) {
+            assert.equal(domain.normalizeProfile(request), request);
+            assert.equal(facade.normalizeProfile(request), request);
+        }
+        const raw = { [Symbol.toPrimitive]() { throw new Error("unexpected coercion"); } };
+        assert.equal(domain.normalizeProfile(raw), raw);
+        assert.equal(facade.normalizeProfile(raw), raw);
+        assert.throws(() => facade.profileClaudeDir(raw), TypeError);
+        assert.equal(facade.profileClaudeDir("Work"), join(directory, ".ccc", "profiles", "Work", "claude"));
+    } finally {
+        for (const [name, value] of [["HOME", saved[0]], ["USERPROFILE", saved[1]]]) {
+            if (value === undefined) delete process.env[name]; else process.env[name] = value;
+        }
+        rmSync(directory, { recursive: true, force: true });
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2168,6 +2230,39 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", endpointContract]);
     } finally { rmSync(endpointContract); }
     console.log("PASS Docker endpoint distribution: compiled required ports, actual context precedence/cache/daemon mount facade and emitted declaration consumer");
+    const branchUrls = ["application/workspace-branch-validation", "worktree"]
+        .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifyWorkspaceBranchDelivery.toString()})(${branchUrls.map(value => JSON.stringify(value)).join(",")});`]);
+    const profileUrls = ["domain/profile-request", "home-layout"]
+        .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifyProfileRequestDelivery.toString()})(${profileUrls.map(value => JSON.stringify(value)).join(",")});`]);
+    const parallelContract = join(packageRoot, "parallel-workspace-profile-consumer.mts");
+    writeFileSync(parallelContract, [
+        'import { createWorkspaceBranchValidation } from "./dist/application/workspace-branch-validation.js";',
+        'import type { WorkspaceBranchValidationPorts } from "./dist/ports/workspace-branch-validation.js";',
+        'import { validateBranchName } from "./dist/worktree.js";',
+        'import { DEFAULT_PROFILE_NAME, normalizeProfile } from "./dist/domain/profile-request.js";',
+        'import { DEFAULT_PROFILE_NAME as facadeDefault, normalizeProfile as facadeNormalize } from "./dist/home-layout.js";',
+        'type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;',
+        'declare const ports: WorkspaceBranchValidationPorts;',
+        'const validate: (branch: string) => string = createWorkspaceBranchValidation(ports);',
+        'const literals: ["default", "default"] = [DEFAULT_PROFILE_NAME, facadeDefault];',
+        'const signatures: [Equal<typeof validateBranchName, (branch: string) => string>, Equal<typeof normalizeProfile, (profile?: string) => string | undefined>, Equal<typeof facadeNormalize, (profile?: string) => string | undefined>] = [true,true,true];',
+        '// @ts-expect-error Byte measurement is required.',
+        'createWorkspaceBranchValidation({});',
+        '// @ts-expect-error Port methods are readonly.',
+        'ports.utf8ByteLength = () => 1;',
+        '// @ts-expect-error Native profile signature remains optional string.',
+        'facadeNormalize(1);',
+        'void [validate, literals, signatures];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", parallelContract]);
+    } finally { rmSync(parallelContract); }
+    console.log("PASS parallel workspace/profile distribution: actual compiled policy and native facades, UTF-8 thresholds/raw identity/private home paths and strict emitted declaration consumers");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);
