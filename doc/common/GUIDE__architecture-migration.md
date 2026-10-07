@@ -1,10 +1,11 @@
 # Implementing the CCC architecture migration
 
-Home resolution and configuration policy extraction is implemented; acceptance
-is in progress. The
+Home resolution and configuration policy extraction is accepted. The
 [home resolution guide](../home/GUIDE__resolution-and-config.md) specifies complete
-path/default-account/marker and config read/update parity. Acceptance remains
-pending broader checks, independent review and QA.
+path/default-account/marker and config read/update parity. Acceptance is
+complete through independent code/security/docs review, 10,507 passing full
+tests, five typechecks, lint, dualshipping, guarded CLI and Harness close.
+Remaining M11-M14 and native acceptance stay separate.
 
 The accepted ordered Codex preparation cutover separates the
 whole directory-before-file operation and per-call UID cache while retaining the
