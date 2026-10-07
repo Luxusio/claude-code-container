@@ -1,5 +1,14 @@
 # Implementing the CCC architecture migration
 
+## Version-file discovery and context
+
+The [scanner guide](../tooling/GUIDE__version-file-scanning.md) maps the complete
+discovery/parser/context flow to domain/tooling, ports/tooling, application/tooling
+and presentation. Native scanner composition retains path/filesystem semantics,
+the import-time shared-array snapshot and legacy public defaults. Lazy entry
+receivers, partial-result catches and exact prompt bytes are parity obligations;
+this cutover does not complete tooling setup or the wider migration.
+
 ## Unified workspace removal application
 
 The [unified removal guide](../workspaces/GUIDE__unified-removal.md) describes

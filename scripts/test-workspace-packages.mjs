@@ -2427,6 +2427,79 @@ async function verifyUnifiedRemovalDelivery(applicationUrl, facadeUrl) {
     } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 }
 
+async function verifyVersionFileScanningDelivery(domainUrl, applicationUrl, presentationUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const fs = await import("node:fs"), path = await import("node:path");
+    const { syncBuiltinESMExports } = await import("node:module");
+    const domain = await import(domainUrl), application = await import(applicationUrl);
+    const presentation = await import(presentationUrl), facade = await import(facadeUrl);
+    const entry = (name, directory) => ({ name, isDirectory() { assert.equal(this.name, name); return directory; }, isFile() { assert.equal(this.name, name); return !directory; } });
+    const reads = [], ignored = new Set();
+    const scan = application.createVersionFileScanner({
+        listDirectoryEntries: directory => directory === "base" ? [entry("sub", true), entry(".node-version", false)] : [entry("go.mod", false)],
+        observeFileByteSize: () => 3,
+        readVersionFileText: file => { reads.push(file); return file.endsWith("go.mod") ? "go 1.23" : "22"; },
+        childPath: (directory, name) => `${directory}/${name}`,
+        sourcePath: (base, file) => file.slice(base.length + 1),
+    }, ignored);
+    assert.deepEqual(reads, []);
+    const request = { baseDirectory: "base", directory: "base", depth: 0, maxDepth: 3 };
+    assert.deepEqual([...scan(request)], [["sub/go.mod", "go 1.23"], [".node-version", "22"]]);
+    ignored.add("sub"); reads.length = 0;
+    assert.deepEqual([...scan(request)], [[".node-version", "22"]]);
+    assert.deepEqual(reads, ["base/.node-version"]);
+    assert.throws(() => application.createVersionFileScanner({}, new Set()), TypeError);
+    assert.deepEqual(domain.extractVersionHints(new Map([[".node-version", "v22\r\n"], ["package.json", '{"engines":{"node":">=24"}}']])),
+        [{ tool: "node", version: "22", source: ".node-version" }]);
+    assert.deepEqual(domain.extractVersionHints(new Map([["sub\\.node-version", "22"]])), []);
+    const sdk = { fixture: true };
+    assert.deepEqual(domain.extractVersionHints(new Map([["global.json", JSON.stringify({ sdk: { version: sdk } })]])),
+        [{ tool: "dotnet", version: sdk, source: "global.json" }]);
+    const content = "x".repeat(2001);
+    assert.equal(presentation.formatScannedFiles(new Map([["one", content]])),
+        `Detected version files:\n\n=== one ===\n${"x".repeat(2000)}\n... (truncated, use Read tool for full content)\n\n`);
+    assert.equal(presentation.formatVersionHints([{ tool: "node", version: "22", source: ".node-version" }]),
+        'Pre-extracted versions:\n  node = "22" (from .node-version)\n\n');
+    assert.equal(facade.scanVersionFiles.length, 1);
+    const fixture = fs.mkdtempSync(path.join(process.cwd(), "version-scanning-"));
+    const originalRead = fs.default.readFileSync;
+    try {
+        fs.mkdirSync(path.join(fixture, "nested"));
+        fs.mkdirSync(path.join(fixture, "node_modules"));
+        fs.mkdirSync(path.join(fixture, ".hidden"));
+        fs.writeFileSync(path.join(fixture, ".node-version"), "22\n");
+        fs.writeFileSync(path.join(fixture, "nested/go.mod"), "module fixture\ngo 1.23\n");
+        fs.writeFileSync(path.join(fixture, "node_modules/package.json"), "{}");
+        fs.writeFileSync(path.join(fixture, ".hidden/package.json"), "{}");
+        fs.writeFileSync(path.join(fixture, "Cargo.toml"), "é".repeat(51200));
+        fs.writeFileSync(path.join(fixture, "package.json"), "é".repeat(51200) + "x");
+        const native = facade.scanVersionFiles(fixture);
+        assert.equal(native.get(".node-version"), "22\n");
+        assert.equal(native.get(path.join("nested", "go.mod")), "module fixture\ngo 1.23\n");
+        assert.equal(native.get("Cargo.toml"), "é".repeat(51200));
+        assert.equal(native.has("package.json"), false);
+        assert.equal(native.size, 3);
+        assert.equal(facade.scanVersionFiles(fixture, fixture, 0, 0).has(path.join("nested", "go.mod")), false);
+        assert.deepEqual([...facade.scanVersionFiles(path.join(fixture, "missing"))], []);
+        const failedPath = path.join(fixture, ".node-version");
+        let injected = 0;
+        fs.default.readFileSync = function (...args) {
+            if (args[0] === failedPath) { injected++; throw new Error("private fixture read failure"); }
+            return originalRead.apply(this, args);
+        };
+        syncBuiltinESMExports();
+        const partial = facade.scanVersionFiles(fixture);
+        assert.equal(injected, 1, "actual compiled facade reached the single named native read fault");
+        assert.equal(partial.has(".node-version"), false);
+        assert.equal(partial.get(path.join("nested", "go.mod")), "module fixture\ngo 1.23\n");
+        assert.equal(partial.get("Cargo.toml"), native.get("Cargo.toml"));
+        assert.equal(partial.size, 2);
+    } finally {
+        fs.default.readFileSync = originalRead; syncBuiltinESMExports();
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2832,6 +2905,36 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", unifiedRemovalContract]);
     } finally { rmSync(unifiedRemovalContract); }
     console.log("PASS unified removal distribution: compiled opaque quarantine veto, actual nested native removal with preserved source refs/config/files, required readonly synchronous declarations");
+    const scannerUrls = ["domain/tooling/version-files", "application/tooling/version-file-scanning", "presentation/tool-version-context", "scanner"]
+        .map(name => pathToFileURL(join(packageRoot, `dist/${name}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyVersionFileScanningDelivery.toString()})(${scannerUrls.map(value => JSON.stringify(value)).join(",")});`]);
+    const scannerContract = join(packageRoot, "version-scanning-consumer.mts");
+    writeFileSync(scannerContract, [
+        'import { matchesPattern, scanVersionFiles, extractVersionHints, formatScannedFiles, formatVersionHints, type VersionHint } from "./dist/scanner.js";',
+        'import { createVersionFileScanner } from "./dist/application/tooling/version-file-scanning.js";',
+        'import type { VersionFileScanningPorts, VersionFileScanRequest } from "./dist/ports/tooling/version-file-scanning.js";',
+        'declare const ports: VersionFileScanningPorts; declare const request: VersionFileScanRequest;',
+        'const legacy: (base:string,dir?:string,depth?:number,maxDepth?:number)=>Map<string,string> = scanVersionFiles;',
+        'const result = createVersionFileScanner(ports,new Set<string>())(request); result.set("x","22");',
+        'const hints: VersionHint[] = extractVersionHints(result); hints.push({tool:"node",version:"22",source:"x"}); hints[0].version="23";',
+        'const texts: string[] = [formatScannedFiles(result),formatVersionHints(hints)]; const matched:boolean = matchesPattern("package.json");',
+        '// @ts-expect-error All five observations are required.',
+        'createVersionFileScanner({},new Set());',
+        '// @ts-expect-error Ignore input has no hidden default.',
+        'createVersionFileScanner(ports);',
+        '// @ts-expect-error Ports are readonly.',
+        'ports.childPath = () => "changed";',
+        '// @ts-expect-error Observations remain synchronous.',
+        'const asyncRead: VersionFileScanningPorts["readVersionFileText"] = async () => "text";',
+        '// @ts-expect-error Scanning remains synchronous.',
+        'const asyncResult: Promise<unknown> = result;',
+        'void [legacy,texts,matched,asyncRead,asyncResult];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", scannerContract]);
+    } finally { rmSync(scannerContract); }
+    console.log("PASS version scanner distribution: compiled ordered core, parser/context bytes, actual native byte/depth boundaries and named-read subprocess fault, readonly synchronous legacy declarations");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);
