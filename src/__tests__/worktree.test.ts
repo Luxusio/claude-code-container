@@ -17,7 +17,6 @@ import {
 } from "fs";
 import { join, dirname, basename, posix, relative, resolve } from "path";
 import { tmpdir } from "os";
-import { fileURLToPath } from "node:url";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
 import {
@@ -4788,7 +4787,7 @@ describe("isValidWorktree", () => {
 
         const cli = spawnSync(process.execPath, [
             "--import", import.meta.resolve("tsx"),
-            "--import", fileURLToPath(new URL("./helpers/worktree-cli-runtime-fixture.mjs", import.meta.url)),
+            "--import", new URL("./helpers/worktree-cli-runtime-fixture.mjs", import.meta.url).href,
             resolve("src/index.ts"),
             "runtime", `@${branch}`,
         ], {
