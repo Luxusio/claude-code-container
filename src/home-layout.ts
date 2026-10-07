@@ -26,8 +26,9 @@ import {
 } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { DEFAULT_PROFILE_NAME as domainDefaultProfileName, normalizeProfile as normalizeProfileRequest } from "./domain/profile-request.js";
 
-export const DEFAULT_PROFILE_NAME = "default";
+export const DEFAULT_PROFILE_NAME = domainDefaultProfileName;
 const MIGRATION_LOCK_STALE_MS = 10 * 60 * 1000;
 
 export function cccHome(): string {
@@ -52,7 +53,7 @@ function resolveEntry(legacyRel: string, nextRel: string): string {
 
 /** `undefined` and "default" both mean the default profile. */
 export function normalizeProfile(profile?: string): string | undefined {
-    return profile && profile !== DEFAULT_PROFILE_NAME ? profile : undefined;
+    return normalizeProfileRequest(profile);
 }
 
 export function profilesDir(): string {
