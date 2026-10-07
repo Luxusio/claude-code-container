@@ -6,7 +6,7 @@ export type { WorkspaceEntry } from "../../domain/workspace/source-entry.js";
 export type { WorktreeCreationAction, WorktreeRepoResult, WorktreeResult } from "../../domain/workspace/creation-result.js";
 export type { MultiCreationPorts, MultiCreationRequest } from "../../ports/workspace/multi-creation.js";
 
-export function createMultiWorkspaceCreation<Prepared, Registration, WorkspaceIdentity, CopiedIdentity>(
+export function createMultiWorkspaceCreation<Prepared, Registration extends object | symbol, WorkspaceIdentity, CopiedIdentity extends object | symbol>(
     ports: MultiCreationPorts<Prepared, Registration, WorkspaceIdentity, CopiedIdentity>,
 ): (request: MultiCreationRequest) => WorktreeResult {
     for (const name of [

@@ -14,6 +14,14 @@ type Identity = { readonly identity: unique symbol };
 type Copied = { readonly copied: unique symbol };
 type PortNames = "observeBranch" | "prepareAddition" | "addPrepared" | "compensateFailedAddition" | "scanSource" | "destinationPath" | "ensureWorkspaceParent" | "createWorkspaceExclusive" | "captureWorkspaceIdentity" | "requireRegistration" | "pathExists" | "worktreeMatches" | "removeRegisteredWorktree" | "rollbackCreatedBranch" | "assertWorkspaceIdentity" | "workspaceEntryCount" | "quarantineWorkspace" | "copyEntry" | "captureCopiedIdentity" | "quarantineCopiedEntry";
 type RequiredKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? never : K }[keyof T];
+// @ts-expect-error Registration cannot be a falsy numeric proof.
+type NumericRegistration = MultiCreationPorts<Prepared, number, Identity, Copied>;
+// @ts-expect-error Registration cannot be a falsy boolean proof.
+type BooleanRegistration = MultiCreationPorts<Prepared, boolean, Identity, Copied>;
+// @ts-expect-error Copied identity cannot be a falsy numeric proof.
+type NumericCopiedIdentity = MultiCreationPorts<Prepared, Receipt, Identity, number>;
+// @ts-expect-error Copied identity cannot be a falsy boolean proof.
+type BooleanCopiedIdentity = MultiCreationPorts<Prepared, Receipt, Identity, boolean>;
 function contracts(ports: MultiCreationPorts<Prepared, Receipt, Identity, Copied>, request: MultiCreationRequest, entry: WorkspaceEntry, result: WorktreeResult) {
     const create = createMultiWorkspaceCreation(ports);
     const proof: [Equal<LegacyEntry, WorkspaceEntry>, Equal<keyof WorkspaceEntry, "name" | "path" | "isGitRepo">, Equal<LegacyResult, WorktreeResult>, Equal<ReturnType<typeof create>, WorktreeResult>, Equal<Parameters<typeof create>, [request: MultiCreationRequest]>, Equal<ReturnType<typeof createWorkspace>, WorktreeResult>, Equal<Parameters<typeof ports.rollbackCreatedBranch>, [source: string, branch: string, action: "worktree-existing" | "worktree-remote" | "worktree-new", prepared: Prepared | null]>, Equal<Parameters<typeof ports.removeRegisteredWorktree>, [request: MultiCreationRequest, source: string, destination: string, receipt: Receipt]>, Equal<Parameters<typeof ports.quarantineCopiedEntry>, [request: MultiCreationRequest, destination: string, identity: Copied]>] = [true, true, true, true, true, true, true, true, true];
@@ -29,6 +37,14 @@ function contracts(ports: MultiCreationPorts<Prepared, Receipt, Identity, Copied
     createMultiWorkspaceCreation({});
     // @ts-expect-error No implicit native adapter.
     createMultiWorkspaceCreation();
+    // @ts-expect-error Factory registration cannot be numeric, including zero.
+    createMultiWorkspaceCreation<Prepared, number, Identity, Copied>(ports as never);
+    // @ts-expect-error Factory registration cannot be boolean, including false.
+    createMultiWorkspaceCreation<Prepared, boolean, Identity, Copied>(ports as never);
+    // @ts-expect-error Factory copied identity cannot be numeric, including zero.
+    createMultiWorkspaceCreation<Prepared, Receipt, Identity, number>(ports as never);
+    // @ts-expect-error Factory copied identity cannot be boolean, including false.
+    createMultiWorkspaceCreation<Prepared, Receipt, Identity, boolean>(ports as never);
     // @ts-expect-error Scan remains synchronous.
     createMultiWorkspaceCreation({ ...ports, scanSource: async () => [] });
     // @ts-expect-error Opaque workspace identity remains synchronous.
@@ -51,6 +67,9 @@ function contracts(ports: MultiCreationPorts<Prepared, Receipt, Identity, Copied
     ports.prepareAddition({ ...request, failureContext: { kind: "multi-repo", repositoryName: "name" } }, "worktree-new").expectedBranchOid;
 }
 void contracts;
+type InvalidProofDeclarations = [NumericRegistration, BooleanRegistration, NumericCopiedIdentity, BooleanCopiedIdentity];
+const invalidDeclarationNames: keyof InvalidProofDeclarations = "length";
+void invalidDeclarationNames;
 
 describe("multi creation generic and mutable legacy type contracts", () => {
     it("uses four unrelated symbol identities without native fence fields", () => {
@@ -65,5 +84,50 @@ describe("multi creation generic and mutable legacy type contracts", () => {
             quarantineWorkspace: () => {}, copyEntry: () => {}, captureCopiedIdentity: () => copied, quarantineCopiedEntry: () => {},
         })({ repositoryPath: "source", destinationPath: "destination", branch: "topic" });
         expect(result).toEqual({ workspacePath: "destination", created: [{ name: "repo", branch: "topic", action: "worktree-new" }], copied: [] });
+    });
+    it.each([
+        { kind: "object", registration: Object.freeze({ marker: "registration" }), copy: Object.freeze({ marker: "copy" }) },
+        { kind: "symbol", registration: Symbol("registration"), copy: Symbol("copy") },
+    ])("compensates $kind proof values by exact identity in repo-then-copy order", ({ registration, copy }) => {
+        const trace: string[] = [];
+        const original = new Error("failed final copy");
+        const existing = new Set(["destination/repo"]);
+        // Prepared and workspace identity deliberately remain unrestricted.
+        const ports: MultiCreationPorts<number, typeof registration, boolean, typeof copy> = {
+            observeBranch: () => "none", prepareAddition: () => 0,
+            addPrepared: (_request, prepared) => { expect(prepared).toBe(0); return { status: 0, registrationReceipt: registration }; },
+            compensateFailedAddition: () => { throw new Error("Unexpected addition failure"); },
+            scanSource: () => [
+                { name: "repo", path: "source/repo", isGitRepo: true },
+                { name: "copied", path: "source/copied", isGitRepo: false },
+                { name: "failed", path: "source/failed", isGitRepo: false },
+            ],
+            destinationPath: (_request, name) => `destination/${name}`,
+            ensureWorkspaceParent: () => {}, createWorkspaceExclusive: () => {}, captureWorkspaceIdentity: () => false,
+            requireRegistration: value => { expect(value).toBe(registration); return registration; },
+            pathExists: path => existing.has(path),
+            worktreeMatches: () => { throw new Error("Reverse cleanup must not add forward matching checks"); },
+            removeRegisteredWorktree: (_request, source, destination, proof) => {
+                expect(source).toBe("source/repo"); expect(destination).toBe("destination/repo"); expect(proof).toBe(registration);
+                trace.push("remove-repo"); existing.delete(destination);
+            },
+            rollbackCreatedBranch: (source, branch, action, prepared) => {
+                expect(source).toBe("source/repo"); expect(branch).toBe("topic"); expect(action).toBe("worktree-new"); expect(prepared).toBe(0);
+                trace.push("branch");
+            },
+            copyEntry: (source, destination) => { if (source === "source/failed") throw original; existing.add(destination); },
+            captureCopiedIdentity: destination => { expect(destination).toBe("destination/copied"); return copy; },
+            quarantineCopiedEntry: (_request, destination, proof) => {
+                expect(destination).toBe("destination/copied"); expect(proof).toBe(copy); trace.push("remove-copy"); existing.delete(destination);
+            },
+            assertWorkspaceIdentity: (_request, identity) => { expect(identity).toBe(false); trace.push("assert-workspace"); },
+            workspaceEntryCount: () => { trace.push("count"); return existing.size; },
+            quarantineWorkspace: (_request, identity) => { expect(identity).toBe(false); trace.push("remove-workspace"); },
+        };
+        let caught: unknown;
+        try { createMultiWorkspaceCreation(ports)({ repositoryPath: "source", destinationPath: "destination", branch: "topic" }); }
+        catch (error) { caught = error; }
+        expect(caught).toBe(original);
+        expect(trace).toEqual(["remove-repo", "branch", "remove-copy", "assert-workspace", "count", "remove-workspace"]);
     });
 });

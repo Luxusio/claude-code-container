@@ -5,6 +5,9 @@ sequence, per-repository addition, copy bookkeeping and both compensation flows.
 It composes the existing addition application. Required semantic ports supply
 scanning, paths, exclusive mkdir, native identities, copying and fenced cleanup;
 the application never inspects or fabricates opaque native proof.
+Registration and copied identity types accept object or symbol references, not
+numeric/boolean tokens. This matches the retained native truthiness checks for
+missing proof and prevents valid-looking zero values from skipping compensation.
 
 Parent mkdir precedes exclusive mkdir, and only the exclusive call translates
 EEXIST. Workspace identity capture is outside repository rollback. Each added

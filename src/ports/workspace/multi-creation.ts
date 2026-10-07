@@ -7,7 +7,7 @@ export interface MultiCreationRequest {
     readonly branch: string;
 }
 
-export interface MultiCreationPorts<Prepared, Registration, WorkspaceIdentity, CopiedIdentity>
+export interface MultiCreationPorts<Prepared, Registration extends object | symbol, WorkspaceIdentity, CopiedIdentity extends object | symbol>
     extends WorktreeAdditionPorts<Prepared, Registration> {
     readonly scanSource: (request: MultiCreationRequest) => WorkspaceEntry[];
     readonly destinationPath: (request: MultiCreationRequest, name: string) => string;

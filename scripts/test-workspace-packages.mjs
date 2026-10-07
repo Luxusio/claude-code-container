@@ -2169,7 +2169,8 @@ async function verifyMultiCreationDelivery(applicationUrl) {
         { name: "plain-a", path: "source/plain-a", isGitRepo: false },
         { name: "plain-b", path: "source/plain-b", isGitRepo: false },
     ];
-    const workspace = { opaque: "workspace" }, copied = { opaque: "copied" };
+    const workspace = { opaque: "workspace" };
+    let copied = { opaque: "copied" }, symbolProofs = false;
     const prepared = new Map(), registrations = new Map(), trace = [];
     const copyFailure = new Error("owned copy fixture failure");
     let mode = "success";
@@ -2177,7 +2178,7 @@ async function verifyMultiCreationDelivery(applicationUrl) {
         observeBranch: () => "none",
         prepareAddition: child => { const token = { opaque: child.repositoryPath }; prepared.set(child.repositoryPath, token); return token; },
         addPrepared: child => {
-            const token = { opaque: child.repositoryPath }; registrations.set(child.repositoryPath, token);
+            const token = symbolProofs ? Symbol(child.repositoryPath) : { opaque: child.repositoryPath }; registrations.set(child.repositoryPath, token);
             return { status: mode === "repo" && child.repositoryPath.endsWith("two") ? 1 : 0, stderr: "later addition failed", registrationReceipt: token };
         },
         compensateFailedAddition: child => { trace.push(`failed-add:${child.repositoryPath}`); },
@@ -2210,6 +2211,9 @@ async function verifyMultiCreationDelivery(applicationUrl) {
     assert.throws(() => create(request), /^Error: Failed to create worktree for two: later addition failed$/);
     assert.deepEqual(trace, ["failed-add:source/two", "remove:source/one", "branch:source/one", "root"]);
     trace.length = 0; mode = "copy";
+    assert.throws(() => create(request), error => error === copyFailure);
+    assert.deepEqual(trace, ["remove:source/two", "branch:source/two", "remove:source/one", "branch:source/one", "copy:workspace/plain-a", "root"]);
+    trace.length = 0; symbolProofs = true; copied = Symbol("copied identity");
     assert.throws(() => create(request), error => error === copyFailure);
     assert.deepEqual(trace, ["remove:source/two", "branch:source/two", "remove:source/one", "branch:source/one", "copy:workspace/plain-a", "root"]);
     assert.throws(() => createMultiWorkspaceCreation({}), TypeError);
@@ -2514,6 +2518,10 @@ async function smoke(packageRoot) {
         'const facade: (source:string,branch:string)=>WorktreeResult = createWorkspace;',
         '// @ts-expect-error All semantic effects are required.',
         'createMultiWorkspaceCreation({});',
+        '// @ts-expect-error Numeric registration tokens can be falsy and are not supported.',
+        'type NumericRegistration = MultiCreationPorts<object,number,object,object>;',
+        '// @ts-expect-error Boolean copied identities can be falsy and are not supported.',
+        'type BooleanCopied = MultiCreationPorts<object,object,object,boolean>;',
         '// @ts-expect-error Ports are readonly.',
         'ports.pathExists = () => true;',
         '// @ts-expect-error The factory result is synchronous.',
