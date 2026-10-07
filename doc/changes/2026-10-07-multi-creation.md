@@ -30,6 +30,19 @@ and shared shipping verifier retain their reviewed bytes. Fresh combined review
 and QA remain required before delivery. Original source/control and failed CLI
 QA evidence are preserved in byte-verified private archives.
 
+Fresh combined review and QA subsequently passed at `e2cb25be`: 88 files,
+3,139 tests and nine conditional skips; five standard type configurations plus
+explicit reuse-test typing, scoped lint, both distribution forms and actual
+candidate CLI creation/list/reuse. All 1,678 captured source/artifact hashes
+remained unchanged. Harness verification returned PASS and the creation task
+closed normally. Initial QA fixture failures were preserved before the complete
+successful rerun; these checks do not certify native Mac/Windows acceptance.
+
+A post-close health helper unexpectedly executed configured checks despite its
+`--dry-run` name. Its owned process tree was stopped; all validated source and
+build hashes still matched, with only the two reviewed documentation updates
+different. No health score is claimed from that interrupted helper.
+
 ## Known ceiling
 
 This operation does not finish dispatch, repair/removal internals, the remaining

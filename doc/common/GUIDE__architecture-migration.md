@@ -1536,3 +1536,26 @@ Verification requires deterministic catch/order/opaque-token tests, actual
 private-Git ownership and partial-copy regressions, both compiled shipping forms
 and unchanged legacy mutable type exports. Repair/removal internals, dispatch and
 the broader architecture acceptance remain future work.
+
+### Frozen workspace verification
+
+When invoking `scripts/test-workspace-packages.mjs` directly in an isolated
+environment, supply `npm_execpath` for the selected Node installation's npm CLI.
+Verify exit zero and both distribution-form results; ordinary npm bootstrap
+variables do not survive `env -i`.
+
+When adding a test outside the architecture and narrow unit typecheck includes,
+typecheck that file explicitly. An external temporary configuration must resolve
+Node types from the candidate checkout. Five existing configurations alone do
+not prove coverage of an excluded file.
+
+Keep runtime-summary success fixtures separate from deliberate runtime-discovery
+failure fences. A summary fixture may allow canned version and exact read-only
+information queries; the workspace-only fence may deliberately fail discovery.
+Record the allowed engine commands and workspace result separately from that
+intentional exit. Use a suite deadline longer than its measured duration; the
+full worktree regression currently takes about nine minutes on this host.
+
+The Harness health command treats `--dry-run` as stdout-only output and still
+executes configured checks. Inspect those commands before invoking it on a
+frozen checkout; it can trigger the normal auto-building test wrapper.
