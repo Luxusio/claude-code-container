@@ -16,10 +16,13 @@ export function createWaitBudget(timeoutMs, intervalMs) {
             return Math.min(maximum, Math.ceil(remaining()));
         },
         async pause() {
-            const delay = Math.min(interval, remaining());
-            // Node truncates fractional delays; rounding down can start one last
-            // observation with less than a millisecond left in the budget.
-            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.ceil(delay)));
+            const wakeAt = Math.min(deadline, performance.now() + interval);
+            let delay;
+            // Timer callbacks can arrive early. Recheck the same monotonic
+            // target without restarting the interval or overall allowance.
+            while ((delay = wakeAt - performance.now()) > 0) {
+                await new Promise((resolve) => setTimeout(resolve, Math.ceil(delay)));
+            }
         },
     };
 }

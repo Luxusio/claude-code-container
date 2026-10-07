@@ -382,6 +382,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
     });
 
     it("cleans up media before reporting a network mismatch", async () => {
+        let clock = 100000;
         const operations: string[] = [];
         const run = vi.fn((command: { input?: string }) => {
             const request = requestOf(command);
@@ -393,9 +394,12 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         const result = await waitForDeviceLabHyperVGuestReadiness({
             executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
             expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000, removeProvisioningMedia,
+            now: () => clock,
+            sleep: async milliseconds => { clock += milliseconds; },
         });
-        expect(result).toMatchObject({ ok: false, reason: "hyper-v-guest-network-not-ready", scrubConfirmed: true, mediaDetached: true });
-        expect(operations.slice(0, 3)).toEqual(["Invoke-Guest", "Remove-VMDvdDrive", "delete-iso"]);
+        expect(result).toMatchObject({ ok: false, reason: "hyper-v-guest-network-not-ready", attempts: 1, scrubConfirmed: true, mediaDetached: true });
+        expect(operations).toEqual(["Invoke-Guest", "Remove-VMDvdDrive", "delete-iso"]);
+        expect(removeProvisioningMedia).toHaveBeenCalledTimes(1);
     });
 
     it("maps bounded native authentication and session errors without exposing host text", async () => {

@@ -47,7 +47,9 @@ describe("shared monotonic observation budget", () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         let clock = 0;
         vi.spyOn(performance, "now").mockImplementation(() => clock);
-        const timer = vi.spyOn(globalThis, "setTimeout");
+        const schedule = globalThis.setTimeout;
+        const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) =>
+            schedule(() => { clock += delay; callback(); }, delay)) as typeof setTimeout);
         const budget = createWaitBudget(100000, input);
         const initial = budget.pause();
         expect(timer.mock.calls[0][1]).toBe(expected);
@@ -61,5 +63,49 @@ describe("shared monotonic observation budget", () => {
         clock = 100000;
         await budget.pause();
         expect(timer).toHaveBeenCalledTimes(2);
+    });
+    it.each([0, 90.5])("rechecks repeated early callbacks against one target from %s", async start => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let clock = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => clock);
+        const budget = createWaitBudget(100, 10);
+        clock = start;
+        const target = Math.min(100, start + 10);
+        const callbacks = [target - 1, target - 0.5, target + 0.25];
+        const schedule = globalThis.setTimeout;
+        const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) =>
+            schedule(() => { clock = callbacks.shift()!; callback(); }, delay)) as typeof setTimeout);
+        let finished = false;
+        const pending = budget.pause().then(() => { finished = true; });
+        await vi.advanceTimersByTimeAsync(10);
+        expect(finished).toBe(false);
+        expect(timer.mock.calls.map(call => call[1])).toEqual([10, 1]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(finished).toBe(false);
+        expect(timer.mock.calls.map(call => call[1])).toEqual([10, 1, 1]);
+        await vi.advanceTimersByTimeAsync(1);
+        await pending;
+        expect(finished).toBe(true);
+        expect(clock).toBe(target + 0.25);
+        expect(budget.remaining()).toBe(Math.max(0, 100 - clock));
+        expect(timer).toHaveBeenCalledTimes(3);
+    });
+    it.each([10, 12])("uses one callback when the monotonic clock reaches %s", async wake => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let clock = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => clock);
+        const schedule = globalThis.setTimeout;
+        const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) =>
+            schedule(() => { clock = wake; callback(); }, delay)) as typeof setTimeout);
+        const budget = createWaitBudget(100, 10);
+        const pending = budget.pause();
+        await vi.runAllTimersAsync();
+        await pending;
+        expect(timer).toHaveBeenCalledTimes(1);
+        expect(budget.remaining()).toBe(100 - wake);
+        clock = 100;
+        await budget.pause();
+        expect(timer).toHaveBeenCalledTimes(1);
+        expect(budget.requestTimeout()).toBe(0);
     });
 });

@@ -67,6 +67,9 @@ for (const [backend, handle] of [["android-emulator", handleAndroidTool], ["andr
         });
         it.each(["failed-then-successful", "successful-then-failed"])("uses latest app observation: %s", async (order) => {
             vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const schedule = globalThis.setTimeout;
+            vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) =>
+                schedule(() => { time += delay; callback(); }, delay)) as typeof setTimeout);
             const bad = result("", 1, { stderr: "device disconnected" });
             const run = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => {
                 const first = run.mock.calls.length === 1;
@@ -83,6 +86,9 @@ for (const [backend, handle] of [["android-emulator", handleAndroidTool], ["andr
         });
         it.each(["failed-then-successful", "successful-then-failed"])("uses latest UI observation: %s", async (order) => {
             vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const schedule = globalThis.setTimeout;
+            vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) =>
+                schedule(() => { time += delay; callback(); }, delay)) as typeof setTimeout);
             let observation = 0;
             const run = vi.spyOn(commands, "runWithTimeout").mockImplementation((_exe, args) => {
                 if (args.includes("uiautomator")) {
