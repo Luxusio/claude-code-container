@@ -24,8 +24,17 @@ function probe(markerValue = marker, secrets = false, addresses = ["172.29.0.10"
     return JSON.stringify({ computerName: "CCC-WIN", addresses, firstLogonCompleted: markerValue, provisioningSecretsPresent: secrets });
 }
 
+function readinessClock() {
+    let now = 100000;
+    return {
+        now: () => now,
+        sleep: async (milliseconds: number) => { now += milliseconds; },
+    };
+}
+
 describe("Device Lab typed Hyper-V guest readiness", () => {
     it("probes, confirms scrub, detaches media, deletes ISO, then checks network", async () => {
+        const clock = readinessClock();
         const calls: string[] = [];
         const run = vi.fn((command: { input?: string }) => {
             const request = requestOf(command);
@@ -34,6 +43,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         });
         const removeProvisioningMedia = vi.fn(() => { calls.push("delete-iso"); });
         const result = await waitForDeviceLabHyperVGuestReadiness({
+            ...clock,
             executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
             expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000, removeProvisioningMedia,
         });
@@ -52,6 +62,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
             ["{malformed", "hyper-v-guest-probe-invalid"],
             [JSON.stringify({ computerName: "CCC-WIN", addresses: ["172.29.0.10"], firstLogonCompleted: marker, provisioningSecretsPresent: "false" }), "hyper-v-guest-probe-invalid"],
         ] as const) {
+            const clock = readinessClock();
             const requests: HyperVWindowsExecutionRequest[] = [];
             const run = vi.fn((command: { input?: string }) => {
                 const request = requestOf(command);
@@ -60,6 +71,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
             });
             const removeProvisioningMedia = vi.fn();
             const result = await waitForDeviceLabHyperVGuestReadiness({
+                ...clock,
                 executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
                 expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000, removeProvisioningMedia,
             });
@@ -226,6 +238,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
     });
 
     it("does not replay an uncertain DVD removal and can confirm its absence by typed reads", async () => {
+        const clock = readinessClock();
         const operations: string[] = [];
         const run = vi.fn((command: { input?: string }) => {
             const request = requestOf(command);
@@ -240,6 +253,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         });
         const removeProvisioningMedia = vi.fn();
         const result = await waitForDeviceLabHyperVGuestReadiness({
+            ...clock,
             executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
             expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000, removeProvisioningMedia,
         });
@@ -249,6 +263,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
     });
 
     it("does not retry an uncertain DVD removal while the attachment remains", async () => {
+        const clock = readinessClock();
         const operations: string[] = [];
         const run = vi.fn((command: { input?: string }) => {
             const request = requestOf(command);
@@ -264,6 +279,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         });
         const removeProvisioningMedia = vi.fn();
         const result = await waitForDeviceLabHyperVGuestReadiness({
+            ...clock,
             executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
             expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000, removeProvisioningMedia,
         });
@@ -273,6 +289,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
     });
 
     it("keeps attached media unsafe after a native ambiguous-DVD refusal", async () => {
+        const clock = readinessClock();
         const operations: string[] = [];
         const run = vi.fn((command: { input?: string }) => {
             const request = requestOf(command);
@@ -291,6 +308,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         });
         const removeProvisioningMedia = vi.fn();
         const result = await waitForDeviceLabHyperVGuestReadiness({
+            ...clock,
             executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
             expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000, removeProvisioningMedia,
         });
@@ -368,11 +386,13 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
     });
 
     it("keeps both latches when host ISO deletion fails after a confirmed detach", async () => {
+        const clock = readinessClock();
         const run = vi.fn((command: { input?: string }) => {
             const request = requestOf(command);
             return envelope(request, request.operation === "Invoke-Guest" ? [{ action: "job", output: probe() }] : []);
         });
         const result = await waitForDeviceLabHyperVGuestReadiness({
+            ...clock,
             executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
             expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000,
             removeProvisioningMedia: () => { throw new Error("disk locked"); },
@@ -407,6 +427,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
             ["InvalidCredential-PSSessionOpenFailed", "powershell-direct-authentication-failed"],
             ["PSSessionOpenFailed", "powershell-direct-session-unavailable"],
         ] as const) {
+            const clock = readinessClock();
             const run = vi.fn((command: { input?: string }) => {
                 const request = requestOf(command);
                 return {
@@ -415,6 +436,7 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
                 };
             });
             const result = await waitForDeviceLabHyperVGuestReadiness({
+                ...clock,
                 executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
                 expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000,
                 removeProvisioningMedia: vi.fn(),
