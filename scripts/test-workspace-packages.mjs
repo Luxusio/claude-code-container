@@ -2987,6 +2987,68 @@ async function verifyContainerInstallationDelivery(applicationUrl, setupUrl, reg
         capture("bubble-missing",()=>setup.ensureTools(target,codex),[{},{},{status:42},{},{},{}]);
         capture("uv-present",()=>setup.ensureUvAvailable(target),[{}]);
         capture("uv-missing",()=>setup.ensureUvAvailable(target),[{status:1},{}]);
+        const claude=registry.getToolByName("claude");assert.ok(claude);
+        const installDescriptor=Object.getOwnPropertyDescriptor(claude,"installCommand");
+        const spawnDescriptor=Object.getOwnPropertyDescriptor(cp,"spawnSync");
+        try {
+            const selectedCalls=[],redirectedCalls=[];let installReads=0;
+            const redirected=function(...args){assert.equal(this,undefined);redirectedCalls.push(args);return {...success,stdout:"VALID"};};
+            cp.spawnSync=function(...args){
+                assert.equal(this,undefined);selectedCalls.push(args);
+                return {...success,stdout:selectedCalls.length===1?"INSTALL":""};
+            };
+            syncBuiltinESMExports();
+            Object.defineProperty(claude,"installCommand",{configurable:installDescriptor.configurable,enumerable:installDescriptor.enumerable,get(){
+                installReads++;cp.spawnSync=redirected;syncBuiltinESMExports();return "synthetic-install-command";
+            }});
+            runtime._setRuntimeInfoForTest({runtime:"docker"});
+            assert.equal(setup.ensureClaudeInContainer(target),undefined);
+            assert.equal(installReads,1);assert.equal(selectedCalls.length,2);assert.equal(redirectedCalls.length,1);
+            assert.deepEqual(selectedCalls[1],["docker",["exec",target,"sh","-c","timeout -k 5s 285s sh -c 'synthetic-install-command'"],{stdio:"inherit",timeout:300_000}]);
+            assert.deepEqual(redirectedCalls[0],selectedCalls[0],"the subsequent Claude confirmation must observe the replacement binding");
+        } finally {
+            Object.defineProperty(claude,"installCommand",installDescriptor);
+            Object.defineProperty(cp,"spawnSync",spawnDescriptor);syncBuiltinESMExports();
+        }
+        const findDescriptor=Object.getOwnPropertyDescriptor(Array.prototype,"find");
+        const logDescriptor=Object.getOwnPropertyDescriptor(console,"log");
+        const npmDefinitions=registry.getNpmTools();const changedDefinitions=[];
+        try {
+            let armed=false,loggerReplacements=0,selectedDefinitions=0;
+            const redirectedLogs=[];
+            const redirectedLog=function(...args){assert.equal(this,console);redirectedLogs.push(args);};
+            Object.defineProperty(Array.prototype,"find",{...findDescriptor,value:function(...args){
+                const selected=Reflect.apply(findDescriptor.value,this,args);
+                if(this.length===npmDefinitions.length&&this.every((entry,index)=>
+                    entry!==null&&typeof entry==="object"&&Object.keys(entry).length===2&&
+                    Object.hasOwn(entry,"cmd")&&Object.hasOwn(entry,"pkg")&&
+                    entry.cmd===npmDefinitions[index].cmd&&entry.pkg===npmDefinitions[index].pkg)&&selected?.cmd===gemini.name){
+                    selectedDefinitions++;
+                    const descriptor=Object.getOwnPropertyDescriptor(selected,"cmd");changedDefinitions.push([selected,descriptor]);
+                    Object.defineProperty(selected,"cmd",{configurable:descriptor.configurable,enumerable:descriptor.enumerable,get(){
+                        if(armed){armed=false;loggerReplacements++;console.log=redirectedLog;}
+                        return descriptor.value;
+                    }});
+                }
+                return selected;
+            }});
+            calls=[];logs=[];progress=[];outcomes=Array.from({length:8},()=>({...success}));
+            outcomes[0].stdout="gemini";
+            Object.defineProperty(outcomes[1],"stdout",{configurable:true,enumerable:true,get(){armed=true;return "MISSING";}});
+            runtime._setRuntimeInfoForTest({runtime:"docker"});
+            assert.equal(setup.ensureTools(target,gemini),undefined);
+            assert.equal(outcomes.length,0);assert.equal(calls.length,8);
+            assert.equal(selectedDefinitions,1);assert.equal(loggerReplacements,1);assert.equal(armed,false);
+            assert.deepEqual(logs,[["Installing gemini..."]],"the logger selected before interpolation retains its console receiver");
+            assert.deepEqual(redirectedLogs,[],"interpolation must not redirect the Installing message");
+            outcomes=[{...success,stdout:"RESTORED 1.2.3"}];
+            assert.equal(setup.ensureClaudeInContainer(target),undefined);assert.equal(outcomes.length,0);
+            assert.deepEqual(redirectedLogs,[["Reusing claude 1.2.3 from the shared volume."]],"a later log capture must observe the replacement logger");
+        } finally {
+            for(const[definition,descriptor]of changedDefinitions)Object.defineProperty(definition,"cmd",descriptor);
+            Object.defineProperty(Array.prototype,"find",findDescriptor);
+            Object.defineProperty(console,"log",logDescriptor);
+        }
         assert.equal(setup.ensureClaudeInContainer.length,1);assert.equal(setup.ensureUvAvailable.length,1);assert.equal(setup.ensureTools.length,2);
         assert.equal("ensureNpmTool" in setup,false);assert.equal("ensureCodexBubblewrap" in setup,false);
     } finally {for(const[owner,name,original]of originals.reverse())owner[name]=original;syncBuiltinESMExports();}

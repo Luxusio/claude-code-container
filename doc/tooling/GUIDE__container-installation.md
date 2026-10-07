@@ -29,6 +29,16 @@ consumers. New core/native tests cover every branch, stage failure, getter order
 metadata identity, live versus pinned runtime and callee/receiver capture. Never
 use real installation, providers, network or credential material as fixtures.
 
+## Local verification and CI cost
+
+For this architecture migration, use local independent review and QA. Start or
+rerun hosted CI only when the user explicitly authorizes that execution. Before
+pushing, check whether the push would trigger CI; existing permission to commit
+or push does not override the user's restriction on CI costs. Preserve local
+commits and evidence while hosted execution is unauthorized. Historical CI
+results do not certify a newly changed candidate, and unavailable native lanes
+remain unverified.
+
 ## Known ceiling
 
 This parity extraction adds no package version, retry, cleanup, cache policy,
