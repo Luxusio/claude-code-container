@@ -28,16 +28,15 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { DEFAULT_PROFILE_NAME as domainDefaultProfileName, normalizeProfile as normalizeProfileRequest } from "./domain/profile-request.js";
 
+import { createHomeLayoutPaths } from "./application/home/layout-paths.js";
+import { createCccConfig } from "./application/home/config.js";
+
 import { createHomeLayoutMigration } from "./application/home-layout-migration.js";
 import type { ClipboardStartupSlot, HomeLayoutMigrationNotice, HomeLayoutMigrationOptions, HomeLayoutMigrationResult, ManagedHomeEntry } from "./ports/home-layout-migration.js";
 export type { HomeLayoutMigrationOptions, HomeLayoutMigrationResult } from "./ports/home-layout-migration.js";
 
 export const DEFAULT_PROFILE_NAME = domainDefaultProfileName;
 const MIGRATION_LOCK_STALE_MS = 10 * 60 * 1000;
-
-export function cccHome(): string {
-    return join(homedir(), ".ccc");
-}
 
 function exists(path: string): boolean {
     try {
@@ -48,125 +47,122 @@ function exists(path: string): boolean {
     }
 }
 
-function resolveEntry(legacyRel: string, nextRel: string): string {
-    const home = cccHome();
-    const legacy = join(home, legacyRel);
-    const next = join(home, nextRel);
-    return exists(legacy) && !exists(next) ? legacy : next;
-}
-
 /** `undefined` and "default" both mean the default profile. */
 export function normalizeProfile(profile?: string): string | undefined {
     return normalizeProfileRequest(profile);
-}
-
-export function profilesDir(): string {
-    return join(cccHome(), "profiles");
 }
 
 // profiles/default is the no-profile account only when ccc made it so. Before
 // this layout, "default" was an ordinary profile name, so a profiles/default
 // without this marker may be another account and must never replace ~/.ccc/claude.
 export const DEFAULT_PROFILE_MARKER = ".ccc-default-profile";
+const DEFAULT_PROFILE_ENTRIES = ["claude", "claude.json", "codex"];
 
-export function defaultProfileDir(): string {
-    return join(profilesDir(), DEFAULT_PROFILE_NAME);
+const layoutPaths = createHomeLayoutPaths({
+    homeDirectory: () => homedir(),
+    joinHostPath: (...parts) => join(...parts),
+    entryExists: (path) => exists(path),
+    createDirectory: (path, options) => {
+        mkdirSync(path, options);
+        return undefined;
+    },
+    writeMarker: (path, content, options) => {
+        writeFileSync(path, content, options);
+        return undefined;
+    },
+}, DEFAULT_PROFILE_NAME, DEFAULT_PROFILE_MARKER, DEFAULT_PROFILE_ENTRIES);
+
+const cccConfig = createCccConfig({
+    resolveConfigPath: () => configFile(),
+    resolveHomePath: () => cccHome(),
+    createDirectory: (path, options) => {
+        mkdirSync(path, options);
+        return undefined;
+    },
+    fileExists: (path) => existsSync(path),
+    readText: (path) => readFileSync(path, "utf-8"),
+    processId: () => process.pid,
+    writeText: (path, data, options) => {
+        writeFileSync(path, data as string, options);
+        return undefined;
+    },
+    replaceFile: (tempPath, path) => {
+        renameSync(tempPath, path);
+        return undefined;
+    },
+});
+
+export function cccHome(): string {
+    return layoutPaths.cccHome();
 }
 
-function hasDefaultProfileMarker(): boolean {
-    return exists(join(defaultProfileDir(), DEFAULT_PROFILE_MARKER));
+export function profilesDir(): string {
+    return layoutPaths.profilesDir();
+}
+
+export function defaultProfileDir(): string {
+    return layoutPaths.defaultProfileDir();
 }
 
 /** Create profiles/default (0700) and mark it as the no-profile account. */
 export function ensureDefaultProfileDir(): void {
-    mkdirSync(defaultProfileDir(), { recursive: true, mode: 0o700 });
-    const marker = join(defaultProfileDir(), DEFAULT_PROFILE_MARKER);
-    if (!exists(marker)) writeFileSync(marker, "", { mode: 0o600 });
-}
-
-const DEFAULT_PROFILE_ENTRIES = ["claude", "claude.json", "codex"];
-
-function hasLegacyDefaultEntries(): boolean {
-    return DEFAULT_PROFILE_ENTRIES.some((entry) => exists(join(cccHome(), entry)));
-}
-
-function profileEntry(profile: string | undefined, entry: string): string {
-    const named = normalizeProfile(profile);
-    if (named) return join(profilesDir(), named, entry);
-    const legacy = join(cccHome(), entry);
-    const next = join(defaultProfileDir(), entry);
-    // Unmarked: a pre-layout home keeps every default entry on its old path (even
-    // one that does not exist yet); only a fresh home starts in profiles/default.
-    if (!hasDefaultProfileMarker()) return hasLegacyDefaultEntries() ? legacy : next;
-    return exists(legacy) && !exists(next) ? legacy : next;
+    layoutPaths.ensureDefaultProfileDir();
 }
 
 export function profileClaudeDir(profile?: string): string {
-    return profileEntry(profile, "claude");
+    return layoutPaths.profileClaudeDir(profile);
 }
 
 export function profileClaudeJsonFile(profile?: string): string {
-    return profileEntry(profile, "claude.json");
+    return layoutPaths.profileClaudeJsonFile(profile);
 }
 
 export function profileCodexDir(profile?: string): string {
-    return profileEntry(profile, "codex");
+    return layoutPaths.profileCodexDir(profile);
 }
 
 export function runDir(): string {
-    return join(cccHome(), "run");
+    return layoutPaths.runDir();
 }
 
 export function locksDir(): string {
-    return resolveEntry("locks", join("run", "locks"));
+    return layoutPaths.locksDir();
 }
 
 export function clipboardFilesDir(): string {
-    return resolveEntry("clipboard-files", join("run", "clipboard-files"));
+    return layoutPaths.clipboardFilesDir();
 }
 
 export function helperBinDir(): string {
-    return resolveEntry("bin", join("run", "bin"));
+    return layoutPaths.helperBinDir();
 }
 
 /** Startup locks and new port files follow the session lock layout. Existing
  * port inodes remain discoverable independently during a partial migration. */
 export function clipboardStateDir(): string {
-    return locksDir() === join(cccHome(), "locks") ? cccHome() : runDir();
+    return layoutPaths.clipboardStateDir();
 }
 
 export function clipboardPortFile(): string {
-    const legacy = join(cccHome(), "clipboard.port");
-    if (exists(legacy)) return legacy;
-    const migrated = join(runDir(), "clipboard.port");
-    // Retain an already moved inode after a partial migration. If no port file
-    // exists yet (or a legacy daemon removed it), follow the active lock layout.
-    return exists(migrated) ? migrated : join(clipboardStateDir(), "clipboard.port");
+    return layoutPaths.clipboardPortFile();
 }
 
 export function clipboardStartingLock(): string {
-    return join(clipboardStateDir(), "clipboard.starting.v2");
+    return layoutPaths.clipboardStartingLock();
 }
 
 export function configFile(): string {
-    return join(cccHome(), "config.json");
+    return layoutPaths.configFile();
 }
 
 export function legacyRemoteConfigDir(): string {
-    return join(cccHome(), "remote");
+    return layoutPaths.legacyRemoteConfigDir();
 }
 
 // === config.json ===
 
 export function readCccConfig(): Record<string, unknown> {
-    const file = configFile();
-    if (!existsSync(file)) return {};
-    try {
-        const parsed = JSON.parse(readFileSync(file, "utf-8"));
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-    } catch {
-        return {};
-    }
+    return cccConfig.read();
 }
 
 /**
@@ -174,25 +170,7 @@ export function readCccConfig(): Record<string, unknown> {
  * overwritten: the update throws and the file stays as it is.
  */
 export function updateCccConfig(mutate: (config: Record<string, unknown>) => void): void {
-    const file = configFile();
-    mkdirSync(cccHome(), { recursive: true, mode: 0o700 });
-    let config: Record<string, unknown> = {};
-    if (existsSync(file)) {
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(readFileSync(file, "utf-8"));
-        } catch {
-            parsed = null;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new Error(`${file} is not a valid JSON object; fix or remove it`);
-        }
-        config = parsed as Record<string, unknown>;
-    }
-    mutate(config);
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, JSON.stringify(config, null, 2), { mode: 0o600 });
-    renameSync(temp, file);
+    cccConfig.update(mutate);
 }
 
 // === Migration ===

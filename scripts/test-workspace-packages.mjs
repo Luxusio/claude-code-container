@@ -2841,6 +2841,88 @@ async function verifyCodexHostAccessDelivery(applicationUrl, facadeUrl, runtimeU
     }
 }
 
+async function verifyHomeResolutionConfigDelivery(pathsUrl, configUrl, facadeUrl) {
+    const assert=(await import("node:assert/strict")).default;
+    const fs=(await import("node:fs")).default, os=(await import("node:os")).default;
+    const path=await import("node:path");
+    const {syncBuiltinESMExports}=await import("node:module");
+    const {createHomeLayoutPaths}=await import(pathsUrl);
+    const {createCccConfig}=await import(configUrl);
+    const events=[], existing=new Set();
+    const entries=["claude","claude.json","codex"];
+    const ports={homeDirectory(){events.push("home");return "home";},joinHostPath(...parts){events.push(["join",...parts]);return parts.join("/");},
+        entryExists(selected){events.push(["exists",selected]);return existing.has(selected);},
+        createDirectory(selected,options){events.push(["mkdir",selected,options]);return undefined;},
+        writeMarker(selected,data,options){events.push(["marker",selected,data,options]);return undefined;}};
+    const layout=createHomeLayoutPaths(ports,"default",".ccc-default-profile",entries);
+    assert.deepEqual(events,[]);
+    assert.equal(layout.profileCodexDir("work"),"home/.ccc/profiles/work/codex");
+    assert.equal(events.some(value=>Array.isArray(value)&&value[0]==="exists"),false);
+    existing.add("home/.ccc/claude");events.length=0;
+    assert.equal(layout.profileCodexDir(),"home/.ccc/codex","other legacy entry keeps absent requested entry legacy");
+    existing.add("home/.ccc/profiles/default/.ccc-default-profile");
+    assert.equal(layout.profileCodexDir(),"home/.ccc/profiles/default/codex");
+    existing.add("home/.ccc/codex");assert.equal(layout.profileCodexDir(),"home/.ccc/codex");
+    existing.add("home/.ccc/profiles/default/codex");assert.equal(layout.profileCodexDir(),"home/.ccc/profiles/default/codex");
+    existing.add("home/.ccc/run/clipboard.port");existing.add("home/.ccc/locks");
+    assert.equal(layout.clipboardPortFile(),"home/.ccc/run/clipboard.port");
+    existing.add("home/.ccc/clipboard.port");assert.equal(layout.clipboardPortFile(),"home/.ccc/clipboard.port");
+    existing.delete("home/.ccc/profiles/default/.ccc-default-profile");events.length=0;
+    assert.equal(layout.ensureDefaultProfileDir(),undefined);
+    assert.deepEqual(events.filter(value=>Array.isArray(value)&&["mkdir","marker"].includes(value[0])),[
+        ["mkdir","home/.ccc/profiles/default",{recursive:true,mode:448}],
+        ["marker","home/.ccc/profiles/default/.ccc-default-profile","",{mode:384}]]);
+    let bytes='{"kept":true}',pid=1,temporary;
+    const trace=[];
+    const configPorts={resolveConfigPath(){trace.push("path");return "config";},resolveHomePath(){trace.push("home");return "home";},
+        createDirectory(selected,options){assert.equal(selected,"home");assert.deepEqual(options,{recursive:true,mode:448});trace.push("mkdir");return undefined;},
+        fileExists(selected){assert.equal(selected,"config");trace.push("exists");return true;},readText(){trace.push("read");return bytes;},
+        processId(){trace.push("pid");return pid;},writeText(selected,data,options){assert.deepEqual(options,{mode:384});trace.push("write");temporary=[selected,data];return undefined;},
+        replaceFile(from,to){trace.push("rename");assert.deepEqual([from,to],["config.2.tmp","config"]);bytes=temporary[1];return undefined;}};
+    const config=createCccConfig(configPorts);assert.deepEqual(trace,[]);assert.deepEqual(config.read(),{kept:true});trace.length=0;
+    assert.equal(config.update(value=>{trace.push("mutate");value.added=1;pid=2;return Promise.resolve();}),undefined);
+    assert.deepEqual(trace,["path","home","mkdir","exists","read","mutate","pid","write","rename"]);
+    assert.equal(bytes,'{\n  "kept": true,\n  "added": 1\n}');
+    bytes="broken";trace.length=0;assert.throws(()=>config.update(()=>{throw new Error("unexpected mutation");}),/not a valid JSON object/);
+    assert.deepEqual(trace,["path","home","mkdir","exists","read"]);
+
+    const fixture=fs.mkdtempSync(path.join(process.cwd(),"home-resolution-"));
+    const savedHome=os.homedir;
+    const saved=[];
+    const replace=(owner,name,value)=>{saved.push([owner,name,owner[name]]);owner[name]=value;};
+    const owned=selected=>assert.ok(typeof selected==="string"&&(selected===fixture||selected.startsWith(fixture+path.sep)),"outside private home fixture");
+    try {
+        os.homedir=()=>fixture;syncBuiltinESMExports();
+        const native=await import(facadeUrl);
+        for(const name of ["accessSync","existsSync","lstatSync","statSync","mkdirSync","readFileSync","writeFileSync","renameSync","unlinkSync","rmdirSync","readdirSync"]){
+            const original=fs[name];replace(fs,name,(...args)=>{owned(args[0]);if(name==="renameSync")owned(args[1]);return original(...args);});
+        }
+        syncBuiltinESMExports();
+        const home=path.join(fixture,".ccc"), legacy=path.join(home,"claude");
+        fs.mkdirSync(legacy,{recursive:true});
+        assert.equal(native.profileCodexDir(),path.join(home,"codex"));
+        assert.equal(native.ensureDefaultProfileDir(),undefined);
+        const marker=path.join(home,"profiles/default/.ccc-default-profile");assert.equal(fs.readFileSync(marker,"utf8"),"");
+        assert.equal(native.profileCodexDir(),path.join(home,"profiles/default/codex"));
+        native.updateCccConfig(value=>{value.kept=true;});
+        const selected=native.configFile();assert.equal(fs.readFileSync(selected,"utf8"),'{\n  "kept": true\n}');
+        assert.deepEqual(native.readCccConfig(),{kept:true});
+        if(process.platform!=="win32"){assert.equal(fs.statSync(selected).mode&511,384);assert.equal(fs.statSync(marker).mode&511,384);}
+        fs.writeFileSync(selected,"malformed");assert.deepEqual(native.readCccConfig(),{});
+        assert.throws(()=>native.updateCccConfig(()=>{}),/not a valid JSON object/);assert.equal(fs.readFileSync(selected,"utf8"),"malformed");
+        fs.writeFileSync(selected,'{"kept":true}');
+        const failure=new Error("private rename failure");replace(fs,"renameSync",(from,to)=>{owned(from);owned(to);throw failure;});syncBuiltinESMExports();
+        assert.throws(()=>native.updateCccConfig(value=>{value.next=2;}),value=>value===failure);
+        assert.equal(fs.readFileSync(selected,"utf8"),'{"kept":true}');
+        assert.equal(fs.readFileSync(`${selected}.${process.pid}.tmp`,"utf8"),'{\n  "kept": true,\n  "next": 2\n}');
+        for(const name of ["cccHome","profilesDir","defaultProfileDir","runDir","locksDir","clipboardFilesDir","helperBinDir","clipboardStateDir","clipboardPortFile","clipboardStartingLock","configFile","legacyRemoteConfigDir","ensureDefaultProfileDir","readCccConfig"]){assert.equal(native[name].name,name);assert.equal(native[name].length,0);}
+        for(const name of ["profileClaudeDir","profileClaudeJsonFile","profileCodexDir","updateCccConfig"]){assert.equal(native[name].name,name);assert.equal(native[name].length,1);}
+    } finally {
+        for(const [owner,name,original] of saved.reverse())owner[name]=original;
+        os.homedir=savedHome;syncBuiltinESMExports();fs.rmSync(fixture,{recursive:true,force:true});
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -3015,6 +3097,34 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", migrationContract]);
     } finally { rmSync(migrationContract); }
     console.log("PASS home migration distribution: compiled JSON/claim/finally policy, actual native one-way migration/retained bytes/inodes and synchronous legacy declaration consumers");
+    const homePolicyUrls=["application/home/layout-paths","application/home/config","home-layout"].map(name=>pathToFileURL(join(packageRoot,`dist/${name}.js`)).href);
+    run(process.execPath,["--input-type=module","-e",`await (${verifyHomeResolutionConfigDelivery.toString()})(...${JSON.stringify(homePolicyUrls)});`]);
+    const homePolicyContract=join(packageRoot,"home-resolution-config-consumer.mts");
+    writeFileSync(homePolicyContract,[
+        'import {createHomeLayoutPaths} from "./dist/application/home/layout-paths.js";',
+        'import {createCccConfig} from "./dist/application/home/config.js";',
+        'import type {HomePathPorts} from "./dist/ports/home/layout-paths.js";',
+        'import type {CccConfigPorts} from "./dist/ports/home/config.js";',
+        'import {ensureDefaultProfileDir,updateCccConfig,profileCodexDir} from "./dist/home-layout.js";',
+        'declare const paths:HomePathPorts;declare const config:CccConfigPorts;',
+        'const home=createHomeLayoutPaths(paths,"default",".ccc-default-profile",["claude","claude.json","codex"]);',
+        'const named:string=home.profileCodexDir("work");const marker:undefined=home.ensureDefaultProfileDir();',
+        'const changed:undefined=createCccConfig(config).update(async()=>{});',
+        'const legacy:()=>void=ensureDefaultProfileDir;const update:(mutate:(value:Record<string,unknown>)=>void)=>void=updateCccConfig;',
+        'const profile:(profile?:string)=>string=profileCodexDir;',
+        '// @ts-expect-error All path capabilities required.',
+        'createHomeLayoutPaths({},"default","marker",[]);',
+        '// @ts-expect-error All config capabilities required.',
+        'createCccConfig({});',
+        '// @ts-expect-error Port readonly.',
+        'config.processId=()=>2;',
+        '// @ts-expect-error New effects synchronous.',
+        'const asyncWrite:CccConfigPorts["writeText"]=async()=>undefined;',
+        'config.writeText("path",undefined,{mode:384});void[named,marker,changed,legacy,update,profile,asyncWrite];',
+    ].join("\n"));
+    try{run(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"--noEmit","--strict","--skipLibCheck","--target","ES2022","--module","NodeNext","--moduleResolution","NodeNext",homePolicyContract]);}
+    finally{rmSync(homePolicyContract);}
+    console.log("PASS home resolution/config distribution: compiled provenance/marker/ordered config policy, actual private native facade bytes/modes/malformed preservation/partial rename state and emitted contracts");
     run(process.execPath, ["--input-type=module", "-e",
         `await (${verifyWorkspaceNaming.toString()})(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/domain/workspace-naming.js")).href)}, ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/worktree.js")).href)});`]);
     const namingContract = join(packageRoot, "workspace-naming-consumer.mts");

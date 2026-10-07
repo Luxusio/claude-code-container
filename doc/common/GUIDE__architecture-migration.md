@@ -1,5 +1,11 @@
 # Implementing the CCC architecture migration
 
+Home resolution and configuration policy extraction is implemented; acceptance
+is in progress. The
+[home resolution guide](../home/GUIDE__resolution-and-config.md) specifies complete
+path/default-account/marker and config read/update parity. Acceptance remains
+pending broader checks, independent review and QA.
+
 The accepted ordered Codex preparation cutover separates the
 whole directory-before-file operation and per-call UID cache while retaining the
 existing per-resource leaf and native ACL authority. See
