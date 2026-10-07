@@ -7,14 +7,29 @@ defaults. Matching build, six focused suites (145 tests), five configured type
 checks and scoped lint passed. One actual dual-payload verifier exercised compiled
 core, parser/context bytes, native byte/depth boundaries and a single named
 read failure in separate Node subprocesses, plus emitted declaration consumers.
-Independent review and fresh full QA remain required. Baseline is accepted
-delivery `52882d39`; its exact CI run `37624710150` passed all five jobs.
+Independent code/security/docs review and fresh full QA passed as recorded below.
+Baseline is accepted delivery `52882d39`; its exact CI run `37624710150` passed
+all five jobs.
 
 The first focused run exposed an incorrect CRLF fixture expectation. Running
 the exact extractor from baseline `52882d39` confirmed that CRLF-terminated
 `.tool-versions` lines are ignored while LF lines participate in precedence.
 The corrected test preserves that behavior and separately asserts LF node/Python
 precedence and input immutability. Production expressions are unchanged.
+
+## Verified acceptance
+
+Fresh independent QA at `dac15cdb` passed the default full collection: 373 files
+and 10,223 tests passed, with ten files and 151 tests conditionally skipped.
+Five configured type checks, scoped lint and a single actual dual-payload
+shipping verifier passed. Compiled public scanner/domain/presentation probes
+verified byte/depth/default/arity boundaries, actual UID1001 permission denial,
+links, named read failure/restoration, legacy parser behavior and exact context
+bytes. Guarded CLI help/version succeeded; invalid runtime returned its exact
+allowed-values diagnostic. Complete source/root/package/assembled membership
+and hashes remained identical for all 1,732 paths. Harness verification returned
+PASS and the task closed normally. These checks did not launch AI, containers,
+providers or access the user's credential home.
 
 ## Known ceiling
 
