@@ -7,6 +7,26 @@ import { spawn, spawnSync } from "node:child_process";
 import { assembleWorkspaceRuntime } from "./workspace-build.mjs";
 import { createOwnedImportRead } from "./fixtures/owned-import-read.mjs";
 
+// Independent hashes captured from accepted 9322c7e6 before the credential extraction.
+const HOST_CREDENTIAL_ASSET_BASELINE = {
+    "baseline": "9322c7e69a357f2a8b07296ea632110387ac8948",
+    "hashes": {
+        "sshDefault": "fd51e763f1cfffb14fb5d8dee11a37e82fe2de4b84587251b8739648e3ad0875",
+        "sshFalse": "fd51e763f1cfffb14fb5d8dee11a37e82fe2de4b84587251b8739648e3ad0875",
+        "sshTrue": "c0572abc56af6a2d15e2b9b67312c2e1a1c03051191bcf668a3160070651e79f",
+        "signing": "1e01e43d18f169911673c4a63b0b915c4cd1ae264aaca8c017e1748c41e4a5bb",
+        "python": "d5939c35f33717ca7d7452cce7025a0632a21523a61b657b7feec29616d30ffd"
+    },
+    "names": {
+        "ssh": "sshCredentialCopyShell",
+        "signing": "gitSigningKeyRewriteShell"
+    },
+    "arities": {
+        "ssh": 0,
+        "signing": 0
+    }
+};
+
 const root = fileURLToPath(new URL("../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "ccc-workspace-package-"));
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -1531,6 +1551,9 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
     let runArgs = [];
     let firstWait;
     let waitCount = 0;
+    const credentialTrace = [];
+    const credentialWarnings = [];
+    let credentialStatuses = { ssh: 0, copy: 0, install: 0 };
     // Node's loader also uses filesystem exports. Load the owned compiled graph
     // before replacing them with fixture data, which is not executable source.
     for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) {
@@ -1573,7 +1596,10 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
         existsSync: selected => {
             // Model this preparation observation without opening a real host device.
             if (selected === "/dev/kvm") return false;
-            fakePath(selected); return false;
+            const path = fakePath(selected);
+            if (path === hostPath.join(home, ".gitconfig")) return true;
+            if (path === hostPath.join(home, ".ssh")) return false;
+            return false;
         },
         statSync: stat, lstatSync: stat, fstatSync: descriptor => stat(descriptor),
         realpathSync: selected => fakePath(selected),
@@ -1672,7 +1698,20 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
             assert.deepEqual(args, ["exec", id, "sh", "-c", docker.sshCredentialCopyShell(true),
                 "ccc-ssh-copy", "/home/ccc/.ssh", "/tmp/.ssh-copy"]);
             assert.deepEqual(options, { stdio: "ignore" });
-            return result();
+            credentialTrace.push("ssh");
+            return result(credentialStatuses.ssh);
+        }
+        if (args[0] === "exec" && args[1] === "--user" && args[2] === "root") {
+            assert.deepEqual(args, ["exec", "--user", "root", id, "sh", "-c",
+                "set -e; cp /tmp/ccc-host-gitconfig /home/ccc/.gitconfig; "
+                + "git config --file /home/ccc/.gitconfig --add safe.directory '*'; "
+                + docker.gitSigningKeyRewriteShell()
+                + "; chown ccc:ccc /home/ccc/.gitconfig; rm -f /tmp/ccc-host-gitconfig",
+                "ccc-signing-key-rewrite", "/home/ccc/.gitconfig",
+                hostPath.join(home, ".ssh").replace(/\\/g, "/").replace(/\/+$/, ""), "/tmp/.ssh-copy"]);
+            assert.deepEqual(options, { stdio: "ignore" });
+            credentialTrace.push("git-install");
+            return result(credentialStatuses.install);
         }
         if (args[0] === "exec") {
             assert.equal(args[1], id);
@@ -1680,6 +1719,12 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
             return result();
         }
         if (args[0] === "cp") {
+            if (args[1] === hostPath.join(home, ".gitconfig")) {
+                assert.deepEqual(args, ["cp", hostPath.join(home, ".gitconfig"), `${id}:/tmp/ccc-host-gitconfig`]);
+                assert.deepEqual(options, { stdio: "ignore" });
+                credentialTrace.push("git-copy");
+                return result(credentialStatuses.copy);
+            }
             assert.ok(fixtureHost.contains(packageDist, args[1]));
             assert.ok(args[2].startsWith(`${id}:/tmp/ccc-managed-`));
             return result();
@@ -1703,15 +1748,29 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
         }
         return ignored;
     };
-    console.log = console.warn = console.error = () => {};
+    console.log = console.warn = () => {};
+    console.error = function (...args) {
+        assert.equal(this, console);
+        if (String(args[0]).includes("SSH credentials") || String(args[0]).includes("host .gitconfig")) credentialWarnings.push(args[0]);
+    };
     delete process.env.DEBUG; delete process.env.SSH_AUTH_SOCK;
     syncBuiltinESMExports();
     runtime._setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-native", remote: false, dockerDesktop: false });
     // Build the exact native run contract once using this same compiled public API.
     docker.startProjectContainer(project, () => {});
+    assert.deepEqual(credentialTrace, ["ssh", "git-copy", "git-install"], "fresh verified creation routes through both private refresh wrappers");
     existing = true;
     const success = ["allocate:4", "now:0", "now:0", `probe:${id}:5000`, "now:10", "sleep:75", "now:85", `probe:${id}:5000`, "now:95", "sleep:75", "now:170", `probe:${id}:5000`];
-    for (const available of [true, false]) {
+    for (const scenario of [
+        { available: true, ssh: 0, copy: 0, install: 0, expected: ["ssh", "git-copy", "git-install"], warnings: [] },
+        { available: true, ssh: 1, copy: 0, install: 0, expected: ["ssh", "git-copy", "git-install"], warnings: [] },
+        { available: true, ssh: 0, copy: 1, install: 0, expected: ["ssh", "git-copy"], warnings: ["[ccc] WARNING: failed to copy host .gitconfig into container"] },
+        { available: true, ssh: 0, copy: 0, install: 1, expected: ["ssh", "git-copy", "git-install"], warnings: ["[ccc] WARNING: failed to install host .gitconfig inside container"] },
+        { available: false, ssh: 0, copy: 0, install: 0, expected: [], warnings: [] },
+    ]) {
+        const { available } = scenario;
+        credentialStatuses = scenario;
+        credentialTrace.length = 0; credentialWarnings.length = 0;
         armed = true; active = false; now = 0; probes = 0; waitCount = 0; firstWait = undefined;
         outcomes = [false, false, available]; calls.length = 0; trace.length = 0;
         const joined = [];
@@ -1734,6 +1793,8 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
         assert.equal(probes, 3); assert.equal(waitCount, 2);
         assert.deepEqual(calls.filter(args => ["stop", "rm", "start"].includes(args[0])), [], "retry outcome must preserve the existing selected container");
         assert.deepEqual(calls.filter(args => args[0] === "run"), [readonlyAccountProbe], "only the exact isolated account validation may run");
+        assert.deepEqual(credentialTrace, scenario.expected);
+        assert.deepEqual(credentialWarnings, scenario.warnings);
     }
 }
 
@@ -2500,6 +2561,98 @@ async function verifyVersionFileScanningDelivery(domainUrl, applicationUrl, pres
     }
 }
 
+async function verifyHostCredentialRefreshDelivery(applicationUrl, adapterUrl, materialUrl, facadeUrl, pythonUrl, baseline) {
+    const assert = (await import("node:assert/strict")).default;
+    const cp = (await import("node:child_process")).default;
+    const fs = (await import("node:fs")).default, os = (await import("node:os")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const { createHash } = await import("node:crypto");
+    const path = await import("node:path");
+    const { createHostCredentialRefresh } = await import(applicationUrl);
+    const { createNativeHostCredentialRefreshPorts } = await import(adapterUrl);
+    const material = await import(materialUrl), facade = await import(facadeUrl), python = await import(pythonUrl);
+    const hash = value => createHash("sha256").update(value).digest("hex");
+    for (const actual of [material, facade]) {
+        assert.equal(hash(actual.sshCredentialCopyShell()), baseline.hashes.sshDefault);
+        assert.equal(hash(actual.sshCredentialCopyShell(false)), baseline.hashes.sshFalse);
+        assert.equal(hash(actual.sshCredentialCopyShell(true)), baseline.hashes.sshTrue);
+        assert.equal(hash(actual.gitSigningKeyRewriteShell()), baseline.hashes.signing);
+        assert.equal(actual.sshCredentialCopyShell.name, baseline.names.ssh); assert.equal(actual.sshCredentialCopyShell.length, baseline.arities.ssh);
+        assert.equal(actual.gitSigningKeyRewriteShell.name, baseline.names.signing); assert.equal(actual.gitSigningKeyRewriteShell.length, baseline.arities.signing);
+    }
+    assert.equal(facade.sshCredentialCopyShell, material.sshCredentialCopyShell);
+    assert.equal(facade.gitSigningKeyRewriteShell, material.gitSigningKeyRewriteShell);
+    assert.equal(hash(python.SSH_KNOWN_HOSTS_PROVENANCE_SCRIPT), baseline.hashes.python);
+    assert.throws(() => createHostCredentialRefresh({}), TypeError);
+    const original = { spawnSync: cp.spawnSync, existsSync: fs.existsSync, homedir: os.homedir, error: console.error };
+    const target = "a".repeat(64), trace = [];
+    let mode = "success", selected = "docker", expectedCommand, homes = 0;
+    const home = path.resolve(process.cwd(), "synthetic-credential-home");
+    const observe = status => ({ get status() { trace.push(`status:${status}`); return status; },
+        get error() { assert.fail("native error must remain unread"); }, get stdout() { assert.fail("stdout must remain unread"); }, get stderr() { assert.fail("stderr must remain unread"); } });
+    try {
+        os.homedir = () => { homes++; trace.push("home"); return home; };
+        fs.existsSync = selectedPath => {
+            assert.ok([path.join(home, ".ssh"), path.join(home, ".gitconfig")].includes(selectedPath));
+            trace.push(selectedPath.endsWith(".gitconfig") ? "git-exists" : "ssh-exists");
+            return mode !== "absent";
+        };
+        console.error = function (message) { assert.equal(this, console); trace.push(message); };
+        cp.spawnSync = (command, args, options) => {
+            assert.equal(command, expectedCommand); assert.deepEqual(options, { stdio: "ignore" });
+            if (args[0] === "cp") {
+                assert.deepEqual(args, ["cp", path.join(home, ".gitconfig"), `${target}:/tmp/ccc-host-gitconfig`]);
+                trace.push("copy"); selected = "changed-after-capture";
+                return observe(mode === "copy-fail" ? 1 : 0);
+            }
+            if (args[1] === "--user") {
+                assert.deepEqual(args.slice(0, 6), ["exec", "--user", "root", target, "sh", "-c"]);
+                assert.ok(args[6].includes(material.gitSigningKeyRewriteShell()));
+                assert.deepEqual(args.slice(7), ["ccc-signing-key-rewrite", "/home/ccc/.gitconfig",
+                    path.join(home, ".ssh").replace(/\\/g, "/").replace(/\/+$/, ""), "/tmp/.ssh-copy"]);
+                trace.push("install"); return observe(mode === "install-fail" ? null : 0);
+            }
+            assert.deepEqual(args, ["exec", target, "sh", "-c", material.sshCredentialCopyShell(true),
+                "ccc-ssh-copy", "/home/ccc/.ssh", "/tmp/.ssh-copy"]);
+            trace.push("ssh"); return observe(mode === "success" ? 0 : undefined);
+        };
+        syncBuiltinESMExports();
+        for (const cli of ["docker", "podman"]) {
+            trace.length = 0; homes = 0; mode = "success"; selected = cli;
+            const ports = createNativeHostCredentialRefreshPorts(() => { trace.push("runtime"); expectedCommand = selected; return selected; });
+            assert.deepEqual(trace, []);
+            const app = createHostCredentialRefresh(ports);
+            assert.equal(app.refreshSsh(target), undefined);
+            assert.deepEqual(trace, ["home", "runtime", "ssh", "status:0"]);
+            trace.length = 0; homes = 0;
+            app.syncGit(target);
+            assert.deepEqual(trace, ["home", "git-exists", "runtime", "home", "copy", "status:0", "install", "status:0"]); assert.equal(homes, 2);
+        }
+        for (const scenario of ["absent", "copy-fail", "install-fail"]) {
+            mode = scenario; selected = "docker"; trace.length = 0;
+            const app = createHostCredentialRefresh(createNativeHostCredentialRefreshPorts(() => { trace.push("runtime"); expectedCommand = selected; return selected; }));
+            if (mode === "install-fail") {
+                app.syncGit(target);
+                assert.equal(trace.at(-1), "[ccc] WARNING: failed to install host .gitconfig inside container");
+            } else {
+                app.syncGit(target);
+                if (mode === "absent") assert.deepEqual(trace, ["home", "git-exists"]);
+                else { assert.equal(trace.includes("install"), false); assert.equal(trace.at(-1), "[ccc] WARNING: failed to copy host .gitconfig into container"); }
+            }
+        }
+        for (const scenario of ["absent", "ssh-fail-present"]) {
+            mode = scenario; selected = "docker"; trace.length = 0;
+            const app = createHostCredentialRefresh(createNativeHostCredentialRefreshPorts(() => { trace.push("runtime"); expectedCommand = selected; return selected; }));
+            app.refreshSsh(target);
+            assert.deepEqual(trace.slice(0, 5), ["home", "runtime", "ssh", "status:undefined", "ssh-exists"]);
+            if (scenario === "absent") assert.equal(trace.length, 5);
+            else assert.equal(trace.at(-1), "[ccc] WARNING: failed to refresh copied SSH credentials inside container");
+        }
+    } finally {
+        cp.spawnSync = original.spawnSync; fs.existsSync = original.existsSync; os.homedir = original.homedir; console.error = original.error; syncBuiltinESMExports();
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2935,6 +3088,38 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", scannerContract]);
     } finally { rmSync(scannerContract); }
     console.log("PASS version scanner distribution: compiled ordered core, parser/context bytes, actual native byte/depth boundaries and named-read subprocess fault, readonly synchronous legacy declarations");
+    const credentialUrls = ["application/credentials/host-refresh", "adapters/credentials/host-refresh", "adapters/credentials/ssh-material", "docker", "ssh-known-hosts"]
+        .map(name => pathToFileURL(join(packageRoot, `dist/${name}.js`)).href);
+    const credentialBaseline = HOST_CREDENTIAL_ASSET_BASELINE;
+    const assetProof = { hashes: credentialBaseline.hashes, names: credentialBaseline.names, arities: credentialBaseline.arities };
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyHostCredentialRefreshDelivery.toString()})(${credentialUrls.map(value => JSON.stringify(value)).join(",")},${JSON.stringify(assetProof)});`]);
+    const credentialContract = join(packageRoot, "host-credential-refresh-consumer.mts");
+    writeFileSync(credentialContract, [
+        'import {createHostCredentialRefresh} from "./dist/application/credentials/host-refresh.js";',
+        'import {createNativeHostCredentialRefreshPorts} from "./dist/adapters/credentials/host-refresh.js";',
+        'import type {HostCredentialRefreshPorts,CredentialCommandObservation} from "./dist/ports/credentials/host-refresh.js";',
+        'import {sshCredentialCopyShell,gitSigningKeyRewriteShell} from "./dist/docker.js";',
+        'declare const ports:HostCredentialRefreshPorts; declare const observed:CredentialCommandObservation;',
+        'const app=createHostCredentialRefresh(ports); const ssh:undefined=app.refreshSsh("target"); const git:undefined=app.syncGit("target");',
+        'const native:HostCredentialRefreshPorts=createNativeHostCredentialRefreshPorts(()=>"podman");',
+        'const assets:string[]=[sshCredentialCopyShell(),sshCredentialCopyShell(true),gitSigningKeyRewriteShell()];',
+        '// @ts-expect-error All observations/reports are required.',
+        'createHostCredentialRefresh({});',
+        '// @ts-expect-error Reports are synchronous undefined, not async.',
+        'const report:HostCredentialRefreshPorts["reportGitCopyFailure"]=async()=>undefined;',
+        '// @ts-expect-error Observations are readonly.',
+        'observed.status=0;',
+        '// @ts-expect-error Runtime selection has no hidden default.',
+        'createNativeHostCredentialRefreshPorts();',
+        '// @ts-expect-error Operations remain synchronous.',
+        'const pending:Promise<unknown>=git;',
+        'void[ssh,git,native,assets,report,pending];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", credentialContract]);
+    } finally { rmSync(credentialContract); }
+    console.log("PASS host credential distribution: compiled core/native status and capture policy, independent baseline asset hashes/public canonical exports; actual verified-ID lifecycle wrappers exercised separately");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);

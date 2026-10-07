@@ -1,5 +1,13 @@
 # Implementing the CCC architecture migration
 
+## Host credential refresh family
+
+The [credential refresh guide](../credentials/GUIDE__host-refresh.md) describes
+the two complete SSH/Git policies, eight semantic ports and fresh native capture.
+Canonical executable assets remain native and retain independent baseline byte
+proof. Existing verified-ID lifecycle callbacks and privilege/source/marker
+authority remain unchanged; this family does not finish all credential operations.
+
 ## Version-file discovery and context
 
 The [scanner guide](../tooling/GUIDE__version-file-scanning.md) maps the complete
