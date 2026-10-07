@@ -68,6 +68,7 @@ import { proveWslBindSourceIdentity } from "./wsl-bind-source-proof.js";
 import { prepareLabStateOwnership } from "./lab-state-ownership.js";
 import { prepareCodexStateOwnership } from "./codex-state-ownership.js";
 import { createHostCredentialRefresh } from "./application/credentials/host-refresh.js";
+import { createHostCredentialPaths } from "./application/credentials/host-paths.js";
 import { createNativeHostCredentialRefreshPorts } from "./adapters/credentials/host-refresh.js";
 export { gitSigningKeyRewriteShell, sshCredentialCopyShell } from "./adapters/credentials/ssh-material.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
@@ -1149,13 +1150,23 @@ export function isDockerDesktop(): boolean {
     return isContainerHostRemote();
 }
 
+const hostCredentialPaths = createHostCredentialPaths({
+    readContainerEnvironment: () => process.env.container,
+    readVitestEnvironment: () => process.env.VITEST,
+    claudeProfilePath: (profile) => getClaudeDir(profile),
+    codexProfilePath: (profile) => getCodexDir(profile),
+    homeDirectory: () => homedir(),
+    joinHostPath: (base, relative) => join(base, relative),
+    createDirectory: (path, options) => {
+        mkdirSync(path, options);
+        return undefined;
+    },
+    packageParentPath: (path) => posix.dirname(path),
+    packageBasename: (path) => posix.basename(path),
+}, CODEX_PACKAGES_CONTAINER_DIR);
+
 export function resolveCredentialHostPath(mount: CredentialMount, profile?: string): string {
-    if (!profile && process.env.container === "docker" && !process.env.VITEST) {
-        return mount.containerDir;
-    }
-    if (mount.containerDir === "/home/ccc/.claude") return getClaudeDir(profile);
-    if (mount.containerDir === "/home/ccc/.codex") return getCodexDir(profile);
-    return join(homedir(), mount.hostDir);
+    return hostCredentialPaths.resolveCredentialHostPath(mount, profile);
 }
 
 /**
@@ -1164,14 +1175,7 @@ export function resolveCredentialHostPath(mount: CredentialMount, profile?: stri
  * on the host as root.
  */
 export function ensureCredentialHostDir(mount: CredentialMount, profile?: string): string {
-    const hostPath = resolveCredentialHostPath(mount, profile);
-    // ccc's own profile credential folders are private; other tools' folders keep their defaults.
-    const cccOwned = mount.containerDir === "/home/ccc/.claude" || mount.containerDir === "/home/ccc/.codex";
-    mkdirSync(hostPath, cccOwned ? { recursive: true, mode: 0o700 } : { recursive: true });
-    if (posix.dirname(CODEX_PACKAGES_CONTAINER_DIR) === mount.containerDir) {
-        mkdirSync(join(hostPath, posix.basename(CODEX_PACKAGES_CONTAINER_DIR)), { recursive: true, mode: 0o700 });
-    }
-    return hostPath;
+    return hostCredentialPaths.ensureCredentialHostDir(mount, profile);
 }
 
 function getCodexContainerUid(containerName: string): string {

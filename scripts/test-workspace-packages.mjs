@@ -2653,6 +2653,81 @@ async function verifyHostCredentialRefreshDelivery(applicationUrl, adapterUrl, m
     }
 }
 
+async function verifyHostCredentialPathsDelivery(applicationUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const fs = await import("node:fs"), os = (await import("node:os")).default;
+    const path = await import("node:path");
+    const { syncBuiltinESMExports } = await import("node:module");
+    const { createHostCredentialPaths } = await import(applicationUrl);
+    const trace = [];
+    let container = "docker", vitest;
+    const ports = {
+        readContainerEnvironment: () => { trace.push("container"); return container; },
+        readVitestEnvironment: () => { trace.push("vitest"); return vitest; },
+        claudeProfilePath: profile => { trace.push(["claude", profile]); return "claude-host"; },
+        codexProfilePath: profile => { trace.push(["codex", profile]); return "codex-host"; },
+        homeDirectory: () => { trace.push("home"); return "home"; },
+        joinHostPath: (base, relative) => { trace.push(["join", base, relative]); return `${base}/${relative}`; },
+        createDirectory: (selected, options) => { trace.push(["mkdir", selected, options]); return undefined; },
+        packageParentPath: selected => { trace.push(["parent", selected]); return "/home/ccc/.codex"; },
+        packageBasename: selected => { trace.push(["basename", selected]); return "packages"; },
+    };
+    const app = createHostCredentialPaths(ports, "/home/ccc/.codex/packages");
+    assert.deepEqual(trace, []);
+    const mount = { hostDir: ".codex", containerDir: "/home/ccc/.codex" };
+    assert.equal(app.resolveCredentialHostPath(mount), mount.containerDir);
+    assert.deepEqual(trace, ["container", "vitest"]);
+    container = undefined; trace.length = 0;
+    assert.equal(app.ensureCredentialHostDir(mount, "work"), "codex-host");
+    assert.deepEqual(trace, [["codex", "work"], ["mkdir", "codex-host", { recursive: true, mode: 448 }],
+        ["parent", "/home/ccc/.codex/packages"], ["basename", "/home/ccc/.codex/packages"],
+        ["join", "codex-host", "packages"], ["mkdir", "codex-host/packages", { recursive: true, mode: 448 }]]);
+    const failure = Symbol("second-directory");
+    let made = 0;
+    const partial = createHostCredentialPaths({ ...ports, createDirectory: () => { if (++made === 2) throw failure; } }, "/home/ccc/.codex/packages");
+    assert.throws(() => partial.ensureCredentialHostDir(mount, "work"), value => value === failure);
+    assert.equal(made, 2);
+    assert.throws(() => createHostCredentialPaths({}, "packages"), TypeError);
+
+    const fixture = fs.mkdtempSync(path.join(process.cwd(), "credential-paths-"));
+    const saved = { home: os.homedir, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE,
+        container: process.env.container, VITEST: process.env.VITEST, VITEST_ONLY_FIXTURE: process.env.VITEST_ONLY_FIXTURE };
+    try {
+        os.homedir = () => fixture; process.env.HOME = fixture; process.env.USERPROFILE = fixture;
+        delete process.env.container; delete process.env.VITEST; delete process.env.VITEST_ONLY_FIXTURE;
+        syncBuiltinESMExports();
+        const facade = await import(facadeUrl);
+        assert.equal(facade.resolveCredentialHostPath.length, 2); assert.equal(facade.ensureCredentialHostDir.length, 2);
+        assert.equal(facade.resolveCredentialHostPath.name, "resolveCredentialHostPath");
+        assert.equal(facade.ensureCredentialHostDir.name, "ensureCredentialHostDir");
+        const selected = facade.ensureCredentialHostDir(mount, "work");
+        assert.equal(selected, path.join(fixture, ".ccc/profiles/work/codex"));
+        assert.equal(fs.statSync(selected).isDirectory(), true);
+        assert.equal(fs.statSync(path.join(selected, "packages")).isDirectory(), true);
+        if (process.platform !== "win32") {
+            assert.equal(fs.statSync(selected).mode & 511, 448); assert.equal(fs.statSync(path.join(selected, "packages")).mode & 511, 448);
+            fs.chmodSync(selected, 493); facade.ensureCredentialHostDir(mount, "work");
+            assert.equal(fs.statSync(selected).mode & 511, 493, "existing permissions are not reset");
+        }
+        process.env.container = "docker";
+        assert.equal(facade.resolveCredentialHostPath(mount), "/home/ccc/.codex");
+        process.env.VITEST = "";
+        assert.equal(facade.resolveCredentialHostPath(mount), "/home/ccc/.codex", "resolver checks exact VITEST truthiness");
+        assert.equal(facade.resolveCredentialHostPath(mount, "work"), selected, "helper sees the empty VITEST key");
+        delete process.env.VITEST;
+        assert.equal(facade.resolveCredentialHostPath(mount, "work"), path.join(fixture, ".codex"), "Codex helper mounted branch precedes named profile using live home");
+        process.env.VITEST_ONLY_FIXTURE = "1";
+        assert.equal(facade.resolveCredentialHostPath(mount), "/home/ccc/.codex", "resolver does not enumerate VITEST_* keys");
+        assert.equal(facade.resolveCredentialHostPath(mount, "work"), selected, "helper does enumerate VITEST_* keys");
+    } finally {
+        os.homedir = saved.home;
+        for (const key of ["HOME", "USERPROFILE", "container", "VITEST", "VITEST_ONLY_FIXTURE"]) {
+            if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+        }
+        syncBuiltinESMExports(); fs.rmSync(fixture, { recursive: true, force: true });
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -3120,6 +3195,34 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", credentialContract]);
     } finally { rmSync(credentialContract); }
     console.log("PASS host credential distribution: compiled core/native status and capture policy, independent baseline asset hashes/public canonical exports; actual verified-ID lifecycle wrappers exercised separately");
+    const hostPathUrls = ["application/credentials/host-paths", "docker"].map(name => pathToFileURL(join(packageRoot, `dist/${name}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyHostCredentialPathsDelivery.toString()})(${hostPathUrls.map(value => JSON.stringify(value)).join(",")});`]);
+    const hostPathContract = join(packageRoot, "host-credential-paths-consumer.mts");
+    writeFileSync(hostPathContract, [
+        'import {createHostCredentialPaths} from "./dist/application/credentials/host-paths.js";',
+        'import type {HostCredentialPathPorts} from "./dist/ports/credentials/host-paths.js";',
+        'import type {CredentialMount} from "./dist/domain/tool-registry.js";',
+        'import {resolveCredentialHostPath,ensureCredentialHostDir} from "./dist/docker.js";',
+        'declare const ports:HostCredentialPathPorts; declare const mount:CredentialMount;',
+        'const app=createHostCredentialPaths(ports,"/home/ccc/.codex/packages");',
+        'const values:string[]=[app.resolveCredentialHostPath(mount),app.ensureCredentialHostDir(mount,"work")];',
+        'const legacy:(mount:CredentialMount,profile?:string)=>string=resolveCredentialHostPath;',
+        'const prepare:typeof legacy=ensureCredentialHostDir; mount.hostDir="changed";',
+        '// @ts-expect-error No package path default.',
+        'createHostCredentialPaths(ports);',
+        '// @ts-expect-error Every observation/effect is required.',
+        'createHostCredentialPaths({},"path");',
+        '// @ts-expect-error Ports readonly.',
+        'ports.homeDirectory=()=>"changed";',
+        '// @ts-expect-error Directory effects synchronous undefined.',
+        'const asyncMkdir:HostCredentialPathPorts["createDirectory"]=async()=>undefined;',
+        'void[values,legacy,prepare,asyncMkdir];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", hostPathContract]);
+    } finally { rmSync(hostPathContract); }
+    console.log("PASS host credential paths distribution: compiled ordered/partial policy, actual private native profiles/directories/modes/live env helpers and mutable legacy declarations");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);

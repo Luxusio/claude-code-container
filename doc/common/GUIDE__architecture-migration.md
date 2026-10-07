@@ -1,5 +1,13 @@
 # Implementing the CCC architecture migration
 
+## Host credential path preparation
+
+The [host-path guide](../credentials/GUIDE__host-paths.md) documents the complete
+resolver/directory policy, nine native observations/effects and explicit package
+path input. Dynamic profile helpers and original getter/creation/failure order
+remain compatibility obligations. Directory preparation creates no new mount
+authority or credential transfer guarantee.
+
 ## Host credential refresh family
 
 The [credential refresh guide](../credentials/GUIDE__host-refresh.md) describes
