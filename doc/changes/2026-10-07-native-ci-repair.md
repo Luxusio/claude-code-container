@@ -102,11 +102,20 @@ remain pending at this checkpoint.
 
 The operator requested Colima support while native CI repair was in progress.
 Queued task: `TASK__colima-docker-context-support`. Colima's Docker mode reuses
-the Docker engine/CLI adapter; inspect the selected Docker context's endpoint
-for its socket and VM capabilities rather than adding a separate Colima engine
-or assuming `/var/run/docker.sock`. Current support is not claimed complete.
+the Docker engine/CLI adapter. Respect the selected Docker context and endpoint,
+and distinguish the client connection socket from the bind source on the daemon
+host or VM. Do not substitute a macOS forwarded client socket for a daemon-side
+bind source or add a separate Colima engine. Current support is not claimed
+complete. At that planning checkpoint source inspection found `dockerEndpoint()` checked
+`DOCKER_HOST` before considering `DOCKER_CONTEXT`; Docker documents the context
+environment variable as overriding the host variable. `resolveHostSocketPath()`
+also ignored the detected Docker socket override. These were bounded follow-up
+subjects, not proof that a particular Colima mount has failed.
 Official references: https://colima.run/docs/runtimes/ and
-https://colima.run/docs/faq/. This follow-up keeps the current native failure
+https://colima.run/docs/faq/; Docker endpoint precedence:
+https://docs.docker.com/reference/cli/docker/; daemon-side bind semantics:
+https://docs.docker.com/engine/storage/bind-mounts/.
+This follow-up keeps the current native failure
 repair focused; real Colima acceptance is a separate environment lane.
 
 ## Stopped restart verification order
@@ -149,3 +158,21 @@ MCP after verification. Provider deletion confirmed owned artifacts removed and
 the exact network allocation released, retaining the shared network and its
 other allocation. An additional guest-result download was refused by the host
 destination-parent fence; previously captured build results remain the evidence.
+
+CI run 37564870779 subsequently completed with independent full QA FAIL.
+Windows ownership, PowerShell/Pester (71/71), packaged assets, Chrome (6/6) and
+actual rootless Podman lifecycle (12/12) passed. Both full suites reported 9638
+passed, one failed and 90 skipped. Ordinary Linux failed the guest readiness
+cleanup case: network-not-ready was expected but its deadline had expired;
+media detachment and scrub confirmation remained true. Podman-forced Linux
+failed the routed wait case when owner resolution timed out with 4ms remaining.
+Timing sensitivity is plausible but unproven. Neither failure is waived, and
+whole-source acceptance remains incomplete pending investigation.
+
+A direct isolated run of the two failed files subsequently passed all 32 tests
+in 8.58 seconds, using the unchanged candidate artifacts and fresh private home
+and temporary roots. This does not erase either CI failure or establish their
+root cause. The guest readiness adapter already supplies explicit clock and
+sleeper ports; its failing cleanup fixture currently uses real elapsed time.
+The routed MCP wait is a real-process/HTTP test and must retain genuine transport
+error and deadline evidence while its boundary timing is investigated.
