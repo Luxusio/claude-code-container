@@ -19,6 +19,14 @@ file matches its accepted source blob. Shared verifier helper bodies, complete
 probe/consumer blocks and both guide additions survive the composition.
 Fresh combined review and full-project QA remain required before delivery.
 
+The first full combined run passed 10,087 tests but failed 44 clipboard-state
+cases. Their real daemon fixture copied `home-layout` without its new application
+dependency, so Node reported a missing fixture module. The fixture's explicit
+dependency closure now includes `application/home-layout-migration`; assertions,
+timeouts, daemon controls and production behavior are unchanged. The failed run
+and unchanged 1,704-file snapshot are retained. Focused and fresh full acceptance
+remain required after this correction.
+
 ## Known ceiling
 
 Existing partial workspace-removal retry refusal and one-way home migration
