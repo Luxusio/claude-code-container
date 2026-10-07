@@ -1,10 +1,12 @@
 # Implementing the CCC architecture migration
 
-The ordered Codex preparation cutover is in progress. Its plan separates the
+The accepted ordered Codex preparation cutover separates the
 whole directory-before-file operation and per-call UID cache while retaining the
 existing per-resource leaf and native ACL authority. See
 [ordered preparation](../credentials/GUIDE__codex-ordered-preparation.md).
-Acceptance remains pending independent review and QA.
+Independent code/security/docs review and full QA with 10,406 passing tests
+completed, followed by Harness verification and close. This operation does not
+complete M11 or the wider migration.
 
 ## Codex host access restoration
 
