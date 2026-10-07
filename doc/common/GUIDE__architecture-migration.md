@@ -1477,3 +1477,20 @@ automatically rebuild and must not run alongside tests using those artifacts.
 Independent review and QA determine portable acceptance. Full native Colima
 proof remains its own dependent Goal task; this work does not certify Mac VM
 sharing, UID behavior, forwarding or networking or complete runtime migration.
+
+## Parallel workspace and profile policy ownership
+
+Branch validation now uses an application with an explicit UTF-8 byte-length
+port while `src/worktree.ts` retains native Buffer composition, public signature,
+ordered errors and workspace ownership. See the
+[branch validation guide](../workspaces/GUIDE__branch-validation.md).
+Profile request normalization and its canonical default literal belong to the
+import-free domain; `src/home-layout.ts` retains native paths, migration and
+credential layout. See the [profile request guide](../profiles/GUIDE__profile-request.md).
+
+The two isolated slices retain their source review/QA evidence. Common
+integration additionally executes their real compiled core and public facades,
+native UTF-8/path behavior and strict emitted declaration consumers in both
+extracted npm and materialized installation payloads. Original/replayed commit
+and patch equivalence belongs in the integration note. These slices do not
+complete all workspace/profile workflows or the overall migration.
