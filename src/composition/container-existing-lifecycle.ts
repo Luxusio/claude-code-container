@@ -10,6 +10,9 @@ type NativeLifecyclePorts = "start" | "stop" | "remove" | "reportContractMismatc
 
 export interface NativeContainerExistingLifecycleContext {
     startCli: string;
+    beforeStart?(): void;
+    afterStart?(id: string): void;
+    beforeRemove?(): void;
     requiredMountDestinations(): readonly string[];
     projectPath: string;
     profile?: string;
@@ -22,10 +25,12 @@ export function createNativeContainerExistingLifecycle(
     return createContainerExistingLifecycle({
         ...ports,
         start: (id) => {
+            context.beforeStart?.();
             const started = spawnSync(context.startCli, ["start", id], { stdio: "inherit" });
             if (started.error || started.status !== 0) {
                 throw new Error("Stopped container could not be restarted; automatic replacement was refused.");
             }
+            context.afterStart?.(id);
         },
         stop: (id) => {
             const stopped = spawnSync(runtimeCli(), ["stop", id], {
@@ -37,6 +42,7 @@ export function createNativeContainerExistingLifecycle(
             }
         },
         remove: (id) => {
+            context.beforeRemove?.();
             // Ordinary rm refuses removal if an external actor starts the container.
             const removed = spawnSync(runtimeCli(), ["rm", id], {
                 encoding: "utf-8",

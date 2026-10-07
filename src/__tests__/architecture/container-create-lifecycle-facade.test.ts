@@ -35,6 +35,17 @@ vi.mock("../../session.js", () => ({
     withContainerLifecycleLock: (_prefix: string, operation: () => unknown) => operation(),
     withProjectFamilyLifecycleLock: native.family,
 }));
+// Lock contention/native descriptor safety is covered by shared-mutation-lock.test.ts.
+// This facade fixture owns fake host paths; bypass only the two startup lock namespaces.
+vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(),
+    withSharedMutationLock: (path: string, operation: () => unknown, options: { waitMs: number; reclaimStale?: boolean }) => {
+        if (!/^\/fixture\/home\/\.ccc\/(?:codex-state\.lock|run\/locks\/identity-[a-f0-9]{64}\.lock)$/.test(path)) throw new Error("unexpected fixture lock IO");
+        expect(operation).toBeTypeOf("function");
+        expect(options).toEqual({ waitMs: path.endsWith("codex-state.lock") ? 600_000 : 1_260_000, reclaimStale: false });
+        return operation();
+    },
+}));
 
 const id = "A".repeat(64);
 const name = "fixture-container";
@@ -219,13 +230,21 @@ describe("actual creation application through native composition", () => {
 
 // Exercise the real public facade and both real applications; only native boundaries are mocked.
 const docker = await import("../../docker.js");
+const { IMAGE_NAME } = await import("../../utils.js");
+const containerIdentity = await import("../../container-identity.js");
+const sharedState = await import("@ccc/device-lab/device-lab-shared-state.js");
+const baseImageId = `sha256:${"b".repeat(64)}`;
+const identityImageId = `sha256:${"c".repeat(64)}`;
 const project = "/fixture/project";
 
 function publicFixture() {
+    const identity = containerIdentity.resolveContainerIdentity();
+    const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     const state = {
         createResult: result(0, "short-id"), remaining: result(1, "", "No such container"),
         changed: false, swapProject: false, currentCli: "captured-runtime",
-        familyCalls: 0, existing: false, runArgs: [] as string[],
+        familyCalls: 0, existing: false, runArgs: [] as string[], invalidMount: false,
+        helperFailure: undefined as unknown,
     };
     native.runtime.mockImplementation(() => state.currentCli);
     native.remote.mockReturnValue(false);
@@ -246,7 +265,15 @@ function publicFixture() {
     native.family.mockImplementation((_prefix, operation) => { state.familyCalls++; return operation(); });
     native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null }) => {
         if (args[0] === "images") return result(0, "image-id");
-        if (args[0] === "image" && args[1] === "inspect") return result(0, "<no value>");
+        if (args[0] === "image" && args[1] === "inspect") {
+            expect(args[2]).toMatch(/^ccc-identity:[a-f0-9]{64}$/);
+            return result(0, JSON.stringify([{ Id: identityImageId, Config: { User: "ccc", Labels: identityLabels } }]));
+        }
+        if (args[0] === "inspect" && args[1] === IMAGE_NAME && args.includes("{{.Id}}")) return result(0, baseImageId);
+        if (args[0] === "run" && args[1] === "--rm") {
+            expect(args.slice(0, 9)).toEqual(["run", "--rm", "--network", "none", "--user", "ccc", "--entrypoint", "/bin/sh", identityImageId]);
+            return result(0, `${identity.uid}:${identity.gid}:/home/ccc:ccc`);
+        }
         if (args[0] === "run") {
             state.runArgs = [...args];
             state.changed = state.swapProject;
@@ -257,6 +284,7 @@ function publicFixture() {
         if (args[0] === "ps" && args[1] === "-q") return result(0, state.existing ? id : "");
         if (args[0] === "inspect" && args.includes("{{.State.Running}}")) return result(0, state.existing ? "true" : "false");
         if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) return result(0, `${id}|true`);
+        if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}|{{.Image}}")) return result(0, `${id}|true|${identityImageId}`);
         if (args[0] === "inspect" && args.includes("{{json .}}")) {
             const mounts: Array<{ Source: string; Destination: string; Type: string; RW: boolean }> = [];
             const labels: Record<string, string> = {};
@@ -266,14 +294,16 @@ function publicFixture() {
                 const value = state.runArgs[index + 1];
                 if (argument === "-v") {
                     const match = value.match(/^(.*):(\/[^:]+)(?::ro)?$/)!;
-                    mounts.push({ Source: match[1], Destination: match[2], Type: match[1].startsWith("/") ? "bind" : "volume", RW: !value.endsWith(":ro") });
+                    mounts.push({ Source: match[1], Destination: match[2], Type: state.invalidMount && match[1] === project ? "tmpfs" : match[1].startsWith("/") ? "bind" : "volume", RW: !value.endsWith(":ro") });
                 }
                 if (argument === "--tmpfs") mounts.push({ Source: "", Destination: value.split(":")[0], Type: "tmpfs", RW: true });
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);
                 if (argument === "-e") env.push(value);
             }
-            return result(0, JSON.stringify({ Id: id, Mounts: mounts, Config: { Labels: labels, Env: env }, HostConfig: { Init: true, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
+            return result(0, JSON.stringify({ Id: id, Image: identityImageId, State: { Running: true }, Mounts: mounts, Config: { Labels: labels, Env: env, User: "ccc" }, HostConfig: { Init: true, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
         }
+        if (args[0] === "exec" && args[1] === id && args[2] === "sh" && args[4]?.includes('$(id -un)')) return result(0, `${identity.uid}:${identity.gid}:ccc:/home/ccc`);
+        if (args[0] === "exec" && args.includes("ccc-ssh-copy") && state.helperFailure !== undefined) throw state.helperFailure;
         if (args[0] === "exec" && args[2] === "cat") {
             if (options?.encoding === null) return { ...result(), stdout: Buffer.from("fixture") };
             return result(0, markers.get(args[3].slice(args[3].lastIndexOf("/") + 1)) ?? "");
@@ -285,19 +315,60 @@ function publicFixture() {
 }
 
 describe("public Docker creation cutover", () => {
+    it("rejects unexpected fixture lock paths before calling an operation", () => {
+        const operation = vi.fn();
+        expect(() => sharedState.withSharedMutationLock("/unexpected/private.lock", operation)).toThrow("unexpected fixture lock IO");
+        expect(operation).not.toHaveBeenCalled();
+    });
+
+    it("publishes verified start before helper failure without firing final ready", () => {
+        const state = publicFixture(); state.createResult = result(0, id);
+        const failure = { kind: "ssh helper failure" }; state.helperFailure = failure;
+        const ready = vi.fn();
+        const started = vi.fn(target => {
+            expect(target).toBe(id);
+            expect(native.spawn.mock.calls.some(call => call[1].includes("{{json .}}"))).toBe(true);
+            expect(native.spawn.mock.calls.some(call => call[1].includes("ccc-ssh-copy"))).toBe(false);
+        });
+        expect(thrown(() => docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready, undefined, started))).toBe(failure);
+        expect(started).toHaveBeenCalledExactlyOnceWith(id);
+        expect(ready).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "rm")).toEqual([]);
+    });
+
+    it("compensates rejected mounts before publishing start authority or ready", () => {
+        const state = publicFixture(); state.createResult = result(0, id); state.invalidMount = true;
+        const ready = vi.fn(); const started = vi.fn();
+        expect(() => docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready, undefined, started)).toThrow("created container bind mount identity verification failed");
+        expect(started).not.toHaveBeenCalled(); expect(ready).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "rm")).toEqual([["captured-runtime", ["rm", "-f", id], cleanupOptions]]);
+        expect(native.spawn.mock.calls.some(call => call[1].includes("ccc-ssh-copy"))).toBe(false);
+    });
+
+    it("compensates a throwing start-authority callback and preserves its exact cause", () => {
+        const state = publicFixture(); state.createResult = result(0, id);
+        const failure = { kind: "start authorization" }; const started = vi.fn(() => { throw failure; });
+        const ready = vi.fn();
+        expect(thrown(() => docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready, undefined, started))).toBe(failure);
+        expect(started).toHaveBeenCalledExactlyOnceWith(id); expect(ready).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "rm")).toEqual([["captured-runtime", ["rm", "-f", id], cleanupOptions]]);
+        expect(native.spawn.mock.calls.some(call => call[1].includes("ccc-ssh-copy"))).toBe(false);
+    });
     it("creates, verifies, synchronizes with current runtime and returns the unchanged public name", () => {
         const state = publicFixture(); state.createResult = result(0, id);
         const ready = vi.fn();
         expect(docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready)).toBe(docker.getContainerName(project));
-        expect(ready).toHaveBeenCalledExactlyOnceWith(id);
+        expect(ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: true });
         expect(state.familyCalls).toBe(1);
-        const run = native.spawn.mock.calls.find(call => call[1][0] === "run");
+        const run = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm");
         expect(run?.[0]).toBe("captured-runtime");
         const proof = native.spawn.mock.calls.find(call => call[1].includes("{{json .}}"));
         expect(proof?.[0]).toBe("changed-runtime");
         expect(proof?.[1]).toEqual(["inspect", "-f", "{{json .}}", id]);
-        const ssh = native.spawn.mock.calls.filter(call => call[1][0] === "exec" && call[1][2] === "sh");
-        expect(ssh).toHaveLength(2);
+        const ssh = native.spawn.mock.calls.filter(call => call[1][0] === "exec" && call[1][2] === "sh" && !call[1][4]?.includes('$(id -un)'));
+        expect(ssh).toHaveLength(1);
+        expect(ssh[0][1]).toContain("ccc-ssh-copy");
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "exec" && call[1][4]?.includes('$(id -un)'))).toHaveLength(1);
         expect(ssh.every(call => call[0] === "changed-runtime" && call[1][1] === id)).toBe(true);
         expect(native.spawn.mock.calls.some(call => call[1][0] === "rm")).toBe(false);
     });
@@ -309,7 +380,7 @@ describe("public Docker creation cutover", () => {
         native.spawn.mockClear(); native.family.mockClear(); vi.mocked(console.log).mockClear();
         expect(docker.startProjectContainer(project, () => {})).toBe(docker.getContainerName(project));
         expect(native.family).not.toHaveBeenCalled();
-        expect(native.spawn.mock.calls.some(call => call[1][0] === "run")).toBe(false);
+        expect(native.spawn.mock.calls.some(call => call[1][0] === "run" && call[1][1] !== "--rm")).toBe(false);
         expect(console.log).not.toHaveBeenCalledWith("Creating container...");
     });
 
@@ -334,13 +405,15 @@ describe("public Docker creation cutover", () => {
         expect(ensureDirs).toHaveBeenCalledTimes(1);
         expect(state.familyCalls).toBe(1);
         expect(native.family.mock.calls[0][0]).toBe(`mount-${docker.bindMountSourceIdentityDigest({ realpath: project, dev: "1", ino: "1" })}`);
-        const run = native.spawn.mock.calls.find(call => call[1][0] === "run");
+        const run = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm");
         expect(run?.[0]).toBe("captured-runtime");
         expect(run?.[2]).toEqual(createOptions);
         expect(run?.[1]).toContain("ccc.managed=true");
         expect(run?.[1]).toContain(`ccc.project.path=${project}`);
         expect(native.spawn.mock.calls.some(call => call[1][0] === "rm")).toBe(false);
-        expect(native.spawn.mock.calls.some(call => call[1].includes("{{.Id}}"))).toBe(false);
+        expect(native.spawn.mock.calls.filter(call => call[1].includes("{{.Id}}"))).toEqual([
+            ["captured-runtime", ["inspect", IMAGE_NAME, "--format", "{{.Id}}"], cleanupOptions],
+        ]);
         expect(console.log).toHaveBeenCalledWith("Creating container...");
     });
 
@@ -352,13 +425,10 @@ describe("public Docker creation cutover", () => {
     });
 
     it("refuses a namespace that appears between existing flow and family callback", () => {
-        publicFixture(); let lists = 0; const original = native.spawn.getMockImplementation()!;
-        native.spawn.mockImplementation((cli, args, options) => {
-            if (args[0] === "ps" && args[1] === "-aq") return result(0, ++lists === 1 ? "" : id);
-            return original(cli, args, options);
-        });
+        const state = publicFixture();
+        native.family.mockImplementation((_prefix, operation) => { state.existing = true; return operation(); });
         expect(() => docker.startProjectContainer(project, () => {})).toThrow("appeared during creation preflight; refusing replacement.");
-        expect(native.spawn.mock.calls.some(call => call[1][0] === "run")).toBe(false);
+        expect(native.spawn.mock.calls.some(call => call[1][0] === "run" && call[1][1] !== "--rm")).toBe(false);
         expect(console.log).not.toHaveBeenCalledWith("Creating container...");
     });
 
@@ -376,7 +446,7 @@ describe("public Docker creation cutover", () => {
         const primary = `bind mount source identity changed: ${project}`;
         expect(failure.message).toBe(absent ? primary : `${primary}; failed to remove rejected container ${id}`);
         if (!absent) expect((failure.cause as Error).message).toBe(primary);
-        const calls = native.spawn.mock.calls.filter(call => call[1][0] === "run" || call[1][0] === "rm" || call[1].includes("{{.Id}}"));
+        const calls = native.spawn.mock.calls.filter(call => call[1][0] === "run" && call[1][1] !== "--rm" || call[1][0] === "rm" || call[1][0] === "inspect" && call[1].at(-1) === id && call[1].includes("{{.Id}}"));
         expect(calls.map(call => [call[0], call[1][0]])).toEqual([["captured-runtime", "run"], ["captured-runtime", "rm"], ["captured-runtime", "inspect"]]);
         expect(calls[1]).toEqual(["captured-runtime", ["rm", "-f", id], cleanupOptions]);
         expect(calls[2]).toEqual(["captured-runtime", ["inspect", "-f", "{{.Id}}", id], cleanupOptions]);
@@ -389,7 +459,7 @@ describe("public Docker creation cutover", () => {
         });
         native.remote.mockImplementation(() => { observations.push("remote"); return true; });
         expect(() => docker.startProjectContainer(project, () => {})).toThrow("exact 64-hex container ID");
-        const args = native.spawn.mock.calls.find(call => call[1][0] === "run")?.[1] as string[];
+        const args = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm")?.[1] as string[];
         expect(args).not.toContain("CCC_PROXY_ENABLED=1");
         expect(args).toContain("CCC_CONTAINER_HOST_REMOTE=1");
         expect(observations.slice(-3)).toEqual(["creating", "remote", "remote"]);

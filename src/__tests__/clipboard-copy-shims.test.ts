@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { spawn } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type Capture = { method: string; path: string; auth?: string; type?: string; body: Buffer };
@@ -15,6 +17,11 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
     let captured: Capture[];
     let responseStatus: number;
     let responseBody: Buffer;
+    let fixtureRoot: string;
+    let portFile: string;
+    let decoy: Server;
+    let decoyUrl: string;
+    let decoyRequests: number;
 
     beforeEach(async () => {
         captured = [];
@@ -32,17 +39,42 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
         const address = server.address();
         if (!address || typeof address === "string") throw new Error("HTTP fixture failed to bind");
         url = `http://127.0.0.1:${address.port}`;
+        fixtureRoot = mkdtempSync(join(tmpdir(), "ccc-copy-shims-"));
+        mkdirSync(join(fixtureRoot, ".ccc", "clipboard"), { recursive: true });
+        portFile = join(fixtureRoot, ".ccc", "clipboard", "clipboard.port");
+        for (const name of ["wl-copy", "xclip", "xsel"]) {
+            const source = readFileSync(`${shimDir}${name}`, "utf8");
+            expect(source).toContain("/run/ccc/clipboard.port");
+            const isolated = source.replaceAll("/run/ccc/clipboard.port", '"$CCC_TEST_PORT_FILE"');
+            expect(isolated).not.toContain("/run/ccc/clipboard.port");
+            writeFileSync(join(fixtureRoot, name), isolated, { mode: 0o600 });
+        }
+        decoyRequests = 0;
+        decoy = createServer((_req, res) => { decoyRequests++; res.writeHead(500); res.end(); });
+        await new Promise<void>((resolve) => decoy.listen(0, "127.0.0.1", resolve));
+        const decoyAddress = decoy.address();
+        if (!decoyAddress || typeof decoyAddress === "string") throw new Error("Decoy failed to bind");
+        decoyUrl = `http://127.0.0.1:${decoyAddress.port}`;
     });
 
     afterEach(async () => {
         server.closeAllConnections();
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        decoy.closeAllConnections();
+        await new Promise<void>((resolve, reject) => decoy.close((error) => error ? reject(error) : resolve()));
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        expect(decoyRequests).toBe(0);
     });
 
     function run(name: string, args: string[], input = sample, endpoint = url) {
+        // Mounted metadata wins over stale environment values, but both endpoints
+        // and every byte of metadata belong exclusively to this test.
+        writeFileSync(portFile, endpoint ? `${new URL(endpoint).port}:test-copy-token` : "invalid", { mode: 0o600 });
         return new Promise<{ code: number | null; stdout: Buffer; stderr: string }>((resolve, reject) => {
-            const child = spawn("sh", [`${shimDir}${name}`, ...args], {
-                env: { ...process.env, CCC_CLIPBOARD_URL: endpoint, CCC_CLIPBOARD_TOKEN: "test-copy-token" },
+            const child = spawn("sh", [join(fixtureRoot, name), ...args], {
+                env: { ...process.env, ENV: "", BASH_ENV: "", HOME: fixtureRoot, TMPDIR: fixtureRoot,
+                    CCC_TEST_PORT_FILE: portFile, CCC_CLIPBOARD_URL: endpoint ? decoyUrl : "",
+                    CCC_CLIPBOARD_TOKEN: "stale-fixture-token" },
                 stdio: ["pipe", "pipe", "pipe"],
             });
             const stdout: Buffer[] = [];
@@ -65,10 +97,7 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
         expect(captured[0].method).toBe("POST");
         expect(captured[0].path).toBe("/clipboard/text");
         expect(captured[0].type).toMatch(/^text\/plain(?:;\s*charset=utf-8)?$/i);
-        const token = existsSync("/run/ccc/clipboard.port")
-            ? readFileSync("/run/ccc/clipboard.port", "utf8").trimEnd().split(":").slice(1).join(":")
-            : "test-copy-token";
-        expect(captured[0].auth).toBe(`Bearer ${token}`);
+        expect(captured[0].auth).toBe("Bearer test-copy-token");
         expect(captured[0].body).toEqual(body);
     }
 

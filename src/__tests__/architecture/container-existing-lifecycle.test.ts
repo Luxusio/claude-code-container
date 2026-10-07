@@ -113,7 +113,7 @@ describe("existing lifecycle observations and contract", () => {
     it("confirmed mismatch clears lifecycle before callback and continues to creation", () => {
         const f = fixture(); f.state.contract = false;
         expect(f.app.run({ containerName: "name", replacementGuard: guard, onRecreate: () => { f.trace.push("callback"); } })).toEqual({ kind: "continue-to-create" });
-        expect(f.trace).toEqual([...pre, "identity:name", "recreate:container contract changed", "remove:id", "callback", "running:name"]);
+        expect(f.trace).toEqual([...pre, "identity:name", "identity:id", "recreate:container contract changed", "remove:id", "callback", "running:name"]);
     });
     it.each(["unsafe", "stopped", "unready", "safe"])("unconfirmed mismatch follows %s defer", mode => {
         const f = fixture(); f.state.contract = false; f.state.safe = mode !== "unsafe";
@@ -161,11 +161,16 @@ describe("running reuse and stopped restart", () => {
         expect(f.app.run({ containerName: "name", ...(guarded ? { replacementGuard: guard } : {}) })).toEqual({ kind: "joined", containerId: "id" });
         expect(f.trace).toEqual([...pre, "running:name", guarded ? "brief:id" : "exec:id", "matches", ...join]);
     });
-    it.each(["before", "after", "unready"])("replaces running %s failure with pinned identity", mode => {
-        const f = fixture(); f.state.devices = mode === "before" ? [false] : [true, false]; f.state.ready = mode !== "unready";
-        expect(f.app.run({ containerName: "name", replacementGuard: guard })).toEqual({ kind: "continue-to-create" });
+    it.each(["before", "after", "unready"])("preserves running %s failure even when the guard authorizes replacement", mode => {
+        const f = fixture(); f.state.identity = { containerId: "id", running: true };
+        f.state.devices = mode === "before" ? [false] : [true, false]; f.state.ready = mode !== "unready";
+        let guardCalls = 0;
+        const run = () => f.app.run({ containerName: "name", replacementGuard: operation => { guardCalls++; operation(); return true; } });
+        expect(run).toThrow(mode === "before" ? "during validation" : mode === "after" ? "during synchronization" : "destructive recovery was refused");
         const middle = mode === "unready" ? [] : mode === "before" ? ["matches"] : ["matches", "mcp:id", "ssh:id", "git:id", "matches"];
-        expect(f.trace).toEqual([...pre, "running:name", "brief:id", ...middle, "identity:name", `recreate:${mode === "unready" ? "container exec failed" : "device-lab mount source identity changed"}`, "remove:id"]);
+        expect(f.trace).toEqual([...pre, "running:name", "brief:id", ...middle, "identity:name"]);
+        expect(guardCalls).toBe(1);
+        expect(f.trace.some(event => /^(remove|stop|start|finish):/.test(event))).toBe(false);
     });
     it.each(["before", "after", "unready"])("veto preserves running %s failure without join", mode => {
         const f = fixture(); f.state.devices = mode === "before" ? [false] : [true, false]; f.state.ready = mode !== "unready";
@@ -236,7 +241,7 @@ describe("identity-fenced replacement callbacks", () => {
     it("pins observed identity when expected ID is omitted", () => {
         const f = fixture(); f.state.identity = { containerId: "observed", running: false };
         expect(f.app.replace({ containerName: "name", reason: "reason", replacementGuard: guard })).toBe(true);
-        expect(f.trace).toEqual(["identity:name", "recreate:reason", "remove:observed"]);
+        expect(f.trace).toEqual(["identity:name", "identity:observed", "recreate:reason", "remove:observed"]);
     });
     it.each([false, true])("guard returning %s without callback never confirms replacement", accepted => {
         const f = fixture(); expect(f.app.replace({ ...replacement, replacementGuard: () => accepted })).toBe(false);
@@ -244,69 +249,84 @@ describe("identity-fenced replacement callbacks", () => {
     });
     it("successful callback then false remains false with performed removal", () => {
         const f = fixture(); expect(f.app.replace({ ...replacement, replacementGuard: operation => { operation(); return false; } })).toBe(false);
-        expect(f.trace).toEqual(["identity:name", "recreate:reason", "remove:id"]);
+        expect(f.trace).toEqual(["identity:name", "identity:id", "recreate:reason", "remove:id"]);
     });
     it("captured initially running identity cannot acquire later stopped authority", () => {
         const f = fixture(); f.state.identity = { containerId: "id", running: true };
         expect(f.app.replace({ ...replacement, replacementGuard: operation => { f.state.identity = { containerId: "id", running: false }; operation(); return true; } })).toBe(false);
         expect(f.trace).toEqual(["identity:name"]);
     });
-    it("captured stopped identity removes without an extra running observation", () => {
-        const f = fixture(); expect(f.app.replace({ ...replacement, replacementGuard: operation => { f.state.identity = { containerId: "id", running: true }; operation(); return true; } })).toBe(true);
-        expect(f.trace).toEqual(["identity:name", "recreate:reason", "remove:id"]);
+    it("refuses removal when a captured stopped container becomes running inside the guard", () => {
+        const f = fixture(); const callback = () => { throw new Error("callback called"); };
+        expect(f.app.replace({ ...replacement, onRecreate: callback, replacementGuard: operation => {
+            f.state.identity = { containerId: "id", running: true }; operation(); return true;
+        } })).toBe(false);
+        expect(f.trace).toEqual(["identity:name", "identity:id"]);
     });
-    it.each([undefined, ""])("startup authorized path %s must exist before managed probe", managedProjectPath => {
-        const f = fixture(); expect(f.app.replace({ ...replacement, initiallyRunningContainerId: "id", managedProjectPath, replacementGuard: guard })).toBe(false);
+    it.each([null, { containerId: "successor", running: false }])("refuses an unavailable or successor exact ID at the last check: %s", identity => {
+        const f = fixture();
+        expect(f.app.replace({ ...replacement, replacementGuard: operation => { f.state.identity = identity; operation(); return true; } })).toBe(false);
+        expect(f.trace).toEqual(["identity:name", "identity:id"]);
+    });
+    it.each([undefined, "", "/project"])("startup-running ID is preserved regardless of managed project path %s", managedProjectPath => {
+        const f = fixture(); let guardCalls = 0;
+        expect(f.app.replace({ ...replacement, initiallyRunningContainerId: "id", managedProjectPath, replacementGuard: operation => { guardCalls++; operation(); return true; } })).toBe(false);
+        expect(guardCalls).toBe(1);
         expect(f.trace).toEqual(["identity:name"]);
     });
-    it.each([null, { containerId: "foreign", running: true }])("startup authorization rejects missing/foreign managed identity %s", managed => {
+    it.each([null, { containerId: "foreign", running: true }, { containerId: "id", running: false }, { containerId: "id", running: true }])("managed identity %s cannot grant replacement authority to startup-running ID", managed => {
         const f = fixture(); f.state.managed = managed;
         expect(f.app.replace({ ...replacement, initiallyRunningContainerId: "id", managedProjectPath: "/project", replacementGuard: guard })).toBe(false);
-        expect(f.trace).toEqual(["identity:name", "managed:id:/project"]);
+        expect(f.trace).toEqual(["identity:name"]);
     });
-    it.each([false, true])("managed running=%s requires fresh proof before removal", running => {
-        const f = fixture(); f.state.managed = { containerId: "id", running };
-        expect(f.app.replace({ ...replacement, initiallyRunningContainerId: "id", managedProjectPath: "/project", replacementGuard: guard })).toBe(true);
-        expect(f.trace).toEqual(["identity:name", "managed:id:/project", ...(running ? ["stop:id"] : []), "recreate:reason", "remove:id"]);
+    it("re-proves each stopped callback and retains prior confirmation across a later successor", () => {
+        const f = fixture(); let calls = 0;
+        expect(f.app.replace({ ...replacement, onRecreate: () => { calls++; }, replacementGuard: operation => {
+            operation(); f.state.identity = { containerId: "successor", running: false }; operation(); return true;
+        } })).toBe(true);
+        expect(calls).toBe(1);
+        expect(f.trace).toEqual(["identity:name", "identity:id", "recreate:reason", "remove:id", "identity:id"]);
     });
-    it("re-proves every managed callback and keeps prior confirmation across later no-op", () => {
-        const f = fixture();
-        expect(f.app.replace({ ...replacement, initiallyRunningContainerId: "id", managedProjectPath: "/project", replacementGuard: operation => { operation(); f.state.managed = null; operation(); return true; } })).toBe(true);
-        expect(f.trace).toEqual(["identity:name", "managed:id:/project", "stop:id", "recreate:reason", "remove:id", "managed:id:/project"]);
-    });
-    it("does not normalize multiple stopped callbacks into one removal", () => {
+    it("does not normalize multiple independently re-proven stopped callbacks into one removal", () => {
         const f = fixture(); let calls = 0;
         expect(f.app.replace({ ...replacement, onRecreate: () => { calls++; }, replacementGuard: operation => { operation(); operation(); return true; } })).toBe(true);
-        expect(calls).toBe(2); expect(f.trace).toEqual(["identity:name", "recreate:reason", "remove:id", "recreate:reason", "remove:id"]);
+        expect(calls).toBe(2); expect(f.trace).toEqual(["identity:name", "identity:id", "recreate:reason", "remove:id", "identity:id", "recreate:reason", "remove:id"]);
     });
-    it("reads managed context anew on each callback", () => {
-        const f = fixture(); const request: ContainerReplacementRequest = { ...replacement, initiallyRunningContainerId: "id", managedProjectPath: "/first" };
+    it("does not query unused managed context during stopped replacement", () => {
+        const f = fixture(); const request: ContainerReplacementRequest = { ...replacement, managedProjectPath: "/first" };
+        f.ports.managedIdentity = () => { throw new Error("managed probe called"); };
         request.replacementGuard = operation => { operation(); request.managedProjectPath = "/second"; operation(); return true; };
         expect(f.app.replace(request)).toBe(true);
-        expect(f.trace.filter(event => event.startsWith("managed:"))).toEqual(["managed:id:/first", "managed:id:/second"]);
+        expect(f.trace.filter(event => event.startsWith("managed:"))).toEqual([]);
+        expect(f.trace.filter(event => event.startsWith("identity:"))).toEqual(["identity:name", "identity:id", "identity:id"]);
     });
-    it.each(["identity", "managedIdentity", "reportRecreation"] as const)("propagates replacement %s failure without removal or callback", name => {
+    it.each(["identity", "reportRecreation"] as const)("propagates replacement %s failure without removal or callback", name => {
         const f = fixture(); const failure = { port: name };
         Object.assign(f.ports, { [name]: () => { throw failure; } });
-        try { f.app.replace({ ...replacement, initiallyRunningContainerId: "id", managedProjectPath: "/project", replacementGuard: guard, onRecreate: () => { throw new Error("callback called"); } }); throw new Error("unexpected success"); }
+        try { f.app.replace({ ...replacement, replacementGuard: guard, onRecreate: () => { throw new Error("callback called"); } }); throw new Error("unexpected success"); }
         catch (error) { expect(error).toBe(failure); }
         expect(f.trace).not.toContain("remove:id");
     });
-    it.each(["stop", "remove", "callback", "guard"])("propagates %s failure with only already-performed effects", mode => {
+    it("propagates the last identity observation error without removal or callback", () => {
+        const f = fixture(); const failure = { port: "last identity" }; let reads = 0;
+        f.ports.identity = target => { f.trace.push(`identity:${target}`); if (++reads === 2) throw failure; return f.state.identity; };
+        try { f.app.replace({ ...replacement, replacementGuard: guard }); throw new Error("unexpected success"); }
+        catch (error) { expect(error).toBe(failure); }
+        expect(f.trace).toEqual(["identity:name", "identity:id"]);
+    });
+    it.each(["remove", "callback", "guard"])("propagates %s failure with only already-performed effects", mode => {
         const f = fixture(); const failure = { failure: mode };
-        const request: ContainerReplacementRequest = { ...replacement, initiallyRunningContainerId: "id", managedProjectPath: "/project", replacementGuard: guard, onRecreate: () => { f.trace.push("callback"); if (mode === "callback") throw failure; } };
-        if (mode === "stop") f.ports.stop = () => { f.trace.push("stop:id"); throw failure; };
+        const request: ContainerReplacementRequest = { ...replacement, replacementGuard: guard, onRecreate: () => { f.trace.push("callback"); if (mode === "callback") throw failure; } };
         if (mode === "remove") f.ports.remove = () => { f.trace.push("remove:id"); throw failure; };
         if (mode === "guard") request.replacementGuard = operation => { operation(); throw failure; };
         try { f.app.replace(request); throw new Error("unexpected success"); } catch (error) { expect(error).toBe(failure); }
-        const expected = ["identity:name", "managed:id:/project", "stop:id"];
-        if (mode !== "stop") expected.push("recreate:reason", "remove:id");
+        const expected = ["identity:name", "identity:id", "recreate:reason", "remove:id"];
         if (mode === "callback" || mode === "guard") expected.push("callback");
         expect(f.trace).toEqual(expected);
     });
     it("false after successful lifecycle callback defers listed ID rather than restarting cleared ID", () => {
         const f = fixture(); f.state.contract = false;
         expect(f.app.run({ containerName: "name", replacementGuard: operation => { operation(); return false; } })).toEqual({ kind: "joined", containerId: "id" });
-        expect(f.trace).toEqual([...pre, "identity:name", "recreate:container contract changed", "remove:id", "safe:id", "running:name", "brief:id", "defer:container contract changed", "ssh:id", "git:id", "finish:id"]);
+        expect(f.trace).toEqual([...pre, "identity:name", "identity:id", "recreate:container contract changed", "remove:id", "safe:id", "running:name", "brief:id", "defer:container contract changed", "ssh:id", "git:id", "finish:id"]);
     });
 });

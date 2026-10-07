@@ -21,12 +21,19 @@ import { detectHostNetworkReach } from "./network-reach.js";
 const STEP_TIMEOUT_MS = 5_000;
 
 function isProxyRunning(containerName: string): boolean {
+    // Inspect the kernel socket table without ss or a TCP connection: probing
+    // the transparent proxy's own port can make it forward back into itself.
+    const address = `0100007F:${PROXY_PORT.toString(16).toUpperCase().padStart(4, "0")}`;
+    const script =
+        `while read -r slot local_address remote_address state rest; do ` +
+        `if [[ "$local_address" == "${address}" && "$state" == "0A" ]]; then exit 0; fi; ` +
+        `done < /proc/net/tcp; exit 1`;
     const result = spawnSync(
         runtimeCli(),
-        ["exec", containerName, "sh", "-c", `ss -tlnp 2>/dev/null | grep -q ':${PROXY_PORT}'`],
+        ["exec", containerName, "bash", "-c", script],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
     );
-    return result.status === 0;
+    return !result.error && result.status === 0;
 }
 
 export function setupLocalhostProxy(containerName: string): void {

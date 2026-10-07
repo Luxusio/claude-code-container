@@ -21,7 +21,7 @@ folder, keeps disposable runtime files in one place, and keeps settings in one f
 │   │   ├── claude.json    # mounted at /home/ccc/.claude.json
 │   │   └── codex/         # mounted at /home/ccc/.codex
 │   └── <name>/            # same three entries per named profile
-├── run/                   # disposable: locks/, clipboard.port, clipboard.starting,
+├── run/                   # disposable: locks/, clipboard.port, clipboard.starting.v2,
 │                          # clipboard-files/, bin/
 ├── devices/               # device lab state (unchanged)
 └── device-broker-private/ # host-only broker state (unchanged)
@@ -40,8 +40,8 @@ Paths inside the container do not change.
    change starts without a codex login and asks for one the first time codex runs.
    The default profile keeps the existing codex login.
 3. Session locks, the clipboard bridge port file, clipboard file transfers and the
-   macOS clipboard helper live under `run/`. Deleting `run/` while no ccc session
-   is running is safe.
+   macOS clipboard helper live under `run/`. Do not remove mounted runtime files while any running or stopped container
+   still references them.
 4. `ccc remote` saves a project's remote config in `config.json` under
    `remote.<project-hash>`. Configs saved by older versions in
    `remote/<project-hash>.json` are still read.
@@ -64,12 +64,24 @@ On the first host-side ccc start after the update, ccc moves the old entries:
 | `codex/` | `profiles/default/codex/` |
 | `locks/`, `clipboard-files/`, `bin/` | `run/…` |
 | `remote/<hash>.json` | `config.json` → `remote.<hash>` |
-| `clipboard.port`, `clipboard.starting` | removed (recreated under `run/`) |
+| `clipboard.port` | renamed to `run/clipboard.port`, retaining its inode |
+| `clipboard.starting`, `clipboard.starting.v2` | active ownership defers migration; never removed by migration |
 
 - The migration runs only when no ccc session is running, counting sessions of an
   older ccc that still uses `~/.ccc/locks`. If one is, ccc skips
   it and tries again on a later start. Until then the old paths keep working.
-- Each entry moves on its own. If one move fails (for example Windows refuses to
+- Migration also waits while any running or stopped container references legacy
+  managed mount paths. Failed or unavailable mount inspection is not proof that
+  migration is safe. Credentials and clipboard files stay at their original paths.
+- Both legacy and v2 clipboard startup locks, in both old and new runtime
+  directories, are honored and held during migration. Existing locks defer the
+  move; migration never reclaims another startup's ownership.
+- The clipboard port file is renamed before other entries, preserving its inode
+  and contents. If a different destination port file exists, migration defers
+  without replacing either file or moving credentials. Normal clipboard startup
+  performs authenticated reuse or serialized retirement; migration does not
+  issue asynchronous shutdown. A failed port move defers the remaining moves.
+- Each other entry moves on its own. If one move fails (for example Windows refuses to
   rename a folder that a running container still uses), ccc prints one warning
   naming it, keeps using the old path for that entry, and retries later. No
   credential is copied or deleted; entries are renamed.
@@ -89,8 +101,9 @@ On the first host-side ccc start after the update, ccc moves the old entries:
   start until the file is fixed or removed.
 - Two ccc starts at the same time do not both migrate: one holds
   `~/.ccc/.layout-migration.lock`.
-- Existing containers are recreated once, because their credential mount sources
-  moved. Containers that have running sessions are recreated after they stop.
+- Existing containers keep their credential mount sources. Migration waits until
+  those references are removed through the normal container lifecycle; it never
+  forces running or stopped containers to lose their backing paths.
 - An older ccc binary run after the migration no longer finds `~/.ccc/claude` and
   asks for a login. The migration is one-way.
 

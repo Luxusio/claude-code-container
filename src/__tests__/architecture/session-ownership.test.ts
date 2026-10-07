@@ -178,7 +178,7 @@ describe("parent ownership handshake", () => {
         const handle = await pending;
         let acknowledged = false;
         const update = handle.updateContainer(containerId, "podman").then(() => { acknowledged = true; });
-        expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, runtime: "podman" });
+        expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: false });
         f.message({ type: "ack", sequence: 9 });
         await Promise.resolve();
         expect(acknowledged).toBe(false);
@@ -403,7 +403,7 @@ describe("guardian ownership protocol", () => {
     it("disconnect passes only the exact acknowledged container ID and selected runtime to cleanup", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman" });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
         expect(f.sent.at(-1)).toEqual({ type: "ack", sequence: 1 });
         await f.guardian.disconnect();
         expect(f.cleanups).toEqual([[binding, receipt, containerId, "podman"]]);
@@ -414,7 +414,7 @@ describe("guardian ownership protocol", () => {
     it("normal release acknowledges once and prevents disconnect cleanup", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker" });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
         await f.guardian.receive({ type: "release", sequence: 2 });
         await f.guardian.disconnect();
         await f.guardian.receive({ type: "release", sequence: 3 });
@@ -433,7 +433,7 @@ describe("guardian ownership protocol", () => {
         expect(f.finishes()).toBe(1);
     });
 
-    it.each([null, "update", {}, { type: "update", sequence: 1, containerId: "bad", runtime: "docker" }])("rejects pre-init message %j without cleanup", async message => {
+    it.each([null, "update", {}, { type: "update", sequence: 1, containerId: "bad", runtime: "docker", cleanupEnabled: true }])("rejects pre-init message %j without cleanup", async message => {
         const f = guardianFixture();
         await expect(f.guardian.receive(message)).rejects.toThrow();
         expect(f.sent).toEqual([{ type: "error" }]);
@@ -442,13 +442,13 @@ describe("guardian ownership protocol", () => {
     });
 
     it.each([
-        { type: "update", sequence: 0, containerId, runtime: "docker" },
-        { type: "update", sequence: 1.5, containerId, runtime: "docker" },
-        { type: "update", sequence: 1, containerId: "", runtime: "docker" },
-        { type: "update", sequence: 1, containerId, runtime: "other" },
-        { type: "update", sequence: 1, containerId: "--all", runtime: "docker" },
-        { type: "update", sequence: 1, containerId: "container-name", runtime: "podman" },
-        { type: "update", sequence: 1, containerId: "a".repeat(65), runtime: "docker" },
+        { type: "update", sequence: 0, containerId, runtime: "docker", cleanupEnabled: true },
+        { type: "update", sequence: 1.5, containerId, runtime: "docker", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "", runtime: "docker", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId, runtime: "other", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "--all", runtime: "docker", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "container-name", runtime: "podman", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "a".repeat(65), runtime: "docker", cleanupEnabled: true },
         { type: "init", binding: { ...binding, lockFile: "/successor.lock" }, receipt },
         { type: "ack", sequence: 1 },
     ])("malformed post-init message %j preserves captured ownership and never adopts its ID", async message => {
@@ -464,8 +464,8 @@ describe("guardian ownership protocol", () => {
     it("replayed handoff cannot replace the acknowledged ID", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker" });
-        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, runtime: "podman" })).rejects.toThrow();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true })).rejects.toThrow();
         expect(f.cleanups).toEqual([[binding, receipt, containerId, "docker"]]);
     });
 
@@ -473,7 +473,7 @@ describe("guardian ownership protocol", () => {
         const f = guardianFixture();
         await f.init();
         f.ports.send = async message => { if (message.type === "ack") throw new Error("IPC closed"); f.sent.push(message); };
-        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman" })).rejects.toThrow("IPC closed");
+        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true })).rejects.toThrow("IPC closed");
         expect(f.cleanups).toEqual([]);
         expect(f.rollbacks).toEqual([[binding, receipt]]);
         expect(f.finishes()).toBe(1);
@@ -488,7 +488,7 @@ describe("guardian ownership protocol", () => {
             f.sent.push(message);
             if (message.type === "ack") { sending.resolve(); await ack.promise; }
         };
-        const update = f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman" });
+        const update = f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
         await sending.promise;
         const disconnected = f.guardian.disconnect();
         await Promise.resolve();
@@ -504,7 +504,7 @@ describe("guardian ownership protocol", () => {
     it.each([false, true])("an asynchronously rejected ACK preserves prior acknowledged ownership (prior ID %s)", async hasPriorId => {
         const f = guardianFixture();
         await f.init();
-        if (hasPriorId) await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker" });
+        if (hasPriorId) await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
         const ack = deferred();
         const sending = deferred();
         f.ports.send = async message => {
@@ -512,7 +512,7 @@ describe("guardian ownership protocol", () => {
             if (message.type === "ack") { sending.resolve(); await ack.promise; }
         };
         const failure = new Error("native ACK write callback failed");
-        const update = f.guardian.receive({ type: "update", sequence: hasPriorId ? 2 : 1, containerId: secondContainerId, runtime: "podman" });
+        const update = f.guardian.receive({ type: "update", sequence: hasPriorId ? 2 : 1, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true });
         const rejected = expect(update).rejects.toBe(failure);
         await sending.promise;
         const disconnected = f.guardian.disconnect();
@@ -583,7 +583,7 @@ describe("guardian ownership protocol", () => {
     it("a rejected release ACK cleans prior ownership and cannot masquerade as successful release", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman" });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
         const ack = deferred();
         const sending = deferred();
         f.ports.send = async message => {
@@ -606,7 +606,7 @@ describe("guardian ownership protocol", () => {
     it("failed asynchronous error notification never hides an owned cleanup failure", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker" });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
         const ack = deferred();
         const sending = deferred();
         const cleanupFailure = new Error("owned stop failed");
@@ -615,7 +615,7 @@ describe("guardian ownership protocol", () => {
             if (message.type === "ack") { sending.resolve(); await ack.promise; }
             if (message.type === "error") throw new Error("error notification callback also failed");
         };
-        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "docker" });
+        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "docker", cleanupEnabled: true });
         const rejected = expect(update).rejects.toBe(cleanupFailure);
         await sending.promise;
         const disconnected = f.guardian.disconnect();
@@ -628,7 +628,7 @@ describe("guardian ownership protocol", () => {
     it("cleanup failure still finishes once and propagates for visible guardian failure", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker" });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
         const failure = new Error("bounded stop failed");
         f.ports.cleanup = () => { throw failure; };
         let caught: unknown;

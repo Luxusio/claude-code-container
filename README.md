@@ -41,6 +41,21 @@ script invokes sudo internally only for the `/usr/local/bin` writes. To uninstal
 
 For development setup, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Fork maintenance and upgrades
+
+This fork follows upstream while retaining the fixes described in the
+[preservation contract](doc/runtime/REQ__upstream-fork-preservation.md).
+Fetch and inspect `upstream` before beginning changes; adapt remaining fixes to
+upstream's current implementation and keep each behavioral change in a focused
+commit. Harness engine fixes are maintained separately from CCC's integration.
+
+Linux/WSL project writes use the host user's numeric identity, with separate
+tool caches for each identity. Existing running containers are preserved during
+upgrades; stop them when their work has finished, then start CCC to apply an
+update. Retained state is migrated only when its source and previous owner can
+be verified. See [ownership and recovery](doc/runtime/REQ__host-project-ownership.md)
+for the supported mappings and refusal conditions.
+
 ## Quick Start
 
 ```bash

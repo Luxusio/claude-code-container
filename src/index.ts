@@ -38,6 +38,11 @@ import {
 
 import { ensureClipboardServer, hasAnyActiveSessionsExcept, retireClipboardServerFromPortFile } from "./clipboard-server.js";
 import { clipboardPortFile as clipboardPortFilePath, DEFAULT_PROFILE_NAME, defaultProfileDir, ensureDefaultProfileDir, migrateHomeLayout, normalizeProfile } from "./home-layout.js";
+import { withCodexConfigLock } from "./codex-config-lock.js";
+import { ensureCodexHarness } from "./codex-harness.js";
+import { assertCodexStateAccessible } from "./codex-state-ownership.js";
+import { hasLegacyHomeLayoutContainerMounts } from "./home-layout-container-guard.js";
+import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
 import { prepareCodexLaunch } from "./codex-launch.js";
 import { ContainerRestartRequiredError, formatContainerStartupError } from "./container-restart-guidance.js";
 import { buildCodexResumeRecoveryCommand } from "./codex-resume-recovery.js";
@@ -90,7 +95,6 @@ import {
     removeProjectContainer,
     syncClipboardShims,
     getContainerStatus,
-    getCurrentImageId,
     ensureCredentialHostDir,
     prepareCodexConfigForContainer,
     ensureContainerManagerSocketAccess,
@@ -119,6 +123,7 @@ import {
     setSessionContainerId,
     acquireHostSessionOwnership,
     confirmSessionOwnership,
+    setSessionCleanupEnabled,
 } from "./session.js";
 
 export const RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the existing container is running. It will be applied after the container stops.";
@@ -476,10 +481,15 @@ export async function maybeAttachCodexClipboardImageForCommand(
 }
 
 // Check if mise.toml exists and offer to create if not
-async function ensureMiseConfig(projectPath: string): Promise<void> {
+export async function ensureMiseConfig(projectPath: string): Promise<void> {
     const miseConfigPath = join(projectPath, "mise.toml");
 
     if (existsSync(miseConfigPath) || existsSync(join(projectPath, ".mise.toml"))) {
+        return;
+    }
+
+    const skippedPath = join(DATA_DIR, "mise-prompt-skipped", getProjectId(projectPath));
+    if (existsSync(skippedPath)) {
         return;
     }
 
@@ -498,6 +508,15 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
         detectProjectToolsAndWriteMiseConfig(projectPath);
     } else {
         console.log("Skipping mise.toml creation.");
+        if (answer === "n" || answer === "no") {
+            try {
+                mkdirSync(dirname(skippedPath), {recursive: true});
+                writeFileSync(skippedPath, "");
+                console.log(`Remembered for this project. To ask again, delete: ${skippedPath}`);
+            } catch {
+                console.warn("Could not save mise prompt preference; you may be asked again next time.");
+            }
+        }
     }
 }
 
@@ -581,49 +600,9 @@ async function exec(
     const containerStatus = getContainerStatus(targetContainer);
     let wasAlreadyRunning = containerStatus.running;
     const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
-    const recreateStoppedContainer = (recreate: (containerId: string) => void) => (
-        replaceStoppedContainerWithoutInterruptingSessions(
-            targetContainer,
-            sessionContainerPrefix,
-            sessionLockFile,
-            containerStatus.containerId!,
-            containerStatus.imageId!,
-            recreate,
-            recreateContainerWithoutInterruptingSessions,
-            getContainerStatus,
-            containerStatus.running,
-        )
-    );
-
-    // Auto-upgrade container if image has been rebuilt
-    if (containerStatus.exists) {
-        const currentImageId = getCurrentImageId();
-        if (
-            currentImageId
-            && containerStatus.containerId
-            && containerStatus.imageId
-            && containerStatus.imageId !== currentImageId
-        ) {
-            const recreated = recreateStoppedContainer((stoppedContainerId) => {
-                const oldImageId = containerStatus.imageId;
-
-                progress("Upgrading container to new image...");
-                const removed = spawnSync(runtimeCli(), ["rm", stoppedContainerId], { stdio: "ignore" });
-                if (removed.error || removed.status !== 0) {
-                    throw new Error("Container image upgrade aborted because the stopped container could not be removed.");
-                }
-                wasAlreadyRunning = false;
-
-                // Remove old image (now dangling). Silently fails if still in use by other containers.
-                if (oldImageId) {
-                    spawnSync(runtimeCli(), ["rmi", oldImageId], { stdio: "ignore" });
-                }
-            });
-            if (!recreated) {
-                console.log(containerUpdateDeferredMessage(containerStatus.running));
-            }
-        }
-    }
+    // Image and numeric-user upgrades are reconciled together by startProjectContainer.
+    // It retains the previous immutable image/mount evidence until Codex state
+    // migration completes, under the startup and existing session guards.
 
     // Start or get container (with extra mounts for worktree workspaces)
     if (!wasAlreadyRunning) progress("Starting container...");
@@ -647,6 +626,7 @@ async function exec(
         recreate();
         return true;
     };
+    const invocationStartedContainers = new Set<string>();
     const startContainer = (
         mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
         portFile: string | undefined = clipboardPortFile,
@@ -662,11 +642,18 @@ async function exec(
                 profile,
                 onRecreate,
                 recreateInsideLifecycleLock,
-                (containerId) => {
+                (containerId, handoff) => {
                     readyContainerId = containerId;
                     setSessionContainerId(containerId);
+                    if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
+                    setSessionCleanupEnabled(invocationStartedContainers.has(containerId));
                 },
                 containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
+                (containerId) => {
+                    invocationStartedContainers.add(containerId);
+                    setSessionContainerId(containerId);
+                    setSessionCleanupEnabled(true);
+                },
             );
             if (!readyContainerId) {
                 throw new Error("Container became unavailable before the session handoff.");
@@ -696,7 +683,7 @@ async function exec(
     let containerName = await withContainerSetupReadiness(sessionContainerPrefix, async () => {
         let readyContainerName = startContainer();
         await confirmSessionOwnership();
-        restoreCodexConfigHostOwnership(readyContainerName);
+        withCodexConfigLock(() => restoreCodexConfigHostOwnership(readyContainerName, profile), profile);
 
         // Skip heavy setup if the container was already running before this
         // launch; the setup lock guarantees a simultaneous creator has finished
@@ -709,7 +696,7 @@ async function exec(
             ensureUvAvailable(readyContainerName);
 
             progress("Building MCP config...");
-            const forwardedMcp = await buildMcpConfig(profile);
+            const forwardedMcp = await buildMcpConfig(profile, () => restoreCodexConfigHostOwnership(readyContainerName, profile));
 
             progress("Setting up localhost proxy...");
             setupLocalhostProxy(readyContainerName);
@@ -726,7 +713,7 @@ async function exec(
             await confirmSessionOwnership();
         } else {
             // Container already running — only rebuild MCP config (lightweight, may have changed)
-            const forwardedMcp = await buildMcpConfig(profile);
+            const forwardedMcp = await buildMcpConfig(profile, () => restoreCodexConfigHostOwnership(readyContainerName, profile));
             if (forwardedMcp.length > 0) {
                 console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
             }
@@ -754,14 +741,25 @@ async function exec(
             // command path while setup owns the readiness lock.
             ensureClaudeInContainer(readyContainerName);
         } else if (commandTool?.name === "codex") {
-            prepareCodexConfigForContainer(readyContainerName);
+            withCodexConfigLock(() => prepareCodexConfigForContainer(readyContainerName, profile), profile);
+            assertCodexStateAccessible(readyContainerName, profile);
+            ensureCodexHarness(readyContainerName, profile);
         }
         progress("Syncing clipboard shims...");
         syncClipboardShims(readyContainerName, __dirname);
         // Runs for new, restarted, reused and deferred containers alike, on the final ID.
         ensureContainerManagerSocketAccess(readyContainerName);
         return readyContainerName;
-    }).catch((error) => {
+    }).catch(async (error) => {
+        // A native start may succeed before its subsequent setup helper fails.
+        // Settle that captured start's guardian authorization before cleanup.
+        try {
+            await confirmSessionOwnership();
+        } catch {
+            try {
+                console.warn("[ccc] Unable to confirm session ownership after setup failure.");
+            } catch { /* A diagnostic must not replace the setup failure. */ }
+        }
         if (error instanceof ContainerRestartRequiredError) throw error;
         const detail = error instanceof Error ? `: ${error.message}` : "";
         throw new Error(`Container setup failed${detail}`, { cause: error });
@@ -899,10 +897,33 @@ async function exec(
         }
 
         await confirmSessionOwnership();
-        resultStatus = preparationStatus ?? await runContainerCommand(runtimeCli(), execArgs, options.interactive !== false);
-        restoreCodexConfigHostOwnership(containerName);
+        if (preparationStatus === null) {
+            setSessionCleanupEnabled(true);
+            await confirmSessionOwnership();
+            resultStatus = await runContainerCommand(runtimeCli(), execArgs, options.interactive !== false);
+        } else {
+            resultStatus = preparationStatus;
+        }
     } finally {
-        envFile.dispose();
+        try {
+            withCodexConfigLock(() => restoreCodexConfigHostOwnership(containerName, profile), profile);
+        } catch (error) {
+            try {
+                console.warn(`[ccc] Unable to restore Codex config access after command exit: ${error instanceof Error ? error.message : String(error)}`);
+            } catch { /* A diagnostic must not replace the command outcome. */ }
+        } finally {
+            try {
+                envFile.dispose();
+            } finally {
+                try {
+                    cleanupSession();
+                } catch {
+                    try {
+                        console.warn("[ccc] Session cleanup failed after command exit.");
+                    } catch { /* A diagnostic must not replace the command outcome. */ }
+                }
+            }
+        }
     }
 
     if (process.env.DEBUG) {
@@ -916,8 +937,6 @@ async function exec(
         console.error(`[ccc:debug] post-exit conversation check: ${output}`);
     }
 
-    // Cleanup on normal exit
-    cleanupSession();
     process.exit(resultStatus);
 }
 
@@ -1785,19 +1804,20 @@ export function informationalCommand(args: string[]): "help" | "version" | null 
 function migrateHostHomeLayout(): void {
     if (process.env[CONTAINER_ENV_KEY] === CONTAINER_ENV_VALUE) return;
     try {
-        migrateHomeLayout({
+        withSharedMutationLock(join(DATA_DIR, "codex-state.lock"), () => migrateHomeLayout({
             // Sessions of an older ccc use ~/.ccc/locks even when run/locks exists.
             hasLiveSessions: () => [join(DATA_DIR, "locks"), join(DATA_DIR, "run", "locks")]
                 .some((directory) => hasAnyActiveSessionsExcept(null, directory)),
             retireLegacyClipboard: retireClipboardServerFromPortFile,
-        });
+            hasContainerMounts: hasLegacyHomeLayoutContainerMounts,
+        }), { waitMs: 10_000, reclaimStale: false });
     } catch (error) {
         console.error(`ccc: ~/.ccc layout migration skipped (${(error as Error).message}); the old paths keep working.`);
     }
 }
 
 // === Main ===
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
     const args = process.argv.slice(2);
 
     // Unified parsing: @branch and remaining args
@@ -1814,6 +1834,29 @@ async function main(): Promise<void> {
         console.log(CLI_VERSION);
         return;
     }
+
+    // Resolve the runtime before inspecting containers for layout migration.
+    // An override may own stopped containers whose legacy bind paths must stay.
+    const extraEnv: Record<string, string> = {};
+    const cmdArgs: string[] = [];
+    for (let i = 0; i < filteredArgs.length; i++) {
+        if (filteredArgs[i] === "--env" && i + 1 < filteredArgs.length) {
+            const kv = filteredArgs[++i];
+            const eqIdx = kv.indexOf("=");
+            if (eqIdx > 0) extraEnv[kv.slice(0, eqIdx)] = kv.slice(eqIdx + 1);
+        } else if (filteredArgs[i] === "--runtime") {
+            try {
+                if (i + 1 >= filteredArgs.length) throw new Error("--runtime requires docker or podman");
+                setRuntimeOverride(filteredArgs[++i]);
+            } catch (e) {
+                console.error((e as Error).message);
+                process.exit(1);
+            }
+        } else {
+            cmdArgs.push(filteredArgs[i]);
+        }
+    }
+    const envOpt = Object.keys(extraEnv).length > 0 ? { env: extraEnv } : {};
 
     migrateHostHomeLayout();
 
@@ -1859,30 +1902,6 @@ async function main(): Promise<void> {
             return;
         }
     }
-
-    // Parse global flags before dispatching so they are removed from
-    // the command args and forwarded to exec() as options.env overrides.
-    const extraEnv: Record<string, string> = {};
-    const cmdArgs: string[] = [];
-    for (let i = 0; i < filteredArgs.length; i++) {
-        if (filteredArgs[i] === "--env" && i + 1 < filteredArgs.length) {
-            const kv = filteredArgs[i + 1];
-            const eqIdx = kv.indexOf("=");
-            if (eqIdx > 0) extraEnv[kv.slice(0, eqIdx)] = kv.slice(eqIdx + 1);
-            i++; // consume the value arg
-        } else if (filteredArgs[i] === "--runtime" && i + 1 < filteredArgs.length) {
-            try {
-                setRuntimeOverride(filteredArgs[i + 1]);
-            } catch (e) {
-                console.error((e as Error).message);
-                process.exit(1);
-            }
-            i++; // consume the value arg
-        } else {
-            cmdArgs.push(filteredArgs[i]);
-        }
-    }
-    const envOpt = Object.keys(extraEnv).length > 0 ? { env: extraEnv } : {};
 
     let command = cmdArgs[0];
     let cwd = process.cwd();
@@ -2121,9 +2140,9 @@ async function main(): Promise<void> {
     }
 }
 
-// Run main only when executed directly (not when imported by test frameworks)
-if (!process.env.VITEST) {
-    main().catch((err) => {
+/** The CLI error boundary also releases claims from failed startup. */
+export function runCli(): Promise<void> {
+    return main().catch((err) => {
         try { cleanupSession(); } catch (cleanupError) {
             console.error(`[ccc] cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
         }
@@ -2131,3 +2150,6 @@ if (!process.env.VITEST) {
         process.exit(1);
     });
 }
+
+// Run only when executed directly (not when imported by test frameworks).
+if (!process.env.VITEST) void runCli();

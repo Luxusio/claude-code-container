@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { withCodexConfigLock } from "./codex-config-lock.js";
 import { getClaudeJsonFile, getCodexConfigFile } from "./utils.js";
 
 interface McpServerConfig {
@@ -354,7 +355,14 @@ function codexConfigAccessError(action: "create" | "read" | "write", file: strin
     return new Error(`Unable to ${action} Codex config at ${file}: ${reason}.${hint}`);
 }
 
-function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>, profile?: string): void {
+function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>, profile?: string, restoreAccess?: () => void): void {
+    withCodexConfigLock(() => {
+        restoreAccess?.();
+        writeCodexMcpConfigUnlocked(mcpServers, profile);
+    }, profile);
+}
+
+function writeCodexMcpConfigUnlocked(mcpServers: Record<string, McpServerConfig>, profile?: string): void {
     const codexConfigFile = getCodexConfigFile(profile);
     try {
         mkdirSync(dirname(codexConfigFile), { recursive: true });
@@ -395,7 +403,7 @@ function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>, profil
  * Build merged MCP config and write to Claude and Codex config files.
  * Called on each exec() to ensure per-project isolation (no stale config from previous project)
  */
-export function buildMcpConfig(profile?: string): string[] {
+export function buildMcpConfig(profile?: string, restoreAccess?: () => void): string[] {
     const claudeJsonFile = getClaudeJsonFile(profile);
     const forwarded: string[] = [];
 
@@ -437,7 +445,7 @@ export function buildMcpConfig(profile?: string): string[] {
         forwarded.push(name);
     }
 
-    writeCodexMcpConfig(mcpServers, profile);
+    writeCodexMcpConfig(mcpServers, profile, restoreAccess);
 
     config.mcpServers = mcpServers;
     writeFileSync(claudeJsonFile, JSON.stringify(config, null, 2), { mode: 0o600 });

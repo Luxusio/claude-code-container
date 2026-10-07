@@ -8,7 +8,7 @@ function compileContracts(ports: ContainerExecReadinessPorts) {
     const app = createContainerExecReadiness(ports);
     const result: boolean = app.run("selected-container");
     const time: number = ports.now();
-    const ready: boolean = ports.canExec("selected-container", 200);
+    const ready: boolean = ports.canExec("selected-container", 5000);
     const slept: undefined = ports.sleep(75);
     createContainerExecReadiness({ ...ports, canExec: canExecContainer });
     void [result, time, ready, slept];
@@ -48,9 +48,9 @@ function compileContracts(ports: ContainerExecReadinessPorts) {
     // @ts-expect-error Run requires a string target.
     app.run(123);
     // @ts-expect-error The exec probe requires a string target.
-    ports.canExec(123, 200);
+    ports.canExec(123, 5000);
     // @ts-expect-error The exec timeout requires a number.
-    ports.canExec("selected-container", "200");
+    ports.canExec("selected-container", "5000");
     // @ts-expect-error The sleep duration requires a number.
     ports.sleep("75");
     // @ts-expect-error Run returns a synchronous boolean.

@@ -62,7 +62,10 @@ function fakePath(selected: string): string {
 // Public Docker, native composition, lifecycle/readiness applications and runtime stay real.
 const docker = await import("../../docker.js");
 const runtime = await import("../../container-runtime.js");
+const containerIdentity = await import("../../container-identity.js");
 const id = "a".repeat(64);
+const baseImageId = `sha256:${"b".repeat(64)}`;
+const identityImageId = `sha256:${"c".repeat(64)}`;
 const project = fixtureHost.project;
 type Path = "running" | "restart" | "deferred";
 const NativeSharedArrayBuffer = globalThis.SharedArrayBuffer;
@@ -80,7 +83,7 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     const waits: Array<[unknown, number, number | bigint, number]> = [];
     const state = {
         existing: false, running: true, deferred: false, armed: false, active: false,
-        now: 0, probes: 0, clocks: 0, sleeps: 0,
+        now: 0, probes: 0, clocks: 0, sleeps: 0, probeDuration: 10,
         failureStep: "", failure: undefined as unknown,
         afterProbe: undefined as undefined | (() => void),
         runArgs: [] as string[],
@@ -90,6 +93,8 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
         if (state.failureStep === step) throw state.failure;
     };
     runtime._setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-native", remote: false, dockerDesktop: false });
+    const identity = containerIdentity.resolveContainerIdentity();
+    const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     native.exists.mockImplementation((selected: string) => { if (selected !== "/dev/kvm") fakePath(selected); return false; });
     native.realpath.mockImplementation(fakePath);
     const stat = (selected: string) => { fakePath(selected); return ({
@@ -131,7 +136,19 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     }));
     native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null; timeout?: number }) => {
         if (args[0] === "images") return result(0, "image-id");
-        if (args[0] === "image" && args[1] === "inspect") return result(0, "<no value>");
+        if (args[0] === "image" && args[1] === "inspect") {
+            expect(args[2]).toMatch(/^ccc-identity:[a-f0-9]{64}$/);
+            return result(0, JSON.stringify([{ Id: identityImageId, Config: { User: "ccc", Labels: identityLabels } }]));
+        }
+        if (args[0] === "inspect" && args.includes("{{.Id}}")) return result(0, baseImageId);
+        if (args[0] === "run" && args[1] === "--rm") {
+            if (args.at(-1) === 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"') {
+                expect(args.slice(0, 9)).toEqual(["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", identityImageId]);
+                return result(0, `${identity.uid}:${identity.gid}`);
+            }
+            expect(args.slice(0, 9)).toEqual(["run", "--rm", "--network", "none", "--user", "ccc", "--entrypoint", "/bin/sh", identityImageId]);
+            return result(0, `${identity.uid}:${identity.gid}:/home/ccc:ccc`);
+        }
         if (args[0] === "run") { state.runArgs = [...args]; return result(0, id); }
         if (args[0] === "start") { state.running = true; state.active = state.armed; return result(); }
         if (args[0] === "ps" && args[1] === "-aq") return result(0, state.existing ? id : "");
@@ -141,6 +158,7 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
         }
         if (args[0] === "inspect" && args.includes("{{.State.Running}}")) return result(0, String(state.existing && state.running));
         if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) return result(0, `${id}|${state.running}`);
+        if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}|{{.Image}}")) return result(0, `${id}|${state.running}|${identityImageId}`);
         if (args[0] === "inspect" && args.includes("{{json .}}")) {
             const mounts: Array<{ Source: string; Destination: string; Type: string; RW: boolean }> = [];
             const labels: Record<string, string> = {};
@@ -155,15 +173,18 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);
                 if (argument === "-e") env.push(value);
             }
-            return result(0, JSON.stringify({ Id: id, Mounts: mounts, Config: { Labels: labels, Env: env }, HostConfig: { Init: !state.deferred, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
+            return result(0, JSON.stringify({ Id: id, Image: identityImageId, State: { Running: state.running }, Mounts: mounts, Config: { Labels: labels, Env: env, User: "ccc" }, HostConfig: { Init: !state.deferred, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
+        }
+        if (args[0] === "exec" && args[1] === id && args[2] === "sh" && args[4]?.includes('$(id -un)')) {
+            return result(0, `${identity.uid}:${identity.gid}:ccc:/home/ccc`);
         }
         if (args.length === 3 && args[0] === "exec" && args[1] === id && args[2] === "true") {
             if (!guarded) { state.active = false; trace.push(`default-probe:${options?.timeout}`); return result(); }
             const attempt = ++state.probes;
             visit(`probe:${attempt}`, `probe:${args[1]}:${options?.timeout}`);
-            state.now += 10;
+            state.now += state.probeDuration;
             state.afterProbe?.();
-            return result(outcomes[attempt - 1] ? 0 : 1);
+            return result(outcomes[attempt - 1] && state.probeDuration <= options!.timeout! ? 0 : 1);
         }
         // Successful readiness proceeds to synchronization/proofs, outside the retry trace.
         if (state.active && state.probes > 0 && outcomes[state.probes - 1]) state.active = false;
@@ -182,6 +203,7 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     state.now = 0;
     trace.length = 0;
     native.spawn.mockClear();
+    native.rename.mockClear();
     const guard = vi.fn(() => false);
     const ready = vi.fn();
     const start = () => docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, guarded ? guard : undefined, ready);
@@ -189,10 +211,20 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
 }
 
 function assertPreserved() {
-    expect(native.spawn.mock.calls.filter(call => ["stop", "rm", "run"].includes(call[1][0]))).toEqual([]);
+    expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0])
+        || (call[1][0] === "run" && call[1][1] !== "--rm"))).toEqual([]);
 }
-const successTrace = ["allocate:4", "now:0", "now:0", `probe:${id}:200`, "now:10", "sleep:75", "now:85", `probe:${id}:200`, "now:95", "sleep:75", "now:170", `probe:${id}:200`];
+const successTrace = ["allocate:4", "now:0", "now:0", `probe:${id}:5000`, "now:10", "sleep:75", "now:85", `probe:${id}:5000`, "now:95", "sleep:75", "now:170", `probe:${id}:5000`];
 const failureTrace = [...successTrace, "now:180"];
+
+function assertStartupLockFinalized() {
+    // The public entrypoint now owns the host-wide startup lock. Its release
+    // runs after readiness (including throws) and reads Date.now for the bounded
+    // rename. Keep that native cleanup separate from the retry policy trace.
+    const releases = native.rename.mock.calls.filter(call => path.basename(call[0]) === "codex-state.lock");
+    expect(releases).toHaveLength(1);
+    expect(releases[0][1]).toMatch(/codex-state\.lock\.[a-f0-9]{16}\.release$/);
+}
 
 beforeEach(() => {
     vi.resetAllMocks();
@@ -221,10 +253,10 @@ describe("public startProjectContainer through real exec readiness", () => {
     it.each(["running", "restart", "deferred"] as const)("retries and joins the selected ID on guarded %s", path => {
         const f = fixture(path);
         expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id);
+        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: path === "restart" });
         expect(f.trace).toEqual(successTrace);
         const probes = native.spawn.mock.calls.filter(call => call[1].length === 3 && call[1][0] === "exec" && call[1][2] === "true");
-        expect(probes.map(call => call.slice(0, 3))).toEqual(Array.from({ length: 3 }, () => ["docker", ["exec", id, "true"], { stdio: ["ignore", "ignore", "ignore"], timeout: 200 }]));
+        expect(probes.map(call => call.slice(0, 3))).toEqual(Array.from({ length: 3 }, () => ["docker", ["exec", id, "true"], { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 }]));
         expect(f.waits).toHaveLength(2);
         expect(f.waits[0][0]).toBeInstanceOf(Int32Array);
         expect((f.waits[0][0] as Int32Array).byteLength).toBe(4);
@@ -238,16 +270,30 @@ describe("public startProjectContainer through real exec readiness", () => {
     it.each(["running", "restart", "deferred"] as const)("preserves %s after exhaustion with no join or destructive fallback", path => {
         const f = fixture(path, [false, false, false]);
         expect(() => f.start()).toThrow(path === "restart" ? "Restarted container is unavailable" : "automatic destructive recovery was refused");
-        expect(f.trace).toEqual(failureTrace);
+        expect(f.trace).toEqual([...failureTrace, "now:180"]);
+        assertStartupLockFinalized();
         expect(f.ready).not.toHaveBeenCalled();
         expect(f.guard).toHaveBeenCalledTimes(path === "restart" ? 0 : 1);
+        assertPreserved();
+    });
+
+    it.each([250, 5000])("joins a healthy guarded container whose exec takes %i ms", duration => {
+        const f = fixture("running", [true]);
+        f.state.probeDuration = duration;
+        expect(f.start()).toBe(docker.getContainerName(project));
+        expect(f.trace).toEqual(["allocate:4", "now:0", "now:0", `probe:${id}:5000`]);
+        expect(f.state.now).toBe(duration);
+        expect(f.state.probes).toBe(1);
+        expect(f.waits).toEqual([]);
+        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: false });
+        expect(f.guard).not.toHaveBeenCalled();
         assertPreserved();
     });
 
     it("uses one default native probe without brief clocks or sleep on an unguarded running container", () => {
         const f = fixture("running", [true], false);
         expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id);
+        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: false });
         expect(f.trace).toEqual(["default-probe:5000"]);
         expect(f.waits).toEqual([]);
         assertPreserved();
@@ -256,12 +302,15 @@ describe("public startProjectContainer through real exec readiness", () => {
 
 describe("native retry failure identity and late effects", () => {
     const stages = ["allocation", "clock:1", "clock:2", "probe:1", "clock:3", "sleep:1", "clock:4", "probe:2", "clock:5", "sleep:2", "clock:6", "probe:3", "clock:7"];
+    const failureTimes = [0, 0, 0, 0, 10, 10, 85, 85, 95, 95, 170, 170, 180];
     it.each(stages)("preserves Error/non-Error at %s without later retry or destructive effects", stage => {
         for (const failure of [new Error(stage), { stage }]) {
             const f = fixture("running", [false, false, false]);
             f.state.failureStep = stage; f.state.failure = failure;
             expect(thrown(f.start)).toBe(failure);
-            expect(f.trace).toEqual(failureTrace.slice(0, stages.indexOf(stage) + 1));
+            const index = stages.indexOf(stage);
+            expect(f.trace).toEqual([...failureTrace.slice(0, index + 1), `now:${failureTimes[index]}`]);
+            assertStartupLockFinalized();
             expect(f.ready).not.toHaveBeenCalled();
             expect(f.guard).not.toHaveBeenCalled();
             assertPreserved();
@@ -281,7 +330,8 @@ describe("native retry failure identity and late effects", () => {
             f.state.afterProbe = undefined;
         };
         expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.trace).toEqual(successTrace.slice(0, 8));
+        expect(f.trace).toEqual([...successTrace.slice(0, 8), "now:95"]);
+        assertStartupLockFinalized();
         expect(replacements.slice(0, 3)).toEqual(["now", "wait", "now"]);
         assertPreserved();
     });
@@ -300,7 +350,7 @@ describe("native retry failure identity and late effects", () => {
         expect(f.start()).toBe(docker.getContainerName(project));
         expect(f.trace).toEqual(successTrace);
         expect(accesses).toEqual([]);
-        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id);
+        expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: false });
         assertPreserved();
     });
 });

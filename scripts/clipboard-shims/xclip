@@ -12,9 +12,22 @@ if [ -z "$CCC_CLIPBOARD_URL" ]; then
     exit 1
 fi
 
-# Refresh token from mounted port file (handles clipboard server restarts mid-session)
-if [ -f /run/ccc/clipboard.port ]; then
-    CCC_CLIPBOARD_TOKEN=$(cut -d: -f2- /run/ccc/clipboard.port)
+# Refresh port and token from one valid record after a daemon restart.
+# Keep the session hostname (including bracketed IPv6) and fallback together.
+if [ -f /run/ccc/clipboard.port ] && [ -r /run/ccc/clipboard.port ] &&
+    _clipboard_record=$(awk -F: '
+        NR == 1 && NF == 2 && $1 ~ /^[0-9]+$/ && length($1) <= 5 &&
+        $1 > 0 && $1 <= 65535 && $2 ~ /^[A-Za-z0-9_-]+$/ { record = $0 }
+        END { if (NR != 1 || record == "") exit 1; print record }
+    ' /run/ccc/clipboard.port 2>/dev/null); then
+    # CCC supplies an explicit port. Refuse to reinterpret another URL shape.
+    case "${CCC_CLIPBOARD_URL##*:}" in
+        ''|*[!0-9]*) ;;
+        *)
+            CCC_CLIPBOARD_URL="${CCC_CLIPBOARD_URL%:*}:${_clipboard_record%%:*}"
+            CCC_CLIPBOARD_TOKEN=${_clipboard_record#*:}
+            ;;
+    esac
 fi
 
 # Parse arguments

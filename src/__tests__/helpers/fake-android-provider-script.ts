@@ -109,6 +109,17 @@ cp.spawn = function(command, args = [], options = {}) {
     if ((command === emulator || command === 'wscript.exe') && process.env.HOME && fs.existsSync(path.join(process.env.HOME, 'fake-android-spawn-failure'))) {
         return originalSpawn(path.join(${JSON.stringify(binDir)}, 'missing-emulator'), args, options);
     }
+    if (command === path.join(${JSON.stringify(binDir)}, 'adb')
+        && args[0] === '-s' && args[2] === 'shell' && args[3] === 'screenrecord'
+        && args[4] === '--time-limit' && args[5] === '5'
+        && args[6] === '/sdcard/fail-immediate-recording.mp4' && args.length === 7) {
+        // Model an immediately exiting provider explicitly. Starting the Node fixture
+        // itself can exceed the real recorder's 150ms startup observation window.
+        fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'adb ' + args.join(' ') + '\n');
+        const child = new (require('node:events').EventEmitter)();
+        queueMicrotask(() => child.emit('exit', 9, null));
+        return child;
+    }
     if (command !== 'wscript.exe' || args[0] !== '//B') return androidSpawn(command, args, options);
     const script = fs.readFileSync(args[1], 'utf8');
     const run = script.match(/^Shell\.Run "(.*)", 0, True\r?$/m);

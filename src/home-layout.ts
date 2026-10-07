@@ -124,18 +124,23 @@ export function helperBinDir(): string {
     return resolveEntry("bin", join("run", "bin"));
 }
 
-/** The clipboard port/startup files follow the locks dir, so a pre-layout home
- * keeps one consistent clipboard state until it migrates. */
+/** Startup locks and new port files follow the session lock layout. Existing
+ * port inodes remain discoverable independently during a partial migration. */
 export function clipboardStateDir(): string {
     return locksDir() === join(cccHome(), "locks") ? cccHome() : runDir();
 }
 
 export function clipboardPortFile(): string {
-    return join(clipboardStateDir(), "clipboard.port");
+    const legacy = join(cccHome(), "clipboard.port");
+    if (exists(legacy)) return legacy;
+    const migrated = join(runDir(), "clipboard.port");
+    // Retain an already moved inode after a partial migration. If no port file
+    // exists yet (or a legacy daemon removed it), follow the active lock layout.
+    return exists(migrated) ? migrated : join(clipboardStateDir(), "clipboard.port");
 }
 
 export function clipboardStartingLock(): string {
-    return join(clipboardStateDir(), "clipboard.starting");
+    return join(clipboardStateDir(), "clipboard.starting.v2");
 }
 
 export function configFile(): string {
@@ -190,23 +195,26 @@ export function updateCccConfig(mutate: (config: Record<string, unknown>) => voi
 export interface HomeLayoutMigrationOptions {
     /** True when a ccc session may still be using the pre-layout paths. */
     hasLiveSessions: () => boolean;
-    /** Stop a clipboard server recorded in a pre-layout port file. */
+    /** True if any stopped/running container still references legacy managed paths. */
+    hasContainerMounts?: () => boolean;
+    /** Deprecated: retained for callers; normal clipboard startup owns retirement. */
     retireLegacyClipboard?: (portFile: string) => void;
     warn?: (message: string) => void;
     now?: () => number;
 }
 
 export type HomeLayoutMigrationResult =
-    | { status: "not-needed" | "busy" | "sessions-active" }
+    | { status: "not-needed" | "busy" | "sessions-active" | "mounts-active" }
     | { status: "migrated"; moved: string[]; failed: string[] };
 
 const MOVES: ReadonlyArray<readonly [string, string]> = [
+    ["clipboard.port", join("run", "clipboard.port")],
     ...DEFAULT_PROFILE_ENTRIES.map((entry) => [entry, join("profiles", DEFAULT_PROFILE_NAME, entry)] as const),
     ["locks", join("run", "locks")],
     ["clipboard-files", join("run", "clipboard-files")],
     ["bin", join("run", "bin")],
 ];
-const EPHEMERAL = ["clipboard.port", "clipboard.starting"];
+const CLIPBOARD_LOCK_NAMES = ["clipboard.starting", "clipboard.starting.v2"];
 
 // Entries that could not be migrated are reported once; the record lives in
 // run/ so deleting run/ only repeats the notice.
@@ -253,7 +261,7 @@ function pendingWork(home: string, reported: Set<string>): boolean {
         if (!exists(join(home, legacyRel))) continue;
         if (!exists(join(home, nextRel)) || !reported.has(legacyRel)) return true;
     }
-    if (EPHEMERAL.some((name) => exists(join(home, name)))) return true;
+    if (CLIPBOARD_LOCK_NAMES.some((name) => exists(join(home, name)))) return true;
     const remote = legacyRemoteFiles(home);
     if (remote.some((name) => !reported.has(join("remote", name)))) return true;
     try {
@@ -340,8 +348,36 @@ export function migrateHomeLayout(options: HomeLayoutMigrationOptions): HomeLayo
     const lockPath = join(home, ".layout-migration.lock");
     if (!acquireMigrationLock(lockPath, (options.now ?? Date.now)())) return { status: "busy" };
     const reportedBefore = reported.size;
+    const clipboardLocks: Array<{ path: string; dev: number; ino: number }> = [];
     try {
         if (options.hasLiveSessions()) return { status: "sessions-active" };
+        if (options.hasContainerMounts?.()) return { status: "mounts-active" };
+        // Lock both namespaces and both protocol generations before moving paths.
+        // Never reclaim a startup lock here: its owner may still publish or retire.
+        const startupPaths = [home, join(home, "run")].flatMap(dir => CLIPBOARD_LOCK_NAMES.map(name => join(dir, name)));
+        if (startupPaths.some(exists)) return { status: "busy" };
+        const legacyPort = join(home, "clipboard.port");
+        const nextPort = join(home, "run", "clipboard.port");
+        if (exists(legacyPort) && exists(nextPort)) {
+            warn(`ccc: both ${legacyPort} and ${nextPort} exist; layout migration deferred without replacing either clipboard file.`);
+            return { status: "busy" };
+        }
+        for (const path of [legacyPort, nextPort]) {
+            if (exists(path) && !lstatSync(path).isFile()) {
+                warn(`ccc: unsafe clipboard state at ${path}; layout migration deferred.`);
+                return { status: "busy" };
+            }
+        }
+        mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
+        for (const path of startupPaths) {
+            try {
+                closeSync(openSync(path, "wx", 0o600));
+                const identity = lstatSync(path);
+                clipboardLocks.push({ path, dev: identity.dev, ino: identity.ino });
+            } catch {
+                return { status: "busy" };
+            }
+        }
         const moved: string[] = [];
         const failed: string[] = [];
         try {
@@ -368,22 +404,11 @@ export function migrateHomeLayout(options: HomeLayoutMigrationOptions): HomeLayo
                 moved.push(legacyRel);
             } catch (error) {
                 failed.push(legacyRel);
+                if (legacyRel === "clipboard.port") {
+                    warn(`ccc: could not move ${legacy}; layout migration deferred without changing other paths.`);
+                    return { status: "migrated", moved, failed };
+                }
                 warn(`ccc: could not move ${legacy} to ${next} (${(error as NodeJS.ErrnoException).code ?? "error"}); still using the old path, will retry on a later start.`);
-            }
-        }
-        const legacyPort = join(home, "clipboard.port");
-        if (exists(legacyPort)) {
-            try {
-                options.retireLegacyClipboard?.(legacyPort);
-            } catch {
-                // The old server exits on its own orphan watchdog.
-            }
-        }
-        for (const name of EPHEMERAL) {
-            try {
-                unlinkSync(join(home, name));
-            } catch {
-                // Absent or already removed.
             }
         }
         try {
@@ -394,6 +419,12 @@ export function migrateHomeLayout(options: HomeLayoutMigrationOptions): HomeLayo
         }
         return { status: "migrated", moved, failed };
     } finally {
+        for (const held of clipboardLocks) {
+            try {
+                const current = lstatSync(held.path);
+                if (current.dev === held.dev && current.ino === held.ino) unlinkSync(held.path);
+            } catch { /* Removed by its owner or another process; never remove a replacement. */ }
+        }
         if (reported.size !== reportedBefore) recordReportedConflicts(home, reported);
         try {
             unlinkSync(lockPath);

@@ -61,7 +61,8 @@ function managedDirectoryComponents(file: string): string[] {
     const segments = parent.slice(root.length).split(sep).filter(Boolean);
     const normalized = process.platform === "win32" ? segments.map((segment) => segment.toLowerCase()) : segments;
     const cccIndex = normalized.findIndex((segment, index) => segment === ".ccc"
-        && ["devices", "locks", "run", "device-broker-private"].includes(normalized[index + 1]));
+        && (index === normalized.length - 1
+            || ["devices", "locks", "run", "device-broker-private"].includes(normalized[index + 1])));
     if (cccIndex < 0) return [];
     const start = cccIndex;
     const result: string[] = [];
@@ -515,7 +516,7 @@ function moveMalformedLock(file: string, token: string, validateDirectories: () 
 export function withSharedMutationLock<T>(
     file: string,
     operation: () => T,
-    options: { waitMs?: number; staleMs?: number; waitBudget?: { remaining(): number } } = {},
+    options: { reclaimStale?: boolean; waitMs?: number; staleMs?: number; waitBudget?: { remaining(): number } } = {},
 ): T {
     const waitMs = options.waitMs ?? DEFAULT_WAIT_MS;
     const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
@@ -550,10 +551,10 @@ export function withSharedMutationLock<T>(
             assertBudget();
             const existing = readLock(file);
             const existingToken = typeof existing?.token === "string" ? existing.token : null;
-            if (existingToken && lockIsStale(file, existing, staleMs)) {
+            if (options.reclaimStale !== false && existingToken && lockIsStale(file, existing, staleMs)) {
                 if (moveIfTokenMatches(file, existingToken, "stale", validateDirectories)) continue;
             }
-            if (!existing && lockIsStale(file, existing, staleMs)) {
+            if (options.reclaimStale !== false && !existing && lockIsStale(file, existing, staleMs)) {
                 if (moveMalformedLock(file, token, validateDirectories)) continue;
             }
             if (remaining() <= 0) {

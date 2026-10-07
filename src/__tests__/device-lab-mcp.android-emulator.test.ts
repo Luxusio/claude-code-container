@@ -396,6 +396,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             },
         });
         expect(recordStart.isError).not.toBe(true);
+        await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/custom-android-recording.mp4");
         const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             recording: { active: boolean; provider: string; runtimeId: string; processIdentity: { pid: number; startToken: string; commandHash: string }; remotePath: string; localPath: string; timeLimitSec: number };
         };
@@ -524,6 +525,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             },
         });
         expect(pullFailStart.isError).not.toBe(true);
+        await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/fail-once-pull-recording.mp4");
         const pullFailStop = await client.callTool({
             name: "record_video",
             arguments: { action: "stop", deviceId: "android-pixel-owned" },
@@ -561,6 +563,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             },
         });
         expect(stopCleanupRecordStart.isError).not.toBe(true);
+        await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/stop-cleanup-recording.mp4");
 
         const dumpUi = await client.callTool({
             name: "ui",

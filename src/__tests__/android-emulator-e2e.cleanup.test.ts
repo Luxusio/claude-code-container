@@ -31,11 +31,17 @@ describe("Android real E2E fixture cleanup", () => {
         }
         fixture.callTool.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
             if (tool === "create_android_emulator") {
+                expect(args).toEqual({ detail: true, name: expect.any(String),
+                    deviceId: expect.stringMatching(/^android-real-e2e-\d+$/),
+                    systemImage: "system-images;android-35;google_apis;x86_64" });
                 createdId = String(args.deviceId);
-                return payload({ device: { id: createdId, port: 5554, provisioned: true } });
+                return payload({ device: { deviceId: createdId, port: 5554, provisioned: true } });
             }
-            if (tool === "inventory") throw new Error("primary-inventory-failure");
-            if (tool === "stop") return payload({ device: { id: createdId, status: "stopped" } });
+            if (tool === "devices") {
+                expect(args).toEqual({ view: "available", detail: true, backend: "android-emulator" });
+                throw new Error("primary-inventory-failure");
+            }
+            if (tool === "stop") return payload({ device: { deviceId: createdId, status: "stopped" } });
             if (tool === "delete") return payload({ deleted: createdId, avdDeleted: true });
             throw new Error(`unexpected tool ${tool}`);
         });
@@ -56,23 +62,23 @@ describe("Android real E2E fixture cleanup", () => {
     };
 
     it("cleans normalized creation without ok after a later failure and preserves that failure", async () => {
-        await expect(run()).rejects.toThrow("inventory: primary-inventory-failure");
+        await expect(run()).rejects.toThrow("devices: primary-inventory-failure");
         assertOwnedCleanup();
     });
 
     it("establishes ownership before validating secondary created-device fields", async () => {
         fixture.callTool.mockImplementationOnce(async (_tool: string, args: Record<string, unknown>) => {
             createdId = String(args.deviceId);
-            return payload({ device: { id: createdId, port: "invalid", provisioned: false } });
+            return payload({ device: { deviceId: createdId, port: "invalid", provisioned: false } });
         });
         await expect(run()).rejects.toThrow("create_android_emulator");
         assertOwnedCleanup();
-        expect(fixture.callTool.mock.calls.some(([tool]) => tool === "inventory")).toBe(false);
+        expect(fixture.callTool.mock.calls.some(([tool]) => tool === "devices")).toBe(false);
     });
 
     it.each(["mcp-error", "structured-error", "wrong-identity"])("never cleans an unowned fixture after %s creation", async kind => {
         fixture.callTool.mockImplementationOnce(async (_tool: string, args: Record<string, unknown>) => {
-            const device = { id: kind === "wrong-identity" ? "unrelated-device" : args.deviceId, port: 5554, provisioned: true };
+            const device = { deviceId: kind === "wrong-identity" ? "unrelated-device" : args.deviceId, port: 5554, provisioned: true };
             return kind === "mcp-error" ? { ...payload({ device, error: "create-failed" }), isError: true }
                 : payload({ ...(kind === "structured-error" ? { ok: false, error: "create-failed" } : {}), device });
         });
@@ -100,7 +106,7 @@ describe("Android real E2E fixture cleanup", () => {
     it("does not accept successful-looking cleanup replies for a different fixture", async () => {
         const normal = fixture.callTool.getMockImplementation()!;
         fixture.callTool.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
-            if (tool === "stop") return payload({ device: { id: "unrelated-device", status: "stopped" } });
+            if (tool === "stop") return payload({ device: { deviceId: "unrelated-device", status: "stopped" } });
             if (tool === "delete") return payload({ deleted: "unrelated-device", avdDeleted: true });
             return normal(tool, args);
         });
@@ -115,10 +121,13 @@ describe("Android real E2E fixture cleanup", () => {
     it.each(["wrong-identity", "stopped", "missing-device"])("rejects %s status before device operations", async kind => {
         const normal = fixture.callTool.getMockImplementation()!;
         fixture.callTool.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
-            if (tool === "inventory") return payload({ devices: [{ id: createdId }] });
-            if (tool === "start") return payload({ device: { id: createdId, status: "running" }, boot: { ready: true } });
+            if (tool === "devices") {
+                expect(args).toEqual({ view: "available", detail: true, backend: "android-emulator" });
+                return payload({ devices: [{ deviceId: createdId }] });
+            }
+            if (tool === "start") return payload({ device: { deviceId: createdId, status: "running" }, boot: { ready: true } });
             if (tool === "status") return payload(kind === "missing-device" ? {} : {
-                device: { id: kind === "wrong-identity" ? "unrelated-device" : createdId,
+                device: { deviceId: kind === "wrong-identity" ? "unrelated-device" : createdId,
                     status: kind === "stopped" ? "stopped" : "running" },
             });
             return normal(tool, args);
@@ -135,9 +144,12 @@ describe("Android real E2E fixture cleanup", () => {
         let uploadedRemotePath = "";
         fixture.callTool.mockImplementation(async (tool: string, args: Record<string, any>) => {
             if (["create_android_emulator", "stop", "delete"].includes(tool)) return normal(tool, args);
-            if (tool === "inventory") return payload({ devices: [{ id: createdId }] });
-            if (tool === "start") return payload({ device: { id: createdId, status: "running" }, boot: { ready: true } });
-            if (tool === "status") return payload({ device: { id: createdId, status: "running" } });
+            if (tool === "devices") {
+                expect(args).toEqual({ view: "available", detail: true, backend: "android-emulator" });
+                return payload({ devices: [{ deviceId: createdId }] });
+            }
+            if (tool === "start") return payload({ device: { deviceId: createdId, status: "running" }, boot: { ready: true } });
+            if (tool === "status") return payload({ device: { deviceId: createdId, status: "running" } });
             if (tool === "exec") return payload({ stdout: "ccc-adb-e2e-ok" });
             if (tool === "upload") {
                 uploaded = readFileSync(args.localPath);
@@ -181,9 +193,14 @@ describe("Android real E2E fixture cleanup", () => {
                 ...(kind === "mcp-error" ? { isError: true } : {}),
             };
 
+            if (tool === "click") {
+                expect(args).toEqual(args.count === 2
+                    ? { count: 2, detail: true, deviceId: createdId, x: 30, y: 30 }
+                    : { detail: true, deviceId: createdId, x: 20, y: 20 });
+            }
             const successes: Record<string, unknown> = {
-                home: { status: 0 }, click: { status: 0 },
-                double_click: { doubleTapped: { x: args.x, y: args.y } },
+                home: { status: 0 },
+                click: args.count === 2 ? { doubleTapped: { x: args.x, y: args.y } } : { status: 0 },
                 long_press: { longPressed: { x: args.x, y: args.y, durationMs: args.durationMs } },
                 swipe: { swiped: { x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2, durationMs: args.durationMs } },
                 drag: { dragged: { x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2, durationMs: args.durationMs } },
@@ -194,11 +211,11 @@ describe("Android real E2E fixture cleanup", () => {
                 set_location: { provider: "adb-emulator", location: { latitude: args.latitude, longitude: args.longitude, altitude: args.altitude } },
                 set_battery: { battery: { level: args.level, status: args.status, charging: args.charging } },
                 install_app: { installed: args.path },
-                launch_app: { launched: args.packageName },
-                wait_for_app: { packageName: args.packageName, running: true, pid: "1234" },
-                permission: { permission: { packageName: args.packageName, permission: args.permission, action: args.action } },
-                stop_app: { stopped: args.packageName },
-                clear_app_data: { reset: { packageName: args.packageName } }, uninstall_app: { uninstalled: args.packageName },
+                launch_app: { launched: args.appId },
+                wait_for_app: { appId: args.appId, running: true, pid: "1234" },
+                permission: { permission: { appId: args.appId, permission: args.permission, action: args.action } },
+                stop_app: { stopped: args.appId },
+                clear_app_data: { reset: { appId: args.appId } }, uninstall_app: { uninstalled: args.appId },
             };
             if (!(tool in successes)) throw new Error(`unexpected tool before recording: ${tool}`);
             return payload({ provider: "adb", ...(successes[tool] as object) });

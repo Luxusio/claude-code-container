@@ -7,6 +7,8 @@ import {
     type DockerRunArgsOptions,
 } from "../docker.js";
 
+import { getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName } from "../container-identity.js";
+
 // Factory for default options — every test overrides only what it needs
 function makeOpts(
     overrides: Partial<DockerRunArgsOptions> = {},
@@ -837,5 +839,24 @@ describe("buildDockerRunArgs — lab-runner profile", () => {
         expect(args).toContain("--group-add");
         expect(args).toContain("108");
         expect(args).not.toContain("--privileged");
+    });
+});
+
+
+describe("identity-scoped persistent tool volumes", () => {
+    it.each([1000, 1001])("keeps both caches and labels bound to UID/GID %s", uid => {
+        const identity = { uid, gid: uid, mapping: "host" as const, contractVersion: "1" };
+        const args = buildDockerRunArgs(makeOpts({ identity,
+            miseVolumeName: getIdentityMiseVolumeName(identity),
+            codexPackagesVolumeName: getIdentityCodexPackagesVolumeName(identity),
+            imageName: `sha256:${"1".repeat(64)}`,
+        }));
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toContain(`ccc-mise-cache-v1-host-${uid}-${uid}:/home/ccc/.local/share/mise`);
+        expect(mounts).toContain(`ccc-codex-packages-v1-host-${uid}-${uid}:/home/ccc/.codex/packages`);
+        expect(mounts).not.toContain("ccc-mise-cache:/home/ccc/.local/share/mise");
+        expect(mounts).not.toContain("ccc-codex-packages:/home/ccc/.codex/packages");
+        expect(extractLabels(args)).toMatchObject(getIdentityLabels(identity));
+        expect(args).toContain(`sha256:${"1".repeat(64)}`);
     });
 });

@@ -32,7 +32,7 @@ export function createNativeContainerImagePreparation(helpers: NativeContainerIm
         reportFallback: ref => { console.warn(`Warning: Failed to pull ${ref}. Using existing image.`); },
         reportFailure: ref => { console.error(`Error: Failed to pull ${ref}.`); },
         reportBuildHint: () => { console.error(`You can build locally instead: ${runtimeCli()} build -t ccc .`); },
-        exitFailure: () => { process.exit(1); },
+        exitFailure: () => { throw new Error("Failed to pull CCC image; container startup was aborted."); },
     });
     const request = {
         get imageName() { return IMAGE_NAME; },

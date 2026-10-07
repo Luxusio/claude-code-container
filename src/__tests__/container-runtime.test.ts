@@ -51,6 +51,9 @@ describe("container-runtime", () => {
         // Scrub env of any pollution from other suites or the shell.
         delete process.env.CCC_RUNTIME;
         delete process.env.DOCKER_HOST;
+        delete process.env.WSL_DISTRO_NAME;
+        delete process.env.CCC_RUNTIME_SOCKET;
+        delete process.env.XDG_RUNTIME_DIR;
         delete process.env.CCC_SELINUX_RELABEL;
         delete process.env.CCC_PODMAN_CGROUPS;
         delete process.env.container;
@@ -62,7 +65,8 @@ describe("container-runtime", () => {
     });
 
     afterEach(() => {
-        process.env = { ...origEnv };
+        for (const key of Object.keys(process.env)) if (!(key in origEnv)) delete process.env[key];
+        Object.assign(process.env, origEnv);
         vi.restoreAllMocks();
     });
 

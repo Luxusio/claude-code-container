@@ -371,23 +371,34 @@ not rearm already completed cleanup. `clearSession` resets all context and
 rearms cleanup. Successful cleanup clears lock/path/profile while retaining
 tool name and the hidden ID until a setter or clear changes them.
 
+The PR #9/#10 reconciliation adds separate captured-ID and cleanup-permission
+state. Host-owned acquisition starts disabled. Parent and guardian both require
+permission before device/container cleanup, with a true parent grant effective
+only after the guardian ACK. A captured-ID change first revokes the old grant.
+Unauthorized guardian cleanup uses receipt-fenced rollback without device stop.
+Legacy unowned `setSession` retains its cleanup-enabled default.
+
 Cleanup preserves the legacy reads across callbacks rather than freezing a
 snapshot. It checks the initial lock/path and completion flag, resolves project
 identity from the current path, then reads the current profile for the prefix.
-Inside the existing lifecycle guard it queries raw foreign claims with the
-current lock, reads the lock again for removal, and, absent foreign claims,
-reads the current path/profile for device cleanup with a 5000 ms timeout.
-Malformed, unreadable or stale-looking foreign raw claims veto devices and stop
-while allowing own-claim removal and finalization; no liveness probe authorizes
+Inside the existing lifecycle guard the composed query reconciles proven stale
+foreign owners and uses remaining raw claims as the shutdown veto. Device cleanup
+reads the current path/profile with a 5000 ms timeout only when foreign claims
+are absent and cleanup is enabled. `retryable-owner` removes its own claim after
+successful cleanup so a failed stop retains the receipt for retry; `ended-owner`
+removes its claim before the query.
+Malformed, unreadable or unproven stale-looking foreign raw claims veto devices and stop
+while allowing own-claim removal and finalization; a liveness probe alone does not authorize
 shutdown. Device exceptions are reported and cleanup continues. The current ID's
 truthiness is checked after devices/reporting; the stop port receives a lazy ID
 reader. The native adapter evaluates `runtimeCli()` before invoking that reader
 to construct `["stop", id]`, preserving runtime-callback mutations without a
 second truthiness filter or container-name rediscovery.
 
-`src/adapters/session-cleanup.ts` supplies one best-effort exists/unlink remover
-shared by automatic cleanup and public `removeSessionLock`. Both filesystem
-errors remain swallowed. Device cleanup uses the existing administration service
+`src/adapters/session-cleanup.ts` retains the best-effort exists/unlink remover
+for public legacy `removeSessionLock`. Composed owned cleanup instead uses an
+unlink remover that ignores only ENOENT and propagates other filesystem failures;
+the ownership composition provides receipt fencing. Device cleanup uses the existing administration service
 until its M06 migration; reporting retains the existing error message. Native
 stop uses `spawnSync` with ignored stdio. Project/guard/query/runtime/spawn/report
 and lock-return exceptions escape and prevent finalization; retry can repeat
@@ -401,7 +412,7 @@ success and uncertain daemon-side outcomes still require their own evidence.
 Signal registration is outside the application and facade implementation: the
 facade delegates through composition to the native adapter, which registers
 `process.once` for SIGINT, SIGTERM and SIGHUP on every setup call. Each callback
-invokes public cleanup before `process.exit(0)`; a cleanup exception prevents
+invokes public cleanup before `process.exit(process.exitCode ?? 0)`; a cleanup exception prevents
 exit. No listener deduplication or new reentrancy policy is introduced.
 
 Verification anchors are architecture `session-cleanup.test.ts`,
@@ -414,8 +425,9 @@ and materialized installs and checks their declarations. It exercises fake-port
 cleanup ordering, raw foreign veto, snapshot/reset and public set/get/clear
 behavior without native cleanup, providers or live containers.
 
-Known ceiling: own-claim removal remains unconditional and callbacks retain mutable
-context. The session-exit adapter now checks stop results, but timeout leaves the
+Known ceiling: callbacks retain mutable context. Own-claim removal is bound to
+the native ownership receipt in owned sessions; legacy unowned callers retain
+their compatibility remover. The session-exit adapter now checks stop results, but timeout leaves the
 daemon-side outcome unknown — upgrade during approved receipt/compare-and-release
 and native outcome reconciliation work.
 
@@ -703,7 +715,10 @@ including the empty string supplied through the core port, reports a mismatch;
 an absent image reports a pull. It qualifies the registry/version reference,
 pulls, then tags a successful pull to the local name. A failed pull with the
 original local image warns and returns. Without that image it reports failure,
-prints the current-runtime build hint and exits with code 1. Thrown Error and
+prints the current-runtime build hint and invokes the injected `exitFailure`
+capability. The current native binding throws
+`Failed to pull CCC image; container startup was aborted.` rather than calling
+`process.exit`, allowing owned launch resources to unwind. Thrown Error and
 non-Error values propagate unchanged and stop later effects.
 
 Keep request facts lazy and capabilities live when extracting similar policy.
@@ -715,7 +730,8 @@ pulls reuse the captured qualified reference and original existence observation.
 Methods retain their receiver and replacements made by earlier callbacks.
 
 `src/composition/container-image-preparation.ts` supplies native helpers through
-live closures and binds the exact existing log/warn/error messages and exit.
+live closures and binds existing log/warn/error messages plus the throwing
+native failure capability described above.
 It obtains image name/version from the existing utils exports. The Docker
 facade supplies a required lazy registry getter that returns its existing
 immutable `DOCKER_REGISTRY_IMAGE` binding; `CCC_REGISTRY` remains a module-load
@@ -732,10 +748,9 @@ prescribed Docker, arguments, runtime/setup, session, remote and index suites.
 Tests use actual application/composition with native mocks and cover lazy fact
 and method getters, callback replacement, exact thrown values, diagnostic order,
 Docker/Podman qualification, native result accessors and changing runtimes.
-Coordinator source verification recorded a full build, four-source lint and
-39 regression files with 2337 passing tests. The complete Docker bytes outside
-the new import and `ensureImage` body matched the retained baseline. Built CLI
-help/version/invalid-runtime probes returned 0/0/1 with version 1.1.90.
+Historical extraction verification covered build, lint, regression tests and
+built CLI exit behavior. Those earlier results do not certify this reconciled
+candidate; its final source/artifact verification is a separate acceptance gate.
 
 `scripts/test-workspace-packages.mjs` adds actual compiled image-policy checks
 to the common smoke used by both extracted npm packages and materialized
@@ -804,12 +819,20 @@ identity. Source assertion, identity lookup/getter and callback exceptions,
 including non-Error values, escape unchanged. A late failure does not stop or
 remove an existing or verified fresh container.
 
+An additive early-start callback captures a successfully restarted existing
+container before setup helpers. Fresh creation reaches that callback only after
+managed-source and running-identity verification. This callback carries invocation
+start authority separately from the final readiness callback: reuse alone does
+not authorize cleanup after failed setup. Capture and ACK are required; forced
+termination before capture is outside this guarantee, without arbitrary scans.
+
 `src/docker.ts` remains the temporary composition root until M13. It constructs
 the factory inside the existing finish closure, binding two source assertion
 wrappers and `getContainerIdentity`, then calls `.run(id, name, onContainerReady)`.
 The existing-lifecycle void finish wrapper and fresh-creation direct finish call
-keep their caller positions. Public signatures, lock authority, preparation,
-native helpers, runtime selection and cleanup semantics retain their behavior.
+keep their caller positions. Existing public calls remain compatible with the
+additive callback; lock authority, preparation and runtime selection stay in
+their current layers, with cleanup permission explicitly separated above.
 
 Verification anchors are `container-session-handoff-core.test.ts`,
 `container-session-handoff-types.test.ts` and
@@ -941,9 +964,10 @@ escape unchanged. `run(target: string): boolean` reads the live ports with their
 ports receiver. No default ports, timing configuration or generic retry engine
 are introduced.
 
-Each run establishes `deadline = now() + 750`. For attempts 0 through 2 it reads
+Each run establishes `deadline = now() + 15150` (three 5000 ms probes plus
+two 75 ms pauses). For attempts 0 through 2 it reads
 `remaining = deadline - now()`, stops when remaining is nonpositive and probes
-the exact supplied target with `Math.min(200, remaining)`. Success returns true
+the exact supplied target with `Math.min(5000, remaining)`. Success returns true
 immediately, including a probe that succeeds after the deadline; success does
 not trigger another clock read. Every failed probe reads the clock again to
 compute `Math.min(75, deadline - now())`, including the final failed attempt.
@@ -984,7 +1008,7 @@ remain required acceptance gates.
 
 ### Known ceiling
 
-Known ceiling: 750ms is a scheduling policy, not a guaranteed elapsed completion
+Known ceiling: 15.15 seconds is a scheduling policy, not a guaranteed elapsed completion
 bound or hard cancellation — upgrade when an approved native protocol can bound
 or cancel the operation itself. A native probe may overrun its supplied budget;
 wall-clock changes and successful late probes retain existing behavior.
@@ -1083,16 +1107,27 @@ unobserved. There are no new retries, catches, rollback or persistent state.
 Successful ownership repair followed by failed finalization remains visible as
 partial failure; the application does not restore ownership or replay mutation.
 
-Docker retains one private stateless application instance and its public
-`prepareCodexConfigForContainer(containerName): void` signature. Native bindings
-resolve the runtime independently when each effect runs. The existing fixed
-shell bodies, quoting helper, target argv, ignored stdio and 15-second outer
-limits stay in Docker. Each shell command retains its 10-second inner timeout
-and 2-second kill grace. These are existing per-command limits, not an end-to-end
-completion guarantee. Root repair changes entry ownership with `chown -h` only;
-probe and final identity/access/permission proof run as the unprivileged
-container user. The existing index caller, pinned target and setup lock remain
-unchanged. Docker is temporary native composition until M13.
+Docker retains the public compatible
+`prepareCodexConfigForContainer(containerName, profile?): void` facade. It resolves
+the selected profile's host config, prepares mounted directory access first,
+then prepares config-file access through two call-local compositions of the same
+three-port application. Native probe/repair/finalize bindings use current runtime
+selection. Host repair eligibility requires a non-symlink host-user-owned parent
+and a regular single-link config file, with absence allowed only for directory
+preparation. Container UID observation is lazy and shared by the two repairs.
+
+Root repair grants mapped-principal POSIX ACL access rather than using the old
+`chown -h` ownership mutation. Python native scripts pin resources, reject linked
+ancestors and file aliases, and preserve contents/owners and unrelated effective
+access. Probe/final verification run as the normal container user; repair runs as
+root. Native commands retain the 15-second outer timeout and inner 10-second
+limit with two-second kill grace, per command rather than end-to-end. The native
+runner throws an operation-labelled error before returning failed non-probe
+results; clean probe status one still reaches the pure application's repair
+branch. Thus injected result-classification semantics above remain intact, while
+native operation failures propagate their own diagnostic. Profile writer locks
+cover host restoration before MCP config mutation. Docker remains temporary
+native composition until M13.
 
 Verification anchors are the three architecture `codex-config-preparation`
 core/type/facade suites and the shared workspace package verifier. Core tests

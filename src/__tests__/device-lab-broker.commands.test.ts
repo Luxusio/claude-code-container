@@ -5839,7 +5839,8 @@ describe("device-lab host broker lifecycle commands", () => {
     });
 
     it("starts and stops broker-owned Android recordings without touching foreign owner devices", async () => {
-        const hostProjectPath = resolve("/project/broker-recording-test");
+        const hostProjectPath = join(process.env.HOME!, "broker-recording-test");
+        mkdirSync(hostProjectPath, { recursive: true });
         const ownerA = deviceLabOwnerId(hostProjectPath);
         const containerRecordingPath = `${deviceLabProjectMountPath(hostProjectPath)}/artifacts/owned.mp4`;
         const hostRecordingPath = join(hostProjectPath, "artifacts", "owned.mp4");
@@ -5911,7 +5912,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     },
                 }),
             });
-            expect(start.status).toBe(200);
+            expect(start.status, JSON.stringify(await start.clone().json())).toBe(200);
             expect(await start.json()).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({

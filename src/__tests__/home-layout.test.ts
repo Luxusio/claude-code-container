@@ -5,6 +5,7 @@ import { join } from "path";
 import {
     clipboardFilesDir,
     clipboardPortFile,
+    clipboardStartingLock,
     helperBinDir,
     locksDir,
     ensureDefaultProfileDir,
@@ -72,6 +73,23 @@ describe("home layout resolution", () => {
         expect(clipboardPortFile()).toBe(ccc("clipboard.port"));
     });
 
+    it("keeps a missing or removed port in the retained legacy lock layout", () => {
+        mkdirSync(ccc("locks"), { recursive: true });
+        expect(clipboardPortFile()).toBe(ccc("clipboard.port"));
+        expect(clipboardStartingLock()).toBe(ccc("clipboard.starting.v2"));
+        writeFileSync(ccc("clipboard.port"), "1234:token");
+        rmSync(ccc("clipboard.port"));
+        expect(clipboardPortFile()).toBe(ccc("clipboard.port"));
+        expect(existsSync(ccc("run"))).toBe(false);
+    });
+
+    it("retains a moved port inode when other runtime entries have not moved", () => {
+        mkdirSync(ccc("locks"), { recursive: true });
+        mkdirSync(ccc("run"), { recursive: true });
+        writeFileSync(ccc("run", "clipboard.port"), "1234:token");
+        expect(clipboardPortFile()).toBe(ccc("run", "clipboard.port"));
+    });
+
     it("resolves each entry on its own in a partly migrated home", () => {
         seedLegacyHome();
         ensureDefaultProfileDir();
@@ -118,12 +136,13 @@ describe("migrateHomeLayout", () => {
 
     it("moves credentials, runtime files and remote configs without losing content", () => {
         seedLegacyHome();
+        const originalPort = statSync(ccc("clipboard.port"));
         const retired: string[] = [];
         const result = migrateHomeLayout({ ...noSessions, retireLegacyClipboard: (file) => retired.push(file) });
 
         expect(result).toEqual({
             status: "migrated",
-            moved: ["claude", "claude.json", "codex", "locks", "clipboard-files", "bin", join("remote", "abc123.json")],
+            moved: ["clipboard.port", "claude", "claude.json", "codex", "locks", "clipboard-files", "bin", join("remote", "abc123.json")],
             failed: [],
         });
         expect(readFileSync(ccc("profiles", "default", "claude", ".credentials.json"), "utf-8")).toBe("claude-secret");
@@ -132,7 +151,9 @@ describe("migrateHomeLayout", () => {
         expect(readFileSync(ccc("run", "clipboard-files", "shot.png"), "utf-8")).toBe("png");
         expect(existsSync(ccc("run", "locks"))).toBe(true);
         expect(existsSync(ccc("run", "bin"))).toBe(true);
-        expect(retired).toEqual([ccc("clipboard.port")]);
+        expect(retired).toEqual([]);
+        expect(statSync(ccc("run", "clipboard.port")).ino).toBe(originalPort.ino);
+        expect(readFileSync(ccc("run", "clipboard.port"), "utf-8")).toBe("1234:token");
         expect(readCccConfig()).toEqual({ defaultTool: "codex", remote: { abc123: { host: "desk", user: "me", remotePath: "" } } });
         if (process.platform !== "win32") {
             expect(statSync(ccc("profiles", "default", "codex")).mode & 0o777).toBe(0o700);
@@ -150,6 +171,51 @@ describe("migrateHomeLayout", () => {
         expect(migrateHomeLayout({ hasLiveSessions: () => true })).toEqual({ status: "sessions-active" });
         expect(existsSync(ccc("claude"))).toBe(true);
         expect(existsSync(ccc(".layout-migration.lock"))).toBe(false);
+    });
+
+    it("retains legacy credentials and clipboard inode while any container holds their mounts", () => {
+        seedLegacyHome();
+        const before = statSync(ccc("clipboard.port"));
+        const hasContainerMounts = vi.fn(() => true);
+        expect(migrateHomeLayout({ ...noSessions, hasContainerMounts })).toEqual({ status: "mounts-active" });
+        expect(readFileSync(ccc("codex", "auth.json"), "utf-8")).toBe("codex-secret");
+        expect(statSync(ccc("clipboard.port")).ino).toBe(before.ino);
+        expect(existsSync(ccc("profiles"))).toBe(false);
+        expect(clipboardStartingLock()).toBe(ccc("clipboard.starting.v2"));
+        expect(hasContainerMounts).toHaveBeenCalledOnce();
+    });
+
+    it("does not move state when container mount inspection fails", () => {
+        seedLegacyHome();
+        expect(() => migrateHomeLayout({ ...noSessions, hasContainerMounts: () => { throw new Error("inspect failed"); } })).toThrow("inspect failed");
+        expect(existsSync(ccc("codex", "auth.json"))).toBe(true);
+        expect(existsSync(ccc(".layout-migration.lock"))).toBe(false);
+    });
+
+    it.each(["clipboard.starting", "clipboard.starting.v2", join("run", "clipboard.starting"), join("run", "clipboard.starting.v2")])("preserves startup lock ownership at %s", path => {
+        seedLegacyHome();
+        mkdirSync(ccc("run"), { recursive: true });
+        writeFileSync(ccc(path), "owner");
+        const before = statSync(ccc(path));
+        expect(migrateHomeLayout(noSessions)).toEqual({ status: "busy" });
+        expect(statSync(ccc(path)).ino).toBe(before.ino);
+        expect(readFileSync(ccc(path), "utf-8")).toBe("owner");
+        expect(existsSync(ccc("codex", "auth.json"))).toBe(true);
+        expect(clipboardPortFile()).toBe(ccc("clipboard.port"));
+    });
+
+    it("does not overwrite either clipboard inode or move credentials on a port conflict", () => {
+        seedLegacyHome();
+        mkdirSync(ccc("run"), { recursive: true });
+        writeFileSync(ccc("run", "clipboard.port"), "9876:other-token");
+        const old = statSync(ccc("clipboard.port"));
+        const next = statSync(ccc("run", "clipboard.port"));
+        expect(migrateHomeLayout(noSessions)).toEqual({ status: "busy" });
+        expect(statSync(ccc("clipboard.port")).ino).toBe(old.ino);
+        expect(statSync(ccc("run", "clipboard.port")).ino).toBe(next.ino);
+        expect(readFileSync(ccc("run", "clipboard.port"), "utf-8")).toBe("9876:other-token");
+        expect(existsSync(ccc("codex", "auth.json"))).toBe(true);
+        expect(clipboardPortFile()).toBe(ccc("clipboard.port"));
     });
 
     it("skips while another start holds a fresh migration lock, and takes over a stale one", () => {

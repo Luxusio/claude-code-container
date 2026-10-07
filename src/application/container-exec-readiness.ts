@@ -8,11 +8,12 @@ export function createContainerExecReadiness(ports: ContainerExecReadinessPorts)
     }
 
     function run(target: string): boolean {
-        const deadline = ports.now() + 750;
+        const probeTimeoutMs = 5000;
+        const deadline = ports.now() + 3 * probeTimeoutMs + 2 * 75;
         for (let attempt = 0; attempt < 3; attempt += 1) {
             const remainingMs = deadline - ports.now();
             if (remainingMs <= 0) break;
-            if (ports.canExec(target, Math.min(200, remainingMs))) return true;
+            if (ports.canExec(target, Math.min(probeTimeoutMs, remainingMs))) return true;
             const sleepMs = Math.min(75, deadline - ports.now());
             if (attempt < 2 && sleepMs > 0) ports.sleep(sleepMs);
         }

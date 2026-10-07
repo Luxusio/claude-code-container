@@ -7,6 +7,7 @@ type NativeCreatePorts = "create" | "removeRejected" | "explicitlyAbsent"
 
 export interface NativeContainerCreateLifecycleContext {
     createCli: string;
+    beforeCreating?(): void;
     createFailureHint: string;
     labWarning(): { unsupportedReason?: string } | null;
     explicitlyNotFound(result: ReturnType<typeof spawnSync>): boolean;
@@ -20,6 +21,7 @@ export function createNativeContainerCreateLifecycle(
         ...ports,
         reportCreating: (name, debug) => {
             if (debug) console.error(`[ccc:debug] Container ${name} not found, creating`);
+            context.beforeCreating?.();
             console.log("Creating container...");
         },
         reportLabWarning: () => {

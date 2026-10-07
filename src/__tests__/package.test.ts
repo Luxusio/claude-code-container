@@ -5,6 +5,7 @@ import { join } from "path";
 import { pathToFileURL } from "url";
 import { describe, expect, it } from "vitest";
 import { materializeUnixInstallPayload, unixWrapperContent } from "../../scripts/install.js";
+import { deviceLabTestHomeEnvironment } from "./helpers/device-lab-test-environment.js";
 
 const repoRoot = join(__dirname, "../..");
 const HIDDEN_LEGACY_TRANSPORT_KEYS = new Set([
@@ -99,9 +100,13 @@ describe("npm package contents", () => {
             encoding: "utf-8",
             stdio: ["ignore", "pipe", "pipe"],
         });
-        const [pack] = JSON.parse(out) as Array<{
-            files: Array<{ path: string }>;
-        }>;
+        type PackReport = { files: Array<{ path: string }> };
+        const report = JSON.parse(out) as PackReport[] | Record<string, PackReport>;
+        // npm 12 keys JSON pack reports by package name; older npm returns an array.
+        const packs = Array.isArray(report) ? report : Object.values(report);
+        expect(packs).toHaveLength(1);
+        const [pack] = packs;
+        expect(Array.isArray(pack.files)).toBe(true);
         const files = new Set(pack.files.map((file) => file.path));
 
         expect(files).toContain("scripts/install.js");
@@ -634,8 +639,13 @@ describe("npm package contents", () => {
                 name: "ccc-device-lab-dist-smoke",
                 serverPath: join(repoRoot, "dist", "device-lab-mcp", "server.mjs"),
                 env: {
-                    HOME: homeDir,
-                    PATH: process.env.PATH || "",
+                    // The client helper merges process.env. Explicitly clear inherited
+                    // provider/broker settings; this checks packaged dispatch, not host tools.
+                    ...Object.fromEntries(Object.keys(process.env).map(key => [key, ""])),
+                    ...deviceLabTestHomeEnvironment(homeDir),
+                    PATH: "",
+                    SYSTEMROOT: process.env.SYSTEMROOT || "",
+                    WINDIR: process.env.WINDIR || "",
                 },
             });
         } finally {

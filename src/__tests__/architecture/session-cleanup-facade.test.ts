@@ -81,7 +81,7 @@ describe("native session cleanup through the public facade", () => {
             "observeActiveSessionsForContainer",
             "getSessionLockClaimsForContainer", "getSessionLockClaimsForProjectFamily", "hasOtherActiveSessions",
             "hasOtherSessionClaims", "recreateContainerWithoutInterruptingSessions", "removeSessionLock",
-            "setSession", "setSessionContainerId", "setupSignalHandlers", "withContainerLifecycleLock",
+            "setSession", "setSessionContainerId", "setSessionCleanupEnabled", "setupSignalHandlers", "withContainerLifecycleLock",
             "withContainerLifecycleLockAsync", "withContainerSetupLockAsync", "withProjectFamilyLifecycleLock",
             "withProjectFamilyLifecycleLockAsync",
         ].sort());
@@ -453,7 +453,7 @@ describe("host ownership acquisition through the facade", () => {
         effects.list.mockReturnValue(["project--foreign.lock"]); effects.read.mockReturnValue("123"); effects.classify.mockReturnValue("stale");
         const acquisition = session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "existing-exact-id", runtime: "podman" }));
         void acquisition.catch(() => undefined);
-        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("existing-exact-id", "podman"));
+        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("existing-exact-id", "podman", false));
         expect(effects.list).not.toHaveBeenCalled(); expect(effects.unlink).not.toHaveBeenCalled();
         expect(() => session.setSession("/other.lock", project)).toThrow(); expect(() => session.clearSession()).toThrow();
         ack();
@@ -463,6 +463,9 @@ describe("host ownership acquisition through the facade", () => {
         expect(() => session.setSession("/other.lock", project)).toThrow();
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
         effects.list.mockReturnValue([]);
+        update.mockResolvedValue(undefined);
+        session.setSessionCleanupEnabled(true);
+        await session.confirmSessionOwnership();
         session.cleanupSession();
         expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "existing-exact-id"], stopOptions);
         expect(release).toHaveBeenCalledTimes(1);
@@ -477,6 +480,36 @@ describe("host ownership acquisition through the facade", () => {
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
     });
 
+    it("failed setup after joining an existing ID removes only its authorized claim", async () => {
+        await session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "existing-exact-id", runtime: "docker" }));
+        session.cleanupSession();
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(effects.capture.mock.results[0].value.path);
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it("confirmation waits for queued permission grants and revocations in order", async () => {
+        await session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "existing-exact-id", runtime: "docker" }));
+        let acknowledge!: () => void;
+        update.mockImplementationOnce(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+        session.setSessionCleanupEnabled(true);
+        await vi.waitFor(() => expect(update).toHaveBeenLastCalledWith("existing-exact-id", "docker", true));
+        session.setSessionCleanupEnabled(false);
+        let confirmed = false;
+        const confirmation = session.confirmSessionOwnership().then(() => { confirmed = true; });
+        await Promise.resolve();
+        expect(confirmed).toBe(false);
+        expect(update).toHaveBeenCalledTimes(2);
+        acknowledge();
+        await confirmation;
+        expect(update.mock.calls.map(call => call[2])).toEqual([false, true, false]);
+        session.cleanupSession();
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(effects.unlink).toHaveBeenCalledTimes(1);
+    });
+
     it("preserves acknowledged cleanup ownership when the monitor fails before the ACK await continuation", async () => {
         const failure = new Error("monitor lost immediately after ACK");
         let monitorFailed!: (error: Error) => void;
@@ -488,7 +521,7 @@ describe("host ownership acquisition through the facade", () => {
         await expect(session.acquireHostSessionOwnership(request, () => ({
             known: true, containerId: "acknowledged-exact-id", runtime: "docker",
         }))).rejects.toBe(failure);
-        expect(update).toHaveBeenCalledExactlyOnceWith("acknowledged-exact-id", "docker");
+        expect(update).toHaveBeenCalledExactlyOnceWith("acknowledged-exact-id", "docker", false);
         const captured = effects.capture.mock.results[0].value as SessionOwnershipReceipt;
         expect(session.getCurrentSession()).toEqual({
             lockFile: captured.path, projectPath: project, profile: undefined, toolName: "codex",
@@ -499,11 +532,62 @@ describe("host ownership acquisition through the facade", () => {
         expect(() => session.setSession("/replacement.lock", project)).toThrow();
         session.cleanupSession();
         expect(effects.authorize).toHaveBeenCalledWith(captured);
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "acknowledged-exact-id"], stopOptions);
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.devices).not.toHaveBeenCalled();
         expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(captured.path);
-        expect(effects.spawn.mock.invocationCallOrder[0]).toBeLessThan(effects.unlink.mock.invocationCallOrder[0]!);
         expect(release).toHaveBeenCalledTimes(1);
         expect(session.getCurrentSession().lockFile).toBeNull();
+    });
+
+    it("a different captured ID first hands off false and needs its own acknowledged grant", async () => {
+        await session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "first-exact-id", runtime: "docker" }));
+        session.setSessionCleanupEnabled(true);
+        await session.confirmSessionOwnership();
+        update.mockClear();
+        session.setSessionContainerId("replacement-exact-id");
+        await session.confirmSessionOwnership();
+        expect(update).toHaveBeenCalledExactlyOnceWith("replacement-exact-id", "docker", false);
+        session.setSessionCleanupEnabled(true);
+        await session.confirmSessionOwnership();
+        expect(update.mock.calls).toEqual([
+            ["replacement-exact-id", "docker", false], ["replacement-exact-id", "docker", true],
+        ]);
+        session.cleanupSession();
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "replacement-exact-id"], stopOptions);
+    });
+
+    it("rejected replacement-ID ACK cannot retain the previous ID's local stop authorization", async () => {
+        await session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "first-exact-id", runtime: "docker" }));
+        session.setSessionCleanupEnabled(true);
+        await session.confirmSessionOwnership();
+        const failure = new Error("fixture replacement ACK lost");
+        let rejectAck!: (error: Error) => void;
+        update.mockClear();
+        update.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectAck = reject; }));
+        session.setSessionContainerId("replacement-exact-id");
+        const confirmation = session.confirmSessionOwnership();
+        const rejected = expect(confirmation).rejects.toBe(failure);
+        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("replacement-exact-id", "docker", false));
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled();
+        rejectAck(failure);
+        await rejected;
+        session.cleanupSession();
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.unlink).toHaveBeenCalledTimes(1);
+    });
+
+    it("capturing the same acknowledged ID retains its own shutdown authorization", async () => {
+        await session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "first-exact-id", runtime: "docker" }));
+        session.setSessionCleanupEnabled(true);
+        await session.confirmSessionOwnership();
+        update.mockClear();
+        session.setSessionContainerId("first-exact-id");
+        await session.confirmSessionOwnership();
+        expect(update).toHaveBeenCalledExactlyOnceWith("first-exact-id", "docker", true);
+        session.cleanupSession();
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "first-exact-id"], stopOptions);
     });
 
     it("reports monitor loss during asynchronous acquisition guard release while retaining the acknowledged cleanup ID", async () => {
@@ -524,7 +608,8 @@ describe("host ownership acquisition through the facade", () => {
         expect(effects.unlink).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
         effects.lock.mockImplementation((_path, operation) => operation());
         session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "acknowledged-exact-id"], stopOptions);
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.devices).not.toHaveBeenCalled();
         expect(release).toHaveBeenCalledTimes(1);
     });
 });

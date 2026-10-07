@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter, once } from "events";
 import { PassThrough, Writable } from "stream";
-import { request, type Server } from "http";
+import { createServer, request, type Server } from "http";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
-import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from "fs";
+import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "fs";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), platform: "win32" }));
 vi.mock("child_process", async () => ({ ...await vi.importActual<typeof import("child_process")>("child_process"), spawn: native.spawn, spawnSync: native.spawnSync }));
@@ -92,8 +92,7 @@ beforeEach(async () => {
     afterSnapshot = undefined;
     children = [];
     server = undefined;
-    token = existsSync("/run/ccc/clipboard.port")
-        ? readFileSync("/run/ccc/clipboard.port", "utf8").trim().split(":").slice(1).join(":") : "image-test-token";
+    token = "image-test-token";
     native.spawn.mockImplementation(() => { const proc = fakeProcess(); children.push(proc); return proc; });
     native.spawnSync.mockReturnValue({ status: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
     mod = await import("../clipboard-server.js");
@@ -241,7 +240,7 @@ it("preserves multi-megabyte image payloads in both native snapshot parsers", ()
     for (const parse of [mod.parseWindowsClipboardSnapshot, mod.parseDarwinHelperOutput]) {
         const result = parse(json);
         expect(result).not.toBeNull();
-        expect(result!.imagePng).toEqual(bytes);
+        expect(result!.imagePng?.equals(bytes)).toBe(true);
         expect(result!.targets).toContain("image/png");
     }
 });
@@ -256,23 +255,49 @@ it.skipIf(process.platform === "win32")("serves actual Claude shell target/image
     await start();
     const { spawn } = await vi.importActual<typeof import("child_process")>("child_process");
     const { readClipboardImagePng } = await import("../codex-clipboard-image.js");
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "ccc-image-shims-"));
+    const metadataRoot = join(fixtureRoot, ".ccc", "clipboard");
+    mkdirSync(metadataRoot, { recursive: true });
+    const portFile = join(metadataRoot, "clipboard.port");
+    writeFileSync(portFile, `${port}:${token}`, { mode: 0o600 });
+    let decoyRequests = 0;
+    const decoy = createServer((_req, res) => { decoyRequests++; res.writeHead(500); res.end(); });
+    await new Promise<void>((resolve) => decoy.listen(0, "127.0.0.1", resolve));
+    const decoyAddress = decoy.address();
+    if (!decoyAddress || typeof decoyAddress === "string") throw new Error("Decoy failed to bind");
+    const decoyPort = decoyAddress.port;
+    for (const name of ["xclip", "wl-paste"]) {
+        const source = readFileSync(resolve(`scripts/clipboard-shims/${name}`), "utf8");
+        expect(source).toContain("/run/ccc/clipboard.port");
+        const isolated = source.replaceAll("/run/ccc/clipboard.port", '"$CCC_TEST_PORT_FILE"');
+        expect(isolated).not.toContain("/run/ccc/clipboard.port");
+        writeFileSync(join(fixtureRoot, name), isolated, { mode: 0o600 });
+    }
     async function shell(name: string, args: string[]) {
-        const proc = spawn("sh", [resolve(`scripts/clipboard-shims/${name}`), ...args], { env: { ...process.env,
-            CCC_CLIPBOARD_URL: `http://127.0.0.1:${port}`, CCC_CLIPBOARD_TOKEN: token }, stdio: ["ignore", "pipe", "pipe"] });
+        const proc = spawn("sh", [join(fixtureRoot, name), ...args], { env: { ...process.env,
+            ENV: "", BASH_ENV: "", HOME: fixtureRoot, TMPDIR: fixtureRoot, CCC_TEST_PORT_FILE: portFile,
+            CCC_CLIPBOARD_URL: `http://127.0.0.1:${decoyPort}`, CCC_CLIPBOARD_TOKEN: "stale-fixture-token" }, stdio: ["ignore", "pipe", "pipe"] });
         const out: Buffer[] = [];
         proc.stdout.on("data", chunk => out.push(chunk));
         const [code] = await once(proc, "close");
         expect(code).toBe(0);
         return Buffer.concat(out);
     }
-    const [targets, image, codex] = await Promise.all([
-        shell("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"]),
-        shell("wl-paste", ["--type", "image/png"]),
-        readClipboardImagePng(`http://127.0.0.1:${port}`, token),
-    ]);
-    expect(targets.toString()).toContain("image/png");
-    expect(image).toEqual(png);
-    expect(codex).toEqual(png);
+    try {
+        const [targets, image, codex] = await Promise.all([
+            shell("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"]),
+            shell("wl-paste", ["--type", "image/png"]),
+            readClipboardImagePng(`http://127.0.0.1:${port}`, token),
+        ]);
+        expect(targets.toString()).toContain("image/png");
+        expect(image).toEqual(png);
+        expect(codex).toEqual(png);
+        expect(decoyRequests).toBe(0);
+    } finally {
+        decoy.closeAllConnections();
+        await new Promise<void>((resolve) => decoy.close(() => resolve()));
+        rmSync(fixtureRoot, { recursive: true, force: true });
+    }
 });
 
 

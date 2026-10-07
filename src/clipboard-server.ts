@@ -9,11 +9,15 @@ import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "chil
 import { randomBytes, createHash, timingSafeEqual } from "crypto";
 import { StringDecoder } from "string_decoder";
 import {
+    constants,
+    fstatSync,
+    lstatSync,
+    fchmodSync,
+    ftruncateSync,
     existsSync,
     readFileSync,
     writeFileSync,
     copyFileSync,
-    unlinkSync,
     readdirSync,
     openSync,
     closeSync,
@@ -23,7 +27,9 @@ import { join, dirname, basename } from "path";
 import { platform } from "os";
 import { fileURLToPath } from "url";
 import { CLIPBOARD_FILES_CONTAINER_DIR } from "./utils.js";
-import { clipboardFilesDir, clipboardPortFile, clipboardStartingLock, clipboardStateDir, helperBinDir, locksDir } from "./home-layout.js";
+import { clipboardFilesDir, clipboardPortFile, clipboardStartingLock, helperBinDir, locksDir } from "./home-layout.js";
+import { tryAcquireClipboardStartupLock, recoverDeadClipboardStartupLock, releaseClipboardStartupLock } from "./clipboard-startup-lock.js";
+import { clipboardPortMayHaveBindUsers } from "./clipboard-bind-users.js";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
 
@@ -46,6 +52,10 @@ const CLIPBOARD_SERVER_ORPHAN_CHECK_INTERVAL_MS = 5000;
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_POLL_TIMEOUT_MS = 5000;
+const SHUTDOWN_TIMEOUT_MS = 2000;
+const UPGRADE_SHUTDOWN_GRACE_MS = 3500;
+const STARTUP_LOCK_TIMEOUT_MS = HEALTH_CHECK_TIMEOUT_MS + SHUTDOWN_TIMEOUT_MS
+    + UPGRADE_SHUTDOWN_GRACE_MS + STARTUP_POLL_TIMEOUT_MS + 1000;
 const PS_MARKER = "<<<CCC_CB_DONE>>>";
 export const MAX_CLIPBOARD_TEXT_BYTES = 1048576;
 const CLIPBOARD_WRITE_TIMEOUT_MS = 5000;
@@ -1268,7 +1278,6 @@ function gracefulShutdown(server: Server, idleTimer?: ReturnType<typeof setInter
     killPersistentPS();
     killPersistentDarwin();
     server.close(() => {
-        cleanupStateFiles();
         process.exit(0);
     });
     setTimeout(() => process.exit(0), 3000);
@@ -1439,11 +1448,6 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform): {
     return { server, start };
 }
 
-function cleanupStateFiles(): void {
-    try { if (existsSync(clipboardPortFile())) unlinkSync(clipboardPortFile()); } catch { /* ignore */ }
-    try { if (existsSync(clipboardStartingLock())) unlinkSync(clipboardStartingLock()); } catch { /* ignore */ }
-}
-
 // === Port File Management ===
 
 function readPortFile(portFile = clipboardPortFile()): { port: number; token: string } | null {
@@ -1463,21 +1467,58 @@ function readPortFile(portFile = clipboardPortFile()): { port: number; token: st
 }
 
 function writePortFile(port: number, token: string): void {
-    mkdirSync(clipboardStateDir(), { recursive: true, mode: 0o700 });
-    writeFileSync(clipboardPortFile(), `${port}:${token}`, { mode: 0o600 });
+    const portFile = clipboardPortFile();
+    mkdirSync(dirname(portFile), { recursive: true, mode: 0o700 });
+    // Containers bind this file's inode. Publish through a pinned descriptor;
+    // stale bytes remain harmless because readers require authenticated health.
+    const flags = constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+    let fd: number;
+    try {
+        fd = openSync(portFile, flags | constants.O_CREAT | constants.O_EXCL, 0o600);
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        fd = openSync(portFile, flags);
+    }
+    try {
+        const file = fstatSync(fd);
+        const path = lstatSync(portFile);
+        const uid = process.getuid?.();
+        if (!file.isFile() || file.nlink !== 1 || (uid !== undefined && file.uid !== uid)
+            || !path.isFile() || path.dev !== file.dev || path.ino !== file.ino) {
+            throw new Error("Unsafe clipboard port file");
+        }
+        if (uid !== undefined && (file.mode & 0o777) !== 0o600) fchmodSync(fd, 0o600);
+        ftruncateSync(fd, 0);
+        writeFileSync(fd, `${port}:${token}`);
+    } finally {
+        closeSync(fd);
+    }
 }
 
 // === Server Shutdown (used for version upgrade restart) ===
 
-function shutdownServer(port: number, token?: string): void {
-    const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const req = httpRequest(
-        { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", timeout: 2000, headers },
-        () => { /* response doesn't matter */ },
-    );
-    req.on("error", () => { /* server may already be gone */ });
-    req.end();
+function shutdownServer(port: number, token?: string): Promise<boolean> {
+    return new Promise((resolve) => {
+        let req: ReturnType<typeof httpRequest> | undefined;
+        const timeout = setTimeout(() => { req?.destroy(); resolve(false); }, SHUTDOWN_TIMEOUT_MS);
+        const finish = (acknowledged: boolean) => { clearTimeout(timeout); resolve(acknowledged); };
+        try {
+            const headers: Record<string, string> = {};
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+            req = httpRequest(
+                { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", headers },
+                (res) => {
+                    res.on("error", () => finish(false));
+                    res.on("end", () => finish(res.statusCode === 200));
+                    res.resume();
+                },
+            );
+            req.on("error", () => finish(false));
+            req.end();
+        } catch {
+            finish(false);
+        }
+    });
 }
 
 // === Health Check ===
@@ -1523,50 +1564,61 @@ export async function ensureClipboardServer(): Promise<number> {
     const bindAddr = "127.0.0.1";
 
     // Check if server already running
-    const existing = readPortFile();
+    let existing = readPortFile();
     if (existing) {
         const health = await checkServerHealth(existing.port, existing.token, bindAddr);
-        if (health.alive) {
-            // Version match → reuse existing server
-            if (health.version === SERVER_VERSION) return existing.port;
-            // Version mismatch → shutdown old server, start new one
-            shutdownServer(existing.port, existing.token);
-            // Brief wait for old server to release the port
-            await new Promise((r) => setTimeout(r, 500));
-        }
-        cleanupStateFiles();
+        if (health.alive && health.version === SERVER_VERSION) return existing.port;
     }
 
-    // Atomic startup lock to prevent race condition
-    let lockFd: number | null = null;
-    try {
-        mkdirSync(clipboardStateDir(), { recursive: true, mode: 0o700 });
-        lockFd = openSync(clipboardStartingLock(), "wx");
-        closeSync(lockFd);
-    } catch {
-        // Another process is starting the server - wait for port file
-        const deadline = Date.now() + STARTUP_POLL_TIMEOUT_MS;
+    const lockPath = clipboardStartingLock();
+    let lock = tryAcquireClipboardStartupLock(lockPath);
+    if (!lock) {
+        const deadline = Date.now() + STARTUP_LOCK_TIMEOUT_MS;
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, STARTUP_POLL_INTERVAL_MS));
             const info = readPortFile();
-            if (info) {
+            if (info && info.token !== existing?.token) {
                 const health = await checkServerHealth(info.port, info.token, bindAddr);
-                if (health.alive) return info.port;
+                if (health.alive && health.version === SERVER_VERSION) return info.port;
+            }
+            lock = tryAcquireClipboardStartupLock(lockPath);
+            if (lock) break;
+            if (recoverDeadClipboardStartupLock(lockPath)) {
+                lock = tryAcquireClipboardStartupLock(lockPath);
+                if (lock) {
+                    // A killed owner may already have sent legacy shutdown.
+                    // Wait for delayed cleanup before successor publication.
+                    await new Promise((r) => setTimeout(r, UPGRADE_SHUTDOWN_GRACE_MS));
+                    break;
+                }
             }
         }
-        // Timeout - try to start ourselves (delete stale lock)
-        cleanupStateFiles();
-        try {
-            mkdirSync(clipboardStateDir(), { recursive: true, mode: 0o700 });
-            lockFd = openSync(clipboardStartingLock(), "wx");
-            closeSync(lockFd);
-        } catch {
-            throw new Error("Failed to acquire clipboard server startup lock");
-        }
+        if (!lock) throw new Error(`Clipboard startup is still owned or its owner cannot be verified: ${lockPath}. Retry after the owner finishes; inspect empty or malformed legacy locks before removing them.`);
     }
 
-    // We hold the startup lock - fork the server
+    // Keep upgrade shutdown, legacy grace and publication under the v2 lock.
+    // Legacy cleanup only knows the old lock pathname and cannot release this one.
     try {
+        const current = readPortFile();
+        if (current) {
+            const health = await checkServerHealth(current.port, current.token, bindAddr);
+            if (health.alive) {
+                if (health.version === SERVER_VERSION) return current.port;
+                if (health.version !== SERVER_VERSION) {
+                    if (clipboardPortMayHaveBindUsers(clipboardPortFile())) {
+                        console.warn("[ccc] Clipboard update deferred: running container bind users could not be excluded. Keeping the authenticated existing bridge; retry after its container users stop.");
+                        return current.port;
+                    }
+                    if (!await shutdownServer(current.port, current.token)) {
+                        throw new Error("Failed to acknowledge clipboard server shutdown for upgrade");
+                    }
+                    // Wait beyond the legacy daemon's 3-second forced exit before publication.
+                    await new Promise((r) => setTimeout(r, UPGRADE_SHUTDOWN_GRACE_MS));
+                }
+            }
+        }
+        existing = current;
+
         const __filename = fileURLToPath(import.meta.url);
         const serverScript = __filename.replace(/\.ts$/, ".js");
 
@@ -1582,19 +1634,15 @@ export async function ensureClipboardServer(): Promise<number> {
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, STARTUP_POLL_INTERVAL_MS));
             const info = readPortFile();
-            if (info) {
+            if (info && info.token !== existing?.token) {
                 const health = await checkServerHealth(info.port, info.token, bindAddr);
-                if (health.alive) {
-                    try { unlinkSync(clipboardStartingLock()); } catch { /* ignore */ }
-                    return info.port;
-                }
+                if (health.alive && health.version === SERVER_VERSION) return info.port;
             }
         }
 
         throw new Error("Clipboard server failed to start within timeout");
-    } catch (err) {
-        try { unlinkSync(clipboardStartingLock()); } catch { /* ignore */ }
-        throw err;
+    } finally {
+        releaseClipboardStartupLock(lock);
     }
 }
 
@@ -1636,16 +1684,16 @@ export function stopClipboardServerIfLast(hasOtherActiveSessions: boolean): void
     const info = readPortFile();
     if (!info) return;
 
+    if (clipboardPortMayHaveBindUsers(clipboardPortFile())) return;
     shutdownServer(info.port, info.token);
 
-    // Clean up port file
-    try { unlinkSync(clipboardPortFile()); } catch { /* ignore */ }
+    // Keep the bind-mounted inode; authenticated health rejects stale state.
 }
 
 /** Ask the server recorded in a pre-layout port file to shut down. */
 export function retireClipboardServerFromPortFile(portFile: string): void {
     const info = readPortFile(portFile);
-    if (info) shutdownServer(info.port, info.token);
+    if (info && !clipboardPortMayHaveBindUsers(portFile)) shutdownServer(info.port, info.token);
 }
 
 // === Standalone Entry Point ===
@@ -1667,7 +1715,6 @@ if (isMainModule && process.argv.includes("--serve")) {
     start(bindAddr)
         .then((port) => {
             writePortFile(port, token);
-            try { unlinkSync(clipboardStartingLock()); } catch { /* ignore */ }
         })
         .catch((err) => {
             console.error("Failed to start clipboard server:", err);

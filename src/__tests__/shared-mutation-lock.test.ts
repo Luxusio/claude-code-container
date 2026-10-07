@@ -81,6 +81,21 @@ describe("device-lab shared mutation lock", () => {
         });
     }
 
+    it("preserves stale and malformed host locks when automatic reclamation is disabled", () => {
+        for (const contents of ["", JSON.stringify({ token: testToken(), pid: 2147483647, host: hostname() })]) {
+            const file = lockPath();
+            writeFileSync(file, contents);
+            const old = new Date(Date.now() - 5000);
+            utimesSync(file, old, old);
+            const callback = vi.fn();
+            expect(() => withHostSharedMutationLock(file, callback, {
+                waitMs: 1, staleMs: 1, reclaimStale: false,
+            })).toThrow(/Timed out acquiring shared mutation lock/);
+            expect(callback).not.toHaveBeenCalled();
+            expect(readFileSync(file, "utf8")).toBe(contents);
+        }
+    });
+
     it("removes its token-fenced lock after the operation", () => {
         const file = lockPath();
         const result = withSharedMutationLock(file, () => {

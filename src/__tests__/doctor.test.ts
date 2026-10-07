@@ -48,6 +48,12 @@ vi.mock("../session.js", () => ({
         mockObserveActiveSessionsForContainer(...args),
 }));
 
+const mockIdentity = vi.hoisted(() => ({ uid: 2001, gid: 3001, mapping: "host" as "host" | "podman-keep-id", contractVersion: "1" }));
+vi.mock("../container-identity.js", async original => ({
+    ...await original<typeof import("../container-identity.js")>(),
+    resolveContainerIdentity: () => mockIdentity,
+}));
+
 // Mock utils.js
 vi.mock("../utils.js", () => ({
     getProjectId: vi.fn().mockReturnValue("myproject-abc123"),
@@ -68,6 +74,7 @@ function makeResult(
 
 describe("runDoctor", () => {
     beforeEach(() => {
+        mockIdentity.uid = 2001; mockIdentity.gid = 3001; mockIdentity.mapping = "host";
         spawnSyncMock.mockReset();
         mockExistsSync.mockReset().mockReturnValue(false);
         mockReaddirSync.mockReset().mockReturnValue([]);
@@ -86,6 +93,19 @@ describe("runDoctor", () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it.each([
+        [2001, 3001, "host", "ccc-mise-cache-v1-host-2001-3001"],
+        [1000, 1000, "podman-keep-id", "ccc-mise-cache-v1-podman-keep-id-1000-1000"],
+    ] as const)("inspects the identity-scoped cache for %s:%s %s", (uid, gid, mapping, volume) => {
+        Object.assign(mockIdentity, { uid, gid, mapping });
+        spawnSyncMock.mockReturnValue(makeResult(0, "ready"));
+        expect(runDoctor("/project/myproject")).toBe(true);
+        const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+        expect(calls).toContainEqual(["volume", "inspect", volume, "--format", "{{.Mountpoint}}"]);
+        expect(calls.some(args => args.includes("ccc-mise-cache"))).toBe(false);
+        expect(console.log).toHaveBeenCalledWith(expect.stringContaining(volume));
     });
 
     it("returns true when all checks pass (Docker running, image built, container running, volume exists)", () => {

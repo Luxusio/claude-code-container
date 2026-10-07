@@ -1,3 +1,4 @@
+import type { SpawnOptions } from "child_process";
 import { chmodSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -7,6 +8,27 @@ const persistenceFailure = vi.hoisted(() => ({
     armed: false,
     successor: null as Record<string, unknown> | null,
 }));
+
+const recorderProcess = vi.hoisted(() => ({
+    executable: "",
+    pid: undefined as number | undefined,
+}));
+
+vi.mock("child_process", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("child_process")>();
+    return {
+        ...actual,
+        spawn(command: string, args: readonly string[], options: SpawnOptions) {
+            const child = actual.spawn(command, args, options);
+            if (command === recorderProcess.executable && args.some((arg) => arg.includes("screencapture"))) {
+                // The parent knows the real PID even when rollback kills the child
+                // before its JavaScript initialization can publish anything.
+                recorderProcess.pid = child.pid;
+            }
+            return child;
+        },
+    };
+});
 
 vi.mock("fs", async (importOriginal) => {
     const actual = await importOriginal<typeof import("fs")>();
@@ -44,7 +66,6 @@ async function waitForPidExit(pid: number, timeoutMs = 2500) {
 
 describe("macOS VM recorder start rollback", () => {
     let context: FakeMacosMcpContext;
-    let recorderPidPath: string;
 
     beforeAll(async () => {
         context = createFakeMacosMcpContext();
@@ -61,20 +82,21 @@ describe("macOS VM recorder start rollback", () => {
         const started = await handleMacosTool("device_start", { deviceId: "macos-rollback-recorder" });
         expect(started?.isError).not.toBe(true);
 
-        recorderPidPath = join(context.homeDir, "recorder.pid");
+        recorderProcess.executable = join(context.binDir, "ssh");
         writeFileSync(join(context.binDir, "ssh"), `#!${process.execPath}
 const command = process.argv.slice(2).join(" ");
 if (command.includes("screencapture") && command.includes("-v")) {
-    require("node:fs").writeFileSync(process.env.RECORDER_PID_PATH, String(process.pid));
+    // Deliberately initialize later than the 150ms recorder readiness grace.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
     setTimeout(() => {}, 20000);
 }
 `);
         chmodSync(join(context.binDir, "ssh"), 0o755);
-        process.env.RECORDER_PID_PATH = recorderPidPath;
     });
 
     afterAll(() => {
-        delete process.env.RECORDER_PID_PATH;
+        recorderProcess.executable = "";
+        recorderProcess.pid = undefined;
         persistenceFailure.armed = false;
         persistenceFailure.successor = null;
         cleanupFakeMacosMcpContext(context);
@@ -99,9 +121,10 @@ if (command.includes("screencapture") && command.includes("-v")) {
 
         expect(result?.isError).toBe(true);
         expect((result?.content as Array<{ text?: string }>)[0].text).toContain("metadata persistence failed");
-        const recorderPid = Number(readFileSync(recorderPidPath, "utf8").trim());
+        const recorderPid = recorderProcess.pid;
         expect(Number.isSafeInteger(recorderPid)).toBe(true);
-        expect(await waitForPidExit(recorderPid)).toBe(true);
+        expect(recorderPid).toBeGreaterThan(0);
+        expect(await waitForPidExit(recorderPid!)).toBe(true);
 
         const ownersRoot = join(context.homeDir, ".ccc", "devices", "owners");
         const statePath = join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");

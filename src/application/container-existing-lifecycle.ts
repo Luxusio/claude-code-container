@@ -30,15 +30,9 @@ export function createContainerExistingLifecycle(ports: ContainerExistingLifecyc
         if (initialIdentity.containerId !== pinnedContainerId) return false;
         let replacementConfirmed = false;
         const guarded = replacementGuard(() => {
-            const startupAuthorizedRunningRecovery = request.initiallyRunningContainerId === pinnedContainerId;
-            if (startupAuthorizedRunningRecovery) {
-                if (!request.managedProjectPath) return;
-                const currentIdentity = ports.managedIdentity(pinnedContainerId, request.managedProjectPath);
-                if (!currentIdentity || currentIdentity.containerId !== pinnedContainerId) return;
-                if (currentIdentity.running) ports.stop(pinnedContainerId);
-            } else if (initialIdentity.running) {
-                return;
-            }
+            if (request.initiallyRunningContainerId === pinnedContainerId || initialIdentity.running) return;
+            const currentIdentity = ports.identity(pinnedContainerId);
+            if (!currentIdentity || currentIdentity.containerId !== pinnedContainerId || currentIdentity.running) return;
             // Ordinary removal retains the stopped-path fence against an external start.
             ports.reportRecreation(reason);
             ports.remove(pinnedContainerId);

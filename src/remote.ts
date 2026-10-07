@@ -5,6 +5,7 @@ import {randomBytes} from "crypto";
 import {existsSync, readFileSync} from "fs";
 import {join, resolve} from "path";
 import {hashPath, getProjectId, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME, collectForwardedEnv, isValidEnvKey} from "./utils.js";
+import {IDENTITY_CONTRACT_VERSION} from "./container-identity.js";
 import {getContainerName} from "./docker.js";
 import {DEFAULT_PROFILE_MARKER, DEFAULT_PROFILE_NAME, legacyRemoteConfigDir, normalizeProfile, readCccConfig, updateCccConfig} from "./home-layout.js";
 import {createSessionLock, removeSessionLock, withContainerLifecycleLock, withContainerLifecycleLockAsync} from "./session.js";
@@ -296,24 +297,34 @@ export function remoteClaudeDirScript(profile?: string): string {
         + `else _ccc_claude_dir="$_ccc_default/claude"; fi; mkdir -p "$_ccc_claude_dir"`;
 }
 
+/** Resolve image identity remotely only when creating a container; retained mounts stay intact. */
+export function remoteContainerStartScript(projectPath: string, profile?: string): string {
+    const projectId = getProjectId(projectPath);
+    const containerName = getContainerName(projectPath, profile);
+    const resolveRemoteClaudeDir = remoteClaudeDirScript(profile);
+    return `${resolveRemoteClaudeDir}; _ccc_container_id=$(docker inspect --format ${shellEscapeArg("{{.Id}}")} ${shellEscapeArg(containerName)} 2>/dev/null || true); if [ -n "$_ccc_container_id" ]; then docker start "$_ccc_container_id" >/dev/null; else
+        _ccc_remote_image=$(docker image inspect ${shellEscapeArg(IMAGE_NAME)} --format '{{.Id}}') || exit 1
+        [ "\${#_ccc_remote_image}" -eq 71 ] && printf '%s\\n' "$_ccc_remote_image" | grep -Eq '^sha256:[a-f0-9]{64}$' || { echo 'Invalid remote image ID' >&2; exit 1; }
+        _ccc_mise_identity=$(docker run --rm --network none --entrypoint /bin/sh "$_ccc_remote_image" -c 'set -e; printf "%s-%s" "$(id -u)" "$(id -g)"') || exit 1
+        case "$_ccc_mise_identity" in ''|*[!0-9-]*) echo 'Invalid remote image identity' >&2; exit 1;; esac
+        printf '%s\\n' "$_ccc_mise_identity" | grep -Eq '^[0-9]+-[0-9]+$' || { echo 'Invalid remote image identity' >&2; exit 1; }
+        _ccc_container_id=$(docker run -d --name ${containerName} \
+        --network host \
+        -v "$_ccc_claude_dir:/home/ccc/.claude" \
+        -v "${MISE_VOLUME_NAME}-v${IDENTITY_CONTRACT_VERSION}-remote-$_ccc_mise_identity:/home/ccc/.local/share/mise" \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -w /project/${projectId} \
+        --pids-limit ${CONTAINER_PID_LIMIT} \
+        "$_ccc_remote_image" sleep infinity); fi`;
+}
+
 /**
  * Start container on remote host without project volume mount.
  * Returns the stable container name and ID captured under the lifecycle lock.
  */
 async function startRemoteContainer(config: RemoteConfig, projectPath: string, reservationToken: string, reservationLeaseSeconds: number, profile?: string): Promise<{ name: string; id: string }> {
-    const projectId = getProjectId(projectPath);
     const containerName = getContainerName(projectPath, profile);
-    const resolveRemoteClaudeDir = remoteClaudeDirScript(profile);
-
-    // Build docker run command (no project volume, just credentials and mise cache)
-    const dockerCmd = `${resolveRemoteClaudeDir}; _ccc_container_id=$(docker inspect --format ${shellEscapeArg("{{.Id}}")} ${shellEscapeArg(containerName)} 2>/dev/null || true); if [ -n "$_ccc_container_id" ]; then docker start "$_ccc_container_id" >/dev/null; else _ccc_container_id=$(docker run -d --name ${containerName} \
-        --network host \
-        -v "$_ccc_claude_dir:/home/ccc/.claude" \
-        -v ${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        -w /project/${projectId} \
-        --pids-limit ${CONTAINER_PID_LIMIT} \
-        ${IMAGE_NAME} sleep infinity); fi`;
+    const dockerCmd = remoteContainerStartScript(projectPath, profile);
 
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,

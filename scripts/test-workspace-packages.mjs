@@ -143,7 +143,7 @@ async function verifyExistingLifecycle(applicationUrl, compositionUrl, facadeUrl
     }, onRecreate: effect("recreated") }), { kind: "continue-to-create" });
     assert.deepEqual(trace, [["list", "project"], ["project"], ["devices"], ["filesystem"],
         ["contract", "pinned"], ["project"], ["devices"], ["filesystem"], ["identity", "project"],
-        ["guard"], ["recreation", "changed"], ["remove", "pinned"], ["recreated"], ["running", "project"]]);
+        ["guard"], ["identity", "pinned"], ["recreation", "changed"], ["remove", "pinned"], ["recreated"], ["running", "project"]]);
     trace.length = 0;
     assert.equal(lifecycle.replace({ containerName: "project", reason: "changed", expectedContainerId: "pinned",
         replacementGuard: () => { trace.push(["veto"]); return false; }, onRecreate: effect("recreated") }), false);
@@ -358,6 +358,8 @@ async function verifyImagePreparation(applicationUrl, portsUrl, compositionUrl, 
     const portModule = await import(portsUrl);
     const { createNativeContainerImagePreparation } = await import(compositionUrl);
     const facade = await import(facadeUrl);
+    const runtime = await import(new URL("./container-runtime.js", facadeUrl));
+    runtime._setRuntimeInfoForTest({ runtime: "docker" });
     assert.deepEqual(Object.keys(portModule), [], "image ports must remain type-only");
     assert.equal(typeof facade.ensureImage, "function");
     const helperCalls = [];
@@ -374,6 +376,25 @@ async function verifyImagePreparation(applicationUrl, portsUrl, compositionUrl, 
     assert.equal(nativeProbes, 0, "image imports and construction must not probe a runtime");
     assert.equal(composed.run(), undefined, "actual compiled composition must preserve development return");
     assert.deepEqual(helperCalls, ["exists", "label"]);
+    const originalError = console.error;
+    const originalLog = console.log;
+    const originalExit = process.exit;
+    const failureTrace = [];
+    try {
+        console.log = () => {};
+        console.error = message => { failureTrace.push(message); };
+        process.exit = () => { throw new Error("image preparation must unwind instead of exiting"); };
+        const failed = createNativeContainerImagePreparation({
+            registryImage: "team/image", isImageExists: () => false,
+            getImageLabel: () => { throw new Error("unexpected missing image label"); },
+            qualifyImageRefForRuntime: ref => ref, pullImage: () => false,
+            tagImage: () => { throw new Error("must not tag a failed pull"); },
+        });
+        assert.throws(() => failed.run(), { name: "Error", message: "Failed to pull CCC image; container startup was aborted." });
+        assert.equal(failureTrace.length, 2);
+        assert.ok(failureTrace[0].startsWith("Error: Failed to pull team/image:"));
+        assert.equal(failureTrace[1], "You can build locally instead: docker build -t ccc .");
+    } finally { console.error = originalError; console.log = originalLog; process.exit = originalExit; }
     const names = ["exists", "label", "qualify", "pull", "tag", "reportStale", "reportPull",
         "reportFallback", "reportFailure", "reportBuildHint", "exitFailure"];
     const qualified = "docker.io/team/image:1.2.3";
@@ -1249,6 +1270,9 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
         assert.deepEqual(Object.keys(await import(portsUrl)), [], "Codex config ports must remain type-only");
         const facade = await import(facadeUrl);
         const runtime = await import(runtimeUrl);
+        const acl = await import(new URL("./codex-config-acl.js", facadeUrl));
+        const layout = await import(new URL("./utils.js", facadeUrl));
+        const path = await import("node:path");
         importRead.close();
         // The loader retains descriptor operations until owned imports finish.
         // All public calls below run with native filesystem effects forbidden.
@@ -1256,15 +1280,7 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
         for (const [name, value] of Object.entries(fs.promises)) if (typeof value === "function") replace(fs.promises, name, forbidden);
         module.syncBuiltinESMExports();
         const stages = ["probe", "repair", "finalize"];
-        const scripts = {
-            probe: "timeout -k 2s 10s sh -c 'if [ -L /home/ccc/.codex/config.toml ] || { [ -e /home/ccc/.codex/config.toml ] && [ ! -f /home/ccc/.codex/config.toml ]; }; then exit 42; fi; test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml'",
-            repair: "timeout -k 2s 10s sh -c 'if [ -e /home/ccc/.codex/config.toml ] || [ -L /home/ccc/.codex/config.toml ]; then chown -h ccc:docker /home/ccc/.codex/config.toml 2>/dev/null || chown -h ccc:ccc /home/ccc/.codex/config.toml; fi'",
-            finalize: "timeout -k 2s 10s sh -c 'if [ -L /home/ccc/.codex/config.toml ] || { [ -e /home/ccc/.codex/config.toml ] && [ ! -f /home/ccc/.codex/config.toml ]; }; then exit 42; fi; if [ -e /home/ccc/.codex/config.toml ]; then chmod 600 /home/ccc/.codex/config.toml && test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml; fi'",
-        };
         const target = "pinned target;$(ignored)";
-        const call = (stage, cli = "docker") => [cli,
-            ["exec", ...(stage === "repair" ? ["--user", "root"] : []), target, "sh", "-c", scripts[stage]],
-            { stdio: "ignore", timeout: 15000 }];
         const diagnostic = (stage, timeout = false) => `Codex config ${stage === "probe" ? "access probe" : "repair"} ${timeout ? "timed out" : "failed"}`;
         const reset = () => { calls.length = 0; dispatch = forbidden; runtime._setRuntimeInfoForTest({ runtime: "docker" }); };
         const clean = stage => ({ status: stage === "probe" ? 1 : 0 });
@@ -1280,12 +1296,6 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
         for (const stage of stages) assert.throws(() => createCodexConfigPreparation({ ...coreFixture().ports, [stage]: null }), {
             name: "TypeError", message: `Codex config preparation requires a callable ${stage} port.`,
         });
-        for (const cli of ["docker", "podman"]) {
-            reset(); runtime._setRuntimeInfoForTest({ runtime: cli });
-            dispatch = () => ({ status: 0, get error() { throw new Error("unobserved success error"); } });
-            assert.equal(facade.prepareCodexConfigForContainer(target), undefined);
-            assert.deepEqual(calls, [call("probe", cli)]);
-        }
         const alreadyAccessible = coreFixture("probe", { status: 0, get error() { throw new Error("unobserved core success error"); } });
         assert.equal(alreadyAccessible.core.run(target), undefined); assert.deepEqual(alreadyAccessible.trace, ["probe"]);
         const successful = coreFixture();
@@ -1303,19 +1313,14 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
                 const f = coreFixture(stage, observation);
                 assert.throws(() => f.core.run(target), { name: "Error", message: diagnostic(stage, timeout) });
                 assert.deepEqual(f.trace, stages.slice(0, stages.indexOf(stage) + 1));
-                reset(); dispatch = () => {
-                    const selected = stages[calls.length - 1]; assert.ok(selected, "unexpected later native effect");
-                    return selected === stage ? observation : clean(selected);
-                };
-                assert.throws(() => facade.prepareCodexConfigForContainer(target), { name: "Error", message: diagnostic(stage, timeout) });
-                assert.deepEqual(calls, stages.slice(0, stages.indexOf(stage) + 1).map(selected => call(selected)));
+
             }
         }
         reset();
         const trace = []; const clis = ["docker", "podman", "docker"];
         dispatch = () => {
             const index = calls.length - 1; const stage = stages[index]; assert.ok(stage, "unexpected later native effect");
-            assert.deepEqual(calls[index], call(stage, clis[index])); trace.push(stage);
+            assert.equal(calls[index], stage); trace.push(stage);
             runtime._setRuntimeInfoForTest({ runtime: clis[(index + 1) % clis.length] });
             let statusReads = 0; let errorReads = 0;
             const result = {
@@ -1329,8 +1334,9 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
             });
             return result;
         };
-        assert.equal(facade.prepareCodexConfigForContainer(target), undefined);
-        assert.deepEqual(calls, stages.map((stage, index) => call(stage, clis[index])));
+        const rawPorts = Object.fromEntries(stages.map(stage => [stage, () => { calls.push(stage); return dispatch(); }]));
+        assert.equal(createCodexConfigPreparation(rawPorts).run(target), undefined);
+        assert.deepEqual(calls, stages);
         assert.deepEqual(trace, [
             "probe", "probe:status:1", "probe:error:1", "probe:code", "probe:status:2", "probe:status:3", "probe:error:2", "probe:status:4", "probe:status:5",
             "repair", "repair:error:1", "repair:code", "repair:status:1", "repair:status:2", "repair:error:2", "repair:status:3",
@@ -1344,7 +1350,7 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
                 reset(); const observed = []; let statusReads = 0; let errorReads = 0;
                 const visit = name => { observed.push(name); if (name === step) throw failure; };
                 dispatch = () => {
-                    const selected = stages[calls.length - 1]; assert.ok(selected, "unexpected later native effect");
+                    const selected = stages[calls.length - 1]; assert.ok(selected, "unexpected later core effect");
                     if (selected !== stage) return clean(selected);
                     visit("dispatch"); return {
                         get status() { visit(`status:${++statusReads}`); return clean(stage).status; },
@@ -1353,13 +1359,67 @@ async function verifyCodexConfigPreparation(applicationUrl, portsUrl, facadeUrl,
                         } : undefined; },
                     };
                 };
-                exactThrow(() => facade.prepareCodexConfigForContainer(target), failure);
+                const rawPorts = Object.fromEntries(stages.map(stage => [stage, () => { calls.push(stage); return dispatch(); }]));
+                exactThrow(() => createCodexConfigPreparation(rawPorts).run(target), failure);
                 assert.deepEqual(observed, observations.slice(0, observations.indexOf(step) + 1));
-                assert.deepEqual(calls, stages.slice(0, stages.indexOf(stage) + 1).map(selected => call(selected)));
+                assert.deepEqual(calls, stages.slice(0, stages.indexOf(stage) + 1));
             }
         }
+        const directoryGuard = 'dir=/home/ccc/.codex; [ ! -L "$dir" ] && [ -d "$dir" ]';
+        const directoryProbe = `${directoryGuard} && [ -r "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]`;
+        const configProbe = `${directoryGuard} && file="$dir/config.toml" && [ ! -L "$file" ] && { [ ! -e "$file" ] || { [ -f "$file" ] && [ -r "$file" ] && [ -w "$file" ]; }; }`;
+        const wrap = script => `timeout -k 2s 10s sh -c '${script.replace(/'/g, `'"'"'`)}'`;
+        const nativeCall = (cli, script, root = false) => [cli,
+            ["exec", ...(root ? ["--user", "root"] : []), target, "sh", "-c", wrap(script)],
+            { encoding: "utf-8", timeout: 15000 }];
+        const uidCall = cli => [cli, ["exec", target, "sh", "-c", "id -u"], { encoding: "utf-8", timeout: 15000 }];
+        const hostReads = [];
+        const hostUid = typeof process.getuid === "function" ? process.getuid() : 1000;
+        replace(process, "getuid", () => hostUid);
+        replace(fs, "lstatSync", selected => {
+            hostReads.push(selected);
+            const config = layout.getCodexConfigFile("work");
+            assert.ok(selected === config || selected === path.dirname(config));
+            return { uid: hostUid, nlink: 1, isDirectory: () => selected === path.dirname(config), isFile: () => selected === config };
+        });
+        module.syncBuiltinESMExports();
+        for (const cli of ["docker", "podman"]) {
+            reset(); hostReads.length = 0; runtime._setRuntimeInfoForTest({ runtime: cli });
+            dispatch = () => ({ status: 0 });
+            assert.equal(facade.prepareCodexConfigForContainer(target, "work"), undefined);
+            assert.deepEqual(calls, [nativeCall(cli, directoryProbe), nativeCall(cli, configProbe)]);
+            assert.deepEqual(hostReads, [], "accessible credentials must not trigger host validation or ACL repair");
+            reset(); hostReads.length = 0; runtime._setRuntimeInfoForTest({ runtime: cli });
+            const expected = [nativeCall(cli, directoryProbe), uidCall(cli),
+                nativeCall(cli, acl.codexConfigDirectoryAclScript("1000"), true), nativeCall(cli, directoryProbe),
+                nativeCall(cli, configProbe), nativeCall(cli, acl.codexConfigFileAclScript("1000"), true), nativeCall(cli, configProbe)];
+            dispatch = () => {
+                const index = calls.length - 1;
+                assert.deepEqual(calls[index], expected[index], "native ACL sequence must remain directory-first and target-pinned");
+                return { status: index === 0 || index === 4 ? 1 : 0, stdout: index === 1 ? "1000\n" : "", stderr: "" };
+            };
+            assert.equal(facade.prepareCodexConfigForContainer(target, "work"), undefined);
+            assert.deepEqual(calls, expected);
+            const config = layout.getCodexConfigFile("work");
+            assert.deepEqual(hostReads, [path.dirname(config), config, path.dirname(config), config]);
+            for (const observation of [{ status: 42, stderr: "guard rejected" }, { status: null, error: { message: "probe unavailable" } }]) {
+                reset(); hostReads.length = 0; runtime._setRuntimeInfoForTest({ runtime: cli });
+                dispatch = () => observation;
+                const detail = observation.error?.message ?? observation.stderr;
+                assert.throws(() => facade.prepareCodexConfigForContainer(target, "work"), {
+                    name: "Error", message: `Unable to prepare Codex credentials at ${path.dirname(config)}: directory access check failed (${detail})`,
+                });
+                assert.deepEqual(calls, [nativeCall(cli, directoryProbe)]);
+                assert.deepEqual(hostReads, []);
+            }
+            reset(); runtime._setRuntimeInfoForTest({ runtime: cli });
+            const failure = new Error("original native ACL probe failure");
+            dispatch = () => { throw failure; };
+            exactThrow(() => facade.prepareCodexConfigForContainer(target, "work"), failure);
+            assert.deepEqual(calls, [nativeCall(cli, directoryProbe)]);
+        }
         runtime._resetRuntimeCacheForTest();
-        console.log("PASS compiled Codex config core and actual public facade: exact commands, raw observations, late runtime selection and native fences");
+        console.log("PASS compiled Codex config core raw observations and actual public facade directory-first ACL commands, pinned targets and native fences");
     } finally {
         for (const [owner, name, original] of originals.reverse()) owner[name] = original;
         module.syncBuiltinESMExports();
@@ -1371,11 +1431,11 @@ async function verifyExecReadiness(applicationUrl, portsUrl) {
     const { createContainerExecReadiness } = await import(applicationUrl);
     assert.deepEqual(Object.keys(await import(portsUrl)), [], "exec readiness ports must remain type-only");
     const cases = [
-        { times: [100, 850], outcomes: [], expected: false, trace: [["now", 100], ["now", 850]] },
-        { times: [0.5, 550.75, 700.25, 750.25], outcomes: [false, true], expected: true,
-            trace: [["now", 0.5], ["now", 550.75], ["probe", " exact-target ", 199.75], ["now", 700.25], ["sleep", 50.25], ["now", 750.25], ["probe", " exact-target ", 0.25]] },
+        { times: [100, 15250], outcomes: [], expected: false, trace: [["now", 100], ["now", 15250]] },
+        { times: [0.5, 14950.75, 15100.25, 15150.25], outcomes: [false, true], expected: true,
+            trace: [["now", 0.5], ["now", 14950.75], ["probe", " exact-target ", 199.75], ["now", 15100.25], ["sleep", 50.25], ["now", 15150.25], ["probe", " exact-target ", 0.25]] },
         { times: [100, -100, -200, -300, -400, -500, -600], outcomes: [false, false, false], expected: false,
-            trace: [["now", 100], ["now", -100], ["probe", " exact-target ", 200], ["now", -200], ["sleep", 75], ["now", -300], ["probe", " exact-target ", 200], ["now", -400], ["sleep", 75], ["now", -500], ["probe", " exact-target ", 200], ["now", -600]] },
+            trace: [["now", 100], ["now", -100], ["probe", " exact-target ", 5000], ["now", -200], ["sleep", 75], ["now", -300], ["probe", " exact-target ", 5000], ["now", -400], ["sleep", 75], ["now", -500], ["probe", " exact-target ", 5000], ["now", -600]] },
     ];
     for (const scenario of cases) {
         const trace = [];
@@ -1443,6 +1503,14 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
     const fixtureHost = fixturePaths(hostPath, hostPath.resolve(hostPath.parse(process.cwd()).root, "ccc-exec-readiness-fixture"));
     const packageDist = fileURLToPath(new URL("./", facadeUrl));
     const id = "a".repeat(64);
+    const baseImageId = `sha256:${"b".repeat(64)}`;
+    const derivedImageId = `sha256:${"c".repeat(64)}`;
+    const readonlyAccountProbe = ["run", "--rm", "--network", "none", "--user", "ccc", "--entrypoint", "/bin/sh", derivedImageId, "-c", 'set -eu; test "$(id -un)" = ccc; test "$(getent passwd ccc | cut -d: -f6)" = /home/ccc; test "$(getent group ccc | cut -d: -f3)" = "$(id -g)"; sudo -n true; printf "%s:%s:%s:ccc\\n" "$(id -u)" "$(id -g)" "$HOME"'];
+    const uid = process.platform === "linux" ? process.geteuid() : 1000;
+    const gid = process.platform === "linux" ? process.getegid() : 1000;
+    const identityLabels = { "ccc.identity.version": "1", "ccc.identity.uid": String(uid),
+        "ccc.identity.gid": String(gid), "ccc.identity.mapping": process.platform === "linux" ? "host" : "desktop",
+        "ccc.identity.base": baseImageId };
     const project = fixtureHost.project;
     const home = fixtureHost.home;
     // This child models a host invocation, even when verification runs in a container.
@@ -1536,9 +1604,20 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
             && /^\d+$/.test(args[1]) && args[2] === "-o" && ["lstart=", "command="].includes(args[3])) return result(1);
         assert.equal(cli, "docker", "no host program may run");
         calls.push(args);
-        if (args[0] === "images") return result(0, "image-id");
-        if (args[0] === "image" && args[1] === "inspect") return result(0, "<no value>");
-        if (args[0] === "run") { assert.equal(armed, false, "guarded existing paths must not create"); runArgs = [...args]; return result(0, id); }
+        if (args[0] === "volume" && args.length === 4 && args[1] === "ls" && args[2] === "--format" && args[3] === "{{.Name}}") return result();
+        if (args[0] === "images") return result(0, baseImageId);
+        if (args[0] === "inspect" && args[1] === "ccc" && args[3] === "{{.Id}}") return result(0, baseImageId);
+        if (args[0] === "image" && args[1] === "inspect") {
+            if (args.length === 3 && args[2].startsWith("ccc-identity:")) {
+                return result(0, JSON.stringify([{ Id: derivedImageId, Config: { User: "ccc", Labels: identityLabels } }]));
+            }
+            return result(0, "<no value>");
+        }
+        if (args[0] === "run" && args[1] === "--rm") {
+            assert.deepEqual(args, readonlyAccountProbe);
+            return result(0, `${uid}:${gid}:/home/ccc:ccc`);
+        }
+        if (args[0] === "run") { assert.equal(armed, false, "guarded existing paths must not create"); assert.equal(args.at(-1), derivedImageId); runArgs = [...args]; return result(0, id); }
         if (args[0] === "ps" && args[1] === "-aq") return result(0, existing ? id : "");
         if (args[0] === "ps" && args[1] === "-q") { active = armed; return result(0, existing ? id : ""); }
         if (args[0] === "ps") return result();
@@ -1558,12 +1637,20 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);
                 if (argument === "-e") env.push(value);
             }
-            return result(0, JSON.stringify({ Id: id, Mounts: mounts, Config: { Labels: labels, Env: env }, HostConfig: { Init: true, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
+            assert.equal(runArgs.at(-1), derivedImageId, "inspection provenance must use the exact selected derived image");
+            assert.deepEqual(Object.fromEntries(Object.keys(identityLabels).filter(key => key !== "ccc.identity.base").map(key => [key, labels[key]])),
+                Object.fromEntries(Object.entries(identityLabels).filter(([key]) => key !== "ccc.identity.base")));
+            assert.equal(runArgs.includes("--privileged"), false, "fixture must not hide a privileged container");
+            const selectedUser = runArgs.includes("--user") ? runArgs[runArgs.indexOf("--user") + 1] : "ccc";
+            assert.notEqual(selectedUser, "root");
+            return result(0, JSON.stringify({ Id: id, Image: derivedImageId, State: { Running: true }, Mounts: mounts,
+                Config: { User: selectedUser, Labels: labels, Env: env },
+                HostConfig: { Init: true, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
         }
         if (args.length === 3 && args[0] === "exec" && args[1] === id && args[2] === "true") {
             assert.equal(active, true, "only the armed real lifecycle may call readiness");
-            assert.deepEqual(options, { stdio: ["ignore", "ignore", "ignore"], timeout: 200 });
-            trace.push(`probe:${id}:200`);
+            assert.deepEqual(options, { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 });
+            trace.push(`probe:${id}:5000`);
             now += 10;
             return result(outcomes[probes++] ? 0 : 1);
         }
@@ -1576,7 +1663,26 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
             assert.ok(entry, "only an actual fake mount marker may be returned");
             return result(0, entry[1]);
         }
-        if (args[0] === "exec" || args[0] === "cp") return result();
+        if (args[0] === "exec" && args[2] === "sh" && args[4] === 'printf "%s:%s:%s:%s" "$(id -u)" "$(id -g)" "$(id -un)" "$HOME"') {
+            assert.equal(args[1], id);
+            return result(0, `${uid}:${gid}:ccc:/home/ccc`);
+        }
+        if (args[0] === "exec" && args[2] === "sh") {
+            assert.deepEqual(args, ["exec", id, "sh", "-c", docker.sshCredentialCopyShell(true),
+                "ccc-ssh-copy", "/home/ccc/.ssh", "/tmp/.ssh-copy"]);
+            assert.deepEqual(options, { stdio: "ignore" });
+            return result();
+        }
+        if (args[0] === "exec") {
+            assert.equal(args[1], id);
+            assert.ok(["sha256sum"].includes(args[2]), "unknown helper execution must fail closed");
+            return result();
+        }
+        if (args[0] === "cp") {
+            assert.ok(fixtureHost.contains(packageDist, args[1]));
+            assert.ok(args[2].startsWith(`${id}:/tmp/ccc-managed-`));
+            return result();
+        }
         throw new Error(`unexpected fenced Docker command: ${JSON.stringify(args)}`);
     };
     Date.now = function () { assert.equal(this, Date); if (active) trace.push(`now:${now}`); return now; };
@@ -1603,24 +1709,73 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
     // Build the exact native run contract once using this same compiled public API.
     docker.startProjectContainer(project, () => {});
     existing = true;
-    const success = ["allocate:4", "now:0", "now:0", `probe:${id}:200`, "now:10", "sleep:75", "now:85", `probe:${id}:200`, "now:95", "sleep:75", "now:170", `probe:${id}:200`];
+    const success = ["allocate:4", "now:0", "now:0", `probe:${id}:5000`, "now:10", "sleep:75", "now:85", `probe:${id}:5000`, "now:95", "sleep:75", "now:170", `probe:${id}:5000`];
     for (const available of [true, false]) {
         armed = true; active = false; now = 0; probes = 0; waitCount = 0; firstWait = undefined;
         outcomes = [false, false, available]; calls.length = 0; trace.length = 0;
         const joined = [];
+        const handoffs = [];
         let guards = 0;
         const start = () => docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined,
-            () => { guards++; return false; }, selected => { joined.push(selected); });
+            () => { guards++; return false; }, (selected, handoff) => { joined.push(selected); handoffs.push(handoff); });
         if (available) {
             assert.equal(start(), docker.getContainerName(project));
-            assert.deepEqual(joined, [id]); assert.equal(guards, 0);
+            assert.deepEqual(joined, [id]); assert.deepEqual(handoffs, [{ startedByInvocation: false }]); assert.equal(guards, 0);
         } else {
             assert.throws(start, /automatic destructive recovery was refused/);
             assert.deepEqual(joined, []); assert.equal(guards, 1);
         }
-        assert.deepEqual(trace, available ? success : [...success, "now:180"]);
+        // Success disables observation when the first post-readiness helper executes;
+        // exhaustion stays armed through the policy's last clock and lock release.
+        assert.deepEqual(trace, available ? success : [...success, "now:180", "now:180"]);
         assert.equal(probes, 3); assert.equal(waitCount, 2);
-        assert.deepEqual(calls.filter(args => ["stop", "rm", "run", "start"].includes(args[0])), [], "retry outcome must preserve the existing selected container");
+        assert.deepEqual(calls.filter(args => ["stop", "rm", "start"].includes(args[0])), [], "retry outcome must preserve the existing selected container");
+        assert.deepEqual(calls.filter(args => args[0] === "run"), [readonlyAccountProbe], "only the exact isolated account validation may run");
+    }
+}
+
+async function verifySessionShutdownAuthorization(applicationUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { armSessionOwnership, createSessionOwnershipGuardian } = await import(applicationUrl);
+    const binding = { lockFile: "/fixture/own.lock", projectPath: "/fixture/project" };
+    const receipt = { path: binding.lockFile, bytes: "nonsecret-fixture", device: "1", inode: "2", birthtime: "3", ownerPid: 17 };
+    const id = "a".repeat(64);
+    let messageListener;
+    const messages = [];
+    const handle = await armSessionOwnership(binding, receipt, {
+        timeoutMs: 1000, assertOwnership: () => {}, cleanup: () => { throw new Error("unexpected startup cleanup"); },
+        setTimer: () => ({}), clearTimer: () => {},
+        launch: () => ({
+            send: async frame => { messages.push(frame); messageListener(frame.type === "init" ? { type: "ready" } : { type: "ack", sequence: frame.sequence }); },
+            onMessage: listener => { messageListener = listener; return () => {}; }, onLoss: () => () => {},
+            unref: () => {}, close: () => {},
+        }),
+    }, error => { throw error; });
+    await handle.updateContainer(id, "podman");
+    assert.deepEqual(messages.at(-1), { type: "update", sequence: 1, containerId: id, runtime: "podman", cleanupEnabled: false });
+    await handle.updateContainer(id, "podman", true);
+    assert.deepEqual(messages.at(-1), { type: "update", sequence: 2, containerId: id, runtime: "podman", cleanupEnabled: true });
+    await assert.rejects(handle.updateContainer(id, "podman", "true"), { name: "TypeError", message: "Invalid session cleanup authorization." });
+    assert.equal(messages.length, 3, "invalid authorization must not emit an IPC update");
+    // Explicit revocation is valid and must survive the ACK boundary.
+    await handle.updateContainer(id, "podman", false);
+    assert.equal(messages.at(-1).cleanupEnabled, false);
+    await handle.release();
+    for (const enabled of [false, true]) {
+        const trace = [];
+        const guardian = createSessionOwnershipGuardian({
+            validate: (b, r) => { assert.deepEqual(b, binding); assert.deepEqual(r, receipt); },
+            send: async frame => { trace.push(["send", frame]); },
+            rollback: (b, r) => { assert.deepEqual(b, binding); assert.deepEqual(r, receipt); trace.push(["rollback"]); },
+            cleanup: (b, r, selected, runtime) => { assert.deepEqual(b, binding); assert.deepEqual(r, receipt); trace.push(["cleanup", selected, runtime]); },
+            finish: status => { trace.push(["finish", status]); },
+        });
+        await guardian.receive({ type: "init", binding, receipt });
+        await guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "podman", cleanupEnabled: enabled });
+        await guardian.disconnect();
+        await guardian.disconnect();
+        assert.deepEqual(trace, [["send", { type: "ready" }], ["send", { type: "ack", sequence: 1 }],
+            enabled ? ["cleanup", id, "podman"] : ["rollback"], ["finish", 0]]);
     }
 }
 
@@ -1759,6 +1914,7 @@ async function smoke(packageRoot) {
         ["dist/ports/session-cleanup.d.ts", "SessionCleanupPorts"],
         ["dist/session.d.ts", "getCurrentSession"],
         ["dist/session.d.ts", "setSessionContainerId"],
+        ["dist/session.d.ts", "setSessionCleanupEnabled"],
         ["dist/session.d.ts", "cleanupSession"],
         ["dist/session.d.ts", "armSessionOwnership"],
         ["dist/session.d.ts", "confirmSessionOwnership"],
@@ -1911,7 +2067,16 @@ async function smoke(packageRoot) {
     assert.match(codexApplicationDeclarations, /createCodexConfigPreparation\(ports: CodexConfigPreparationPorts\)/);
     assert.match(codexApplicationDeclarations, /run: \(target: string\) => undefined;/);
     assert.doesNotMatch(codexApplicationDeclarations, /Promise<|ports\?:/);
-    assert.match(readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8"), /prepareCodexConfigForContainer\(containerName: string\): void;/);
+    assert.match(readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8"), /prepareCodexConfigForContainer\(containerName: string, profile\?: string\): void;/);
+    const lifecycleFacadeDeclarations = readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8");
+    assert.match(lifecycleFacadeDeclarations, /startProjectContainer\(\.\.\.args: Parameters<typeof startProjectContainerLocked>\): string;/);
+    assert.match(lifecycleFacadeDeclarations, /declare function startProjectContainerLocked\(projectPath: string, ensureDirs: \(\) => void,/);
+    assert.match(lifecycleFacadeDeclarations, /onContainerReady\?: \(containerId: string, handoff: \{\s*startedByInvocation: boolean;\s*\}\) => void/);
+    assert.match(lifecycleFacadeDeclarations, /initiallyRunningContainerId\?: string/);
+    assert.match(lifecycleFacadeDeclarations, /onContainerStarted\?: \(containerId: string\) => void\): string;/);
+    const ownershipHandleDeclarations = readFileSync(join(packageRoot, "dist/ports/session-ownership.d.ts"), "utf8");
+    assert.match(ownershipHandleDeclarations, /updateContainer\(containerId: string \| null, runtime: SessionOwnershipRuntime, cleanupEnabled\?: boolean\): Promise<void>;/);
+    assert.match(ownershipHandleDeclarations, /cleanupEnabled: boolean;/);
     assert.match(readFileSync(join(packageRoot, "dist/docker.js"), "utf8"), /import \{ createCodexConfigPreparation \} from ["']\.\/application\/codex-config-preparation\.js["'];/);
     const execPortsDeclarations = readFileSync(join(packageRoot, "dist/ports/container-exec-readiness.d.ts"), "utf8");
     assert.match(execPortsDeclarations, /now\(\): number;/);
@@ -1924,10 +2089,7 @@ async function smoke(packageRoot) {
     assert.doesNotMatch(execApplicationDeclarations, /Promise<|\?:/);
     const execFacadeDeclarations = readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8");
     assert.match(execFacadeDeclarations, /canExecContainer\(containerName: string, timeoutMs\?: number\): boolean;/);
-    assert.match(execFacadeDeclarations, /startProjectContainer\(projectPath: string, ensureDirs: \(\) => void,/);
     assert.match(execFacadeDeclarations, /recreateRunningContainer\?: \(recreate: \(\) => void\) => boolean,/);
-    assert.match(execFacadeDeclarations, /onContainerReady\?: \(containerId: string\) => void,/);
-    assert.match(execFacadeDeclarations, /initiallyRunningContainerId\?: string\): string;/);
     const execFacadeSource = readFileSync(join(packageRoot, "dist/docker.js"), "utf8");
     assert.match(execFacadeSource, /import \{ createContainerExecReadiness \} from ["']\.\/application\/container-exec-readiness\.js["'];/);
     assert.match(execFacadeSource, /function canExecContainerAfterBriefRetry\(containerName\) \{\s*const sleeper = new Int32Array\(new SharedArrayBuffer\(4\)\);\s*return createContainerExecReadiness\(\{\s*now: \(\) => Date\.now\(\),\s*canExec: \(target, timeoutMs\) => canExecContainer\(target, timeoutMs\),\s*sleep: ms => \{\s*Atomics\.wait\(sleeper, 0, 0, ms\);\s*return undefined;\s*\},?\s*\}\)\.run\(containerName\);\s*\}/);
@@ -2066,7 +2228,7 @@ async function smoke(packageRoot) {
         "  stopContainer:readId=>{assert.equal(cleanupLocked,true);assert.equal(typeof readId,'function');cleanupTrace.push(['stop',readId()]);return undefined;},",
         "});",
         "assert.deepEqual(cleanupApi.getCurrentSession(),emptyContext);cleanupApi.cleanupSession();assert.deepEqual(cleanupTrace,[]);",
-        "cleanupApi.setSession('/claims/own.lock','/project','work','codex');cleanupApi.setSessionContainerId('captured-id');",
+        "cleanupApi.setSession('/claims/own.lock','/project','work','codex');cleanupApi.setSessionCleanupEnabled(true);cleanupApi.setSessionContainerId('captured-id');",
         "const cleanupSnapshot=cleanupApi.getCurrentSession();",
         "assert.deepEqual(cleanupSnapshot,{lockFile:'/claims/own.lock',projectPath:'/project',profile:'work',toolName:'codex'});",
         "assert.notEqual(cleanupSnapshot,cleanupApi.getCurrentSession());cleanupSnapshot.lockFile='outside';assert.equal(cleanupApi.getCurrentSession().lockFile,'/claims/own.lock');",
@@ -2074,11 +2236,13 @@ async function smoke(packageRoot) {
         "assert.deepEqual(cleanupTrace,[['project','/project'],['lock','project--p--work'],['raw','project--p--work','/claims/own.lock'],['devices','/project',5000,'work'],['stop','captured-id'],['remove','/claims/own.lock'],['unlock','project--p--work']]);",
         "assert.deepEqual(cleanupApi.getCurrentSession(),{...emptyContext,toolName:'codex'});",
         "cleanupTrace.length=0;cleanupApi.setSession('/claims/next.lock','/next');cleanupApi.cleanupSession();assert.deepEqual(cleanupTrace,[]);",
+        "cleanupTrace.length=0;cleanupApi.clearSession();cleanupApi.setSession('/claims/denied.lock','/denied');cleanupApi.setSessionContainerId('preserved-id');cleanupApi.setSessionCleanupEnabled(false);cleanupApi.cleanupSession();",
+        "assert.deepEqual(cleanupTrace,[['project','/denied'],['lock','project'],['raw','project','/claims/denied.lock'],['remove','/claims/denied.lock'],['unlock','project']]);cleanupTrace.length=0;",
         "cleanupApi.clearSession();assert.deepEqual(cleanupApi.getCurrentSession(),emptyContext);",
         "cleanupApi.setSession('/claims/foreign-own.lock','/foreign','','');cleanupApi.setSessionContainerId('must-not-stop');foreignClaim=true;cleanupApi.cleanupSession();",
         "assert.deepEqual(cleanupTrace,[['project','/foreign'],['lock','project'],['raw','project','/claims/foreign-own.lock'],['remove','/claims/foreign-own.lock'],['unlock','project']]);",
         "assert.deepEqual(cleanupApi.getCurrentSession(),{...emptyContext,toolName:''});",
-        "cleanupApi.clearSession();cleanupTrace.length=0;foreignClaim=false;cleanupApi.setSession('/claims/reset.lock','/reset');cleanupApi.cleanupSession();",
+        "cleanupApi.clearSession();cleanupTrace.length=0;foreignClaim=false;cleanupApi.setSession('/claims/reset.lock','/reset');cleanupApi.setSessionCleanupEnabled(true);cleanupApi.cleanupSession();",
         "assert.deepEqual(cleanupTrace,[['project','/reset'],['lock','project'],['raw','project','/claims/reset.lock'],['devices','/reset',5000,undefined],['remove','/claims/reset.lock'],['unlock','project']]);",
         "assert.deepEqual(cleanupApi.getCurrentSession(),{...emptyContext,toolName:'claude'});",
         "claimsFacade.clearSession();assert.deepEqual(claimsFacade.getCurrentSession(),emptyContext);",
@@ -2116,6 +2280,9 @@ async function smoke(packageRoot) {
         .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",
         `await (${verifySessionHandoff.toString()})(...${JSON.stringify(handoffUrls)});`]);
+    const ownershipApplicationUrl = pathToFileURL(join(packageRoot, "dist/application/session-ownership.js")).href;
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifySessionShutdownAuthorization.toString()})(${JSON.stringify(ownershipApplicationUrl)});`]);
     const readinessUrls = ["application/container-runtime-readiness", "ports/container-runtime-readiness", "docker"]
         .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",
@@ -2295,9 +2462,13 @@ try {
     assert.deepEqual(readFileSync(join(fixture, "dist/device-lab-mcp/server.mjs")), deviceLabBundle);
     rmSync(preserved);
     const report = JSON.parse(run(process.execPath, [npmCli, "pack", "--ignore-scripts", "--json", "--pack-destination", temporary], fixture));
-    const filename = report?.[0]?.filename;
+    const reports = Array.isArray(report) ? report : Object.values(report);
+    assert.equal(reports.length, 1, "expected one packed workspace distribution");
+    const [packedReport] = reports;
+    const filename = packedReport?.filename;
     assert.ok(typeof filename === "string" && /^[A-Za-z0-9._-]+\.tgz$/.test(filename));
-    assert.ok(report[0].files.every(({ path }) => !/^(?:dist\/)?x11-mcp(?:\/|$)/.test(path)),
+    assert.ok(Array.isArray(packedReport.files), "npm pack did not report package files");
+    assert.ok(packedReport.files.every(({ path }) => !/^(?:dist\/)?x11-mcp(?:\/|$)/.test(path)),
         "npm package contains standalone X11 artifacts");
     run(process.platform === "win32" ? "tar.exe" : "tar", ["-xzf", join(temporary, filename), "-C", temporary]);
     const packed = join(temporary, "package");

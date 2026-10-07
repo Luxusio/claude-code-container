@@ -791,32 +791,6 @@ describe('auto container version-up', () => {
     expect(typeof isContainerImageOutdated).toBe('function')
   })
 
-  it('auto-upgrade captures the old image ID before removing the stopped container', () => {
-    // Simulates the upgrade logic from index.ts exec():
-    // 1. Capture old image SHA before container removal
-    // 2. Remove only the exact container ID confirmed stopped under the lock
-    // 3. Remove old image (silently fails if still in use)
-    const oldImageId = "sha256:oldimage111"
-    const currentImageId = "sha256:newimage222"
-    const stoppedContainerId = "sha256:stoppedcontainer333"
-
-    // The upgrade condition: old image differs from current
-    expect(oldImageId).not.toBe(currentImageId)
-
-    const rmArgs = ["rm", stoppedContainerId]
-    const rmiArgs = ["rmi", oldImageId]
-    expect(rmArgs).toEqual(["rm", stoppedContainerId])
-    expect(rmiArgs[0]).toBe("rmi")
-    expect(rmiArgs[1]).toBe(oldImageId)
-  })
-
-  it('skips old image removal when old image ID is empty', () => {
-    // If docker inspect fails to get old image ID, skip rmi
-    const oldImageId = ""
-    expect(oldImageId).toBeFalsy()
-    // The if (oldImageId) guard prevents docker rmi from running
-  })
-
   it('deferred upgrade message does not claim active sessions from container liveness', () => {
     const message = RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE
     expect(message).toContain("existing container is running")

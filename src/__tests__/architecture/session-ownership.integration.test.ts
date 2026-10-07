@@ -111,7 +111,7 @@ if (process.argv[1] === ${JSON.stringify(join(distribution, "session-ownership-g
         const moduleUrl = (file: string) => JSON.stringify(pathToFileURL(join(distribution, file)).href);
         writeFileSync(ownerScript, `
 import { createSessionLock, setSession, clearSession, setupSignalHandlers, armSessionOwnership,
-    setSessionContainerId, confirmSessionOwnership, cleanupSession, acquireHostSessionOwnership,
+    setSessionContainerId, setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession, acquireHostSessionOwnership,
     getCurrentSession, observeActiveSessionsForContainer } from ${moduleUrl("session.js")};
 import { getProjectId } from ${moduleUrl("utils.js")};
 import { setRuntimeOverride } from ${moduleUrl("container-runtime.js")};
@@ -158,6 +158,7 @@ if (mode.startsWith('acquire')) {
             return { known: true, containerId: initialId, runtime: 'docker' };
         });
         lock = acquired.lockFile;
+        if (mode !== 'acquire-join') { setSessionCleanupEnabled(true); await confirmSessionOwnership(); }
         const childPids = readFileSync('/proc/' + process.pid + '/task/' + process.pid + '/children', 'utf8').trim().split(/\\s+/).filter(Boolean).map(Number);
         if (childPids.length !== 1) throw new Error('Expected one exact native guardian child after acquisition');
         guardian = childPids[0];
@@ -199,7 +200,7 @@ if (mode.startsWith('acquire')) {
     directGuardian.send({ type: 'init', binding: { lockFile: lock, projectPath: project, profile }, receipt: captureNativeSessionOwnership(lock) });
     await ready;
     const acknowledged = waitFrame('ack');
-    directGuardian.send({ type: 'update', sequence: 1, containerId: initialId, runtime: 'docker' });
+    directGuardian.send({ type: 'update', sequence: 1, containerId: initialId, runtime: 'docker', cleanupEnabled: true });
     await acknowledged;
     guardian = directGuardian.pid;
     directGuardian.once('exit', (code, signal) => process.send({ event: 'guardian-exit', code, signal }));
@@ -213,10 +214,11 @@ if (mode.startsWith('acquire')) {
     const duplicateArm = armSessionOwnership().then((pid) => { extraGuardian = pid; return false; }, () => true);
     guardian = await firstArm;
     pendingRefusals = { overwrite, clear, arm: await duplicateArm };
-    if (initialId) { setSessionContainerId(initialId); await confirmSessionOwnership(); }
+    // This fixture represents a completed launch, rather than a failed join.
+    if (initialId) { setSessionContainerId(initialId); setSessionCleanupEnabled(true); await confirmSessionOwnership(); }
 } else {
     guardian = await armSessionOwnership();
-    if (initialId) { setSessionContainerId(initialId); await confirmSessionOwnership(); }
+    if (initialId) { setSessionContainerId(initialId); setSessionCleanupEnabled(true); await confirmSessionOwnership(); }
 }
 process.send({ event: 'ready', lock, guardian, pendingRefusals, extraGuardian });
 const hold = setInterval(() => {}, 1000);
@@ -242,6 +244,9 @@ process.on('message', async (message) => {
         }
         if (message.event === 'blocked-update') {
             setSessionContainerId(message.id);
+            // The new captured identity has completed its fixture launch; its
+            // own permission ACK remains queued while synchronous setup blocks.
+            setSessionCleanupEnabled(true);
             // Real synchronous setup blocks the owner's event loop while the
             // independently running guardian sends its update acknowledgement.
             Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6500);
@@ -528,12 +533,26 @@ process.on('message', async (message) => {
         await eventually(() => !existsSync(predecessor.ready.lock), "post-ACK predecessor pruning");
         await eventually(() => !running(predecessor.ready.guardian), "predecessor guardian after handoff");
         expect(stops()).toEqual([]);
-        // No container setup or separate setSessionContainerId happens in this
-        // fixture: acquisition itself must already have acknowledged idA.
+        // Acquisition captures idA without authority; the successful fixture
+        // explicitly acknowledges launch permission before it reports READY.
         await kill(acquired);
         await eventually(() => !existsSync(acquired.ready.lock), "acquired owner autonomous cleanup");
         await eventually(() => !running(acquired.ready.guardian), "acquired guardian exit");
         expect(stops()).toEqual([["stop", idA]]);
+    });
+
+    it.skipIf(process.platform !== "linux").each(["SIGKILL", "SIGTERM"] as const)("failed join followed by %s releases its claim without stopping the captured background ID", async signal => {
+        const candidate = launch("", idA, "project", false, "acquire-join");
+        const inspected = await frame(candidate, "inspecting");
+        candidate.child.send({ event: "resume-inspection" });
+        const acquired = await ready(candidate);
+        expect(acquired.ready.lock).toBe(inspected.lock);
+        candidate.child.kill(signal);
+        await eventually(() => candidate.child.exitCode !== null || candidate.child.signalCode !== null, "failed join owner exit");
+        await eventually(() => !existsSync(acquired.ready.lock), "failed join claim release");
+        await eventually(() => !running(acquired.ready.guardian), "failed join guardian exit");
+        expect(stops()).toEqual([]);
+        expect(calls().filter(args => args[0] !== "--version")).toEqual([]);
     });
 
     it.skipIf(process.platform !== "linux")("pre-ACK acquisition failure preserves the predecessor's authority to stop its ID", async () => {

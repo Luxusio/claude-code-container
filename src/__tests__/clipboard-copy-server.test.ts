@@ -148,7 +148,7 @@ describe("authenticated clipboard text copy (actual HTTP handler)", () => {
         const exact = Buffer.from("한".repeat(349525) + "x");
         expect(exact.length).toBe(mod.MAX_CLIPBOARD_TEXT_BYTES);
         expect((await http(port, exact).response).status).toBe(204);
-        expect(Buffer.concat(children[0].input)).toEqual(exact);
+        expect(Buffer.concat(children[0].input).equals(exact)).toBe(true);
         adapter.spawn.mockClear();
         expect((await http(port, Buffer.concat([exact, Buffer.from("x")]), { headers: { "Transfer-Encoding": "chunked" } }).response).status).toBe(413);
         expect(adapter.spawn).not.toHaveBeenCalled();

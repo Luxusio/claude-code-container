@@ -32,10 +32,25 @@ vi.mock("../../session.js", () => ({
     withContainerLifecycleLock: (_prefix: string, operation: () => unknown) => operation(),
     withProjectFamilyLifecycleLock: native.family,
 }));
+// Native lock safety/contended ownership is tested in shared-mutation-lock.test.ts.
+// No other shared state export or native path is replaced by this lock boundary.
+vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(),
+    withSharedMutationLock: (path: string, operation: () => unknown, options: { waitMs: number; reclaimStale?: boolean }) => {
+        if (!/^\/fixture\/home\/\.ccc\/(?:codex-state\.lock|run\/locks\/identity-[a-f0-9]{64}\.lock)$/.test(path)) throw new Error("unexpected fixture lock IO");
+        expect(operation).toBeTypeOf("function");
+        expect(options).toEqual({ waitMs: path.endsWith("codex-state.lock") ? 600_000 : 1_260_000, reclaimStale: false });
+        return operation();
+    },
+}));
 
 // Docker, lifecycle composition and the extracted application remain real.
 const docker = await import("../../docker.js");
-const { getClaudeJsonFile } = await import("../../utils.js");
+const containerIdentity = await import("../../container-identity.js");
+const sharedState = await import("@ccc/device-lab/device-lab-shared-state.js");
+const baseImageId = `sha256:${"b".repeat(64)}`;
+const identityImageId = `sha256:${"c".repeat(64)}`;
+const { getClaudeJsonFile, IMAGE_NAME } = await import("../../utils.js");
 const id = "a".repeat(64);
 const project = "/fixture/project";
 const refusal = "Container identity changed before session handoff; refusing to join.";
@@ -51,6 +66,8 @@ function thrown(operation: () => unknown): unknown {
 }
 
 function fixture(path: Path) {
+    const identity = containerIdentity.resolveContainerIdentity();
+    const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     const trace: string[] = [];
     const state = {
         existing: false, running: true, deferred: false, late: false,
@@ -82,12 +99,25 @@ function fixture(path: Path) {
     native.family.mockImplementation((_prefix, operation) => operation());
     native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null }) => {
         if (args[0] === "images") return result(0, "image-id");
-        if (args[0] === "image" && args[1] === "inspect") return result(0, "<no value>");
+        if (args[0] === "image" && args[1] === "inspect") {
+            expect(args[2]).toMatch(/^ccc-identity:[a-f0-9]{64}$/);
+            return result(0, JSON.stringify([{ Id: identityImageId, Config: { User: "ccc", Labels: identityLabels } }]));
+        }
+        if (args[0] === "inspect" && args[1] === IMAGE_NAME && args.includes("{{.Id}}")) return result(0, baseImageId);
+        if (args[0] === "run" && args[1] === "--rm") {
+            if (args.at(-1) === 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"') {
+                expect(args.slice(0, 9)).toEqual(["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", identityImageId]);
+                return result(0, `${identity.uid}:${identity.gid}`);
+            }
+            expect(args.slice(0, 9)).toEqual(["run", "--rm", "--network", "none", "--user", "ccc", "--entrypoint", "/bin/sh", identityImageId]);
+            return result(0, `${identity.uid}:${identity.gid}:/home/ccc:ccc`);
+        }
         if (args[0] === "run") { state.runArgs = [...args]; return result(0, id); }
         if (args[0] === "start") { state.running = true; return result(); }
         if (args[0] === "ps" && args[1] === "-aq") return result(0, state.existing ? id : "");
         if (args[0] === "ps" && args[1] === "-q") return result(0, state.existing && state.running ? id : "");
         if (args[0] === "inspect" && args.includes("{{.State.Running}}")) return result(0, String(state.existing && state.running));
+        if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}|{{.Image}}")) return result(0, `${id}|${state.running}|${identityImageId}`);
         if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
             if (state.late) {
                 trace.push(`identity:${args[1]}`);
@@ -111,8 +141,9 @@ function fixture(path: Path) {
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);
                 if (argument === "-e") env.push(value);
             }
-            return result(0, JSON.stringify({ Id: id, Mounts: mounts, Config: { Labels: labels, Env: env }, HostConfig: { Init: !state.deferred, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
+            return result(0, JSON.stringify({ Id: id, Image: identityImageId, State: { Running: state.running }, Mounts: mounts, Config: { Labels: labels, Env: env, User: "ccc" }, HostConfig: { Init: !state.deferred, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
         }
+        if (args[0] === "exec" && args[1] === id && args[2] === "sh" && args[4]?.includes('$(id -un)')) return result(0, `${identity.uid}:${identity.gid}:ccc:/home/ccc`);
         if (args[0] === "exec" && args[2] === "cat") {
             if (options?.encoding === null) return { ...result(), stdout: Buffer.from("fixture") };
             return result(0, markers.get(args[3].slice(args[3].lastIndexOf("/") + 1)) ?? "");
@@ -131,9 +162,9 @@ function fixture(path: Path) {
         state.late = false;
         native.spawn.mockClear(); native.family.mockClear(); trace.length = 0;
     }
-    const start = (ready?: (target: string) => void) => docker.startProjectContainer(
+    const start = (ready?: (target: string, handoff: { startedByInvocation: boolean }) => void, started?: (target: string) => void) => docker.startProjectContainer(
         project, () => {}, undefined, undefined, undefined, undefined,
-        path === "deferred" ? () => false : undefined, ready,
+        path === "deferred" ? () => false : undefined, ready, undefined, started,
     );
     return { state, trace, start };
 }
@@ -151,12 +182,18 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("public Docker session handoff through the real application", () => {
+    it("refuses an unknown fixture lock without executing its callback", () => {
+        const callback = vi.fn();
+        expect(() => sharedState.withSharedMutationLock("/outside/start.lock", callback)).toThrow("unexpected fixture lock IO");
+        expect(callback).not.toHaveBeenCalled();
+    });
     it.each(["fresh", "existing", "restart", "deferred"] as const)("hands off the pinned ID after source checks with a bare callback on %s", path => {
         const f = fixture(path);
         const returned = Promise.resolve("ignored");
         Object.defineProperty(returned, "then", { get() { throw new Error("must not observe callback return"); } });
-        expect(f.start(function (this: unknown, target) {
+        expect(f.start(function (this: unknown, target, handoff) {
             expect(this).toBeUndefined(); expect(target).toBe(id);
+            expect(handoff).toEqual({ startedByInvocation: path === "fresh" || path === "restart" });
             f.trace.push(`ready:${target}`);
             return returned;
         })).toBe(docker.getContainerName(project));
@@ -170,10 +207,27 @@ describe("public Docker session handoff through the real application", () => {
         const filesystemCheck = sourceTrace.findIndex(entry => entry.endsWith("claude.json"));
         expect(projectCheck).toBeGreaterThanOrEqual(0);
         expect(filesystemCheck).toBeGreaterThan(projectCheck);
-        expect(native.spawn.mock.calls.filter(call => call[1][0] === "run")).toHaveLength(path === "fresh" ? 1 : 0);
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "run" && call[1][1] !== "--rm")).toHaveLength(path === "fresh" ? 1 : 0);
         expect(native.spawn.mock.calls.filter(call => call[1][0] === "start").map(call => call[1])).toEqual(path === "restart" ? [["start", id]] : []);
         expect(native.family).toHaveBeenCalledTimes(path === "fresh" ? 1 : 0);
         if (path === "deferred") expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+        assertPreserved();
+    });
+
+    it.each(["fresh", "existing", "restart", "deferred"] as const)("publishes start authority before helper synchronization, once on %s", path => {
+        const f = fixture(path);
+        const ready = vi.fn();
+        const started = vi.fn(function (this: unknown, target: string) {
+            expect(this).toBeUndefined();
+            expect(target).toBe(id);
+            expect(f.trace).not.toContain("sync-finished");
+            expect(ready).not.toHaveBeenCalled();
+            f.trace.push("started");
+        });
+        expect(f.start(ready, started)).toBe(docker.getContainerName(project));
+        expect(started).toHaveBeenCalledTimes(path === "fresh" || path === "restart" ? 1 : 0);
+        expect(ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: path === "fresh" || path === "restart" });
+        if (started.mock.calls.length) expect(f.trace.indexOf("started")).toBeLessThan(f.trace.indexOf("sync-finished"));
         assertPreserved();
     });
 

@@ -116,15 +116,16 @@ describe("image preparation native composition and public facade", () => {
         expect(process.exit).not.toHaveBeenCalled();
     });
 
-    it("reports failed absent pull, resolves the build hint late and allows an intercepted exit to return", () => {
+    it("reports failed absent pull, resolves the build hint late and unwinds startup without exiting", () => {
         results.pull = { status: null };
-        expect(ensureImage()).toBeUndefined();
+        expect(ensureImage).toThrow("Failed to pull CCC image; container startup was aborted.");
         expect(trace).toEqual([
             "runtime:docker", "spawn:docker:images", `log:${pulling}`, "runtime:docker", "runtime:docker", "spawn:docker:pull",
-            `error:Error: Failed to pull ${remote}.`, "runtime:docker", "error:You can build locally instead: docker build -t ccc .", "exit:1",
+            `error:Error: Failed to pull ${remote}.`, "runtime:docker", "error:You can build locally instead: docker build -t ccc .",
         ]);
         expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["images", "pull"]);
         expect(console.warn).not.toHaveBeenCalled();
+        expect(process.exit).not.toHaveBeenCalled();
     });
 
     it("reads registry only after the diagnostic and retains module-load CCC_REGISTRY snapshot", () => {
@@ -221,8 +222,9 @@ describe("unchanged native result interpretation", () => {
     it.each([0, 1, -1, null, undefined])("pull accepts status zero only and never reads error/stdout, status=%s", status => {
         results.pull = { status, get error() { throw new Error("unused error"); }, get stdout() { throw new Error("unused stdout"); } };
         expect(pullImage("fixture/ref")).toBe(status === 0);
-        ensureImage();
-        expect(process.exit).toHaveBeenCalledTimes(status === 0 ? 0 : 1);
+        if (status === 0) expect(ensureImage()).toBeUndefined();
+        else expect(ensureImage).toThrow("Failed to pull CCC image; container startup was aborted.");
+        expect(process.exit).not.toHaveBeenCalled();
     });
 
     it.each([undefined, null, { status: 1 }, { status: null }, { status: 0, error: new Error("ignored tag failure") }])("tag ignores every returned result: %s", result => {
@@ -307,9 +309,9 @@ describe("runtime qualification and observation schedule", () => {
     it("observes the runtime after the failure diagnostic for the build hint", () => {
         results.pull = { status: 1 };
         vi.mocked(console.error).mockImplementation(message => { trace.push(`error:${message}`); cli = "podman"; });
-        ensureImage();
-        expect(trace.slice(-4)).toEqual([
-            `error:Error: Failed to pull ${remote}.`, "runtime:podman", "error:You can build locally instead: podman build -t ccc .", "exit:1",
+        expect(ensureImage).toThrow("Failed to pull CCC image; container startup was aborted.");
+        expect(trace.slice(-3)).toEqual([
+            `error:Error: Failed to pull ${remote}.`, "runtime:podman", "error:You can build locally instead: podman build -t ccc .",
         ]);
     });
 });
@@ -391,10 +393,11 @@ describe("native and presentation fault identity with no downstream effects", ()
         expect(trace).toEqual([...absentPulled, `error:Error: Failed to pull ${remote}.`]);
     });
 
-    it.each([new Error("exit"), { exit: true }, null, undefined])("preserves the intercepted exit thrown value: %s", failure => {
+    it.each([new Error("exit"), { exit: true }, null, undefined])("unwinds without calling a hostile process.exit: %s", failure => {
         results.pull = { status: 1 };
         vi.mocked(process.exit).mockImplementation(() => { throw failure; });
-        expect(thrown(ensureImage)).toBe(failure);
+        expect(thrown(ensureImage)).toEqual(new Error("Failed to pull CCC image; container startup was aborted."));
+        expect(process.exit).not.toHaveBeenCalled();
         expect(trace).toEqual([...absentPulled, `error:Error: Failed to pull ${remote}.`, "runtime:docker", "error:You can build locally instead: docker build -t ccc ."]);
     });
 

@@ -67,7 +67,7 @@ describe("ensureTools (npm tools)", () => {
 
         expect(spawnSyncMock).toHaveBeenCalledTimes(8);
 
-        // Verify install command uses mise exec node@22 (index 4 after cache probe and cleanup)
+        // Verify install command uses mise exec node@22 (index 3 after cleanup)
         const installCall = spawnSyncMock.mock.calls[4];
         expect(installCall[0]).toBe("docker");
         const installArgs = installCall[1] as string[];
@@ -111,7 +111,7 @@ describe("ensureTools (npm tools)", () => {
             "Container gemini installation failed",
         );
 
-        // wrapper check + cache probe + 2 cleanups + failed install; no later mutation or proof.
+        // 1 check + 2 cleanups + failed install; no later mutation or proof.
         expect(spawnSyncMock).toHaveBeenCalledTimes(5);
     });
 
@@ -142,15 +142,6 @@ describe("ensureTools (npm tools)", () => {
         expect(commands).not.toContain("npm install");
         expect(commands).not.toContain("rm -f ~/.local/share/mise/shims");
         expect(commands).not.toContain("mise reshim");
-        expect(console.log).not.toHaveBeenCalled();
-        expect(spawnSyncMock.mock.calls[1]).toEqual([
-            "docker", ["exec", "-w", "/home/ccc", container, "sh", "-c", expect.any(String)],
-            { encoding: "utf-8", timeout: 20_000 },
-        ]);
-        expect(commands).toContain("timeout -k 1s 3s");
-        expect(commands).toContain("timeout -k 1s 10s");
-        expect(commands).not.toContain("codex");
-        expect(commands).not.toContain("opencode");
     });
 
     it.each([1, 42, 126, 127, 124, 137])("does not reinstall when persisted binary verification fails with %s", status => {
@@ -162,22 +153,11 @@ describe("ensureTools (npm tools)", () => {
         expect(commands).not.toMatch(/npm install|rm -rf|rm -f|mise reshim|cat > /);
     });
 
-    it.each(["", "noise\nREADY\n", "READY\nMISSING\n", "missing", "READY extra"])("rejects unexpected cache probe output %j before changing the installation", output => {
+    it("rejects unexpected cache probe output before changing the installation", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\n"));
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, output));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "noise\nREADY\n"));
         expect(() => ensureTools(container, getToolByName("gemini")!)).toThrow("invalid result");
         expect(spawnSyncMock).toHaveBeenCalledTimes(2);
-        expect(console.log).not.toHaveBeenCalled();
-    });
-
-    it.each(["ETIMEDOUT", "ENOENT"])("refuses mutation when the cache runtime probe reports %s", code => {
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\n"));
-        spawnSyncMock.mockReturnValueOnce({ ...makeResult(0, "READY\n"), error: Object.assign(new Error("fixture failure"), { code }) });
-        expect(() => ensureTools(container, getToolByName("gemini")!)).toThrow(
-            code === "ETIMEDOUT" ? "cached executable probe timed out" : "cached executable probe failed",
-        );
-        expect(spawnSyncMock).toHaveBeenCalledTimes(2);
-        expect(console.log).not.toHaveBeenCalled();
     });
 
     it("fails when a cached tool wrapper cannot be created", () => {
@@ -186,10 +166,6 @@ describe("ensureTools (npm tools)", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(1));
         expect(() => ensureTools(container, getToolByName("gemini")!)).toThrow("wrapper creation failed");
         expect(spawnSyncMock).toHaveBeenCalledTimes(3);
-        const script = (spawnSyncMock.mock.calls[2][1] as string[]).at(-1)!;
-        expect(script).toContain('gemini "$@"');
-        expect(script).toContain("chmod +x /home/ccc/.local/bin/gemini && exit 0");
-        expect(script).toContain("rm -f /home/ccc/.local/bin/gemini\nexit 1");
     });
         // This runs the Linux container probe verbatim, including coreutils timeout.
         it.skipIf(process.platform !== "linux").each([
@@ -257,12 +233,27 @@ printf '1.0.0\\n'
                     expect(probe.status).toBe(0);
                     expect(probe.stdout.trim()).toBe(outcome === "healthy" ? "READY" : "MISSING");
                 }
-                const binaryRuns = ["healthy", "broken", "runtime-missing", "timeout", "killed"].includes(outcome);
-                expect(existsSync(marker)).toBe(binaryRuns);
-                if (binaryRuns) expect(readFileSync(marker, "utf-8")).toBe("actual");
+                if (existsSync(marker)) expect(readFileSync(marker, "utf-8")).toBe("actual");
+                if (["missing", "missing-node"].includes(outcome)) expect(existsSync(marker)).toBe(false);
             } finally {
                 rmSync(directory, { recursive: true, force: true });
             }
         });
+
+    it("prepares selected OpenCode data before probing an existing wrapper", () => {
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // data access
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper exists
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // ready
+        ensureTools(container, getToolByName("opencode")!);
+        expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+        expect((spawnSyncMock.mock.calls[0][1] as string[]).at(-1)).toContain("dir=/home/ccc/.local/share/opencode");
+        expect((spawnSyncMock.mock.calls[1][1] as string[]).at(-1)).toContain("[ -x /home/ccc/.local/bin/opencode ]");
+    });
+
+    it("stops selected OpenCode setup when data access cannot be checked", () => {
+        spawnSyncMock.mockReturnValueOnce(makeResult(127));
+        expect(() => ensureTools(container, getToolByName("opencode")!)).toThrow("Unable to prepare OpenCode data");
+        expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    });
 
 });

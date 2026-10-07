@@ -20,6 +20,7 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
     let currentToolName: string | null = null;
     let currentContainerId: string | null = null;
     let cleanedUp = false;
+    let cleanupEnabled = true;
 
     function setSession(lockFile: string, projectPath: string, profile?: string, toolName?: string): void {
         currentSessionLockFile = lockFile;
@@ -27,10 +28,16 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
         currentProfile = profile;
         currentToolName = toolName ?? "claude";
         currentContainerId = null;
+        cleanupEnabled = true;
     }
 
     function setSessionContainerId(containerId: string | null): void {
         currentContainerId = containerId;
+    }
+
+    function setSessionCleanupEnabled(enabled: boolean): void {
+        if (typeof enabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
+        cleanupEnabled = enabled;
     }
 
     function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } {
@@ -43,6 +50,7 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
         currentProfile = undefined;
         currentToolName = null;
         currentContainerId = null;
+        cleanupEnabled = true;
         cleanedUp = false;
     }
 
@@ -57,7 +65,7 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
         ports.withLifecycleLock(containerPrefix, () => {
             if (mode === "ended-owner") ports.removeClaim(currentSessionLockFile!);
             const hasOthers = ports.hasOtherClaims(containerPrefix, currentSessionLockFile!);
-            if (!hasOthers) {
+            if (!hasOthers && cleanupEnabled) {
                 try {
                     ports.cleanupDevices(currentProjectPath!, 5000, currentProfile);
                 } catch (error) {
@@ -81,6 +89,7 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
     return {
         setSession,
         setSessionContainerId,
+        setSessionCleanupEnabled,
         getCurrentSession,
         clearSession,
         cleanupSession,

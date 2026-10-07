@@ -74,6 +74,9 @@ let acquisitionFailure: Error | null = null;
 let ownershipAuthorization: (() => void) | null = null;
 let capturedOwnership: SessionOwnershipReceipt | null = null;
 let pendingOwnershipUpdate: Promise<void> = Promise.resolve();
+let capturedContainerId: string | null = null;
+let sessionCleanupEnabled = true;
+let cleanupAuthorizationVersion = 0;
 
 function ownershipFailed(error: Error): void {
     if (acquiringOwnership) { acquisitionFailure = error; return; }
@@ -137,6 +140,10 @@ export async function acquireHostSessionOwnership(
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
                 sessionCleanup.setSession(lockFile, binding.projectPath, binding.profile, binding.toolName);
+                capturedContainerId = null;
+                sessionCleanupEnabled = false;
+                sessionCleanup.setSessionCleanupEnabled(false);
+                cleanupAuthorizationVersion++;
                 ownershipAuthorization = () => { throw new Error("Host session ownership was not established."); };
                 const receipt = captureNativeSessionOwnership(lockFile);
                 validateNativeSessionOwnership({ ...binding, lockFile }, receipt, process.pid);
@@ -151,7 +158,8 @@ export async function acquireHostSessionOwnership(
                 if (acquisitionFailure) throw acquisitionFailure;
             },
             async acknowledge(id, runtime) {
-                await ownership!.updateContainer(id, runtime);
+                await ownership!.updateContainer(id, runtime, false);
+                capturedContainerId = id;
                 sessionCleanup.setSessionContainerId(id);
             },
             reconcileForeign(prefix, lockFile) {
@@ -171,6 +179,9 @@ export async function acquireHostSessionOwnership(
                 ownershipAuthorization = null;
                 capturedOwnership = null;
                 pendingOwnershipUpdate = Promise.resolve();
+                capturedContainerId = null;
+                sessionCleanupEnabled = true;
+                cleanupAuthorizationVersion++;
                 if (previous) await previous.release();
             },
         }).run(request);
@@ -192,21 +203,52 @@ export function setSession(lockFile: string, projectPath: string, profile?: stri
         throw new Error("Cannot replace an owned host session before cleanup.");
     }
     sessionCleanup.setSession(lockFile, projectPath, profile, toolName);
+    capturedContainerId = null;
+    sessionCleanupEnabled = true;
+    cleanupAuthorizationVersion++;
     ownershipAuthorization = null;
     capturedOwnership = null;
 }
 
+/** Capture and shutdown authorization are separate; a failed join only drops its claim. */
+export function setSessionCleanupEnabled(enabled: boolean): void {
+    if (typeof enabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
+    if (acquiringOwnership) throw new Error("Cannot update host session ownership during acquisition.");
+    sessionCleanupEnabled = enabled;
+    const version = ++cleanupAuthorizationVersion;
+    if (!enabled || !ownership) sessionCleanup.setSessionCleanupEnabled(enabled);
+    queueOwnershipUpdate(version);
+}
+
+function queueOwnershipUpdate(version: number): void {
+    if (!ownership) return;
+    const activeOwnership = ownership;
+    const containerId = capturedContainerId;
+    const enabled = sessionCleanupEnabled;
+    const runtime = runtimeCli();
+    if (runtime !== "docker" && runtime !== "podman") throw new Error("Invalid session container runtime.");
+    pendingOwnershipUpdate = pendingOwnershipUpdate.then(async () => {
+        await activeOwnership.updateContainer(containerId, runtime, enabled);
+        // A stale successful ACK must not reauthorize a subsequently revoked session.
+        if (ownership === activeOwnership && cleanupAuthorizationVersion === version) {
+            sessionCleanup.setSessionCleanupEnabled(enabled);
+        }
+    });
+    // ACK failure invokes ownershipFailed; consume now while confirm retains rejection.
+    void pendingOwnershipUpdate.catch(() => undefined);
+}
+
 export function setSessionContainerId(containerId: string | null): void {
     if (acquiringOwnership) throw new Error("Cannot update host session ownership during acquisition.");
-    sessionCleanup.setSessionContainerId(containerId);
-    if (ownership) {
-        const runtime = runtimeCli();
-        if (runtime !== "docker" && runtime !== "podman") throw new Error("Invalid session container runtime.");
-        pendingOwnershipUpdate = ownership.updateContainer(containerId, runtime);
-        // ACK failure also invokes ownershipFailed; attach immediately so a
-        // synchronous setup step cannot leave an unhandled rejected promise.
-        void pendingOwnershipUpdate.catch(() => undefined);
+    // Permission belongs to the captured identity, never its replacement. Revoke
+    // before publishing a different ID so guardian EOF cannot stop a failed join.
+    if (ownership && capturedContainerId !== containerId) {
+        sessionCleanupEnabled = false;
+        sessionCleanup.setSessionCleanupEnabled(false);
     }
+    capturedContainerId = containerId;
+    sessionCleanup.setSessionContainerId(containerId);
+    queueOwnershipUpdate(++cleanupAuthorizationVersion);
 }
 
 export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } {
@@ -217,6 +259,9 @@ export function clearSession(): void {
     if (armingOwnership || acquiringOwnership) throw new Error("Cannot clear host session ownership during acquisition.");
     if (ownership) cleanupSession();
     sessionCleanup.clearSession();
+    capturedContainerId = null;
+    sessionCleanupEnabled = true;
+    cleanupAuthorizationVersion++;
     ownershipAuthorization = null;
     capturedOwnership = null;
 }
@@ -318,6 +363,9 @@ export function cleanupSession(): void {
         const previous = ownership;
         ownership = null;
         pendingOwnershipUpdate = Promise.resolve();
+        capturedContainerId = null;
+        sessionCleanupEnabled = true;
+        cleanupAuthorizationVersion++;
         ownershipAuthorization = null;
         capturedOwnership = null;
         if (previous) void previous.release().catch(() => undefined);

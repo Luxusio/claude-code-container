@@ -50,7 +50,7 @@ describe("session claims compatibility facade", () => {
             "observeActiveSessionsForContainer",
             "getSessionLockClaimsForContainer", "getSessionLockClaimsForProjectFamily", "hasOtherActiveSessions",
             "hasOtherSessionClaims", "recreateContainerWithoutInterruptingSessions", "removeSessionLock",
-            "setSession", "setSessionContainerId", "setupSignalHandlers", "withContainerLifecycleLock",
+            "setSession", "setSessionContainerId", "setSessionCleanupEnabled", "setupSignalHandlers", "withContainerLifecycleLock",
             "withContainerLifecycleLockAsync", "withContainerSetupLockAsync", "withProjectFamilyLifecycleLock",
             "withProjectFamilyLifecycleLockAsync",
         ].sort());

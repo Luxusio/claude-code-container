@@ -116,8 +116,18 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
 # ============================================================
 # LAYER 5: User setup (절대 안 바뀜)
 # ============================================================
-RUN useradd -r -s /usr/sbin/nologin ccc-proxy && \
-    useradd -m -s /bin/bash ccc && \
+RUN set -eu; \
+    uid_owner="$(getent passwd 1000 || true)"; \
+    if [ -n "$uid_owner" ]; then \
+        if [ "$(echo "$uid_owner" | cut -d: -f1)" != ubuntu ] || \
+           [ "$(echo "$uid_owner" | cut -d: -f6)" != /home/ubuntu ]; then \
+            echo "Cannot create ccc: UID 1000 belongs to an unrelated account" >&2; exit 1; \
+        fi; \
+        userdel ubuntu; \
+    fi; \
+    groupadd -o -g 1000 ccc; \
+    useradd -r -s /usr/sbin/nologin ccc-proxy; \
+    useradd -m -u 1000 -g ccc -d /home/ccc -s /bin/bash ccc; \
     chmod o+x /home/ccc && \
     echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     (getent group docker || groupadd docker) && usermod -aG docker ccc

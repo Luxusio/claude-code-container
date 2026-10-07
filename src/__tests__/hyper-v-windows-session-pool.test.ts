@@ -369,19 +369,19 @@ describe("broker Hyper-V session pool", () => {
         expect(result.error).toBe("hyper-v-windows-session-exited");
     });
 
-    it("does not lose the marker when a flood forces the line buffer to be dropped", async () => {
+    it("retains lost readiness evidence when a flood forces the line buffer to be dropped", async () => {
         // The buffer drop exists so an un-newlined child cannot exhaust memory, but it also discards
         // whatever evidence that buffer held. Since the latch reads absence of evidence as proof
         // that nothing ran, a child emitting one long un-newlined run before announcing would have
         // every later request re-issued. Lost evidence now forces the conservative answer instead.
         const result = await runStub(
-            `#!/bin/sh\nawk 'BEGIN { while (i++ < 600) printf "%0512000d", 0 }'\necho ${MARKER}\nsleep 0.2\n`,
+            `#!/bin/sh\nawk 'BEGIN { printf "%01048576d", 0 }'\nsleep 0.2\n`,
             8000,
         );
         // The exact code, not merely "not never-ran": a caller that outran its own budget would
-        // report session-timeout, which also satisfies not-never-ran while testing nothing. This one
-        // pipes ~300MB, so the budget is generous — but a loose assertion would let a slow box turn
-        // the test quiet instead of red.
+        // report session-timeout, which also satisfies not-never-ran while testing nothing.
+        // One MiB crosses the 512 KiB buffer limit. No ready marker is emitted, so this result
+        // must come from the lost-evidence latch rather than a later readiness announcement.
         expect(result.error).toBe("hyper-v-windows-session-exited");
     });
 

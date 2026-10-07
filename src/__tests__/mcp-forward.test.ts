@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: vi.fn((operation: () => unknown) => operation()) }));
+
 vi.mock("fs", async () => {
     const actual = await vi.importActual<typeof import("fs")>("fs");
     return {
@@ -132,7 +134,7 @@ describe("buildMcpConfig", () => {
     let existsSync: ReturnType<typeof vi.fn>;
     let readFileSync: ReturnType<typeof vi.fn>;
     let writeFileSync: ReturnType<typeof vi.fn>;
-    let buildMcpConfig: (profile?: string) => string[];
+    let buildMcpConfig: (profile?: string, restoreAccess?: () => void) => string[];
 
     function getWrittenConfig(): Record<string, unknown> {
         expect(writeFileSync).toHaveBeenCalled();
@@ -160,6 +162,35 @@ describe("buildMcpConfig", () => {
         writeFileSync.mockImplementation(() => undefined);
         const mod = await import("../mcp-forward.js");
         buildMcpConfig = mod.buildMcpConfig;
+    });
+
+    it("restores host access and writes under the selected profile lock", async () => {
+        const { withCodexConfigLock } = await import("../codex-config-lock.js");
+        let locked = false;
+        vi.mocked(withCodexConfigLock).mockImplementation(operation => {
+            locked = true;
+            try { return operation(); } finally { locked = false; }
+        });
+        const restoreAccess = vi.fn(() => expect(locked).toBe(true));
+        writeFileSync.mockImplementation((path: string) => {
+            if (path.endsWith("codex/config.toml")) {
+                expect(locked).toBe(true);
+                expect(restoreAccess).toHaveBeenCalledOnce();
+            }
+        });
+        try {
+            buildMcpConfig("work", restoreAccess);
+            expect(withCodexConfigLock).toHaveBeenCalledWith(expect.any(Function), "work");
+            expect(restoreAccess).toHaveBeenCalledOnce();
+        } finally {
+            vi.mocked(withCodexConfigLock).mockImplementation(operation => operation());
+        }
+    });
+
+    it("stops before config mutation if in-lock access repair fails", () => {
+        const restoreAccess = () => { throw new Error("access unavailable"); };
+        expect(() => buildMcpConfig("work", restoreAccess)).toThrow("access unavailable");
+        expect(writeFileSync).not.toHaveBeenCalled();
     });
 
     it("always includes chrome-devtools in the written config", () => {

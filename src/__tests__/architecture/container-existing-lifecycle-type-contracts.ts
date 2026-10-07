@@ -65,6 +65,12 @@ createContainerExistingLifecycle({ ...ports, finish: (): void => {} });
 app.run({ containerName: "name", replacementGuard: true });
 // @ts-expect-error A promise cannot authorize replacement.
 app.run({ containerName: "name", replacementGuard: async () => true });
+// @ts-expect-error Startup-running identity is an immutable ID fact, not a boolean authority.
+app.run({ containerName: "name", initiallyRunningContainerId: true });
+// @ts-expect-error Last-check replacement identity must include its observed running state.
+createContainerExistingLifecycle({ ...ports, identity: () => ({ containerId: "pinned" }) });
+// @ts-expect-error Runtime running state is an observation, not a truthy status string.
+createContainerExistingLifecycle({ ...ports, identity: () => ({ containerId: "pinned", running: "false" }) });
 // @ts-expect-error Replacement requires an explicit reason.
 app.replace({ containerName: "name" });
 // @ts-expect-error Joined identity is required.

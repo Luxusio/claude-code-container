@@ -116,8 +116,18 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
 # ============================================================
 # LAYER 5: User setup (절대 안 바뀜)
 # ============================================================
-RUN useradd -r -s /usr/sbin/nologin ccc-proxy && \
-    useradd -m -s /bin/bash ccc && \
+RUN set -eu; \
+    uid_owner="$(getent passwd 1000 || true)"; \
+    if [ -n "$uid_owner" ]; then \
+        if [ "$(echo "$uid_owner" | cut -d: -f1)" != ubuntu ] || \
+           [ "$(echo "$uid_owner" | cut -d: -f6)" != /home/ubuntu ]; then \
+            echo "Cannot create ccc: UID 1000 belongs to an unrelated account" >&2; exit 1; \
+        fi; \
+        userdel ubuntu; \
+    fi; \
+    groupadd -o -g 1000 ccc; \
+    useradd -r -s /usr/sbin/nologin ccc-proxy; \
+    useradd -m -u 1000 -g ccc -d /home/ccc -s /bin/bash ccc; \
     chmod o+x /home/ccc && \
     echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     (getent group docker || groupadd docker) && usermod -aG docker ccc
@@ -151,9 +161,11 @@ WORKDIR /home/ccc
 # Trust all directories (container is isolated, ownership mismatches from bind mounts)
 RUN git config --global --add safe.directory '*'
 USER root
-RUN mkdir -p /home/ccc/.ccc/labs /host-stage && \
+# /home/ccc/.codex/packages is the mount point of the ccc-codex-packages volume;
+# owning it here makes Docker initialize a new volume as ccc:ccc.
+RUN mkdir -p /home/ccc/.ccc/labs /home/ccc/.codex/packages /host-stage && \
     touch /host-stage/gitconfig && \
-    chown -R ccc:ccc /home/ccc/.ccc /host-stage
+    chown -R ccc:ccc /home/ccc/.ccc /home/ccc/.codex /host-stage
 USER ccc
 
 # ============================================================
@@ -194,8 +206,10 @@ RUN cd /opt/ccc/dist/packages/device-lab/appium-runtime && ~/.local/bin/mise exe
 RUN printf '%s\n' 'import "../dist/device-lab-mcp/server.mjs";' > /opt/ccc/device-lab-mcp/server.mjs
 
 # ============================================================
-# claude-code is installed at runtime and cached in mise volume.
-# See ensureClaudeInContainer() in src/index.ts
+# claude-code is installed at runtime. Its native install directory is kept in
+# the mise volume and reached through a symlinked ~/.local/share/claude, so
+# `claude update` inside the container works and survives container recreation.
+# See ensureClaudeInContainer() in src/container-setup.ts
 # ============================================================
 
 # ============================================================

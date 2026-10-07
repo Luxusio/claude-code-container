@@ -1258,11 +1258,14 @@ require('node:module').syncBuiltinESMExports();`);
         await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Session recovery", deviceId } });
         await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
         try {
+            // start returns before its detached fixture child initializes. A quiet log
+            // is not acknowledgement: observe that first connect before measuring recovery.
+            const before = await waitForLog(logPath, /wsb connect --id [0-9a-f-]{36}/);
+            expect((before.match(/wsb connect --id/g) || []).length).toBe(1);
             const statePath = windowsStatePath();
             const state = JSON.parse(readFileSync(statePath, "utf8"));
             state.devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch = helperSessionLaunch;
             writeFileSync(statePath, JSON.stringify(state));
-            const before = await waitForStableLog(logPath);
             const probe = await client.callTool({ name: "cursor_position", arguments: { deviceId, timeoutMs: 350 } });
             expect(probe.isError).toBe(true);
             const after = await waitForStableLog(logPath);

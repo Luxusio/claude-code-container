@@ -83,9 +83,10 @@ export async function armSessionOwnership(
     return {
         pid: channel.pid,
         assertOwnership() { ports.assertOwnership(binding, receipt); },
-        async updateContainer(containerId, runtime) {
+        async updateContainer(containerId, runtime, cleanupEnabled = false) {
+            if (typeof cleanupEnabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
             if (phase !== "active") throw new Error("Session ownership guardian is unavailable.");
-            await request(++sequence, { type: "update", sequence, containerId, runtime });
+            await request(++sequence, { type: "update", sequence, containerId, runtime, cleanupEnabled });
         },
         async release() {
             if (phase === "closed") return;
@@ -106,6 +107,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
     let ownership: { binding: SessionOwnershipBinding; receipt: SessionOwnershipReceipt } | null = null;
     let containerId: string | null = null;
     let runtime: SessionOwnershipRuntime = "docker";
+    let cleanupEnabled = false;
     let finished = false;
     let sequence = 0;
     let queue: Promise<void> = Promise.resolve();
@@ -119,7 +121,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
         finished = true;
         try {
             if (ownership) {
-                if (containerId === null) ports.rollback(ownership.binding, ownership.receipt);
+                if (containerId === null || !cleanupEnabled) ports.rollback(ownership.binding, ownership.receipt);
                 else ports.cleanup(ownership.binding, ownership.receipt, containerId, runtime);
             }
         } catch (error) {
@@ -148,11 +150,13 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
                     || frame.sequence <= sequence) throw new Error("Invalid ownership sequence.");
                 if (frame.type === "update") {
                     if ((frame.containerId !== null && (typeof frame.containerId !== "string" || !/^[a-f0-9]{12,64}$/.test(frame.containerId)))
-                        || (frame.runtime !== "docker" && frame.runtime !== "podman")) throw new Error("Invalid container handoff.");
+                        || (frame.runtime !== "docker" && frame.runtime !== "podman")
+                        || typeof frame.cleanupEnabled !== "boolean") throw new Error("Invalid container handoff.");
                     await ports.send({ type: "ack", sequence: frame.sequence });
                     sequence = frame.sequence;
                     containerId = frame.containerId;
                     runtime = frame.runtime;
+                    cleanupEnabled = frame.cleanupEnabled;
                 } else if (frame.type === "release") {
                     await ports.send({ type: "ack", sequence: frame.sequence });
                     sequence = frame.sequence;

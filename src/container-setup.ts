@@ -5,6 +5,7 @@
 
 import { spawnSync } from "child_process";
 import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry.js";
+import { prepareOpenCodeDataDirectory } from "./opencode-data-access.js";
 import { runtimeCli } from "./container-runtime.js";
 import { CLAUDE_BIN_PATH } from "./domain/tool-layout.js";
 import { createRequestedToolSetup } from "./application/requested-tool-setup.js";
@@ -871,6 +872,7 @@ export function ensureClaudeInContainer(containerName: string): void {
  * - npm tools: lazily install only the active tool
  */
 export function ensureTools(containerName: string, activeTool: ToolDefinition): void {
+    if (activeTool.name === "opencode") prepareOpenCodeDataDirectory(containerName);
     createRequestedToolSetup({
         ensureClaudeLauncher: ensureClaudeInContainer,
         ensureNpmTool,

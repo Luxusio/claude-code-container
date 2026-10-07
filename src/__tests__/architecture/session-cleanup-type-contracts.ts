@@ -15,6 +15,10 @@ app.setSession("own.lock", "/project");
 app.setSession("own.lock", "/project", "", "");
 app.setSessionContainerId("opaque-id");
 app.setSessionContainerId(null);
+app.setSessionCleanupEnabled(false);
+app.setSessionCleanupEnabled(true);
+// @ts-expect-error shutdown authorization requires an explicit boolean
+app.setSessionCleanupEnabled("true");
 const snapshot: { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } = app.getCurrentSession();
 const cleanup: void = app.cleanupSession();
 const clear: void = app.clearSession();

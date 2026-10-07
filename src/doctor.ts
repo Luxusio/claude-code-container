@@ -1,3 +1,4 @@
+import { getIdentityMiseVolumeName, resolveContainerIdentity } from "./container-identity.js";
 // src/doctor.ts - Health check and diagnostics for ccc
 
 import { spawnSync } from "child_process";
@@ -11,7 +12,7 @@ import {
     isImageExists,
     getImageLabel,
 } from "./docker.js";
-import { getProjectId, MISE_VOLUME_NAME, CLI_VERSION } from "./utils.js";
+import { getProjectId, CLI_VERSION } from "./utils.js";
 import { locksDir as sessionLocksDir } from "./home-layout.js";
 import { observeActiveSessionsForContainer } from "./session.js";
 import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
@@ -132,16 +133,17 @@ export function runDoctor(projectPath: string): boolean {
     }
 
     // 4. Volume (mise cache)
+    const miseVolumeName = getIdentityMiseVolumeName(resolveContainerIdentity());
     const volResult = spawnSync(
         runtimeCli(),
-        ["volume", "inspect", MISE_VOLUME_NAME, "--format", "{{.Mountpoint}}"],
+        ["volume", "inspect", miseVolumeName, "--format", "{{.Mountpoint}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (volResult.status === 0) {
         checks.push({
             name: "Mise cache",
             status: "ok",
-            message: `Volume '${MISE_VOLUME_NAME}' exists`,
+            message: `Volume '${miseVolumeName}' exists`,
         });
     } else {
         checks.push({

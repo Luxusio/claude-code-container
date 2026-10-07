@@ -8721,13 +8721,10 @@ describe("the error a partial removal actually prints", () => {
 // entry point. `tsx` runs src/index.ts directly, which avoids asserting against a `dist/`
 // that may be stale.
 //
-// `ensureDockerRunning()` sits after the assert, so the preflight RUNS without Docker — but
-// the line that proves it ran, `Removing workspace @…`, is printed one line AFTER that check.
-// An earlier version of this comment claimed the test was Docker-independent; measured with
-// DOCKER_HOST pointed at a dead socket, the preflight worked perfectly and the test failed
-// anyway, blaming the removal. So either observation is accepted: reaching the removal, or
-// dying on Docker after the assert. A crash BEFORE the assert produces neither, which is the
-// thing being detected.
+// This exercises the real entry point and Git operations against an isolated runtime
+// inventory. Real Docker Desktop probes alone took 41 seconds on one host, exceeding
+// the test budget before its independent runtime probe even ran. Runtime availability
+// must not decide whether this regression actually asserts workspace removal.
 describe("the removal preflight, through the CLI entry point", () => {
     let root: string;
     let previousProtocol: string | undefined;
@@ -8745,7 +8742,7 @@ describe("the removal preflight, through the CLI entry point", () => {
         rmSync(root, { recursive: true, force: true });
     });
 
-    it("removes, through the CLI, the workspace removeWorkspace removes", () => {
+    it.each([true, false])("removes through the CLI only after a successful runtime inventory (%s)", (inventoryAvailable) => {
         const origin = join(root, "origin");
         const src = join(root, "src");
         initRepo(origin);
@@ -8765,30 +8762,44 @@ describe("the removal preflight, through the CLI entry point", () => {
         const repoRoot = resolve(__dirname, "..", "..");
         const tsx = join(repoRoot, "node_modules", ".bin", "tsx");
         expect(existsSync(tsx), "tsx is a declared devDependency of this repo").toBe(true);
-        // vitest injects NODE_OPTIONS (its own loader) and VITEST_* into the environment.
-        // Inherited by the child they made it exit 0 having printed nothing at all, which is
-        // indistinguishable from "the preflight did not fire" — the exact ambiguity the
-        // assertions below exist to catch. The runtime probe uses this same object, so the
-        // probe and the run cannot disagree about which runtime they are talking about.
+        // Intercept only the external runtime transport inside the child. The real
+        // CLI, ownership checks, lifecycle lock, and Git removal all execute. Unknown
+        // runtime commands fail closed, and no call can reach the developer's daemon.
+        const runtimeLog = join(root, "runtime-calls.jsonl");
+        const runtimePreload = join(root, "runtime-fixture.cjs");
+        writeFileSync(runtimePreload, `
+const cp = require("node:child_process");
+const fs = require("node:fs");
+const original = cp.spawnSync;
+cp.spawnSync = function(command, args, options) {
+    if (command !== "docker" && command !== "podman") return original.apply(this, arguments);
+    fs.appendFileSync(process.env.CCC_FIXTURE_RUNTIME_LOG, JSON.stringify([command, ...args]) + "\\n");
+    const key = JSON.stringify(args);
+    let stdout = "";
+    let status = 0;
+    if (command !== "docker") throw new Error("Unexpected runtime: " + command);
+    if (key === JSON.stringify(["--version"])) stdout = "Docker version 27.1.1";
+    else if (key === JSON.stringify(["info", "--format", "{{.OperatingSystem}}"])) stdout = "Linux";
+    else if (key === JSON.stringify(["info", "--format", "{{json .SecurityOptions}}"])) stdout = "[]";
+    else if (key === JSON.stringify(["info"])) stdout = "isolated fixture";
+    else if (key === JSON.stringify(["ps", "-a", "--format", "{{.Names}}"])) status = process.env.CCC_FIXTURE_INVENTORY === "available" ? 0 : 1;
+    else throw new Error("Unexpected runtime command: " + key);
+    return { pid: 0, status, signal: null, stdout, stderr: "", output: [null, stdout, ""] };
+};
+require("node:module").syncBuiltinESMExports();
+`);
         const childEnvironment = Object.fromEntries([
             ...Object.entries(process.env).filter(([key]) => (
                 key !== "NODE_OPTIONS" && !key.startsWith("VITEST")
             )),
             ["GIT_ALLOW_PROTOCOL", "file"],
-            // The child is the REAL `ccc`, and it takes a lifecycle lock under
-            // `join(homedir(), ".ccc")/locks` (src/utils.ts DATA_DIR, src/session.ts). Left
-            // pointed at the developer's home it wrote one guard file per run into their
-            // actual `~/.ccc/locks` and never removed it — nineteen strays on this machine,
-            // which `ccc doctor` counts as stale locks. Worse, vitest runs files in parallel
-            // workers and more than ten other test files read that same directory, so this
-            // test was racing them: a one-in-N failure that passes on the next two runs,
-            // which is exactly the unexplained red this suite produced once.
-            //
-            // `os.homedir()` honours $HOME on POSIX and USERPROFILE on Windows, so this puts
-            // DATA_DIR inside the fixture and makes the test hermetic rather than merely
-            // tidy. The runtime probe shares this object, so it follows automatically.
+            // Keep lifecycle locks and any migration state inside this fixture too.
             ["HOME", root],
             ["USERPROFILE", root],
+            ["CCC_RUNTIME", "docker"],
+            ["NODE_OPTIONS", `--require=${JSON.stringify(runtimePreload)}`],
+            ["CCC_FIXTURE_RUNTIME_LOG", runtimeLog],
+            ["CCC_FIXTURE_INVENTORY", inventoryAvailable ? "available" : "failed"],
         ]) as NodeJS.ProcessEnv;
         // `-f`, not bare `rm`. Same preflight, and it lets this assert the claim the whole fix
         // is about — that the CLI removes what the library removes — instead of stopping at
@@ -8798,6 +8809,7 @@ describe("the removal preflight, through the CLI entry point", () => {
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
             env: childEnvironment,
+            timeout: 20000,
         });
         const output = `${ran.stdout ?? ""}${ran.stderr ?? ""}`;
         expect(ran.error, "the CLI must actually run").toBeUndefined();
@@ -8807,80 +8819,20 @@ describe("the removal preflight, through the CLI entry point", () => {
         // this on a workspace `removeWorkspace()` removes and reports {"errors":[]} for.
         expect(output, "the CLI must not refuse what the library it wraps removes")
             .not.toContain("not owned by");
-        // And it must have got PAST the preflight. Without this, a crash before the assert
-        // satisfies the line above by saying nothing at all — which is exactly what happened
-        // when vitest's own NODE_OPTIONS reached the child.
-        //
-                // Decided by a FACT, established before the child ran, not by reading the child's
-        // own text. Two reasons, both measured:
-        //
-        // The first pattern matched "docker is not running" — but `ensureDockerRunning`
-        // prints `${info.runtime} is not running`, and .github/workflows/ci.yml runs this
-        // whole suite with CCC_RUNTIME=podman. Under that job the preflight worked perfectly
-        // and the test failed anyway, blaming the removal: the exact defect one commit
-        // earlier fixed, reintroduced by naming a vendor instead of the condition.
-        //
-        // And a disjunction decided by the output can be satisfied by the output. A preflight
-        // that failed with a message resembling the runtime error would have passed on a
-        // broken CLI. `isDockerRunning()` is the same check `ensureDockerRunning` makes, so
-        // this branches on what the CLI will do rather than on what it said.
-        // Probed by spawning, not by calling `isDockerRunning()` in this process:
-        // `container-runtime.ts` caches the resolved runtime in a module-level `_cachedInfo`,
-        // so whichever test in this worker asked first decides the answer for the rest. Under
-        // CCC_RUNTIME=podman the in-process call still ran `docker info` and reported up,
-        // while the child correctly said "podman is not running" — the probe disagreeing with
-        // the run it is supposed to describe.
-        // Mirrors `resolveRuntime()` in src/container-runtime.ts rather than approximating
-        // it, in its order and by its predicate. The first version asked docker first and
-        // asked whether it was UP; ccc prefers podman and asks whether it is ON PATH. With
-        // Podman Desktop installed and stopped alongside a running Docker — an ordinary
-        // developer machine — ccc resolves podman, finds it down and exits, while the probe
-        // saw docker up and demanded the removal. The probe has to ask the question the
-        // product asks, not a question that usually gives the same answer.
-        const spawnOk = (name: string, ...args: string[]) => spawnSync(name, args, {
-            env: childEnvironment,
-            stdio: ["pipe", "pipe", "pipe"],
-        }).status === 0;
-        const named = childEnvironment.CCC_RUNTIME;
-        // Validated before it reaches `new RegExp` below: `CCC_RUNTIME=pod(man` made the test
-        // die with "Unterminated group", pointing at the assertion instead of at the
-        // environment. ccc rejects anything but these two, so this should fail — legibly.
-        expect(
-            named === undefined || named === "docker" || named === "podman",
-            `CCC_RUNTIME must be 'docker' or 'podman', not ${JSON.stringify(named)}`,
-        ).toBe(true);
-        // `resolveRuntime` has THREE outcomes, not two: podman if on PATH, else docker if on
-        // PATH, else it throws. Collapsing the throw into "docker" made the test say the run
-        // never reached the runtime check on a machine with neither installed — where the run
-        // reached it and was told there is nothing to reach. The same misdirection as the two
-        // before it, on the one outcome the mirror did not cover.
-        const runtime = named
-            ?? (spawnOk("podman", "--version")
-                ? "podman"
-                : spawnOk("docker", "--version") ? "docker" : null);
-        if (runtime === null) {
-            expect(output, "with no runtime installed, ccc refuses to choose one")
-                .toMatch(/No container runtime found/i);
-        } else if (spawnOk(runtime, "info")) {
-            expect(output, "the run must have reached the removal").toContain("Removing workspace");
-            // The claim the whole fix is about, asserted through the entry point rather than
-            // through the library: `-f` removes what `removeWorkspace(..., {force:true})`
-            // removes. Nothing else in the suite says that about the CLI.
-            // Case-insensitive: the CLI's catch prints `Error: ` capitalised.
-            expect(output, "and -f must not have been refused either").not.toMatch(/error:/i);
-            expect(existsSync(workspacePath), "the CLI removes what the library removes")
-                .toBe(false);
+        const calls = readFileSync(runtimeLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        expect(calls).toContainEqual(["docker", "info"]);
+        expect(calls).toContainEqual(["docker", "ps", "-a", "--format", "{{.Names}}"]);
+        expect(output).toContain("Removing workspace");
+        if (inventoryAvailable) {
+            expect(ran.status, output).toBe(0);
+            expect(output).not.toMatch(/error:/i);
+            expect(output).toContain("Workspace removed.");
+            expect(existsSync(workspacePath), "the CLI removes what the library removes").toBe(false);
         } else {
-            // No container runtime here, so the removal cannot be reached — but the preflight
-            // still ran, which is what this test binds. It must have died on the runtime
-            // check, not before it: a crash before the assert says neither thing.
-            // Named, not just "is not running". A preflight that failed with a message
-            // resembling the runtime error would otherwise satisfy this — measured: a
-            // preflight throwing "docker is not running" passed under CCC_RUNTIME=podman,
-            // because the arm only asked for the shape of the sentence and not for whose it
-            // was. Requiring the resolved runtime's own name closes the state that matters.
-            expect(output, "the run must have stopped at the runtime check, not before it")
-                .toMatch(new RegExp(`${runtime} is not running|Cannot connect to the`, "i"));
+            expect(ran.status, output).toBe(1);
+            expect(output).toContain("Unable to list workspace containers");
+            expect(readFileSync(join(nested, "stuff.txt"), "utf8")).toBe("files the operator put here");
+            expect(branchExistsInRepo(src, "cli-loose")).toBe("local");
         }
     }, 30000);
 });

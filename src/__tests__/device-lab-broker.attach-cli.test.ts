@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { createServer } from "http";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
+import { pathToFileURL } from "url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createDeviceBrokerServer,
@@ -29,11 +30,11 @@ import { close, listen } from "./helpers/host-broker-test-fixture.js";
 import { freePort } from "./helpers/fake-broker-mcp-fixture.js";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 
-async function waitForBrokerHealth(port: number, timeoutMs = 30000) {
+async function waitForBrokerHealth(port: number, timeoutMs = 8000, exited: () => boolean = () => false) {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() <= deadline) {
+    while (Date.now() <= deadline && !exited()) {
         try {
-            const response = await fetch(`http://127.0.0.1:${port}/health`);
+            const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) });
             const body = await response.json() as { name?: string };
             if (response.ok && body.name === "ccc-device-broker") return true;
         } catch {
@@ -2089,7 +2090,8 @@ describe("device-lab host broker physical attach and CLI", () => {
         const child = spawn(
             process.execPath,
             [
-                join(process.cwd(), "node_modules/tsx/dist/cli.mjs"),
+                "--import",
+                pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href,
                 join(process.cwd(), "src/index.ts"),
                 "devices",
                 "broker",
@@ -2100,31 +2102,45 @@ describe("device-lab host broker physical attach and CLI", () => {
                 String(port),
             ],
             {
-                cwd: process.cwd(),
+                // The CLI must not depend on the checkout's Git ownership or worktree topology.
+                cwd: fixtureHome,
                 env,
                 stdio: ["ignore", "pipe", "pipe"],
             },
         );
         let stdout = "";
         let stderr = "";
-        child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
-        child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+        let spawnError: string | undefined;
+        let closed = false;
+        const childClosed = new Promise<void>((resolve) => child.once("close", () => {
+            closed = true;
+            resolve();
+        }));
+        child.once("error", (error: NodeJS.ErrnoException) => { spawnError = error.code || "spawn-error"; });
+        child.stdout?.on("data", (chunk) => { stdout = (stdout + chunk.toString()).slice(-8192); });
+        child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-8192); });
         try {
-            const healthy = await waitForBrokerHealth(port);
-            if (!healthy) throw new Error(`broker serve did not become healthy; exit=${child.exitCode}; stdout=${stdout}; stderr=${stderr}`);
+            const healthy = await waitForBrokerHealth(port, 8000, () => closed || spawnError !== undefined);
+            if (!healthy) throw new Error(`broker serve did not become healthy; exit=${child.exitCode}; error=${spawnError}; stdout=${stdout}; stderr=${stderr}`);
+            await new Promise((resolve) => setTimeout(resolve, 100));
             expect(child.exitCode).toBeNull();
+            expect(child.signalCode).toBeNull();
+            expect(spawnError).toBeUndefined();
         } finally {
-            child.kill("SIGTERM");
-            await new Promise<void>((resolve) => {
-                const timer = setTimeout(() => {
-                    if (child.exitCode === null) child.kill("SIGKILL");
-                    resolve();
-                }, 1000);
-                child.once("exit", () => {
-                    clearTimeout(timer);
-                    resolve();
-                });
-            });
+            if (!closed) child.kill("SIGTERM");
+            const forceTimer = setTimeout(() => { if (!closed) child.kill("SIGKILL"); }, 1000);
+            let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    childClosed,
+                    new Promise<never>((_resolve, reject) => {
+                        deadlineTimer = setTimeout(() => reject(new Error("Owned broker child did not close")), 3000);
+                    }),
+                ]);
+            } finally {
+                clearTimeout(forceTimer);
+                clearTimeout(deadlineTimer);
+            }
             expect(stderr).not.toContain("Unknown command");
         }
     }, 20000);

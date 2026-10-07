@@ -33,7 +33,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
         ...overrides,
     };
     const destinations = vi.fn(() => ["/fixture/project", "/fixture/auth"]);
-    const context = {
+    const context: Parameters<typeof createNativeContainerExistingLifecycle>[1] = {
         startCli: "captured-runtime", requiredMountDestinations: destinations,
         projectPath: "/fixture/project", profile: "work",
     };
@@ -95,23 +95,23 @@ describe("existing container application through native composition", () => {
         expect(native.runtime).not.toHaveBeenCalled();
     });
 
-    it("recovers only an authorized managed exact ID, selecting stop/remove runtime separately", () => {
-        native.runtime.mockReturnValueOnce("docker").mockReturnValueOnce("podman");
+    it("defers a safe mismatch on the startup-running ID even when the guard authorizes replacement", () => {
         const f = fixture({ inspectContract: () => false });
-        const recreate = vi.fn(() => { f.order.push("recreated"); });
+        const recreate = vi.fn();
         const guard = vi.fn((replace: () => void) => { replace(); return true; });
-        expect(f.lifecycle.run({ containerName: name, managedProjectPath: "/fixture/project", initiallyRunningContainerId: id, replacementGuard: guard, onRecreate: recreate })).toEqual({ kind: "continue-to-create" });
-        expect(f.ports.managedIdentity).toHaveBeenCalledExactlyOnceWith(id, "/fixture/project");
-        expect(native.spawn.mock.calls).toEqual([
-            ["docker", ["stop", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }],
-            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }],
-        ]);
-        expect(console.log).toHaveBeenCalledExactlyOnceWith("Recreating container (container contract changed)...");
-        expect(recreate).toHaveBeenCalledTimes(1);
-        expect(f.ports.finish).not.toHaveBeenCalled();
-        expect(f.ports.safeToDefer).not.toHaveBeenCalled();
+        expect(f.lifecycle.run({ containerName: name, managedProjectPath: "/fixture/project", initiallyRunningContainerId: id, replacementGuard: guard, onRecreate: recreate })).toEqual({ kind: "joined", containerId: id });
+        expect(guard).toHaveBeenCalledTimes(1);
+        expect(f.ports.managedIdentity).not.toHaveBeenCalled();
+        expect(f.ports.identity).toHaveBeenCalledExactlyOnceWith(name);
+        expect(native.runtime).not.toHaveBeenCalled();
+        expect(native.spawn).not.toHaveBeenCalled();
+        expect(console.log).not.toHaveBeenCalled();
+        expect(recreate).not.toHaveBeenCalled();
+        expect(f.ports.safeToDefer).toHaveBeenCalledExactlyOnceWith(id, expect.any(Function));
+        expect(f.ports.finish).toHaveBeenCalledExactlyOnceWith(id);
+        expect(f.order.slice(-3)).toEqual(["ssh", "git", `finish:${id}`]);
+        expect(f.order).not.toContain("mcp");
     });
-
     it("uses ordinary non-force removal on the captured stopped path without stop or managed reinspection", () => {
         const f = fixture();
         expect(f.lifecycle.replace({ containerName: name, expectedContainerId: id, reason: "changed", replacementGuard: operation => { operation(); return true; } })).toBe(true);
@@ -119,26 +119,58 @@ describe("existing container application through native composition", () => {
         expect(f.ports.managedIdentity).not.toHaveBeenCalled();
     });
 
-    it.each(["stop", "rm"] as const)("preserves native %s failure, suppressing later effects and callbacks", operation => {
+    it.each([{ status: 1 }, { status: null }, { status: 0, error: new Error("remove denied") }])("preserves stopped removal failure, suppressing callbacks: %j", result => {
         const f = fixture();
-        native.spawn.mockImplementation((_cli, args) => ({ status: args[0] === operation ? 1 : 0 }));
+        native.spawn.mockReturnValue(result);
         const recreated = vi.fn();
-        expect(() => f.lifecycle.replace({ containerName: name, expectedContainerId: id, managedProjectPath: "/fixture/project", initiallyRunningContainerId: id, reason: "changed", replacementGuard: replace => { replace(); return true; }, onRecreate: recreated })).toThrow(operation === "stop"
-            ? "Container replacement aborted because the idle running container could not be stopped."
-            : "Container replacement aborted because the stopped container could not be removed.");
+        expect(() => f.lifecycle.replace({ containerName: name, expectedContainerId: id, managedProjectPath: "/fixture/project", reason: "changed", replacementGuard: replace => { replace(); return true; }, onRecreate: recreated })).toThrow("Container replacement aborted because the stopped container could not be removed.");
         expect(recreated).not.toHaveBeenCalled();
-        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(operation === "stop" ? ["stop"] : ["stop", "rm"]);
-        expect(console.log).toHaveBeenCalledTimes(operation === "stop" ? 0 : 1);
+        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["rm"]);
+        expect(console.log).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(f.ports.identity).mock.calls).toEqual([[name], [id]]);
+        expect(f.ports.managedIdentity).not.toHaveBeenCalled();
     });
 
-    it("preserves managed successor identity without native effects", () => {
-        const f = fixture({ managedIdentity: () => ({ containerId: "successor", running: true }) });
-        expect(f.lifecycle.replace({ containerName: name, expectedContainerId: id, managedProjectPath: "/fixture/project", initiallyRunningContainerId: id, reason: "changed", replacementGuard: replace => { replace(); return true; } })).toBe(false);
+    it.each([null, { containerId: "successor", running: false }, { containerId: id, running: true }])("preserves last-check disappearance, successor or external start without native effects: %j", current => {
+        const identity = vi.fn<SuppliedPorts["identity"]>().mockReturnValueOnce({ containerId: id, running: false }).mockReturnValueOnce(current);
+        const f = fixture({ identity });
+        expect(f.lifecycle.replace({ containerName: name, expectedContainerId: id, reason: "changed", replacementGuard: replace => { replace(); return true; } })).toBe(false);
+        expect(identity.mock.calls).toEqual([[name], [id]]);
+        expect(f.ports.managedIdentity).not.toHaveBeenCalled();
         expect(native.runtime).not.toHaveBeenCalled();
         expect(native.spawn).not.toHaveBeenCalled();
         expect(console.log).not.toHaveBeenCalled();
     });
 
+    it("refuses an initially observed running container even when the guard later stops it", () => {
+        const identity = vi.fn<SuppliedPorts["identity"]>().mockReturnValue({ containerId: id, running: true });
+        const f = fixture({ identity });
+        expect(f.lifecycle.replace({ containerName: name, reason: "changed", replacementGuard: replace => {
+            identity.mockReturnValue({ containerId: id, running: false }); replace(); return true;
+        } })).toBe(false);
+        expect(identity).toHaveBeenCalledExactlyOnceWith(name);
+        expect(native.spawn).not.toHaveBeenCalled();
+        expect(native.runtime).not.toHaveBeenCalled();
+    });
+
+    it("runs the removal boundary before native execution and preserves its failure identity", () => {
+        const failure = new Error("project root changed");
+        const f = fixture();
+        f.context.beforeRemove = () => { throw failure; };
+        expect(() => f.lifecycle.replace({ containerName: name, reason: "changed", replacementGuard: replace => { replace(); return true; } })).toThrow(failure);
+        expect(native.runtime).not.toHaveBeenCalled();
+        expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it("runs restart boundaries around captured-runtime start before synchronization", () => {
+        const f = fixture({ isRunning: () => false });
+        f.context.beforeStart = () => { f.order.push("before-start"); };
+        f.context.afterStart = exactId => { f.order.push(`after-start:${exactId}`); };
+        native.spawn.mockImplementation(() => { f.order.push("native-start"); return { status: 0 }; });
+        expect(f.lifecycle.run({ containerName: name })).toEqual({ kind: "joined", containerId: id });
+        expect(f.order.slice(-7)).toEqual(["before-start", "native-start", `after-start:${id}`, "mcp", "ssh", "git", `finish:${id}`]);
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit" });
+    });
     it("reads required destinations only when reporting a mismatch and safely defers without MCP", () => {
         const f = fixture({ inspectContract: (_id, report) => { report("credential mount changed"); return false; } });
         f.destinations.mockReturnValue(["/updated/destination"]);

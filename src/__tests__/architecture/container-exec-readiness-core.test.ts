@@ -97,40 +97,57 @@ describe("container exec readiness capabilities", () => {
 
 describe("container exec readiness policy traces", () => {
     const cases = [
-        { name: "initial expiry", times: [100, 850], outcomes: [], result: false,
-            trace: [n(100), n(850)] },
-        { name: "initial negative budget", times: [100, 851], outcomes: [], result: false,
-            trace: [n(100), n(851)] },
+        { name: "initial expiry", times: [100, 15250], outcomes: [], result: false,
+            trace: [n(100), n(15250)] },
+        { name: "initial negative budget", times: [100, 15251], outcomes: [], result: false,
+            trace: [n(100), n(15251)] },
         { name: "immediate success", times: [100, 101], outcomes: [true], result: true,
-            trace: [n(100), n(101), p(200)] },
+            trace: [n(100), n(101), p(5000)] },
         { name: "second attempt success", times: [100, 101, 110, 185], outcomes: [false, true], result: true,
-            trace: [n(100), n(101), p(200), n(110), s(75), n(185), p(200)] },
+            trace: [n(100), n(101), p(5000), n(110), s(75), n(185), p(5000)] },
         { name: "third attempt success", times: [100, 101, 110, 185, 190, 265], outcomes: [false, false, true], result: true,
-            trace: [n(100), n(101), p(200), n(110), s(75), n(185), p(200), n(190), s(75), n(265), p(200)] },
+            trace: [n(100), n(101), p(5000), n(110), s(75), n(185), p(5000), n(190), s(75), n(265), p(5000)] },
         { name: "exhaustion retains final post-failure clock without a third pause", times: [100, 101, 110, 185, 190, 265, 270], outcomes: [false, false, false], result: false,
-            trace: [n(100), n(101), p(200), n(110), s(75), n(185), p(200), n(190), s(75), n(265), p(200), n(270)] },
-        { name: "expiry after a pause", times: [100, 101, 110, 850], outcomes: [false], result: false,
-            trace: [n(100), n(101), p(200), n(110), s(75), n(850)] },
-        { name: "shrinking timeout and pause budgets", times: [0, 600, 700, 725, 740, 749, 750], outcomes: [false, false, false], result: false,
-            trace: [n(0), n(600), p(150), n(700), s(50), n(725), p(25), n(740), s(10), n(749), p(1), n(750)] },
-        { name: "fractional budgets stay unrounded", times: [0.5, 550.75, 700.25, 750.25], outcomes: [false, true], result: true,
-            trace: [n(0.5), n(550.75), p(199.75), n(700.25), s(50.25), n(750.25), p(0.25)] },
-        { name: "zero pause is skipped", times: [0, 0, 750, 751], outcomes: [false], result: false,
-            trace: [n(0), n(0), p(200), n(750), n(751)] },
-        { name: "negative pause is skipped", times: [0, 0, 800, 801], outcomes: [false], result: false,
-            trace: [n(0), n(0), p(200), n(800), n(801)] },
-        { name: "forward jump expires the next attempt", times: [100, 101, 900, 901], outcomes: [false], result: false,
-            trace: [n(100), n(101), p(200), n(900), n(901)] },
+            trace: [n(100), n(101), p(5000), n(110), s(75), n(185), p(5000), n(190), s(75), n(265), p(5000), n(270)] },
+        { name: "expiry after a pause", times: [100, 101, 110, 15250], outcomes: [false], result: false,
+            trace: [n(100), n(101), p(5000), n(110), s(75), n(15250)] },
+        { name: "shrinking timeout and pause budgets", times: [0, 15000, 15100, 15125, 15140, 15149, 15150], outcomes: [false, false, false], result: false,
+            trace: [n(0), n(15000), p(150), n(15100), s(50), n(15125), p(25), n(15140), s(10), n(15149), p(1), n(15150)] },
+        { name: "fractional budgets stay unrounded", times: [0.5, 14950.75, 15100.25, 15150.25], outcomes: [false, true], result: true,
+            trace: [n(0.5), n(14950.75), p(199.75), n(15100.25), s(50.25), n(15150.25), p(0.25)] },
+        { name: "zero pause is skipped", times: [0, 0, 15150, 15151], outcomes: [false], result: false,
+            trace: [n(0), n(0), p(5000), n(15150), n(15151)] },
+        { name: "negative pause is skipped", times: [0, 0, 15200, 15201], outcomes: [false], result: false,
+            trace: [n(0), n(0), p(5000), n(15200), n(15201)] },
+        { name: "forward jump expires the next attempt", times: [100, 101, 15300, 15301], outcomes: [false], result: false,
+            trace: [n(100), n(101), p(5000), n(15300), n(15301)] },
         { name: "backward jumps preserve caps and three-attempt bound", times: [100, -100, -200, -300, -400, -500, -600], outcomes: [false, false, false], result: false,
-            trace: [n(100), n(-100), p(200), n(-200), s(75), n(-300), p(200), n(-400), s(75), n(-500), p(200), n(-600)] },
-        { name: "backward jump permits retry after a skipped pause", times: [0, 0, 800, 700], outcomes: [false, true], result: true,
-            trace: [n(0), n(0), p(200), n(800), n(700), p(50)] },
+            trace: [n(100), n(-100), p(5000), n(-200), s(75), n(-300), p(5000), n(-400), s(75), n(-500), p(5000), n(-600)] },
+        { name: "backward jump permits retry after a skipped pause", times: [0, 0, 15200, 15100], outcomes: [false, true], result: true,
+            trace: [n(0), n(0), p(5000), n(15200), n(15100), p(50)] },
     ];
 
     it.each(cases)("$name", ({ times, outcomes, result, trace }) => {
         const f = fixture(times, outcomes);
         expect(createContainerExecReadiness(f.ports).run(target)).toBe(result);
         expect(f.trace).toEqual(trace);
+    });
+
+    it.each([250, 5000])("accepts a healthy probe taking %i ms within the normal exec timeout", duration => {
+        let now = 0;
+        const trace: unknown[][] = [];
+        const app = createContainerExecReadiness({
+            now() { trace.push(n(now)); return now; },
+            canExec(selected, timeout) {
+                trace.push(["canExec", selected, timeout]);
+                now += duration;
+                return duration <= timeout;
+            },
+            sleep(duration) { trace.push(s(duration)); return undefined; },
+        });
+        expect(app.run(target)).toBe(true);
+        expect(now).toBe(duration);
+        expect(trace).toEqual([n(0), n(0), p(5000)]);
     });
 
     it("accepts a successful probe that moves the clock beyond the deadline without another read", () => {
@@ -140,14 +157,14 @@ describe("container exec readiness policy traces", () => {
             now() { trace.push(n(current)); return current; },
             canExec(selected, timeout) {
                 trace.push(["canExec", selected, timeout]);
-                current = 1000;
+                current = 16000;
                 return true;
             },
             sleep(duration) { trace.push(s(duration)); return undefined; },
         });
         expect(app.run(target)).toBe(true);
-        expect(current).toBe(1000);
-        expect(trace).toEqual([n(0), n(0), p(200)]);
+        expect(current).toBe(16000);
+        expect(trace).toEqual([n(0), n(0), p(5000)]);
     });
 
     it("uses live replacements with the ports receiver and independent deadlines on repeat runs", () => {
@@ -177,13 +194,13 @@ describe("container exec readiness policy traces", () => {
             return false;
         };
         expect(app.run(target)).toBe(true);
-        expect(f.trace).toEqual([n(0), n(0), p(200), n(10), s(75), n(20), p(200)]);
+        expect(f.trace).toEqual([n(0), n(0), p(5000), n(10), s(75), n(20), p(5000)]);
 
         f.trace.length = 0;
-        const times = [1000, 1600];
+        const times = [1000, 16000];
         f.ports.now = function () { expect(this).toBe(f.ports); const value = times.shift()!; f.trace.push(n(value)); return value; };
         expect(app.run("second-target")).toBe(true);
-        expect(f.trace).toEqual([n(1000), n(1600), ["canExec", "second-target", 150]]);
+        expect(f.trace).toEqual([n(1000), n(16000), ["canExec", "second-target", 150]]);
     });
 });
 
@@ -216,7 +233,7 @@ describe("container exec readiness failure propagation", () => {
         });
         f.ports.sleep = ((duration: number) => { f.trace.push(s(duration)); return ignored; }) as unknown as ContainerExecReadinessPorts["sleep"];
         expect(createContainerExecReadiness(f.ports).run(target)).toBe(false);
-        expect(f.trace).toEqual([n(0), n(0), p(200), n(0), s(75), n(0), p(200), n(0), s(75), n(0), p(200), n(0)]);
+        expect(f.trace).toEqual([n(0), n(0), p(5000), n(0), s(75), n(0), p(5000), n(0), s(75), n(0), p(5000), n(0)]);
         expect(accesses).toEqual([]);
     });
 });

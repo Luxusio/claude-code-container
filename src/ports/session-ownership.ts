@@ -19,7 +19,7 @@ export type SessionOwnershipRuntime = "docker" | "podman";
 export type SessionOwnershipMessage =
     | { type: "init"; binding: SessionOwnershipBinding; receipt: SessionOwnershipReceipt }
     | { type: "ready" }
-    | { type: "update"; sequence: number; containerId: string | null; runtime: SessionOwnershipRuntime }
+    | { type: "update"; sequence: number; containerId: string | null; runtime: SessionOwnershipRuntime; cleanupEnabled: boolean }
     | { type: "release"; sequence: number }
     | { type: "ack"; sequence: number }
     | { type: "error" };
@@ -35,7 +35,7 @@ export interface SessionOwnershipChannel {
 
 export interface SessionOwnershipHandle {
     readonly pid?: number;
-    updateContainer(containerId: string | null, runtime: SessionOwnershipRuntime): Promise<void>;
+    updateContainer(containerId: string | null, runtime: SessionOwnershipRuntime, cleanupEnabled?: boolean): Promise<void>;
     release(): Promise<void>;
     assertOwnership(): void;
 }
