@@ -2728,6 +2728,84 @@ async function verifyHostCredentialPathsDelivery(applicationUrl, facadeUrl) {
     }
 }
 
+async function verifyCodexHostAccessDelivery(applicationUrl, facadeUrl, runtimeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const fs = (await import("node:fs")).default;
+    const cp = (await import("node:child_process")).default;
+    const os = (await import("node:os")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const path = await import("node:path");
+    const originals = [];
+    const replace = (owner, name, value) => { originals.push([owner, name, owner[name]]); owner[name] = value; };
+    const uid = Object.getOwnPropertyDescriptor(process, "getuid");
+    const forbidden = () => { throw new Error("unexpected Codex host access native effect"); };
+    const importRead = await createOwnedImportRead(new URL("./", facadeUrl), new URL("./packages/device-lab/package.json", facadeUrl), "host access fixture");
+    try {
+        replace(fs, "readFileSync", importRead.read);
+        replace(os, "homedir", () => path.resolve("codex-host-access-fixture"));
+        for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) replace(cp, name, forbidden);
+        syncBuiltinESMExports();
+        const { createCodexHostAccessRestoration } = await import(applicationUrl);
+        const facade = await import(facadeUrl);
+        const runtime = await import(runtimeUrl);
+        const layout = await import(new URL("./utils.js", facadeUrl));
+        const acl = await import(new URL("./codex-config-acl.js", facadeUrl));
+        importRead.close();
+        for (const [name, value] of Object.entries(fs)) if (typeof value === "function") replace(fs, name, forbidden);
+        for (const [name, value] of Object.entries(fs.promises)) if (typeof value === "function") replace(fs.promises, name, forbidden);
+        const trace = [], warnings = [];
+        let accessCount = 0, denied = false, repairStatus = 0, recheckFails = false;
+        const config = layout.getCodexConfigFile("work");
+        replace(fs, "accessSync", (selected, mode) => {
+            assert.equal(selected, config); assert.equal(mode, fs.constants.R_OK | fs.constants.W_OK);
+            trace.push("access");
+            if (++accessCount === 1 && denied) throw { code: "EACCES" };
+            if (accessCount === 2 && recheckFails) throw new Error("recheck-denied");
+        });
+        replace(fs, "lstatSync", selected => {
+            trace.push(selected === config ? "config" : "parent");
+            assert.ok(selected === config || selected === path.dirname(config));
+            return { uid: 1001, isDirectory() { return true; }, isFile() { return true; }, get nlink() { throw new Error("unexpected host nlink read"); } };
+        });
+        replace(console, "warn", function (message) { assert.equal(this, console); warnings.push(message); });
+        Object.defineProperty(process, "getuid", { configurable: true, value: function () { assert.equal(this, process); return 1001; } });
+        const target = "pinned target;$(ignored)";
+        replace(cp, "spawnSync", (command, args, options) => {
+            assert.equal(command, "docker"); assert.deepEqual(options, { encoding: "utf-8", timeout: 15000 });
+            if (args[1] === target) {
+                assert.deepEqual(args, ["exec", target, "sh", "-c", "id -u"]);
+                trace.push("uid"); runtime._setRuntimeInfoForTest({ runtime: "podman" });
+                return { status: 0, stdout: "2001\n" };
+            }
+            assert.deepEqual(args, ["exec", "--user", "root", target, "sh", "-c",
+                `timeout -k 2s 10s sh -c '${acl.codexConfigFileAclScript("2001").replace(/'/g, `'"'"'`)}'`]);
+            trace.push("repair"); return { status: repairStatus, stderr: "repair-denied" };
+        });
+        syncBuiltinESMExports();
+        assert.equal(facade.restoreCodexConfigHostOwnership.length, 2);
+        assert.equal(facade.restoreCodexConfigHostOwnership.name, "restoreCodexConfigHostOwnership");
+        assert.equal(facade.restoreCodexConfigHostOwnership(target, "work"), undefined);
+        assert.deepEqual(trace, ["access"]);
+        for (const failure of ["none", "repair", "recheck"]) {
+            trace.length = 0; warnings.length = 0; accessCount = 0; denied = true;
+            repairStatus = failure === "repair" ? 1 : 0; recheckFails = failure === "recheck";
+            runtime._setRuntimeInfoForTest({ runtime: "docker" });
+            assert.equal(facade.restoreCodexConfigHostOwnership(target, "work"), undefined);
+            assert.deepEqual(trace, ["access", "parent", "config", "uid", "repair", ...(failure === "repair" ? [] : ["access"])]);
+            assert.equal(warnings.length, failure === "none" ? 0 : 1);
+            if (warnings.length) assert.ok(warnings[0].includes(config) && warnings[0].includes(failure === "repair" ? "repair-denied" : "recheck-denied"));
+        }
+        let touched = false;
+        const core = createCodexHostAccessRestoration({ resolveConfig: () => "absent", accessConfig: () => { throw { code: "ENOENT" }; },
+            hasHostIdentity: () => { touched = true; return true; } });
+        assert.equal(core.restore("target"), undefined); assert.equal(touched, false);
+    } finally {
+        if (uid) Object.defineProperty(process, "getuid", uid); else delete process.getuid;
+        for (const [owner, name, original] of originals.reverse()) owner[name] = original;
+        syncBuiltinESMExports();
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -3639,6 +3717,31 @@ async function smoke(packageRoot) {
     run(process.execPath, ["--input-type=module", "-e",
         `const createOwnedImportRead = ${createOwnedImportRead.toString()}; await (${verifyCodexConfigPreparation.toString()})(...${JSON.stringify(codexConfigUrls)});`]);
     console.log("PASS Codex config distribution: compiled core and actual public facade, strict declarations, commands and observation parity");
+    const hostAccessUrls = ["application/credentials/codex-host-access", "docker", "container-runtime"]
+        .map(name => pathToFileURL(join(packageRoot, `dist/${name}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e",
+        `const createOwnedImportRead = ${createOwnedImportRead.toString()}; await (${verifyCodexHostAccessDelivery.toString()})(...${JSON.stringify(hostAccessUrls)});`]);
+    const hostAccessContract = join(packageRoot, "codex-host-access-consumer.mts");
+    writeFileSync(hostAccessContract, [
+        'import {createCodexHostAccessRestoration} from "./dist/application/credentials/codex-host-access.js";',
+        'import type {CodexHostAccessPorts} from "./dist/ports/credentials/codex-host-access.js";',
+        'import {restoreCodexConfigHostOwnership} from "./dist/docker.js";',
+        'declare const ports:CodexHostAccessPorts;',
+        'const value:undefined=createCodexHostAccessRestoration(ports).restore("target","work");',
+        'const legacy:(target:string,profile?:string)=>void=restoreCodexConfigHostOwnership;',
+        '// @ts-expect-error All capabilities required.',
+        'createCodexHostAccessRestoration({});',
+        '// @ts-expect-error Capabilities readonly.',
+        'ports.currentHostUid=()=>1;',
+        '// @ts-expect-error Access is synchronous.',
+        'const asyncAccess:CodexHostAccessPorts["accessConfig"]=async()=>undefined;',
+        'void[value,legacy,asyncAccess];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root,"node_modules/typescript/bin/tsc"),"--noEmit","--strict","--skipLibCheck",
+            "--target","ES2022","--module","NodeNext","--moduleResolution","NodeNext",hostAccessContract]);
+    } finally { rmSync(hostAccessContract); }
+    console.log("PASS Codex host access distribution: actual compiled facade healthy/repair/failure/recheck, runtime pinning and synchronous readonly declarations");
     await mcpSmoke(packageRoot, "device-lab-mcp");
 }
 

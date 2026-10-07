@@ -30,6 +30,7 @@ import { createContainerRuntimeReadiness } from "./application/container-runtime
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
 import { createCodexConfigPreparation } from "./application/codex-config-preparation.js";
+import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
 import { createNativeContainerExistingLifecycle } from "./composition/container-existing-lifecycle.js";
 import { createNativeContainerCreateLifecycle } from "./composition/container-create-lifecycle.js";
 import { createNativeContainerDestructiveLifecycle } from "./composition/container-destructive-lifecycle.js";
@@ -1192,48 +1193,37 @@ function getCodexContainerUid(containerName: string): string {
 
 // Retain the historical API name; access is now shared without changing owners.
 export function restoreCodexConfigHostOwnership(containerName: string, profile?: string): void {
-    const configFile = getCodexConfigFile(profile);
-    const accessMode = fsConstants.R_OK | fsConstants.W_OK;
-    const warn = (reason: unknown): void => {
-        console.warn(`[ccc] Unable to restore host access to ${configFile}: ${reason instanceof Error ? reason.message : String(reason)}`);
-    };
-    try {
-        accessSync(configFile, accessMode);
-        return;
-    } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "ENOENT") return;
-        if (code !== "EACCES" && code !== "EPERM") {
-            warn(error);
-            return;
-        }
-    }
-
-    // Repair only an inaccessible file, never the credential tree. The parent
-    // must represent the invoking host user before it can identify the ACL user.
-    // Raw host IDs cannot be used inside rootless Podman's user namespace.
-    try {
-        if (typeof process.getuid !== "function") {
-            throw new Error("host user identity is unavailable; automatic access repair skipped");
-        }
-        const parent = lstatSync(dirname(configFile));
-        const config = lstatSync(configFile);
-        if (!parent.isDirectory() || parent.uid !== process.getuid() || !config.isFile()) {
-            throw new Error("automatic repair requires a regular config file in a non-symlink directory owned by the host user");
-        }
-        const repaired = spawnSync(runtimeCli(), [
-            "exec", "--user", "root", containerName, "sh", "-c",
-            codexConfigMutation(codexConfigFileAclScript(getCodexContainerUid(containerName))),
-        ], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
-        if (repaired.error || repaired.status !== 0) {
-            throw new Error(`container ACL repair failed (${repaired.error?.message ?? (repaired.stderr?.trim() || `exit ${repaired.status ?? "unknown"}`)})`);
-        }
-        accessSync(configFile, accessMode);
-    } catch (error) {
-        // MCP generation still reports an actionable error if access is denied.
-        // A post-exit repair failure must not prevent session/env-file cleanup.
-        warn(error);
-    }
+    let accessMode: number;
+    const hostAccess = createCodexHostAccessRestoration({
+        resolveConfig: (selectedProfile) => {
+            const configFile = getCodexConfigFile(selectedProfile);
+            accessMode = fsConstants.R_OK | fsConstants.W_OK;
+            return configFile;
+        },
+        accessConfig: (configFile) => {
+            accessSync(configFile, accessMode);
+            return undefined;
+        },
+        hasHostIdentity: () => typeof process.getuid === "function",
+        inspectParent: (configFile) => lstatSync(dirname(configFile)),
+        inspectConfig: (configFile) => lstatSync(configFile),
+        currentHostUid: () => process.getuid!(),
+        repairConfig: (target) => {
+            const repaired = spawnSync(runtimeCli(), [
+                "exec", "--user", "root", target, "sh", "-c",
+                codexConfigMutation(codexConfigFileAclScript(getCodexContainerUid(target))),
+            ], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
+            if (repaired.error || repaired.status !== 0) {
+                throw new Error(`container ACL repair failed (${repaired.error?.message ?? (repaired.stderr?.trim() || `exit ${repaired.status ?? "unknown"}`)})`);
+            }
+            return undefined;
+        },
+        warn: (configFile, reason) => {
+            console.warn(`[ccc] Unable to restore host access to ${configFile}: ${reason instanceof Error ? reason.message : String(reason)}`);
+            return undefined;
+        },
+    });
+    hostAccess.restore(containerName, profile);
 }
 
 const SOCKET_ACCESS_TIMEOUT_MS = 10_000;

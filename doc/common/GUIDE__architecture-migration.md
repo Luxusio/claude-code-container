@@ -1,5 +1,13 @@
 # Implementing the CCC architecture migration
 
+## Codex host access restoration
+
+The [restoration guide](../credentials/GUIDE__codex-host-access.md) maps the full
+best-effort host access policy to eight ports and fresh native Docker scope.
+Direct errno/getter reads, both catches and access-mode/runtime operand order
+remain compatibility obligations. Existing ACL/principal/locks and post-command
+cleanup retain authority; this does not finish ordered config preparation.
+
 ## Host credential path preparation
 
 The [host-path guide](../credentials/GUIDE__host-paths.md) documents the complete
