@@ -2042,7 +2042,7 @@ async function verifyProfileRequestDelivery(domainUrl, facadeUrl) {
 
 async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
     const assert = (await import("node:assert/strict")).default;
-    const { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
+    const { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { spawnSync } = await import("node:child_process");
     const { createWorktreeAddition } = await import(applicationUrl);
@@ -2124,6 +2124,21 @@ async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
         assert.deepEqual(multi.copied, ["plain.txt"]);
         assert.equal(readFileSync(join(multi.workspacePath, "plain.txt"), "utf8"), "independent copy\n");
         for (const name of ["repo-a", "repo-b"]) assert.equal(git(["branch", "--show-current"], join(multi.workspacePath, name)), "multi-topic");
+        const beforeRemoval = ["repo-a", "repo-b"].map(name => {
+            const repository = join(multiRoot, name);
+            return { head: git(["rev-parse", "HEAD"], repository), refs: git(["show-ref"], repository),
+                config: readFileSync(join(repository, ".git", "config"), "utf8"),
+                contents: readFileSync(join(repository, "owned.txt"), "utf8") };
+        });
+        assert.deepEqual(facade.removeWorkspace(multiRoot, "multi-topic"), { removed: ["plain.txt", "repo-a", "repo-b"], errors: [] });
+        assert.equal(existsSync(multi.workspacePath), false);
+        for (const [index, name] of ["repo-a", "repo-b"].entries()) {
+            const repository = join(multiRoot, name);
+            assert.deepEqual({ head: git(["rev-parse", "HEAD"], repository), refs: git(["show-ref"], repository),
+                config: readFileSync(join(repository, ".git", "config"), "utf8"),
+                contents: readFileSync(join(repository, "owned.txt"), "utf8") }, beforeRemoval[index]);
+            assert.equal(git(["worktree", "list", "--porcelain"], repository).includes(multi.workspacePath), false);
+        }
     } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -2217,6 +2232,45 @@ async function verifyMultiCreationDelivery(applicationUrl) {
     assert.throws(() => create(request), error => error === copyFailure);
     assert.deepEqual(trace, ["remove:source/two", "branch:source/two", "remove:source/one", "branch:source/one", "copy:workspace/plain-a", "root"]);
     assert.throws(() => createMultiWorkspaceCreation({}), TypeError);
+}
+
+async function verifyMultiRemovalDelivery(applicationUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { createMultiWorkspaceRemoval } = await import(applicationUrl);
+    const request = { repositoryPath: "source", destinationPath: "workspace", branch: "topic", options: undefined };
+    const workspace = Symbol("workspace"), identity = Symbol("entry"), registration = Symbol("registration");
+    const entries = [{ name: "repo", path: "source/repo", isGitRepo: true }, { name: "copy", path: "source/copy", isGitRepo: false }];
+    const paths = new Set(["workspace", "workspace/repo", "workspace/copy"]), trace = [];
+    let failRepository = false;
+    const ports = {
+        scanSource: actual => { assert.equal(actual, request); return entries; },
+        destinationPath: (_actual, name) => `workspace/${name}`,
+        pathExists: path => paths.has(path),
+        assertWorkspaceIdentity: (actual, proof) => { assert.equal(actual, request); assert.equal(proof, workspace); trace.push("assert"); },
+        worktreeMatches: () => true,
+        unmanagedPathRefusal: () => assert.fail("owned worktree"),
+        captureWorktreeIdentity: () => identity,
+        captureRegistration: (actual, source, destination, proof) => { assert.equal(actual, request); assert.equal(source, "source/repo"); assert.equal(destination, "workspace/repo"); assert.equal(proof, identity); trace.push("registration"); return registration; },
+        removeRegisteredEntry: (actual, _source, destination, proof, receipt, force) => { assert.equal(actual, request); assert.equal(proof, identity); assert.equal(receipt, registration); assert.equal(force, false); if (failRepository) throw new Error("refused"); paths.delete(destination); trace.push("repo"); },
+        scanWorkspace: () => [],
+        captureCopiedIdentity: () => identity,
+        quarantineCopiedEntry: (actual, destination, proof) => { assert.equal(actual, request); assert.equal(proof, identity); paths.delete(destination); trace.push("copy"); },
+        remainingNames: () => [],
+        quarantineWorkspace: (actual, proof) => { assert.equal(actual, request); assert.equal(proof, workspace); trace.push("root"); },
+        relayEntryError: (name, _destination, error) => `${name}:${error.message}`,
+    };
+    const remove = createMultiWorkspaceRemoval(ports);
+    assert.deepEqual(trace, []);
+    assert.deepEqual(remove(request, workspace), { removed: ["repo", "copy"], errors: [] });
+    assert.deepEqual(trace, ["assert", "registration", "repo", "assert", "copy", "assert", "root"]);
+    paths.add("workspace/repo"); paths.add("workspace/copy"); trace.length = 0; failRepository = true;
+    assert.deepEqual(remove(request, workspace), { removed: ["copy"], errors: ["repo:refused"] });
+    assert.equal(paths.has("workspace/repo"), true); assert.equal(trace.at(-1), "assert"); assert.equal(trace.includes("root"), false);
+    const forceRequest = { ...request, options: { force: true } };
+    const force = createMultiWorkspaceRemoval({ ...ports, scanSource: () => [], assertWorkspaceIdentity: () => {},
+        remainingNames: () => ["foreign"], scanWorkspace: () => [{ name: "foreign", path: "workspace/foreign", isGitRepo: true }],
+        quarantineWorkspace: () => assert.fail("foreign repository must survive") });
+    assert.deepEqual(force(forceRequest, workspace), { removed: [], errors: ["Workspace ownership changed before deletion (foreign)."] });
 }
 
 async function smoke(packageRoot) {
@@ -2533,6 +2587,36 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", multiContract]);
     } finally { rmSync(multiContract); }
     console.log("PASS multi creation distribution: compiled forward/reverse compensation, actual multiple Git/file-copy facade and mutable legacy/opaque declaration consumers");
+    const removalUrl = pathToFileURL(join(packageRoot, "dist/application/workspace/multi-removal.js")).href;
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyMultiRemovalDelivery.toString()})(${JSON.stringify(removalUrl)});`]);
+    const removalContract = join(packageRoot, "multi-removal-consumer.mts");
+    writeFileSync(removalContract, [
+        'import { createMultiWorkspaceRemoval } from "./dist/application/workspace/multi-removal.js";',
+        'import type { MultiRemovalPorts, MultiRemovalRequest } from "./dist/ports/workspace/multi-removal.js";',
+        'import { removeWorkspace, type RemoveResult } from "./dist/worktree.js";',
+        'import type { RemoveResult as DomainResult } from "./dist/domain/workspace/removal-result.js";',
+        'type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2)?true:false;',
+        'declare const ports: MultiRemovalPorts<{w:"workspace"},{e:"entry"},{r:"registration"}>;',
+        'declare const request: MultiRemovalRequest;',
+        'const result: RemoveResult = createMultiWorkspaceRemoval(ports)(request, {w:"workspace"});',
+        'result.removed.push("mutable"); result.errors = ["mutable"];',
+        'const same: Equal<RemoveResult,DomainResult> = true;',
+        'const facade: (source:string,branch:string,opts?:{force?:boolean})=>RemoveResult = removeWorkspace;',
+        '// @ts-expect-error Every semantic port is required.',
+        'createMultiWorkspaceRemoval({});',
+        '// @ts-expect-error Ports are readonly.',
+        'ports.pathExists = () => true;',
+        '// @ts-expect-error The original options object, including undefined, is explicit.',
+        'const missing: MultiRemovalRequest = {repositoryPath:"source",destinationPath:"workspace",branch:"topic"};',
+        '// @ts-expect-error Removal remains synchronous.',
+        'const asynchronous: Promise<unknown> = result;',
+        'void [same,facade,missing,asynchronous];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", removalContract]);
+    } finally { rmSync(removalContract); }
+    console.log("PASS multi removal distribution: compiled opaque/refusal/error policy, actual multi Git/copy removal and preserved source refs/config/files, mutable legacy declarations");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);

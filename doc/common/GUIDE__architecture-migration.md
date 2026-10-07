@@ -1559,3 +1559,19 @@ full worktree regression currently takes about nine minutes on this host.
 The Harness health command treats `--dry-run` as stdout-only output and still
 executes configured checks. Inspect those commands before invoking it on a
 frozen checkout; it can trigger the normal auto-building test wrapper.
+
+## Multi-repo workspace removal application
+
+The multi removal application owns source-order iteration, per-entry outcomes,
+the copied-entry successor checks and final root decision. Fifteen required
+semantic ports retain native existence observations, registration/inode proof,
+quarantine scopes and diagnostic relay. Public dispatch and ownership refusal
+remain in the native facade; the application relays opaque proofs unchanged.
+See the [multi removal guide](../workspaces/GUIDE__multi-removal.md).
+
+Strict per-entry force checks and final force truthiness retain their separate
+read positions. Identity capture and relay exceptions preserve their original
+catch boundaries. Existing partial-removal retry ownership refusal is retained.
+Verification covers core faults, real Git facade behavior, the full worktree
+regressions and actual compiled removal/source preservation in both shipping
+forms. Unified removal, repair/dispatch and final composition remain separate.

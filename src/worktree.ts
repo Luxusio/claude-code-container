@@ -2,12 +2,15 @@
 
 import { spawnSync } from "child_process";
 import { createWorkspaceBranchValidation } from "./application/workspace-branch-validation.js";
+import { createMultiWorkspaceRemoval } from "./application/workspace/multi-removal.js";
+import type { RemoveResult } from "./domain/workspace/removal-result.js";
 import { createMultiWorkspaceCreation } from "./application/workspace/multi-creation.js";
 import type { WorkspaceEntry } from "./domain/workspace/source-entry.js";
 import { createUnifiedWorkspaceCreation } from "./application/workspace/unified-creation.js";
 import type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
 import type { WorktreeAdditionPorts } from "./ports/workspace/worktree-addition.js";
 
+export type { RemoveResult } from "./domain/workspace/removal-result.js";
 export type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
 import { createHash, randomBytes } from "crypto";
 import {
@@ -846,11 +849,6 @@ function removePathByQuarantine(
 export interface WorkspaceInfo {
     branch: string;
     path: string;
-}
-
-export interface RemoveResult {
-    removed: string[];
-    errors: string[];
 }
 
 // === Pure Functions ===
@@ -7865,7 +7863,12 @@ export function removeWorkspace(
     }
 
     // Multi-repo mode
-    return removeMultiRepoWorkspace(resolved, wsPath, branch, workspaceIdentity, opts);
+    return removeMultiRepoWorkspace({
+        repositoryPath: resolved,
+        destinationPath: wsPath,
+        branch,
+        options: opts,
+    }, workspaceIdentity);
 }
 
 function removeUnifiedWorkspace(
@@ -8230,111 +8233,38 @@ function removeUnifiedWorkspace(
     return { removed, errors };
 }
 
-function removeMultiRepoWorkspace(
-    resolved: string,
-    wsPath: string,
-    branch: string,
-    workspaceIdentity: DirectoryIdentity,
-    opts?: { force?: boolean },
-): RemoveResult {
-    const removed: string[] = [];
-    const errors: string[] = [];
-
-    const sourceEntries = scanDirectory(resolved, { strict: true });
-
-    for (const entry of sourceEntries) {
-        const wsEntryPath = join(wsPath, entry.name);
-        if (!existsSync(wsEntryPath)) {
-            continue;
-        }
-
-        if (entry.isGitRepo) {
-            assertDirectoryIdentity(wsPath, workspaceIdentity);
-            if (!isValidWorktree(wsEntryPath, entry.path)) {
-                // Multi-repo mode's copy of the veto above, gated the same way for symmetry —
-                // but say plainly that this is not reachable today for the shape it was
-                // written for. `assertWorkspaceOwnership`, from `assertWorkspaceBranch`,
-                // raises `Workspace repository '<name>' is not owned by its source
-                // repository` on BOTH sides of the flag before this loop runs, so multi-repo
-                // never produces the refusal below and -f never gets here. Measured, and
-                // pinned by a test; relaxing that assert is a separate decision from the one
-                // this gate implements.
-                if (opts?.force !== true) {
-                    errors.push(unmanagedPathRefusal(wsEntryPath, pathContent(wsEntryPath)));
-                }
-                continue;
-            }
-            const entryIdentity = captureDirectoryIdentity(wsEntryPath);
-            try {
-                const registrationFence = captureExistingWorktreeRegistrationFence(
-                    entry.path,
-                    wsEntryPath,
-                    branch,
-                    entryIdentity,
-                );
-                removeRegisteredWorktree(
-                    entry.path,
-                    wsEntryPath,
-                    entryIdentity,
-                    opts?.force === true,
-                    dirname(wsPath),
-                    registrationFence,
-                );
-                removed.push(entry.name);
-            } catch (error) {
-                errors.push(relayNestedRemovalError(entry.name, wsEntryPath, error));
-            }
-        } else {
-            try {
-                assertDirectoryIdentity(wsPath, workspaceIdentity);
-                const current = scanDirectory(wsPath, { strict: true })
-                    .find((candidate) => candidate.name === entry.name);
-                if (current?.isGitRepo) {
-                    errors.push(`${entry.name}: became a Git repository before deletion`);
-                    continue;
-                }
-                const entryIdentity = capturePathIdentity(wsEntryPath);
-                removePathByQuarantine(wsEntryPath, entryIdentity, dirname(wsPath));
-                if (existsSync(wsEntryPath)) {
-                    errors.push(`${entry.name}: path was recreated during deletion`);
-                    continue;
-                }
-                removed.push(entry.name);
-            } catch (error) {
-                errors.push(relayNestedRemovalError(entry.name, wsEntryPath, error));
-            }
-        }
-    }
-
-    // Try to remove the workspace directory itself
-    try {
-        if (existsSync(wsPath)) {
-            assertDirectoryIdentity(wsPath, workspaceIdentity);
-            if (errors.length > 0) return { removed, errors };
-            const remaining = readdirSync(wsPath);
-            if (remaining.length === 0) {
-                removeDirectoryByQuarantine(wsPath, workspaceIdentity);
-            } else if (opts?.force) {
-                const remainingRepositories = scanDirectory(wsPath, { strict: true })
-                    .filter((entry) => entry.isGitRepo);
-                if (remainingRepositories.length > 0) {
-                    errors.push(
-                        `Workspace ownership changed before deletion (${remainingRepositories.map(({ name }) => name).join(", ")}).`,
-                    );
-                    return { removed, errors };
-                }
-                removeDirectoryByQuarantine(wsPath, workspaceIdentity);
-            } else {
-                errors.push(
-                    `Workspace directory not empty (${remaining.length} items remaining). Use -f to force.`,
-                );
-            }
-        }
-    } catch (e) {
-        errors.push(
-            `Failed to remove workspace directory: ${(e as Error).message}`,
-        );
-    }
-
-    return { removed, errors };
-}
+const removeMultiRepoWorkspace = createMultiWorkspaceRemoval<
+    DirectoryIdentity, DirectoryIdentity, WorktreeRegistrationFence
+>({
+    scanSource: (request) => scanDirectory(request.repositoryPath, { strict: true }),
+    destinationPath: (request, name) => join(request.destinationPath, name),
+    pathExists: existsSync,
+    assertWorkspaceIdentity: (request, identity) => assertDirectoryIdentity(request.destinationPath, identity),
+    worktreeMatches: (source, destination) => isValidWorktree(destination, source),
+    unmanagedPathRefusal: (destination) => unmanagedPathRefusal(destination, pathContent(destination)),
+    captureWorktreeIdentity: captureDirectoryIdentity,
+    captureRegistration: (request, source, destination, identity) => captureExistingWorktreeRegistrationFence(
+        source,
+        destination,
+        request.branch,
+        identity,
+    ),
+    removeRegisteredEntry: (request, source, destination, identity, receipt, force) => removeRegisteredWorktree(
+        source,
+        destination,
+        identity,
+        force,
+        dirname(request.destinationPath),
+        receipt,
+    ),
+    scanWorkspace: (request) => scanDirectory(request.destinationPath, { strict: true }),
+    captureCopiedIdentity: capturePathIdentity,
+    quarantineCopiedEntry: (request, destination, identity) => removePathByQuarantine(
+        destination,
+        identity,
+        dirname(request.destinationPath),
+    ),
+    remainingNames: (request) => readdirSync(request.destinationPath),
+    quarantineWorkspace: (request, identity) => removeDirectoryByQuarantine(request.destinationPath, identity),
+    relayEntryError: relayNestedRemovalError,
+});
