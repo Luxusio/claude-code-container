@@ -1445,14 +1445,18 @@ function siblingRegisteredWorkspacePaths(workspacePath: string): string[] {
             sourceBasename,
         );
         if (pathExistsStrict(sourcePath)) {
-            if (hasGitMetadata(sourcePath)
+            const sourceIsGitRepository = hasGitMetadata(sourcePath);
+            if (sourceIsGitRepository
                 && registryContainsWorktree(sourcePath, workspacePath)) {
                 registered.push(workspacePath);
             }
-            for (const entry of scanUnifiedNestedRepositories(
-                sourcePath,
-                { strict: true, allowRegisteredWorktrees: true },
-            )) {
+            const entries = sourceIsGitRepository
+                ? scanUnifiedNestedRepositories(
+                    sourcePath,
+                    { strict: true, allowRegisteredWorktrees: true },
+                )
+                : scanDirectory(sourcePath, { strict: true });
+            for (const entry of entries) {
                 if (entry.isGitRepo
                     && registryContainsWorktree(
                         entry.path,
