@@ -79,6 +79,15 @@ mount representations. This compatibility does not bypass bind source, user,
 provenance or live identity checks. Failed creation verification still compensates
 only the exact captured newly created container ID.
 
+For the selected Podman runtime, an absent `HostConfig.DeviceRequests` field
+means no Docker-style device requests: Podman 4.9.3 does not expose that field.
+Determine this compatibility from the selected runtime, never inspected labels
+or payload hints. Docker inspection must still contain the field. Present
+malformed or nonempty requests and unexpected host devices remain unsafe;
+`Devices`, `GroupAdd`, privilege, user, mount and provenance checks still apply.
+A stopped compatible Podman container must restart with its observed identity
+instead of being replaced solely for this schema difference.
+
 ## Existing projects
 
 CCC-managed Codex state (the resolved default or named profile, including legacy `~/.ccc/codex`, distinct from host `~/.codex`) must

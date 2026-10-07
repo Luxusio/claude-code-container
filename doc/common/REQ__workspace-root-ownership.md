@@ -45,7 +45,15 @@ the workspace without risking uncommitted files.
 - Confirmed recovery creates and validates a temporary Git registration and
   index, then relinks that registration to the existing workspace. It preserves
   tracked modifications, untracked files, and ignored files. Any failed
-  validation rolls metadata back; declining the prompt changes nothing.
+  validation rolls metadata back; declining the prompt changes nothing. The
+  internal temporary registration name is bounded and randomly unique; it
+  must not repeat the workspace name and introduce additional Git path
+  length limits for an otherwise valid workspace. Its bounded name includes
+  a deterministic digest of the observed canonical workspace path and
+  directory identity plus a fresh random nonce. Later recovery accepts that
+  exact workspace binding or the legacy workspace-derived name, and refuses
+  a digest belonging to another workspace. Equivalent Windows case/short
+  spellings retain the same binding; distinct directory objects do not.
 - The recreated management `gitdir` backpointer is an absolute path. On
   Windows it uses forward slashes, matching Git's administrative path format.
   The workspace `.git` forward link may remain relative for portability.
@@ -56,6 +64,8 @@ the workspace without risking uncommitted files.
   during preflight. A failed attempt preserves the workspace files. Worktree
   creation diagnostics retain the original failure message when Git stderr is
   empty, including registration ownership capture failures before checkout.
+  Failure to read a temporary HEAD reports the observation step and Git
+  error; a successfully observed mismatching HEAD reports an identity change.
 
 ## Verification
 

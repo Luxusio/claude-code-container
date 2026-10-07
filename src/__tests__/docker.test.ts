@@ -2101,9 +2101,9 @@ describe("docker.ts module exports", () => {
 
         function mockReplacementRuntime(
             contractJson: string,
-            options: { identityRunning?: boolean } = {},
+            options: { identityRunning?: boolean, startTransitionsToRunning?: boolean } = {},
         ): void {
-            const identityRunning = options.identityRunning ?? true;
+            let identityRunning = options.identityRunning ?? true;
             let removed = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
@@ -2118,6 +2118,10 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
                 if (args[0] === "ps" && args[1] === "-q") {
                     return makeResult(0, !removed && identityRunning ? "abc123\n" : "");
+                }
+                if (args[0] === "start" && options.startTransitionsToRunning) {
+                    identityRunning = true;
+                    return makeResult(0, "abc123\n");
                 }
                 if (args[0] === "stop") {
                     return makeResult(0, "abc123\n");
@@ -2253,6 +2257,57 @@ describe("docker.ts module exports", () => {
                 .toBe(getContainerName(projectPath));
             expect(guard).not.toHaveBeenCalled();
             expect(ready).toHaveBeenCalledWith(TEST_CONTAINER_ID, { startedByInvocation: false });
+            expectNoContainerReplacement();
+        });
+
+        it.each([
+            ["podman", "absent", false],
+            ["podman", "absent", true],
+            ["docker", "absent", true],
+            ["podman", "malformed", true],
+            ["podman", "string", true],
+            ["podman", "nonempty", true],
+            ["podman", "injected device", true],
+            ["podman", "missing devices", true],
+            ["podman", "missing groups", true],
+        ] as const)("checks selected %s HostConfig.DeviceRequests %s (running=%s)", (runtime, fault, running) => {
+            _setRuntimeInfoForTest({ runtime, rootless: runtime === "podman", flavor: runtime === "podman" ? "podman-rootless" : "docker-native" });
+            const lab = buildLabRunnerRunConfig("lab-runner", getContainerName(projectPath))!;
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: lab.status, unsupportedReason: lab.unsupportedReason,
+                kvmDevice: lab.status === "ready",
+            }));
+            inspected.State = { Running: running };
+            delete inspected.HostConfig.DeviceRequests;
+            // Match Podman's actual tmpfs representation alongside the absent field.
+            if (runtime === "podman") {
+                inspected.Mounts.find((mount: { Destination: string }) => mount.Destination === "/var/run/docker.sock").Source = "/run/podman/podman.sock";
+                inspected.HostConfig.Tmpfs = Object.fromEntries(inspected.Mounts
+                    .filter((mount: { Type: string }) => mount.Type === "tmpfs")
+                    .map((mount: { Destination: string }) => [mount.Destination, "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup"]));
+                inspected.Mounts = inspected.Mounts.filter((mount: { Type: string, Destination: string }) => mount.Type !== "tmpfs");
+            }
+            // Payload hints cannot authorize the Podman schema exception on Docker.
+            inspected.Runtime = "podman";
+            inspected.Config.Labels["ccc.runtime"] = "podman";
+            if (fault === "malformed") inspected.HostConfig.DeviceRequests = {};
+            if (fault === "string") inspected.HostConfig.DeviceRequests = "[]";
+            if (fault === "nonempty") inspected.HostConfig.DeviceRequests = [{ Driver: "nvidia", Count: -1, Capabilities: [["gpu"]] }];
+            if (fault === "injected device") inspected.HostConfig.Devices.push({ PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" });
+            if (fault === "missing devices") delete inspected.HostConfig.Devices;
+            if (fault === "missing groups") delete inspected.HostConfig.GroupAdd;
+            mockReplacementRuntime(JSON.stringify(inspected), { identityRunning: running, startTransitionsToRunning: true });
+            const ready = vi.fn();
+            const start = () => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false, ready);
+            if (runtime === "podman" && fault === "absent") {
+                expect(start()).toBe(getContainerName(projectPath));
+                expect(ready).toHaveBeenCalledWith(TEST_CONTAINER_ID, { startedByInvocation: !running });
+                if (!running) expect(spawnSyncMock.mock.calls.some((call: unknown[]) =>
+                    JSON.stringify(call[1]) === JSON.stringify(["start", TEST_CONTAINER_SHORT_ID]))).toBe(true);
+            } else {
+                expect(start).toThrow("contract failed safety validation");
+                expect(ready).not.toHaveBeenCalled();
+            }
             expectNoContainerReplacement();
         });
 

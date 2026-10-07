@@ -210,17 +210,23 @@ describe.skipIf(!isPodmanAvailable())('E2E: Podman Integration', () => {
             const matches = containers.filter(container => container.name.startsWith(`ccc-${basename(testProjectDir).toLowerCase()}-`))
             expect(matches, commandEvidence(result)).toHaveLength(1)
             observedContainer = { id: matches[0].id, name: matches[0].name }
-            expect(matches[0].state, commandEvidence(result)).toBe('running')
+            expect(matches[0].state, commandEvidence(result)).toBe('exited')
         })
 
         it('executes command and returns output', { timeout: 60000 }, () => {
             const result = runCcc(['echo', 'podman-output'], { cwd: testProjectDir, timeout: 60000 })
             expectSuccess(result)
             expect(result.stdout, commandEvidence(result)).toContain('podman-output')
-            expectObservedContainer('running')
+            expectObservedContainer('exited')
         })
 
         it('ccc stop stops the container', { timeout: 30000 }, () => {
+            expectObservedContainer('exited')
+            // Public short commands stop on last-session cleanup. Start only this
+            // fixture's captured ID so the public stop command exercises a live container.
+            const started = runCommand('podman', ['start', observedContainer!.id], { timeout: 10000 })
+            expectSuccess(started)
+            expectObservedContainer('running')
             const result = runCcc(['stop'], { cwd: testProjectDir, timeout: 30000 })
             expectSuccess(result)
             expect(result.stdout, commandEvidence(result)).toContain('Container stopped')
@@ -231,7 +237,7 @@ describe.skipIf(!isPodmanAvailable())('E2E: Podman Integration', () => {
             const setup = runCcc(['echo', 'setup'], { cwd: testProjectDir, timeout: 60000 })
             expectSuccess(setup)
             expect(setup.stdout, commandEvidence(setup)).toContain('setup')
-            expectObservedContainer('running')
+            expectObservedContainer('exited')
             const result = runCcc(['rm'], { cwd: testProjectDir, timeout: 30000 })
             expectSuccess(result)
             expect(result.stdout, commandEvidence(result)).toContain('Container removed')

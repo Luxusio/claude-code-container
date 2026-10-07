@@ -4576,6 +4576,14 @@ describe("isValidWorktree", () => {
             expect(repairWorkspaceRootOwnership(result.workspacePath, source, branch,
                 { confirmedMissingRegistration: true })).toBe(true);
             expect(() => assertWorkspaceRootOwnership(workspace, expandedSource)).not.toThrow();
+            const rebuiltManagement = resolve(workspace,
+                readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""));
+            rmSync(rebuiltManagement, { recursive: true });
+            const alternateCase = join(dirname(workspace), basename(workspace).toUpperCase());
+            const observedAlias = existsSync(alternateCase) ? alternateCase : workspace;
+            expect(repairWorkspaceRootOwnership(observedAlias, expandedSource, branch,
+                { confirmedMissingRegistration: true })).toBe(true);
+            expect(() => assertWorkspaceRootOwnership(result.workspacePath, source)).not.toThrow();
             expect(readFileSync(join(workspace, "keep-me.txt"), "utf-8")).toBe("uncommitted\n");
             expect(readFileSync(join(workspace, "init.txt"), "utf-8")).toBe("tracked modification\n");
         },
@@ -4684,6 +4692,24 @@ describe("isValidWorktree", () => {
         );
         expect(repaired, recoveryFailure).toBe(true);
         expect(recoveryFailure).toBeUndefined();
+        const rebuiltManagement = resolve(result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""));
+        // Git sanitizes a leading dot to a dash in administrative entry names.
+        expect(basename(rebuiltManagement)).toMatch(/^[.-]ccc-register-[0-9a-f]{12}-[0-9a-f]{32}$/);
+        // A second lost registration must accept this workspace's bound name.
+        rmSync(rebuiltManagement, { recursive: true });
+        expect(canRecreateMissingWorkspaceRootRegistration(result.workspacePath, tmpDir, branch))
+            .toBe(true);
+        expect(repairWorkspaceRootOwnership(result.workspacePath, tmpDir, branch, {
+            confirmedMissingRegistration: true,
+            reportFailure: (reason) => { recoveryFailure = reason; },
+        }), recoveryFailure).toBe(true);
+        const secondManagement = resolve(result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""));
+        expect(secondManagement).not.toBe(rebuiltManagement);
+        expect(basename(secondManagement).match(/ccc-register-([0-9a-f]{12})-/)?.[1])
+            .toBe(basename(rebuiltManagement).match(/ccc-register-([0-9a-f]{12})-/)?.[1]);
+
         expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(true);
         expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir))
             .not.toThrow();
@@ -4707,6 +4733,35 @@ describe("isValidWorktree", () => {
             cwd: result.workspacePath,
             stdio: "pipe",
         }).status).toBe(0);
+    });
+
+    it("refuses a missing registration name bound to another workspace", () => {
+        initRepo(tmpDir);
+        const owner = createWorkspace(tmpDir, "digest-owner");
+        const target = createWorkspace(tmpDir, "digest-target");
+        const gitDirectory = (workspace: string): string => resolve(workspace,
+            readFileSync(join(workspace, ".git"), "utf-8").trim().replace(/^gitdir:\s*/, ""));
+        rmSync(gitDirectory(owner.workspacePath), { recursive: true });
+        expect(repairWorkspaceRootOwnership(owner.workspacePath, tmpDir, "digest-owner", {
+            confirmedMissingRegistration: true,
+        })).toBe(true);
+        const ownerManagement = gitDirectory(owner.workspacePath);
+        rmSync(ownerManagement, { recursive: true });
+        rmSync(gitDirectory(target.workspacePath), { recursive: true });
+        const targetGitFile = join(target.workspacePath, ".git");
+        const forgedLink = `gitdir: ${relative(target.workspacePath, ownerManagement)}\n`;
+        writeFileSync(targetGitFile, forgedLink);
+        writeFileSync(join(target.workspacePath, "init.txt"), "modified\n");
+        writeFileSync(join(target.workspacePath, "keep-me.txt"), "untracked\n");
+        expect(canRecreateMissingWorkspaceRootRegistration(target.workspacePath, tmpDir, "digest-target"))
+            .toBe(false);
+        expect(repairWorkspaceRootOwnership(target.workspacePath, tmpDir, "digest-target", {
+            confirmedMissingRegistration: true,
+        })).toBe(false);
+        expect(readFileSync(targetGitFile, "utf-8")).toBe(forgedLink);
+        expect(readFileSync(join(target.workspacePath, "init.txt"), "utf-8")).toBe("modified\n");
+        expect(readFileSync(join(target.workspacePath, "keep-me.txt"), "utf-8")).toBe("untracked\n");
+        expect(existsSync(ownerManagement)).toBe(false);
     });
 
     it("recreates a missing root registration through the confirmed CLI prompt", () => {
@@ -5130,6 +5185,7 @@ describe("isValidWorktree", () => {
         initRepo(tmpDir);
         const branch = "source-branch-conflict";
         const result = createWorkspace(tmpDir, branch);
+        const existingTemporaryEntries = new Set(readdirSync(dirname(result.workspacePath)));
         const gitFile = join(result.workspacePath, ".git");
         const managementDirectory = resolve(
             result.workspacePath,
@@ -5148,7 +5204,7 @@ describe("isValidWorktree", () => {
         )).toThrow("refusing unsafe shared-branch worktree");
         expect(readFileSync(gitFile, "utf-8")).toContain("gitdir:");
         expect(readdirSync(dirname(result.workspacePath)).some((entry) => (
-            entry.startsWith(`.${basename(result.workspacePath)}.ccc-register-`)
+            !existingTemporaryEntries.has(entry) && /^\.ccc-register-[0-9a-f]{12}-[0-9a-f]{32}$/.test(entry)
         ))).toBe(false);
     });
 
@@ -5533,6 +5589,7 @@ describe("isValidWorktree", () => {
         initRepo(tmpDir);
         const branch = "rollback-root-owner";
         const result = createWorkspace(tmpDir, branch);
+        const existingTemporaryEntries = new Set(readdirSync(dirname(result.workspacePath)));
         const gitFile = join(result.workspacePath, ".git");
         const managementDirectory = resolve(
             result.workspacePath,
@@ -5562,7 +5619,7 @@ describe("isValidWorktree", () => {
         }).stdout;
         expect(after).toBe(before);
         expect(readdirSync(dirname(result.workspacePath)).some((entry) => (
-            entry.startsWith(`.${basename(result.workspacePath)}.ccc-register-`)
+            !existingTemporaryEntries.has(entry) && /^\.ccc-register-[0-9a-f]{12}-[0-9a-f]{32}$/.test(entry)
         ))).toBe(false);
     });
 
@@ -5571,6 +5628,7 @@ describe("isValidWorktree", () => {
             initRepo(tmpDir);
             const branch = "failed-add-root-owner";
             const result = createWorkspace(tmpDir, branch);
+            const existingTemporaryEntries = new Set(readdirSync(dirname(result.workspacePath)));
             const gitFile = join(result.workspacePath, ".git");
             const managementDirectory = resolve(
                 result.workspacePath,
@@ -5648,7 +5706,7 @@ describe("isValidWorktree", () => {
             }).stdout;
             expect(after).toBe(before);
             expect(readdirSync(dirname(result.workspacePath)).some((entry) => (
-                entry.startsWith(`.${basename(result.workspacePath)}.ccc-register-`)
+                !existingTemporaryEntries.has(entry) && /^\.ccc-register-[0-9a-f]{12}-[0-9a-f]{32}$/.test(entry)
             ))).toBe(false);
         },
     );
@@ -5662,6 +5720,7 @@ describe("isValidWorktree", () => {
             }).status).toBe(0);
             const branch = "relative-rollback-root-owner";
             const result = createWorkspace(tmpDir, branch);
+            const existingTemporaryEntries = new Set(readdirSync(dirname(result.workspacePath)));
             const gitFile = join(result.workspacePath, ".git");
             const originalGitFile = readFileSync(gitFile, "utf-8");
             const managementDirectory = resolve(
@@ -5721,7 +5780,7 @@ describe("isValidWorktree", () => {
             }).stdout;
             expect(after).toBe(before);
             expect(readdirSync(dirname(result.workspacePath)).some((entry) => (
-                entry.startsWith(`.${basename(result.workspacePath)}.ccc-register-`)
+                !existingTemporaryEntries.has(entry) && /^\.ccc-register-[0-9a-f]{12}-[0-9a-f]{32}$/.test(entry)
             ))).toBe(false);
         },
     );

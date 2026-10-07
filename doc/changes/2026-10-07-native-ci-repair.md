@@ -60,3 +60,40 @@ SHA-256 `4b2ed752269bfd2a7a0b7bad0efad3ddee21f67a9fe8c1915317e134b4e2d5c5`
 and `f439d6b75e7d3b5fcff8d9f9b344700214468ab8f4bf3db3d324f65f0cc8a604`.
 Its previously failing alternate-case backpointer regression passed natively.
 The whole corrected native subset and final CI remain pending at this checkpoint.
+
+## Remaining native failures resolved in source
+
+A bounded guest-only diagnostic showed temporary HEAD observation exiting 128
+with `fatal: '$GIT_DIR' too big`; the source branch OID and administrative HEAD
+contents matched. The first bounded-name correction used `.ccc-register-<32hex>` rather than
+repeating the whole workspace basename. Unique creation and every identity, branch/OID,
+final validation and rollback fence remain. Git observation errors are reported
+separately from successful observations whose OID changed.
+
+Podman's absent `DeviceRequests` inspection field is normalized only when the
+selected runtime is Podman, never by trusting payload runtime labels. Docker
+missing fields and malformed/nonempty requests or injected devices remain
+refused. Native-shaped reuse fixtures passed 12 focused cases. Short CCC
+commands intentionally stop their container after the last session ends; E2E
+now verifies that state and starts only its captured owned container ID before
+checking public `stop`. Corrected native and fresh final QA remain pending.
+
+## Repeated-recovery binding
+
+The final bounded name is `.ccc-register-<12hex workspace digest>-<32hex nonce>`.
+Its digest binds the observed canonical workspace path and device/inode; only
+its exact bound format or a legacy workspace-derived name can recover. Windows
+case aliases retain the same digest while distinct objects remain separate.
+Two successive registration losses/recoveries preserve tracked, untracked and
+ignored content with a stable digest and fresh nonce. Another workspace's
+binding is refused without changing the target. Nine focused cases passed;
+final corrected native and fresh full QA remain pending.
+
+The final bound-name source/test overlay was byte-verified in the actual
+Windows guest against SHA-256
+`b64ac1f357d82eff7f3094031b3d41f15e10c18c212ef4e7eade4770310e9fe9`
+and `51b404c0173829e9bb28df5eafa8678fc7eabeb5993755f8027d81b70ab57d04`.
+The long-name confirmed recovery and native short/expanded/case recovery
+regressions passed (2 passed, 0 failed), including repeated recoveries and
+file preservation. Exact committed full native CI/build and fresh whole QA
+remain pending at this checkpoint.

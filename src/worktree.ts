@@ -1,7 +1,7 @@
 // src/worktree.ts - Git worktree workspace management for ccc
 
 import { spawnSync } from "child_process";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import {
     chmodSync,
     closeSync,
@@ -2046,6 +2046,16 @@ function assertWorkspaceBranchIsExclusive(
     assertNestedRepositoryIdentity(workspacePath, workspaceIdentity);
 }
 
+function workspaceRegistrationDigest(identity: DirectoryIdentity): string {
+    const canonicalPath = process.platform === "win32"
+        ? identity.realpath.toLowerCase()
+        : identity.realpath;
+    // Device/inode separate case-sensitive Windows objects with folded names.
+    return createHash("sha256").update(JSON.stringify([
+        canonicalPath, identity.dev, identity.ino,
+    ])).digest("hex").slice(0, 12);
+}
+
 function recreateMissingWorkspaceRootRegistration(
     workspacePath: string,
     sourcePath: string,
@@ -2068,15 +2078,20 @@ function recreateMissingWorkspaceRootRegistration(
     const managementRoot = resolve(commonGitDirectory, "worktrees");
     const managementName = basename(staleGitDirectory);
     const workspaceManagementName = basename(workspacePath);
+    const workspaceDigest = workspaceRegistrationDigest(workspaceIdentity);
     const ownershipEvidence = captureNestedWorkspaceOwnershipEvidence(
         workspacePath,
         sourcePath,
         expectedBranch,
     );
     const managementSuffix = managementName.slice(workspaceManagementName.length);
+    const legacyManagementName = managementName.startsWith(workspaceManagementName)
+        && (managementSuffix === "" || /^\d+$/.test(managementSuffix));
+    const boundManagementName = new RegExp(
+        `^[.-]ccc-register-${workspaceDigest}-[0-9a-f]{32}$`,
+    ).test(managementName);
     if (!isSourceWorktreeManagementRoot(dirname(staleGitDirectory), commonGitDirectory)
-        || !managementName.startsWith(workspaceManagementName)
-        || (managementSuffix !== "" && !/^\d+$/.test(managementSuffix))
+        || (!legacyManagementName && !boundManagementName)
         || pathExistsStrict(staleGitDirectory)) {
         return refuse("workspace Git link no longer names a missing direct child of the source management root");
     }
@@ -2121,7 +2136,7 @@ function recreateMissingWorkspaceRootRegistration(
 
     const temporaryPath = join(
         dirname(process.platform === "win32" ? workspaceIdentity.realpath : workspacePath),
-        `.${basename(workspacePath)}.ccc-register-${randomBytes(16).toString("hex")}`,
+        `.ccc-register-${workspaceDigest}-${randomBytes(16).toString("hex")}`,
     );
     mkdirSync(temporaryPath);
     const temporaryIdentity = captureDirectoryIdentity(temporaryPath);
@@ -2214,9 +2229,15 @@ function recreateMissingWorkspaceRootRegistration(
                 env: sourceEnvironment,
             },
         );
-        if (registeredHead.error || registeredHead.status !== 0
-            || currentBranchHead.error || currentBranchHead.status !== 0
-            || (registeredHead.stdout ?? "").trim() !== expectedOid
+        if (registeredHead.error || registeredHead.status !== 0) {
+            return refuse("temporary registration HEAD could not be read",
+                (registeredHead.stderr ?? "").trim() || registeredHead.error?.message);
+        }
+        if (currentBranchHead.error || currentBranchHead.status !== 0) {
+            return refuse("expected branch HEAD could not be read",
+                (currentBranchHead.stderr ?? "").trim() || currentBranchHead.error?.message);
+        }
+        if ((registeredHead.stdout ?? "").trim() !== expectedOid
             || (currentBranchHead.stdout ?? "").trim() !== expectedOid) {
             return refuse("temporary registration HEAD changed");
         }

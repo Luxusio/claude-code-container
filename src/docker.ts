@@ -2011,12 +2011,17 @@ function inspectedHostConfig(value: unknown): InspectedHostConfig | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const config = value as Record<string, unknown>;
     if (typeof config.Privileged !== "boolean") return null;
+    // Podman 4.9.3's inspect schema omits Docker's DeviceRequests field.
+    // Runtime selection is trusted; inspected payloads cannot select this exception.
+    const normalized = !Object.hasOwn(config, "DeviceRequests") && getRuntimeInfo().runtime === "podman"
+        ? { ...config, DeviceRequests: [] }
+        : config;
     for (const key of ["Devices", "DeviceRequests", "GroupAdd"] as const) {
-        if (!Object.hasOwn(config, key) || (config[key] !== null && !Array.isArray(config[key]))) {
+        if (!Object.hasOwn(normalized, key) || (normalized[key] !== null && !Array.isArray(normalized[key]))) {
             return null;
         }
     }
-    return config as InspectedHostConfig;
+    return normalized as InspectedHostConfig;
 }
 
 function devicesMatchExpectedKvmOnly(devices: unknown, kvmDevicePath: string | undefined): boolean {
