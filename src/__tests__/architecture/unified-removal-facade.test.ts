@@ -1,18 +1,45 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { UnifiedRemovalRequest } from "../../ports/workspace/unified-removal.js";
 const interception = vi.hoisted(() => ({
     calls: [] as UnifiedRemovalRequest[],
-    lateContent: false
+    lateContent: false,
+    replacement: undefined as "destination" | "source" | "registration" | undefined,
+    savedPath: "",
+    successorPath: "",
+    successorSnapshot: undefined as { head: string; refs: string; config: string; file: string } | undefined,
+    successorFiles: undefined as Record<string, string> | undefined,
 }));
 vi.mock("../../application/workspace/unified-removal.js", async () => {
     const actual = await vi.importActual<typeof import("../../application/workspace/unified-removal.js")>("../../application/workspace/unified-removal.js");
     const wrapped: typeof actual.createUnifiedWorkspaceRemoval = ports => {
         const remove = actual.createUnifiedWorkspaceRemoval({
             ...ports,
+            removeRegisteredNested(request, source, destination, identity, registration, force, sourceIdentity, guard) {
+                const replacement = interception.replacement;
+                if (replacement) {
+                    // This seam runs after both directory and registration capture. The
+                    // original native binding receives every original receipt and guard.
+                    const path = replacement === "destination" ? destination
+                        : replacement === "source" ? source
+                        : git(destination, "rev-parse", "--absolute-git-dir");
+                    interception.successorPath = path;
+                    renameSync(path, interception.savedPath);
+                    if (replacement === "registration") {
+                        cpSync(interception.savedPath, path, { recursive: true });
+                        writeFileSync(join(path, "successor-marker"), "successor registration\n");
+                        interception.successorFiles = files(path);
+                    } else {
+                        init(path);
+                        writeFileSync(join(path, "successor-marker"), "successor repository\n");
+                        interception.successorSnapshot = snapshot(path);
+                    }
+                }
+                return ports.removeRegisteredNested(request, source, destination, identity, registration, force, sourceIdentity, guard);
+            },
             removeRegisteredRoot(request, identity, registration, veto) {
                 if (interception.lateContent)
                     writeFileSync(join(request.destinationPath, "late.txt"), "late content\n");
@@ -59,6 +86,31 @@ function snapshot(path: string) {
         file: readFileSync(join(path, "tracked.txt"), "utf8")
     };
 }
+function files(path: string): Record<string, string> {
+    const result: Record<string, string> = {};
+    const visit = (directory: string, prefix: string): void => {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+            const name = `${prefix}${entry.name}`;
+            if (entry.isDirectory()) visit(join(directory, entry.name), `${name}/`);
+            else result[name] = readFileSync(join(directory, entry.name)).toString("hex");
+        }
+    };
+    visit(path, "");
+    return result;
+}
+function quarantinePaths(path: string): string[] {
+    const result: string[] = [];
+    const visit = (directory: string): void => {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const child = join(directory, entry.name);
+            if (entry.name.startsWith(".ccc-worktree-quarantine-") || entry.name.startsWith(".ccc-delete-")) result.push(child);
+            visit(child);
+        }
+    };
+    visit(path);
+    return result.sort();
+}
 describe("unified facade native removal", () => {
     let root: string, source: string;
     beforeEach(() => {
@@ -74,14 +126,67 @@ describe("unified facade native removal", () => {
         init(join(source, "nested"));
         interception.calls.length = 0;
         interception.lateContent = false;
+        interception.replacement = undefined;
+        interception.savedPath = join(root, "saved-object");
+        interception.successorPath = "";
+        interception.successorSnapshot = undefined;
+        interception.successorFiles = undefined;
     });
     afterEach(() => {
         interception.lateContent = false;
+        interception.replacement = undefined;
         rmSync(root, {
             recursive: true,
             force: true
         });
         vi.unstubAllEnvs();
+    });
+    it.each(["destination", "source", "registration"] as const)("preserves an actual %s successor appearing after ownership capture", replacement => {
+        const branch = `replace-${replacement}`;
+        createWorkspace(source, branch);
+        const destination = getWorkspacePath(source, branch);
+        const nestedSource = join(source, "nested");
+        const nestedDestination = join(destination, "nested");
+        const sourceBefore = snapshot(source);
+        const nestedBefore = snapshot(nestedSource);
+        const registrationPath = git(nestedDestination, "rev-parse", "--absolute-git-dir");
+        const registrationBefore = files(registrationPath);
+        const registryBefore = git(nestedSource, "worktree", "list", "--porcelain");
+        const rootRegistryBefore = git(source, "worktree", "list", "--porcelain");
+        const quarantinesBefore = quarantinePaths(root);
+        interception.replacement = replacement;
+
+        const result = removeWorkspace(source, branch, { force: true });
+
+        expect(result.removed).toEqual([]);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toMatch(/changed|replaced|ownership|identity/i);
+        expect(interception.calls).toHaveLength(1);
+        expect(existsSync(destination)).toBe(true);
+        expect(snapshot(source)).toEqual(sourceBefore);
+        expect(git(source, "worktree", "list", "--porcelain")).toBe(rootRegistryBefore);
+        if (replacement === "registration") {
+            expect(files(registrationPath)).toEqual(interception.successorFiles);
+            expect(files(interception.savedPath)).toEqual(registrationBefore);
+            expect(snapshot(nestedSource)).toEqual(nestedBefore);
+            expect(git(nestedSource, "worktree", "list", "--porcelain")).toBe(registryBefore);
+            expect(readFileSync(join(nestedDestination, "tracked.txt"), "utf8")).toBe("original\n");
+        } else {
+            expect(snapshot(interception.successorPath)).toEqual(interception.successorSnapshot);
+            expect(readFileSync(join(interception.successorPath, "successor-marker"), "utf8")).toBe("successor repository\n");
+            if (replacement === "source") {
+                expect(snapshot(interception.savedPath)).toEqual(nestedBefore);
+                const savedRegistration = join(interception.savedPath, ".git", "worktrees", basename(registrationPath));
+                expect(files(savedRegistration)).toEqual(registrationBefore);
+                expect(readFileSync(join(nestedDestination, "tracked.txt"), "utf8")).toBe("original\n");
+            } else {
+                expect(snapshot(nestedSource)).toEqual(nestedBefore);
+                expect(files(registrationPath)).toEqual(registrationBefore);
+                expect(git(nestedSource, "worktree", "list", "--porcelain")).toBe(registryBefore);
+                expect(readFileSync(join(interception.savedPath, "tracked.txt"), "utf8")).toBe("original\n");
+            }
+        }
+        expect(quarantinePaths(root)).toEqual(quarantinesBefore);
     });
     it("removes actual native root and nested registrations with exact request options and source preservation", () => {
         const branch = "success";

@@ -41,6 +41,12 @@ worktree regressions. Both extracted npm and materialized install payloads must
 execute the compiled application and native facade and compile emitted types.
 Guarded CLI proof remains separate from package-module proof.
 
+When claiming successor preservation during removal, replace the source,
+destination and registration objects after ownership capture in private real-Git
+fixtures. Invoke the original native binding with its captured proofs and verify
+refusal, unchanged successor files/refs/configuration and retained registrations.
+Creation or repair replacement tests do not prove this removal timing boundary.
+
 ## Known ceiling
 
 This is an internal parity extraction. Outer workspace dispatch and repair,
