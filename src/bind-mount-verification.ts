@@ -107,7 +107,7 @@ export function classifyRequiredMount(
         }
         return withPath(evidence.liveProof, path);
     }
-    if (required.sourceKind === "daemon" && !sourceMatches) {
+    if (required.sourceKind === "daemon" && (!sourceMatches || evidence.liveProof)) {
         if (!evidence.liveProof) {
             return { kind: "retryable", reason: `bind source proof unavailable for ${path}`, containerPath: path };
         }

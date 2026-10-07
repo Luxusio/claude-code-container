@@ -51,6 +51,7 @@ describe("container-runtime", () => {
         // Scrub env of any pollution from other suites or the shell.
         delete process.env.CCC_RUNTIME;
         delete process.env.DOCKER_HOST;
+        delete process.env.DOCKER_CONTEXT;
         delete process.env.WSL_DISTRO_NAME;
         delete process.env.CCC_RUNTIME_SOCKET;
         delete process.env.XDG_RUNTIME_DIR;
@@ -313,6 +314,18 @@ describe("container-runtime", () => {
     });
 
     describe("isContainerHostRemote", () => {
+        it("lets an explicit remote context override a local Desktop host endpoint", () => {
+            process.env.CCC_RUNTIME = "docker";
+            process.env.DOCKER_CONTEXT = "selected-remote";
+            process.env.DOCKER_HOST = "unix:///desktop.sock";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(0, "Docker Desktop\n"))
+                .mockReturnValueOnce(result(0, "ssh://remote@example.test\n"))
+                .mockReturnValue(result(1));
+            expect(getRuntimeInfo().dockerDesktop).toBe(false);
+            expect(spawnSyncMock).toHaveBeenCalledWith("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "--", "selected-remote"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        });
         it("reflects the cached remote flag", () => {
             _setRuntimeInfoForTest({ runtime: "docker", remote: true });
             expect(isContainerHostRemote()).toBe(true);

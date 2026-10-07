@@ -1438,3 +1438,42 @@ This extraction does not separate full workspace creation, repair or removal
 orchestration. Native Windows/macOS behavior is not certified by portable string
 or fixture tests, and remaining M11–M14 and Device Lab migration work still need
 their own implementation and acceptance.
+
+## Docker endpoint selection and daemon mount consumption
+
+`createDockerEndpointResolver` in `src/application/docker-endpoint-selection.ts`
+owns lazy environment precedence through three required synchronous
+`DockerEndpointSelectionPorts`. A nonempty raw context name selects its exact
+inspection; no host read or fallback follows a failed context. Otherwise the
+existing trimmed host override short-circuits inspection, and absent overrides
+inspect the current context. Construction validates bindings without invoking
+them; port error identity remains visible. The application has no native or
+ambient dependencies.
+
+`src/container-runtime.ts` composes environment readers and protected argument
+arrays for Docker inspection. Existing process cache, exported types and actual
+Desktop capability gates remain. A VM-backed legacy flavor label alone does not
+authorize Desktop aliases or its SSH-agent bridge.
+
+The socket carried by runtime facts is a daemon-side bind source, distinct from
+the client's connection endpoint. Both rendered run arguments and expected
+mounts consume the configured Docker source; default Desktop `.raw` equivalence
+is restricted to the canonical default expectation. Custom paths retain exact
+source and daemon identity proofs. Podman existence fallback remains unchanged.
+The bind renderer accepts an explicit source namespace. Noncanonical configured
+Docker sockets use the daemon namespace even during nested CCC execution;
+ordinary filesystem paths retain caller-container translation. Canonical
+default and Podman rendering behavior remain compatible.
+Darwin's Desktop agent source is used only with verified Docker Desktop; other
+Darwin engines omit that unproven bind while retaining SSH-key behavior.
+
+Verification anchors are endpoint core/facade/type suites, existing runtime and
+Docker args/lifecycle guards, recursive core typing and the two actual shipping
+payloads with emitted declaration consumers. The requirements are in
+[Docker context and socket contract](../runtime/REQ__docker-context-and-daemon-socket.md).
+Build before dependent checks. During frozen-artifact QA use direct
+`node node_modules/vitest/vitest.mjs run ...`; the ordinary test wrapper may
+automatically rebuild and must not run alongside tests using those artifacts.
+Independent review and QA determine portable acceptance. Full native Colima
+proof remains its own dependent Goal task; this work does not certify Mac VM
+sharing, UID behavior, forwarding or networking or complete runtime migration.

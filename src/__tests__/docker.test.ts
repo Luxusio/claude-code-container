@@ -505,6 +505,7 @@ describe("docker.ts module exports", () => {
         mountChallengePaths.clear();
         mismatchingMountChallengeContainerIds.clear();
         delete process.env.SSH_AUTH_SOCK;
+        vi.stubEnv("DOCKER_CONTEXT", "");
         mockCleanupOwnerDevices.mockReset();
         mockGetSessionLockClaimsForContainer.mockReset().mockReturnValue([]);
         mockWithContainerLifecycleLock.mockClear();
@@ -539,6 +540,7 @@ describe("docker.ts module exports", () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+        vi.unstubAllEnvs();
     });
 
     describe("getContainerName", () => {
@@ -4003,6 +4005,126 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it.each(["matching", "foreign daemon", "read-only", "non-bind", "default Desktop alias"])("validates configured Docker daemon socket with %s proof", fault => {
+            const source = "/daemon-profile/custom/docker.sock";
+            _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true, socketPath: source });
+            const inspected = JSON.parse(fullCredentialMountsJson([], { status: "unsupported", kvmDevice: false, groupAdd: [] }));
+            const mount = inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/var/run/docker.sock");
+            mount.Source = fault === "default Desktop alias" ? "/var/run/docker.sock.raw" : source;
+            if (fault === "read-only") mount.RW = false;
+            if (fault === "non-bind") mount.Type = "volume";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "info") return makeResult(0, "daemon-current\n");
+                if (args[0] === "exec" && args[4] === "/usr/bin/docker" && args[7] === "info") return makeResult(0, fault === "foreign daemon" ? "daemon-foreign\n" : "daemon-current\n");
+                return makeResult(0);
+            });
+            const start = () => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false);
+            if (fault === "matching") expect(start()).toBe(getContainerName(projectPath));
+            else expect(start).toThrow("contract failed safety validation");
+            expectNoContainerReplacement();
+            if (fault === "matching" || fault === "foreign daemon") {
+                expect(spawnSyncMock.mock.calls.some(call => {
+                    const args = call[1] as string[];
+                    return args[0] === "exec" && args[4] === "/usr/bin/docker" && args[6] === "unix:///var/run/docker.sock" && args[7] === "info";
+                })).toBe(true);
+            }
+        });
+
+        it("keeps a configured daemon socket in actual creation args without a client existence fallback", () => {
+            const source = "/daemon-profile/custom/docker.sock";
+            _setRuntimeInfoForTest({ runtime: "docker", remote: true, dockerDesktop: false, socketPath: source });
+            mockExistsSync.mockImplementation((selected: string) => selected !== source);
+            let joining = false;
+            const inspected = JSON.parse(fullCredentialMountsJson([], { status: "unsupported", kvmDevice: false, groupAdd: [] }));
+            inspected.Id = TEST_CREATED_CONTAINER_ID;
+            inspected.Mounts.find((mount: { Destination: string }) => mount.Destination === "/var/run/docker.sock").Source = source;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps") return makeResult(0, joining ? `${TEST_CREATED_CONTAINER_ID}\n` : "");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) return makeResult(0, `${TEST_CREATED_CONTAINER_ID}|true\n`);
+                if (joining && args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
+                if (args[0] === "info") return makeResult(0, "daemon-current\n");
+                if (args[0] === "exec" && args[4] === "/usr/bin/docker" && args[7] === "info") return makeResult(0, "daemon-current\n");
+                return makeResult(0);
+            });
+            const ready = vi.fn(() => {
+                expect(spawnSyncMock.mock.calls.some(call => {
+                    const args = call[1] as string[];
+                    return args[0] === "exec" && args[3] === TEST_CREATED_CONTAINER_ID && args[4] === "/usr/bin/docker" && args[7] === "info";
+                })).toBe(true);
+            });
+            startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, undefined, ready);
+            const runArgs = spawnSyncMock.mock.calls.find(call => (call[1] as string[])[0] === "run")![1] as string[];
+            expect(runArgs).toContain(`${source}:/var/run/docker.sock`);
+            expect(runArgs).not.toContain("/var/run/docker.sock:/var/run/docker.sock");
+            expect(mockExistsSync).not.toHaveBeenCalledWith(source);
+            expect(ready).toHaveBeenCalledExactlyOnceWith(TEST_CREATED_CONTAINER_ID, { startedByInvocation: true });
+            // Verify the created socket again through the existing-container path.
+            joining = true;
+            autoInspectCreatedContainer = false;
+            const runsBeforeJoin = spawnSyncMock.mock.calls.filter(call => (call[1] as string[])[0] === "run").length;
+            expect(startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false)).toBe(getContainerName(projectPath));
+            expect(spawnSyncMock.mock.calls.filter(call => (call[1] as string[])[0] === "run")).toHaveLength(runsBeforeJoin);
+            expect(spawnSyncMock.mock.calls.some(call => {
+                const args = call[1] as string[];
+                return args[0] === "exec" && args[3] === TEST_CREATED_CONTAINER_ID && args[4] === "/usr/bin/docker" && args[7] === "info";
+            })).toBe(true);
+        });
+
+        it("rejects a fresh custom socket targeting a foreign daemon before setup and compensates only its captured ID", () => {
+            const source = "/daemon-profile/custom/docker.sock";
+            const createdId = TEST_CREATED_CONTAINER_ID;
+            _setRuntimeInfoForTest({ runtime: "docker", remote: true, dockerDesktop: false, socketPath: source });
+            const ready = vi.fn(); const started = vi.fn();
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${createdId}\n`);
+                if (args[0] === "info") return makeResult(0, "daemon-current\n");
+                if (args[0] === "exec" && args[4] === "/usr/bin/docker" && args[7] === "info") return makeResult(0, "daemon-foreign\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}")) return makeResult(1, "", `Error: No such object: ${createdId}`);
+                return makeResult(0);
+            });
+            expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, undefined, ready, undefined, started)).toThrow("different daemon");
+            expect(ready).not.toHaveBeenCalled(); expect(started).not.toHaveBeenCalled();
+            expect(spawnSyncMock.mock.calls.filter(call => (call[1] as string[])[0] === "rm").map(call => call[1])).toEqual([["rm", "-f", createdId]]);
+            expect(spawnSyncMock.mock.calls.some(call => ["stop", "cp"].includes((call[1] as string[])[0]))).toBe(false);
+            const execCalls = spawnSyncMock.mock.calls.filter(call => (call[1] as string[])[0] === "exec");
+            expect(execCalls.length).toBeGreaterThan(0);
+            expect(execCalls.every(call => {
+                const args = call[1] as string[];
+                return args[1] === "--user" && args[2] === "root" && args[3] === createdId && ["cat", "/usr/bin/docker"].includes(args[4]);
+            })).toBe(true);
+        });
+
+        it("preserves a malformed configured socket on native create refusal without trying another socket", () => {
+            const source = "/daemon/docker.sock:ro";
+            _setRuntimeInfoForTest({ runtime: "docker", socketPath: source });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(125, "", "fixture invalid mount");
+                return makeResult(0);
+            });
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow();
+            const runs = spawnSyncMock.mock.calls.filter(call => (call[1] as string[])[0] === "run");
+            expect(runs).toHaveLength(1);
+            expect(runs[0][1]).toContain(`${source}:/var/run/docker.sock`);
+            expect(runs[0][1]).not.toContain("/var/run/docker.sock:/var/run/docker.sock");
+        });
+
         it("rejects a running container with a foreign container-manager socket source", () => {
             const runtime = {
                 runtime: "docker" as const,
@@ -5777,10 +5899,11 @@ describe("docker.ts module exports", () => {
             expect(runCall![2]).toEqual(expect.objectContaining({ stdio: ["inherit", "pipe", "inherit"] }));
         });
 
-        it("uses darwin SSH agent socket on darwin platform", () => {
+        it("uses darwin SSH agent socket only for verified Docker Desktop", () => {
             mockExistsSync.mockReturnValue(false); // no SSH dir
 
             const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
@@ -5800,6 +5923,23 @@ describe("docker.ts module exports", () => {
             expect(runArgs).toContain("/run/host-services/ssh-auth.sock");
 
             platformSpy.mockRestore();
+        });
+
+        it.each(["docker", "podman"] as const)("omits unproven Darwin agent bridge for %s while keeping SSH keys", selectedRuntime => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({ runtime: selectedRuntime, remote: true, dockerDesktop: false });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
+                return makeResult(0);
+            });
+            startProjectContainer(projectPath, ensureDirs);
+            const runArgs = spawnSyncMock.mock.calls.find(call => (call[1] as string[])[0] === "run")![1] as string[];
+            expect(runArgs).toContain(`${join(homedir(), ".ssh")}:/home/ccc/.ssh:ro`);
+            expect(runArgs.some(arg => arg.includes("ssh-auth.sock") || arg.startsWith("SSH_AUTH_SOCK=") || arg.endsWith(":/tmp/ssh-agent.sock"))).toBe(false);
         });
 
         it("uses SSH_AUTH_SOCK env var on linux when socket exists", () => {

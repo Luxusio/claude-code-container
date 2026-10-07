@@ -1895,6 +1895,89 @@ async function verifyWorkspaceNaming(domainUrl, facadeUrl) {
     } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+async function verifyDockerEndpointSelection(applicationUrl, runtimeUrl, dockerUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const cp = (await import("node:child_process")).default;
+    const application = await import(applicationUrl);
+    const runtime = await import(runtimeUrl);
+    const docker = await import(dockerUrl);
+    const trace = [];
+    const resolve = application.createDockerEndpointResolver({
+        readContextOverride: () => { trace.push("context"); return "colima-fixture"; },
+        readHostOverride: () => { throw new Error("shadowed host must not be read"); },
+        inspectContextEndpoint: context => { trace.push(context); return null; },
+    });
+    assert.deepEqual(trace, []);
+    assert.equal(resolve(), null);
+    assert.deepEqual(trace, ["context", "colima-fixture"]);
+    const mounts = await import(new URL("./bind-mount-verification.js", runtimeUrl).href);
+    const required = { containerPath: "/var/run/docker.sock", presence: "core", readonly: false,
+        type: "bind", sourceKind: "daemon" };
+    const observed = { Destination: "/var/run/docker.sock", Source: "/daemon/custom.sock", Type: "bind", RW: true };
+    assert.deepEqual(mounts.classifyRequiredMount(required, observed, { sourcePathMatches: true,
+        liveProof: { kind: "mismatch", reason: "fixture foreign daemon" } }, "strict"),
+    { kind: "mismatch", reason: "fixture foreign daemon", containerPath: "/var/run/docker.sock" });
+    const original = cp.spawnSync;
+    const saved = new Map(["DOCKER_CONTEXT", "DOCKER_HOST", "CCC_RUNTIME_SOCKET", "WSL_DISTRO_NAME", "container", "HOSTNAME"]
+        .map(name => [name, process.env[name]]));
+    const calls = [];
+    let endpoint = "ssh://fixture.invalid";
+    cp.spawnSync = (command, args) => {
+        assert.equal(command, "docker"); calls.push(args);
+        if (args.join(" ") === "--version") return { status: 0, stdout: "Docker version 27.1.1" };
+        if (args.join(" ") === "info --format {{.OperatingSystem}}") return { status: 0, stdout: "Docker Desktop" };
+        if (args[0] === "context") {
+            assert.deepEqual(args, ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "--", "colima-fixture"]);
+            return { status: 0, stdout: endpoint };
+        }
+        if (args[0] === "inspect") {
+            assert.deepEqual(args, ["inspect", "ccc-package-parent", "--format", "{{json .Mounts}}"]);
+            return { status: 0, stdout: JSON.stringify([{ Source: "/srv/daemon", Destination: "/daemon" }]) };
+        }
+        assert.deepEqual(args, ["info", "--format", "{{json .SecurityOptions}}"]);
+        return { status: 0, stdout: "[]" };
+    };
+    syncBuiltinESMExports();
+    try {
+        process.env.DOCKER_CONTEXT = "colima-fixture";
+        process.env.DOCKER_HOST = "unix:///shadowed-client.sock";
+        process.env.CCC_RUNTIME_SOCKET = "/daemon/custom.sock";
+        delete process.env.WSL_DISTRO_NAME;
+        if (process.platform === "linux") {
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-package-parent";
+        }
+        runtime._resetSelinuxCacheForTest();
+        runtime._resetRuntimeCacheForTest(); runtime.setRuntimeOverride("docker");
+        const info = runtime.getRuntimeInfo();
+        assert.equal(info.dockerDesktop, false, "remote selected context must not inherit shadowed local capabilities");
+        assert.equal(info.socketPath, "/daemon/custom.sock");
+        const count = calls.length;
+        assert.equal(runtime.getRuntimeInfo(), info); assert.equal(calls.length, count);
+        const args = docker.buildDockerRunArgs({ containerName: "ccc-package-endpoint", fullPath: "/package-source",
+            projectMountPath: "/project/package", projectMountIdentity: "package-identity",
+            credentialMounts: [], gitIdentityMounts: [], claudeJsonFile: "/package-home/claude.json",
+            miseVolumeName: "ccc-package-mise", pidsLimit: "-1", imageName: "ccc",
+            hostSshDir: null, sshAgentSocket: null });
+        assert.ok(args.includes("/daemon/custom.sock:/var/run/docker.sock"));
+        assert.equal(args.some(value => value.includes("shadowed-client.sock")), false);
+        if (process.platform === "linux") {
+            assert.deepEqual(runtime.bindMountArgs("/daemon/project", "/project"), ["-v", "/srv/daemon/project:/project"]);
+            assert.deepEqual(runtime.bindMountArgs("/daemon/custom.sock", "/var/run/docker.sock", { sourceNamespace: "daemon" }),
+                ["-v", "/daemon/custom.sock:/var/run/docker.sock"]);
+        }
+        endpoint = "";
+        runtime._resetRuntimeCacheForTest(); runtime.setRuntimeOverride("docker");
+        assert.equal(runtime.getRuntimeInfo().dockerDesktop, false, "empty selected context must not fall back to shadowed host");
+    } finally {
+        cp.spawnSync = original; syncBuiltinESMExports(); runtime._resetRuntimeCacheForTest(); runtime._resetSelinuxCacheForTest();
+        for (const [name, value] of saved) {
+            if (value === undefined) delete process.env[name]; else process.env[name] = value;
+        }
+    }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2060,6 +2143,31 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", namingContract]);
     } finally { rmSync(namingContract); }
     console.log("PASS workspace naming distribution: actual compiled pure rules and public facade, native sibling paths/listing and exact emitted declaration consumer");
+    const endpointUrls = ["application/docker-endpoint-selection", "container-runtime", "docker"]
+        .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifyDockerEndpointSelection.toString()})(${endpointUrls.map(value => JSON.stringify(value)).join(",")});`]);
+    const endpointContract = join(packageRoot, "docker-endpoint-consumer.mts");
+    writeFileSync(endpointContract, [
+        'import { createDockerEndpointResolver } from "./dist/application/docker-endpoint-selection.js";',
+        'import type { DockerEndpointSelectionPorts } from "./dist/ports/docker-endpoint-selection.js";',
+        'import { bindMountArgs } from "./dist/container-runtime.js";',
+        'declare const ports: DockerEndpointSelectionPorts;',
+        'const resolve: () => string | null = createDockerEndpointResolver(ports);',
+        '// @ts-expect-error All semantic ports are required.',
+        'createDockerEndpointResolver({ ...ports, readContextOverride: undefined });',
+        '// @ts-expect-error Observation ports remain synchronous.',
+        'createDockerEndpointResolver({ ...ports, inspectContextEndpoint: async () => "unix:///socket" });',
+        'bindMountArgs("/daemon/socket", "/var/run/docker.sock", { sourceNamespace: "daemon" });',
+        '// @ts-expect-error Only explicit client/daemon source namespaces are supported.',
+        'bindMountArgs("/daemon/socket", "/var/run/docker.sock", { sourceNamespace: "other" });',
+        'void resolve;',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", endpointContract]);
+    } finally { rmSync(endpointContract); }
+    console.log("PASS Docker endpoint distribution: compiled required ports, actual context precedence/cache/daemon mount facade and emitted declaration consumer");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);

@@ -37,6 +37,19 @@ function verifyRegularBind(
 }
 
 describe("bind mount verification", () => {
+    it.each(["strict", "safe-defer"] as const)("honors mandatory daemon identity evidence even for an exact source under %s", policy => {
+        const path = "/var/run/docker.sock";
+        const contract: RequiredMountContract = { containerPath: path, readonly: false, type: "bind", presence: "core", sourceKind: "daemon" };
+        const observed = { Source: "/daemon-profile/docker.sock", Destination: path, Type: "bind", RW: true };
+        for (const proof of [
+            { kind: "verified", via: "daemon" },
+            { kind: "mismatch", reason: "foreign daemon" },
+            { kind: "retryable", reason: "daemon unavailable" },
+        ] as const) {
+            const result = verifyMountSet([contract], [observed], new Map([[path, { sourcePathMatches: true, liveProof: proof }]]), { policy });
+            expect(result).toEqual(proof.kind === "verified" ? proof : { ...proof, containerPath: path });
+        }
+    });
     it("accepts a recognized lexical source alias only after live identity proof", () => {
         expect(verifyRegularBind(true, { kind: "verified", via: "identity" }))
             .toEqual({ kind: "verified", via: "identity" });

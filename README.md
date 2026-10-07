@@ -425,6 +425,35 @@ ccc runtime                # e.g. runtime=podman version=5.2.3 flavor=podman-roo
 
 If neither runtime is installed, `ccc` exits with a clear error.
 
+### Docker contexts and Colima
+
+Colima's Docker runtime uses the existing Docker adapter. Select its Docker
+context and choose Docker explicitly when Podman is also installed:
+
+```bash
+colima start --runtime docker
+docker context ls
+DOCKER_CONTEXT=colima ccc --runtime docker
+```
+
+The example uses the default Colima context; use the context shown for your
+profile. `DOCKER_CONTEXT` takes precedence over `DOCKER_HOST`. Failed context
+inspection does not select the shadowed host or grant Docker Desktop features.
+
+`CCC_RUNTIME_SOCKET` specifies the socket **on the daemon host or VM** that is
+mounted into the CCC container, where it appears as `/var/run/docker.sock`.
+Without an override, Docker retains the daemon's `/var/run/docker.sock` source.
+The macOS `~/.colima/<profile>/docker.sock` connection endpoint is not
+automatically used as that bind source. Custom sources still require matching
+mount and daemon identity proofs.
+
+The Docker Desktop SSH-agent bridge is enabled only for verified Desktop.
+Other macOS engines omit that bridge; SSH-key mounts retain their existing
+behavior. Colima VM sharing must include your project and CCC state paths;
+configure additional mounts as described in the [Colima FAQ](https://colima.run/docs/faq/).
+Real Mac Colima acceptance for writes/ownership, socket access, SSH, networking
+and join/restart remains pending; portable tests alone do not certify those paths.
+
 ## Profiles
 
 Switch between different Claude and Codex accounts. Each profile has its own Claude login, Codex login and container, fully isolated. The account used without `CCC_PROFILE` is the built-in profile `default`.

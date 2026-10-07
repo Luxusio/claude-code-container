@@ -834,7 +834,12 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     // Container-manager socket: Docker uses /var/run/docker.sock,
     // Podman substitutes its own socket on the host side but keeps the same
     // in-container path so docker CLI shims inside the container keep working.
-    args.push(...bindMountArgs(resolveHostSocketPath(), "/var/run/docker.sock"));
+    const socketSource = resolveHostSocketPath();
+    args.push(...bindMountArgs(socketSource, "/var/run/docker.sock", {
+        sourceNamespace: getRuntimeInfo().runtime === "docker" && socketSource !== CONTAINER_MANAGER_SOCKET
+            ? "daemon"
+            : "client",
+    }));
 
     args.push("-w", opts.projectMountPath, "--pids-limit", opts.pidsLimit);
 
@@ -983,14 +988,15 @@ export function getLabRunnerUnsupportedReason(): string | null {
 
 /**
  * Host-side socket path used for the container-manager bind mount.
- * Docker → /var/run/docker.sock. Podman → Podman socket path (rootless or rootful).
+ * Docker → configured daemon socket or /var/run/docker.sock.
+ * Podman → Podman socket path (rootless or rootful).
  * If the Podman socket doesn't exist on disk, fall back to /var/run/docker.sock
  * (callers that need the socket must themselves enable it via
  * `systemctl --user start podman.socket`).
  */
 function resolveHostSocketPath(): string {
     const info = getRuntimeInfo();
-    if (info.runtime === "docker") return "/var/run/docker.sock";
+    if (info.runtime === "docker") return info.socketPath ?? "/var/run/docker.sock";
     const socket = info.socketPath ?? "/run/podman/podman.sock";
     if (existsSync(socket)) return socket;
     // Fall back to /var/run/docker.sock if Podman socket isn't running.
@@ -1830,6 +1836,19 @@ function collectMountEvidence(
                 : { kind: "mismatch", reason: `bind source changed for ${required.containerPath}` } as const;
         return { sourcePathMatches, liveProof };
     }
+    if (proof.kind === "daemon" && required.hostPath !== CONTAINER_MANAGER_SOCKET
+        && getRuntimeInfo().runtime === "docker") {
+        if ((required.type !== undefined && observed.Type !== required.type)
+            || (required.readonly !== undefined && observed.RW !== !required.readonly)) return {};
+        const sourcePathMatches = observed.Source === required.hostPath;
+        if (!sourcePathMatches) {
+            return { authoritativeMismatch: `bind source changed for ${required.containerPath}` };
+        }
+        return {
+            sourcePathMatches,
+            liveProof: containerManagerSocketTargetsCurrentDockerDaemon(containerId),
+        };
+    }
     let primarySource: string;
     try {
         primarySource = proof.kind === "path" && proof.canonical
@@ -2620,11 +2639,14 @@ function startProjectContainerLocked(
     const currentDeviceLabOwnerAuthFile = preparedDeviceLabSources.ownerAuthFile?.path;
     const projectId = getProjectId(fullPath);
     const projectMountPath = `/project/${projectId}`;
+    const runtimeInfo = getRuntimeInfo();
     const hostSshPath = join(homedir(), ".ssh");
     const hostSshDir = existsSync(hostSshPath) ? hostSshPath : null;
     let sshAgentSocket: string | null = null;
     if (process.platform === "darwin") {
-        sshAgentSocket = "/run/host-services/ssh-auth.sock";
+        if (runtimeInfo.runtime === "docker" && runtimeInfo.dockerDesktop) {
+            sshAgentSocket = "/run/host-services/ssh-auth.sock";
+        }
     } else {
         const hostSock = process.env.SSH_AUTH_SOCK;
         if (hostSock && existsSync(hostSock)) sshAgentSocket = hostSock;
@@ -2637,7 +2659,6 @@ function startProjectContainerLocked(
     });
     const gitIdentityMounts = getHostGitIdentityMounts();
     const labRunner = buildContainerVmRunConfig(containerName);
-    const runtimeInfo = getRuntimeInfo();
     const filesystemBind = (
         hostPath: string,
         containerPath: string,
@@ -2710,6 +2731,7 @@ function startProjectContainerLocked(
             sourceProof: {
                 kind: "daemon",
                 equivalentSources: runtimeInfo.runtime === "docker" && runtimeInfo.dockerDesktop
+                    && (runtimeInfo.socketPath ?? "/var/run/docker.sock") === "/var/run/docker.sock"
                     ? ["/var/run/docker.sock.raw"]
                     : [],
             },
@@ -2917,7 +2939,9 @@ function startProjectContainerLocked(
         verifyCreated: (id) => {
             const verification = verifyCreatedContainerBindMounts(
                 id,
-                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"),
+                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"
+                    || (runtimeInfo.runtime === "docker" && mount.sourceProof?.kind === "daemon"
+                        && mount.hostPath !== CONTAINER_MANAGER_SOCKET)),
                 projectMountIdentity,
             );
             if (verification.kind === "verified") publishStarted(id);

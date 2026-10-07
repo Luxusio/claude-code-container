@@ -26,6 +26,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { parseRuntimeOverride, type RuntimeName } from "./domain/container-runtime.js";
 import { createContainerRuntimeSelector } from "./application/container-runtime-selection.js";
+import { createDockerEndpointResolver } from "./application/docker-endpoint-selection.js";
 
 export type { RuntimeName } from "./domain/container-runtime.js";
 
@@ -144,17 +145,21 @@ function detectVersion(runtime: RuntimeName): string | null {
  * Detect whether the resolved runtime is VM-backed (Docker Desktop / podman
  * machine). Called once and cached.
  */
-function dockerEndpoint(): string | null {
-    const configured = process.env.DOCKER_HOST?.trim();
-    if (configured) return configured;
-    const result = spawnSync(
-        "docker",
-        ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (result.status !== 0) return null;
-    return (result.stdout ?? "").trim() || null;
-}
+const dockerEndpoint = createDockerEndpointResolver({
+    readContextOverride: () => process.env.DOCKER_CONTEXT,
+    readHostOverride: () => process.env.DOCKER_HOST,
+    inspectContextEndpoint: (context) => {
+        const args = ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"];
+        if (context !== undefined) args.push("--", context);
+        const result = spawnSync(
+            "docker",
+            args,
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (result.status !== 0) return null;
+        return (result.stdout ?? "").trim() || null;
+    },
+});
 
 function dockerEndpointIsLocal(endpoint: string | null): boolean {
     return endpoint !== null && /^(?:unix|npipe):\/\//i.test(endpoint);
@@ -437,11 +442,13 @@ export function needsSelinuxRelabel(): boolean {
 export function bindMountArgs(
     hostPath: string,
     containerPath: string,
-    opts: { readonly?: boolean } = {},
+    opts: { readonly?: boolean; sourceNamespace?: "client" | "daemon" } = {},
 ): string[] {
     const suffixes: string[] = [];
     if (opts.readonly) suffixes.push("ro");
-    const translatedHostPath = translateCurrentContainerPath(hostPath);
+    const translatedHostPath = opts.sourceNamespace === "daemon"
+        ? hostPath
+        : translateCurrentContainerPath(hostPath);
     const isHostPath = translatedHostPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(translatedHostPath);
     if (isHostPath && needsSelinuxRelabel()) {
         suffixes.push("Z");

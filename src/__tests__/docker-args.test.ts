@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -8,6 +8,7 @@ import {
 } from "../docker.js";
 
 import { getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName } from "../container-identity.js";
+import { _resetRuntimeCacheForTest, _setRuntimeInfoForTest } from "../container-runtime.js";
 
 // Factory for default options — every test overrides only what it needs
 function makeOpts(
@@ -82,6 +83,23 @@ function extractLabels(args: string[]): Record<string, string> {
     }
     return labels;
 }
+
+describe("Docker daemon-side socket source", () => {
+    afterEach(() => _resetRuntimeCacheForTest());
+    it("uses the configured daemon path even when the path is absent on the client", () => {
+        const source = "/ccc-absent-client/daemon/docker.sock";
+        _setRuntimeInfoForTest({ runtime: "docker", dockerDesktop: false, remote: true, socketPath: source });
+        expect(extractVolumeMounts(buildDockerRunArgs(makeOpts()))).toContain(`${source}:/var/run/docker.sock`);
+    });
+    it("retains the Docker daemon default when no source is configured", () => {
+        _setRuntimeInfoForTest({ runtime: "docker", socketPath: null });
+        expect(extractVolumeMounts(buildDockerRunArgs(makeOpts()))).toContain("/var/run/docker.sock:/var/run/docker.sock");
+    });
+    it("retains Podman's existing fallback when its configured client socket is absent", () => {
+        _setRuntimeInfoForTest({ runtime: "podman", socketPath: "/ccc-absent-client/podman.sock" });
+        expect(extractVolumeMounts(buildDockerRunArgs(makeOpts()))).toContain("/var/run/docker.sock:/var/run/docker.sock");
+    });
+});
 
 // ===========================================================================
 // 1. SSH mount — core feature tests
