@@ -1508,3 +1508,18 @@ Verification requires core traces, real-Git facade ordering tests, existing
 worktree ownership regressions and both shipped compiled/type consumers. Outer
 workspace dispatch, copying, repair/removal and broader M11–M14 remain separate
 work. This boundary does not complete the whole migration.
+
+## Unified workspace creation application
+
+Unified creation composes the addition operation with registration, naming,
+nested repair and exact root compensation ports. Registration and naming stay
+before the repair catch; result assembly stays after it. Only repair exceptions
+trigger ownership observation, registered root removal and branch compensation.
+Existing native helpers remain the authority for every destructive operation.
+
+Result and action shapes belong to the pure domain while their old facade exports
+and mutable arrays remain compatible. See the
+[unified creation guide](../workspaces/GUIDE__unified-creation.md). Verification
+combines boundary/receipt tests, real-Git replacement/rollback regressions and
+compiled nested creation in both shipping forms. Multi-repo orchestration,
+dispatch and repair/removal internals remain separate migration work.

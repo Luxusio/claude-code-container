@@ -2089,7 +2089,54 @@ async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
         assert.equal(result.workspacePath, join(root, "source--topic"));
         assert.deepEqual(result.created, [{ name: "source", branch: "topic", action: "worktree-new" }]);
         assert.equal(git(["branch", "--show-current"], result.workspacePath), "topic");
+        git(["init", "nested-source"]);
+        const nestedSource = join(root, "nested-source");
+        git(["config", "user.name", "Fixture"], nestedSource);
+        git(["config", "user.email", "fixture@example.invalid"], nestedSource);
+        git(["config", "commit.gpgsign", "false"], nestedSource);
+        writeFileSync(join(nestedSource, "nested.txt"), "nested fixture\n");
+        git(["add", "nested.txt"], nestedSource); git(["commit", "-m", "nested"], nestedSource);
+        git(["-c", "protocol.file.allow=always", "submodule", "add", nestedSource, "nested"], source);
+        git(["commit", "-am", "nested repository"], source);
+        const nested = facade.createWorkspace(source, "nested-topic");
+        assert.deepEqual(nested.created, [
+            { name: "source", branch: "nested-topic", action: "worktree-new" },
+            { name: "nested", branch: "nested-topic", action: "worktree-new" },
+        ]);
+        assert.equal(git(["branch", "--show-current"], join(nested.workspacePath, "nested")), "nested-topic");
     } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+async function verifyUnifiedCreationDelivery(applicationUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { createUnifiedWorkspaceCreation } = await import(applicationUrl);
+    const request = { repositoryPath: "source", destinationPath: "destination", branch: "topic" };
+    const prepared = { opaque: "prepared" }, registration = { opaque: "registration" };
+    const nested = { name: "nested", branch: "topic", action: "worktree-existing" };
+    const failure = new Error("nested fixture failure");
+    let failRepair = false;
+    const trace = [];
+    const create = createUnifiedWorkspaceCreation({
+        observeBranch: child => { assert.equal(child.failureContext.kind, "unified"); trace.push("observe"); return "none"; },
+        prepareAddition: () => { trace.push("prepare"); return prepared; },
+        addPrepared: (_child, value) => { assert.equal(value, prepared); trace.push("add"); return { status: 0, registrationReceipt: registration }; },
+        compensateFailedAddition: () => assert.fail("addition succeeded"),
+        requireRootRegistration: (value, actual) => { assert.equal(value, registration); assert.equal(actual, request); trace.push("require"); return registration; },
+        sourceWorkspaceName: actual => { assert.equal(actual, request); trace.push("name"); return "source"; },
+        repairNestedWorktrees: actual => { assert.equal(actual, request); trace.push("repair"); if (failRepair) throw failure; return [nested]; },
+        rootWorktreeMatches: actual => { assert.equal(actual, request); trace.push("match"); return true; },
+        removeRegisteredRoot: (actual, value) => { assert.equal(actual, request); assert.equal(value, registration); trace.push("remove"); },
+        rollbackCreatedRootBranch: (actual, action, value) => { assert.equal(actual, request); assert.equal(action, "worktree-new"); assert.equal(value, prepared); trace.push("branch"); },
+    });
+    assert.deepEqual(trace, []);
+    const result = create(request);
+    assert.deepEqual(trace, ["observe", "prepare", "add", "require", "name", "repair"]);
+    assert.equal(result.workspacePath, "destination"); assert.equal(result.created[1], nested);
+    assert.deepEqual(result.copied, []);
+    trace.length = 0; failRepair = true;
+    assert.throws(() => create(request), error => error === failure);
+    assert.deepEqual(trace, ["observe", "prepare", "add", "require", "name", "repair", "match", "remove", "branch"]);
+    assert.throws(() => createUnifiedWorkspaceCreation({}), TypeError);
 }
 
 async function smoke(packageRoot) {
@@ -2343,6 +2390,36 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", additionContract]);
     } finally { rmSync(additionContract); }
     console.log("PASS worktree addition distribution: compiled opaque receipt policy, real native Git facade and emitted generic/required/synchronous declarations");
+    const unifiedUrl = pathToFileURL(join(packageRoot, "dist/application/workspace/unified-creation.js")).href;
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyUnifiedCreationDelivery.toString()})(${JSON.stringify(unifiedUrl)});`]);
+    const unifiedContract = join(packageRoot, "unified-creation-consumer.mts");
+    writeFileSync(unifiedContract, [
+        'import { createUnifiedWorkspaceCreation } from "./dist/application/workspace/unified-creation.js";',
+        'import type { UnifiedCreationPorts, UnifiedCreationRequest } from "./dist/ports/workspace/unified-creation.js";',
+        'import type { WorktreeCreationAction } from "./dist/domain/workspace/creation-result.js";',
+        'import type { WorktreeAdditionAction } from "./dist/ports/workspace/worktree-addition.js";',
+        'import { createWorkspace, type WorktreeResult, type WorktreeRepoResult } from "./dist/worktree.js";',
+        'type Equal<A,B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;',
+        'declare const ports: UnifiedCreationPorts<{opaque:"prepared"},{opaque:"registration"}>;',
+        'declare const request: UnifiedCreationRequest;',
+        'const result: WorktreeResult = createUnifiedWorkspaceCreation(ports)(request);',
+        'const alias: Equal<WorktreeCreationAction, WorktreeAdditionAction> = true;',
+        'const facade: (source:string,branch:string)=>WorktreeResult = createWorkspace;',
+        'const entry: WorktreeRepoResult = {name:"repo",branch:"topic",action:"worktree-new"};',
+        'entry.name = "changed"; result.created.push(entry); result.copied.push("plain"); result.workspacePath = "changed";',
+        '// @ts-expect-error Every semantic port is required.',
+        'createUnifiedWorkspaceCreation({});',
+        '// @ts-expect-error Ports are readonly.',
+        'ports.rootWorktreeMatches = () => true;',
+        '// @ts-expect-error Public creation remains synchronous.',
+        'const asynchronous: Promise<unknown> = result;',
+        'void [alias,facade,asynchronous];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", unifiedContract]);
+    } finally { rmSync(unifiedContract); }
+    console.log("PASS unified creation distribution: compiled ordered repair/compensation, actual nested Git facade and mutable legacy/generic declaration consumers");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);

@@ -1,4 +1,6 @@
-export type WorktreeAdditionAction = "worktree-existing" | "worktree-remote" | "worktree-new";
+import type { WorktreeCreationAction } from "../../domain/workspace/creation-result.js";
+
+export type WorktreeAdditionAction = WorktreeCreationAction;
 
 export interface WorktreeAdditionRequest {
     readonly repositoryPath: string;

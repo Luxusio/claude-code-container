@@ -3,6 +3,11 @@
 import { spawnSync } from "child_process";
 import { createWorkspaceBranchValidation } from "./application/workspace-branch-validation.js";
 import { createWorktreeAddition } from "./application/workspace/worktree-addition.js";
+import { createUnifiedWorkspaceCreation } from "./application/workspace/unified-creation.js";
+import type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
+import type { WorktreeAdditionPorts } from "./ports/workspace/worktree-addition.js";
+
+export type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
 import { createHash, randomBytes } from "crypto";
 import {
     chmodSync,
@@ -844,18 +849,6 @@ function removePathByQuarantine(
 export interface WorkspaceInfo {
     branch: string;
     path: string;
-}
-
-export interface WorktreeResult {
-    workspacePath: string;
-    created: WorktreeRepoResult[];
-    copied: string[];
-}
-
-export interface WorktreeRepoResult {
-    name: string;
-    branch: string;
-    action: "worktree-existing" | "worktree-remote" | "worktree-new";
 }
 
 export interface RemoveResult {
@@ -5915,10 +5908,10 @@ export function initWithSubmodules(dirPath: string): void {
 
 // === Write Functions ===
 
-const addWorkspaceWorktree = createWorktreeAddition<
+const workspaceWorktreeAdditionPorts: WorktreeAdditionPorts<
     ReturnType<typeof prepareWorktreeCreation>,
     WorktreeRegistrationFence
->({
+> = {
     observeBranch: (request) => branchExistsInRepo(request.repositoryPath, request.branch),
     prepareAddition: (request, action) => prepareWorktreeCreation(
         request.repositoryPath,
@@ -5944,6 +5937,37 @@ const addWorkspaceWorktree = createWorktreeAddition<
         prepared.expectedBranchOid,
         prepared.destinationIdentity,
         registrationReceipt,
+    ),
+};
+
+const addWorkspaceWorktree = createWorktreeAddition(workspaceWorktreeAdditionPorts);
+
+const createUnifiedWorkspace = createUnifiedWorkspaceCreation({
+    ...workspaceWorktreeAdditionPorts,
+    requireRootRegistration: (receipt, request) => requireWorktreeRegistrationFence(
+        receipt,
+        request.destinationPath,
+    ),
+    sourceWorkspaceName: (request) => basename(request.repositoryPath),
+    repairNestedWorktrees: (request) => repairWorkspace(
+        request.repositoryPath,
+        request.destinationPath,
+        request.branch,
+    ),
+    rootWorktreeMatches: (request) => isValidWorktree(request.destinationPath, request.repositoryPath),
+    removeRegisteredRoot: (request, registration) => removeRegisteredWorktree(
+        request.repositoryPath,
+        request.destinationPath,
+        registration.destinationIdentity,
+        true,
+        dirname(request.destinationPath),
+        registration,
+    ),
+    rollbackCreatedRootBranch: (request, action, prepared) => rollbackFailedCreatedBranch(
+        request.repositoryPath,
+        request.branch,
+        action,
+        prepared.expectedBranchOid,
     ),
 });
 
@@ -5981,71 +6005,11 @@ export function createWorkspace(
 
     // Unified mode: top-level is a git repo
     if (hasGitMetadata(resolved)) {
-        return createUnifiedWorkspace(resolved, wsPath, branch);
+        return createUnifiedWorkspace({ repositoryPath: resolved, destinationPath: wsPath, branch });
     }
 
     // Multi-repo mode: scan children
     return createMultiRepoWorkspace(resolved, wsPath, branch);
-}
-
-function createUnifiedWorkspace(
-    resolved: string,
-    wsPath: string,
-    branch: string,
-): WorktreeResult {
-    const { action, prepared, registrationReceipt: registrationFence } = addWorkspaceWorktree({
-        repositoryPath: resolved,
-        destinationPath: wsPath,
-        branch,
-        failureContext: { kind: "unified" },
-    });
-    const { expectedBranchOid } = prepared;
-    const rootRegistrationFence = requireWorktreeRegistrationFence(
-        registrationFence,
-        wsPath,
-    );
-
-    const dirName = basename(resolved);
-    let nestedCreated: WorktreeRepoResult[];
-    try {
-        nestedCreated = repairWorkspace(resolved, wsPath, branch);
-    } catch (error) {
-        const rollbackErrors: string[] = [];
-        try {
-            if (!isValidWorktree(wsPath, resolved)) {
-                throw new Error("root worktree ownership changed during rollback");
-            }
-            removeRegisteredWorktree(
-                resolved,
-                wsPath,
-                rootRegistrationFence.destinationIdentity,
-                true,
-                dirname(wsPath),
-                rootRegistrationFence,
-            );
-            rollbackFailedCreatedBranch(
-                resolved,
-                branch,
-                action,
-                expectedBranchOid,
-            );
-        } catch (rollbackError) {
-            rollbackErrors.push((rollbackError as Error).message);
-        }
-        if (rollbackErrors.length > 0) {
-            throw new Error(
-                `${(error as Error).message}; workspace rollback failed: ${rollbackErrors.join("; ")}`,
-                { cause: error },
-            );
-        }
-        throw error;
-    }
-
-    return {
-        workspacePath: wsPath,
-        created: [{ name: dirName, branch, action }, ...nestedCreated],
-        copied: [],
-    };
 }
 
 function createMultiRepoWorkspace(
