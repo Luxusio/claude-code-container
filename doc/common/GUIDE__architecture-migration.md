@@ -1407,3 +1407,34 @@ resolution and credential/home-layout migration remain with their current
 owners. Other M11 workflows, remaining earlier milestone work, M12–M14 and M13
 composition closure still require their own implementation and acceptance;
 this slice does not complete the full architecture migration.
+
+## Pure workspace naming rules (M11f candidate)
+
+`src/domain/workspace-naming.ts` owns the literal `WORKTREE_SEPARATOR`, sibling
+basename formatting and lazy source-basename candidates. Formatting retains the
+existing replacement of branch `/` characters with `-`; it performs no further
+validation, trimming, case folding or path normalization. Candidate traversal
+retains the original positive-offset condition and nonoverlapping separator
+advance. A leading separator stops the walk, and a trailing separator still
+produces its preceding basename. Iteration remains lazy so native work for one
+candidate precedes string processing for the next.
+
+`src/worktree.ts` retains native path resolution and joining, filesystem reads,
+Git registration checks and every ownership fence. It reexports the existing
+separator and keeps its public workspace interfaces. Both registration and
+repair traversal consume the same passive candidates. A candidate is only a
+possible sibling source, never proof of ownership. Registration still propagates
+nested scan failures and deduplicates observed paths; repair retains its existing
+nested-scan catch and assigns remaining checkouts to the first proven owner.
+
+Verification anchors are the naming domain, public facade and type suites,
+the recursive core boundary guard, and the retained real-Git worktree suite.
+Both extracted npm and materialized installation payloads must execute actual
+compiled rules and the public facade, with a strict emitted declaration consumer
+proving the separator literal and existing signatures. These are requirements;
+independent review and fresh QA determine acceptance.
+
+This extraction does not separate full workspace creation, repair or removal
+orchestration. Native Windows/macOS behavior is not certified by portable string
+or fixture tests, and remaining M11–M14 and Device Lab migration work still need
+their own implementation and acceptance.

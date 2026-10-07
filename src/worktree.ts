@@ -32,6 +32,11 @@ import {
     sep,
     win32,
 } from "path";
+import {
+    WORKTREE_SEPARATOR,
+    formatWorkspaceSiblingBasename,
+    iterateWorkspaceSourceBasenames,
+} from "./domain/workspace-naming.js";
 
 /** Recursive directory copy (Node 14 compatible replacement for cpSync) */
 function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
@@ -268,7 +273,7 @@ export function setAsideConflictingContent(
     return preserved;
 }
 
-export const WORKTREE_SEPARATOR = "--";
+export { WORKTREE_SEPARATOR } from "./domain/workspace-naming.js";
 
 // === Types ===
 
@@ -1009,8 +1014,7 @@ export function getWorkspacePath(sourcePath: string, branch: string): string {
     const resolved = resolve(sourcePath);
     const parent = dirname(resolved);
     const dirName = basename(resolved);
-    const safeBranch = branch.replace(/\//g, "-");
-    return join(parent, `${dirName}${WORKTREE_SEPARATOR}${safeBranch}`);
+    return join(parent, formatWorkspaceSiblingBasename(dirName, branch));
 }
 
 export function assertWorkspaceBranch(
@@ -1509,11 +1513,10 @@ function registryContainsWorktree(repositoryPath: string, expectedPath: string):
 function siblingRegisteredWorkspacePaths(workspacePath: string): string[] {
     const registered: string[] = [];
     const workspaceName = basename(workspacePath);
-    let separatorIndex = workspaceName.indexOf(WORKTREE_SEPARATOR);
-    while (separatorIndex > 0) {
+    for (const sourceBasename of iterateWorkspaceSourceBasenames(workspaceName)) {
         const sourcePath = join(
             dirname(workspacePath),
-            workspaceName.slice(0, separatorIndex),
+            sourceBasename,
         );
         if (pathExistsStrict(sourcePath)) {
             if (hasGitMetadata(sourcePath)
@@ -1533,10 +1536,6 @@ function siblingRegisteredWorkspacePaths(workspacePath: string): string[] {
                 }
             }
         }
-        separatorIndex = workspaceName.indexOf(
-            WORKTREE_SEPARATOR,
-            separatorIndex + WORKTREE_SEPARATOR.length,
-        );
     }
     return registered.filter((path, index) => (
         registered.findIndex((candidate) => sameObservedPath(candidate, path)) === index
@@ -2806,9 +2805,8 @@ function workspaceWorktreeRepairPlan(
     const repairs: WorkspaceWorktreeRepair[] = [];
     const remaining = new Set(unusablePaths);
     const workspaceName = basename(workspacePath);
-    let separatorIndex = workspaceName.indexOf(WORKTREE_SEPARATOR);
-    while (separatorIndex > 0) {
-        const sourcePath = join(dirname(workspacePath), workspaceName.slice(0, separatorIndex));
+    for (const sourceBasename of iterateWorkspaceSourceBasenames(workspaceName)) {
+        const sourcePath = join(dirname(workspacePath), sourceBasename);
         if (pathExistsStrict(sourcePath)) {
             const consider = (owner: string, checkoutPath: string) => {
                 if (!remaining.has(checkoutPath)) return;
@@ -2829,10 +2827,6 @@ function workspaceWorktreeRepairPlan(
                 // A source that cannot be scanned simply offers no repair for these paths.
             }
         }
-        separatorIndex = workspaceName.indexOf(
-            WORKTREE_SEPARATOR,
-            separatorIndex + WORKTREE_SEPARATOR.length,
-        );
     }
     return repairs;
 }

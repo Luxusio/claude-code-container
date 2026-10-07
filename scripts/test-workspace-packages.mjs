@@ -1871,6 +1871,30 @@ async function verifyProfileCatalog(facadeUrl) {
     assert.deepEqual(facade.listProfiles(), ["default"]);
 }
 
+async function verifyWorkspaceNaming(domainUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { mkdirSync, mkdtempSync, rmSync } = await import("node:fs");
+    const { join, resolve, dirname, basename } = await import("node:path");
+    const domain = await import(domainUrl);
+    const facade = await import(facadeUrl);
+    assert.equal(domain.WORKTREE_SEPARATOR, "--");
+    assert.equal(facade.WORKTREE_SEPARATOR, domain.WORKTREE_SEPARATOR);
+    assert.equal(domain.formatWorkspaceSiblingBasename("repo--nested", "feature//ui"), "repo--nested--feature--ui");
+    assert.equal(domain.formatWorkspaceSiblingBasename("Repo", " spaced\\branch "), "Repo-- spaced\\branch ");
+    assert.deepEqual([...domain.iterateWorkspaceSourceBasenames("a----b--")], ["a", "a--", "a----b"]);
+    assert.deepEqual([...domain.iterateWorkspaceSourceBasenames("--a--b")], []);
+    assert.deepEqual([...domain.iterateWorkspaceSourceBasenames("a---b")], ["a"]);
+    const directory = mkdtempSync(join(process.cwd(), "workspace-naming-"));
+    try {
+        const source = join(directory, "repo--nested");
+        const expected = join(dirname(resolve(source)), `${basename(resolve(source))}--feature-ui`);
+        assert.equal(facade.getWorkspacePath(source, "feature/ui"), expected);
+        assert.deepEqual(facade.listWorkspaces(source), []);
+        mkdirSync(expected);
+        assert.deepEqual(facade.listWorkspaces(source), [{ branch: "feature-ui", path: expected }]);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2016,6 +2040,26 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", profileContract]);
     } finally { rmSync(profileContract); }
     console.log("PASS profile catalog distribution: actual compiled public facade, declarations, private layout/settings, builtin ensure, file-entry queries, reserved errors and Unix modes");
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifyWorkspaceNaming.toString()})(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/domain/workspace-naming.js")).href)}, ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/worktree.js")).href)});`]);
+    const namingContract = join(packageRoot, "workspace-naming-consumer.mts");
+    writeFileSync(namingContract, [
+        'import { WORKTREE_SEPARATOR as publicSeparator, getWorkspacePath, listWorkspaces } from "./dist/worktree.js";',
+        'import { WORKTREE_SEPARATOR, formatWorkspaceSiblingBasename, iterateWorkspaceSourceBasenames } from "./dist/domain/workspace-naming.js";',
+        'type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;',
+        'const literals: ["--", "--"] = [publicSeparator, WORKTREE_SEPARATOR];',
+        'const exact: [Equal<typeof formatWorkspaceSiblingBasename, (sourceBasename: string, branch: string) => string>, Equal<ReturnType<typeof iterateWorkspaceSourceBasenames>, Generator<string, void, unknown>>, Equal<typeof getWorkspacePath, (sourcePath: string, branch: string) => string>, Equal<ReturnType<typeof listWorkspaces>, Array<{ branch: string; path: string }>>] = [true,true,true,true];',
+        '// @ts-expect-error Naming does not accept a numeric branch.',
+        'formatWorkspaceSiblingBasename("repo", 1);',
+        '// @ts-expect-error The public separator must retain its literal type.',
+        'const widened: "other" = publicSeparator;',
+        'void [literals, exact, widened];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", namingContract]);
+    } finally { rmSync(namingContract); }
+    console.log("PASS workspace naming distribution: actual compiled pure rules and public facade, native sibling paths/listing and exact emitted declaration consumer");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);
