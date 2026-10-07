@@ -33,7 +33,9 @@ describe("profile request native facade", () => {
     it("propagates a domain exception by identity", () => {
         const sentinel = new Error("domain failure");
         vi.spyOn(domain, "normalizeProfile").mockImplementation(() => { throw sentinel; });
-        expect(() => facade.normalizeProfile("work")).toThrow(sentinel);
+        let caught: unknown;
+        try { facade.normalizeProfile("work"); } catch (error) { caught = error; }
+        expect(caught).toBe(sentinel);
     });
 
     it("retains malformed JavaScript identity and downstream native path errors", () => {
