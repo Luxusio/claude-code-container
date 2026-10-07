@@ -71,6 +71,21 @@ The original master and unrelated feature/ui branches were retained.
 
 ## Remaining acceptance
 
+The first fresh combined portable QA at `3ebf6e3e` failed: 349 files passed,
+two failed and eight skipped; 9,819 tests passed, 45 failed and 128 skipped.
+44 clipboard-state failures came from its manual fixture compilation omitting
+the new `domain/profile-request` dependency. The fixture now includes that real
+module. The remaining broker wait failure retained a real RPC error instead of
+claiming absence.
+
+The independently reviewed and QA-passed monotonic wait correction at
+`ee69457798d4c1145efad18a84dbaf524836bc61` was replayed unchanged as
+`ad48bfb9`. Its fresh QA passed 252 tests across 13 files, typechecks and both
+real shipping payloads, including corrected provider byte/runtime parity.
+Automatic review/QA records remained absent; its task is accurately blocked
+under the existing operator-approved exception. This does not waive the failed
+combined QA: fresh combined review and full portable QA remain required.
+
 Real Mac Colima acceptance remains unavailable: Device Lab reports no macOS
 host and no provider. Socket access, project ownership/writes, SSH, networking
 and native join/restart remain required in the dependent task. The two earlier

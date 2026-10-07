@@ -27,7 +27,7 @@ describe.each(["legacy", "run"])("clipboard state across real daemon restarts (%
         // behind architecture seams. A missing fixture module is not a daemon
         // publication timeout.
         for (const name of ["clipboard-server", "clipboard-startup-lock", "utils", "home-layout", "session-lock-liveness",
-            "adapters/session-env-file", "application/session-lock-liveness", "domain/session-lock"]) {
+            "adapters/session-env-file", "application/session-lock-liveness", "domain/session-lock", "domain/profile-request"]) {
             const source = readFileSync(fileURLToPath(new URL(`../${name}.ts`, import.meta.url)), "utf8");
             mkdirSync(dirname(join(fixtureRoot, `${name}.js`)), { recursive: true });
             writeFileSync(join(fixtureRoot, `${name}.js`), transpileModule(source, {
