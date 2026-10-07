@@ -1524,6 +1524,24 @@ combines boundary/receipt tests, real-Git replacement/rollback regressions and
 compiled nested creation in both shipping forms. Multi-repo orchestration,
 dispatch and repair/removal internals remain separate migration work.
 
+## Home layout migration application
+
+Home migration moves pending/default-profile, ordered moves, conflict notices,
+remote JSON merge and finally decisions into application. Twenty-nine required
+semantic ports retain scoped native claims, inode release, atomic config storage,
+path resolution and warning formatting. Existing public options/results remain
+compatible, including callback receivers and the unused retirement callback.
+See the [home migration guide](../home/GUIDE__layout-migration.md).
+
+The native migration claim retains its mtime/two-attempt behavior and broad
+observation fallbacks. Application preserves startup preflight order, repeated
+reads, raw diagnostic failures, missing-hash precedence and publication before
+ordered source deletion. The existing migration remains one-way; code rollback
+does not reverse migrated user data. Verification includes ordered core faults,
+native callback/inode/contention tests, legacy regressions and both actual
+shipping forms with strict declaration consumers. General home/config resolution,
+credential transfer and final composition remain separate migration work.
+
 ## Multi-repo workspace creation application
 
 Multi creation composes addition with explicit scan, claim, copy and quarantine

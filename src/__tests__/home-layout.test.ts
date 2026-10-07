@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -277,6 +277,40 @@ describe("migrateHomeLayout", () => {
         expect(readFileSync(ccc("profiles", "default", "claude", ".credentials.json"), "utf-8")).toBe("claude-secret");
         expect(profileClaudeDir()).toBe(ccc("profiles", "default", "claude"));
         expect(warn).toHaveBeenCalledWith(expect.stringContaining("CCC_PROFILE=default-pre-layout"));
+    });
+
+    it("advances reserved suffix collisions without replacing any existing profile", () => {
+        seedLegacyHome();
+        for (const name of ["default", "default-pre-layout", "default-pre-layout-2"]) {
+            mkdirSync(ccc("profiles", name), { recursive: true });
+            writeFileSync(ccc("profiles", name, "identity"), name);
+        }
+        expect(migrateHomeLayout(noSessions).status).toBe("migrated");
+        expect(readFileSync(ccc("profiles", "default-pre-layout-3", "identity"), "utf8")).toBe("default");
+        for (const name of ["default-pre-layout", "default-pre-layout-2"]) expect(readFileSync(ccc("profiles", name, "identity"), "utf8")).toBe(name);
+    });
+
+    it.skipIf(process.platform === "win32")("treats a dangling default marker link as present without strengthening its type", () => {
+        seedLegacyHome(); mkdirSync(ccc("profiles", "default"), { recursive: true });
+        symlinkSync(ccc("missing-marker-target"), ccc("profiles", "default", ".ccc-default-profile"));
+        expect(migrateHomeLayout(noSessions).status).toBe("migrated");
+        expect(existsSync(ccc("profiles", "default-pre-layout"))).toBe(false);
+        expect(readFileSync(ccc("profiles", "default", "codex", "auth.json"), "utf8")).toBe("codex-secret");
+    });
+
+    it("preserves primitive legacy remote values and existing destination values", () => {
+        mkdirSync(ccc("remote"), { recursive: true });
+        for (const [name, value] of [["nil", null], ["flag", false], ["number", 5], ["text", "fixture"], ["list", [1]], ["existing", "legacy"]] as const) writeFileSync(ccc("remote", `${name}.json`), JSON.stringify(value));
+        writeFileSync(ccc("config.json"), JSON.stringify({ untouched: "keep", remote: { existing: "destination" } }));
+        expect(migrateHomeLayout(noSessions)).toMatchObject({ status: "migrated", failed: [] });
+        expect(readCccConfig()).toEqual({ untouched: "keep", remote: { existing: "destination", flag: false, list: [1], nil: null, number: 5, text: "fixture" } });
+        expect(existsSync(ccc("remote"))).toBe(false);
+    });
+
+    it.each(["null", "[]", "3", '"text"'])("refuses destination config primitive %s without deleting remote sources", text => {
+        mkdirSync(ccc("remote"), { recursive: true }); writeFileSync(ccc("remote", "a.json"), "false"); writeFileSync(ccc("config.json"), text);
+        expect(migrateHomeLayout(noSessions)).toEqual({ status: "migrated", moved: [], failed: ["remote"] });
+        expect(readFileSync(ccc("config.json"), "utf8")).toBe(text); expect(readFileSync(ccc("remote", "a.json"), "utf8")).toBe("false");
     });
 
     it("keeps going when one entry cannot move, and that entry stays on its old path", async () => {

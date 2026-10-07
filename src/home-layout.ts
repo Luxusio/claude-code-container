@@ -28,6 +28,10 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { DEFAULT_PROFILE_NAME as domainDefaultProfileName, normalizeProfile as normalizeProfileRequest } from "./domain/profile-request.js";
 
+import { createHomeLayoutMigration } from "./application/home-layout-migration.js";
+import type { ClipboardStartupSlot, HomeLayoutMigrationNotice, HomeLayoutMigrationOptions, HomeLayoutMigrationResult, ManagedHomeEntry } from "./ports/home-layout-migration.js";
+export type { HomeLayoutMigrationOptions, HomeLayoutMigrationResult } from "./ports/home-layout-migration.js";
+
 export const DEFAULT_PROFILE_NAME = domainDefaultProfileName;
 const MIGRATION_LOCK_STALE_MS = 10 * 60 * 1000;
 
@@ -193,30 +197,6 @@ export function updateCccConfig(mutate: (config: Record<string, unknown>) => voi
 
 // === Migration ===
 
-export interface HomeLayoutMigrationOptions {
-    /** True when a ccc session may still be using the pre-layout paths. */
-    hasLiveSessions: () => boolean;
-    /** True if any stopped/running container still references legacy managed paths. */
-    hasContainerMounts?: () => boolean;
-    /** Deprecated: retained for callers; normal clipboard startup owns retirement. */
-    retireLegacyClipboard?: (portFile: string) => void;
-    warn?: (message: string) => void;
-    now?: () => number;
-}
-
-export type HomeLayoutMigrationResult =
-    | { status: "not-needed" | "busy" | "sessions-active" | "mounts-active" }
-    | { status: "migrated"; moved: string[]; failed: string[] };
-
-const MOVES: ReadonlyArray<readonly [string, string]> = [
-    ["clipboard.port", join("run", "clipboard.port")],
-    ...DEFAULT_PROFILE_ENTRIES.map((entry) => [entry, join("profiles", DEFAULT_PROFILE_NAME, entry)] as const),
-    ["locks", join("run", "locks")],
-    ["clipboard-files", join("run", "clipboard-files")],
-    ["bin", join("run", "bin")],
-];
-const CLIPBOARD_LOCK_NAMES = ["clipboard.starting", "clipboard.starting.v2"];
-
 // Entries that could not be migrated are reported once; the record lives in
 // run/ so deleting run/ only repeats the notice.
 function reportedConflictsFile(home: string): string {
@@ -240,38 +220,6 @@ function recordReportedConflicts(home: string, reported: Set<string>): void {
     }
 }
 
-function legacyRemoteFiles(home: string): string[] {
-    try {
-        return readdirSync(join(home, "remote")).filter((name) => name.endsWith(".json"));
-    } catch {
-        return [];
-    }
-}
-
-/** A profiles/default that ccc did not mark while pre-layout credentials exist
- * is a profile the user named "default" before this layout. */
-function unmarkedDefaultProfile(home: string): boolean {
-    return exists(join(home, "profiles", DEFAULT_PROFILE_NAME))
-        && !exists(join(home, "profiles", DEFAULT_PROFILE_NAME, DEFAULT_PROFILE_MARKER))
-        && DEFAULT_PROFILE_ENTRIES.some((entry) => exists(join(home, entry)));
-}
-
-function pendingWork(home: string, reported: Set<string>): boolean {
-    if (unmarkedDefaultProfile(home)) return true;
-    for (const [legacyRel, nextRel] of MOVES) {
-        if (!exists(join(home, legacyRel))) continue;
-        if (!exists(join(home, nextRel)) || !reported.has(legacyRel)) return true;
-    }
-    if (CLIPBOARD_LOCK_NAMES.some((name) => exists(join(home, name)))) return true;
-    const remote = legacyRemoteFiles(home);
-    if (remote.some((name) => !reported.has(join("remote", name)))) return true;
-    try {
-        return readdirSync(join(home, "remote")).length === 0;
-    } catch {
-        return false;
-    }
-}
-
 function acquireMigrationLock(lockPath: string, now: number): boolean {
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -290,51 +238,6 @@ function acquireMigrationLock(lockPath: string, now: number): boolean {
     return false;
 }
 
-function setAsideUnmarkedDefaultProfile(home: string, warn: (message: string) => void): void {
-    const current = join(home, "profiles", DEFAULT_PROFILE_NAME);
-    let name = "default-pre-layout";
-    for (let suffix = 2; exists(join(home, "profiles", name)); suffix++) name = `default-pre-layout-${suffix}`;
-    renameSync(current, join(home, "profiles", name));
-    warn(`ccc: your profile named "default" is now "${name}" (use CCC_PROFILE=${name}); "default" is the account used without CCC_PROFILE.`);
-}
-
-function mergeLegacyRemoteConfigs(home: string, reported: Set<string>, warn: (message: string) => void): string[] {
-    const dir = join(home, "remote");
-    const merged: string[] = [];
-    const parsed: Record<string, unknown> = {};
-    for (const name of legacyRemoteFiles(home)) {
-        try {
-            parsed[name.slice(0, -".json".length)] = JSON.parse(readFileSync(join(dir, name), "utf-8"));
-            merged.push(name);
-        } catch {
-            const key = join("remote", name);
-            if (!reported.has(key)) {
-                warn(`ccc: kept ${join(dir, name)} (not valid JSON); it is not used.`);
-                reported.add(key);
-            }
-        }
-    }
-    if (merged.length > 0) {
-        // Throws on an unparseable config.json; the legacy files then stay and keep being read.
-        updateCccConfig((config) => {
-            const remote = config.remote && typeof config.remote === "object" && !Array.isArray(config.remote)
-                ? config.remote as Record<string, unknown>
-                : {};
-            for (const [hash, value] of Object.entries(parsed)) {
-                if (!(hash in remote)) remote[hash] = value;
-            }
-            config.remote = remote;
-        });
-        for (const name of merged) unlinkSync(join(dir, name));
-    }
-    try {
-        rmdirSync(dir);
-    } catch {
-        // Not empty (kept files) or already gone.
-    }
-    return merged.map((name) => join("remote", name));
-}
-
 /**
  * Move a pre-layout ~/.ccc into the profile/run layout. Runs only while no
  * session is live, never copies or deletes credentials, and is idempotent.
@@ -342,95 +245,118 @@ function mergeLegacyRemoteConfigs(home: string, reported: Set<string>, warn: (me
 export function migrateHomeLayout(options: HomeLayoutMigrationOptions): HomeLayoutMigrationResult {
     const home = cccHome();
     const warn = options.warn ?? ((message: string) => console.error(message));
-    if (!exists(home)) return { status: "not-needed" };
-    const reported = readReportedConflicts(home);
-    if (!pendingWork(home, reported)) return { status: "not-needed" };
-
     const lockPath = join(home, ".layout-migration.lock");
-    if (!acquireMigrationLock(lockPath, (options.now ?? Date.now)())) return { status: "busy" };
-    const reportedBefore = reported.size;
-    const clipboardLocks: Array<{ path: string; dev: number; ino: number }> = [];
-    try {
-        if (options.hasLiveSessions()) return { status: "sessions-active" };
-        if (options.hasContainerMounts?.()) return { status: "mounts-active" };
-        // Lock both namespaces and both protocol generations before moving paths.
-        // Never reclaim a startup lock here: its owner may still publish or retire.
-        const startupPaths = [home, join(home, "run")].flatMap(dir => CLIPBOARD_LOCK_NAMES.map(name => join(dir, name)));
-        if (startupPaths.some(exists)) return { status: "busy" };
-        const legacyPort = join(home, "clipboard.port");
-        const nextPort = join(home, "run", "clipboard.port");
-        if (exists(legacyPort) && exists(nextPort)) {
-            warn(`ccc: both ${legacyPort} and ${nextPort} exist; layout migration deferred without replacing either clipboard file.`);
-            return { status: "busy" };
+    const legacyPath = (entry: ManagedHomeEntry): string => join(home, entry);
+    const targetPath = (entry: ManagedHomeEntry): string => DEFAULT_PROFILE_ENTRIES.includes(entry)
+        ? join(home, "profiles", DEFAULT_PROFILE_NAME, entry)
+        : join(home, "run", entry);
+    const startupPath = (slot: ClipboardStartupSlot): string => join(slot.namespace === "legacy" ? home : join(home, "run"), slot.name);
+    const remoteDirectory = join(home, "remote");
+    function report(notice: HomeLayoutMigrationNotice): undefined {
+        switch (notice.kind) {
+            case "clipboard-conflict":
+                warn(`ccc: both ${legacyPath("clipboard.port")} and ${targetPath("clipboard.port")} exist; layout migration deferred without replacing either clipboard file.`);
+                break;
+            case "unsafe-clipboard":
+                warn(`ccc: unsafe clipboard state at ${notice.namespace === "legacy" ? legacyPath("clipboard.port") : targetPath("clipboard.port")}; layout migration deferred.`);
+                break;
+            case "default-profile-renamed":
+                warn(`ccc: your profile named "default" is now "${notice.name}" (use CCC_PROFILE=${notice.name}); "default" is the account used without CCC_PROFILE.`);
+                break;
+            case "profile-prepare-failed":
+                warn(`ccc: could not prepare ${defaultProfileDir()} (${(notice.error as NodeJS.ErrnoException).code ?? "error"}); still using the old paths, will retry on a later start.`);
+                break;
+            case "entry-conflict":
+                warn(`ccc: both ${legacyPath(notice.entry)} and ${targetPath(notice.entry)} exist; using ${targetPath(notice.entry)} and leaving the old one untouched.`);
+                break;
+            case "clipboard-move-failed":
+                warn(`ccc: could not move ${legacyPath("clipboard.port")}; layout migration deferred without changing other paths.`);
+                break;
+            case "entry-move-failed":
+                warn(`ccc: could not move ${legacyPath(notice.entry)} to ${targetPath(notice.entry)} (${(notice.error as NodeJS.ErrnoException).code ?? "error"}); still using the old path, will retry on a later start.`);
+                break;
+            case "invalid-remote":
+                warn(`ccc: kept ${join(remoteDirectory, notice.name)} (not valid JSON); it is not used.`);
+                break;
+            case "remote-merge-failed":
+                warn(`ccc: could not merge ${remoteDirectory} into config.json (${(notice.error as Error).message}); remote configs are still read from there.`);
+                break;
         }
-        for (const path of [legacyPort, nextPort]) {
-            if (exists(path) && !lstatSync(path).isFile()) {
-                warn(`ccc: unsafe clipboard state at ${path}; layout migration deferred.`);
-                return { status: "busy" };
-            }
-        }
-        mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
-        for (const path of startupPaths) {
-            try {
-                closeSync(openSync(path, "wx", 0o600));
-                const identity = lstatSync(path);
-                clipboardLocks.push({ path, dev: identity.dev, ino: identity.ino });
-            } catch {
-                return { status: "busy" };
-            }
-        }
-        const moved: string[] = [];
-        const failed: string[] = [];
-        try {
-            if (unmarkedDefaultProfile(home)) setAsideUnmarkedDefaultProfile(home, warn);
-            if (DEFAULT_PROFILE_ENTRIES.some((entry) => exists(join(home, entry)))) ensureDefaultProfileDir();
-        } catch (error) {
-            warn(`ccc: could not prepare ${defaultProfileDir()} (${(error as NodeJS.ErrnoException).code ?? "error"}); still using the old paths, will retry on a later start.`);
-            return { status: "migrated", moved, failed: [...DEFAULT_PROFILE_ENTRIES] };
-        }
-        for (const [legacyRel, nextRel] of MOVES) {
-            const legacy = join(home, legacyRel);
-            const next = join(home, nextRel);
-            if (!exists(legacy)) continue;
-            if (exists(next)) {
-                if (!reported.has(legacyRel)) {
-                    warn(`ccc: both ${legacy} and ${next} exist; using ${next} and leaving the old one untouched.`);
-                    reported.add(legacyRel);
-                }
-                continue;
-            }
-            try {
-                mkdirSync(dirname(next), { recursive: true, mode: 0o700 });
-                renameSync(legacy, next);
-                moved.push(legacyRel);
-            } catch (error) {
-                failed.push(legacyRel);
-                if (legacyRel === "clipboard.port") {
-                    warn(`ccc: could not move ${legacy}; layout migration deferred without changing other paths.`);
-                    return { status: "migrated", moved, failed };
-                }
-                warn(`ccc: could not move ${legacy} to ${next} (${(error as NodeJS.ErrnoException).code ?? "error"}); still using the old path, will retry on a later start.`);
-            }
-        }
-        try {
-            moved.push(...mergeLegacyRemoteConfigs(home, reported, warn));
-        } catch (error) {
-            failed.push("remote");
-            warn(`ccc: could not merge ${join(home, "remote")} into config.json (${(error as Error).message}); remote configs are still read from there.`);
-        }
-        return { status: "migrated", moved, failed };
-    } finally {
-        for (const held of clipboardLocks) {
+        return undefined;
+    }
+    return createHomeLayoutMigration<{ path: string; dev: number; ino: number }>({
+        homeExists: () => exists(home),
+        readReportedConflicts: () => readReportedConflicts(home),
+        defaultProfileExists: () => exists(join(home, "profiles", DEFAULT_PROFILE_NAME)),
+        defaultProfileMarkerExists: () => exists(join(home, "profiles", DEFAULT_PROFILE_NAME, DEFAULT_PROFILE_MARKER)),
+        profileNameExists: (name) => exists(join(home, "profiles", name)),
+        legacyEntryExists: (entry) => exists(legacyPath(entry)),
+        targetEntryExists: (entry) => exists(targetPath(entry)),
+        startupSlotExists: (slot) => exists(startupPath(slot)),
+        clipboardPortIsRegular: (namespace) => lstatSync(namespace === "legacy" ? legacyPath("clipboard.port") : targetPath("clipboard.port")).isFile(),
+        listLegacyRemoteNames: () => {
+            try { return readdirSync(remoteDirectory); } catch { return []; }
+        },
+        legacyRemoteDirectoryIsEmpty: () => {
+            try { return readdirSync(remoteDirectory).length === 0; } catch { return false; }
+        },
+        remoteEntryKey: (name) => join("remote", name),
+        readLegacyRemoteText: (name) => readFileSync(join(remoteDirectory, name), "utf-8"),
+        acquireMigrationLock: (now) => acquireMigrationLock(lockPath, now),
+        releaseMigrationLock: () => {
+            try { unlinkSync(lockPath); } catch { /* Already gone. */ }
+            return undefined;
+        },
+        ensureRuntimeDirectory: () => {
+            mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
+            return undefined;
+        },
+        claimStartupSlot: (slot) => {
+            const path = startupPath(slot);
+            closeSync(openSync(path, "wx", 0o600));
+            const identity = lstatSync(path);
+            return { path, dev: identity.dev, ino: identity.ino };
+        },
+        releaseStartupReceipt: (held) => {
             try {
                 const current = lstatSync(held.path);
                 if (current.dev === held.dev && current.ino === held.ino) unlinkSync(held.path);
             } catch { /* Removed by its owner or another process; never remove a replacement. */ }
-        }
-        if (reported.size !== reportedBefore) recordReportedConflicts(home, reported);
-        try {
-            unlinkSync(lockPath);
-        } catch {
-            // Already gone.
-        }
-    }
+            return undefined;
+        },
+        renameDefaultProfile: (name) => {
+            renameSync(join(home, "profiles", DEFAULT_PROFILE_NAME), join(home, "profiles", name));
+            return undefined;
+        },
+        ensureDefaultProfileDirectory: () => {
+            ensureDefaultProfileDir();
+            return undefined;
+        },
+        moveEntry: (entry) => {
+            const next = targetPath(entry);
+            mkdirSync(dirname(next), { recursive: true, mode: 0o700 });
+            renameSync(legacyPath(entry), next);
+            return undefined;
+        },
+        updateConfig: (mutate) => {
+            updateCccConfig(mutate);
+            return undefined;
+        },
+        removeLegacyRemoteFile: (name) => {
+            unlinkSync(join(remoteDirectory, name));
+            return undefined;
+        },
+        removeEmptyLegacyRemoteDirectory: () => {
+            try { rmdirSync(remoteDirectory); } catch { /* Not empty (kept files) or already gone. */ }
+            return undefined;
+        },
+        recordReportedConflicts: (reported) => {
+            recordReportedConflicts(home, reported);
+            return undefined;
+        },
+        hasLiveSessions: () => options.hasLiveSessions(),
+        hasContainerMounts: () => options.hasContainerMounts?.() ?? false,
+        currentTime: () => (options.now ?? Date.now)(),
+        report,
+    })();
 }

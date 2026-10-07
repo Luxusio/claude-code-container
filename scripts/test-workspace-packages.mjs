@@ -2142,6 +2142,74 @@ async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
     } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
+async function verifyHomeMigrationDelivery(applicationUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const fs = await import("node:fs"), path = await import("node:path");
+    const { createHomeLayoutMigration } = await import(applicationUrl);
+    const facade = await import(facadeUrl);
+    const legacy = new Set(["claude", "codex"]), reported = new Set(), trace = [], receipts = [];
+    const config = { remote: { one: "existing", keep: true } };
+    const ports = {
+        homeExists: () => true, readReportedConflicts: () => reported,
+        defaultProfileExists: () => false, defaultProfileMarkerExists: () => false,
+        profileNameExists: () => false, legacyEntryExists: entry => legacy.has(entry), targetEntryExists: () => false,
+        startupSlotExists: slot => { trace.push(`preflight:${slot.namespace}/${slot.name}`); return false; },
+        clipboardPortIsRegular: () => true,
+        listLegacyRemoteNames: () => ["one.json", "two.json", "bad.json", "ignored.txt"],
+        legacyRemoteDirectoryIsEmpty: () => false, remoteEntryKey: name => `remote/${name}`,
+        readLegacyRemoteText: name => ({ "one.json": "1", "two.json": "[1,2]", "bad.json": "{" })[name],
+        acquireMigrationLock: now => { assert.equal(now, 42); trace.push("claim"); return true; },
+        releaseMigrationLock: () => { trace.push("release-migration"); },
+        ensureRuntimeDirectory: () => { trace.push("mkdir"); },
+        claimStartupSlot: () => { const receipt = receipts.length === 0 ? 0 : Symbol("receipt"); receipts.push(receipt); return receipt; },
+        releaseStartupReceipt: receipt => { assert.equal(receipt, receipts[trace.filter(item => item === "release-startup").length]); trace.push("release-startup"); },
+        renameDefaultProfile: () => assert.fail("no reserved profile"), ensureDefaultProfileDirectory: () => { trace.push("profile"); },
+        moveEntry: entry => { legacy.delete(entry); trace.push(`move:${entry}`); },
+        updateConfig: mutate => { assert.equal(mutate(config), undefined); trace.push("publish"); },
+        removeLegacyRemoteFile: name => { assert.equal(trace.includes("publish"), true); trace.push(`unlink:${name}`); },
+        removeEmptyLegacyRemoteDirectory: () => {}, recordReportedConflicts: value => { assert.equal(value, reported); trace.push("conflicts"); },
+        hasLiveSessions: () => false, hasContainerMounts: () => false, currentTime: () => 42,
+        report: notice => { assert.equal(notice.kind, "invalid-remote"); assert.equal(notice.name, "bad.json"); },
+    };
+    const migrate = createHomeLayoutMigration(ports);
+    assert.deepEqual(trace, []);
+    assert.deepEqual(migrate(), { status: "migrated", moved: ["claude", "codex", "remote/one.json", "remote/two.json"], failed: [] });
+    assert.deepEqual(config.remote, { one: "existing", keep: true, two: [1, 2] });
+    assert.deepEqual([...reported], ["remote/bad.json"]);
+    assert.deepEqual(trace.slice(-6), ["release-startup", "release-startup", "release-startup", "release-startup", "conflicts", "release-migration"]);
+    assert.equal(receipts[0], 0);
+    const fixture = fs.mkdtempSync(path.join(process.cwd(), "home-migration-"));
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CCC_HOME: process.env.CCC_HOME };
+    try {
+        const fixtureHome = path.join(fixture, ".ccc"); fs.mkdirSync(fixtureHome);
+        process.env.HOME = fixture; process.env.USERPROFILE = fixture; process.env.CCC_HOME = fixtureHome;
+        for (const name of ["claude", "codex", "remote"]) fs.mkdirSync(path.join(fixtureHome, name));
+        const credentials = "fixture credential bytes\n", token = "fixture clipboard token\n";
+        fs.writeFileSync(path.join(fixtureHome, "codex", "auth.json"), credentials);
+        fs.writeFileSync(path.join(fixtureHome, "clipboard.port"), token);
+        fs.writeFileSync(path.join(fixtureHome, "remote", "one.json"), "1");
+        fs.writeFileSync(path.join(fixtureHome, "remote", "two.json"), "true");
+        fs.writeFileSync(path.join(fixtureHome, "remote", "bad.json"), "{");
+        fs.writeFileSync(path.join(fixtureHome, "config.json"), JSON.stringify({ remote: { one: "existing" } }));
+        const before = fs.lstatSync(path.join(fixtureHome, "clipboard.port"));
+        const warnings = [], options = { hasLiveSessions: () => false, hasContainerMounts: () => false,
+            warn: message => warnings.push(message), retireLegacyClipboard: () => assert.fail("deprecated callback") };
+        const result = facade.migrateHomeLayout(options);
+        assert.equal(result.status, "migrated"); assert.deepEqual(result.failed, []);
+        assert.equal(fs.readFileSync(path.join(fixtureHome, "profiles/default/codex/auth.json"), "utf8"), credentials);
+        assert.equal(fs.readFileSync(path.join(fixtureHome, "run/clipboard.port"), "utf8"), token);
+        const after = fs.lstatSync(path.join(fixtureHome, "run/clipboard.port"));
+        assert.equal(after.dev, before.dev); assert.equal(after.ino, before.ino);
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fixtureHome, "config.json"), "utf8")).remote, { one: "existing", two: true });
+        assert.equal(fs.existsSync(path.join(fixtureHome, "remote/bad.json")), true);
+        assert.equal(warnings.length, 1); assert.match(warnings[0], /not valid JSON/);
+        assert.deepEqual(facade.migrateHomeLayout(options), { status: "not-needed" });
+    } finally {
+        for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+}
+
 async function verifyUnifiedCreationDelivery(applicationUrl) {
     const assert = (await import("node:assert/strict")).default;
     const { createUnifiedWorkspaceCreation } = await import(applicationUrl);
@@ -2418,6 +2486,35 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", profileContract]);
     } finally { rmSync(profileContract); }
     console.log("PASS profile catalog distribution: actual compiled public facade, declarations, private layout/settings, builtin ensure, file-entry queries, reserved errors and Unix modes");
+    const migrationUrl = pathToFileURL(join(packageRoot, "dist/application/home-layout-migration.js")).href;
+    run(process.execPath, ["--input-type=module", "-e", `await (${verifyHomeMigrationDelivery.toString()})(${JSON.stringify(migrationUrl)}, ${JSON.stringify(homeLayout)});`]);
+    const migrationContract = join(packageRoot, "home-layout-migration-consumer.mts");
+    writeFileSync(migrationContract, [
+        'import { createHomeLayoutMigration } from "./dist/application/home-layout-migration.js";',
+        'import type { HomeLayoutMigrationPorts } from "./dist/ports/home-layout-migration.js";',
+        'import { migrateHomeLayout, type HomeLayoutMigrationOptions, type HomeLayoutMigrationResult } from "./dist/home-layout.js";',
+        'declare const ports: HomeLayoutMigrationPorts<symbol>;',
+        'const result: HomeLayoutMigrationResult = createHomeLayoutMigration(ports)();',
+        'const facade: (options:HomeLayoutMigrationOptions)=>HomeLayoutMigrationResult = migrateHomeLayout;',
+        'const legacy: HomeLayoutMigrationOptions = {hasLiveSessions:()=>false,warn:async()=>{},retireLegacyClipboard:()=>{}};',
+        'if(result.status==="migrated") {result.moved.push("mutable");result.failed=[];}',
+        '// @ts-expect-error All semantic ports are required.',
+        'createHomeLayoutMigration({});',
+        '// @ts-expect-error Ports are readonly.',
+        'ports.homeExists=()=>true;',
+        '// @ts-expect-error New effect contracts reject async implementations.',
+        'const asyncPorts: HomeLayoutMigrationPorts<symbol> = {...ports,moveEntry:async()=>undefined};',
+        '// @ts-expect-error Config publication mutation is synchronous.',
+        'ports.updateConfig(async()=>undefined);',
+        '// @ts-expect-error Result remains synchronous.',
+        'const asynchronous: Promise<unknown> = result;',
+        'void [facade,legacy,asyncPorts,asynchronous];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", migrationContract]);
+    } finally { rmSync(migrationContract); }
+    console.log("PASS home migration distribution: compiled JSON/claim/finally policy, actual native one-way migration/retained bytes/inodes and synchronous legacy declaration consumers");
     run(process.execPath, ["--input-type=module", "-e",
         `await (${verifyWorkspaceNaming.toString()})(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/domain/workspace-naming.js")).href)}, ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/worktree.js")).href)});`]);
     const namingContract = join(packageRoot, "workspace-naming-consumer.mts");
