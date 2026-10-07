@@ -135,3 +135,17 @@ Failure/deferred budgets and traces remain unchanged; no production TypeScript
 is changed. Both actual extracted npm/materialized install smoke checks and
 46 targeted facade cases passed in the worker check. Final independent delta
 verification and corrected full CI remain pending. Failed QA3 evidence is kept.
+
+The independent delta QA subsequently passed all 46 facade tests and the actual
+extracted npm/materialized installation smoke (17 PASS outputs). Fixture hashes
+matched before and after execution; production TypeScript was unchanged from
+03486786. The reviewed correction was committed and pushed as 6dcf0bb7. Full
+CI run 37564870779 was still in progress at this checkpoint; no full-suite PASS
+or architecture completion is inferred from the focused checks.
+
+The task-owned Windows VM `ccc-native-ci-20261007`, incarnation
+`1d242aa71a4cffa99cae75516d956e92`, was stopped and deleted through Device Lab
+MCP after verification. Provider deletion confirmed owned artifacts removed and
+the exact network allocation released, retaining the shared network and its
+other allocation. An additional guest-result download was refused by the host
+destination-parent fence; previously captured build results remain the evidence.
