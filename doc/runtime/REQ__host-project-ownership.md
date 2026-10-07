@@ -70,6 +70,15 @@ new UID1000 images without changing ownership of the legacy shared cache.
 Existing remote containers continue to use their existing mounts; this change
 does not replace them or change Mutagen synchronization.
 
+Container inspection must recognize writable tmpfs mounts reported through
+`HostConfig.Tmpfs`. Podman 4.9.3 appends `rprivate` and `tmpcopyup` by default;
+these exact options are compatible with the managed tmpfs contract and must not
+make an otherwise verified create or reuse fail. Do not accept unknown options,
+shared propagation modes, malformed options, conflicting access, or conflicting
+mount representations. This compatibility does not bypass bind source, user,
+provenance or live identity checks. Failed creation verification still compensates
+only the exact captured newly created container ID.
+
 ## Existing projects
 
 CCC-managed Codex state (the resolved default or named profile, including legacy `~/.ccc/codex`, distinct from host `~/.codex`) must

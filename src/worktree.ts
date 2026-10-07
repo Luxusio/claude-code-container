@@ -289,13 +289,20 @@ type FileIdentity = {
     ino: string;
 };
 
+// Use one observed spelling before computing containment and relative links.
+// Direct ownership comparisons still require their separate no-link/object
+// proof; native canonical spelling alone does not establish that authority.
+function observedRealpath(path: string): string {
+    return process.platform === "win32" ? realpathSync.native(path) : realpathSync(path);
+}
+
 function captureDirectoryIdentity(path: string): DirectoryIdentity {
     const observed = lstatSync(path, { bigint: true });
     if (!observed.isDirectory() || observed.isSymbolicLink()) {
         throw new Error(`Workspace path '${path}' must be a real directory.`);
     }
     return {
-        realpath: realpathSync(path),
+        realpath: observedRealpath(path),
         dev: observed.dev.toString(),
         ino: observed.ino.toString(),
     };
@@ -317,7 +324,7 @@ function capturePathIdentity(path: string): DirectoryIdentity {
         throw new Error(`Workspace entry '${path}' must not be a symbolic link.`);
     }
     return {
-        realpath: realpathSync(path),
+        realpath: observedRealpath(path),
         dev: observed.dev.toString(),
         ino: observed.ino.toString(),
     };
@@ -400,8 +407,8 @@ function normalizeWorktreeGitLink(
     validatedContent?: string,
 ): string {
     const portableGitDirectory = portableWorktreeGitDirectory(
-        dirname(gitFile),
-        resolvedGitDirectory,
+        process.platform === "win32" ? observedRealpath(dirname(gitFile)) : dirname(gitFile),
+        process.platform === "win32" ? observedRealpath(resolvedGitDirectory) : resolvedGitDirectory,
     );
     const expectedContent = `gitdir: ${portableGitDirectory}\n`;
     normalizeWorktreeMetadataFile(
@@ -1109,7 +1116,7 @@ function gitLinkKind(gitPath: string): GitLinkKind {
             ? registeredGitFile
             : resolve(gitDir, registeredGitFile);
         try {
-            realpathSync(registeredPath);
+            observedRealpath(registeredPath);
         } catch (error) {
             // Carry the path Git actually recorded. An errno's own `path` is the FIRST MISSING
             // COMPONENT of the walk, not the path asked for: on a machine where `/project` exists
@@ -1128,26 +1135,26 @@ function gitLinkKind(gitPath: string): GitLinkKind {
         if (!lstatSync(commonGitDir).isDirectory()) {
             throw brokenWorktreeLink("worktree common directory is not a directory");
         }
-        const managementRootPath = join(realpathSync(commonGitDir), "worktrees");
+        const managementRootPath = join(observedRealpath(commonGitDir), "worktrees");
         const managementRootObserved = lstatSync(managementRootPath);
         if (!managementRootObserved.isDirectory() || managementRootObserved.isSymbolicLink()) {
             throw brokenWorktreeLink("worktree management root is not a real directory");
         }
-        if (!isSourceWorktreeManagementRoot(dirname(gitDir), realpathSync(commonGitDir))) {
+        if (!isSourceWorktreeManagementRoot(dirname(gitDir), observedRealpath(commonGitDir))) {
             throw brokenWorktreeLink("worktree management link crosses an untrusted root");
         }
-        if (!sameExistingObject(dirname(realpathSync(gitDir)), managementRootPath)) {
+        if (!sameExistingObject(dirname(observedRealpath(gitDir)), managementRootPath)) {
             throw new Error("worktree management entry is outside its source repository");
         }
         const listed = spawnSync(
             "git",
-            ["--git-dir", realpathSync(commonGitDir), "worktree", "list", "--porcelain"],
+            ["--git-dir", observedRealpath(commonGitDir), "worktree", "list", "--porcelain"],
             { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         if (listed.error || listed.status !== 0) {
             throw new Error("unable to verify Git worktree registry");
         }
-        const expectedPath = realpathSync(dirname(gitPath));
+        const expectedPath = observedRealpath(dirname(gitPath));
         const registered = (listed.stdout ?? "")
             .split(/\r?\n\r?\n/)
             .some((record) => {
@@ -1370,7 +1377,7 @@ function trackedSubmoduleGitDirectoryIsOwned(
     const actualGitDirectory = resolve(dirname(gitFile), match[1].trim());
     try {
         const ownerGitDirectory = resolve(parentRepository, gitDirectoryOutput);
-        const ownerGitRealpath = realpathSync(ownerGitDirectory);
+        const ownerGitRealpath = observedRealpath(ownerGitDirectory);
         let observedPath = ownerGitDirectory;
         for (const segment of ["modules", ...storageName.split("/")]) {
             observedPath = join(observedPath, segment);
@@ -1381,7 +1388,7 @@ function trackedSubmoduleGitDirectoryIsOwned(
         if (!expected.isDirectory()) return false;
         const relativeExpected = relative(
             ownerGitRealpath,
-            realpathSync(expectedGitDirectory),
+            observedRealpath(expectedGitDirectory),
         );
         if (relativePathEscapesRoot(relativeExpected)) return false;
         return sameObservedPath(actualGitDirectory, expectedGitDirectory);
@@ -2113,7 +2120,7 @@ function recreateMissingWorkspaceRootRegistration(
     if (mode === "inspect") return true;
 
     const temporaryPath = join(
-        dirname(workspacePath),
+        dirname(process.platform === "win32" ? workspaceIdentity.realpath : workspacePath),
         `.${basename(workspacePath)}.ccc-register-${randomBytes(16).toString("hex")}`,
     );
     mkdirSync(temporaryPath);
@@ -2249,8 +2256,8 @@ function recreateMissingWorkspaceRootRegistration(
         }
 
         const portableGitDirectory = portableWorktreeGitDirectory(
-            dirname(join(workspacePath, ".git")),
-            managementDirectory,
+            process.platform === "win32" ? workspaceIdentity.realpath : workspacePath,
+            process.platform === "win32" ? managementIdentity.realpath : managementDirectory,
         );
         assertRecoveryAuthority();
         if (!managementRootIdentity) return refuse("temporary management root identity is unavailable");
@@ -3111,8 +3118,8 @@ function nestedRepositoryCandidateIsSafe(
         const candidate = lstatSync(candidatePath);
         if (!candidate.isDirectory() || candidate.isSymbolicLink()) return false;
         const relativeCandidate = relative(
-            realpathSync(parentRepository),
-            realpathSync(candidatePath),
+            observedRealpath(parentRepository),
+            observedRealpath(candidatePath),
         );
         if (relativePathEscapesRoot(relativeCandidate)) {
             throw new Error(
@@ -4049,7 +4056,7 @@ function ensureNestedWorktreeParent(
         if (!observed.isDirectory() || observed.isSymbolicLink()) {
             throw new Error(`Nested worktree parent is not a safe directory: ${current}`);
         }
-        const relativeObserved = relative(workspaceRoot, realpathSync(current));
+        const relativeObserved = relative(workspaceRoot, observedRealpath(current));
         if (relativePathEscapesRoot(relativeObserved)) {
             throw new Error(`Nested worktree parent escapes its workspace: ${current}`);
         }
@@ -4077,7 +4084,7 @@ function assertNestedWorktreeDestinationFence(
     for (const parent of fence.parents) {
         assertDirectoryIdentity(parent.path, parent.identity);
         if (relativePathEscapesRoot(
-            relative(fence.workspace.realpath, realpathSync(parent.path)),
+            relative(fence.workspace.realpath, observedRealpath(parent.path)),
         )) {
             throw new Error(`Nested worktree parent escaped its workspace: ${parent.path}`);
         }
@@ -4087,7 +4094,7 @@ function assertNestedWorktreeDestinationFence(
     if (!destination.isDirectory() || destination.isSymbolicLink()
         || relativePathEscapesRoot(relative(
             fence.workspace.realpath,
-            realpathSync(destinationPath),
+            observedRealpath(destinationPath),
         ))) {
         throw new Error(`Nested worktree destination escaped its workspace: ${destinationPath}`);
     }
@@ -6794,7 +6801,7 @@ function trackedWorktreeGitFiles(
     const collect = (currentRepository: string): void => {
         let currentRealpath: string;
         try {
-            currentRealpath = realpathSync(currentRepository);
+            currentRealpath = observedRealpath(currentRepository);
         } catch (error) {
             if (!strict) return;
             throw new Error(
@@ -6816,7 +6823,7 @@ function trackedWorktreeGitFiles(
                 if (!candidate.isDirectory() || candidate.isSymbolicLink()) {
                     throw new Error("tracked Git link is not a real directory");
                 }
-                const candidateRealpath = realpathSync(candidatePath);
+                const candidateRealpath = observedRealpath(candidatePath);
                 const relativeCandidate = relative(currentRealpath, candidateRealpath);
                 if (relativePathEscapesRoot(relativeCandidate)) {
                     throw new Error("tracked Git link escapes its repository");
@@ -7590,8 +7597,8 @@ export function isValidWorktree(
             if (!isSourceWorktreeManagementRoot(dirname(resolvedGitdir), sourceGitRealpath)) {
                 return refuse("workspace Git link crosses an untrusted management root");
             }
-            const managementRoot = realpathSync(managementRootPath);
-            const managementEntry = realpathSync(resolvedGitdir);
+            const managementRoot = observedRealpath(managementRootPath);
+            const managementEntry = observedRealpath(resolvedGitdir);
             if (!sameExistingObject(dirname(managementEntry), managementRoot)) {
                 return refuse("management entry is outside the source worktrees directory");
             }
@@ -7610,7 +7617,7 @@ export function isValidWorktree(
                 return refuse(`git worktree list failed${detail ? `: ${detail}` : ""}`);
             }
             assertNestedRepositoryIdentity(sourceRepoPath, sourceIdentity);
-            const expectedPath = realpathSync(dirPath);
+            const expectedPath = observedRealpath(dirPath);
             const records = (listed.stdout ?? "")
                 .split(/\r?\n\r?\n/)
                 .map((record) => {

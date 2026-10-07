@@ -4517,9 +4517,22 @@ describe("isValidWorktree", () => {
         const alternateGitFile = join(dirname(result.workspacePath), alternateName, ".git");
         if (!existsSync(alternateGitFile)) context.skip();
         expect(statSync(alternateGitFile).ino).toBe(statSync(gitFile).ino);
-        writeFileSync(join(gitDirectory, "gitdir"), `${alternateGitFile}\n`);
+        // Git strips the literal '/.git' suffix before registry comparison.
+        // Preserve its administrative slash format while varying only case.
+        writeFileSync(join(gitDirectory, "gitdir"),
+            `${portableWorktreeBackpointer(alternateGitFile)}\n`);
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(listed.status, listed.stderr).toBe(0);
+        expect(listed.stdout).not.toContain("prunable");
+        expect(listed.stdout).toContain(
+            `worktree ${portableWorktreeBackpointer(dirname(alternateGitFile))}\n`,
+        );
 
-        expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(true);
+        let ownershipFailure: string | undefined;
+        expect(isValidWorktree(result.workspacePath, tmpDir,
+            (reason) => { ownershipFailure = reason; }), ownershipFailure).toBe(true);
         expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir))
             .not.toThrow();
         expect(detectWorktreeWorkspaceBranch(result.workspacePath))
@@ -4535,7 +4548,7 @@ describe("isValidWorktree", () => {
             const short = spawnSync("cmd.exe", ["/d", "/c",
                 'for %I in ("%CCC_SHORT_PATH_FIXTURE%") do @echo %~sI',
             ], {
-                encoding: "utf-8", stdio: "pipe",
+                encoding: "utf-8", stdio: "pipe", windowsVerbatimArguments: true,
                 env: { ...process.env, CCC_SHORT_PATH_FIXTURE: expandedParent },
             });
             expect(short.status, short.stderr).toBe(0);

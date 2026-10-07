@@ -107,6 +107,8 @@ describe.skipIf(!isPodmanAvailable())('E2E: Podman Integration', () => {
         ensureBuilt()
         testProjectDir = mkdtempSync(join(tmpdir(), 'ccc-podman-test-'))
         writeFileSync(join(testProjectDir, 'package.json'), JSON.stringify({ name: 'test-project' }))
+        // Avoid interactive tool detection and external Claude analysis in this fixture.
+        writeFileSync(join(testProjectDir, 'mise.toml'), '[tools]\n')
     })
 
     afterAll(() => {

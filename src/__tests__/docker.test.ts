@@ -45,6 +45,7 @@ let expandShortContainerIds = false;
 let latestCreatedContainer: { id: string; runArgs: string[] } | null = null;
 let autoInspectCreatedContainer = true;
 let autoInspectCreatedContainerFailuresRemaining = 0;
+let autoInspectCreatedTmpfsOptions: string | undefined;
 let autoInspectCreatedMountSource = (source: string, _destination: string): string => source;
 const createdContainerInspectIds: string[] = [];
 let autoReadMountMarkers = true;
@@ -85,6 +86,7 @@ vi.mock("child_process", async (importOriginal) => {
                     RW: boolean;
                 }> = [];
                 const labels: Record<string, string> = {};
+                const tmpfs: Record<string, string> = {};
                 for (let index = 0; index < latestCreatedContainer.runArgs.length; index += 1) {
                     const argument = latestCreatedContainer.runArgs[index];
                     if (argument === "-v") {
@@ -99,6 +101,10 @@ vi.mock("child_process", async (importOriginal) => {
                             });
                         }
                     }
+                    if (argument === "--tmpfs" && autoInspectCreatedTmpfsOptions !== undefined) {
+                        const destination = latestCreatedContainer.runArgs[index + 1].split(":")[0];
+                        tmpfs[destination] = autoInspectCreatedTmpfsOptions;
+                    }
                     if (argument === "--label") {
                         const label = latestCreatedContainer.runArgs[index + 1] ?? "";
                         const separator = label.indexOf("=");
@@ -110,6 +116,7 @@ vi.mock("child_process", async (importOriginal) => {
                 return makeResult(0, JSON.stringify({
                     Id: latestCreatedContainer.id,
                     Mounts: mounts,
+                    HostConfig: { Tmpfs: tmpfs },
                     Config: { Labels: labels },
                 }));
             }
@@ -474,6 +481,7 @@ describe("docker.ts module exports", () => {
         latestCreatedContainer = null;
         autoInspectCreatedContainer = true;
         autoInspectCreatedContainerFailuresRemaining = 0;
+        autoInspectCreatedTmpfsOptions = undefined;
         autoInspectCreatedMountSource = (source: string): string => source;
         createdContainerInspectIds.length = 0;
         autoReadMountMarkers = true;
@@ -2230,7 +2238,7 @@ describe("docker.ts module exports", () => {
             })).toHaveLength(1);
         });
 
-        it.each(["rw,noexec,nosuid,nodev,mode=0711", "noexec,nosuid,nodev,mode=0711", "", "duplicate representation"])("reuses Docker HostConfig.Tmpfs mounts: %s", options => {
+        it.each(["rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup", "rw,noexec,nosuid,nodev,mode=0711", "noexec,nosuid,nodev,mode=0711", "", "duplicate representation"])("reuses Docker HostConfig.Tmpfs mounts: %s", options => {
             const inspected = JSON.parse(makeDriftedRunningContract(() => undefined));
             inspected.HostConfig.Tmpfs = Object.fromEntries(inspected.Mounts
                 .filter((mount: { Type: string }) => mount.Type === "tmpfs")
@@ -4957,6 +4965,44 @@ describe("docker.ts module exports", () => {
             expect(runArgs).not.toContain("/dev/kvm:/dev/kvm");
             expect(runArgs).not.toContain("/dev/net/tun:/dev/net/tun");
             expect(runArgs).not.toContain("--privileged");
+        });
+
+        it.each([
+            "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup",
+            "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup,rshared",
+            "rw,noexec,nosuid,nodev,mode=0711,shared,tmpcopyup",
+            "rw,noexec,nosuid,nodev,mode=0711,rprivate,notmpcopyup",
+            "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup,unknown",
+            "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup,ro",
+            "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup,",
+        ])("verifies newly created native Podman HostConfig.Tmpfs: %s", options => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "podman-rootless" });
+            autoInspectCreatedTmpfsOptions = options;
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${TEST_CREATED_CONTAINER_ID}\n`));
+            const start = () => startProjectContainer(projectPath, ensureDirs);
+            const accepted = options === "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup";
+            if (accepted) {
+                expect(start()).toBe(getContainerName(projectPath));
+                expect(createdContainerInspectIds).toEqual([TEST_CREATED_CONTAINER_ID]);
+                expect(mountChallengeContainerIds).toEqual(new Set([TEST_CREATED_CONTAINER_ID]));
+            } else {
+                expect(start).toThrow("created container bind mount identity verification failed");
+                expect(createdContainerInspectIds.length).toBeGreaterThan(0);
+                expect(new Set(createdContainerInspectIds)).toEqual(new Set([TEST_CREATED_CONTAINER_ID]));
+            }
+            const removals = spawnSyncMock.mock.calls.filter((call: unknown[]) => (call[1] as string[])[0] === "rm");
+            expect(removals.map((call: unknown[]) => call[1])).toEqual(accepted ? [] : [["rm", "-f", TEST_CREATED_CONTAINER_ID]]);
+            const runCall = spawnSyncMock.mock.calls.find((call: unknown[]) => call[0] === "podman" && (call[1] as string[])[0] === "run");
+            expect(runCall).toBeDefined();
+            expect(runCall![1]).toContain("--tmpfs");
         });
 
         it.each([

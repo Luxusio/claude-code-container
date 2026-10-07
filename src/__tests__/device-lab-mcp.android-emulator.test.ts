@@ -1177,6 +1177,8 @@ if (args[0] === '-s' && args[2] === 'shell' && args[3] === 'getprop' && args[4] 
             });
             expect(create.isError).not.toBe(true);
 
+            // Boot must remain pending before the child has entered its script.
+            writeFileSync(join(homeDir, "fake-android-boot-pending"), "");
             const start = await client.callTool({
                 name: "start",
                 arguments: { deviceId, bootTimeoutMs: 5000 },

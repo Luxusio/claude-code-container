@@ -16,7 +16,8 @@ Native acceptance includes an owner-scoped Device Lab Hyper-V Windows guest
 created for this task, headless build/test execution and exact-device cleanup.
 Local Linux fixtures do not establish Windows NTFS or rootless Podman behavior.
 The workflow now selects the correction branch and feature base for native CI
-without removing ownership gates; no completed remote run is claimed yet.
+without removing ownership gates. The ed9d288a run completed with Linux,
+Podman-forced units and Chrome passing; native Windows and Podman E2E failed.
 
 ## Known ceiling
 
@@ -27,7 +28,35 @@ focused run passed 90 cases and fresh foundation run passed 10 cases.
 
 Device Lab created and booted Windows Server guest `ccc-native-ci-20261007`,
 incarnation `1d242aa71a4cffa99cae75516d956e92`. Node24.21.0 and Git2.55.0 were
-downloaded with verified checksums. The baseline-source guest installation/build
-is still in progress. Corrected-source native build/tests, final exact-SHA CI,
-rootless Podman acceptance and exact-device cleanup are pending. No Linux
-fixture result substitutes for those native outcomes.
+downloaded with verified checksums. Installation and explicit build for the
+ed9d288a source completed successfully; its Windows subset failed. Acceptance
+for the subsequent Windows/Podman corrections, final exact-SHA CI and exact-
+device cleanup remain pending. No Linux fixture substitutes for native outcomes.
+
+Fresh full-suite QA also exposed an Android boot-exit fixture race. Establish
+its pending-boot marker before starting the fake emulator so an early adb poll
+cannot report boot-ready before the child initializes. Preserve the child exit
+17, stopped-state rollback, and cleared runtime/lifecycle assertions.
+
+## Native diagnosis and correction
+
+The exact ed9d288a Windows guest source archive was verified against SHA-256
+`97cfd0aee82deaf2479dfb3c26fbc0e0e8286384c1cbd0e0a39d9dbfd5280a85`.
+Both native dependency installation and explicit `npm run build` exited 0;
+Windows worktree tests exited 1. Remaining path fixes canonicalize captured
+Windows observations before containment/relative-link relationships and use
+Git's valid forward-slash administrative backpointer format. They preserve
+object/no-link proof and rollback. Corrected native results remain pending.
+
+The ed9d288a CI Linux, Podman-forced unit and Chrome jobs passed. Native
+Podman diagnostics proved inspection failed because its default `rprivate`
+and `tmpcopyup` flags were rejected. Accept exactly those two benign defaults
+without dropping hardening flags or unknown/shared/conflicting-option refusal.
+Create/reuse inspection regressions passed 21 focused tests, including captured
+identity and exact-ID compensation. Native lifecycle acceptance remains pending.
+
+The next Windows source/test overlay was byte-verified in the guest against
+SHA-256 `4b2ed752269bfd2a7a0b7bad0efad3ddee21f67a9fe8c1915317e134b4e2d5c5`
+and `f439d6b75e7d3b5fcff8d9f9b344700214468ab8f4bf3db3d324f65f0cc8a604`.
+Its previously failing alternate-case backpointer regression passed natively.
+The whole corrected native subset and final CI remain pending at this checkpoint.

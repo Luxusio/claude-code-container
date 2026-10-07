@@ -23,7 +23,12 @@ the workspace without risking uncommitted files.
   symbolic link or junction, and a nonzero inode, matching device, and object
   type confirm the same existing object. Hard links and junction aliases must
   not establish direct ownership. The same object checks apply to stale
-  backpointer repair and tracked nested worktree mounts.
+  backpointer repair and tracked nested worktree mounts. Existing Windows
+  identity captures and containment/relative-link calculations use native
+  expanded paths consistently. Canonical spelling does not replace filesystem
+  identity, direct-path, branch, or metadata generation checks. Recovery
+  creates its temporary registration beside the observed workspace path so
+  the missing destination still agrees with Git after temporary cleanup.
 - A workspace owned by another repository, a copied or forged `.git` link, or
   missing or ambiguous Git evidence must be refused before launch. The CLI
   must not delete, adopt, or rewrite that directory as part of this refusal.
