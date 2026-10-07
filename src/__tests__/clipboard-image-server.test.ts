@@ -80,7 +80,10 @@ function fakeProcess() {
     return proc;
 }
 
+const originalProcessPlatform = process.platform;
+
 beforeEach(async () => {
+    Object.defineProperty(process, "platform", { configurable: true, get: () => native.platform });
     vi.resetModules();
     vi.clearAllMocks();
     native.platform = "win32";
@@ -99,6 +102,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: originalProcessPlatform });
     for (const child of children) child.kill();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
 });

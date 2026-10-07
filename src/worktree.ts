@@ -1392,7 +1392,8 @@ function trackedSubmoduleGitDirectoryIsOwned(
 
 function sameObservedPath(left: string, right: string): boolean {
     try {
-        return realpathSync(left) === realpathSync(right);
+        return realpathSync(left) === realpathSync(right)
+            || sameWindowsCanonicalObject(left, right);
     } catch {
         const resolvedLeft = resolve(left);
         const resolvedRight = resolve(right);
@@ -1402,14 +1403,23 @@ function sameObservedPath(left: string, right: string): boolean {
     }
 }
 
-// Git for Windows and Node can spell the same existing path with different case.
-// A case-folded string alone is not ownership evidence (Windows directories may
-// be case-sensitive), so accept an alias only when both observations name the
-// same filesystem object.
-function sameExistingObject(left: string, right: string): boolean {
+// Node's JS realpath can retain an 8.3 spelling that Git expands. Native
+// canonical spelling is useful only after excluding link aliases throughout
+// both paths, and confirming the existing object by device, inode and type.
+function sameWindowsCanonicalObject(left: string, right: string): boolean {
+    if (process.platform !== "win32") return false;
     try {
-        if (realpathSync(left) === realpathSync(right)) return true;
-        if (process.platform !== "win32") return false;
+        for (const path of [left, right]) {
+            let current = resolve(path);
+            for (;;) {
+                if (lstatSync(current).isSymbolicLink()) return false;
+                const parent = dirname(current);
+                if (parent === current) break;
+                current = parent;
+            }
+        }
+        if (realpathSync.native(left).toLowerCase()
+            !== realpathSync.native(right).toLowerCase()) return false;
         const observedLeft = lstatSync(left, { bigint: true });
         const observedRight = lstatSync(right, { bigint: true });
         return observedLeft.ino !== 0n
@@ -1417,6 +1427,15 @@ function sameExistingObject(left: string, right: string): boolean {
             && observedLeft.ino === observedRight.ino
             && observedLeft.isDirectory() === observedRight.isDirectory()
             && observedLeft.isFile() === observedRight.isFile();
+    } catch {
+        return false;
+    }
+}
+
+function sameExistingObject(left: string, right: string): boolean {
+    try {
+        if (realpathSync(left) === realpathSync(right)) return true;
+        return sameWindowsCanonicalObject(left, right);
     } catch {
         return false;
     }
@@ -1431,7 +1450,8 @@ function sameDirectExistingObject(left: string, right: string): boolean {
     const sameSpelling = process.platform === "win32"
         ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
         : resolvedLeft === resolvedRight;
-    return sameSpelling && sameExistingObject(left, right);
+    return (sameSpelling || sameWindowsCanonicalObject(left, right))
+        && sameExistingObject(left, right);
 }
 
 function isSourceWorktreeManagementRoot(
@@ -1444,7 +1464,10 @@ function isSourceWorktreeManagementRoot(
     const hasExpectedSpelling = process.platform === "win32"
         ? resolvedCandidate.toLowerCase() === resolvedExpected.toLowerCase()
         : resolvedCandidate === resolvedExpected;
-    if (!hasExpectedSpelling) return false;
+    if (!hasExpectedSpelling
+        && !sameWindowsCanonicalObject(candidate, expected)
+        && !(basename(candidate) === "worktrees"
+            && sameWindowsCanonicalObject(dirname(candidate), commonGitDirectory))) return false;
     if (pathExistsStrict(candidate)) {
         const candidateObserved = lstatSync(candidate);
         if (!candidateObserved.isDirectory() || candidateObserved.isSymbolicLink()) return false;
@@ -6013,7 +6036,7 @@ function createUnifiedWorkspace(
     );
 
     if (result.status !== 0) {
-        const stderr = (result.stderr ?? "").trim();
+        const stderr = (result.stderr ?? "").trim() || result.error?.message || "";
         try {
             rollbackFailedWorktreeAdd(
                 resolved,
@@ -6152,7 +6175,7 @@ function createMultiRepoWorkspace(
             );
 
             if (result.status !== 0) {
-                const stderr = (result.stderr ?? "").trim();
+                const stderr = (result.stderr ?? "").trim() || result.error?.message || "";
                 try {
                     rollbackFailedWorktreeAdd(
                         repo.path,

@@ -33,7 +33,10 @@ function child() {
     return proc;
 }
 
+const originalProcessPlatform = process.platform;
+
 beforeEach(async () => {
+    Object.defineProperty(process, "platform", { configurable: true, get: () => "win32" });
     vi.resetModules();
     vi.clearAllMocks();
     servers = [];
@@ -81,6 +84,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: originalProcessPlatform });
     vi.useRealTimers();
     for (const server of servers) {
         server.closeAllConnections();

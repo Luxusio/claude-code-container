@@ -10,6 +10,8 @@ import {
     lstatSync,
     renameSync,
     statSync,
+    realpathSync,
+    linkSync,
     chmodSync,
 } from "fs";
 import { join, dirname, basename, posix, relative, resolve } from "path";
@@ -4216,6 +4218,20 @@ describe("repairWorkspace", () => {
         });
     });
 
+    it.skipIf(process.platform === "win32")(
+        "reports the original registration capture error when Git stderr is empty", () => {
+            initRepo(tmpDir);
+            const branch = "registration-capture-diagnostic";
+            const workspace = getWorkspacePath(tmpDir, branch);
+            expect(() => withGitMetadataMutation(join(workspace, ".git"), workspace,
+                () => createWorkspace(tmpDir, branch)))
+                .toThrow("Worktree registration ownership changed before deletion");
+            // Capture failure has no owned registration fence: preserve its metadata.
+            expect(readFileSync(join(workspace, ".git"), "utf-8"))
+                .toBe("gitdir: /ccc-test-missing-gitdir\n");
+        },
+    );
+
     it.skipIf(process.platform === "win32")("preserves a replacement path after worktree registration", () => {
         initRepo(tmpDir);
         const foreign = join(tmpDir, "foreign-destination");
@@ -4443,7 +4459,12 @@ describe("isValidWorktree", () => {
             readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
         );
         writeFileSync(join(gitDirectory, "gitdir"),
-            `${relative(gitDirectory, gitFile)}\n`);
+            `${relative(gitDirectory, join(tmpDir, "missing-worktree", ".git"))}\n`);
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(listed.status, listed.stderr).toBe(0);
+        expect(listed.stdout).toContain("prunable");
 
         expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(false);
         expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir))
@@ -4507,6 +4528,72 @@ describe("isValidWorktree", () => {
             result.workspacePath, "case-root-backpointer", spawnSync, tmpDir,
         )).not.toThrow();
     });
+
+    it.skipIf(process.platform !== "win32")(
+        "creates and recovers ownership through real Windows short and expanded paths", (context) => {
+            const expandedParent = realpathSync.native(tmpDir);
+            const short = spawnSync("cmd.exe", ["/d", "/c",
+                'for %I in ("%CCC_SHORT_PATH_FIXTURE%") do @echo %~sI',
+            ], {
+                encoding: "utf-8", stdio: "pipe",
+                env: { ...process.env, CCC_SHORT_PATH_FIXTURE: expandedParent },
+            });
+            expect(short.status, short.stderr).toBe(0);
+            const shortParent = short.stdout.trim();
+            // Filesystems with 8.3 names disabled cannot provide this native fixture.
+            if (shortParent.toLowerCase() === expandedParent.toLowerCase()) context.skip();
+            expect(realpathSync.native(shortParent)).toBe(expandedParent);
+            expect(shortParent).toMatch(/~[0-9]/);
+            const source = join(shortParent, "source");
+            const expandedSource = join(expandedParent, "source");
+            initRepo(source);
+            const branch = "short-path-root";
+            const result = createWorkspace(source, branch);
+            const workspace = getWorkspacePath(expandedSource, branch);
+            const gitFile = join(workspace, ".git");
+            const management = resolve(workspace,
+                readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""));
+            writeFileSync(join(workspace, "keep-me.txt"), "uncommitted\n");
+            writeFileSync(join(workspace, "init.txt"), "tracked modification\n");
+            expect(isValidWorktree(result.workspacePath, source)).toBe(true);
+            expect(() => assertWorkspaceRootOwnership(workspace, expandedSource)).not.toThrow();
+            expect(() => assertWorkspaceBranch(workspace, branch, spawnSync, expandedSource))
+                .not.toThrow();
+            rmSync(management, { recursive: true });
+            expect(repairWorkspaceRootOwnership(result.workspacePath, source, branch,
+                { confirmedMissingRegistration: true })).toBe(true);
+            expect(() => assertWorkspaceRootOwnership(workspace, expandedSource)).not.toThrow();
+            expect(readFileSync(join(workspace, "keep-me.txt"), "utf-8")).toBe("uncommitted\n");
+            expect(readFileSync(join(workspace, "init.txt"), "utf-8")).toBe("tracked modification\n");
+        },
+    );
+
+    it.skipIf(process.platform !== "win32")(
+        "rejects Windows junction and hardlink aliases in a live backpointer", () => {
+            initRepo(tmpDir);
+            const result = createWorkspace(tmpDir, "direct-windows-backpointer");
+            const gitFile = join(result.workspacePath, ".git");
+            const management = resolve(result.workspacePath,
+                readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""));
+            const marker = join(result.workspacePath, "keep-me.txt");
+            writeFileSync(marker, "uncommitted\n");
+            writeFileSync(join(result.workspacePath, "init.txt"), "tracked modification\n");
+            const alias = join(tmpDir, "junction-alias");
+            symlinkSync(result.workspacePath, alias, "junction");
+            writeFileSync(join(management, "gitdir"), `${join(alias, ".git")}\n`);
+            expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(false);
+            expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir)).toThrow();
+            const hardlink = join(result.workspacePath, "hardlink.git");
+            linkSync(gitFile, hardlink);
+            expect(lstatSync(hardlink).ino).toBe(lstatSync(gitFile).ino);
+            writeFileSync(join(management, "gitdir"), `${hardlink}\n`);
+            expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(false);
+            expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir)).toThrow();
+            expect(readFileSync(marker, "utf-8")).toBe("uncommitted\n");
+            expect(readFileSync(join(result.workspacePath, "init.txt"), "utf-8"))
+                .toBe("tracked modification\n");
+        },
+    );
 
     it("explains how to inspect a foreign root without changing it", () => {
         const sourceRepo = join(tmpDir, "source");
@@ -9612,7 +9699,8 @@ describe("the stranded-branch notice, run as printed", () => {
     });
 
     // A recorded path that begins with a dash. Where it comes from: a gitdir file decides where
-    // the path starts, `git worktree list --porcelain` reports it verbatim, and the value
+    // the path starts; Git reports a literal or management-relative resolved spelling,
+    // depending on its version, and the value
     // crosses the container boundary. Without the `--` separator git parses it as options and
     // answers `error: unknown switch 'f'` with a usage line, exit 129 — the exact failure this
     // notice was rewritten to stop producing, reintroduced by the notice itself.
@@ -9629,14 +9717,22 @@ describe("the stranded-branch notice, run as printed", () => {
         const registry = join(source, ".git", "worktrees");
         writeFileSync(join(registry, readdirSync(registry)[0], "gitdir"), "-foo/.git\n");
         rmSync(checkout, { recursive: true, force: true });
-        // `--` here too: git's own lock subcommand needs it for the same reason.
-        expect(spawnSync("git", ["worktree", "lock", "--", "-foo"], {
+        // Newer Git resolves relative backpointers from the management entry;
+        // older Git reports them literally. Use Git's actual recorded spelling.
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: source, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(listed.status, listed.stderr).toBe(0);
+        const recordedPath = listed.stdout.split("\n\n")
+            .find((record) => record.includes("branch refs/heads/feat"))!
+            .split("\n").find((line) => line.startsWith("worktree "))!.slice(9);
+        expect(spawnSync("git", ["worktree", "lock", "--", recordedPath], {
             cwd: source,
             stdio: "pipe",
         }).status, "the fixture itself proves git needs the separator").toBe(0);
 
         const stranded = strandedBranchRegistrations(source, "feat");
-        expect(stranded[0]?.lockedPaths, "the dash survives into the notice").toEqual(["-foo"]);
+        expect(stranded[0]?.lockedPaths).toEqual([recordedPath]);
 
         const commands = strandedBranchNotice("feat", stranded)
             .split("\n")
@@ -9649,6 +9745,12 @@ describe("the stranded-branch notice, run as printed", () => {
         });
         expect(pasted.status, pasted.stderr).toBe(0);
         expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
+    });
+    it("keeps a literal dash path behind the cleanup argument separator", () => {
+        const notice = strandedBranchNotice("feat", [{
+            repository: "/source", lockedPaths: ["-foo"],
+        }]);
+        expect(notice).toContain("worktree unlock -- -foo");
     });
     // A worktree of the source that lives INSIDE the source. The scan runs with
     // allowRegisteredWorktrees, so it is found as its own repository — but it shares the

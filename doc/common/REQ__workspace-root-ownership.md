@@ -18,8 +18,12 @@ the workspace without risking uncommitted files.
   paths resolve to the same observed filesystem object. Case-insensitive text
   comparison alone does not establish ownership. A Git backpointer or registry
   path must also directly name that path, so a symlink alias cannot establish
-  ownership. The same object checks apply to stale backpointer repair and
-  tracked nested worktree mounts.
+  ownership. Windows short (8.3) and expanded path spellings may agree only
+  after native canonical paths agree, every ancestor is observed without a
+  symbolic link or junction, and a nonzero inode, matching device, and object
+  type confirm the same existing object. Hard links and junction aliases must
+  not establish direct ownership. The same object checks apply to stale
+  backpointer repair and tracked nested worktree mounts.
 - A workspace owned by another repository, a copied or forged `.git` link, or
   missing or ambiguous Git evidence must be refused before launch. The CLI
   must not delete, adopt, or rewrite that directory as part of this refusal.
@@ -44,7 +48,9 @@ the workspace without risking uncommitted files.
   validation step, including the specific post-relink ownership invariant,
   and includes Git's concise error when available. Equivalent
   Windows paths must pass the same observed-object checks during recovery as
-  during preflight. A failed attempt preserves the workspace files.
+  during preflight. A failed attempt preserves the workspace files. Worktree
+  creation diagnostics retain the original failure message when Git stderr is
+  empty, including registration ownership capture failures before checkout.
 
 ## Verification
 
@@ -52,5 +58,6 @@ Use real temporary Git repositories and worktrees to cover owned, relative
 backpointer, stale metadata, missing management entry, foreign, and forged
 cases. Missing-entry coverage includes declined recovery, confirmed root-only
 recovery through the CLI prompt, branch conflict, and rollback. Run the Windows
-path spelling and nested mount cases on a Windows filesystem. Preserve tracked
-changes and an untracked marker across every validation or refusal path.
+path spelling (including a real short/expanded path pair) and nested mount
+cases on a Windows filesystem. Preserve tracked changes and an untracked
+marker across every validation or refusal path.

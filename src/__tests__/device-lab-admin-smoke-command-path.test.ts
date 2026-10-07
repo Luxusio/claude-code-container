@@ -23,6 +23,8 @@ function setPlatform(platform: NodeJS.Platform) {
 
 describe("deviceLabSmoke command discovery", () => {
     beforeEach(() => {
+        vi.stubEnv("ANDROID_HOME", "");
+        vi.stubEnv("ANDROID_SDK_ROOT", "");
         setPlatform("win32");
         spawnSyncMock.mockReset();
         spawnSyncMock.mockImplementation((command, args) => {
@@ -41,6 +43,7 @@ describe("deviceLabSmoke command discovery", () => {
     });
 
     afterEach(() => {
+        vi.unstubAllEnvs();
         setPlatform(originalPlatform);
         if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
         else process.env.LOCALAPPDATA = originalLocalAppData;

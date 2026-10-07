@@ -749,126 +749,133 @@ describe("device-lab MCP foundation and definitions", () => {
     });
 
     it("reports backends without starting heavyweight devices", { timeout: TIMEOUT }, async () => {
-        const result = await client.callTool({ name: "devices", arguments: { view: "backends", implicitBroker: false } });
-        expect(result.isError).not.toBe(true);
+        const isolated = await createDeviceLabMcpTestContext();
+        try {
+            const client = isolated.client;
+            expect(existsSync(join(isolated.homeDir, ".ccc", "devices"))).toBe(false);
+            const result = await client.callTool({ name: "devices", arguments: { view: "backends", implicitBroker: false } });
+            expect(result.isError).not.toBe(true);
 
-        const content = result.content as Array<{ type: string; text?: string }>;
-        const payload = JSON.parse(content[0].text ?? "{}") as {
-            ownerId?: string;
-            broker?: {
-                mode: string;
-                lazy: boolean;
-                transport: { environmentRequired: boolean };
-                containerContract: { incomplete: boolean; environmentRequired: boolean; ownerResolution: string; stateExists: boolean };
-                warnings: string[];
-                protocolVersion: number;
+            const content = result.content as Array<{ type: string; text?: string }>;
+            const payload = JSON.parse(content[0].text ?? "{}") as {
+                ownerId?: string;
+                broker?: {
+                    mode: string;
+                    lazy: boolean;
+                    transport: { environmentRequired: boolean };
+                    containerContract: { incomplete: boolean; environmentRequired: boolean; ownerResolution: string; stateExists: boolean };
+                    warnings: string[];
+                    protocolVersion: number;
+                };
+                backends?: Array<{ name: string; available: boolean; status?: string; capabilities?: string[] }>;
             };
-            backends?: Array<{ name: string; available: boolean; status?: string; capabilities?: string[] }>;
-        };
 
-        expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
-        expect(payload.broker).toEqual(expect.objectContaining({
-            mode: "broker-unavailable",
-            lazy: true,
-            transport: expect.objectContaining({ environmentRequired: false }),
-            containerContract: expect.objectContaining({
-                incomplete: true,
-                environmentRequired: false,
-                ownerResolution: "host-broker-resolve",
-                stateExists: false,
-            }),
-            warnings: expect.arrayContaining([expect.stringContaining("device-lab container wiring is incomplete")]),
-            protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
-        }));
-        expect(payload.backends?.map((backend) => backend.name)).toEqual([
-            "x11-current-display",
-            "android-emulator",
-            "android-device",
-            "ios-simulator",
-            "ios-device",
-            "windows-sandbox",
-            "windows-vm",
-            "macos-vm",
-            "linux-vm",
-        ]);
-        for (const backend of payload.backends || []) backend.capabilities = (backend.capabilities || []).map(publicToolName);
-        const acceptedTools = new Set([...TOOLS.map((tool: { name: string }) => tool.name),
-            "rotate_left", "rotate_right", "install_app", "launch_app", "screenshot"]);
-        const unknownCapabilities = (payload.backends || []).flatMap((backend) => (backend.capabilities || [])
-            .filter((capability) => !acceptedTools.has(capability))
-            .map((capability) => ({ backend: backend.name, capability })));
-        expect(unknownCapabilities).toEqual([]);
-        const toolBackendEnums = new Map(TOOLS.map((tool: { name: string }) => [
-            tool.name,
-            ((toolProperties(tool).backend as { enum?: unknown[] } | undefined)?.enum || []).map(String),
-        ]));
-        const capabilitiesMissingBackendEnum = (payload.backends || []).flatMap((backend) => (backend.capabilities || [])
-            .filter((capability) => {
-                const backendEnum = toolBackendEnums.get(capability) || [];
-                return backendEnum.length > 0 && !backendEnum.includes(backend.name);
-            })
-            .map((capability) => ({
-                backend: backend.name,
-                capability,
-                advertisedBackendEnum: toolBackendEnums.get(capability) || [],
-            })));
-        expect(capabilitiesMissingBackendEnum).toEqual([]);
-        expect(payload.backends?.find((backend) => backend.name === "android-emulator")?.status).toBe("missing-prerequisites");
-        expect(payload.backends?.find((backend) => backend.name === "android-device")?.status).toBe("missing-prerequisites");
-        const androidDeviceBackend = payload.backends?.find((backend) => backend.name === "android-device");
-        expect(androidDeviceBackend?.capabilities).toContain("wireless");
-        expect(androidDeviceBackend?.capabilities).not.toEqual(expect.arrayContaining([
-            "set_location",
-            "set_battery",
-            "set_network",
-            "set_network",
-        ]));
-        const iosSimulatorBackend = payload.backends?.find((backend) => backend.name === "ios-simulator");
-        expect(iosSimulatorBackend?.status).toBe("missing-prerequisites");
-        expect(iosSimulatorBackend?.capabilities).toEqual(expect.arrayContaining([
-            "click",
-            "long_press",
-            "swipe",
-            "drag",
-            "type",
-            "key",
-            "home",
-            "lock",
-            "unlock",
-            "set_orientation",
-            "set_location",
-            "clipboard",
-            "clipboard",
-            "wait_for_text",
-        ]));
-        expect(iosSimulatorBackend?.capabilities).not.toEqual(expect.arrayContaining([
-            "set_battery",
-            "set_network",
-            "set_network",
-        ]));
-        const iosDeviceBackend = payload.backends?.find((backend) => backend.name === "ios-device");
-        expect(iosDeviceBackend?.status).toBe("missing-prerequisites");
-        expect(iosDeviceBackend?.capabilities).toContain("wireless");
-        expect(iosDeviceBackend?.capabilities).not.toEqual(expect.arrayContaining([
-            "exec",
-            "open_url",
-            "set_location",
-            "clipboard",
-            "clipboard",
-            "set_battery",
-        ]));
-        const windowsBackend = payload.backends?.find((backend) => backend.name === "windows-sandbox");
-        expect(windowsBackend?.status).toBe("missing-prerequisites");
-        expect(windowsBackend?.capabilities).toContain("devices");
-        expect(windowsBackend?.capabilities).toEqual(expect.arrayContaining(["window_list", "ui"]));
-        const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
-        expect(macosBackend?.status).toBe("missing-prerequisites");
-        expect(macosBackend?.capabilities).toContain("devices");
-        expect(macosBackend?.capabilities).toEqual(expect.arrayContaining([
-            "window_list",
-            "ui",
-            "create_macos_vm",
-        ]));
+            expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+            expect(payload.broker).toEqual(expect.objectContaining({
+                mode: "broker-unavailable",
+                lazy: true,
+                transport: expect.objectContaining({ environmentRequired: false }),
+                containerContract: expect.objectContaining({
+                    incomplete: true,
+                    environmentRequired: false,
+                    ownerResolution: "host-broker-resolve",
+                    stateExists: false,
+                }),
+                warnings: expect.arrayContaining([expect.stringContaining("device-lab container wiring is incomplete")]),
+                protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
+            }));
+            expect(payload.backends?.map((backend) => backend.name)).toEqual([
+                "x11-current-display",
+                "android-emulator",
+                "android-device",
+                "ios-simulator",
+                "ios-device",
+                "windows-sandbox",
+                "windows-vm",
+                "macos-vm",
+                "linux-vm",
+            ]);
+            for (const backend of payload.backends || []) backend.capabilities = (backend.capabilities || []).map(publicToolName);
+            const acceptedTools = new Set([...TOOLS.map((tool: { name: string }) => tool.name),
+                "rotate_left", "rotate_right", "install_app", "launch_app", "screenshot"]);
+            const unknownCapabilities = (payload.backends || []).flatMap((backend) => (backend.capabilities || [])
+                .filter((capability) => !acceptedTools.has(capability))
+                .map((capability) => ({ backend: backend.name, capability })));
+            expect(unknownCapabilities).toEqual([]);
+            const toolBackendEnums = new Map(TOOLS.map((tool: { name: string }) => [
+                tool.name,
+                ((toolProperties(tool).backend as { enum?: unknown[] } | undefined)?.enum || []).map(String),
+            ]));
+            const capabilitiesMissingBackendEnum = (payload.backends || []).flatMap((backend) => (backend.capabilities || [])
+                .filter((capability) => {
+                    const backendEnum = toolBackendEnums.get(capability) || [];
+                    return backendEnum.length > 0 && !backendEnum.includes(backend.name);
+                })
+                .map((capability) => ({
+                    backend: backend.name,
+                    capability,
+                    advertisedBackendEnum: toolBackendEnums.get(capability) || [],
+                })));
+            expect(capabilitiesMissingBackendEnum).toEqual([]);
+            expect(payload.backends?.find((backend) => backend.name === "android-emulator")?.status).toBe("missing-prerequisites");
+            expect(payload.backends?.find((backend) => backend.name === "android-device")?.status).toBe("missing-prerequisites");
+            const androidDeviceBackend = payload.backends?.find((backend) => backend.name === "android-device");
+            expect(androidDeviceBackend?.capabilities).toContain("wireless");
+            expect(androidDeviceBackend?.capabilities).not.toEqual(expect.arrayContaining([
+                "set_location",
+                "set_battery",
+                "set_network",
+                "set_network",
+            ]));
+            const iosSimulatorBackend = payload.backends?.find((backend) => backend.name === "ios-simulator");
+            expect(iosSimulatorBackend?.status).toBe("missing-prerequisites");
+            expect(iosSimulatorBackend?.capabilities).toEqual(expect.arrayContaining([
+                "click",
+                "long_press",
+                "swipe",
+                "drag",
+                "type",
+                "key",
+                "home",
+                "lock",
+                "unlock",
+                "set_orientation",
+                "set_location",
+                "clipboard",
+                "clipboard",
+                "wait_for_text",
+            ]));
+            expect(iosSimulatorBackend?.capabilities).not.toEqual(expect.arrayContaining([
+                "set_battery",
+                "set_network",
+                "set_network",
+            ]));
+            const iosDeviceBackend = payload.backends?.find((backend) => backend.name === "ios-device");
+            expect(iosDeviceBackend?.status).toBe("missing-prerequisites");
+            expect(iosDeviceBackend?.capabilities).toContain("wireless");
+            expect(iosDeviceBackend?.capabilities).not.toEqual(expect.arrayContaining([
+                "exec",
+                "open_url",
+                "set_location",
+                "clipboard",
+                "clipboard",
+                "set_battery",
+            ]));
+            const windowsBackend = payload.backends?.find((backend) => backend.name === "windows-sandbox");
+            expect(windowsBackend?.status).toBe("missing-prerequisites");
+            expect(windowsBackend?.capabilities).toContain("devices");
+            expect(windowsBackend?.capabilities).toEqual(expect.arrayContaining(["window_list", "ui"]));
+            const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
+            expect(macosBackend?.status).toBe("missing-prerequisites");
+            expect(macosBackend?.capabilities).toContain("devices");
+            expect(macosBackend?.capabilities).toEqual(expect.arrayContaining([
+                "window_list",
+                "ui",
+                "create_macos_vm",
+            ]));
+        } finally {
+            await cleanupDeviceLabMcpTestContext(isolated);
+        }
     });
 
     it("reports real-device wireless missing prerequisites without environment configuration", { timeout: TIMEOUT }, async () => {
@@ -896,51 +903,58 @@ describe("device-lab MCP foundation and definitions", () => {
     });
 
     it("reports zero-config broker contract without starting host providers", { timeout: TIMEOUT }, async () => {
-        const result = await client.callTool({
-            name: "devices",
-            arguments: { view: "backends", implicitBroker: false, detail: true },
-        });
-        expect(result.isError).not.toBe(true);
-        const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")).broker as {
-            ownerId: string;
-            mode: string;
-            lazy: boolean;
-            available: boolean;
-            transport: { hostCandidates: string[]; defaultPort: number; zeroConfig: boolean; environmentRequired: boolean };
-            probe: { requested: boolean; available: boolean; attempts: unknown[] };
-            state: { root: string; ownerRoot: string; locksRoot: string; logsRoot: string; rootExists: boolean };
-            containerContract: { incomplete: boolean; stateExists: boolean; deviceStateMounted: boolean; environmentRequired: boolean; ownerResolution: string };
-            warnings: string[];
-            remedies: string[];
-            protocolVersion: number;
-        };
+        const isolated = await createDeviceLabMcpTestContext();
+        try {
+            const client = isolated.client;
+            expect(existsSync(join(isolated.homeDir, ".ccc", "devices"))).toBe(false);
+            const result = await client.callTool({
+                name: "devices",
+                arguments: { view: "backends", implicitBroker: false, detail: true },
+            });
+            expect(result.isError).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")).broker as {
+                ownerId: string;
+                mode: string;
+                lazy: boolean;
+                available: boolean;
+                transport: { hostCandidates: string[]; defaultPort: number; zeroConfig: boolean; environmentRequired: boolean };
+                probe: { requested: boolean; available: boolean; attempts: unknown[] };
+                state: { root: string; ownerRoot: string; locksRoot: string; logsRoot: string; rootExists: boolean };
+                containerContract: { incomplete: boolean; stateExists: boolean; deviceStateMounted: boolean; environmentRequired: boolean; ownerResolution: string };
+                warnings: string[];
+                remedies: string[];
+                protocolVersion: number;
+            };
 
-        expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
-        expect(payload.mode).toBe("broker-unavailable");
-        expect(payload.lazy).toBe(true);
-        expect(payload.available).toBe(false);
-        expect(payload.probe).toEqual(expect.objectContaining({ requested: false, available: false, attempts: [] }));
-        expect(payload.transport).toEqual(expect.objectContaining({
-            hostCandidates: expect.arrayContaining(["host.docker.internal", "172.17.0.1"]),
-            defaultPort: 17373,
-            zeroConfig: true,
-            environmentRequired: false,
-        }));
-        expect(payload.state.ownerRoot).toContain(payload.ownerId);
-        expect(payload.state.locksRoot).toContain(join(".ccc", "devices", "broker", "locks"));
-        expect(payload.state).toEqual(expect.objectContaining({ runtimeFile: expect.stringContaining(join(".ccc", "devices", "broker", "runtime.json")) }));
-        expect(payload.state.rootExists).toBe(false);
-        expect(payload.containerContract).toEqual(expect.objectContaining({
-            incomplete: true,
-            stateExists: false,
-            deviceStateMounted: false,
-            environmentRequired: false,
-            ownerResolution: "host-broker-resolve",
-        }));
-        expect(payload.containerContract).not.toHaveProperty("ownerBasisEnvPresent");
-        expect(payload.containerContract).not.toHaveProperty("ownerBasisMatches");
-        expect(payload.warnings).toEqual(expect.arrayContaining([expect.stringContaining("device-lab container wiring is incomplete")]));
-        expect(payload.remedies).toEqual(expect.arrayContaining([expect.stringContaining("Restart or recreate ccc from the host")]));
+            expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+            expect(payload.mode).toBe("broker-unavailable");
+            expect(payload.lazy).toBe(true);
+            expect(payload.available).toBe(false);
+            expect(payload.probe).toEqual(expect.objectContaining({ requested: false, available: false, attempts: [] }));
+            expect(payload.transport).toEqual(expect.objectContaining({
+                hostCandidates: expect.arrayContaining(["host.docker.internal", "172.17.0.1"]),
+                defaultPort: 17373,
+                zeroConfig: true,
+                environmentRequired: false,
+            }));
+            expect(payload.state.ownerRoot).toContain(payload.ownerId);
+            expect(payload.state.locksRoot).toContain(join(".ccc", "devices", "broker", "locks"));
+            expect(payload.state).toEqual(expect.objectContaining({ runtimeFile: expect.stringContaining(join(".ccc", "devices", "broker", "runtime.json")) }));
+            expect(payload.state.rootExists).toBe(false);
+            expect(payload.containerContract).toEqual(expect.objectContaining({
+                incomplete: true,
+                stateExists: false,
+                deviceStateMounted: false,
+                environmentRequired: false,
+                ownerResolution: "host-broker-resolve",
+            }));
+            expect(payload.containerContract).not.toHaveProperty("ownerBasisEnvPresent");
+            expect(payload.containerContract).not.toHaveProperty("ownerBasisMatches");
+            expect(payload.warnings).toEqual(expect.arrayContaining([expect.stringContaining("device-lab container wiring is incomplete")]));
+            expect(payload.remedies).toEqual(expect.arrayContaining([expect.stringContaining("Restart or recreate ccc from the host")]));
+        } finally {
+            await cleanupDeviceLabMcpTestContext(isolated);
+        }
     });
 
     it("omits MCP broker wiring warnings when the shared state root is mounted", { timeout: TIMEOUT }, async () => {

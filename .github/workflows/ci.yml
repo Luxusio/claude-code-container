@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, feature/device-mcp-squashed, "fix/post-merge-ci-*"]
   pull_request:
-    branches: [master]
+    branches: [master, feature/device-mcp-squashed]
 
 jobs:
   hyper-v-powershell-static:
@@ -31,7 +31,7 @@ jobs:
       - name: Test Windows worktree ownership
         run: >-
           npx vitest run src/__tests__/worktree.test.ts
-          -t "recreates missing root registration after explicit confirmation|recreates a missing root registration through the confirmed CLI prompt|repairs a stale backpointer for an owned existing workspace|writes Git for Windows backpointers|alternate Windows case|alternate-case foreign path|alternate-case parent|alternate-case symlink root|relative backpointer created by a Git version"
+          -t "recreates missing root registration after explicit confirmation|recreates a missing root registration through the confirmed CLI prompt|repairs a stale backpointer for an owned existing workspace|writes Git for Windows backpointers|alternate Windows case|alternate-case foreign path|alternate-case parent|alternate-case symlink root|real Windows short and expanded paths|Windows junction and hardlink aliases|relative backpointer created by a Git version"
 
       - name: Parse and analyze Hyper-V PowerShell
         run: npm run test:hyper-v:pester

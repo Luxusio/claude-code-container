@@ -35,10 +35,13 @@ function setPlatform(platform: NodeJS.Platform) {
 
 describe("device-lab commandPath", () => {
     beforeEach(() => {
+        vi.stubEnv("ANDROID_HOME", "");
+        vi.stubEnv("ANDROID_SDK_ROOT", "");
         spawnSyncMock.mockReset();
     });
 
     afterEach(() => {
+        vi.unstubAllEnvs();
         setPlatform(originalPlatform);
         if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
         else process.env.LOCALAPPDATA = originalLocalAppData;
