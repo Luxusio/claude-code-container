@@ -2,6 +2,7 @@
 
 import { spawnSync } from "child_process";
 import { createWorkspaceBranchValidation } from "./application/workspace-branch-validation.js";
+import { createWorktreeAddition } from "./application/workspace/worktree-addition.js";
 import { createHash, randomBytes } from "crypto";
 import {
     chmodSync,
@@ -5914,6 +5915,38 @@ export function initWithSubmodules(dirPath: string): void {
 
 // === Write Functions ===
 
+const addWorkspaceWorktree = createWorktreeAddition<
+    ReturnType<typeof prepareWorktreeCreation>,
+    WorktreeRegistrationFence
+>({
+    observeBranch: (request) => branchExistsInRepo(request.repositoryPath, request.branch),
+    prepareAddition: (request, action) => prepareWorktreeCreation(
+        request.repositoryPath,
+        request.destinationPath,
+        request.branch,
+        action,
+    ),
+    addPrepared: (request, prepared) => {
+        const { result, registrationFence } = runPreparedWorktreeAdd(
+            request.repositoryPath,
+            request.destinationPath,
+            request.branch,
+            prepared.expectedBranchOid.expectedOid,
+            prepared.destinationIdentity,
+        );
+        return { ...result, registrationReceipt: registrationFence };
+    },
+    compensateFailedAddition: (request, action, prepared, registrationReceipt) => rollbackFailedWorktreeAdd(
+        request.repositoryPath,
+        request.destinationPath,
+        request.branch,
+        action,
+        prepared.expectedBranchOid,
+        prepared.destinationIdentity,
+        registrationReceipt,
+    ),
+});
+
 /**
  * Create a workspace with git worktrees.
  *
@@ -5960,58 +5993,13 @@ function createUnifiedWorkspace(
     wsPath: string,
     branch: string,
 ): WorktreeResult {
-    const existence = branchExistsInRepo(resolved, branch);
-
-    let action: WorktreeRepoResult["action"];
-
-    switch (existence) {
-        case "local":
-            action = "worktree-existing";
-            break;
-        case "remote":
-            action = "worktree-remote";
-            break;
-        case "none":
-            action = "worktree-new";
-            break;
-    }
-    const {
-        expectedBranchOid,
-        destinationIdentity,
-    } = prepareWorktreeCreation(
-        resolved,
-        wsPath,
+    const { action, prepared, registrationReceipt: registrationFence } = addWorkspaceWorktree({
+        repositoryPath: resolved,
+        destinationPath: wsPath,
         branch,
-        action,
-    );
-    const { result, registrationFence } = runPreparedWorktreeAdd(
-        resolved,
-        wsPath,
-        branch,
-        expectedBranchOid.expectedOid,
-        destinationIdentity,
-    );
-
-    if (result.status !== 0) {
-        const stderr = (result.stderr ?? "").trim() || result.error?.message || "";
-        try {
-            rollbackFailedWorktreeAdd(
-                resolved,
-                wsPath,
-                branch,
-                action,
-                expectedBranchOid,
-                destinationIdentity,
-                registrationFence,
-            );
-        } catch (rollbackError) {
-            throw new Error(
-                `Failed to create worktree: ${stderr}; rollback failed: ${(rollbackError as Error).message}`,
-                { cause: rollbackError },
-            );
-        }
-        throw new Error(`Failed to create worktree: ${stderr}`);
-    }
+        failureContext: { kind: "unified" },
+    });
+    const { expectedBranchOid } = prepared;
     const rootRegistrationFence = requireWorktreeRegistrationFence(
         registrationFence,
         wsPath,
@@ -6099,60 +6087,13 @@ function createMultiRepoWorkspace(
     try {
         for (const repo of gitRepos) {
             const destPath = join(wsPath, repo.name);
-            const existence = branchExistsInRepo(repo.path, branch);
-
-            let action: WorktreeRepoResult["action"];
-
-            switch (existence) {
-                case "local":
-                    action = "worktree-existing";
-                    break;
-                case "remote":
-                    action = "worktree-remote";
-                    break;
-                case "none":
-                    action = "worktree-new";
-                    break;
-            }
-            const {
-                expectedBranchOid,
-                destinationIdentity,
-            } = prepareWorktreeCreation(
-                repo.path,
-                destPath,
+            const { action, prepared, registrationReceipt: registrationFence } = addWorkspaceWorktree({
+                repositoryPath: repo.path,
+                destinationPath: destPath,
                 branch,
-                action,
-            );
-            const { result, registrationFence } = runPreparedWorktreeAdd(
-                repo.path,
-                destPath,
-                branch,
-                expectedBranchOid.expectedOid,
-                destinationIdentity,
-            );
-
-            if (result.status !== 0) {
-                const stderr = (result.stderr ?? "").trim() || result.error?.message || "";
-                try {
-                    rollbackFailedWorktreeAdd(
-                        repo.path,
-                        destPath,
-                        branch,
-                        action,
-                        expectedBranchOid,
-                        destinationIdentity,
-                        registrationFence,
-                    );
-                } catch (rollbackError) {
-                    throw new Error(
-                        `Failed to create worktree for ${repo.name}: ${stderr}; rollback failed: ${(rollbackError as Error).message}`,
-                        { cause: rollbackError },
-                    );
-                }
-                throw new Error(
-                    `Failed to create worktree for ${repo.name}: ${stderr}`,
-                );
-            }
+                failureContext: { kind: "multi-repo", repositoryName: repo.name },
+            });
+            const { expectedBranchOid } = prepared;
 
             created.push({ name: repo.name, branch, action });
             rollbackOids.set(repo.name, expectedBranchOid);

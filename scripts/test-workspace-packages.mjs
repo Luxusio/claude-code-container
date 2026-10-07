@@ -2040,6 +2040,58 @@ async function verifyProfileRequestDelivery(domainUrl, facadeUrl) {
     }
 }
 
+async function verifyWorktreeAdditionDelivery(applicationUrl, facadeUrl) {
+    const assert = (await import("node:assert/strict")).default;
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { spawnSync } = await import("node:child_process");
+    const { createWorktreeAddition } = await import(applicationUrl);
+    const facade = await import(facadeUrl);
+    const request = { repositoryPath: "source", destinationPath: "destination", branch: "topic", failureContext: { kind: "unified" } };
+    const prepared = { opaque: "preparation" }, receipt = { opaque: "registration" };
+    const trace = [];
+    const add = createWorktreeAddition({
+        observeBranch: actual => { assert.equal(actual, request); trace.push("observe"); return "none"; },
+        prepareAddition: (actual, action) => { assert.equal(actual, request); assert.equal(action, "worktree-new"); trace.push("prepare"); return prepared; },
+        addPrepared: (actual, preparation) => { assert.equal(actual, request); assert.equal(preparation, prepared); trace.push("add"); return { status: 0, registrationReceipt: receipt }; },
+        compensateFailedAddition: () => { assert.fail("successful addition must not compensate"); },
+    });
+    assert.deepEqual(trace, []);
+    const added = add(request);
+    assert.equal(added.prepared, prepared); assert.equal(added.registrationReceipt, receipt);
+    assert.deepEqual(trace, ["observe", "prepare", "add"]);
+    assert.throws(() => createWorktreeAddition({}), TypeError);
+    const failure = new Error("owned compensation fixture");
+    const failed = createWorktreeAddition({
+        observeBranch: () => "local", prepareAddition: () => prepared,
+        addPrepared: () => ({ status: null, stderr: "  original diagnostic  ", registrationReceipt: null }),
+        compensateFailedAddition: (_request, action, preparation, registration) => {
+            assert.equal(action, "worktree-existing"); assert.equal(preparation, prepared); assert.equal(registration, null); throw failure;
+        },
+    });
+    assert.throws(() => failed(request), error => error.cause === failure
+        && error.message === "Failed to create worktree: original diagnostic; rollback failed: owned compensation fixture");
+    const root = mkdtempSync(join(process.cwd(), "worktree-addition-"));
+    function git(args, cwd = root) {
+        const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 15000, windowsHide: true });
+        assert.equal(result.status, 0, String(result.error || result.stderr));
+        return result.stdout.trim();
+    }
+    try {
+        git(["init", "source"]);
+        const source = join(root, "source");
+        git(["config", "user.name", "Fixture"], source);
+        git(["config", "user.email", "fixture@example.invalid"], source);
+        git(["config", "commit.gpgsign", "false"], source);
+        writeFileSync(join(source, "owned.txt"), "owned fixture\n");
+        git(["add", "owned.txt"], source); git(["commit", "-m", "fixture"], source);
+        const result = facade.createWorkspace(source, "topic");
+        assert.equal(result.workspacePath, join(root, "source--topic"));
+        assert.deepEqual(result.created, [{ name: "source", branch: "topic", action: "worktree-new" }]);
+        assert.equal(git(["branch", "--show-current"], result.workspacePath), "topic");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 async function smoke(packageRoot) {
     assert.equal(existsSync(join(packageRoot, "node_modules")), false);
     assert.equal(existsSync(join(packageRoot, "x11-mcp")), false, "standalone X11 source was distributed");
@@ -2263,6 +2315,34 @@ async function smoke(packageRoot) {
             "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", parallelContract]);
     } finally { rmSync(parallelContract); }
     console.log("PASS parallel workspace/profile distribution: actual compiled policy and native facades, UTF-8 thresholds/raw identity/private home paths and strict emitted declaration consumers");
+    const worktreeAdditionUrls = ["application/workspace/worktree-addition", "worktree"]
+        .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifyWorktreeAdditionDelivery.toString()})(${worktreeAdditionUrls.map(value => JSON.stringify(value)).join(",")});`]);
+    const additionContract = join(packageRoot, "worktree-addition-consumer.mts");
+    writeFileSync(additionContract, [
+        'import { createWorktreeAddition } from "./dist/application/workspace/worktree-addition.js";',
+        'import type { WorktreeAdditionPorts, WorktreeAdditionRequest } from "./dist/ports/workspace/worktree-addition.js";',
+        'import { createWorkspace, type WorktreeResult } from "./dist/worktree.js";',
+        'declare const ports: WorktreeAdditionPorts<{ opaque: "prepared" }, { opaque: "receipt" }>;',
+        'declare const request: WorktreeAdditionRequest;',
+        'const result = createWorktreeAddition(ports)(request);',
+        'const prepared: { opaque: "prepared" } = result.prepared;',
+        'const receipt: { opaque: "receipt" } | null = result.registrationReceipt;',
+        'const facade: (source: string, branch: string) => WorktreeResult = createWorkspace;',
+        '// @ts-expect-error All semantic effects are required.',
+        'createWorktreeAddition({});',
+        '// @ts-expect-error Port functions are readonly.',
+        'ports.observeBranch = () => "none";',
+        '// @ts-expect-error The addition is synchronous.',
+        'const asynchronous: Promise<unknown> = result;',
+        'void [prepared, receipt, facade, asynchronous];',
+    ].join("\n"));
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", additionContract]);
+    } finally { rmSync(additionContract); }
+    console.log("PASS worktree addition distribution: compiled opaque receipt policy, real native Git facade and emitted generic/required/synchronous declarations");
     const toolDetectDeclarations = readFileSync(join(packageRoot, "dist/tool-detect.d.ts"), "utf8");
     assert.match(toolDetectDeclarations, /export declare function getDefaultToolPreference\(\): string \| null;/);
     assert.match(toolDetectDeclarations, /export declare function setDefaultToolPreference\(toolName: string\): void;/);

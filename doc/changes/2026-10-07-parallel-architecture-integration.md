@@ -6,8 +6,9 @@ Independently reviewed and QA-passed source commits were fast-forwarded to that
 branch at `4aac41e14e4ae20ea68b76d96c545620b8878046` and pushed normally.
 The reviewed native-CI outcome note subsequently landed and was pushed at
 `067a6220d05e1561d4ad3c41e24d2a1fbcbbfa03`.
-The additional common shipping proof remains an integration candidate until
-its own combined review and QA. No full-suite/native PASS is inferred.
+The additional common shipping proof and corrective fixtures subsequently passed
+combined review and fresh portable QA at `a0bdd0d8`, which was pushed normally.
+This portable result does not certify native capabilities.
 
 ## Exact source provenance
 
@@ -84,10 +85,23 @@ The independently reviewed and QA-passed monotonic wait correction at
 real shipping payloads, including corrected provider byte/runtime parity.
 Automatic review/QA records remained absent; its task is accurately blocked
 under the existing operator-approved exception. This does not waive the failed
-combined QA: fresh combined review and full portable QA remain required.
+first combined QA. Cycle 2 at `a0bdd0d8` passed 351 files and 9,868 tests, with
+eight files and 128 tests skipped, plus five type configurations, lint, both
+shipping payloads and ten compiled CLI scenarios. All 1,458 source/distribution
+hashes remained unchanged during that QA. Harness verification and task close
+passed for the integration task. Its worktree and the correction worktree were
+subsequently archived and removed normally with their disposable branches;
+original source histories remain pinned. The original 97 modified tracked user
+files retained their byte hashes after feature delivery.
+
+The exact `a0bdd0d8` GitHub [CI run 37581430497](https://github.com/Luxusio/claude-code-container/actions/runs/37581430497)
+subsequently completed successfully in all five jobs: Windows PowerShell/static
+and worktree ownership, Podman lifecycle E2E, Chrome DevTools, Podman-forced full
+tests and Linux full tests. The earlier full-suite failures remain recorded as
+history; these declared CI lanes now have success evidence at the delivered tip.
+This workflow does not run real Windows VM/Sandbox or Mac Colima acceptance.
 
 Real Mac Colima acceptance remains unavailable: Device Lab reports no macOS
 host and no provider. Socket access, project ownership/writes, SSH, networking
-and native join/restart remain required in the dependent task. The two earlier
-native-CI full-suite deadline failures are not waived by the operator's missing
-receipt exception. Full architecture migration remains in progress.
+and native join/restart remain required in the dependent task. Full architecture
+migration remains in progress.

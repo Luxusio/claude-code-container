@@ -1494,3 +1494,17 @@ native UTF-8/path behavior and strict emitted declaration consumers in both
 extracted npm and materialized installation payloads. Original/replayed commit
 and patch equivalence belongs in the integration note. These slices do not
 complete all workspace/profile workflows or the overall migration.
+
+## Worktree addition operation boundary
+
+Single-repository addition has an application policy with four explicit native
+ports. Unified and multi-repo callers share action selection and failed addition
+compensation while retaining their original registration-validation and outer
+rollback order. Preparation and registration receipts remain opaque; existing
+native helpers own OID, tracking configuration and filesystem identity. See the
+[worktree addition guide](../workspaces/GUIDE__worktree-addition.md).
+
+Verification requires core traces, real-Git facade ordering tests, existing
+worktree ownership regressions and both shipped compiled/type consumers. Outer
+workspace dispatch, copying, repair/removal and broader M11–M14 remain separate
+work. This boundary does not complete the whole migration.
