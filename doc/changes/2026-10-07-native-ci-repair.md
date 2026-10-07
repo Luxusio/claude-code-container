@@ -122,3 +122,16 @@ precede MCP/SSH/Git helpers and ready publication. Unknown or failed proof
 preserves without replacement or joining. Running safe-defer keeps its existing
 policy. Source/architecture types and focused native failure probes passed;
 corrected-source native CI and final whole QA remain pending.
+
+## Packaged and adjacent fixture alignment
+
+Exact0348 native Windows and rootless Podman lifecycle acceptance passed.
+Fresh QA found eight adjacent facade trace assertions and the shipped package
+constructor fixture had not been updated for mandatory live verification.
+The test-only correction supplies and observes `verifyBeforeSetup` before MCP,
+records exactly two live-proof retry allocations on successful nondeferred
+paths, and verifies the early pinned-ID restart observation before start.
+Failure/deferred budgets and traces remain unchanged; no production TypeScript
+is changed. Both actual extracted npm/materialized install smoke checks and
+46 targeted facade cases passed in the worker check. Final independent delta
+verification and corrected full CI remain pending. Failed QA3 evidence is kept.

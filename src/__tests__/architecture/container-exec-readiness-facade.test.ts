@@ -215,6 +215,9 @@ function assertPreserved() {
         || (call[1][0] === "run" && call[1][1] !== "--rm"))).toEqual([]);
 }
 const successTrace = ["allocate:4", "now:0", "now:0", `probe:${id}:5000`, "now:10", "sleep:75", "now:85", `probe:${id}:5000`, "now:95", "sleep:75", "now:170", `probe:${id}:5000`];
+// Fresh inspection and live mount proof each allocate their bounded retry
+// session only after readiness succeeds; exhaustion retains its original trace.
+const liveProofTrace = ["allocate:4", "allocate:4"];
 const failureTrace = [...successTrace, "now:180"];
 
 function assertStartupLockFinalized() {
@@ -254,7 +257,7 @@ describe("public startProjectContainer through real exec readiness", () => {
         const f = fixture(path);
         expect(f.start()).toBe(docker.getContainerName(project));
         expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: path === "restart" });
-        expect(f.trace).toEqual(successTrace);
+        expect(f.trace).toEqual(path === "deferred" ? successTrace : [...successTrace, ...liveProofTrace]);
         const probes = native.spawn.mock.calls.filter(call => call[1].length === 3 && call[1][0] === "exec" && call[1][2] === "true");
         expect(probes.map(call => call.slice(0, 3))).toEqual(Array.from({ length: 3 }, () => ["docker", ["exec", id, "true"], { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 }]));
         expect(f.waits).toHaveLength(2);
@@ -281,7 +284,7 @@ describe("public startProjectContainer through real exec readiness", () => {
         const f = fixture("running", [true]);
         f.state.probeDuration = duration;
         expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.trace).toEqual(["allocate:4", "now:0", "now:0", `probe:${id}:5000`]);
+        expect(f.trace).toEqual(["allocate:4", "now:0", "now:0", `probe:${id}:5000`, ...liveProofTrace]);
         expect(f.state.now).toBe(duration);
         expect(f.state.probes).toBe(1);
         expect(f.waits).toEqual([]);
@@ -330,7 +333,7 @@ describe("native retry failure identity and late effects", () => {
             f.state.afterProbe = undefined;
         };
         expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.trace).toEqual([...successTrace.slice(0, 8), "now:95"]);
+        expect(f.trace).toEqual([...successTrace.slice(0, 8), ...liveProofTrace, "now:95"]);
         assertStartupLockFinalized();
         expect(replacements.slice(0, 3)).toEqual(["now", "wait", "now"]);
         assertPreserved();
@@ -348,7 +351,7 @@ describe("native retry failure identity and late effects", () => {
             return ignored;
         }) as unknown as typeof Atomics.wait;
         expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.trace).toEqual(successTrace);
+        expect(f.trace).toEqual([...successTrace, ...liveProofTrace]);
         expect(accesses).toEqual([]);
         expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: false });
         assertPreserved();

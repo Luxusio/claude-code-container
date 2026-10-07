@@ -112,6 +112,7 @@ async function verifyExistingLifecycle(applicationUrl, compositionUrl, facadeUrl
         assertProjectSources: effect("project"), assertDeviceSources: effect("devices"),
         assertFilesystemSources: effect("filesystem"),
         inspectContract: id => { trace.push(["contract", id]); return true; },
+        verifyBeforeSetup: effect("live"),
         safeToDefer: () => { throw new Error("unexpected defer probe"); },
         isRunning: name => { trace.push(["running", name]); return true; },
         canExec: id => { trace.push(["exec", id]); return true; },
@@ -134,7 +135,7 @@ async function verifyExistingLifecycle(applicationUrl, compositionUrl, facadeUrl
     assert.deepEqual(lifecycle.run({ containerName: "project" }), { kind: "joined", containerId: "pinned" });
     assert.deepEqual(trace, [["list", "project"], ["project"], ["devices"], ["filesystem"],
         ["contract", "pinned"], ["project"], ["devices"], ["filesystem"], ["running", "project"],
-        ["exec", "pinned"], ["device-match"], ["mcp", "pinned"], ["ssh", "pinned"],
+        ["exec", "pinned"], ["device-match"], ["live", "pinned"], ["mcp", "pinned"], ["ssh", "pinned"],
         ["git", "pinned"], ["device-match"], ["finish", "pinned"]]);
     trace.length = 0;
     ports.inspectContract = (id, reportReason) => { trace.push(["contract", id]); reportReason("changed"); return false; };
@@ -1727,7 +1728,9 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
         }
         // Success disables observation when the first post-readiness helper executes;
         // exhaustion stays armed through the policy's last clock and lock release.
-        assert.deepEqual(trace, available ? success : [...success, "now:180", "now:180"]);
+        // Successful reuse allocates separate bounded retry sessions for fresh
+        // inspection and live mount proof after the readiness probe succeeds.
+        assert.deepEqual(trace, available ? [...success, "allocate:4", "allocate:4"] : [...success, "now:180", "now:180"]);
         assert.equal(probes, 3); assert.equal(waitCount, 2);
         assert.deepEqual(calls.filter(args => ["stop", "rm", "start"].includes(args[0])), [], "retry outcome must preserve the existing selected container");
         assert.deepEqual(calls.filter(args => args[0] === "run"), [readonlyAccountProbe], "only the exact isolated account validation may run");

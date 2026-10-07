@@ -236,7 +236,16 @@ describe("public Docker session handoff through the real application", () => {
         expect(f.start()).toBe(docker.getContainerName(project));
         expect(f.trace.some(entry => entry.startsWith("identity:"))).toBe(false);
         const inspections = native.spawn.mock.calls.filter(call => call[1].includes("{{.Id}}|{{.State.Running}}"));
-        expect(inspections).toHaveLength(path === "deferred" ? 1 : 0);
+        expect(inspections).toHaveLength(path === "deferred" || path === "restart" ? 1 : 0);
+        if (path === "restart") {
+            // Restart rechecks its captured stopped ID before start. This early
+            // fence must not become a callback-dependent final identity probe.
+            expect(inspections[0]).toEqual(["fixture-runtime", ["inspect", id, "--format", "{{.Id}}|{{.State.Running}}"],
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }]);
+            const startCall = native.spawn.mock.calls.find(call => call[1][0] === "start");
+            expect(startCall?.[1]).toEqual(["start", id]);
+            expect(native.spawn.mock.calls.indexOf(inspections[0])).toBeLessThan(native.spawn.mock.calls.indexOf(startCall!));
+        }
         expect(f.trace.some(entry => entry.endsWith("claude.json"))).toBe(true);
         assertPreserved();
     });
