@@ -33,8 +33,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 
 | Lane | Operation ids | State |
 | --- | --- | --- |
-| sandbox-stop | OP-windows-sandbox-stop | plan peer-reviewed; canonical publication pending; direct binding only, overall operation stays partial until broker binding moves |
-| clipboard-bridge | OP-clipboard-read, OP-clipboard-write, OP-clipboard-server-ensure, OP-clipboard-server-retire | plan mechanical corrections in progress; no production edits |
+| sandbox-stop | OP-windows-sandbox-stop | canonical plan published; implementation released; direct binding only, whole operation stays partial until broker binding moves |
+| clipboard-bridge | OP-clipboard-read, OP-clipboard-write, OP-clipboard-server-ensure, OP-clipboard-server-retire | canonical plan published; requirement and private-fixture prerequisites first, implementation released; no cutover credit yet |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 

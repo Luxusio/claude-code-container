@@ -114,7 +114,7 @@
       "coveredOperationIds": [
         "OP-windows-sandbox-stop"
       ],
-      "status": "plan peer-reviewed; canonical publication pending; direct binding only, overall operation stays partial until broker binding moves"
+      "status": "canonical plan published; implementation released; direct binding only, whole operation stays partial until broker binding moves"
     },
     {
       "id": "clipboard-bridge",
@@ -125,7 +125,7 @@
         "OP-clipboard-server-ensure",
         "OP-clipboard-server-retire"
       ],
-      "status": "plan mechanical corrections in progress; no production edits"
+      "status": "canonical plan published; requirement and private-fixture prerequisites first, implementation released; no cutover credit yet"
     }
   ]
 }
