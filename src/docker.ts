@@ -29,7 +29,7 @@ import { createContainerSessionHandoff } from "./application/container-session-h
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
-import { containerEngineFailureHint, ContainerEngineUnavailableError } from "./domain/container-runtime.js";
+import { containerEngineFailureHint, ContainerEngineUnavailableError, containerMemoryLimit, validateContainerMemory } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
 import { createOrderedCodexConfigPreparation } from "./application/credentials/codex-config-preparation.js";
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
@@ -717,6 +717,7 @@ export interface DockerRunArgsOptions {
     codexPackagesVolumeName?: string;
     identity?: ContainerUserIdentity;
     pidsLimit: string;
+    memoryLimit?: string;
     imageName: string;
     hostSshDir: string | null;
     sshAgentSocket: string | null;
@@ -791,8 +792,177 @@ function nativeContainerLaunchArguments() {
 export const CONTAINER_INIT_UNAVAILABLE_HINT = "[ccc] If the error above mentions docker-init, tini or catatonit, "
     + "the container runtime has no init binary for --init: install docker-init/tini (Docker) or catatonit (Podman).";
 
+/** Query only when composing creation args; formatting remains deterministic. */
+export function resolveNewContainerMemoryLimit(): string | undefined {
+    const override = process.env.CCC_CONTAINER_MEMORY;
+    if (override !== undefined) return validateContainerMemory(override);
+    const info = getRuntimeInfo();
+    if (info.runtime !== "docker" || !info.dockerDesktop) return undefined;
+    const result = spawnSync(runtimeCli(), ["info", "--format", "{{.MemTotal}}"], {
+        encoding: "utf-8", timeout: 5000, maxBuffer: 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) {
+        const hint = containerEngineFailureHint(result.stderr);
+        if (hint) throw new ContainerEngineUnavailableError(hint);
+        return containerMemoryLimit("docker-desktop");
+    }
+    return containerMemoryLimit("docker-desktop", Number(result.stdout.trim()));
+}
+
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
-    return nativeContainerLaunchArguments().buildRunArgs(opts);
+    // Stable hostname: derived from container name, truncated to 63 chars (RFC 1123).
+    // Ensures Claude Code's --resume can find conversations after container recreation,
+    // since conversations are keyed by hostname internally.
+    const hostname = opts.containerName.slice(0, 63);
+
+    const args: string[] = [
+        "run",
+        "-d",
+        "--name",
+        opts.containerName,
+        "--hostname",
+        hostname,
+        "--network",
+        "host",
+        "--security-opt",
+        "seccomp=unconfined",
+        "--cap-add",
+        "NET_ADMIN",
+        // Run the runtime's init (docker-init/tini, catatonit) as PID 1 so orphaned
+        // children are reaped instead of piling up as zombies under `tail`.
+        "--init",
+    ];
+
+    if (opts.memoryLimit !== undefined) {
+        const limit = validateContainerMemory(opts.memoryLimit);
+        args.push("--memory", limit, "--memory-swap", limit);
+    }
+
+    // Bind mounts (runtime-aware: adds :Z on SELinux podman)
+    args.push(...bindMountArgs(opts.fullPath, opts.projectMountPath));
+    for (const mount of opts.credentialMounts) {
+        args.push(...bindMountArgs(mount.hostPath, mount.containerPath));
+    }
+    for (const mount of opts.gitIdentityMounts ?? []) {
+        args.push(...bindMountArgs(mount.hostPath, mount.containerPath, { readonly: true }));
+    }
+    args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
+    if (opts.deviceLabStateHostDir) {
+        args.push(...bindMountArgs(opts.deviceLabStateHostDir, "/home/ccc/.ccc/devices", { readonly: true }));
+        args.push("--tmpfs", "/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0711");
+        if (opts.deviceLabOwnerId) {
+            args.push(...bindMountArgs(
+                join(opts.deviceLabStateHostDir, "owners", opts.deviceLabOwnerId),
+                `/home/ccc/.ccc/devices/owners/${opts.deviceLabOwnerId}`,
+            ));
+        }
+        args.push("--tmpfs", "/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0711");
+        if (opts.deviceLabOwnerAuthFile) {
+            args.push(...bindMountArgs(opts.deviceLabOwnerAuthFile, DEVICE_BROKER_AUTH_CONTAINER_FILE, { readonly: true }));
+            args.push("-e", `CCC_DEVICE_BROKER_AUTH_FILE=${DEVICE_BROKER_AUTH_CONTAINER_FILE}`);
+        }
+    }
+    // Named volume — never gets :Z (mount helper auto-detects host-path vs name)
+    args.push(...bindMountArgs(opts.miseVolumeName, "/home/ccc/.local/share/mise"));
+    args.push(...bindMountArgs(opts.codexPackagesVolumeName ?? CODEX_PACKAGES_VOLUME_NAME, CODEX_PACKAGES_CONTAINER_DIR));
+    if (opts.labRunner) {
+        // Lab state only matters where container-QEMU labs can run (REQ__lab-state-volume.md).
+        if (opts.labRunner.status === "ready") {
+            args.push(...bindMountArgs(opts.labRunner.stateVolumeName, opts.labRunner.stateContainerDir));
+        }
+    }
+    // Container-manager socket: Docker uses /var/run/docker.sock,
+    // Podman substitutes its own socket on the host side but keeps the same
+    // in-container path so docker CLI shims inside the container keep working.
+    const socketSource = resolveHostSocketPath();
+    args.push(...bindMountArgs(socketSource, "/var/run/docker.sock", {
+        sourceNamespace: getRuntimeInfo().runtime === "docker" && socketSource !== CONTAINER_MANAGER_SOCKET
+            ? "daemon"
+            : "client",
+    }));
+
+    args.push("-w", opts.projectMountPath, "--pids-limit", opts.pidsLimit);
+
+    // Runtime-specific: --userns=keep-id:uid=1000,gid=1000 on rootless podman
+    args.push(...runtimeExtraRunArgs());
+
+    // Mount host SSH keys (read-only) for git SSH access
+    if (opts.hostSshDir) {
+        args.push(...bindMountArgs(opts.hostSshDir, "/home/ccc/.ssh", { readonly: true }));
+        args.push(
+            "-e",
+            "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519",
+        );
+    }
+
+    // Forward SSH agent socket
+    if (opts.sshAgentSocket) {
+        args.push(...bindMountArgs(opts.sshAgentSocket, "/tmp/ssh-agent.sock"));
+        args.push("-e", "SSH_AUTH_SOCK=/tmp/ssh-agent.sock");
+    }
+
+    // Trust the project's mise config without requiring a separate `mise trust`
+    // call. Baked in at container creation so every `docker exec` inherits it;
+    // mise checks this env var in-memory on each invocation and skips the
+    // trust-file write path entirely.
+    args.push("-e", `MISE_TRUSTED_CONFIG_PATHS=${opts.projectMountPath}`);
+    if (opts.proxyEnabled) {
+        args.push("-e", "CCC_PROXY_ENABLED=1");
+    }
+    // Fixed at creation, unlike per-session env: the device-lab MCP uses it to know the container's
+    // loopback is shared through a VM even when CCC_DISABLE_PROXY turned the proxy off
+    // (doc/device-lab/REQ__container-broker-discovery.md).
+    if (opts.containerHostRemote) {
+        args.push("-e", "CCC_CONTAINER_HOST_REMOTE=1");
+    }
+
+    if (opts.labRunner) {
+        args.push("-e", "CCC_LAB_RUNNER=1");
+        args.push("-e", `CCC_LAB_RUNNER_STATUS=${opts.labRunner.status}`);
+        args.push("-e", `CCC_LAB_STATE_DIR=${opts.labRunner.stateContainerDir}`);
+        args.push("-e", `CCC_LAB_NET_MODE=${opts.labRunner.networkMode}`);
+        if (opts.labRunner.unsupportedReason) {
+            args.push("-e", `CCC_LAB_RUNNER_UNSUPPORTED_REASON=${opts.labRunner.unsupportedReason}`);
+        }
+        if (opts.labRunner.status === "ready" && opts.labRunner.kvmDevicePath) {
+            args.push("--device", `${opts.labRunner.kvmDevicePath}:${opts.labRunner.kvmDevicePath}`);
+            if (opts.labRunner.kvmGroupId !== undefined) {
+                args.push("--group-add", String(opts.labRunner.kvmGroupId));
+            }
+        }
+    }
+
+    // Extra volume mounts (e.g., source .git for worktree workspaces)
+    if (opts.extraMounts) {
+        for (const mount of opts.extraMounts) {
+            args.push(...bindMountArgs(mount.hostPath, mount.containerPath));
+        }
+    }
+
+    // Mount clipboard port file so shims can read the latest token even after server restarts
+    if (opts.clipboardPortFile && existsSync(opts.clipboardPortFile)) {
+        args.push(...bindMountArgs(opts.clipboardPortFile, "/run/ccc/clipboard.port", { readonly: true }));
+    }
+    if (opts.clipboardFilesHostDir) {
+        args.push(...bindMountArgs(opts.clipboardFilesHostDir, CLIPBOARD_FILES_CONTAINER_DIR));
+    }
+
+    args.push(...getComposeLabels(
+        opts.containerName,
+        opts.fullPath,
+        opts.projectMountIdentity,
+        opts.profile,
+    ));
+    if (opts.identity) {
+        for (const [key, value] of Object.entries(getIdentityLabels(opts.identity))) {
+            args.push("--label", `${key}=${value}`);
+        }
+    }
+    if (opts.deviceLabMountIdentity) {
+        args.push("--label", `${DEVICE_LAB_MOUNT_IDENTITY_LABEL}=${opts.deviceLabMountIdentity}`);
+    }
+    args.push(opts.imageName);
+    return args;
 }
 
 export function isLabRunnerProfile(profile?: string): boolean {
@@ -2599,6 +2769,7 @@ function startProjectContainerLocked(
             profile,
         ),
         prepareRunArgs: () => buildDockerRunArgs({
+            memoryLimit: resolveNewContainerMemoryLimit(),
             containerName,
             fullPath,
             projectMountPath,

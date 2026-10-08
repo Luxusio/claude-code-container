@@ -32,15 +32,24 @@ or image build. Default installation bounds image inspections and image builds,
 and reports CLI and container-image outcomes separately. Image failure remains
 nonfatal to CLI installation, matching the existing runtime-optional intent.
 
-The operator subsequently requested removal of the newly added container
-memory limits and Cargo parallel-job default. Both policies and their dedicated
-tests were removed. CCC no longer adds memory/swap flags, queries VM RAM for
-this policy, reads `CCC_CONTAINER_MEMORY`, or supplies `CARGO_BUILD_JOBS=2`.
-Existing user environment forwarding and explicit Cargo preferences retain
-their original behavior. Existing containers were never modified.
+New Docker Desktop containers use one quarter of the engine VM's reported RAM,
+up to 8 GiB, rounded down to MiB. A 32 GiB VM therefore gives each new CCC
+container an 8 GiB memory cap; an 8 GiB VM gives 2 GiB. The equal memory/swap
+cap prevents container workloads from exhausting shared VM swap. An unavailable
+or invalid memory observation refuses unlimited creation. Explicit positive
+`CCC_CONTAINER_MEMORY` values, such as `4g`, override the default. Native Docker
+and Podman retain existing defaults unless that override is provided.
 
-Docker transport diagnosis, bounded inspections and the `--skip-image` update
-path remain. These changes improve failure handling and CLI update reliability;
-they do not impose workload resource policy or guarantee prevention of OOM.
+CCC sessions default `CARGO_BUILD_JOBS` to `2`, including reused containers.
+Forwarded host values and explicit `--env CARGO_BUILD_JOBS=...` retain precedence.
+The per-session change works with an existing image; no project Cargo config
+is edited. A container reaching its own cap may still fail a build or lose a
+process; the cap reduces the risk of VM-wide failure, not every possible OOM.
+
+Existing containers retain their old memory settings. Updating the CLI does not
+retroactively rewrite Docker HostConfig. Apply an explicit resource update to
+the intended owned container, or create a new one, to obtain the memory cap.
+No running container is silently stopped or recreated for this repair.
+Final build, package and independent review/QA remain required.
 No API version override, Docker reset, volume deletion, hosted CI or remote push
 is part of this repair. The architecture migration remains paused.
