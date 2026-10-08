@@ -1,7 +1,8 @@
 # Provider and runtime operation integration
 
-Status: portable/source verification passed at `68e062b0`; local delivery pending. The local destination remains
-`feature/device-mcp-squashed` at `9528cdf9`. No CI, push, global installation,
+Status: portable/source verification passed at `68e062b0`; actual local source
+delivery passed at `19e4b93b` on `feature/device-mcp-squashed`. This metadata
+record updates the three accepted operation flags after independent byte checks. No CI, push, global installation,
 or native provider mutation is part of this work.
 
 Three complete operations move policy inward while preserving their public
@@ -13,8 +14,8 @@ adapter. Identity retains native commands, image assets and lock authority.
 The accepted source snapshots are admission `b94cb28d`, identity `4be2ab3a`,
 and flow `d5b9bfe2`. Each received independent code and security review and
 bounded source QA. Flow's final test-only archive correction received affected
-review and a fresh 34-test integration recheck. Source QA remains distinct from
-the pending compiled distribution and combined acceptance gates.
+review and a fresh 34-test integration recheck. Source QA remains distinct from the subsequently passed compiled distribution,
+combined portable acceptance and actual local delivery checks.
 
 Ten original commits replayed without conflicts. Root helper commit `aef10c3b`
 duplicates admission's final helper commit exactly; the mapping is recorded
@@ -66,14 +67,16 @@ logs remain byte-identical. This proves the repaired portable context, while
 native platform/provider acceptance and full architecture completion remain
 unverified.
 
-The current WBS records 55/218 implemented operations: 52 integrated and
-three verified candidates awaiting local delivery, with 19 partial operations
-and 144 TODO. These are provisional unweighted operation counts. The guardian
-repair, shared helper and test infrastructure receive no additional credit. Historical inventory anchors, the provisional denominator and
+The current WBS records 55/218 implemented and integrated operations (25.2%),
+with zero pending completed candidates, 19 partial operations and 144 TODO.
+Independent delivery verification matched all 41 changed paths and all 37
+immutable source/repair hashes; all 97 original user files remained unchanged. These are provisional unweighted operation counts. The guardian
+repair, shared helper and test infrastructure receive no additional credit.
+Historical inventory anchors, the provisional denominator and
 unverified Windows/macOS/Colima and reliability requirements remain unchanged.
 Automatic memory limits and Cargo parallel-job defaults remain removed.
 
 Existing formal missing-hook blocks and the actual-results continuation
 decision are recorded separately; this integration still awaits its one
-verification attempt and remaining delivery checks. No hook receipt, formal close, complete
+verification attempt and final metadata delivery checks. No hook receipt, formal close, complete
 architecture claim or native acceptance is inferred from these source results.
