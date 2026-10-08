@@ -1,3 +1,5 @@
+import { createBrokerWindowsSandboxCreate } from "./device-lab/application/lifecycle/windows-sandbox-create.js";
+import { brokerWindowsSandboxRecord, retainAfterWindowsConfigFailure } from "./device-lab/domain/lifecycle/windows-sandbox-create.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { createFocusedInventory, createOwnerInventory } from "./device-lab/application/broker-observation-inventory.js";
 import { createLeaseDatePolicy, createLeaseDirectoryScan, createLeaseList, createPhysicalComposite } from "./device-lab/application/broker-observation-leases.js";
@@ -5670,26 +5672,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
     }
     if (parsed.backend === "windows-sandbox") {
         const configPath = brokerWindowsConfigPath(ownerId, parsed.deviceId);
-        return {
-            id: parsed.deviceId,
-            name,
-            backend: parsed.backend,
-            kind: "desktop",
-            platform: "windows",
-            ownerId,
-            networking: create.networking === true,
-            clipboard: create.clipboard === true,
-            vgpu: create.vgpu === true,
-            memoryMb: typeof create.memoryMb === "number" ? create.memoryMb : 4096,
-            minimized: create.minimized !== false,
-            configPath,
-            recording: null,
-            status: "stopped",
-            creatable: true,
-            createdAt: now,
-            updatedAt: now,
-            authority: "host-broker",
-        };
+        return brokerWindowsSandboxRecord(ownerId, parsed.deviceId, name, create, configPath, now);
     }
     if (isHyperVBackend(parsed.backend)) {
         const linuxGuest = parsed.backend === "linux-vm";
@@ -13021,7 +13004,52 @@ async function lifecycleCommandInvokeUnlocked(
                 },
             };
         }
-        const device = createOwnerDeviceRecord(ownerId, persistedParsed) as Record<string, unknown>;
+        let sandboxDevice: Record<string, unknown> | undefined;
+        if (parsed.backend === "windows-sandbox") {
+            const outcome = await createBrokerWindowsSandboxCreate({
+                createRecord: (input: CommandParamSuccess) => createOwnerDeviceRecord(ownerId, input) as Record<string, unknown>,
+                claimDefinition: (device: Record<string, unknown>) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(persistedParsed)),
+                rollbackAfterClaimFailure: (device: Record<string, unknown>, existing: Record<string, unknown> | null) => rollbackProviderCreateAfterConflict(
+                    persistedParsed, device, existing,
+                    providerCommand && !("error" in providerCommand) ? providerCommand : null,
+                    normalized, hyperVCleanupDeadlineAt,
+                ),
+                publishConfig: (input: CommandParamSuccess) => writeBrokerWindowsConfig(ownerId, parsed.deviceId, input.create || {}, normalized),
+                removeMatchingClaim: (id: unknown, createdAt: unknown) => mutateOwnerDevices(ownerId, parsed.stateKey,
+                    devices => devices.filter(candidate => retainAfterWindowsConfigFailure(candidate, id, createdAt))),
+                stateErrorCode: error => ownerDeviceStateErrorCode(error),
+            }).create(persistedParsed);
+            if (outcome.kind === "claim-exception") {
+                const { error, rollback } = outcome;
+                if (!rollback.ok) {
+                    return { status: 502, payload: {
+                        ok: false, error: "owner-device-state-rollback-failed", ownerId,
+                        backend: parsed.backend, deviceId: parsed.deviceId,
+                        stateError: outcome.stateCode, rollback,
+                    } };
+                }
+                const failure = ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
+                return { ...failure, payload: { ...(failure.payload as Record<string, unknown>), rollback } };
+            }
+            if (outcome.kind === "claim-conflict") {
+                const { claim, rollback } = outcome;
+                return { status: rollback.ok ? 409 : 502, payload: {
+                    ok: false, error: rollback.ok ? claim.error : "owner-device-conflict-rollback-failed", ownerId,
+                    backend: parsed.backend, deviceId: parsed.deviceId, field: claim.field, value: claim.value,
+                    existing: redactBrokerDeviceSecrets(claim.existing), rollback,
+                } };
+            }
+            if (outcome.kind === "config-failure") {
+                const { error } = outcome;
+                return { status: 500, payload: {
+                    ok: false, error: "windows-sandbox-config-write-failed", ownerId,
+                    backend: parsed.backend, deviceId: parsed.deviceId,
+                    detail: error instanceof Error ? error.message : String(error),
+                } };
+            }
+            sandboxDevice = outcome.device;
+        }
+        const device = sandboxDevice || createOwnerDeviceRecord(ownerId, persistedParsed) as Record<string, unknown>;
         if (parsed.backend === "android-emulator" && parsed.create?.createAvd === true) {
             if (!androidCreateAvdRoot) {
                 return {
@@ -13037,6 +13065,7 @@ async function lifecycleCommandInvokeUnlocked(
             }
             device.avdRoot = androidCreateAvdRoot;
         }
+        if (parsed.backend !== "windows-sandbox") {
         let claim;
         try {
             claim = claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(persistedParsed));
@@ -13095,27 +13124,6 @@ async function lifecycleCommandInvokeUnlocked(
                 },
             };
         }
-        if (parsed.backend === "windows-sandbox") {
-            try {
-                writeBrokerWindowsConfig(ownerId, parsed.deviceId, persistedParsed.create || {}, normalized);
-            } catch (error) {
-                mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.filter((candidate) => {
-                    if (!candidate || typeof candidate !== "object") return true;
-                    const record = candidate as Record<string, unknown>;
-                    return record.id !== device.id || record.createdAt !== device.createdAt;
-                }));
-                return {
-                    status: 500,
-                    payload: {
-                        ok: false,
-                        error: "windows-sandbox-config-write-failed",
-                        ownerId,
-                        backend: parsed.backend,
-                        deviceId: parsed.deviceId,
-                        detail: error instanceof Error ? error.message : String(error),
-                    },
-                };
-            }
         }
         return {
             status: 200,

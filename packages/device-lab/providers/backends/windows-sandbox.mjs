@@ -1,3 +1,4 @@
+import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
 import { createWindowsSandboxStop } from "../application/lifecycle/windows-sandbox-stop.mjs";
 import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
 import { randomUUID } from "crypto";
@@ -1707,39 +1708,18 @@ async function handleWindowsToolUnlocked(name, args) {
         }
 
         case "device_create": {
-            const { backend, name: deviceName, deviceId, networking = false, clipboard = false, vgpu = false, memoryMb = 4096, minimized = true } = args;
-            if (backend !== "windows-sandbox") return undefined;
-
-            const id = deviceId || windowsDeviceId(deviceName);
-            const devices = readWindowsDevices();
-            if (devices.some((device) => device.id === id)) {
-                return textResult(false, `Device already exists for this owner: ${id}`);
-            }
-
-            const device = {
-                id,
-                name: deviceName,
-                backend,
-                kind: "desktop",
-                platform: "windows",
-                ownerId: ownerId(),
-                networking: Boolean(networking),
-                clipboard: Boolean(clipboard),
-                vgpu: Boolean(vgpu),
-                memoryMb,
-                minimized: minimized !== false,
-                helper: ensureHelperWorkspace({ id }),
-                recording: null,
-                status: "stopped",
-                creatable: true,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            };
-            const claim = claimWindowsDevice(device);
-            if (!claim.ok) {
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
-            }
-            return jsonResult({ device: withTargetStatus(device) });
+            const outcome = createWindowsSandboxCreate({
+                deriveDeviceId: (name) => windowsDeviceId(name),
+                readDefinitions: () => readWindowsDevices(),
+                readOwnerId: () => ownerId(),
+                ensureHelperWorkspace: (device) => ensureHelperWorkspace(device),
+                wallTimestamp: () => new Date().toISOString(),
+                claimDefinition: (device) => claimWindowsDevice(device),
+            }).create(args);
+            if (outcome.kind === "skipped") return undefined;
+            if (outcome.kind === "duplicate") return textResult(false, `Device already exists for this owner: ${outcome.id}`);
+            if (outcome.kind === "claim-conflict") return textResult(false, `Device identity already exists for this owner (${outcome.field}: ${outcome.value})`);
+            return jsonResult({ device: withTargetStatus(outcome.device) });
         }
 
         case "device_delete": {
