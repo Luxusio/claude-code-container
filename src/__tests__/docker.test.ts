@@ -66,6 +66,9 @@ vi.mock("child_process", async (importOriginal) => {
         ...actual,
         spawnSync: (...args: unknown[]) => {
             const argv = args[1] as string[];
+            if (argv?.[0] === "info" && argv.at(-1) === "{{.MemTotal}}") {
+                return makeResult(0, String(32 * 1024 ** 3));
+            }
             if (rejectStoppedExec && !existingRuntimeRunning && argv?.[0] === "exec") {
                 stoppedExecAttempts += 1;
                 return makeResult(1, "", "container is stopped; exec refused");
