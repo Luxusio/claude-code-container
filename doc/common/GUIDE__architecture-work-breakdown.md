@@ -23,18 +23,18 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |
 | --- | ---: | ---: | --- | --- | --- |
 | runtime\-launch | 1 | 0 | `02c5a401` | code/security/qa actual PASS; hook receipts absent | pending |
-| workspace\-repair | 5 | 0 | `d7f578d8` | pending | pending |
+| workspace\-repair | 5 | 0 | `d7f578d8` | code/security actual PASS in recovery run; QA shipping/focused checks PASS, final native suite case pending | pending |
 | codex\-launch | 1 | 0 | `ea96263f` | code/security/qa actual PASS; hook receipts absent | pending |
 | codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | pending |
-| codex\-clipboard | 1 | 0 | `fb6c26f7` | discovery in progress; full review/security/QA pending | pending |
-| broker\-observations | 6 | 3 | `3f020650` | pending | pending |
+| codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
+| broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
 
 ## 0.2 Active next plans
 
 | Lane | Operation ids | State |
 | --- | --- | --- |
-| sandbox\-stop | OP\-windows\-sandbox\-stop | canonical plan published; implementation released; direct binding only, whole operation stays partial until broker binding moves |
-| clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | canonical plan published; requirement and private\-fixture prerequisites first, implementation released; no cutover credit yet |
+| sandbox\-stop | OP\-windows\-sandbox\-stop | implementation in progress; production checkpoint 2bc76924; focused tests running, package consumers and guide remain; direct binding only, no whole\-operation credit |
+| clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | implementation in progress; private baseline build and 595 tests PASS \(15 skipped\), fixed core contracts and parallel test author; facade cutover pending, no operation credit |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 

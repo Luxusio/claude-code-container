@@ -38,7 +38,7 @@
         "OP-workspace-broken-content-repair"
       ],
       "partialOperationIds": [],
-      "codeReview": "pending",
+      "codeReview": "code/security actual PASS in recovery run; QA shipping/focused checks PASS, final native suite case pending",
       "integration": "pending",
       "nativeAcceptance": "unverified"
     },
@@ -80,7 +80,7 @@
         "OP-codex-clipboard-attachment"
       ],
       "partialOperationIds": [],
-      "codeReview": "discovery in progress; full review/security/QA pending",
+      "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
       "integration": "pending",
       "nativeAcceptance": "unverified"
     },
@@ -103,7 +103,7 @@
         "OP-device-session-status",
         "OP-device-owned-list"
       ],
-      "codeReview": "pending",
+      "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
       "integration": "pending",
       "nativeAcceptance": "unverified"
     }
@@ -115,7 +115,7 @@
       "coveredOperationIds": [
         "OP-windows-sandbox-stop"
       ],
-      "status": "canonical plan published; implementation released; direct binding only, whole operation stays partial until broker binding moves"
+      "status": "implementation in progress; production checkpoint 2bc76924; focused tests running, package consumers and guide remain; direct binding only, no whole-operation credit"
     },
     {
       "id": "clipboard-bridge",
@@ -126,7 +126,7 @@
         "OP-clipboard-server-ensure",
         "OP-clipboard-server-retire"
       ],
-      "status": "canonical plan published; requirement and private-fixture prerequisites first, implementation released; no cutover credit yet"
+      "status": "implementation in progress; private baseline build and 595 tests PASS (15 skipped), fixed core contracts and parallel test author; facade cutover pending, no operation credit"
     }
   ]
 }
