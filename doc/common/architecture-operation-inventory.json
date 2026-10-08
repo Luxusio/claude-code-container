@@ -218679,7 +218679,7 @@
       "id": "PROOF-qemu-exec",
       "provider": "container-qemu",
       "action": "device_exec",
-      "workItemId": "PROPOSE-device-container-qemu-exec",
+      "workItemId": "OP-device-exec",
       "supportDisposition": "implemented condition and workflow",
       "trace": [
         {
@@ -218782,13 +218782,14 @@
         "src/__tests__/device-lab-file-policy.test.ts"
       ],
       "native": "unverified",
-      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution."
+      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution.",
+      "workflowProposalId": "PROPOSE-device-container-qemu-exec"
     },
     {
       "id": "PROOF-qemu-upload",
       "provider": "container-qemu",
       "action": "device_upload",
-      "workItemId": "PROPOSE-device-container-qemu-upload",
+      "workItemId": "OP-device-upload",
       "supportDisposition": "implemented condition and workflow",
       "trace": [
         {
@@ -218891,13 +218892,14 @@
         "src/__tests__/device-lab-file-policy.test.ts"
       ],
       "native": "unverified",
-      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution."
+      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution.",
+      "workflowProposalId": "PROPOSE-device-container-qemu-upload"
     },
     {
       "id": "PROOF-qemu-download",
       "provider": "container-qemu",
       "action": "device_download",
-      "workItemId": "PROPOSE-device-container-qemu-download",
+      "workItemId": "OP-device-download",
       "supportDisposition": "implemented condition and workflow",
       "trace": [
         {
@@ -219000,7 +219002,8 @@
         "src/__tests__/device-lab-file-policy.test.ts"
       ],
       "native": "unverified",
-      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution."
+      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution.",
+      "workflowProposalId": "PROPOSE-device-container-qemu-download"
     },
     {
       "id": "PROOF-hyperv-windows-vm-create",

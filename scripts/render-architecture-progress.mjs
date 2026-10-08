@@ -5,14 +5,15 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const progress = JSON.parse(readFileSync(resolve(root, "doc/common/architecture-progress.json"), "utf8"));
 const inventory = JSON.parse(readFileSync(resolve(root, "doc/common/architecture-operation-inventory.json"), "utf8"));
-if (progress.schemaVersion !== 1 || !/^[a-f0-9]{40}$/.test(progress.baselineCommit)
+if (progress.schemaVersion !== 1 || typeof progress.baselineCommit !== "string" || !/^[a-f0-9]{40}$/.test(progress.baselineCommit)
     || progress.baselineCommit !== inventory.baselineCommit) throw Error("Progress baseline/schema mismatch");
 if (typeof progress.updatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(progress.updatedAt)
     || new Date(`${progress.updatedAt}T00:00:00Z`).toISOString().slice(0, 10) !== progress.updatedAt) throw Error("Invalid progress date");
 if (progress.sourceDenominatorCertified && (inventory.closure.exhaustive !== true || inventory.gaps.length)) throw Error("Cannot certify a denominator with unresolved inventory closure");
 const items = new Map();
 for (const item of inventory.workItems) {
-    if (!/^OP-[a-z0-9-]+$/.test(item.id) || items.has(item.id) || !/^M(?:0[0-9]|1[0-4])$/.test(item.countingOwner)
+    if (typeof item.id !== "string" || !/^OP-[a-z0-9-]+$/.test(item.id) || items.has(item.id)
+        || typeof item.countingOwner !== "string" || !/^M(?:0[0-9]|1[0-4])$/.test(item.countingOwner)
         || typeof item.operation !== "string" || !["migrated", "partial", "pending"].includes(item.implementationStatus)) throw Error("Invalid/duplicate operation: " + item.id);
     items.set(item.id, item);
 }
@@ -20,7 +21,7 @@ const excluded = new Set(progress.excludedOperationIds);
 if (excluded.size !== 1 || progress.excludedOperationIds.length !== 1 || !excluded.has("OP-opencode-data-access-preparation")) throw Error("Only the authorized OpenCode operation may be excluded");
 const candidates = new Map();
 for (const lane of progress.lanes) {
-    if (!/^[a-f0-9]{40}$/.test(lane.commit) || lane.integration !== "pending") throw Error("Invalid candidate provenance: " + lane.id);
+    if (typeof lane.commit !== "string" || !/^[a-f0-9]{40}$/.test(lane.commit) || lane.integration !== "pending") throw Error("Invalid candidate provenance: " + lane.id);
     for (const [ids, status] of [[lane.wholeOperationIds, "candidate"], [lane.partialOperationIds, "partial"]]) {
         for (const id of ids) {
             if (!items.has(id) || excluded.has(id) || candidates.has(id) || items.get(id).implementationStatus === "migrated") throw Error("Invalid/duplicate candidate operation: " + id);
