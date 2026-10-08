@@ -4600,6 +4600,31 @@ assert.equal(out.length,52);compareFrozenRows(out,golden);assert.notEqual(constr
 }
 async function verifyRuntimeCapabilitiesDelivery(payload,privateHome,golden){
  const effect=fence();
+ // Read the exact emitted static closure before fencing descriptor operations.
+ // The load hook serves these owned bytes; payload code never gets a read bridge.
+ const facadeUrl=pathToFileURL(path.join(payload,'dist/container-runtime.js'));
+ const importRead=await createOwnedImportRead(new URL('./',facadeUrl),new URL('./packages/device-lab/package.json',facadeUrl),'runtime import fixture');
+ const sourceUrls=['container-runtime','domain/container-runtime','application/container-runtime-selection','application/docker-endpoint-selection',
+  'application/container-launch-arguments','domain/container-launch-arguments','application/runtime-capabilities','domain/runtime-capabilities','adapters/runtime-capabilities']
+  .map(name=>new URL('./'+name+'.js',facadeUrl));
+ importRead.restrictSources(sourceUrls);
+ const ownedSources=new Map();
+ try{
+  for(const url of sourceUrls){
+   assert.ok(fs.lstatSync(url).size<=256*1024,'bounded runtime import source');
+   const source=importRead.read(url,'utf8');
+   assert.ok(Buffer.byteLength(source,'utf8')<=256*1024,'bounded runtime import bytes');
+   ownedSources.set(url.href,source);
+  }
+ }catch(error){effect.deny('runtime unowned import read')(error);}
+ finally{importRead.close();}
+ const loadedSources=new Set();
+ const hook=registerHooks({load(url,context,nextLoad){
+  if(url.startsWith('node:'))return nextLoad(url,context);
+  if(!ownedSources.has(url))return effect.deny('runtime unexpected import')(url);
+  loadedSources.add(url);
+  return {format:'module',source:ownedSources.get(url),shortCircuit:true};
+ }});
  const state={active:false,trace:[],env:{},platform:'linux',uid:0,probe:null,platformReads:null,failEnv:null,loopback:false};
  const nativeJoin=path.join;
  for(const key of ['writeFileSync','appendFileSync','openSync','mkdirSync','rmSync','unlinkSync','renameSync','symlinkSync','linkSync','truncateSync'])effect.patch(fs,key,effect.deny('runtime '+key));
@@ -4615,6 +4640,7 @@ process.env=new Proxy(originalEnv,{get(target,key){if(keys.has(key)){if(state.ac
 Object.defineProperty(process,'platform',{configurable:true,get(){if(state.active)state.trace.push(['platform']);return state.platformReads?.length?state.platformReads.shift():state.platform;}});
 Object.defineProperty(process,'getuid',{configurable:true,get(){if(state.active)state.trace.push(['uid-get']);if(state.uid==='absent')return undefined;if(state.uid==='getter-fault')throw Error('uid-getter');return function(){state.trace.push(['uid-call',this===process]);if(state.uid==='fault')throw Error('uid-fault');return state.uid;};}});
 const source=path.join(payload,'dist/container-runtime.js');const runtime=await import(pathToFileURL(source).href);
+assert.equal(loadedSources.size,sourceUrls.length,'only exact shipped runtime closure loaded');
 const result=(status,stdout)=>({get status(){state.trace.push(['status']);return status;},get stdout(){state.trace.push(['stdout']);return stdout;}});
 const defaults=(command,args)=>{if(args[0]==='--version')return result(0,command==='docker'?'Docker version 27.1.1':'podman version 5.2.3');if(args[0]==='context')return result(0,'unix:///selected.sock');if(args.at(-1)==='{{.OperatingSystem}}')return result(0,'Ubuntu');if(args.at(-1)==='{{json .SecurityOptions}}')return result(0,'[]');if(args.at(-1)==='{{.Host.Remote}}')return result(0,'false');if(args.at(-1)==='{{.Host.Security.Rootless}}')return result(0,'false');throw Error('unplanned mock command');};
 const outputRows=[];
@@ -4653,7 +4679,7 @@ try{
  run('version-getters',{probe:(c,a)=>a[0]==='--version'?result(0,{toString(){state.trace.push(['version-toString',this!==null]);return 'custom 7.2';}}):defaults(c,a)});
 }finally{state.active=false;process.env=originalEnv;Object.defineProperty(process,'platform',platformDescriptor);Object.defineProperty(process,'getuid',uidDescriptor);}
 assert.equal(outputRows.length,55);compareFrozenRows(outputRows,golden);await verifyControlledRuntimeCore(payload);effect.finish();return {consumer:'runtime55',executed:55,layer:'compiled-public-and-inward-collection'};
- }finally{effect.restore();}
+ }finally{hook.deregister();effect.restore();}
 }
 
 const runtimeCapabilitiesDeclarationConsumer = "import { createRuntimeCapabilitiesCollector } from \"./dist/application/runtime-capabilities.js\";\nimport type { RuntimeCapabilitiesPorts, RuntimeCapabilityProbeResult } from \"./dist/ports/runtime-capabilities.js\";\nimport type { RuntimeInfo, RuntimeFlavor } from \"./dist/domain/runtime-capabilities.js\";\nimport { getRuntimeInfo, runtimeCli, type RuntimeInfo as PublicRuntimeInfo, type RuntimeFlavor as PublicRuntimeFlavor } from \"./dist/container-runtime.js\";\nimport type { RuntimeName } from \"./dist/domain/container-runtime.js\";\n\nfunction runtimeCapabilitiesContracts(ports: RuntimeCapabilitiesPorts): void {\n    const collect: () => RuntimeInfo = createRuntimeCapabilitiesCollector(ports);\n    const domainInfo: RuntimeInfo = getRuntimeInfo(); const publicInfo: PublicRuntimeInfo = collect();\n    const flavor: RuntimeFlavor = publicInfo.flavor; const publicFlavor: PublicRuntimeFlavor = flavor;\n    const name: RuntimeName = runtimeCli(); const raw: RuntimeCapabilityProbeResult = ports.observeVersion(name);\n    const wsl: string | undefined = ports.readWslDistributionName();\n    const { readWslDistributionName, ...withoutWsl } = ports;\n    // @ts-expect-error capabilities must include the explicit lazy WSL observation port\n    const missingWsl: RuntimeCapabilitiesPorts = withoutWsl;\n    // @ts-expect-error raw probe status is not a sanitized success boolean\n    const wrongProbe: RuntimeCapabilityProbeResult = { status: true, stdout: \"\" };\n    // @ts-expect-error cache publication must finish synchronously before the collector returns\n    const asyncPublisher: RuntimeCapabilitiesPorts[\"publishCachedInfo\"] = async () => undefined;\n    // @ts-expect-error public info remains synchronous\n    const asyncInfo: Promise<RuntimeInfo> = getRuntimeInfo();\n    void [domainInfo, publicInfo, publicFlavor, raw, wsl, readWslDistributionName, missingWsl, wrongProbe, asyncPublisher, asyncInfo];\n}\n\n// @ts-expect-error permissive void publication loses exact completion contract\nconst voidPublisher: RuntimeCapabilitiesPorts[\"publishCachedInfo\"] = (): void => {};\n";
@@ -5096,6 +5122,7 @@ import dgram from 'node:dgram';import tls from 'node:tls';import {createHash} fr
     const program = `${imports}
 import ts from ${JSON.stringify(pathToFileURL(join(root, "node_modules/typescript/lib/typescript.js")).href)};
 ${mcpPayloadCliConsumer.toString()}
+const createOwnedImportRead=${createOwnedImportRead.toString()};
 ${fence.toString()}
 ${compareFrozenRows.toString()}
 ${verifyControlledRuntimeCore.toString()}
