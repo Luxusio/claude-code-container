@@ -23,7 +23,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |
 | --- | ---: | ---: | --- | --- | --- |
 | runtime\-launch | 1 | 0 | `02c5a401` | code/security/qa actual PASS; hook receipts absent | pending |
-| workspace\-repair | 5 | 0 | `d7f578d8` | code/security actual PASS in recovery run; QA shipping/focused checks PASS, final native suite case pending | pending |
+| workspace\-repair | 5 | 0 | `d7f578d8` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
 | codex\-launch | 1 | 0 | `ea96263f` | code/security/qa actual PASS; hook receipts absent | pending |
 | codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | pending |
 | codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |

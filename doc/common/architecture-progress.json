@@ -38,7 +38,7 @@
         "OP-workspace-broken-content-repair"
       ],
       "partialOperationIds": [],
-      "codeReview": "code/security actual PASS in recovery run; QA shipping/focused checks PASS, final native suite case pending",
+      "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
       "integration": "pending",
       "nativeAcceptance": "unverified"
     },
