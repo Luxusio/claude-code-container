@@ -73,7 +73,7 @@ describe("complete runtime capability policy", () => {
     });
     it("keeps changing platform observations separate across phases", () => {
         const { ports, collect, trace } = fixture(); const platforms = ["win32", "linux", "darwin", "linux"];
-        ports.observeDockerOperatingSystem = () => ({ status: 1, get stdout() { throw Error("failed OS stdout must be skipped"); } });
+        ports.observeDockerOperatingSystem = () => ({ status: 1, get stdout(): never { throw Error("failed OS stdout must be skipped"); } });
         ports.readPlatform = () => { trace.push("platform"); return platforms.shift()!; };
         expect(collect()()).toMatchObject({ dockerDesktop: false, remote: true, rootless: false, flavor: "docker-desktop" });
         expect(trace.filter(name => name === "platform")).toHaveLength(4);
@@ -96,7 +96,7 @@ describe("complete runtime capability policy", () => {
     });
     it("consumes raw result lazily and never accesses failed-version stdout", () => {
         const { ports, collect, trace } = fixture(); let statusReads = 0;
-        ports.observeVersion = () => ({ get status() { statusReads++; return 1; }, get stdout() { throw Error("stdout"); } });
+        ports.observeVersion = () => ({ get status() { statusReads++; return 1; }, get stdout(): never { throw Error("stdout"); } });
         expect(collect()().version).toBeNull(); expect(statusReads).toBe(1); expect(trace).not.toContain("version.stdout");
     });
     it("distinguishes ignored rootless UID failures from propagating socket UID failures", () => {
