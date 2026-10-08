@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { captureNativeSessionOwnership } from "../../adapters/session-ownership.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -127,6 +129,7 @@ if (!mode.startsWith('acquire')) {
     setSession(lock, project, profile);
 }
 setupSignalHandlers();
+process.send({ event: 'phase', phase: mode.startsWith('acquire') ? 'acquiring' : 'arming' });
 let guardian;
 let directGuardian;
 let pendingRefusals;
@@ -147,6 +150,7 @@ if (mode.startsWith('acquire')) {
     try {
         const acquired = await acquireHostSessionOwnership({ projectId: getProjectId(project), projectPath: project, profile }, async () => {
             lock = getCurrentSession().lockFile;
+            process.send({ event: 'phase', phase: 'inspecting', lock });
             process.send({ event: 'inspecting', lock });
             const continuation = await resume;
             if (mode === 'acquire-fail') {
@@ -278,6 +282,76 @@ process.on('message', async (message) => {
         rmSync(root, { recursive: true, force: true });
     });
 
+    // The owned fake runtime uses a POSIX executable, like the existing shutdown cases.
+    it.skipIf(process.platform === "win32").each([false, true])("READY avoids held cleanup loading and terminal exit awaits it (loader rejects %s)", async rejectLoad => {
+        const trace = join(root, "guardian-loads.jsonl");
+        const held = join(root, "cleanup-held");
+        const release = join(root, "cleanup-release");
+        const loader = join(root, "cleanup-loader.mjs");
+        const preload = join(root, "cleanup-register.mjs");
+        const cleanupUrl = pathToFileURL(join(distribution, "composition/session-cleanup.js")).href;
+        writeFileSync(trace, "");
+        writeFileSync(loader, `
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+export async function load(url, context, nextLoad) {
+    appendFileSync(${JSON.stringify(trace)}, JSON.stringify(url) + '\\n');
+    if (url === ${JSON.stringify(cleanupUrl)}) {
+        writeFileSync(${JSON.stringify(held)}, url);
+        while (!existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 10));
+        if (${rejectLoad}) throw new Error('owned deferred cleanup loader rejection');
+    }
+    return nextLoad(url, context);
+}
+`);
+        writeFileSync(preload, `import { register } from 'node:module'; register(${JSON.stringify(pathToFileURL(loader).href)}, import.meta.url);`);
+        const project = join(root, "project");
+        const projectId = `${basename(project).toLowerCase().replace(/[^a-z0-9-]/g, "-")}-${createHash("sha256").update(project).digest("hex").slice(0, 12)}`;
+        const locks = join(home, ".ccc", "run", "locks");
+        mkdirSync(locks, { recursive: true });
+        const lock = join(locks, `${projectId}--loader-proof.lock`);
+        writeFileSync(lock, String(process.pid));
+        const receipt = captureNativeSessionOwnership(lock);
+        const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href,
+            join(distribution, "session-ownership-guardian.js"), String(process.pid)], {
+            cwd: root,
+            env: { HOME: home, USERPROFILE: home, TMPDIR: root, TMP: root, TEMP: root,
+                PATH: process.platform === "win32" ? `${bin};${dirname(process.execPath)}` : `${bin}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+                CCC_RUNTIME: "docker", CCC_TEST_RUNTIME_LOG: log, CCC_DEVICE_BROKER_AUTO_START: "0",
+                ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+            stdio: ["ignore", "pipe", "pipe", "ipc"],
+        });
+        const owner: Owner = { child, messages: [], output: "" };
+        owners.push(owner);
+        child.stderr!.on("data", chunk => { owner.output += String(chunk); });
+        child.on("error", error => { owner.output += error.message; });
+        child.on("message", message => { owner.messages.push(message); });
+        const started = Date.now();
+        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt });
+        await eventually(() => owner.messages.some(message => (message as { type?: string }).type === "ready"),
+            `native guardian READY while cleanup loader held: ${owner.output}`, 5000);
+        expect(Date.now() - started).toBeLessThan(5000);
+        expect(existsSync(held)).toBe(false);
+        const startupLoads = readFileSync(trace, "utf8").trim().split("\n").map(line => JSON.parse(line) as string);
+        expect(startupLoads).toContain(pathToFileURL(join(distribution, "composition/session-ownership-native.js")).href);
+        expect(startupLoads.some(url => /session-cleanup|device-lab-admin|device-lab-broker/.test(url))).toBe(false);
+        child.send({ type: "update", sequence: 1, containerId: idA, runtime: "docker", cleanupEnabled: true });
+        await eventually(() => owner.messages.some(message => (message as { type?: string }).type === "ack"), "captured ID ACK", 5000);
+        child.disconnect();
+        await eventually(() => existsSync(held), "authorized cleanup reaches actual held module");
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+        expect(stops()).toEqual([]);
+        expect(existsSync(lock)).toBe(true);
+        writeFileSync(release, "release");
+        await eventually(() => child.exitCode !== null || child.signalCode !== null, "deferred cleanup terminal exit");
+        expect(child.signalCode).toBeNull();
+        expect(child.exitCode).toBe(rejectLoad ? 1 : 0);
+        expect(stops()).toEqual(rejectLoad ? [] : [["stop", idA]]);
+        expect(existsSync(lock)).toBe(rejectLoad);
+        if (rejectLoad) expect(owner.output).toContain("Ended host session cleanup failed");
+    });
+
     function calls(): string[][] {
         return readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
     }
@@ -327,10 +401,17 @@ process.on('message', async (message) => {
 
     async function ready(owner: Owner): Promise<Owner & { ready: Ready }> {
         const child = owner.child;
-        await eventually(() => {
-            if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Owner exited before READY: ${owner.output}`);
-            return owner.ready !== undefined;
-        }, "built owner READY");
+        const diagnostic = () => JSON.stringify({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode,
+            phase: owner.messages.filter(message => (message as { event?: string }).event === "phase").at(-1) ?? "before fixture phase",
+            messages: owner.messages, stderrAndOutput: owner.output });
+        try {
+            await eventually(() => {
+                if (child.exitCode !== null || child.signalCode !== null) throw new Error("Owner exited before READY");
+                return owner.ready !== undefined;
+            }, "built owner READY");
+        } catch (error) {
+            throw new Error(`${error instanceof Error ? error.message : String(error)}: ${diagnostic()}`, { cause: error });
+        }
         expect(owner.ready!.guardian).toBeGreaterThan(0);
         expect(owner.ready!.guardian).not.toBe(child.pid);
         expect(running(owner.ready!.guardian)).toBe(true);

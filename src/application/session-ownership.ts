@@ -116,13 +116,13 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
         queue = result.catch(() => undefined);
         return result;
     }
-    function cleanupAndFinish(status: 0 | 1 = 0): void {
+    async function cleanupAndFinish(status: 0 | 1 = 0): Promise<void> {
         if (finished) return;
         finished = true;
         try {
             if (ownership) {
                 if (containerId === null || !cleanupEnabled) ports.rollback(ownership.binding, ownership.receipt);
-                else ports.cleanup(ownership.binding, ownership.receipt, containerId, runtime);
+                else await ports.cleanup(ownership.binding, ownership.receipt, containerId, runtime);
             }
         } catch (error) {
             ports.finish(1);
@@ -168,7 +168,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
             } catch (error) {
                 try { await ports.send({ type: "error" }); } catch { /* retain the original failure */ }
                 // Do not await the queued disconnect from inside this operation.
-                cleanupAndFinish(1);
+                await cleanupAndFinish(1);
                 throw error;
             }
         });

@@ -121,3 +121,11 @@ query. Native Windows deletion/console-close and macOS tempfile behavior require
 native acceptance. Parent cleanup cannot run after SIGKILL; this env-file contract
 does not extend the session guardian. The native identity-check-to-unlink window
 is not an atomic hostile-filesystem guarantee.
+
+Guardian initialization must validate the native receipt and parent and install
+its IPC handling without loading device cleanup administration. Cleanup-only
+module loading must not consume the existing five-second ownership
+acknowledgment deadline. On an authorized disconnected owner, the guardian
+must await deferred cleanup before reporting its terminal status; cleanup failure
+remains a failed exit. The serialized ACK outcome continues to select the exact
+owned container ID, and native synchronous cleanup facade contracts remain intact.

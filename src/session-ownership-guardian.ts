@@ -1,6 +1,6 @@
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { createSessionOwnershipGuardian } from "./application/session-ownership.js";
-import { assertNativeSessionOwnership, cleanupCapturedNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership.js";
+import { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership-native.js";
 
 const ownerPid = Number(process.argv[2]);
 if (!process.send || !process.connected || !Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
@@ -31,7 +31,10 @@ const guardian = createSessionOwnershipGuardian({
         }
     },
     rollback: rollbackCapturedNativeSessionOwnership,
-    cleanup: cleanupCapturedNativeSessionOwnership,
+    async cleanup(binding, receipt, containerId, runtime) {
+        const { cleanupCapturedNativeSessionOwnership } = await import("./composition/session-ownership.js");
+        cleanupCapturedNativeSessionOwnership(binding, receipt, containerId, runtime);
+    },
     send(message) {
         return new Promise<void>((resolve, reject) => {
             if (!process.connected) {

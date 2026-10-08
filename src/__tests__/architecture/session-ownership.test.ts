@@ -411,6 +411,50 @@ describe("guardian ownership protocol", () => {
         expect(f.finishes()).toBe(1);
     });
 
+    it.each([false, true])("awaits async cleanup and serializes duplicate disconnect (reject %s)", async rejectCleanup => {
+        const f = guardianFixture();
+        const cleanup = deferred();
+        const entered = deferred();
+        const failure = new Error("deferred native cleanup failed");
+        f.ports.cleanup = async (...args) => { f.cleanups.push(args); entered.resolve(); await cleanup.promise; };
+        await f.init();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
+        const disconnected = f.guardian.disconnect();
+        const outcome = rejectCleanup ? expect(disconnected).rejects.toBe(failure) : disconnected;
+        const duplicate = f.guardian.disconnect();
+        await entered.promise;
+        expect(f.finishes()).toBe(0);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, "podman"]]);
+        if (rejectCleanup) cleanup.reject(failure); else cleanup.resolve();
+        await outcome;
+        await duplicate;
+        expect(f.cleanups).toHaveLength(1);
+        expect(f.finishStatuses).toEqual([rejectCleanup ? 1 : 0]);
+    });
+
+    it.each([false, true])("awaits cleanup on protocol failure and preserves error precedence (cleanup rejects %s)", async rejectCleanup => {
+        const f = guardianFixture();
+        const cleanup = deferred();
+        const entered = deferred();
+        const original = new Error("original ACK failure");
+        const cleanupFailure = new Error("cleanup failure takes precedence");
+        await f.init();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        f.ports.cleanup = async (...args) => { f.cleanups.push(args); entered.resolve(); await cleanup.promise; };
+        f.ports.send = async message => { if (message.type === "ack") throw original; f.sent.push(message); };
+        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true });
+        const outcome = expect(update).rejects.toBe(rejectCleanup ? cleanupFailure : original);
+        const duplicate = f.guardian.disconnect();
+        await entered.promise;
+        expect(f.finishes()).toBe(0);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, "docker"]]);
+        if (rejectCleanup) cleanup.reject(cleanupFailure); else cleanup.resolve();
+        await outcome;
+        await duplicate;
+        expect(f.finishStatuses).toEqual([1]);
+        expect(f.cleanups).toHaveLength(1);
+    });
+
     it("normal release acknowledges once and prevents disconnect cleanup", async () => {
         const f = guardianFixture();
         await f.init();

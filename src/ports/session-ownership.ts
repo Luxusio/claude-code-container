@@ -53,7 +53,7 @@ export interface SessionOwnershipGuardianPorts {
     rollback(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
     validate(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
     cleanup(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
-        containerId: string | null, runtime: SessionOwnershipRuntime): void;
+        containerId: string | null, runtime: SessionOwnershipRuntime): void | Promise<void>;
     send(message: SessionOwnershipMessage): Promise<void>;
     finish(status?: 0 | 1): void;
 }
