@@ -5082,7 +5082,9 @@ async function mcpPayloadCliConsumer(payload,privateHome,ts,recordDenied) {
       if(specifier.startsWith('@ccc/'))return load(createRequire(file).resolve(specifier));
       return nativeRequire(specifier);
     };
-    runInThisContext('(function(require,module,exports,__filename,__dirname){'+compiled+'\n})',{filename:file})(requireMapped,module,module.exports,file,path.dirname(file));
+    // Node ignores only an initial hashbang. Pad it so line/column offsets survive the VM wrapper.
+    const wrappedSource=compiled.replace(/^#![^\r\n\u2028\u2029]*/,line=>' '.repeat(line.length));
+    runInThisContext('(function(require,module,exports,__filename,__dirname){'+wrappedSource+'\n})',{filename:file})(requireMapped,module,module.exports,file,path.dirname(file));
     return module.exports;
   };
   const argv=process.argv,exit=process.exit,cwd=process.cwd();
