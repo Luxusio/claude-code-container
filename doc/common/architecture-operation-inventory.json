@@ -92134,7 +92134,28 @@
           "line": 152
         }
       ],
-      "callers": [],
+      "callers": [
+        {
+          "path": "src/docker.ts",
+          "line": 70,
+          "kind": "import",
+          "importSource": "./codex-state-ownership.js",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "enclosingSymbol": "module",
+          "callSite": "prepareCodexStateOwnership",
+          "referenceDescription": "Named ownership facade import; native startup authority remains with the caller."
+        },
+        {
+          "path": "src/docker.ts",
+          "line": 2627,
+          "kind": "callSite",
+          "importSource": "./codex-state-ownership.js",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "enclosingSymbol": "startProjectContainerLocked.prepareRetainedState",
+          "callSite": "prepareCodexStateOwnership",
+          "referenceDescription": "Retained-state callback under the shared startup lock; syntactic caller trace, not native migration acceptance."
+        }
+      ],
       "exports": {
         "source": {
           "path": "src/codex-state-ownership.ts",
@@ -92216,6 +92237,18 @@
           },
           "sourceTrace": [
             {
+              "path": "src/docker.ts",
+              "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+              "symbol": "prepareCodexStateOwnership",
+              "line": 70
+            },
+            {
+              "path": "src/docker.ts",
+              "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+              "symbol": "prepareCodexStateOwnership",
+              "line": 2627
+            },
+            {
               "path": "src/codex-state-ownership.ts",
               "gitBlob": "403c760e3bc1823fbe4618dfdc7069da0ff65f1d",
               "symbol": "prepareCodexStateOwnership",
@@ -92278,9 +92311,10 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
+      "collaborationContract": "The caller holds the shared codex-state.lock (waitMs:600000, reclaimStale:false) through container startup and preserves previous container Id/Image/Mounts before replacement. Its prepareRetainedState callback invokes Codex migration with the captured managed-root alias proof, then exact named Lab volume preparation, and sets its once flag only after both succeed. Each policy retains its distinct host-bind or named-volume authority; neither depends on clipboard cache/generation nor acquires a new lock.",
       "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
+        "src/codex-state-ownership.ts",
+        "src/docker.ts"
       ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
@@ -92330,7 +92364,28 @@
           "line": 6
         }
       ],
-      "callers": [],
+      "callers": [
+        {
+          "path": "src/docker.ts",
+          "line": 69,
+          "kind": "import",
+          "importSource": "./lab-state-ownership.js",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "enclosingSymbol": "module",
+          "callSite": "prepareLabStateOwnership",
+          "referenceDescription": "Named ownership facade import; native startup authority remains with the caller."
+        },
+        {
+          "path": "src/docker.ts",
+          "line": 2630,
+          "kind": "callSite",
+          "importSource": "./lab-state-ownership.js",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "enclosingSymbol": "startProjectContainerLocked.prepareRetainedState",
+          "callSite": "prepareLabStateOwnership",
+          "referenceDescription": "Retained-state callback under the shared startup lock; syntactic caller trace, not native migration acceptance."
+        }
+      ],
       "exports": {
         "source": {
           "path": "src/lab-state-ownership.ts",
@@ -92412,6 +92467,18 @@
           },
           "sourceTrace": [
             {
+              "path": "src/docker.ts",
+              "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+              "symbol": "prepareLabStateOwnership",
+              "line": 69
+            },
+            {
+              "path": "src/docker.ts",
+              "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+              "symbol": "prepareLabStateOwnership",
+              "line": 2630
+            },
+            {
               "path": "src/lab-state-ownership.ts",
               "gitBlob": "d0650b5555339b68e6c6f1fc0c789611b96343ac",
               "symbol": "prepareLabStateOwnership",
@@ -92470,9 +92537,10 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
+      "collaborationContract": "The caller holds the shared codex-state.lock (waitMs:600000, reclaimStale:false) through container startup and preserves previous container Id/Image/Mounts before replacement. Its prepareRetainedState callback invokes Codex migration with the captured managed-root alias proof, then exact named Lab volume preparation, and sets its once flag only after both succeed. Each policy retains its distinct host-bind or named-volume authority; neither depends on clipboard cache/generation nor acquires a new lock.",
       "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
+        "src/lab-state-ownership.ts",
+        "src/docker.ts"
       ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
@@ -179055,6 +179123,18 @@
       },
       "sourceTrace": [
         {
+          "path": "src/docker.ts",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "symbol": "prepareCodexStateOwnership",
+          "line": 70
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "symbol": "prepareCodexStateOwnership",
+          "line": 2627
+        },
+        {
           "path": "src/codex-state-ownership.ts",
           "gitBlob": "403c760e3bc1823fbe4618dfdc7069da0ff65f1d",
           "symbol": "prepareCodexStateOwnership",
@@ -179084,6 +179164,18 @@
         "line": 6
       },
       "sourceTrace": [
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "symbol": "prepareLabStateOwnership",
+          "line": 69
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "6d868cc1a5a881849a7238be139ad11bfe1986ca",
+          "symbol": "prepareLabStateOwnership",
+          "line": 2630
+        },
         {
           "path": "src/lab-state-ownership.ts",
           "gitBlob": "d0650b5555339b68e6c6f1fc0c789611b96343ac",
