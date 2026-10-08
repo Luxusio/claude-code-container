@@ -12,7 +12,7 @@ describe("actual public Sandbox create bindings", () => {
     it("creates through actual MCP and refuses duplicate owner identity", async () => {
         const context = await createDeviceLabMcpTestContext({ defaultImplicitBroker: false });
         try {
-            const args = { backend: "windows-sandbox", name: "Architecture Sandbox", deviceId: "architecture-sandbox" };
+            const args = { name: "Architecture Sandbox", deviceId: "architecture-sandbox" };
             const catalog = await context.client.listTools(); const tool = catalog.tools.find(tool => tool.name === "create_windows_sandbox");
             expect(tool).toBeDefined(); expect(catalog.tools.some(tool => tool.name === "device_create")).toBe(false);
             expect(tool?.inputSchema.properties?.memoryMb).toMatchObject({ type: "integer" });
