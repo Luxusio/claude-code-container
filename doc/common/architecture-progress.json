@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-08",
+  "inventoryPath": "doc/common/architecture-operation-inventory.json",
+  "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
+  "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
+  "excludedOperationIds": [
+    "OP-opencode-data-access-preparation"
+  ],
+  "sourceDenominatorCertified": false,
+  "countRule": "One complete operation/all required bindings once; no helper/file/task count and no fractional credit for partial work.",
+  "lanes": [
+    {
+      "id": "runtime-launch",
+      "branch": "refactor/architecture-runtime-launch-arguments-20261008",
+      "commit": "02c5a401e8bebef315b915feb0799e5925b7ba9c",
+      "taskId": "TASK__architecture-runtime-launch-arguments",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-container-create"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "code/security/qa actual PASS; hook receipts absent",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "workspace-repair",
+      "branch": "refactor/architecture-workspace-admission-repair-20261008",
+      "commit": "d7f578d82c8650f1abab31f55b3be1556889b1ae",
+      "taskId": "TASK__architecture-workspace-admission-repair",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-workspace-create-admission",
+        "OP-workspace-remove-admission",
+        "OP-workspace-nested-repair",
+        "OP-workspace-root-recovery",
+        "OP-workspace-broken-content-repair"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "pending",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "codex-launch",
+      "branch": "refactor/architecture-codex-launch-20261008",
+      "commit": "ea96263f9323883fcbeab8eed090d1b4bf78030d",
+      "taskId": "TASK__architecture-codex-launch",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-codex-launch"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "code/security/qa actual PASS; hook receipts absent",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "codex-resume",
+      "branch": "refactor/architecture-codex-resume-20261008",
+      "commit": "b625854d031fb2b03c292a055d333d9681e72d64",
+      "taskId": "TASK__architecture-codex-resume",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-codex-resume"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "code/security/qa actual PASS; hook receipts absent",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "codex-clipboard",
+      "branch": "refactor/architecture-codex-clipboard-attachment-20261008",
+      "commit": "fb6c26f72cca2d9e72159cf18edc34933e5b383a",
+      "taskId": "TASK__architecture-codex-clipboard-attachment",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-codex-clipboard-attachment"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "discovery in progress; full review/security/QA pending",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "broker-observations",
+      "branch": "refactor/architecture-broker-observations-20261008",
+      "commit": "3f020650f12178f11a863799bb04d15933d95b8f",
+      "taskId": "TASK__architecture-broker-observations",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-appium-list",
+        "OP-lease-list",
+        "OP-physical-list",
+        "OP-device-lifecycle-plan",
+        "OP-broker-status",
+        "OP-broker-service-status"
+      ],
+      "partialOperationIds": [
+        "OP-device-inventory",
+        "OP-device-session-status"
+      ],
+      "codeReview": "pending",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    }
+  ],
+  "planningLanes": [
+    {
+      "id": "sandbox-stop",
+      "taskId": "TASK__architecture-sandbox-stop",
+      "coveredOperationIds": [
+        "OP-windows-sandbox-stop"
+      ],
+      "status": "plan peer-reviewed; canonical publication pending; direct binding only, overall operation stays partial until broker binding moves"
+    },
+    {
+      "id": "clipboard-bridge",
+      "taskId": "TASK__architecture-clipboard-bridge",
+      "coveredOperationIds": [
+        "OP-clipboard-read",
+        "OP-clipboard-write",
+        "OP-clipboard-server-ensure",
+        "OP-clipboard-server-retire"
+      ],
+      "status": "plan mechanical corrections in progress; no production edits"
+    }
+  ]
+}

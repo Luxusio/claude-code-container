@@ -16,6 +16,14 @@ scope. Use Codex/Claude scope rather than the older full tool catalog.
 
 ## Counting migration progress
 
+Use the [hierarchical WBS checklist](GUIDE__architecture-work-breakdown.md) for
+the full currently inventoried development list and separate implementation,
+candidate, partial and delivery states. Its [progress overlay](architecture-progress.json)
+records immutable candidate commits; regenerate with
+`node scripts/render-architecture-progress.mjs` after every status update.
+OpenCode is visible as excluded rather than part of the current denominator.
+
+
 Use the [operation inventory audit](AUDIT__architecture-operation-inventory.md)
 and its [JSON data](architecture-operation-inventory.json) for revision-bound
 operation counts. Count complete policy/workflow cutovers once, with equivalent
