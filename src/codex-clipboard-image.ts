@@ -1,119 +1,11 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { request as httpRequest } from "http";
 import { join, posix } from "path";
+import { createCodexClipboardImageAttachment } from "./application/tool-session/codex-clipboard-image.js";
+import type { ClipboardImageAttachmentResult } from "./domain/tool-session/codex-clipboard-image.js";
 
-export const CODEX_CLIPBOARD_IMAGE_PROMPT = "Please inspect the attached clipboard image.";
-const CODEX_CLIPBOARD_SUBCOMMANDS = new Set([
-    "exec",
-    "review",
-    "login",
-    "logout",
-    "mcp",
-    "mcp-server",
-    "app-server",
-    "completion",
-    "sandbox",
-    "debug",
-    "doctor",
-    "migrate-rollouts",
-    "apply",
-    "resume",
-    "fork",
-    "cloud",
-    "features",
-    "help",
-]);
-
-const OPTIONS_WITH_VALUES = new Set([
-    "-c",
-    "--config",
-    "--enable",
-    "--disable",
-    "-i",
-    "--image",
-    "-m",
-    "--model",
-    "-p",
-    "--profile",
-    "-s",
-    "--sandbox",
-    "-a",
-    "--ask-for-approval",
-    "-C",
-    "--cd",
-    "--add-dir",
-]);
-
-export interface ClipboardImageAttachmentResult {
-    args: string[];
-    relativeImagePath?: string;
-}
-
-function hasInlineValueOption(arg: string, option: string): boolean {
-    return arg.startsWith(`${option}=`);
-}
-
-export function buildCodexClipboardImageRelativePath(timestamp: number): string {
-    return posix.join(".omx", "clipboard-images", `clipboard-${timestamp}.png`);
-}
-
-export function injectCodexClipboardImageArgs(args: string[], imagePath: string): string[] {
-    if (args.length === 0) {
-        return args;
-    }
-
-    for (let i = 1; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === "-i" || arg === "--image" || hasInlineValueOption(arg, "--image")) {
-            return [...args];
-        }
-    }
-
-    let positionalIndex: number | null = null;
-    for (let i = 1; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === "--") {
-            positionalIndex = i + 1 < args.length ? i + 1 : null;
-            break;
-        }
-        if (OPTIONS_WITH_VALUES.has(arg)) {
-            i += 1;
-            continue;
-        }
-        if (
-            hasInlineValueOption(arg, "--config")
-            || hasInlineValueOption(arg, "--image")
-            || hasInlineValueOption(arg, "--model")
-            || hasInlineValueOption(arg, "--profile")
-            || hasInlineValueOption(arg, "--sandbox")
-            || hasInlineValueOption(arg, "--ask-for-approval")
-            || hasInlineValueOption(arg, "--cd")
-            || hasInlineValueOption(arg, "--add-dir")
-        ) {
-            continue;
-        }
-        if (arg.startsWith("-")) {
-            continue;
-        }
-        positionalIndex = i;
-        break;
-    }
-
-    if (positionalIndex !== null && CODEX_CLIPBOARD_SUBCOMMANDS.has(args[positionalIndex])) {
-        return [...args];
-    }
-
-    if (positionalIndex === null) {
-        return [...args, "--image", imagePath, CODEX_CLIPBOARD_IMAGE_PROMPT];
-    }
-
-    return [
-        ...args.slice(0, positionalIndex),
-        "--image",
-        imagePath,
-        ...args.slice(positionalIndex),
-    ];
-}
+export { CODEX_CLIPBOARD_IMAGE_PROMPT, injectCodexClipboardImageArgs } from "./domain/tool-session/codex-clipboard-image.js";
+export type { ClipboardImageAttachmentResult } from "./domain/tool-session/codex-clipboard-image.js";
 
 export async function readClipboardImagePng(
     clipboardUrl: string,
@@ -143,7 +35,17 @@ export async function readClipboardImagePng(
     });
 }
 
-export async function maybeAttachCodexClipboardImage(
+const attachment = createCodexClipboardImageAttachment<Buffer>({
+    now: () => Date.now(),
+    relativePath: (first, second, filename) => posix.join(first, second, filename()),
+    imagePath: (projectPath, relativeImagePath) => join(projectPath, relativeImagePath),
+    defaultReader: () => readClipboardImagePng,
+    ensureDirectory: (projectPath, first, second) => mkdirSync(join(projectPath, first, second), { recursive: true }),
+    writeImage: (hostImagePath, image) => writeFileSync(hostImagePath, image),
+});
+
+export const buildCodexClipboardImageRelativePath: (timestamp: number) => string = attachment.buildCodexClipboardImageRelativePath;
+export const maybeAttachCodexClipboardImage: (
     projectPath: string,
     args: string[],
     options: {
@@ -153,28 +55,4 @@ export async function maybeAttachCodexClipboardImage(
         timestamp?: number;
         readImage?: (clipboardUrl: string, clipboardToken: string) => Promise<Buffer | null>;
     },
-): Promise<ClipboardImageAttachmentResult> {
-    if (!options.enabled || !options.clipboardUrl || !options.clipboardToken) {
-        return { args: [...args] };
-    }
-
-    const relativeImagePath = buildCodexClipboardImageRelativePath(options.timestamp ?? Date.now());
-    const imageArgs = injectCodexClipboardImageArgs(args, relativeImagePath);
-    if (imageArgs.length === args.length && imageArgs.every((arg, index) => arg === args[index])) {
-        return { args: [...args] };
-    }
-    const readImage = options.readImage ?? readClipboardImagePng;
-    const image = await readImage(options.clipboardUrl, options.clipboardToken);
-    if (!image) {
-        return { args: [...args] };
-    }
-
-    const hostImagePath = join(projectPath, relativeImagePath);
-    mkdirSync(join(projectPath, ".omx", "clipboard-images"), { recursive: true });
-    writeFileSync(hostImagePath, image);
-
-    return {
-        args: imageArgs,
-        relativeImagePath,
-    };
-}
+) => Promise<ClipboardImageAttachmentResult> = attachment.maybeAttachCodexClipboardImage;
