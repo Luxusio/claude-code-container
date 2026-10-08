@@ -4809,10 +4809,20 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
     const originalParse = parseDescriptor.value, originalStringify = stringifyDescriptor.value;
     const host = path.join(privateHome,'.claude.json');
     const raw = new Error('raw-error');
-    let mode, target, events, active = false, existsFile, parserIndex;
+    let mode, target, events, active = false, pendingDocument, parserSelection;
     const restoreJson = () => {Object.defineProperty(JSON,'parse',parseDescriptor);Object.defineProperty(JSON,'stringify',stringifyDescriptor);};
+    const selectParser=kind=>{
+      const document=pendingDocument;pendingDocument=undefined;
+      const selection=++parserSelection;
+      events.push(['parser:get',document,kind,selection]);
+      if((mode==='claude-getter-throw' && document===target)||(mode==='host-getter-throw' && document===host))throw raw;
+      return function(...args){
+        events.push(['parser:call',document,kind,selection,this===JSON]);
+        return kind==='original'?Reflect.apply(originalParse,this,args):{};
+      };
+    };
     replace(fs,'existsSync',(file,...args)=>{
-      if (active && (file === target || file === host)) {existsFile=file;events.push(['exists',file]);}
+      if (active && (file === target || file === host)) {pendingDocument=file;events.push(['exists',file]);}
       return native.existsSync(file,...args);
     });
     replace(fs,'readFileSync',(file,...args)=>{
@@ -4822,8 +4832,9 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       if (active && (file === target || file === host)) {
         events.push(['read',file]);
         if ((mode==='claude-parser-replacement' && file===target) || (mode==='host-parser-replacement' && file===host)) {
-          Object.defineProperty(JSON,'parse',{configurable:true,writable:true,value:()=>({})});
+          Object.defineProperty(JSON,'parse',{configurable:true,get:()=>selectParser('replacement')});
         }
+        pendingDocument=undefined;
       }
       owned(file,true); return native.readFileSync(file,...args);
     });
@@ -4852,12 +4863,8 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       target=utils.getClaudeJsonFile(profile);const codex=utils.getCodexConfigFile(profile);
       owned(target);owned(codex);fs.mkdirSync(path.dirname(target),{recursive:true});fs.mkdirSync(path.dirname(codex),{recursive:true});
       native.writeFileSync(target,'{"retained":true}');native.writeFileSync(host,'{"mcpServers":{"host":{"command":"node"}}}');native.writeFileSync(codex,'model = "keep"\n');
-      events=[];parserIndex=0;active=true;
-      Object.defineProperty(JSON,'parse',{configurable:true,get(){
-        const file=existsFile;events.push(['parser:get',file]);parserIndex++;
-        if ((mode==='claude-getter-throw' && parserIndex===1)||(mode==='host-getter-throw' && parserIndex===2)) throw raw;
-        return originalParse;
-      }});
+      events=[];pendingDocument=undefined;parserSelection=0;active=true;
+      Object.defineProperty(JSON,'parse',{configurable:true,get:()=>selectParser('original')});
       Object.defineProperty(JSON,'stringify',{configurable:true,writable:true,value:(...args)=>{
         if(args[2]!==2)return originalStringify(...args);
         events.push('serialize');
@@ -4876,8 +4883,15 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
         const existence=events.findIndex(event=>Array.isArray(event)&&event[0]==='exists'&&event[1]===file);
         const getter=events.findIndex(event=>Array.isArray(event)&&event[0]==='parser:get'&&event[1]===file);
         const read=events.findIndex(event=>Array.isArray(event)&&event[0]==='read'&&event[1]===file);
-        assert(getter>existence);assert.equal(read===-1,mode===(file===target?'claude-getter-throw':'host-getter-throw'));
-        if(read!==-1)assert(read>getter);
+        assert(getter>existence,originalStringify({mode,file,existence,getter,read,events:events.slice(0,32)}).slice(0,2400));assert.equal(read===-1,mode===(file===target?'claude-getter-throw':'host-getter-throw'));
+        const call=events.findIndex(event=>Array.isArray(event)&&event[0]==='parser:call'&&event[1]===file);
+        if(read!==-1){
+          assert(read>getter);assert(call>read,'selected parser must execute after its document read');
+          assert.deepEqual(events[call].slice(2,4),events[getter].slice(2,4),'invoke exactly the preselected parser');
+          assert.equal(events[call][4],true,'JSON remains the parser receiver');
+          const expectedParser=mode==='claude-parser-replacement'&&file===host?'replacement':'original';
+          assert.equal(events[call][2],expectedParser,'mutating target read must invoke its original parser; later host selects current parser');
+        }else assert.equal(call,-1,'throwing target getter must prevent read and invocation');
       }
       assert.equal(events.includes('selected-write'),mode!=='serializer-throw');
       if(events.includes('selected-write'))assert(events.indexOf('selected-write')>events.indexOf('serialize'));
