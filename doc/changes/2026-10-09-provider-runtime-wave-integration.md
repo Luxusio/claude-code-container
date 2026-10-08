@@ -40,8 +40,21 @@ admission and flow behavior under effect fences. The first run found an emitted
 relative import missing from the test's native dependency bindings. Its exact
 path now uses the existing frozen lock observation; native import permissions
 remain restricted. The corrected checker completed with exit 0 for both forms,
-including current strict declaration consumers and public MCP checks. Final
-independent combined review and the full portable suite remain pending.
+including current strict declaration consumers and public MCP checks. The
+independent combined code and security reviews passed. The full portable run
+then failed three session ownership cases: 11,574 passed, three failed and
+151 skipped across 452 passing, one failing and ten skipped files. Its original
+logs and JSON remain preserved; an isolated passing run does not waive it.
+
+A guardian startup repair now removes cleanup-only imports from initialization
+and awaits deferred cleanup before terminal exit. Native validation and public
+synchronous cleanup contracts remain intact; the 5-second ACK and 15-second
+fixture deadlines remain unchanged. The first original failure missed the ACK
+deadline; attribution of the other two acquisition failures remains unresolved.
+The repair received independent code and security PASS and bounded QA: 294
+tests including all 19 emitted process cases, plus 220 supplemental native claim
+and liveness tests. Replay `39947369` matches original `0828bce3`. Fresh current
+build, both shipping forms and the full combined QA remain required.
 
 The current WBS remains 52/218 implemented and integrated, with 19 partial
 operations and 147 TODO. These three operations gain credit only after combined
