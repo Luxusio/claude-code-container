@@ -3235,12 +3235,12 @@ async function verifyClipboardBridgeDelivery(payloadArgument, homeArgument, mode
             const read = snapshotCore.createClipboardSnapshotReader(ports, state);
             const initial = await read("windows"); assert.equal(initial.imagePng, opaque);
             clock = 1000; assert.equal(await read("windows"), initial); assert.equal(captures, 1);
-            let publish;
-            ports.readWindowsCapture = () => { captures++; return new Promise(done => { publish = done; }); };
+            let publishCapture;
+            ports.readWindowsCapture = () => { captures++; return new Promise(done => { publishCapture = done; }); };
             const pending = read("windows", true); await Promise.resolve(); await Promise.resolve();
             snapshotCore.invalidateClipboardCache(state);
             ports.readWindowsCapture = async () => { captures++; return { marker: "m", targets: ["image/png"], text: null, imagePng: opaque, imageBmp: null }; };
-            publish({ marker: "m", targets: [], text: null, imagePng: null, imageBmp: null });
+            publishCapture({ marker: "m", targets: [], text: null, imagePng: null, imageBmp: null });
             assert.equal((await pending).imagePng, opaque); assert.equal(captures, 3);
             ports.readWindowsCapture = async () => { throw rawRead; };
             await assert.rejects(read("windows", true), value => value === rawRead);
@@ -3405,7 +3405,13 @@ async function verifyReviewedWorkspaceDelivery(payload, fixtures) {
     for (const name of ["spawn", "exec", "execSync", "execFile", "execFileSync", "fork"]) cp[name] = () => { throw new Error("Unallocated workspace native execution"); };
     cp.spawnSync = (command, args, options) => {
         assert.equal(command, "git");
-        assert.ok(resolve(options.cwd).startsWith(resolve(fixtures) + "/"), "Git must remain in private fixture repositories");
+        if (typeof options.cwd === "string") {
+            assert.ok(resolve(options.cwd).startsWith(resolve(fixtures) + "/"), "Git must remain in private fixture repositories");
+        } else {
+            assert.deepEqual([args[0], ...args.slice(2)], ["--git-dir", "worktree", "list", "--porcelain"]);
+            assert.equal(typeof args[1], "string");
+            assert.ok(resolve(args[1]).startsWith(resolve(fixtures) + "/"), "Git registry must remain inside private fixtures");
+        }
         return nativeSpawnSync(command, args, {...options, timeout:20000});
     };
     syncBuiltinESMExports();
