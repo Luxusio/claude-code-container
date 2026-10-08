@@ -26,8 +26,8 @@ import { TOOLS as OPERATION_TOOLS } from "./operation-tools.mjs";
 import { actionResult } from "./action-output.mjs";
 import { flowStepArguments, normalizeToolArgs, normalizePublicToolArgs, toolInputError } from "./tool-arguments.mjs";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
+import { runDeviceFlow } from "@ccc/device-lab/providers/application/device-flow.mjs";
 
-const FLOW_MAX_STEPS = 50;
 const DEVICE_REQUIRED_TOOLS = new Set(OPERATION_TOOLS
     .filter((tool) => tool.inputSchema?.required?.includes("deviceId"))
     .map((tool) => tool.name));
@@ -1613,71 +1613,15 @@ async function dispatchDeviceTool(name, rawArgs, { detail = false } = {}) {
     return unhandledDeviceToolResult(name, args) || textResult(false, `Unknown tool: ${name}`);
 }
 
-async function handleRunFlow(args, { toolName, toolAllowed, detail }) {
-    const nativeContent = [];
-    const finish = (value) => {
-        if (value && typeof value === "object" && value.ok === false) value = { error: "flow-step-failed", ...value };
-        const response = typeof value === "string"
-            ? textResult(false, value)
-            : flowJsonResult(detail ? value : compactToolValue(toolName, value), { detail });
-        response.content.push(...nativeContent);
-        return response;
-    };
-    const { steps, stopOnError = true } = args;
-    if (!Array.isArray(steps)) return finish(`${toolName} requires steps array`);
-    if (steps.length === 0) return finish(`${toolName} requires at least one step`);
-    if (steps.length > FLOW_MAX_STEPS) return finish(`${toolName} supports at most ${FLOW_MAX_STEPS} steps`);
-
-    const results = [];
-    for (let index = 0; index < steps.length; index += 1) {
-        const step = steps[index] || {};
-        const tool = typeof step.tool === "string" ? step.tool : "";
-        const label = (typeof step.label === "string" && step.label) || tool || `step-${index + 1}`;
-        if (!tool || Object.hasOwn(step, "name")) {
-            const summary = { index, label, isError: true, error: "Flow step requires tool; name is not supported" };
-            results.push(summary);
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
-        }
-        if (!toolAllowed(tool)) {
-            const summary = { index, label, tool, isError: true, error: `${toolName} does not allow step tool: ${tool}` };
-            results.push(summary);
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
-        }
-
-        if (step.arguments !== undefined && (!step.arguments || typeof step.arguments !== "object" || Array.isArray(step.arguments))) {
-            results.push({ index, label, tool, isError: true, error: "Flow step arguments must be an object" });
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
-        }
-        const inputError = toolInputError(tool, step.arguments) || (!flowOperationAllowed(tool, step.arguments) ? `${toolName} does not allow step action: ${tool}` : null);
-        if (inputError) {
-            if (inputError === `${tool} requires confirmDestructive:true`) {
-                const operation = toolOperation(tool, step.arguments);
-                const denied = policyDeniedResult(evaluateDestructivePolicy(operation, step.arguments));
-                results.push({ index, label, tool, ...summarizeToolResult(operation, actionResult(tool, operation, denied, { detail }), nativeContent) });
-            } else results.push({ index, label, tool, isError: true, error: inputError });
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
-        }
-        // A preceding step may have changed the broker or device state.
-        let result;
-        try {
-            result = await withBrokerOperation(() => dispatchTool(toolOperation(tool, step.arguments), normalizePublicToolArgs(tool, flowStepArguments(tool, args, step.arguments)), { detail }));
-        } catch (err) {
-            result = textResult(false, `Unexpected error: ${err.message}`);
-        }
-        const operation = toolOperation(tool, step.arguments);
-        const classified = summarizeToolResult(operation, result, []);
-        const presented = actionResult(tool, operation, result, { detail });
-        const summary = { index, label, tool, ...summarizeToolResult(operation, presented, nativeContent),
-            ...(classified.isError ? { isError: true } : {}) };
-        results.push(summary);
-        if (summary.isError && stopOnError) return finish({ ok: false, stoppedAt: index, results });
-    }
-
-    return finish({ ok: results.every((result) => !result.isError), results });
+async function handleRunFlow(args, options) {
+    return runDeviceFlow(args, options, {
+        toolInputError, flowOperationAllowed, toolOperation,
+        flowStepArguments, normalizePublicToolArgs, withBrokerOperation, dispatchTool,
+        evaluateDestructivePolicy, policyDeniedResult, summarizeToolResult, actionResult,
+        unexpectedError: (message) => textResult(false, message),
+        textFailure: (message) => textResult(false, message),
+        renderFlow: (value, { toolName, detail }) => flowJsonResult(detail ? value : compactToolValue(toolName, value), { detail }),
+    });
 }
 
 async function handleDeviceRunFlow(args, options) {

@@ -3,6 +3,7 @@ import { validateListFilesArgs } from "@ccc/device-lab/providers/file-listing.mj
 import { createInputError, normalizeCreateArgs, CREATE_TOOL_BACKENDS } from "./creation-input.mjs";
 import { TOOLS, SINGLE_BACKEND_TOOL_DEFAULTS, GROUP_OPERATIONS, DISCOVERY_OPERATIONS, toolOperation } from "./tools.mjs";
 import { SINGLE_BACKEND_TOOL_DEFAULTS as OPERATION_DEFAULTS } from "./operation-tools.mjs";
+import { sharedFlowTarget } from "@ccc/device-lab/providers/domain/device-flow.mjs";
 
 const DEVICE_TARGET_PROPERTIES = new Map(TOOLS
     .filter((tool) => tool.inputSchema?.required?.includes("deviceId"))
@@ -194,13 +195,6 @@ export function normalizeToolArgs(args = {}, toolName) {
 export function flowStepArguments(tool, rawFlowArgs, rawStepArgs) {
     const args = normalizeToolArgs(rawFlowArgs);
     const stepArgs = { ...normalizeToolArgs(rawStepArgs), ...(Object.hasOwn(rawStepArgs || {}, "action") ? { action: rawStepArgs.action } : {}) };
-    const sharedTarget = {};
-    const changedTarget = ["deviceId"].some((key) =>
-        Object.hasOwn(args, key) && Object.hasOwn(stepArgs, key) && args[key] !== stepArgs[key]);
-    if (DEVICE_TARGET_PROPERTIES.has(tool) && !changedTarget) {
-        for (const key of ["deviceId", "incarnationId"]) {
-            if (Object.hasOwn(args, key) && Object.hasOwn(DEVICE_TARGET_PROPERTIES.get(tool), key)) sharedTarget[key] = args[key];
-        }
-    }
+    const sharedTarget = sharedFlowTarget(args, stepArgs, DEVICE_TARGET_PROPERTIES.get(tool));
     return { ...sharedTarget, ...stepArgs };
 }
