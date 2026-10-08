@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import ts from "typescript";
+import { createRequire, isBuiltin } from "node:module";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1875,6 +1876,20 @@ async function verifyCompiledPublicExecReadiness(facadeUrl, runtimeUrl) {
 
 async function verifySessionShutdownAuthorization(applicationUrl) {
     const assert = (await import("node:assert/strict")).default;
+    const childProcess = await import("node:child_process");
+    const net = await import("node:net");
+    let unexpectedEffects = 0;
+    const deny = () => { unexpectedEffects++; throw new Error("unexpected compiled guardian native/network effect"); };
+    for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) childProcess.default[name] = deny;
+    for (const name of ["connect", "createConnection"]) net.default[name] = deny;
+    net.default.Socket.prototype.connect = deny;
+    (await import("node:tls")).default.connect = deny;
+    for (const protocol of ["node:http", "node:https"]) {
+        const native = (await import(protocol)).default;
+        native.request = native.get = deny;
+    }
+    globalThis.fetch = deny;
+    (await import("node:module")).syncBuiltinESMExports();
     const { armSessionOwnership, createSessionOwnershipGuardian } = await import(applicationUrl);
     const binding = { lockFile: "/fixture/own.lock", projectPath: "/fixture/project" };
     const receipt = { path: binding.lockFile, bytes: "nonsecret-fixture", device: "1", inode: "2", birthtime: "3", ownerPid: 17 };
@@ -1916,6 +1931,38 @@ async function verifySessionShutdownAuthorization(applicationUrl) {
         assert.deepEqual(trace, [["send", { type: "ready" }], ["send", { type: "ack", sequence: 1 }],
             enabled ? ["cleanup", id, "podman"] : ["rollback"], ["finish", 0]]);
     }
+    for (const rejects of [false, true]) {
+        const trace = [];
+        let settle;
+        const failure = new Error("owned pending cleanup rejection");
+        const pending = new Promise((resolve, reject) => { settle = () => rejects ? reject(failure) : resolve(); });
+        const guardian = createSessionOwnershipGuardian({
+            validate: () => {}, send: async () => {},
+            rollback: () => { throw new Error("authorized captured-ID cleanup must not roll back"); },
+            cleanup: (b, r, selected, runtime) => {
+                assert.deepEqual(b, binding); assert.deepEqual(r, receipt);
+                assert.equal(selected, id); assert.equal(runtime, "podman");
+                trace.push("cleanup"); return pending;
+            },
+            finish: status => { trace.push(["finish", status]); },
+        });
+        await guardian.receive({ type: "init", binding, receipt });
+        await guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "podman", cleanupEnabled: true });
+        const disconnected = guardian.disconnect();
+        // Attach rejection observation before releasing the controlled cleanup.
+        const outcome = rejects ? assert.rejects(disconnected, error => error === failure) : disconnected;
+        const duplicate = guardian.disconnect();
+        const lateFrame = guardian.receive({ type: "release", sequence: 2 });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(trace, ["cleanup"], "compiled guardian must await cleanup before finishing");
+        settle();
+        await outcome;
+        await duplicate;
+        await lateFrame;
+        await guardian.disconnect();
+        assert.deepEqual(trace, ["cleanup", ["finish", rejects ? 1 : 0]], "duplicate terminal events must have no effect");
+    }
+    assert.equal(unexpectedEffects, 0, "compiled guardian proof must not attempt native/network effects");
 }
 
 async function verifyOwnedEnvFile(facadeUrl, adapterUrl) {
@@ -4302,7 +4349,64 @@ function identityWitness(source, scenario) {
     }
 }
 
+function verifyGuardianStartupClosure(packageRoot) {
+    const visited = new Set();
+    const visit = file => {
+        if (visited.has(file)) return;
+        const within = relative(packageRoot, file);
+        assert.ok(within && !within.startsWith(`..${sep}`) && within !== "..",
+            `guardian startup dependency must resolve inside shipped payload: ${file}`);
+        assert.doesNotMatch(within.replaceAll(sep, "/"),
+            /(?:session-cleanup|composition\/session-ownership\.js|device-lab-admin|device-lab-broker|\/providers\/)/,
+            "guardian static startup closure must exclude cleanup/admin/broker/providers");
+        visited.add(file);
+        const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+        for (const statement of tree.statements) {
+            if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+            const specifier = statement.moduleSpecifier;
+            if (!specifier) continue;
+            assert.ok(ts.isStringLiteral(specifier), "startup dependencies must be literal");
+            if (isBuiltin(specifier.text)) continue;
+            visit(createRequire(pathToFileURL(file)).resolve(specifier.text));
+        }
+    };
+    visit(join(packageRoot, "dist/session-ownership-guardian.js"));
+    assert.ok(visited.has(join(packageRoot, "dist/composition/session-ownership-native.js")));
+    assert.ok(visited.has(join(packageRoot, "dist/application/session-ownership.js")));
+}
+
 async function smoke(packageRoot) {
+    verifyGuardianStartupClosure(packageRoot);
+    const guardianContract = join(packageRoot, "session-guardian-consumer.mts");
+    writeFileSync(guardianContract, `import { cleanupSession } from "./dist/session.js";
+import { cleanupCapturedNativeSessionOwnership } from "./dist/composition/session-ownership.js";
+import { createSessionCleanup } from "./dist/application/session-cleanup.js";
+import { createSessionOwnershipGuardian } from "./dist/application/session-ownership.js";
+import type { SessionOwnershipGuardianPorts, SessionOwnershipPorts } from "./dist/ports/session-ownership.js";
+declare const ports: SessionOwnershipGuardianPorts;
+const asyncPorts: SessionOwnershipGuardianPorts = { ...ports, cleanup: async () => {} };
+const guardian = createSessionOwnershipGuardian(asyncPorts);
+const disconnect: Promise<void> = guardian.disconnect();
+const publicCleanup: ReturnType<typeof cleanupSession> = undefined;
+const capturedCleanup: ReturnType<typeof cleanupCapturedNativeSessionOwnership> = undefined;
+const applicationCleanup: ReturnType<ReturnType<typeof createSessionCleanup>["cleanupSession"]> = undefined;
+const parentCleanup: ReturnType<SessionOwnershipPorts["cleanup"]> = undefined;
+// @ts-expect-error Public cleanup remains synchronous void.
+const publicPending: ReturnType<typeof cleanupSession> = Promise.resolve();
+// @ts-expect-error Native captured cleanup remains synchronous void.
+const capturedPending: ReturnType<typeof cleanupCapturedNativeSessionOwnership> = Promise.resolve();
+// @ts-expect-error Public application cleanup remains synchronous void.
+const applicationPending: ReturnType<ReturnType<typeof createSessionCleanup>["cleanupSession"]> = Promise.resolve();
+// @ts-expect-error Parent ownership cleanup remains synchronous void.
+const parentPending: ReturnType<SessionOwnershipPorts["cleanup"]> = Promise.resolve();
+void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, parentCleanup,
+    publicPending, capturedPending, applicationPending, parentPending];
+`);
+    try {
+        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "false",
+            "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--typeRoots", join(root, "node_modules/@types"), guardianContract]);
+    } finally { rmSync(guardianContract); }
+
     const waveHome=mkdtempSync(join(temporary,'provider-runtime-wave-'));
     const waveResult=spawnSync(process.execPath,['--input-type=module','-e',
         `await (${verifyProviderRuntimeWave.toString()})(${JSON.stringify(packageRoot)},${JSON.stringify(IDENTITY_IMAGE_SHIPPING_BASELINE)});`],
@@ -5209,6 +5313,7 @@ async function smoke(packageRoot) {
     const ownershipApplicationUrl = pathToFileURL(join(packageRoot, "dist/application/session-ownership.js")).href;
     run(process.execPath, ["--input-type=module", "-e",
         `await (${verifySessionShutdownAuthorization.toString()})(${JSON.stringify(ownershipApplicationUrl)});`]);
+    console.log("PASS guardian distribution: payload-only light startup closure, public synchronous/guardian asynchronous declarations, awaited cleanup success/rejection and duplicate terminal effects");
     const readinessUrls = ["application/container-runtime-readiness", "ports/container-runtime-readiness", "docker"]
         .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",
