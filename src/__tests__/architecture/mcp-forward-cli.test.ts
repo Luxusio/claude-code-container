@@ -59,6 +59,7 @@ vi.mock("../../session.js", async original => {
 }; });
 vi.mock("../../container-setup.js", () => ({
     CLAUDE_BIN_PATH: "/home/ccc/.local/bin/claude", ensureUvAvailable: () => f.events.push("uv"),
+    ensureClaudeInContainer: (id: string) => { expect(id).toBe("final-id"); f.events.push("claude-ready"); },
     ensureTools: (id: string, tool: {name: string}) => { expect(id).toBe("final-id"); expect(readFileSync(f.codex, "utf8")).toContain('url = "http://host.docker.internal:8181/sse"'); expect(JSON.parse(readFileSync(f.claude, "utf8")).mcpServers.forwarded.url).toBe("http://host.docker.internal:8181/sse"); expect(f.restorePositions).toEqual([false, false]); f.events.push(`tool:${tool.name}`); if (f.failTool) throw new Error("tool unavailable"); },
 }));
 vi.mock("../../codex-config-lock.js", async original => {

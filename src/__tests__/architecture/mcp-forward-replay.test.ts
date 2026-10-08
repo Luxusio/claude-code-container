@@ -84,13 +84,21 @@ describe("actual immutable facade replay", () => {
         '[mcp_servers.retired]\ncommand = "\\u002fopt/ccc/x11-mcp/server.mjs"\n[mcp_servers.safe.env]\ncommand = "/opt/ccc/x11-mcp/server.mjs"\n',
         '# ccc-managed-mcp begin\nstale = true\n# ccc-managed-mcp end\nmodel = "remaining"\n',
         '# ccc-managed-mcp begin\nmodel = "unpaired"\n',
-    ])("pairs TOML scanner preservation and idempotent exact bytes", text => {
+    ])("pairs TOML scanner preservation and actual second-regeneration bytes", text => {
         const first = observe(old, undefined, undefined, text);
         expect(observe(candidate, undefined, undefined, text)).toEqual(first);
         const next = new Map(first.documents).get(codexPath)!;
+        const expectedSecond = observe(old, undefined, undefined, next);
         const second = observe(candidate, undefined, undefined, next);
-        expect(second).toEqual(observe(old, undefined, undefined, next));
-        expect(second.events.some(e => (e as string[])[0] === `write:${codexPath}`)).toBe(false);
+        expect(second).toEqual(expectedSecond);
+        const unpaired = text === '# ccc-managed-mcp begin\nmodel = "unpaired"\n';
+        expect(second.events.some(e => (e as string[])[0] === `write:${codexPath}`)).toBe(unpaired);
+        if (unpaired) {
+            expect(new Map(expectedSecond.documents).get(codexPath)).not.toBe(next);
+            expect(new Map(second.documents).get(codexPath)).not.toContain('model = "unpaired"');
+        } else {
+            expect(new Map(second.documents).get(codexPath)).toBe(next);
+        }
         expect(second.events.some(e => (e as string[])[0] === `write:${claudePath}`)).toBe(true);
     });
     it.each(["resolve-claude", `exists:${claudePath}`, `read:${claudePath}`, "exists:/fixture/.claude.json", "read:/fixture/.claude.json", "lock", "restore", "resolve-codex", "mkdir:/fixture/profile/codex", `exists:${codexPath}`, `read:${codexPath}`, `write:${codexPath}`, `write:${claudePath}`])("pairs native failure precedence and survivors at %s", point => {
