@@ -42,7 +42,7 @@ Object.assign(env, { HOME: temporary, USERPROFILE: temporary, CCC_DEVICE_BROKER_
 function run(executable, args, cwd = temporary) {
     const result = spawnSync(executable, args, { cwd, env, encoding: "utf8", timeout: 120000,
         maxBuffer: 4 * 1024 * 1024, windowsHide: true });
-    assert.equal(result.status, 0, String(result.error || result.stderr || "distribution command failed").slice(0, 2000));
+    assert.equal(result.status, 0, String(result.error || result.stderr || result.stdout || "distribution command failed").slice(0, 2000));
     return result.stdout;
 }
 
