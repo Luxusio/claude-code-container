@@ -171,9 +171,7 @@ beforeAll(async () => {
     for (const provider of Object.keys(admittedProviders)) {
         const archived = await import(join(frozenRoot, "packages/device-lab/providers", provider));
         assertNoDenials();
-        const controlled = provider === "state/state-file.mjs"
-            ? await import("@ccc/device-lab/providers/state/state-file.mjs")
-            : await import("@ccc/device-lab/providers/backends/windows-sandbox.mjs");
+        const controlled = await import(join(checkoutRoot, "packages/device-lab/providers", provider));
         assertNoDenials();
         expect(Object.keys(controlled).sort(), provider).toEqual(Object.keys(archived).sort());
         for (const name of Object.keys(archived)) {
