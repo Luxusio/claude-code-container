@@ -26,6 +26,7 @@ import { homedir } from "os";
 import { dirname, join, normalize, posix, resolve } from "path";
 import { fileURLToPath } from "url";
 import { createContainerSessionHandoff } from "./application/container-session-handoff.js";
+import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
@@ -752,181 +753,36 @@ export interface LabRunnerRunConfig {
 // Docker Compose-compatible labels for Docker Desktop grouping.
 // com.docker.compose.* labels are undocumented internals but stable since Compose V2.
 // Podman accepts arbitrary labels as opaque strings.
-function getComposeLabels(
-    containerName: string,
-    fullPath: string,
-    projectMountIdentity?: string,
-    profile?: string,
-): string[] {
-    const labels = [
-        "--label", "com.docker.compose.project=ccc",
-        "--label", `com.docker.compose.service=${containerName}`,
-        "--label", "com.docker.compose.oneoff=False",
-        "--label", "com.docker.compose.version=2",
-        "--label", "com.docker.compose.container-number=1",
-        "--label", "ccc.managed=true",
-        "--label", `ccc.project.path=${fullPath}`,
-        "--label", `ccc.profile=${profile ?? ""}`,
-        "--label", `ccc.cli.version=${CLI_VERSION}`,
-    ];
-    if (projectMountIdentity) {
-        labels.push("--label", `${PROJECT_MOUNT_IDENTITY_LABEL}=${projectMountIdentity}`);
-    }
-    return labels;
+const invokeContainerArgumentMethod = Reflect.apply;
+
+function nativeContainerLaunchArguments() {
+    return createContainerLaunchArguments<ContainerUserIdentity>({
+        captureBindMountArgs: () => bindMountArgs,
+        captureRuntimeExtraRunArgs: () => runtimeExtraRunArgs,
+        readRuntimeInfo: () => getRuntimeInfo(),
+        captureExistsSync: () => existsSync,
+        captureHostJoin: () => join,
+        captureIdentityLabels: () => getIdentityLabels,
+        captureEntries: () => {
+            const receiver = Object;
+            const entries = receiver.entries;
+            return value => invokeContainerArgumentMethod(entries, receiver, [value]);
+        },
+        readCliVersion: () => CLI_VERSION,
+        readProjectMountIdentityLabel: () => PROJECT_MOUNT_IDENTITY_LABEL,
+        readDeviceLabMountIdentityLabel: () => DEVICE_LAB_MOUNT_IDENTITY_LABEL,
+        readCodexPackagesVolumeName: () => CODEX_PACKAGES_VOLUME_NAME,
+        readCodexPackagesContainerDir: () => CODEX_PACKAGES_CONTAINER_DIR,
+        readBrokerAuthContainerFile: () => DEVICE_BROKER_AUTH_CONTAINER_FILE,
+        readClipboardFilesContainerDir: () => CLIPBOARD_FILES_CONTAINER_DIR,
+    });
 }
 
 export const CONTAINER_INIT_UNAVAILABLE_HINT = "[ccc] If the error above mentions docker-init, tini or catatonit, "
     + "the container runtime has no init binary for --init: install docker-init/tini (Docker) or catatonit (Podman).";
 
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
-    // Stable hostname: derived from container name, truncated to 63 chars (RFC 1123).
-    // Ensures Claude Code's --resume can find conversations after container recreation,
-    // since conversations are keyed by hostname internally.
-    const hostname = opts.containerName.slice(0, 63);
-
-    const args: string[] = [
-        "run",
-        "-d",
-        "--name",
-        opts.containerName,
-        "--hostname",
-        hostname,
-        "--network",
-        "host",
-        "--security-opt",
-        "seccomp=unconfined",
-        "--cap-add",
-        "NET_ADMIN",
-        // Run the runtime's init (docker-init/tini, catatonit) as PID 1 so orphaned
-        // children are reaped instead of piling up as zombies under `tail`.
-        "--init",
-    ];
-
-    // Bind mounts (runtime-aware: adds :Z on SELinux podman)
-    args.push(...bindMountArgs(opts.fullPath, opts.projectMountPath));
-    for (const mount of opts.credentialMounts) {
-        args.push(...bindMountArgs(mount.hostPath, mount.containerPath));
-    }
-    for (const mount of opts.gitIdentityMounts ?? []) {
-        args.push(...bindMountArgs(mount.hostPath, mount.containerPath, { readonly: true }));
-    }
-    args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
-    if (opts.deviceLabStateHostDir) {
-        args.push(...bindMountArgs(opts.deviceLabStateHostDir, "/home/ccc/.ccc/devices", { readonly: true }));
-        args.push("--tmpfs", "/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0711");
-        if (opts.deviceLabOwnerId) {
-            args.push(...bindMountArgs(
-                join(opts.deviceLabStateHostDir, "owners", opts.deviceLabOwnerId),
-                `/home/ccc/.ccc/devices/owners/${opts.deviceLabOwnerId}`,
-            ));
-        }
-        args.push("--tmpfs", "/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0711");
-        if (opts.deviceLabOwnerAuthFile) {
-            args.push(...bindMountArgs(opts.deviceLabOwnerAuthFile, DEVICE_BROKER_AUTH_CONTAINER_FILE, { readonly: true }));
-            args.push("-e", `CCC_DEVICE_BROKER_AUTH_FILE=${DEVICE_BROKER_AUTH_CONTAINER_FILE}`);
-        }
-    }
-    // Named volume — never gets :Z (mount helper auto-detects host-path vs name)
-    args.push(...bindMountArgs(opts.miseVolumeName, "/home/ccc/.local/share/mise"));
-    args.push(...bindMountArgs(opts.codexPackagesVolumeName ?? CODEX_PACKAGES_VOLUME_NAME, CODEX_PACKAGES_CONTAINER_DIR));
-    if (opts.labRunner) {
-        // Lab state only matters where container-QEMU labs can run (REQ__lab-state-volume.md).
-        if (opts.labRunner.status === "ready") {
-            args.push(...bindMountArgs(opts.labRunner.stateVolumeName, opts.labRunner.stateContainerDir));
-        }
-    }
-    // Container-manager socket: Docker uses /var/run/docker.sock,
-    // Podman substitutes its own socket on the host side but keeps the same
-    // in-container path so docker CLI shims inside the container keep working.
-    const socketSource = resolveHostSocketPath();
-    args.push(...bindMountArgs(socketSource, "/var/run/docker.sock", {
-        sourceNamespace: getRuntimeInfo().runtime === "docker" && socketSource !== CONTAINER_MANAGER_SOCKET
-            ? "daemon"
-            : "client",
-    }));
-
-    args.push("-w", opts.projectMountPath, "--pids-limit", opts.pidsLimit);
-
-    // Runtime-specific: --userns=keep-id:uid=1000,gid=1000 on rootless podman
-    args.push(...runtimeExtraRunArgs());
-
-    // Mount host SSH keys (read-only) for git SSH access
-    if (opts.hostSshDir) {
-        args.push(...bindMountArgs(opts.hostSshDir, "/home/ccc/.ssh", { readonly: true }));
-        args.push(
-            "-e",
-            "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519",
-        );
-    }
-
-    // Forward SSH agent socket
-    if (opts.sshAgentSocket) {
-        args.push(...bindMountArgs(opts.sshAgentSocket, "/tmp/ssh-agent.sock"));
-        args.push("-e", "SSH_AUTH_SOCK=/tmp/ssh-agent.sock");
-    }
-
-    // Trust the project's mise config without requiring a separate `mise trust`
-    // call. Baked in at container creation so every `docker exec` inherits it;
-    // mise checks this env var in-memory on each invocation and skips the
-    // trust-file write path entirely.
-    args.push("-e", `MISE_TRUSTED_CONFIG_PATHS=${opts.projectMountPath}`);
-    if (opts.proxyEnabled) {
-        args.push("-e", "CCC_PROXY_ENABLED=1");
-    }
-    // Fixed at creation, unlike per-session env: the device-lab MCP uses it to know the container's
-    // loopback is shared through a VM even when CCC_DISABLE_PROXY turned the proxy off
-    // (doc/device-lab/REQ__container-broker-discovery.md).
-    if (opts.containerHostRemote) {
-        args.push("-e", "CCC_CONTAINER_HOST_REMOTE=1");
-    }
-
-    if (opts.labRunner) {
-        args.push("-e", "CCC_LAB_RUNNER=1");
-        args.push("-e", `CCC_LAB_RUNNER_STATUS=${opts.labRunner.status}`);
-        args.push("-e", `CCC_LAB_STATE_DIR=${opts.labRunner.stateContainerDir}`);
-        args.push("-e", `CCC_LAB_NET_MODE=${opts.labRunner.networkMode}`);
-        if (opts.labRunner.unsupportedReason) {
-            args.push("-e", `CCC_LAB_RUNNER_UNSUPPORTED_REASON=${opts.labRunner.unsupportedReason}`);
-        }
-        if (opts.labRunner.status === "ready" && opts.labRunner.kvmDevicePath) {
-            args.push("--device", `${opts.labRunner.kvmDevicePath}:${opts.labRunner.kvmDevicePath}`);
-            if (opts.labRunner.kvmGroupId !== undefined) {
-                args.push("--group-add", String(opts.labRunner.kvmGroupId));
-            }
-        }
-    }
-
-    // Extra volume mounts (e.g., source .git for worktree workspaces)
-    if (opts.extraMounts) {
-        for (const mount of opts.extraMounts) {
-            args.push(...bindMountArgs(mount.hostPath, mount.containerPath));
-        }
-    }
-
-    // Mount clipboard port file so shims can read the latest token even after server restarts
-    if (opts.clipboardPortFile && existsSync(opts.clipboardPortFile)) {
-        args.push(...bindMountArgs(opts.clipboardPortFile, "/run/ccc/clipboard.port", { readonly: true }));
-    }
-    if (opts.clipboardFilesHostDir) {
-        args.push(...bindMountArgs(opts.clipboardFilesHostDir, CLIPBOARD_FILES_CONTAINER_DIR));
-    }
-
-    args.push(...getComposeLabels(
-        opts.containerName,
-        opts.fullPath,
-        opts.projectMountIdentity,
-        opts.profile,
-    ));
-    if (opts.identity) {
-        for (const [key, value] of Object.entries(getIdentityLabels(opts.identity))) {
-            args.push("--label", `${key}=${value}`);
-        }
-    }
-    if (opts.deviceLabMountIdentity) {
-        args.push("--label", `${DEVICE_LAB_MOUNT_IDENTITY_LABEL}=${opts.deviceLabMountIdentity}`);
-    }
-    args.push(opts.imageName);
-    return args;
+    return nativeContainerLaunchArguments().buildRunArgs(opts);
 }
 
 export function isLabRunnerProfile(profile?: string): boolean {
@@ -999,14 +855,7 @@ export function getLabRunnerUnsupportedReason(): string | null {
  * `systemctl --user start podman.socket`).
  */
 function resolveHostSocketPath(): string {
-    const info = getRuntimeInfo();
-    if (info.runtime === "docker") return info.socketPath ?? "/var/run/docker.sock";
-    const socket = info.socketPath ?? "/run/podman/podman.sock";
-    if (existsSync(socket)) return socket;
-    // Fall back to /var/run/docker.sock if Podman socket isn't running.
-    // This keeps the bind-mount spec valid; the socket will 404 but nothing
-    // inside the container will crash at create time.
-    return "/var/run/docker.sock";
+    return nativeContainerLaunchArguments().resolveHostSocketPath();
 }
 
 // === Container Name ===

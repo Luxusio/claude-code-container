@@ -27,6 +27,7 @@ import { join } from "path";
 import { parseRuntimeOverride, type RuntimeName } from "./domain/container-runtime.js";
 import { createContainerRuntimeSelector } from "./application/container-runtime-selection.js";
 import { createDockerEndpointResolver } from "./application/docker-endpoint-selection.js";
+import { createContainerMountArguments } from "./application/container-launch-arguments.js";
 
 export type { RuntimeName } from "./domain/container-runtime.js";
 
@@ -423,13 +424,22 @@ export function isSelinuxEnforcing(): boolean {
  * Whether bind-mounts need the `:Z` (private relabel) suffix.
  * Gated by CCC_SELINUX_RELABEL=auto|force|off (default auto = detect).
  */
+function nativeContainerMountArguments() {
+    return createContainerMountArguments({
+        readSelinuxRelabelMode: () => process.env.CCC_SELINUX_RELABEL,
+        readRuntimeName: () => runtimeCli(),
+        observeSelinuxEnforcing: () => isSelinuxEnforcing(),
+        readContainerMarker: () => process.env.container,
+        isVitestProcess: isVitestProcess,
+        observeCurrentContainerMounts: () => getCurrentContainerMounts(),
+        captureHostJoin: () => join,
+        readRuntimeInfo: () => getRuntimeInfo(),
+        readPodmanCgroups: () => process.env.CCC_PODMAN_CGROUPS,
+    });
+}
+
 export function needsSelinuxRelabel(): boolean {
-    const mode = (process.env.CCC_SELINUX_RELABEL ?? "auto").toLowerCase();
-    if (mode === "off") return false;
-    if (mode === "force") return true;
-    // auto: only on podman + SELinux enforcing. Docker manages labels itself.
-    if (runtimeCli() !== "podman") return false;
-    return isSelinuxEnforcing();
+    return nativeContainerMountArguments().needsSelinuxRelabel();
 }
 
 /**
@@ -444,47 +454,9 @@ export function bindMountArgs(
     containerPath: string,
     opts: { readonly?: boolean; sourceNamespace?: "client" | "daemon" } = {},
 ): string[] {
-    const suffixes: string[] = [];
-    if (opts.readonly) suffixes.push("ro");
-    const translatedHostPath = opts.sourceNamespace === "daemon"
-        ? hostPath
-        : translateCurrentContainerPath(hostPath);
-    const isHostPath = translatedHostPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(translatedHostPath);
-    if (isHostPath && needsSelinuxRelabel()) {
-        suffixes.push("Z");
-    }
-    const suffix = suffixes.length > 0 ? `:${suffixes.join(",")}` : "";
-    return ["-v", `${translatedHostPath}:${containerPath}${suffix}`];
+    return nativeContainerMountArguments().bindMountArgs(hostPath, containerPath, opts);
 }
 
-function translateCurrentContainerPath(hostPath: string): string {
-    if (!hostPath.startsWith("/")) return hostPath;
-    if (process.env.container !== "docker" || isVitestProcess()) return hostPath;
-    if (runtimeCli() !== "docker") return hostPath;
-
-    const mounts = getCurrentContainerMounts();
-    let best: { source: string; destination: string } | null = null;
-    for (const mount of mounts) {
-        if (hostPath === mount.destination || hostPath.startsWith(`${mount.destination}/`)) {
-            if (!best || mount.destination.length > best.destination.length) {
-                best = mount;
-            }
-        }
-    }
-    if (!best) return hostPath;
-
-    const source = normalizeDockerMountSource(best.source);
-    const rel = hostPath.slice(best.destination.length).replace(/^\/+/, "");
-    return rel ? join(source, rel) : source;
-}
-
-function normalizeDockerMountSource(source: string): string {
-    const match = source.match(/^([A-Za-z]):[\\/](.*)$/);
-    if (!match) return source;
-    const drive = match[1].toLowerCase();
-    const rest = match[2].replace(/\\/g, "/");
-    return `/run/desktop/mnt/host/${drive}/${rest}`;
-}
 
 function isVitestProcess(): boolean {
     return Object.keys(process.env).some((key) => key === "VITEST" || key.startsWith("VITEST_"));
@@ -539,20 +511,7 @@ function getCurrentContainerMounts(): Array<{ source: string; destination: strin
  * Requires Podman 4.3+ for the `:uid=,gid=` syntax (released Nov 2022).
  */
 export function runtimeExtraRunArgs(): string[] {
-    const info = getRuntimeInfo();
-    const extras: string[] = [];
-    const podmanCgroups = (process.env.CCC_PODMAN_CGROUPS ?? "").toLowerCase();
-    if (
-        info.runtime === "podman"
-        && !info.remote
-        && (podmanCgroups === "disabled" || (podmanCgroups !== "enabled" && process.env.container === "docker"))
-    ) {
-        extras.push("--cgroups=disabled");
-    }
-    if (info.flavor === "podman-rootless" || info.flavor === "podman-machine") {
-        extras.push("--userns=keep-id:uid=1000,gid=1000");
-    }
-    return extras;
+    return nativeContainerMountArguments().runtimeExtraRunArgs();
 }
 
 /**
