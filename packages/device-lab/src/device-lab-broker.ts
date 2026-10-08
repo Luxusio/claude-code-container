@@ -1,4 +1,10 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createFocusedInventory, createOwnerInventory } from "./device-lab/application/broker-observation-inventory.js";
+import { createLeaseDatePolicy, createLeaseDirectoryScan, createLeaseList, createPhysicalComposite } from "./device-lab/application/broker-observation-leases.js";
+import { createAppiumObservations } from "./device-lab/application/broker-observation-appium.js";
+import { createBrokerService, createBrokerStatus } from "./device-lab/application/broker-observation-status.js";
+import { createAndroidPreviewPortAllocation, createLifecyclePreview } from "./device-lab/application/broker-observation-command-plan.js";
+import { hyperVPreviewConflicts } from "./device-lab/domain/broker-observation-command-plan.js";
 import { linuxWindowListCommand, windowsWindowListCommand, parseGuestWindowList, linuxFocusWindowCommand, windowsFocusWindowCommand, parseGuestFocusWindow } from "./device-lab/broker/hyper-v/window-list.js";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
@@ -2921,65 +2927,39 @@ export async function invokeHostDeviceBrokerOwnerRpc(
 export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
     const normalized = normalizeBrokerOptions(options);
     const ownerId = options.ownerId || deviceBrokerOwnerId(normalized.cwd, options.profile);
-    const root = brokerRoot();
-    const service = deviceBrokerServicePlan(normalized);
-    const serviceOwner = readServiceOwner();
-    const runtimeFile = brokerRuntimeFile();
-    const runtime = readHostBrokerRuntime();
+    const facts = observeBrokerStatus(ownerId, normalized);
     return {
-        name: DEVICE_BROKER_NAME,
-        version: DEVICE_LAB_VERSION,
-        host: normalized.host,
-        port: normalized.port,
-        url: `http://${normalized.host}:${normalized.port}`,
-        ownerId,
-        hostId: hostname(),
-        mode: "host-broker-daemon",
-        lazy: true,
-        process: {
-            pid: process.pid,
-            startToken: readDeviceRuntimeProcessStartToken(process.pid),
-        },
+        name: DEVICE_BROKER_NAME, version: DEVICE_LAB_VERSION,
+        ...facts.address, ownerId, hostId: facts.hostId, mode: "host-broker-daemon", lazy: true,
+        process: facts.currentProcess,
         startupPolicy: "host ccc auto-starts the broker for containers; daemon startup never starts device providers",
-        startedAt: normalized.startedAt,
-        state: {
-            root,
-            ownerRoot: join(root, "owners", ownerId),
-            brokerRoot: join(root, "broker"),
-            locksRoot: join(root, "broker", "locks"),
-            logsRoot: join(root, "broker", "logs"),
-            runtimeFile,
-            rootExists: existsSync(root),
-        },
-        runtime: {
-            file: runtimeFile,
-            present: runtime !== null,
-            metadata: runtime,
-        },
-        containerContract: {
-            environmentRequired: false,
-            ownerResolution: "host-broker-resolve",
-            deviceStateMounted: existsSync(root),
-        },
-        persistence: deviceBrokerPersistence(ownerId),
-        serviceManager: {
-            supported: service.supported,
-            platform: service.platform,
-            manager: service.manager,
-            serviceName: service.serviceName,
-            definitionPath: service.definitionPath,
-            command: service.command,
-            diagnostics: service.diagnostics,
-            owner: serviceOwner,
-            ownedByCurrentOwner: serviceOwner?.ownerId === ownerId,
-            actions: ["status"],
-        },
-        // The gate of the process answering, so read it from the broker's /status: a CLI
-        // process has its own. Bounded to a state, a closed code and a timestamp.
-        hyperVElevationGate: hyperVElevationGateStatus(),
-        protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
+        startedAt: facts.startedAt,
+        state: { ...facts.paths, runtimeFile: facts.runtimeFile, rootExists: facts.rootExists },
+        runtime: facts.runtimeFacts,
+        containerContract: { environmentRequired: false, ownerResolution: "host-broker-resolve", deviceStateMounted: facts.deviceStateMounted },
+        persistence: facts.persistence,
+        serviceManager: { ...facts.serviceFacts, owner: facts.serviceOwner, ownedByCurrentOwner: facts.ownedByCurrentOwner, actions: ["status"] },
+        hyperVElevationGate: facts.elevation, protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
     };
 }
+
+const observeBrokerStatus = createBrokerStatus({
+    root: () => brokerRoot(),
+    service: (normalized: NormalizedBrokerOptions) => deviceBrokerServicePlan(normalized),
+    serviceOwner: () => readServiceOwner(),
+    runtimeFile: () => brokerRuntimeFile(),
+    runtime: () => readHostBrokerRuntime(),
+    address: normalized => ({ host: normalized.host, port: normalized.port, url: `http://${normalized.host}:${normalized.port}` }),
+    hostId: () => hostname(),
+    pid: () => process.pid,
+    startToken: () => readDeviceRuntimeProcessStartToken(process.pid),
+    startedAt: normalized => normalized.startedAt,
+    paths: (root, ownerId) => ({ root, ownerRoot: join(root, "owners", ownerId), brokerRoot: join(root, "broker"), locksRoot: join(root, "broker", "locks"), logsRoot: join(root, "broker", "logs") }),
+    exists: root => existsSync(root),
+    persistence: ownerId => deviceBrokerPersistence(ownerId),
+    serviceFacts: service => ({ supported: service.supported, platform: service.platform, manager: service.manager, serviceName: service.serviceName, definitionPath: service.definitionPath, command: service.command, diagnostics: service.diagnostics }),
+    elevation: () => hyperVElevationGateStatus(),
+});
 
 function serviceNameForPlatform(platform: NodeJS.Platform): string {
     if (platform === "darwin") return "com.ccc.device-broker";
@@ -3338,75 +3318,40 @@ function serviceCommandsFor(action: ServiceAction, plan: ServicePlan, normalized
 export function deviceBrokerService(action: string = "status", options: DeviceBrokerOptions & { dryRun?: boolean } = {}) {
     const normalized = normalizeBrokerOptions(options);
     const ownerId = options.ownerId || deviceBrokerOwnerId(normalized.cwd, options.profile);
-    const requested = DEVICE_BROKER_SERVICE_ACTIONS.has(action) ? action as ServiceAction : null;
-    if (!requested) {
-        return {
-            ok: false,
-            error: "invalid-service-action",
-            action,
-            allowed: [...DEVICE_BROKER_SERVICE_ACTIONS],
-        };
+    const observation = observeBrokerService(ownerId, action, { normalized, options });
+    if (observation.kind === "invalid-action") return { ok: false, error: "invalid-service-action", action: observation.action, allowed: observation.allowed };
+    if (observation.kind === "unsupported") {
+        const value = observation.value;
+        return { ok: false, ownerId: value.ownerId, action: value.action, dryRun: value.dryRun,
+            service: value.service, serviceOwner: value.serviceOwner, ownedByCurrentOwner: value.ownedByCurrentOwner,
+            installed: value.installed, running: value.running, results: value.results, changed: value.changed,
+            error: "service-manager-unsupported", diagnostics: value.diagnostics };
     }
-    const plan = deviceBrokerServicePlan(normalized);
-    const commands = serviceCommandsFor(requested, plan, normalized);
-    const dryRun = options.dryRun === true;
-    const serviceOwner = readServiceOwner();
-    const ownedByCurrentOwner = serviceOwner?.ownerId === ownerId;
-    const installedBefore = plan.definitionPath ? existsSync(plan.definitionPath) : serviceOwner ? true : null;
-    if (!plan.supported) {
-        return {
-            ok: false,
-            ownerId,
-            action: requested,
-            dryRun,
-            service: { ...plan, commands },
-            serviceOwner,
-            ownedByCurrentOwner,
-            installed: installedBefore,
-            running: null,
-            results: [],
-            changed: false,
-            error: "service-manager-unsupported",
-            diagnostics: plan.diagnostics,
-        };
+    if (observation.kind === "dry-run") {
+        const value = observation.value;
+        return { ok: true, ownerId: value.ownerId, action: value.action, dryRun: value.dryRun,
+            service: value.service, serviceOwner: value.serviceOwner, ownedByCurrentOwner: value.ownedByCurrentOwner,
+            installed: value.installed, running: value.running, results: value.results, changed: value.changed,
+            diagnostics: value.diagnostics };
     }
-    if (dryRun) {
-        return {
-            ok: true,
-            ownerId,
-            action: requested,
-            dryRun,
-            service: { ...plan, commands },
-            serviceOwner,
-            ownedByCurrentOwner,
-            installed: installedBefore,
-            running: null,
-            results: [],
-            changed: false,
-            diagnostics: plan.diagnostics,
-        };
-    }
-    const results = commands.map((command) => normalized.commandRunner(command, {
-        timeoutMs: normalized.commandTimeoutMs,
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-    }));
-    const running = results.length > 0 ? commandSucceeded(results[0]) : null;
-    return {
-        ok: true,
-        ownerId,
-        action: requested,
-        dryRun,
-        service: { ...plan, commands },
-        serviceOwner,
-        ownedByCurrentOwner,
-        installed: installedBefore,
-        installedBefore,
-        running,
-        results,
-        changed: false,
-        diagnostics: plan.diagnostics,
-    };
+    const value = observation.value;
+    return { ok: true, ownerId: value.ownerId, action: value.action, dryRun: value.dryRun,
+        service: value.service, serviceOwner: value.serviceOwner, ownedByCurrentOwner: value.ownedByCurrentOwner,
+        installed: value.installed, installedBefore: value.installedBefore, running: value.running,
+        results: value.results, changed: value.changed, diagnostics: value.diagnostics };
 }
+
+const observeBrokerService = createBrokerService({
+    plan: (context: { normalized: NormalizedBrokerOptions; options: DeviceBrokerOptions & { dryRun?: boolean } }) => deviceBrokerServicePlan(context.normalized),
+    commands: (action: ServiceAction, plan: ServicePlan, context) => serviceCommandsFor(action, plan, context.normalized),
+    dryRun: context => context.options.dryRun === true,
+    owner: () => readServiceOwner(),
+    installed: plan => existsSync(plan.definitionPath!),
+    query: (context, command: ProviderCommand) => context.normalized.commandRunner(command, { timeoutMs: context.normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+    succeeded: result => commandSucceeded(result),
+    projection: (plan, commands) => ({ ...plan, commands }),
+    diagnostics: plan => plan.diagnostics,
+}, DEVICE_BROKER_SERVICE_ACTIONS);
 
 const BROKER_ERROR_SUMMARY_KEYS = ["ok", "error", "code", "ownerId", "method", "backend", "deviceId", "tool", "status"];
 
@@ -3513,45 +3458,19 @@ function readRequestJson(req: IncomingMessage, limit = DEVICE_BROKER_RPC_BODY_LI
 }
 
 function ownerInventory(ownerId: string, redactSecrets = false) {
-    const root = brokerRoot();
-    const backends = DEVICE_BROKER_BACKEND_STATE_KEYS.map((stateKey) => {
-        const file = join(root, "owners", ownerId, stateKey, "devices.json");
-        if (!existsSync(file)) return { stateKey, devices: [], exists: false };
-        try {
-            const stat = statSync(file);
-            if (stat.size > DEVICE_BROKER_INVENTORY_FILE_LIMIT) {
-                return {
-                    stateKey,
-                    devices: [],
-                    exists: true,
-                    truncated: true,
-                    error: "inventory-file-too-large",
-                    maxBytes: DEVICE_BROKER_INVENTORY_FILE_LIMIT,
-                    bytes: stat.size,
-                };
-            }
-            const devices = readOwnerDeviceStateFile(file, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-            return {
-                stateKey,
-                devices: redactSecrets
-                    ? devices.slice(0, DEVICE_BROKER_INVENTORY_DEVICE_LIMIT).map(redactBrokerDeviceSecrets)
-                    : devices.slice(0, DEVICE_BROKER_INVENTORY_DEVICE_LIMIT),
-                exists: true,
-                truncated: devices.length > DEVICE_BROKER_INVENTORY_DEVICE_LIMIT,
-                totalDevices: devices.length,
-                maxDevices: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT,
-            };
-        } catch (error) {
-            return { stateKey, devices: [], exists: true, error: ownerDeviceStateErrorCode(error) || "inventory-read-failed" };
-        }
-    });
-    return {
-        ownerId,
-        root,
-        ownerRoot: join(root, "owners", ownerId),
-        backends,
-    };
+    return observeOwnerInventory(ownerId, redactSecrets);
 }
+
+const observeOwnerInventory = createOwnerInventory({
+    root: () => brokerRoot(),
+    file: (root, ownerId, stateKey) => join(root, "owners", ownerId, stateKey, "devices.json"),
+    exists: file => existsSync(file),
+    stat: file => statSync(file),
+    read: (file, maxBytes) => readOwnerDeviceStateFile(file, maxBytes),
+    redact: redactBrokerDeviceSecrets,
+    errorCode: error => ownerDeviceStateErrorCode(error),
+    ownerRoot: (root, ownerId) => join(root, "owners", ownerId),
+}, { stateKeys: DEVICE_BROKER_BACKEND_STATE_KEYS, maxBytes: DEVICE_BROKER_INVENTORY_FILE_LIMIT, maxDevices: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT });
 
 async function hostBackends(ownerId: string, normalized: NormalizedBrokerOptions) {
     const adb = providerExecutable("adb", normalized);
@@ -3767,39 +3686,22 @@ function validateDeviceToolParams(params: unknown): DeviceToolParamError | Devic
 }
 
 function invokeDeviceInventory(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions) {
-    const inventory = ownerInventory(ownerId);
-    const backends = parsed.stateKey
-        ? inventory.backends.filter((entry) => entry.stateKey === parsed.stateKey)
-        : inventory.backends;
-    const hostInventory = parsed.backend === "android-device" ? androidHostDeviceInventory(normalized) : null;
-    const creationChoices = parsed.backend === "android-emulator" ? androidCreationChoices({
+    const result = observeFocusedInventory(ownerId, parsed, normalized);
+    return { status: 200, payload: { ok: true, result: { ...result, source: "host-broker-owner-state", startsDevices: false } } };
+}
+
+const observeFocusedInventory = createFocusedInventory<unknown, NormalizedBrokerOptions, ReturnType<typeof androidHostDeviceInventory>, NonNullable<ReturnType<typeof androidCreationChoices>>>({
+    inventory: ownerId => ownerInventory(ownerId),
+    androidHost: normalized => androidHostDeviceInventory(normalized),
+    androidChoices: normalized => androidCreationChoices({
         avdmanager: findAndroidTool("avdmanager", normalized),
         emulator: findAndroidTool("emulator", normalized),
         adb: findAndroidTool("adb", normalized),
     }, androidSdkCandidates(), (executable: string, args: string[], options: { timeout: number; maxBuffer: number }) => normalized.commandRunner({
         mode: "exec", provider: "avdmanager", executable, args,
-    }, { timeoutMs: options.timeout, outputLimit: options.maxBuffer })) : null;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                tool: parsed.tool,
-                backend: parsed.backend,
-                devices: parsed.stateKey ? (backends[0]?.devices || []) : undefined,
-                backends: backends.map((entry) => ({
-                    ...entry,
-                    backend: backendForStateKey(entry.stateKey),
-                })),
-                ...(hostInventory ? { hostDevices: hostInventory.devices, hostInventory } : {}),
-                ...(creationChoices || {}),
-                source: "host-broker-owner-state",
-                startsDevices: false,
-            },
-        },
-    };
-}
+    }, { timeoutMs: options.timeout, outputLimit: options.maxBuffer })),
+    backend: entry => backendForStateKey(entry.stateKey),
+});
 
 type DeviceToolMatch = { stateKey: string; backend: string | null; device: Record<string, unknown> };
 
@@ -6110,42 +6012,20 @@ type AndroidEmulatorPortAllocation =
     | { ok: false; status: number; error: string; allowed?: string; detail?: string };
 
 function resolveAndroidEmulatorCreatePort(ownerId: string, parsed: CommandParamSuccess, additionalUsedPorts: Iterable<number> = []): AndroidEmulatorPortAllocation {
-    const requested = parsed.create?.port;
-    if (requested !== undefined && !validAndroidEmulatorPort(requested)) {
-        return {
-            ok: false,
-            status: 400,
-            error: "invalid-android-emulator-port",
-            allowed: `even integer ${ANDROID_EMULATOR_PORT_MIN}-${ANDROID_EMULATOR_PORT_MAX}`,
-        };
-    }
-    let used: Set<number>;
-    try {
-        used = allocatedAndroidEmulatorPorts();
-    } catch (error) {
-        return {
-            ok: false,
-            status: 503,
-            error: "android-emulator-port-inventory-unavailable",
-            detail: ownerDeviceStateErrorCode(error) || deviceLabProjectEnumerationErrorCode(error) || "android-emulator-port-inventory-read-failed",
-        };
-    }
-    for (const port of additionalUsedPorts) {
-        if (validAndroidEmulatorPort(port)) used.add(port);
-    }
-    if (requested !== undefined) {
-        return used.has(requested)
-            ? { ok: false, status: 409, error: "android-emulator-port-conflict", detail: `port-${requested}-already-allocated` }
-            : { ok: true, port: requested };
-    }
-    const slotCount = ((ANDROID_EMULATOR_PORT_MAX - ANDROID_EMULATOR_PORT_MIN) / 2) + 1;
-    const initialSlot = Number.parseInt(createHash("sha256").update(`${ownerId}\0${parsed.deviceId}`).digest("hex").slice(0, 8), 16) % slotCount;
-    for (let offset = 0; offset < slotCount; offset += 1) {
-        const port = ANDROID_EMULATOR_PORT_MIN + (((initialSlot + offset) % slotCount) * 2);
-        if (!used.has(port)) return { ok: true as const, port };
-    }
-    return { ok: false as const, status: 409, error: "android-emulator-port-pool-exhausted" };
+    const allocation = observeAndroidPreviewPort(ownerId, parsed, additionalUsedPorts);
+    if (allocation.kind === "allocated") return { ok: true, port: allocation.port };
+    if (allocation.kind === "invalid") return { ok: false, status: 400, error: "invalid-android-emulator-port", allowed: `even integer ${ANDROID_EMULATOR_PORT_MIN}-${ANDROID_EMULATOR_PORT_MAX}` };
+    if (allocation.kind === "inventory-failed") return { ok: false, status: 503, error: "android-emulator-port-inventory-unavailable", detail: allocation.detail };
+    if (allocation.kind === "conflict") return { ok: false, status: 409, error: "android-emulator-port-conflict", detail: `port-${allocation.port}-already-allocated` };
+    return { ok: false, status: 409, error: "android-emulator-port-pool-exhausted" };
 }
+
+const observeAndroidPreviewPort = createAndroidPreviewPortAllocation<CommandParamSuccess>({
+    valid: port => validAndroidEmulatorPort(port),
+    allocated: () => allocatedAndroidEmulatorPorts(),
+    inventoryError: error => ownerDeviceStateErrorCode(error) || deviceLabProjectEnumerationErrorCode(error) || "android-emulator-port-inventory-read-failed",
+    seed: (ownerId, parsed) => Number.parseInt(createHash("sha256").update(`${ownerId}\0${parsed.deviceId}`).digest("hex").slice(0, 8), 16),
+}, ANDROID_EMULATOR_PORT_MIN, ANDROID_EMULATOR_PORT_MAX);
 
 function androidEmulatorPortsFromAdbDevices(output: unknown): Set<number> {
     const ports = new Set<number>();
@@ -6471,20 +6351,22 @@ function leaseExpiryFrom(updatedAt: string, ttlMs: number) {
 }
 
 function leaseTtlMs(lease: Record<string, unknown> | null | undefined) {
-    return typeof lease?.ttlMs === "number" && Number.isInteger(lease.ttlMs) && lease.ttlMs > 0
-        ? lease.ttlMs
-        : DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS;
+    return observeLeaseDates.ttlMs(lease);
 }
 
 function leaseExpiresAt(lease: Record<string, unknown>) {
-    if (typeof lease.expiresAt === "string" && !Number.isNaN(Date.parse(lease.expiresAt))) return lease.expiresAt;
-    const updatedAt = typeof lease.updatedAt === "string" && !Number.isNaN(Date.parse(lease.updatedAt)) ? lease.updatedAt : new Date(0).toISOString();
-    return leaseExpiryFrom(updatedAt, leaseTtlMs(lease));
+    return observeLeaseDates.expiresAt(lease);
 }
 
 function leaseExpired(lease: Record<string, unknown>, nowMs = Date.now()) {
-    return Date.parse(leaseExpiresAt(lease)) <= nowMs;
+    return observeLeaseDates.expired(lease, nowMs);
 }
+
+const observeLeaseDates = createLeaseDatePolicy({
+    parse: read => Date.parse(read()),
+    epoch: () => new Date(0).toISOString(),
+    expiryFrom: (updatedAt, ttlMs) => leaseExpiryFrom(updatedAt, ttlMs),
+}, DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS);
 
 function physicalDeviceLeaseMatches(ownerId: string, stateKey: string, deviceId: string, device: unknown) {
     if (!DEVICE_BROKER_PHYSICAL_BACKENDS.has(stateKey) || !device || typeof device !== "object") return false;
@@ -6661,74 +6543,39 @@ function ensurePhysicalLeaseDirectory(backend: string): PhysicalLeaseDirectoryIn
 }
 
 function scanPhysicalLeaseDirectory(backend: string): PhysicalLeaseDirectoryScan {
-    const locksDir = physicalLeaseLocksDir(backend);
-    const inspection = inspectPhysicalLeaseDirectory(backend);
-    if (!inspection.ok) return inspection;
-    if (!inspection.exists) return { ok: true, entries: [] };
-    try {
-        assertDeviceLabPathWithinRoot(brokerRoot(), locksDir, "physical-lease-directory");
-        const directory = opendirSync(locksDir);
-        const entries: Array<{ file: string; hardwareId: string }> = [];
-        let entryCount = 0;
-        try {
-            while (true) {
-                const entry = directory.readSync();
-                if (!entry) break;
-                entryCount += 1;
-                if (entryCount > DEVICE_BROKER_PHYSICAL_LEASE_DIRECTORY_ENTRY_LIMIT) {
-                    return {
-                        ok: false,
-                        status: 507,
-                        payload: {
-                            ok: false,
-                            error: "physical-lease-directory-entry-limit-exceeded",
-                            backend,
-                            limit: DEVICE_BROKER_PHYSICAL_LEASE_DIRECTORY_ENTRY_LIMIT,
-                        },
-                    };
-                }
-                if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-                const encodedHardwareId = entry.name.slice(0, -".json".length);
-                let hardwareId: string;
-                try {
-                    hardwareId = decodeURIComponent(encodedHardwareId);
-                } catch {
-                    continue;
-                }
-                if (!hardwareId || hardwareId.length > 256 || /[\u0000-\u001f]/.test(hardwareId)) continue;
-                if (encodeURIComponent(hardwareId) !== encodedHardwareId) continue;
-                entries.push({ file: join(locksDir, entry.name), hardwareId });
-            }
-        } finally {
-            directory.closeSync();
-        }
-        return { ok: true, entries };
-    } catch (error) {
-        return {
-            ok: false,
-            status: 409,
-            payload: {
-                ok: false,
-                error: "physical-lease-directory-invalid",
-                backend,
-                detail: deviceLabStateFileErrorCode(error) || "physical-lease-directory-read-failed",
-            },
-        };
-    }
+    const scan = observeLeaseDirectory(backend);
+    if (scan.kind === "entries") return { ok: true, entries: scan.entries };
+    if (scan.kind === "native-refusal") return scan.evidence as Extract<PhysicalLeaseDirectoryInspection, { ok: false }>;
+    if (scan.kind === "entry-cap") return { ok: false, status: 507, payload: {
+        ok: false, error: "physical-lease-directory-entry-limit-exceeded", backend: scan.backend, limit: scan.limit,
+    } };
+    return { ok: false, status: 409, payload: {
+        ok: false, error: "physical-lease-directory-invalid", backend: scan.backend, detail: scan.detail,
+    } };
 }
 
+const observeLeaseDirectory = createLeaseDirectoryScan({
+    root: backend => physicalLeaseLocksDir(backend),
+    inspect: backend => inspectPhysicalLeaseDirectory(backend),
+    assertRoot: root => assertDeviceLabPathWithinRoot(brokerRoot(), root, "physical-lease-directory"),
+    open: root => opendirSync(root),
+    entryFile: (root, entry) => join(root, entry.name),
+    errorCode: error => deviceLabStateFileErrorCode(error),
+}, DEVICE_BROKER_PHYSICAL_LEASE_DIRECTORY_ENTRY_LIMIT);
+
 function listPhysicalLeases(ownerId: string, backend: string) {
-    const scan = scanPhysicalLeaseDirectory(backend);
-    if (!scan.ok) return scan;
-    const leases = [];
-    for (const { file, hardwareId } of scan.entries) {
-        const lease = readLeaseFile(file, backend, hardwareId);
-        if (!lease || lease.ownerId !== ownerId) continue;
-        if (leaseExpired(lease)) continue;
-        leases.push({ ...lease, expiresAt: leaseExpiresAt(lease), ttlMs: leaseTtlMs(lease) });
-    }
-    return { ok: true as const, leases };
+    return observePhysicalLeases(ownerId, backend);
 }
+
+const observePhysicalLeases = createLeaseList<string, PhysicalLeaseDirectoryScan>(
+    backend => scanPhysicalLeaseDirectory(backend),
+    {
+        read: (file, backend, hardwareId) => readLeaseFile(file, backend, hardwareId),
+        expired: lease => leaseExpired(lease),
+        expiresAt: lease => leaseExpiresAt(lease),
+        ttlMs: lease => leaseTtlMs(lease),
+    },
+);
 
 function createPhysicalLease(ownerId: string, parsed: LeaseParamSuccess, now: string) {
     return withLeaseExpiry({
@@ -7547,23 +7394,16 @@ async function withPhysicalDeviceOperation(
 function listAttachedPhysicalDevices(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
     const parsed = validateLeaseParams(params, "list");
     if (!parsed.ok) return leaseParamError(parsed);
-    const listed = listPhysicalLeases(ownerId, parsed.backend);
-    if (!listed.ok) return { status: listed.status, payload: listed.payload };
-    const hostInventory = parsed.backend === "android-device" ? androidHostDeviceInventory(normalized) : null;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                devices: readOwnerDevices(ownerId, parsed.backend),
-                leases: listed.leases,
-                ...(hostInventory ? { hostDevices: hostInventory.devices, hostInventory } : {}),
-            },
-        },
-    };
+    const observation = observePhysicalComposite(ownerId, parsed.backend, normalized);
+    if (observation.kind === "lease-refused") return { status: observation.evidence.status, payload: observation.evidence.payload };
+    return { status: 200, payload: { ok: true, result: observation.value } };
 }
+
+const observePhysicalComposite = createPhysicalComposite({
+    leases: (ownerId, backend) => listPhysicalLeases(ownerId, backend),
+    androidHost: (normalized: NormalizedBrokerOptions) => androidHostDeviceInventory(normalized),
+    devices: (ownerId, backend) => readOwnerDevices(ownerId, backend),
+});
 
 function brokerSlug(value: unknown): string {
     return String(value || "")
@@ -12634,236 +12474,49 @@ function redactBrokerCreateSecrets(create: unknown) {
 }
 
 function hyperVCreateConfigurationConflicts(device: Record<string, unknown>, parsed: CommandParamSuccess): string[] {
-    const create = parsed.create || {};
-    const linuxGuest = parsed.backend === "linux-vm";
-    const expected: Record<string, unknown> = {
-        name: String(create.name || parsed.deviceId),
-        // Match resolveHyperVImageForCreate's automatic profile selection for retries.
-        profile: typeof create.profile === "string" ? create.profile : linuxGuest ? "ubuntu-lts" : "windows-server",
-        memoryMb: typeof create.memoryMb === "number" ? create.memoryMb : 4096,
-        cpus: typeof create.cpus === "number" ? create.cpus : 2,
-        networking: create.networking !== false,
-        ...(create.nestedVirtualization === true || device.nestedVirtualization === true
-            ? { nestedVirtualization: create.nestedVirtualization === true } : {}),
-        ...hyperVSecureBootConfiguration(parsed.backend),
-    };
-    if (typeof create.diskMaxBytes === "number") expected.diskMaxBytes = create.diskMaxBytes;
-    if (typeof create.baseImageSha256 === "string") expected.baseImageSha256 = create.baseImageSha256.toLowerCase();
-    if (typeof create.sourceImage === "string") expected.sourceImage = create.sourceImage;
-    return Object.entries(expected)
-        .filter(([key, value]) => device[key] !== value)
-        .map(([key]) => key);
+    return hyperVPreviewConflicts(device, parsed, () => hyperVSecureBootConfiguration(parsed.backend));
 }
 
 function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: NormalizedBrokerOptions, redactSecrets = true) {
     const parsed = validateCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
-    let devices: unknown[];
-    try {
-        devices = readOwnerDevices(ownerId, parsed.stateKey);
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
+    const observation = observeLifecyclePreview(ownerId, parsed, normalized, redactSecrets);
+    if (observation.kind === "state-failed") return ownerDeviceStateFailure(observation.error, { backend: parsed.backend, stateKey: parsed.stateKey });
+    if (observation.kind === "allocation-failed") {
+        const allocation = observation.evidence;
+        return { status: allocation.status, payload: { ok: false, error: allocation.error, ...(allocation.allowed ? { allowed: allocation.allowed } : {}), ...(allocation.detail ? { detail: allocation.detail } : {}), ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
     }
-    const device = devices.find((candidate) => {
-        return candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId;
-    });
-    if (device && isHyperVBackend(parsed.backend) && parsed.command !== "device_create" && parsed.command !== "device_status") {
-        if (!validHyperVIncarnationId(parsed.expectedIncarnationId)) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-required", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
-        }
-        const currentIncarnationId = device && typeof device === "object" && !Array.isArray(device)
-            ? hyperVDeviceIncarnationId(device as Record<string, unknown>)
-            : null;
-        if (currentIncarnationId !== parsed.expectedIncarnationId) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
-        }
-    }
-    if (parsed.command === "device_create") {
-        if (device) {
-            if (isHyperVBackend(parsed.backend)) {
-                const record = device as Record<string, unknown>;
-                const conflicts = hyperVCreateConfigurationConflicts(record, parsed);
-                if (conflicts.length === 0) {
-                    return {
-                        status: 200,
-                        payload: {
-                            ok: true,
-                            result: {
-                                ownerId,
-                                backend: parsed.backend,
-                                stateKey: parsed.stateKey,
-                                command: parsed.command,
-                                deviceId: parsed.deviceId,
-                                device: redactSecrets ? redactHyperVDeviceSecrets(record) : record,
-                                idempotent: true,
-                                providerCommand: null,
-                                execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false },
-                            },
-                        },
-                    };
-                }
-                return {
-                    status: 409,
-                    payload: {
-                        ok: false,
-                        error: "hyper-v-create-configuration-conflict",
-                        ownerId,
-                        backend: parsed.backend,
-                        deviceId: parsed.deviceId,
-                        conflicts,
-                    },
-                };
-            }
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "owner-device-already-exists",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                },
-            };
-        }
-        let effectiveParsed = parsed;
-        if (parsed.backend === "android-emulator") {
-            const allocation = resolveAndroidEmulatorCreatePort(ownerId, parsed);
-            if (!allocation.ok) {
-                return {
-                    status: allocation.status,
-                    payload: {
-                        ok: false,
-                        error: allocation.error,
-                        ...(allocation.allowed ? { allowed: allocation.allowed } : {}),
-                        ...(allocation.detail ? { detail: allocation.detail } : {}),
-                        ownerId,
-                        backend: parsed.backend,
-                        deviceId: parsed.deviceId,
-                    },
-                };
-            }
-            effectiveParsed = { ...parsed, create: { ...(parsed.create || {}), port: allocation.port } };
-        }
-        let plannedDevice: unknown;
-        try {
-            plannedDevice = createOwnerDeviceRecord(ownerId, effectiveParsed);
-            assertOwnerDeviceStateWritable([...devices, plannedDevice], DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-        } catch (error) {
-            return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-        }
-        return {
-            status: 200,
-            payload: {
-                ok: true,
-                result: {
-                    ownerId,
-                    backend: parsed.backend,
-                    stateKey: parsed.stateKey,
-                    command: parsed.command,
-                    deviceId: parsed.deviceId,
-                    force: parsed.force,
-                    dryRun: parsed.dryRun,
-                    device: redactSecrets
-                        ? redactBrokerDeviceSecrets(plannedDevice)
-                        : plannedDevice,
-                    create: redactSecrets && isHyperVBackend(parsed.backend)
-                        ? publicHyperVCreateConfiguration({
-                            ...(effectiveParsed.create || {}),
-                            ...hyperVSecureBootConfiguration(parsed.backend),
-                        })
-                        : redactBrokerCreateSecrets(effectiveParsed.create),
-                    providerCommand: normalized
-                        ? redactSecrets && isHyperVBackend(parsed.backend)
-                            ? { mode: "powershell", provider: "hyper-v" }
-                            : providerCommandForCreate(ownerId, effectiveParsed, normalized)
-                        : null,
-                    execution: {
-                        mode: "planned",
-                        providerExecution: normalized ? "available" : "deferred",
-                        mutatesHost: false,
-                    },
-                },
-            },
-        };
-    }
-    if (!device) {
-        if (isHyperVBackend(parsed.backend) && parsed.command === "device_delete") {
-            return {
-                status: 200,
-                payload: {
-                    ok: true,
-                    result: {
-                        ownerId,
-                        backend: parsed.backend,
-                        stateKey: parsed.stateKey,
-                        command: parsed.command,
-                        deviceId: parsed.deviceId,
-                        device: null,
-                        idempotent: true,
-                        alreadyMissing: true,
-                        providerCommand: null,
-                        execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false },
-                    },
-                },
-            };
-        }
-        return {
-            status: 404,
-            payload: {
-                ok: false,
-                error: "owner-device-not-found",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-            },
-        };
-    }
-    if ((parsed.stateKey === "android-device" || parsed.stateKey === "ios-device") && parsed.command === "device_start") {
-        const record = device as Record<string, unknown>;
-        const leaseMatches = physicalDeviceLeaseMatches(ownerId, parsed.stateKey, parsed.deviceId, record);
-        if (record.status !== "attached" || !leaseMatches) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "physical-device-not-attached",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                    remedy: "attach the physical device before starting it",
-                },
-            };
-        }
-    }
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                command: parsed.command,
-                deviceId: parsed.deviceId,
-                force: parsed.force,
-                dryRun: parsed.dryRun,
-                device: redactSecrets && isHyperVBackend(parsed.backend)
-                    ? redactHyperVDeviceSecrets(device)
-                    : redactSecrets ? redactBrokerDeviceSecrets(device) : device,
-                providerCommand: normalized
-                    ? redactSecrets && isHyperVBackend(parsed.backend)
-                        ? { mode: "powershell", provider: "hyper-v" }
-                        : providerCommandFor(ownerId, parsed, device, normalized)
-                    : null,
-                execution: {
-                    mode: "planned",
-                    providerExecution: normalized ? "available" : "deferred",
-                    mutatesHost: false,
-                },
-            },
-        },
+    if (observation.kind === "incarnation-required" || observation.kind === "incarnation-conflict") return {
+        status: 409, payload: { ok: false, error: observation.kind === "incarnation-required" ? "hyper-v-incarnation-required" : "hyper-v-incarnation-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId },
     };
+    if (observation.kind === "configuration-conflict") return { status: 409, payload: { ok: false, error: "hyper-v-create-configuration-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, conflicts: observation.conflicts } };
+    if (observation.kind === "already-exists") return { status: 409, payload: { ok: false, error: "owner-device-already-exists", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+    if (observation.kind === "not-found") return { status: 404, payload: { ok: false, error: "owner-device-not-found", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+    if (observation.kind === "not-attached") return { status: 409, payload: { ok: false, error: "physical-device-not-attached", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, remedy: "attach the physical device before starting it" } };
+    if (observation.kind === "equivalent-create") return { status: 200, payload: { ok: true, result: { ...observation.value, idempotent: true, providerCommand: null, execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false } } } };
+    if (observation.kind === "missing-delete") return { status: 200, payload: { ok: true, result: { ...observation.value, device: null, idempotent: true, alreadyMissing: true, providerCommand: null, execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false } } } };
+    const { providerPlan, providerAvailable, ...value } = observation.value;
+    return { status: 200, payload: { ok: true, result: { ...value, providerCommand: providerPlan, execution: { mode: "planned", providerExecution: providerAvailable ? "available" : "deferred", mutatesHost: false } } } };
 }
+
+const observeLifecyclePreview = createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, ReturnType<typeof redactBrokerDeviceSecrets>, ReturnType<typeof redactBrokerCreateSecrets> | ReturnType<typeof publicHyperVCreateConfiguration>, ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | { mode: string; provider: string }, AndroidEmulatorPortAllocation>({
+    read: (ownerId, parsed: CommandParamSuccess) => readOwnerDevices(ownerId, parsed.stateKey),
+    hyperV: parsed => isHyperVBackend(parsed.backend),
+    validIncarnation: parsed => validHyperVIncarnationId(parsed.expectedIncarnationId),
+    incarnation: device => hyperVDeviceIncarnationId(device),
+    conflicts: (device, parsed) => hyperVCreateConfigurationConflicts(device, parsed),
+    androidPort: (ownerId, parsed) => resolveAndroidEmulatorCreatePort(ownerId, parsed),
+    createDefinition: (ownerId, parsed) => createOwnerDeviceRecord(ownerId, parsed),
+    assertWritable: read => assertOwnerDeviceStateWritable(read(), DEVICE_BROKER_INVENTORY_FILE_LIMIT),
+    redactDevice: device => redactBrokerDeviceSecrets(device),
+    redactHyperVDevice: device => redactHyperVDeviceSecrets(device),
+    redactCreate: parsed => redactBrokerCreateSecrets(parsed.create),
+    publicHyperVCreate: (effective, original) => publicHyperVCreateConfiguration({ ...(effective.create || {}), ...hyperVSecureBootConfiguration(original.backend) }),
+    maskedHyperVPlan: () => ({ mode: "powershell", provider: "hyper-v" }),
+    createPlan: (ownerId, parsed, normalized: NormalizedBrokerOptions) => providerCommandForCreate(ownerId, parsed, normalized),
+    existingPlan: (ownerId, parsed, device, normalized) => providerCommandFor(ownerId, parsed, device, normalized),
+    attachmentMatches: (ownerId, parsed, device) => physicalDeviceLeaseMatches(ownerId, parsed.stateKey, parsed.deviceId, device),
+});
 
 async function lifecycleCommandInvokeUnlocked(
     ownerId: string,
@@ -15513,66 +15166,22 @@ function ownerDeviceNotFound(ownerId: string, backend: string, deviceId: string)
 function appiumSessionStatus(ownerId: string, params: unknown) {
     const parsed = validateAppiumParams(params, "status");
     if (!parsed.ok) return appiumParamError(parsed);
-    let devices: unknown[];
-    try {
-        devices = readOwnerDevices(ownerId, parsed.stateKey);
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
-    if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const appium = device && typeof device === "object" ? (device as { appium?: unknown }).appium ?? null : null;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                device,
-                appium,
-                authority: "host-broker",
-            },
-        },
-    };
+    const observation = observeAppium.status(ownerId, parsed);
+    if (observation.kind === "read-failed") return ownerDeviceStateFailure(observation.error, { backend: parsed.backend, stateKey: parsed.stateKey });
+    if (observation.kind === "not-found") return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
+    return { status: 200, payload: { ok: true, result: { ...observation.value, authority: "host-broker" } } };
 }
 
 function appiumSessionList(ownerId: string, params: unknown) {
     const parsed = validateAppiumListParams(params);
     if (!parsed.ok) return appiumParamError(parsed);
-    let devices: unknown[];
-    try {
-        devices = readOwnerDevices(ownerId, parsed.stateKey);
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    const sessions = devices
-        .filter((device) => device && typeof device === "object")
-        .map((device) => {
-            const record = device as Record<string, unknown>;
-            return {
-                deviceId: record.id,
-                status: record.status ?? null,
-                appium: record.appium ?? null,
-            };
-        })
-        .filter((session) => typeof session.deviceId === "string");
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                authority: "host-broker",
-                sessions,
-            },
-        },
-    };
+    const observation = observeAppium.list(ownerId, parsed);
+    if (observation.kind === "read-failed") return ownerDeviceStateFailure(observation.error, { backend: parsed.backend, stateKey: parsed.stateKey });
+    const { sessions, ...value } = observation.value;
+    return { status: 200, payload: { ok: true, result: { ...value, authority: "host-broker", sessions } } };
 }
+
+const observeAppium = createAppiumObservations({ read: (ownerId, stateKey) => readOwnerDevices(ownerId, stateKey) });
 
 function appiumLiveRuntimeMetadataConflict(ownerId: string, parsed: AppiumParamSuccess, appium: unknown, normalized: NormalizedBrokerOptions): BrokerRpcResult | null {
     if (!liveBrokerOwnedAppiumRuntime(appium, normalized)) return null;
