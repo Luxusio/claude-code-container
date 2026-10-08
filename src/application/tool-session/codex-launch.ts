@@ -1,4 +1,5 @@
 import { interactiveCommand, type CodexLaunchPreparation } from "../../domain/tool-session/codex-launch.js";
+import { containerEngineFailureHint } from "../../domain/container-runtime.js";
 import type { CodexLaunchPorts } from "../../ports/tool-session/codex-launch.js";
 
 export function createCodexLaunchPreparation<Start>(ports: CodexLaunchPorts<Start>) {
@@ -7,18 +8,22 @@ export function createCodexLaunchPreparation<Start>(ports: CodexLaunchPorts<Star
         const unchanged = { ok: true as const, command: original };
         const interactive = interactiveCommand(command);
         if (!interactive) return unchanged;
+        const failure = (error: string, status = 1): CodexLaunchPreparation => ({ ok: false, command: original, status, error });
         try {
             const executable = ports.probeDaemonExecutable();
+            const engineFailure = executable.status !== 0 ? containerEngineFailureHint(executable.stderr) : undefined;
+            if (engineFailure) return failure(engineFailure);
             if (executable.error || executable.signal || executable.status !== 1
                 || executable.stdout !== "ccc-codex-daemon-missing\n" || executable.stderr !== "") return unchanged;
         } catch {
             return unchanged;
         }
-        const failure = (error: string, status = 1): CodexLaunchPreparation => ({ ok: false, command: original, status, error });
         const start = ports.prepareStart();
         let help;
         try {
             help = ports.probeDaemonStartHelp(start);
+            const engineFailure = help.status !== 0 ? containerEngineFailureHint(help.stderr) : undefined;
+            if (engineFailure) return failure(engineFailure);
         } catch {
             return unchanged;
         }

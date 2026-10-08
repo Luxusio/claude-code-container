@@ -58,6 +58,21 @@ function prepare(command: string[], mock: ReturnType<typeof runner>) {
 }
 
 describe("non-destructive Codex launch", () => {
+    it("refuses a Docker Desktop exec-inspect 500 without another daemon or user exec", () => {
+        const mock = runner(probe(1, "", { stderr: "request returned 500 Internal Server Error for API route and version http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.56/exec/123/json, check if the server supports the requested api version" }));
+        const result = prepare(["codex", bypass], mock);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("runtime failure must stop launch");
+        expect(result.error).toContain("Container engine is unavailable");
+        expect(result.command).toEqual(["codex", bypass]);
+        expect(mock).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops after a known engine failure while checking daemon help", () => {
+        const mock = runner(missingDaemon(), probe(1, "", { stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" }));
+        expect(prepare(["codex", bypass], mock).ok).toBe(false);
+        expect(mock).toHaveBeenCalledTimes(2);
+    });
     it.each([
         ["codex"],
         ["codex", bypass],

@@ -29,6 +29,7 @@ import { createContainerSessionHandoff } from "./application/container-session-h
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
+import { containerEngineFailureHint, ContainerEngineUnavailableError } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
 import { createOrderedCodexConfigPreparation } from "./application/credentials/codex-config-preparation.js";
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
@@ -287,13 +288,18 @@ function combineLiveSourceProof(
 }
 
 export function readDirectoryMountMarker(containerId: string, markerPath: string) {
-    const options = { encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
+    const options = { encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], timeout: 5000 };
     const result = spawnSync(runtimeCli(), ["exec", containerId, "cat", markerPath], options);
+    const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
+    if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
     // Only this generated, non-secret challenge may need traversal through a
     // host-owned 0700 SSH directory. Never read keys as part of mount proof.
-    if ((result.error || result.status !== 0)
+    if (!result.error && !result.signal && result.status !== null && result.status !== 0
         && /^\/home\/ccc\/\.ssh\/\.ccc-mount-identity-[a-f0-9]{32}$/.test(markerPath)) {
-        return spawnSync(runtimeCli(), ["exec", "--user", "root", containerId, "cat", markerPath], options);
+        const elevated = spawnSync(runtimeCli(), ["exec", "--user", "root", containerId, "cat", markerPath], options);
+        const engineFailure = elevated.status !== 0 ? containerEngineFailureHint(elevated.stderr) : undefined;
+        if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
+        return elevated;
     }
     return result;
 }
@@ -352,8 +358,11 @@ function proveContainerSeesCurrentBindSource(
                     encoding: null,
                     stdio: ["pipe", "pipe", "pipe"],
                     maxBuffer: 1024 * 1024 + 1,
+                    timeout: 5000,
                 },
             );
+            const engineFailure = result.status !== 0 ? containerEngineFailureHint(Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr) : undefined;
+            if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
             let containerExecReady = false;
             if (result.error || result.status !== 0) {
                 session.containerExecReady ??= canExecContainer(containerId, 200);
@@ -378,7 +387,8 @@ function proveContainerSeesCurrentBindSource(
         } else {
             verification = { kind: "mismatch", reason: `bind source type changed for ${containerPath}` };
         }
-    } catch {
+    } catch (error) {
+        if (error instanceof ContainerEngineUnavailableError) throw error;
         verification = {
             kind: "retryable",
             reason: `bind source proof failed for ${containerPath}`,
@@ -1205,7 +1215,7 @@ export function getContainerIdentity(containerName: string): ContainerIdentity |
     const result = spawnSync(
         runtimeCli(),
         ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
     );
     if (result.error || result.status !== 0) return null;
     const [containerId, running, ...extra] = (result.stdout ?? "").trim().split("|");
@@ -1261,7 +1271,8 @@ export function getManagedProjectContainerIdentity(
             }
         }
         return { containerId: inspected.Id, running: inspected.State.Running };
-    } catch {
+    } catch (error) {
+        if (error instanceof ContainerEngineUnavailableError) throw error;
         return null;
     }
 }
@@ -1322,7 +1333,7 @@ function getListedContainerId(containerName: string): { known: boolean; containe
     const result = spawnSync(
         runtimeCli(),
         ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
     );
     if (result.error || result.status !== 0) return { known: false, containerId: null };
     const ids = (result.stdout ?? "").trim().split(/\s+/).filter(Boolean);
@@ -1566,8 +1577,10 @@ function inspectContainerJsonOnce(containerId: string): Record<string, unknown> 
     const result = spawnSync(
         runtimeCli(),
         ["inspect", "-f", "{{json .}}", containerId],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
     );
+    const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
+    if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
     if (result.error || result.status !== 0) return null;
     try {
         const inspected = JSON.parse((result.stdout ?? "").trim()) as unknown;
@@ -2037,7 +2050,8 @@ function containerMatchesRunContract(
             if (Array.isArray(groupAdd) && groupAdd.length > 0) return failContract("stale group-add on unsupported config");
         }
         return true;
-    } catch {
+    } catch (error) {
+        if (error instanceof ContainerEngineUnavailableError) throw error;
         reportMismatch("container contract inspection failed");
         return null;
     }
@@ -2130,7 +2144,8 @@ function containerRunContractIsSafeToDefer(
             return unsafe("stale VM device or group on unsupported config");
         }
         return true;
-    } catch {
+    } catch (error) {
+        if (error instanceof ContainerEngineUnavailableError) throw error;
         return unsafe("container contract inspection failed");
     }
 }

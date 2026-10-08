@@ -47,12 +47,18 @@ describe("complete Codex launch operation", () => {
         const bad = ["codex"]; Object.defineProperty(bad, Symbol.iterator, { value() { throw sentinel; } });
         expect(failure(() => f.app.prepare(bad))).toBe(sentinel);
     });
-    it("swallows the help call but lets help observation failure escape", () => {
+    it("keeps transport-probe observation failures inside the help catch", () => {
         const f = fixture(), sentinel = Symbol("help");
         Object.defineProperty(f.ports, "probeDaemonStartHelp", { value() { throw sentinel; } });
         expect(f.app.prepare(["codex"])).toEqual({ ok: true, command: ["codex"] });
         const g = fixture(); Object.defineProperty(g.state.help, "status", { get() { throw sentinel; } });
-        expect(failure(() => g.app.prepare(["codex"]))).toBe(sentinel); expect(g.calls).toEqual(["executable", "bind", "help"]);
+        expect(g.app.prepare(["codex"])).toEqual({ ok: true, command: ["codex"] }); expect(g.calls).toEqual(["executable", "bind", "help"]);
+    });
+    it.each(["executable", "help"] as const)("stops on a known engine failure during %s without starting the daemon", stage => {
+        const f = fixture();
+        f.state[stage] = success({ status: 1, stderr: "request returned 500 Internal Server Error for API route and version http://engine/exec/id/json" });
+        expect(f.app.prepare(["codex"])).toMatchObject({ ok: false, status: 1, error: expect.stringContaining("Container engine is unavailable") });
+        expect(f.calls).toEqual(stage === "executable" ? ["executable"] : ["executable", "bind", "help"]);
     });
     it("retains unsupported profile refusal after the positive help gate", () => {
         const f = fixture(); expect(f.app.prepare(["codex", "--profile", "named"])).toMatchObject({ ok: false, status: 1 });
@@ -90,6 +96,6 @@ describe("complete Codex launch operation", () => {
             get error() { reads.push("error"); return undefined; }, get signal() { reads.push("signal"); return null; },
             get status() { reads.push("status"); return 1; }, get stdout() { reads.push("stdout"); return "ccc-codex-daemon-missing\n"; }, get stderr() { reads.push("stderr"); return ""; },
         };
-        f.app.prepare(["codex"]); expect(reads).toEqual(["error", "signal", "status", "stdout", "stderr"]);
+        f.app.prepare(["codex"]); expect(reads).toEqual(["status", "stderr", "error", "signal", "status", "stdout", "stderr"]);
     });
 });

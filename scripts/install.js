@@ -19,6 +19,8 @@ if (!powershellModule) throw new Error("CCC provider runtime is missing; reinsta
 const { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } = await import(pathToFileURL(powershellModule).href);
 const distFile = join(projectRoot, "dist", "index.js");
 const isWindows = process.platform === "win32";
+const runtimeProbeTimeout = 5000;
+const imageBuildTimeout = 20 * 60 * 1000;
 
 function getInstallDir() {
     if (isWindows) {
@@ -73,7 +75,7 @@ function detectRuntime() {
     const env = process.env.CCC_RUNTIME;
     if (env === "docker" || env === "podman") return env;
     for (const name of ["podman", "docker"]) {
-        const r = spawnSync(name, ["--version"], { encoding: "utf-8" });
+        const r = spawnSync(name, ["--version"], { encoding: "utf-8", timeout: runtimeProbeTimeout });
         if (r.status === 0) return name;
     }
     return null;
@@ -86,7 +88,7 @@ function getImageHash(runtime) {
             const result = spawnSync(runtime, [
                 "inspect", "ccc",
                 "--format", `{{index .Config.Labels "${label}"}}`
-            ], { encoding: "utf-8" });
+            ], { encoding: "utf-8", timeout: runtimeProbeTimeout });
             if (result.status === 0 && result.stdout.trim()) {
                 return result.stdout.trim();
             }
@@ -107,7 +109,7 @@ function buildImage() {
     if (!runtime) {
         console.log("No container runtime (podman or docker) detected. Skipping image build.");
         console.log("Install podman or docker, then run 'ccc' to auto-pull/build.");
-        return;
+        return { status: "skipped", reason: "no runtime detected" };
     }
     console.log(`Using container runtime: ${runtime}`);
 
@@ -115,7 +117,7 @@ function buildImage() {
     const imageHash = getImageHash(runtime);
     if (currentHash === imageHash) {
         console.log(`Container image up to date (hash: ${currentHash})`);
-        return;
+        return { status: "ready" };
     }
     console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
     console.log(`Rebuilding container image with ${runtime}...`);
@@ -125,13 +127,17 @@ function buildImage() {
             buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
         }
         buildArgs.push(".");
-        const buildResult = spawnSync(runtime, buildArgs, { cwd: projectRoot, stdio: "inherit" });
+        const buildResult = spawnSync(runtime, buildArgs, { cwd: projectRoot, stdio: "inherit", timeout: imageBuildTimeout });
+        if (buildResult.error) throw buildResult.error;
+        if (buildResult.signal) throw new Error(`${runtime} build terminated by ${buildResult.signal}`);
         if (buildResult.status !== 0) {
-            throw new Error(`${runtime} build exited with code ${buildResult.status}`);
+            throw new Error(`${runtime} build ${buildResult.status === null ? "ended without an exit code" : `exited with code ${buildResult.status}`}`);
         }
         console.log("Container image built.");
+        return { status: "ready" };
     } catch (e) {
         console.error(`Failed to build image with ${runtime}:`, e.message);
+        return { status: "failed" };
     }
 }
 
@@ -305,11 +311,18 @@ function linkBinary() {
     }
 }
 
-function install() {
+function install({ skipImage = false } = {}) {
     build();
-    buildImage();
+    const image = skipImage ? { status: "skipped", reason: "--skip-image" } : buildImage();
     linkBinary();
-    console.log("\nDone! Run 'ccc --help' to verify.");
+    console.log("\nCLI installed. Run 'ccc --help' to verify.");
+    if (image.status === "ready") {
+        console.log("Container image ready.");
+    } else if (image.status === "failed") {
+        console.log("Container image build failed; CLI installation succeeded. Retry the image build when the container runtime is available.");
+    } else {
+        console.log(`Container image build skipped (${image.reason}).`);
+    }
 }
 
 function postinstall() {
@@ -379,6 +392,6 @@ if (invokedPath && (isWindows ? invokedPath.toLowerCase() === modulePath.toLower
     } else if (args.includes("--postinstall")) {
         postinstall();
     } else {
-        install();
+        install({ skipImage: args.includes("--skip-image") });
     }
 }
