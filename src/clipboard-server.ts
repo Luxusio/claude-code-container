@@ -33,13 +33,35 @@ import { clipboardPortMayHaveBindUsers } from "./clipboard-bind-users.js";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
 
+import { createClipboardSnapshotReader, createClipboardSnapshotState, buildImageFileClipboardFallbackFromPaths as buildImageFileFallback } from "./application/clipboard/snapshot.js";
+import { createClipboardTextWriter } from "./application/clipboard/text-write.js";
+import { createClipboardServerLifecycle } from "./application/clipboard/server-lifecycle.js";
+import { CACHE_TTL_MS, shouldReuseClipboardCache, buildImageMimeReadOrder, isSupportedImageTarget, type ClipboardPlatform, type ClipboardSnapshot as PolicyClipboardSnapshot } from "./domain/clipboard/snapshot.js";
+import { MAX_CLIPBOARD_TEXT_BYTES, CLIPBOARD_WRITE_TIMEOUT_MS } from "./domain/clipboard/text-write.js";
+export { CACHE_TTL_MS, shouldReuseClipboardCache, buildImageMimeReadOrder, MAX_CLIPBOARD_TEXT_BYTES };
+export type { ClipboardPlatform };
+
 // === Version (for auto-restart on upgrade) ===
-// Uses content hash of the compiled server file so ANY code change triggers restart
+// Fixed compiled policy closure preserves upgrade detection after application extraction.
 function getServerHash(): string {
     try {
-        const __fn = fileURLToPath(import.meta.url);
-        const content = readFileSync(__fn, "utf-8");
-        return createHash("sha256").update(content).digest("hex").slice(0, 12);
+        const directory = dirname(fileURLToPath(import.meta.url));
+        const files = [
+            "clipboard-server.js",
+            "domain/clipboard/snapshot.js",
+            "domain/clipboard/text-write.js",
+            "domain/clipboard/server-lifecycle.js",
+            "application/clipboard/snapshot.js",
+            "application/clipboard/text-write.js",
+            "application/clipboard/server-lifecycle.js",
+        ];
+        const hash = createHash("sha256").update("ccc-clipboard-policy-v1\0");
+        for (const file of files) {
+            const content = readFileSync(join(directory, file), "utf-8");
+            hash.update(file).update("\0").update(String(Buffer.byteLength(content, "utf8")))
+                .update("\0").update(content).update("\0");
+        }
+        return hash.digest("hex").slice(0, 12);
     } catch { return "unknown"; }
 }
 const SERVER_VERSION = getServerHash();
@@ -50,15 +72,14 @@ const SERVER_VERSION = getServerHash();
 export const CLIPBOARD_SERVER_ORPHAN_GRACE_MS = 15000;
 const CLIPBOARD_SERVER_ORPHAN_CHECK_INTERVAL_MS = 5000;
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
-const STARTUP_POLL_INTERVAL_MS = 100;
-const STARTUP_POLL_TIMEOUT_MS = 5000;
+
+
 const SHUTDOWN_TIMEOUT_MS = 2000;
-const UPGRADE_SHUTDOWN_GRACE_MS = 3500;
-const STARTUP_LOCK_TIMEOUT_MS = HEALTH_CHECK_TIMEOUT_MS + SHUTDOWN_TIMEOUT_MS
-    + UPGRADE_SHUTDOWN_GRACE_MS + STARTUP_POLL_TIMEOUT_MS + 1000;
+
+
 const PS_MARKER = "<<<CCC_CB_DONE>>>";
-export const MAX_CLIPBOARD_TEXT_BYTES = 1048576;
-const CLIPBOARD_WRITE_TIMEOUT_MS = 5000;
+
+
 
 // === Security Helpers ===
 function safeCompare(a: string, b: string): boolean {
@@ -68,7 +89,7 @@ function safeCompare(a: string, b: string): boolean {
 }
 
 // === Platform Detection ===
-export type ClipboardPlatform = "darwin" | "linux-x11" | "linux-wayland" | "wsl" | "windows" | "unsupported";
+
 
 function detectPlatform(): ClipboardPlatform {
     const plat = platform();
@@ -126,11 +147,8 @@ function canRunPowerShellExe(): boolean {
 }
 
 /** Write text as stdin data, never as shell or PowerShell source. */
-export async function writeClipboardText(text: string, plat: ClipboardPlatform): Promise<void> {
-    const bytes = Buffer.from(text, "utf8");
-    if (bytes.length > MAX_CLIPBOARD_TEXT_BYTES || text.includes("\0") || bytes.toString("utf8") !== text) {
-        throw new Error("Invalid clipboard text");
-    }
+interface PreparedClipboardTextWriter { command: string; args: string[]; input: Buffer }
+function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): PreparedClipboardTextWriter {
     let command: string;
     let args: string[];
     let input = bytes;
@@ -168,40 +186,7 @@ export async function writeClipboardText(text: string, plat: ClipboardPlatform):
             throw new Error("Clipboard writer unavailable");
     }
 
-    invalidateClipboardCache();
-    try {
-        await new Promise<void>((resolve, reject) => {
-            const child = spawn(command, args, {
-                stdio: ["pipe", "ignore", "ignore"],
-                windowsHide: true,
-                ...(plat === "darwin" ? { env: { ...process.env, LC_CTYPE: "UTF-8" } } : {}),
-            });
-            let settled = false;
-            const finish = (success: boolean) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                if (success) resolve();
-                else reject(new Error("Clipboard write failed"));
-            };
-            const timer = setTimeout(() => {
-                child.kill("SIGKILL");
-                finish(false);
-            }, CLIPBOARD_WRITE_TIMEOUT_MS);
-            child.once("error", () => finish(false));
-            // Clipboard tools fork a selection owner; inherited pipes must not
-            // keep a completed upload waiting for that owner to exit.
-            child.once("exit", (code) => finish(code === 0));
-            child.stdin!.on("error", () => {
-                child.kill("SIGKILL");
-                finish(false);
-            });
-            child.stdin!.end(input);
-        });
-    } finally {
-        // Also discard reads started while the native command was running.
-        invalidateClipboardCache();
-    }
+    return { command, args, input };
 }
 
 class ClipboardUploadError extends Error {
@@ -577,45 +562,17 @@ function killPersistentPS(): void {
 }
 
 // === Clipboard Cache ===
-export const CACHE_TTL_MS = 200; // Short no-marker fallback; marker platforms can reuse longer safely.
-interface ClipboardSnapshot {
-    timestamp: number;
-    marker?: string | null;
-    targets: string[];
-    text: Buffer | null;
-    imagePng: Buffer | null;
-    imageBmp: Buffer | null;
-}
-let clipboardCache: ClipboardSnapshot | null = null;
-let clipboardCacheGeneration = 0;
-let clipboardReadQueue: Promise<unknown> = Promise.resolve();
+ // Short no-marker fallback; marker platforms can reuse longer safely.
+type ClipboardSnapshot = PolicyClipboardSnapshot<Buffer>;
+const clipboardState = createClipboardSnapshotState<Buffer>();
 
-function invalidateClipboardCache(): void {
-    clipboardCacheGeneration += 1;
-    clipboardCache = null;
-}
 
-export function shouldReuseClipboardCache(
-    cache: Pick<ClipboardSnapshot, "timestamp" | "marker"> | null,
-    now: number,
-    marker: string | null,
-    ttlMs = CACHE_TTL_MS,
-): boolean {
-    if (!cache) return false;
-    if (marker !== null) return cache.marker === marker;
-    return now - cache.timestamp < ttlMs;
-}
 
-const IMAGE_MIME_TYPES = [
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "image/tiff",
-    "image/bmp",
-];
+
+
+
+
+
 
 const IMAGE_FILE_EXTENSIONS = [
     ".png",
@@ -631,19 +588,9 @@ const IMAGE_FILE_EXTENSIONS = [
 
 const WINDOWS_IMAGE_FILE_EXTENSIONS = IMAGE_FILE_EXTENSIONS;
 
-function isSupportedImageTarget(target: string): boolean {
-    return IMAGE_MIME_TYPES.includes(target.toLowerCase());
-}
 
-export function buildImageMimeReadOrder(targets: string[], preferred: "png" | "bmp" = "png"): string[] {
-    const preferredMime = preferred === "bmp" ? "image/bmp" : "image/png";
-    const ordered = [
-        preferredMime,
-        ...targets.map((target) => target.toLowerCase()).filter(isSupportedImageTarget),
-        ...IMAGE_MIME_TYPES,
-    ];
-    return [...new Set(ordered)];
-}
+
+
 
 export function isImageFilePath(filePath: string): boolean {
     const lower = filePath.toLowerCase();
@@ -714,36 +661,10 @@ export function buildImageFileClipboardFallbackFromPaths(
     });
     const copyImageFile = options.copyImageFile ?? copyImageFileToClipboardShare;
 
-    for (const filePath of paths) {
-        const image = readImageFile(filePath);
-        if (image) {
-            return {
-                targets: ["image/png", "application/x-ccc-image-file"],
-                text: null,
-                imagePng: image,
-                imageBmp: null,
-            };
-        }
-    }
-
-    for (const filePath of paths) {
-        const copiedPath = copyImageFile(filePath);
-        if (copiedPath) return withCopiedImageFileTextFallback(copiedPath);
-    }
-
-    return withCopiedImageFileTextFallback(null);
+    return buildImageFileFallback(paths, readImageFile, copyImageFile);
 }
 
-function withCopiedImageFileTextFallback(
-    text: Buffer | null,
-): Omit<ClipboardSnapshot, "timestamp"> {
-    return {
-        targets: text ? ["text/plain", "application/x-ccc-copied-image-file"] : [],
-        text,
-        imagePng: null,
-        imageBmp: null,
-    };
-}
+
 
 export function parseWindowsClipboardSnapshot(output: string): Omit<ClipboardSnapshot, "timestamp"> | null {
     if (!output) return null;
@@ -953,74 +874,7 @@ export function buildWindowsClipboardReadCommand(
  * Skips 'clipboard info' — infers targets from actual data availability.
  * Runs osascript (image) and pbpaste (text) concurrently for ~2x speedup.
  */
-async function readAllClipboardDarwin(): Promise<Omit<ClipboardSnapshot, "timestamp">> {
-    // Try native helper first (persistent process, ~5ms per read)
-    const nativeOutput = await runDarwinCommand();
-    if (nativeOutput !== null) {
-        const parsed = parseDarwinHelperOutput(nativeOutput);
-        if (!parsed) throw new ClipboardReadError();
-        if (parsed.imagePng) return parsed;
 
-        // A successful native read may contain only a file reference or an
-        // image representation that NSImage could not decode. Do not bypass
-        // the existing fallbacks just because the helper is installed.
-        const converted = execCommand("pngpaste", ["-"]);
-        if (converted.status === 0 && converted.stdout.length > 0) {
-            return { ...parsed, targets: [...new Set([...parsed.targets, "image/png"])], imagePng: converted.stdout };
-        }
-        const fileFallback = readDarwinClipboardImageFileFallback();
-        if (fileFallback.targets.length > 0) return { ...fileFallback, marker: parsed.marker };
-        if (parsed.text) {
-            const textFallback = buildImageFileClipboardFallbackFromPaths(
-                parseClipboardImagePathText(parsed.text.toString("utf8")),
-            );
-            if (textFallback.targets.length > 0) return { ...textFallback, marker: parsed.marker };
-        }
-        return parsed;
-    }
-
-    // Fallback: parallel osascript + pbpaste (~250ms)
-    const [imgResult, textResult] = await Promise.all([
-        execCommandAsync("osascript", ["-e",
-            'try\nset d to the clipboard as «class PNGf»\nreturn d\nend try']),
-        execCommandAsync("pbpaste", []),
-    ]);
-    if (imgResult.status !== 0 || textResult.status !== 0) throw new ClipboardReadError();
-
-    const targets: string[] = [];
-    let imagePng: Buffer | null = null;
-    let text: Buffer | null = null;
-
-    if (imgResult.status === 0 && imgResult.stdout.length > 0) {
-        imagePng = parseAppleScriptImageData(imgResult.stdout);
-    }
-    // Fallback: pngpaste outputs raw PNG binary
-    if (!imagePng) {
-        const r = execCommand("pngpaste", ["-"]);
-        if (r.status === 0 && r.stdout.length > 0) {
-            imagePng = r.stdout;
-        }
-    }
-    if (imagePng) targets.push("image/png");
-
-    if (!imagePng) {
-        const fileFallback = readDarwinClipboardImageFileFallback();
-        if (fileFallback.targets.length > 0) return fileFallback;
-    }
-
-    if (textResult.status === 0 && textResult.stdout.length > 0) {
-        text = textResult.stdout;
-        if (!imagePng) {
-            const textPathFallback = buildImageFileClipboardFallbackFromPaths(
-                parseClipboardImagePathText(text.toString("utf-8")),
-            );
-            if (textPathFallback.targets.length > 0) return textPathFallback;
-        }
-        targets.push("text/plain");
-    }
-
-    return { targets, text, imagePng, imageBmp: null };
-}
 
 /**
  * Windows/WSL: Read all clipboard data via the persistent PowerShell process.
@@ -1063,130 +917,75 @@ async function readClipboardChangeMarker(plat: ClipboardPlatform): Promise<strin
     return null;
 }
 
-function readDarwinClipboardImageFileFallback(): Omit<ClipboardSnapshot, "timestamp"> {
-    const r = execCommand("osascript", ["-e", [
+function readDarwinClipboardFileReferenceData(): { stdout: Buffer; status: number } {
+    return execCommand("osascript", ["-e", [
         "try",
         "set f to the clipboard as «class furl»",
         "return POSIX path of f",
         "end try",
     ].join("\n")]);
-    if (r.status !== 0 || r.stdout.length === 0) return withCopiedImageFileTextFallback(null);
-    return buildImageFileClipboardFallbackFromPaths(r.stdout.toString("utf-8").split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
 }
 
-function readLinuxClipboardUriList(plat: ClipboardPlatform, targets: string[]): string[] {
-    const candidateTargets = [
-        ...targets.filter((target) => target === "text/uri-list" || target === "x-special/gnome-copied-files"),
-        "text/uri-list",
-        "x-special/gnome-copied-files",
-    ];
-    for (const target of [...new Set(candidateTargets)]) {
-        const r = plat === "linux-x11"
-            ? execCommand("xclip", ["-selection", "clipboard", "-t", target, "-o"])
-            : execCommand("wl-paste", ["--type", target]);
-        if (r.status === 0 && r.stdout.length > 0) {
-            const paths = parseClipboardFileUriList(r.stdout.toString("utf-8"));
-            if (paths.length > 0) return paths;
-        }
-    }
-    return [];
+function readLinuxClipboardUriData(plat: ClipboardPlatform, target: string): { stdout: Buffer; status: number } {
+    return plat === "linux-x11"
+        ? execCommand("xclip", ["-selection", "clipboard", "-t", target, "-o"])
+        : execCommand("wl-paste", ["--type", target]);
 }
 
-function readLinuxClipboardImageFileFallback(plat: ClipboardPlatform, targets: string[]): Omit<ClipboardSnapshot, "timestamp"> {
-    return buildImageFileClipboardFallbackFromPaths(readLinuxClipboardUriList(plat, targets));
-}
 
-function getCachedClipboard(plat: ClipboardPlatform, forceRefresh = false): Promise<ClipboardSnapshot> {
-    const read = clipboardReadQueue.then(() => readAndCacheClipboard(plat, forceRefresh));
-    clipboardReadQueue = read.catch(() => {});
-    return read;
-}
 
-async function readAndCacheClipboard(plat: ClipboardPlatform, forceRefresh: boolean): Promise<ClipboardSnapshot> {
-    // A native read can finish after a successful POST. Never publish its old
-    // snapshot into the cache or return it to a waiting HTTP reader.
-    while (true) {
-        const generation = clipboardCacheGeneration;
-        const snapshot = await readClipboardSnapshot(plat, forceRefresh);
-        if (generation !== clipboardCacheGeneration) continue;
-        clipboardCache = snapshot;
-        return snapshot;
-    }
-}
+const getCachedClipboard = createClipboardSnapshotReader<Buffer>({
+    now: () => Date.now(),
+    readChangeMarker: readClipboardChangeMarker,
+    readWindowsCapture: readAllClipboardWindows,
+    readDarwinFrame: () => runDarwinCommand(),
+    parseDarwinCapture: parseDarwinHelperOutput,
+    readDarwinLegacyImage: () => execCommandAsync("osascript", ["-e",
+        'try\nset d to the clipboard as «class PNGf»\nreturn d\nend try']),
+    readDarwinLegacyText: () => execCommandAsync("pbpaste", []),
+    readDarwinPngpaste: () => execCommand("pngpaste", ["-"]),
+    parseAppleScriptImage: parseAppleScriptImageData,
+    readDarwinFileReferenceData: readDarwinClipboardFileReferenceData,
+    readLinuxUriData: readLinuxClipboardUriData,
+    decodeText: (bytes, encoding) => bytes.toString(encoding),
+    parseFileUriList: parseClipboardFileUriList,
+    parseImagePathText: parseClipboardImagePathText,
+    readTargets: readClipboardTargets,
+    readText: readClipboardText,
+    readImage: readClipboardImage,
+    readImageFile: (filePath) => {
+        if (!isImageFilePath(filePath)) return null;
+        try {
+            const body = readFileSync(filePath);
+            return body.length > 0 ? body : null;
+        } catch { return null; }
+    },
+    copyImageFile: copyImageFileToClipboardShare,
+    createReadError: () => new ClipboardReadError(),
+}, clipboardState);
 
-async function readClipboardSnapshot(plat: ClipboardPlatform, forceRefresh: boolean): Promise<ClipboardSnapshot> {
-    const now = Date.now();
-    const marker = await readClipboardChangeMarker(plat);
-    const cached = clipboardCache;
-    const negativeCacheFresh = cached && (cached.imagePng || cached.imageBmp || now - cached.timestamp < CACHE_TTL_MS);
-    if (cached && negativeCacheFresh && !forceRefresh && shouldReuseClipboardCache(cached, now, marker)) {
-        return cached;
-    }
+const writeClipboardText = createClipboardTextWriter<Buffer, PreparedClipboardTextWriter, ChildProcess, ReturnType<typeof setTimeout>>({
+    encodeText: (text) => Buffer.from(text, "utf8"),
+    decodeText: (bytes) => bytes.toString("utf8"),
+    prepareWriter: prepareClipboardTextWriter,
+    launchWriter: (prepared, plat) => spawn(prepared.command, prepared.args, {
+        stdio: ["pipe", "ignore", "ignore"],
+        windowsHide: true,
+        ...(plat === "darwin" ? { env: { ...process.env, LC_CTYPE: "UTF-8" } } : {}),
+    }),
+    scheduleTimeout: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
+    clearTimeout: (timer) => { clearTimeout(timer); return undefined; },
+    onWriterError: (child, callback) => { child.once("error", callback); return undefined; },
+    onWriterExit: (child, callback) => { child.once("exit", callback); return undefined; },
+    onInputError: (child, callback) => { child.stdin!.on("error", callback); return undefined; },
+    endInput: (child, prepared) => { child.stdin!.end(prepared.input); return undefined; },
+    killWriter: (child) => { child.kill("SIGKILL"); return undefined; },
+}, clipboardState);
+export { writeClipboardText };
 
-    if (plat === "windows" || plat === "wsl" || plat === "darwin") {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            const snapshot = plat === "darwin" ? await readAllClipboardDarwin() : await readAllClipboardWindows();
-            const after = await readClipboardChangeMarker(plat);
-            // macOS without its optional helper retains the legacy fallback,
-            // but never borrows an unrelated marker for those separate reads.
-            if (snapshot.marker == null) {
-                if (plat !== "darwin" || marker !== null || after !== null) throw new ClipboardReadError();
-                return { timestamp: Date.now(), ...snapshot, marker: null };
-            }
-            if (snapshot.marker === after) return { timestamp: Date.now(), ...snapshot };
-        }
-        throw new ClipboardReadError();
-    }
 
-    // Linux: individual calls
-    const targets = readClipboardTargets(plat);
-    const hasImage = targets.some(isSupportedImageTarget);
-    const hasText = targets.some(t => t.includes("text/plain") || t === "STRING" || t === "UTF8_STRING");
-    const text = hasText ? readClipboardText(plat) : null;
-    const imagePng = hasImage ? readClipboardImage(plat, "png", targets) : null;
-    const imageBmp = hasImage ? readClipboardImage(plat, "bmp", targets) : null;
 
-    if (!imagePng && !imageBmp) {
-        const fileFallback = readLinuxClipboardImageFileFallback(plat, targets);
-        if (fileFallback.targets.length > 0) {
-            return {
-                timestamp: now,
-                marker: null,
-                ...fileFallback,
-            };
-        }
 
-        if (text) {
-            const textPathFallback = buildImageFileClipboardFallbackFromPaths(
-                parseClipboardImagePathText(text.toString("utf-8")),
-            );
-            if (textPathFallback.targets.length > 0) {
-                return {
-                    timestamp: now,
-                    marker: null,
-                    ...textPathFallback,
-                };
-            }
-        }
-    }
-
-    // Filter targets: remove image types if actual image data is null/empty,
-    // and remove text/plain if actual text data is null/empty
-    const filteredTargets = targets.filter(t => {
-        if (isSupportedImageTarget(t)) return imagePng !== null || imageBmp !== null;
-        if (t.includes("text/plain") || t === "STRING" || t === "UTF8_STRING") return text !== null;
-        return true;
-    });
-
-    return {
-        timestamp: now,
-        marker: null,
-        targets: filteredTargets,
-        text,
-        imagePng,
-        imageBmp,
-    };
-}
 
 function readClipboardTargets(plat: ClipboardPlatform): string[] {
     switch (plat) {
@@ -1560,91 +1359,32 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
  * If a server is already running (verified via health check + token), reuses it.
  * Otherwise starts a new detached server process.
  */
-export async function ensureClipboardServer(): Promise<number> {
-    const bindAddr = "127.0.0.1";
-
-    // Check if server already running
-    let existing = readPortFile();
-    if (existing) {
-        const health = await checkServerHealth(existing.port, existing.token, bindAddr);
-        if (health.alive && health.version === SERVER_VERSION) return existing.port;
-    }
-
-    const lockPath = clipboardStartingLock();
-    let lock = tryAcquireClipboardStartupLock(lockPath);
-    if (!lock) {
-        const deadline = Date.now() + STARTUP_LOCK_TIMEOUT_MS;
-        while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, STARTUP_POLL_INTERVAL_MS));
-            const info = readPortFile();
-            if (info && info.token !== existing?.token) {
-                const health = await checkServerHealth(info.port, info.token, bindAddr);
-                if (health.alive && health.version === SERVER_VERSION) return info.port;
-            }
-            lock = tryAcquireClipboardStartupLock(lockPath);
-            if (lock) break;
-            if (recoverDeadClipboardStartupLock(lockPath)) {
-                lock = tryAcquireClipboardStartupLock(lockPath);
-                if (lock) {
-                    // A killed owner may already have sent legacy shutdown.
-                    // Wait for delayed cleanup before successor publication.
-                    await new Promise((r) => setTimeout(r, UPGRADE_SHUTDOWN_GRACE_MS));
-                    break;
-                }
-            }
-        }
-        if (!lock) throw new Error(`Clipboard startup is still owned or its owner cannot be verified: ${lockPath}. Retry after the owner finishes; inspect empty or malformed legacy locks before removing them.`);
-    }
-
-    // Keep upgrade shutdown, legacy grace and publication under the v2 lock.
-    // Legacy cleanup only knows the old lock pathname and cannot release this one.
-    try {
-        const current = readPortFile();
-        if (current) {
-            const health = await checkServerHealth(current.port, current.token, bindAddr);
-            if (health.alive) {
-                if (health.version === SERVER_VERSION) return current.port;
-                if (health.version !== SERVER_VERSION) {
-                    if (clipboardPortMayHaveBindUsers(clipboardPortFile())) {
-                        console.warn("[ccc] Clipboard update deferred: running container bind users could not be excluded. Keeping the authenticated existing bridge; retry after its container users stop.");
-                        return current.port;
-                    }
-                    if (!await shutdownServer(current.port, current.token)) {
-                        throw new Error("Failed to acknowledge clipboard server shutdown for upgrade");
-                    }
-                    // Wait beyond the legacy daemon's 3-second forced exit before publication.
-                    await new Promise((r) => setTimeout(r, UPGRADE_SHUTDOWN_GRACE_MS));
-                }
-            }
-        }
-        existing = current;
-
-        const __filename = fileURLToPath(import.meta.url);
-        const serverScript = __filename.replace(/\.ts$/, ".js");
-
-        const child = spawn(process.execPath, [serverScript, "--serve"], {
-            detached: true,
-            stdio: "ignore",
-            windowsHide: true,
-        });
-        child.unref();
-
-        // Wait for the server to write its port file
-        const deadline = Date.now() + STARTUP_POLL_TIMEOUT_MS;
-        while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, STARTUP_POLL_INTERVAL_MS));
-            const info = readPortFile();
-            if (info && info.token !== existing?.token) {
-                const health = await checkServerHealth(info.port, info.token, bindAddr);
-                if (health.alive && health.version === SERVER_VERSION) return info.port;
-            }
-        }
-
-        throw new Error("Clipboard server failed to start within timeout");
-    } finally {
-        releaseClipboardStartupLock(lock);
-    }
-}
+const clipboardLifecycle = createClipboardServerLifecycle({
+    readPortFile,
+    portFilePath: () => clipboardPortFile(),
+    startupLockPath: () => clipboardStartingLock(),
+    tryAcquireStartupLock: tryAcquireClipboardStartupLock,
+    recoverDeadStartupLock: recoverDeadClipboardStartupLock,
+    releaseStartupLock: (lock) => { releaseClipboardStartupLock(lock); return undefined; },
+    checkHealth: checkServerHealth,
+    requestShutdown: shutdownServer,
+    portMayHaveBindUsers: clipboardPortMayHaveBindUsers,
+    warnUpgradeDeferred: () => {
+        console.warn("[ccc] Clipboard update deferred: running container bind users could not be excluded. Keeping the authenticated existing bridge; retry after its container users stop.");
+        return undefined;
+    },
+    now: () => Date.now(),
+    sleep: (milliseconds) => new Promise((r) => setTimeout(r, milliseconds)),
+    daemonScriptPath: () => fileURLToPath(import.meta.url).replace(/\.ts$/, ".js"),
+    launchDaemon: (serverScript) => spawn(process.execPath, [serverScript, "--serve"], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+    }),
+    unrefDaemon: (child) => { child.unref(); return undefined; },
+}, SERVER_VERSION);
+const { ensureClipboardServer, stopClipboardServerIfLast, retireClipboardServerFromPortFile } = clipboardLifecycle;
+export { ensureClipboardServer, stopClipboardServerIfLast, retireClipboardServerFromPortFile };
 
 /**
  * Check if there are any active CCC sessions besides the given lock file.
@@ -1678,23 +1418,10 @@ export function hasAnyActiveSessionsExcept(currentLockFile: string | null, direc
  * Stop the clipboard server when the session module has atomically established
  * that no other session owns the shared container.
  */
-export function stopClipboardServerIfLast(hasOtherActiveSessions: boolean): void {
-    if (hasOtherActiveSessions) return;
 
-    const info = readPortFile();
-    if (!info) return;
-
-    if (clipboardPortMayHaveBindUsers(clipboardPortFile())) return;
-    shutdownServer(info.port, info.token);
-
-    // Keep the bind-mounted inode; authenticated health rejects stale state.
-}
 
 /** Ask the server recorded in a pre-layout port file to shut down. */
-export function retireClipboardServerFromPortFile(portFile: string): void {
-    const info = readPortFile(portFile);
-    if (info && !clipboardPortMayHaveBindUsers(portFile)) shutdownServer(info.port, info.token);
-}
+
 
 // === Standalone Entry Point ===
 // When run with --serve flag, start the HTTP server directly

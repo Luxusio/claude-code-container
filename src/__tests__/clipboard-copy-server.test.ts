@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request, type Server } from "http";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { EventEmitter } from "events";
 import { PassThrough, Writable } from "stream";
 
-const adapter = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), trusted: vi.fn() }));
+const adapter = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), trusted: vi.fn(), home: "" }));
 vi.mock("child_process", () => ({ spawn: adapter.spawn, spawnSync: adapter.spawnSync }));
-vi.mock("os", async () => ({ ...await vi.importActual<typeof import("os")>("os"), platform: () => "win32" }));
+vi.mock("os", async () => ({ ...await vi.importActual<typeof import("os")>("os"), platform: () => "win32", homedir: () => adapter.home }));
 vi.mock("@ccc/device-lab/windows-system-powershell.js", async () => ({
     ...await vi.importActual<typeof import("@ccc/device-lab/windows-system-powershell.js")>("@ccc/device-lab/windows-system-powershell.js"),
     canonicalWindowsPowerShellPath: adapter.trusted,
@@ -34,8 +37,15 @@ function child() {
 }
 
 const originalProcessPlatform = process.platform;
+const fixtureHomeKeys = ["HOME", "USERPROFILE", "TMPDIR"] as const;
+let fixtureHome: string;
+let originalHomeEnvironment: Record<typeof fixtureHomeKeys[number], string | undefined>;
 
 beforeEach(async () => {
+    fixtureHome = mkdtempSync(join(tmpdir(), "ccc-private-clipboard-copy-server-"));
+    originalHomeEnvironment = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TMPDIR: process.env.TMPDIR };
+    for (const key of fixtureHomeKeys) process.env[key] = fixtureHome;
+    adapter.home = fixtureHome;
     Object.defineProperty(process, "platform", { configurable: true, get: () => "win32" });
     vi.resetModules();
     vi.clearAllMocks();
@@ -84,13 +94,19 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-    Object.defineProperty(process, "platform", { configurable: true, value: originalProcessPlatform });
     vi.useRealTimers();
     for (const server of servers) {
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     for (const proc of children) { proc.stdin.destroy(); proc.stdout.destroy(); proc.stderr.destroy(); }
+    Object.defineProperty(process, "platform", { configurable: true, value: originalProcessPlatform });
+    for (const key of fixtureHomeKeys) {
+        const value = originalHomeEnvironment[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+    rmSync(fixtureHome, { recursive: true, force: true });
 });
 
 async function start(plat: Parameters<ClipboardModule["createClipboardServer"]>[1] = "linux-x11") {

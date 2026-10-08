@@ -3,6 +3,7 @@ import { createServer, request as httpRequest, type Server } from "http";
 import { EventEmitter } from "events";
 import { join } from "path";
 import { type ChildProcess } from "child_process";
+import { createHash } from "crypto";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 // Must be declared before import of the module under test.
@@ -130,6 +131,24 @@ const DATA_DIR = join("/home/testuser", ".ccc", "run");
 const LOCKS_DIR = join(DATA_DIR, "locks");
 const PORT_FILE = join(DATA_DIR, "clipboard.port");
 const STARTING_LOCK = join(DATA_DIR, "clipboard.starting.v2");
+const POLICY_HASH_FILES = [
+    "clipboard-server.js",
+    "domain/clipboard/snapshot.js",
+    "domain/clipboard/text-write.js",
+    "domain/clipboard/server-lifecycle.js",
+    "application/clipboard/snapshot.js",
+    "application/clipboard/text-write.js",
+    "application/clipboard/server-lifecycle.js",
+];
+function currentPolicyVersion(): string {
+    const content = "file-content-for-hash";
+    const hash = createHash("sha256").update("ccc-clipboard-policy-v1\0");
+    for (const file of POLICY_HASH_FILES) {
+        hash.update(file).update("\0").update(String(Buffer.byteLength(content, "utf8")))
+            .update("\0").update(content).update("\0");
+    }
+    return hash.digest("hex").slice(0, 12);
+}
 
 // ─── Test Suite ───────────────────────────────────────────────────────────────
 
@@ -138,7 +157,7 @@ describe("clipboard-server", () => {
         vi.clearAllMocks();
         // Default: getServerHash reads a file successfully
         mockReadFileSync.mockImplementation((path: string, _enc?: string) => {
-            if (path === "/fake/clipboard-server.js") {
+            if (POLICY_HASH_FILES.some(file => path === join("/fake", file))) {
                 return "file-content-for-hash";
             }
             throw new Error(`Unexpected readFileSync: ${path}`);
@@ -3350,10 +3369,7 @@ describe("clipboard-server", () => {
 
         it("reuses existing server when health check passes and version matches", async () => {
             // Stand up a real health server
-            const expectedVersion = (() => {
-                const { createHash } = require("crypto");
-                return createHash("sha256").update("file-content-for-hash").digest("hex").slice(0, 12);
-            })();
+            const expectedVersion = currentPolicyVersion();
             const serverToken = "reuse-token-xyz";
 
             const healthServer = createServer((req, res) => {
@@ -3751,8 +3767,7 @@ describe("clipboard-server", () => {
                 const auth = req.headers.authorization;
                 const isValid = auth === `Bearer ${raceToken}`;
                 res.writeHead(200, { "Content-Type": "application/json" });
-                const { createHash } = require("crypto");
-                const version = createHash("sha256").update("file-content-for-hash").digest("hex").slice(0, 12);
+                const version = currentPolicyVersion();
                 res.end(JSON.stringify({ service: "ccc-clipboard", version, ...(isValid ? { valid: true } : {}) }));
             });
             const racePort = await new Promise<number>((resolve) => {

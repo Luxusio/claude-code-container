@@ -6,9 +6,9 @@ import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "fs";
 
-const native = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), platform: "win32" }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), platform: "win32", home: "" }));
 vi.mock("child_process", async () => ({ ...await vi.importActual<typeof import("child_process")>("child_process"), spawn: native.spawn, spawnSync: native.spawnSync }));
-vi.mock("os", async () => ({ ...await vi.importActual<typeof import("os")>("os"), platform: () => native.platform }));
+vi.mock("os", async () => ({ ...await vi.importActual<typeof import("os")>("os"), platform: () => native.platform, homedir: () => native.home }));
 vi.mock("fs", async () => {
     const actual = await vi.importActual<typeof import("fs")>("fs");
     return { ...actual, existsSync: (path: string) => String(path).endsWith("clipboard-helper-darwin") || actual.existsSync(path) };
@@ -81,8 +81,15 @@ function fakeProcess() {
 }
 
 const originalProcessPlatform = process.platform;
+const fixtureHomeKeys = ["HOME", "USERPROFILE", "TMPDIR"] as const;
+let fixtureHome: string;
+let originalHomeEnvironment: Record<typeof fixtureHomeKeys[number], string | undefined>;
 
 beforeEach(async () => {
+    fixtureHome = mkdtempSync(join(tmpdir(), "ccc-private-clipboard-image-server-"));
+    originalHomeEnvironment = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TMPDIR: process.env.TMPDIR };
+    for (const key of fixtureHomeKeys) process.env[key] = fixtureHome;
+    native.home = fixtureHome;
     Object.defineProperty(process, "platform", { configurable: true, get: () => native.platform });
     vi.resetModules();
     vi.clearAllMocks();
@@ -102,9 +109,15 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-    Object.defineProperty(process, "platform", { configurable: true, value: originalProcessPlatform });
     for (const child of children) child.kill();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
+    Object.defineProperty(process, "platform", { configurable: true, value: originalProcessPlatform });
+    for (const key of fixtureHomeKeys) {
+        const value = originalHomeEnvironment[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+    rmSync(fixtureHome, { recursive: true, force: true });
 });
 
 async function start(platform: "windows" | "darwin" = "windows") {
