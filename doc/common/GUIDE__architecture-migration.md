@@ -1,5 +1,18 @@
 # Implementing the CCC architecture migration
 
+## Counting migration progress
+
+Use the [operation inventory audit](AUDIT__architecture-operation-inventory.md)
+and its [JSON data](architecture-operation-inventory.json) for revision-bound
+operation counts. Count complete policy/workflow cutovers once, with equivalent
+provider/executor routes recorded as bindings. Partial work stays outside the
+completed numerator; helper, file, commit and Harness task counts do not measure
+architecture completion. Refresh source anchors and evidence when the baseline
+changes. Native, installed-package and reliability acceptance remain separate.
+
+Hosted CI, workflow reruns and CI-triggering pushes require explicit user
+authorization. Use local review and the checks appropriate to the current diff.
+
 The complete Claude/npm/bubblewrap/uv installation policy cutover has passed local verification.
 The [container installation guide](../tooling/GUIDE__container-installation.md)
 requires native callee capture and unchanged assets, runtime selection and

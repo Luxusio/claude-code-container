@@ -1,0 +1,70 @@
+# Architecture operation inventory
+
+Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Data: [operation inventory](architecture-operation-inventory.json).
+
+The source-mapped inventory contains **32 migrated / 213 implementation work
+items (15.0%)**; 15 are partial and 166 are pending. Partial and pending together
+leave 181 implementation items unfinished at this baseline.
+
+This is an unweighted count of operation cutovers, not an estimate of remaining
+effort or overall Goal acceptance. A small installation policy and a large
+provider workflow each count once. Helpers, ports, aliases and equivalent
+transport bindings do not add work items. Each row has one counting owner even
+when its requirements span packets. Review and QA of this inventory assess the
+accounting; they do not certify native execution or the completed architecture.
+
+| Packet | Total | Migrated | Partial | Pending |
+| --- | ---: | ---: | ---: | ---: |
+| M00 | 0 | 0 | 0 | 0 |
+| M01 | 0 | 0 | 0 | 0 |
+| M02 | 4 | 0 | 1 | 3 |
+| M03 | 6 | 0 | 0 | 6 |
+| M04 | 4 | 0 | 1 | 3 |
+| M05 | 15 | 0 | 0 | 15 |
+| M06 | 14 | 0 | 0 | 14 |
+| M07 | 23 | 0 | 10 | 13 |
+| M08 | 76 | 0 | 1 | 75 |
+| M09 | 1 | 0 | 0 | 1 |
+| M10 | 14 | 9 | 1 | 4 |
+| M11 | 34 | 23 | 1 | 10 |
+| M12 | 16 | 0 | 0 | 16 |
+| M13 | 6 | 0 | 0 | 6 |
+| M14 | 0 | 0 | 0 | 0 |
+
+M00, M01 and M14 have no independently counted product operations. Their
+foundation, inventory and verification requirements remain mapped in
+`coverage` and `acceptanceItems`. Zero operation rows does not mean those
+requirements are complete or excluded.
+
+Acceptance evidence is tracked separately. A migrated source policy does not
+prove native execution, installed artifact parity or reliability. Each evidence
+claim is limited to its recorded revision and scope. The verified source entries
+below describe recorded bounded cutovers; they are not verified whole-packet
+acceptance. Unverified packet obligations do not erase historical local test
+results, and those results do not certify subsequent changes.
+
+| Evidence kind | Verified | Unverified | Blocked | Inapplicable |
+| --- | ---: | ---: | ---: | ---: |
+| sourceCutover | 35 | 15 | 0 | 0 |
+| portableContract | 0 | 15 | 0 | 0 |
+| packageInstall | 0 | 15 | 0 | 0 |
+| native | 0 | 15 | 0 | 0 |
+| reliability | 0 | 15 | 0 | 0 |
+
+To reproduce the implementation count, count `workItems` once by `id`, group by
+`implementationStatus`, and divide migrated by total. For packet counts, group
+by `countingOwner`, not `packets`. Acceptance totals group `acceptanceItems` by
+`kind` and `status`; they use a separate denominator. `closure` records the
+source-mapping claim and its review status, not an architecture acceptance gate.
+
+After each cutover, update the affected stable IDs, bindings, supporting source
+and evidence, then recompute this audit. New or changed operation boundaries
+require an explicit retirement/replacement mapping. Refresh the baseline and
+its tracked source universe when evaluating later code. The initial
+`src/__tests__/architecture/migration-ledger.ts` remains a historical snapshot.
+
+Hosted CI, workflow reruns and CI-triggering pushes require explicit user
+authorization. This accounting task uses local static inspection and does not
+execute providers or install tools. Native availability is never inferred from
+a portable test.
