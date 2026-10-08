@@ -86,10 +86,11 @@ vi.mock("child_process", async original => {
         exec: deniedCapability, execSync: deniedCapability, execFile: deniedCapability,
         execFileSync: (file: string, args: string[], options: Record<string, unknown>) => {
             // Only immutable baseline materialization is allowed in this test.
-            if ((file === "git" && args.length === 7 && args[0] === "archive" && args[1] === revision
+            if ((file === "git" && args.length === 8 && args[0] === "archive" && args[1] === revision
                 && args[2] === "--output=" + archiveFile && args[3] === "device-lab-mcp/src"
                 && args[4] === "packages/device-lab/providers" && args[5] === "packages/hyper-v/src"
-                && args[6] === "packages/hyper-v/powershell" && options.cwd === checkoutRoot)
+                && args[6] === "packages/hyper-v/powershell" && args[7] === "packages/device-lab/package.json"
+                && options.cwd === checkoutRoot)
                 || (file === "tar" && args.length === 4 && args[0] === "-xf" && args[1] === archiveFile
                     && args[2] === "-C" && args[3] === frozenRoot)) {
                 return actual.execFileSync(file, args, options);
@@ -141,10 +142,16 @@ beforeAll(async () => {
     // controlled providers; this does not prove frozen native-provider equality.
     if (!existsSync(join(frozenRoot, "device-lab-mcp/src/server.mjs"))) {
         mkdirSync(frozenRoot, { recursive: true });
-        execFileSync("git", ["archive", revision, "--output=" + archiveFile, "device-lab-mcp/src", "packages/device-lab/providers", "packages/hyper-v/src", "packages/hyper-v/powershell"], { cwd: checkoutRoot });
+        execFileSync("git", ["archive", revision, "--output=" + archiveFile, "device-lab-mcp/src", "packages/device-lab/providers", "packages/hyper-v/src", "packages/hyper-v/powershell", "packages/device-lab/package.json"], { cwd: checkoutRoot });
         execFileSync("tar", ["-xf", archiveFile, "-C", frozenRoot]);
     }
     assertNoDenials();
+    // Original manifest enables package self-reference without dependency fallback.
+    expect(digest(join(frozenRoot, "packages/device-lab/package.json")), `manifest frozen ${revision}`)
+        .toBe("d0afbcdd410f410fae0a73344f84c3669c33c290afea240c697b2b1ca335c3c6");
+    const archivedContext = await import(join(frozenRoot, "packages/device-lab/providers/context.mjs"));
+    assertNoDenials();
+    expect(archivedContext.PACKAGE_ROOT).toBe(join(frozenRoot, "packages/device-lab"));
     const admittedProviders: Record<string, { archived: string; current: string; sourceTip: string }> = {
         "backends/windows-sandbox.mjs": {
             archived: "adb87857f40652c7da3906ad3e59ab6677050780b3d8ed81f5b37a733288a178",
