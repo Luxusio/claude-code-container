@@ -2,16 +2,18 @@ import { describe, expect, it } from "vitest";
 import { readStateFileText, readValidatedStateFile, validateStateFileContent } from "../../../packages/device-lab/providers/application/state-file-read.mjs";
 import type { StateFileReadPorts } from "../../../packages/device-lab/providers/ports/state-file.mjs";
 
+type MutableReadPorts = { -readonly [Key in keyof StateFileReadPorts<string, unknown>]: StateFileReadPorts<string, unknown>[Key] };
+
 function fixture(bytes: string | null = '{"id":1}') {
     const trace: string[] = [];
-    const ports = {
+    const ports: MutableReadPorts = {
         read: () => { trace.push("read"); return bytes; },
         decode: bytes => { trace.push("decode"); return bytes; },
         parse: decode => { trace.push("parse-capture"); const text = decode(); trace.push("parse-call"); return JSON.parse(text); },
         validate: value => { trace.push("validate"); return value; },
         isStateError: error => { trace.push("recognize"); return error instanceof RangeError; },
         invalidState: cause => { trace.push("invalid"); return new Error("state-invalid", { cause }); },
-    } satisfies StateFileReadPorts<string, unknown>;
+    };
     return { ports, trace };
 }
 

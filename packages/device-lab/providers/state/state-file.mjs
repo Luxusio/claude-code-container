@@ -10,6 +10,7 @@ export {
 } from "../adapters/state/state-file.mjs";
 export { DeviceLabStateFileError };
 
+/** @param {string} file @param {string} prefix @param {number} [limitBytes] @returns {string | null} */
 export function readDeviceLabTextFile(file, prefix, limitBytes = DEVICE_LAB_STATE_FILE_LIMIT_BYTES) {
     return readStateFileText({
         read: () => readDeviceLabBinaryFile(file, prefix, limitBytes),
@@ -17,6 +18,14 @@ export function readDeviceLabTextFile(file, prefix, limitBytes = DEVICE_LAB_STAT
     });
 }
 
+/**
+ * @template Value
+ * @param {string} file
+ * @param {(value: unknown) => Value} validate
+ * @param {string} prefix
+ * @param {number} [limitBytes]
+ * @returns {Value | null}
+ */
 export function readDeviceLabStateFile(file, validate, prefix, limitBytes = DEVICE_LAB_STATE_FILE_LIMIT_BYTES) {
     return readValidatedStateFile({
         read: () => readDeviceLabBinaryFile(file, prefix, limitBytes),

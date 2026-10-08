@@ -6,6 +6,7 @@ export { DeviceLabStateFileError };
 
 export const DEVICE_LAB_STATE_FILE_LIMIT_BYTES = 256 * 1024;
 
+/** @param {import("node:fs").Stats} opened @param {import("node:fs").Stats} path */
 function sameOpenedFile(opened, path) {
     if (!opened.isFile() || !path.isFile() || path.isSymbolicLink()) return false;
     if (opened.nlink !== 1 || path.nlink !== 1) return false;
@@ -14,6 +15,7 @@ function sameOpenedFile(opened, path) {
     return true;
 }
 
+/** @param {number} descriptor @param {number} limitBytes @param {string} prefix @returns {Buffer} */
 function readBounded(descriptor, limitBytes, prefix) {
     const buffer = Buffer.allocUnsafe(limitBytes + 1);
     let total = 0;
@@ -25,10 +27,19 @@ function readBounded(descriptor, limitBytes, prefix) {
     throw new DeviceLabStateFileError(`${prefix}-file-too-large`);
 }
 
+/** @param {string} file @param {string} prefix @param {number} [limitBytes] @returns {Buffer | null} */
 export function readDeviceLabBinaryFile(file, prefix, limitBytes = DEVICE_LAB_STATE_FILE_LIMIT_BYTES) {
     return withDeviceLabReadableFile(file, prefix, limitBytes, (descriptor) => readBounded(descriptor, limitBytes, prefix));
 }
 
+/**
+ * @template Value
+ * @param {string} file
+ * @param {string} prefix
+ * @param {number} limitBytes
+ * @param {(descriptor: number, stat: import("node:fs").Stats) => Value} operation
+ * @returns {Value | null}
+ */
 export function withDeviceLabReadableFile(file, prefix, limitBytes, operation) {
     let descriptor = null;
     let operationStarted = false;
@@ -44,14 +55,15 @@ export function withDeviceLabReadableFile(file, prefix, limitBytes, operation) {
     } catch (error) {
         if (operationStarted) throw error;
         if (error instanceof DeviceLabStateFileError) throw error;
-        if (error?.code === "ENOENT" && descriptor === null) return null;
-        if (error?.code === "ELOOP") throw new DeviceLabStateFileError(`${prefix}-state-invalid`, { cause: error });
+        if (/** @type {{code?: unknown} | null | undefined} */ (error)?.code === "ENOENT" && descriptor === null) return null;
+        if (/** @type {{code?: unknown} | null | undefined} */ (error)?.code === "ELOOP") throw new DeviceLabStateFileError(`${prefix}-state-invalid`, { cause: error });
         throw new DeviceLabStateFileError(`${prefix}-state-read-failed`, { cause: error });
     } finally {
         if (descriptor !== null) closeSync(descriptor);
     }
 }
 
+/** @param {string} root @param {string} file @param {string} prefix @returns {void} */
 export function assertDeviceLabPathWithinRoot(root, file, prefix) {
     const resolvedRoot = resolve(root);
     const resolvedFile = resolve(file);
