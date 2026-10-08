@@ -1,0 +1,45 @@
+import type { WorkspaceEntry } from "../../domain/workspace/source-entry.js";
+import type { WorktreeRepoResult } from "../../domain/workspace/creation-result.js";
+import type { WorkspaceRepairAuthority, WorkspaceRepairDirectoryIdentity, WorkspaceRepairDestinationFence, WorkspaceRepairGitObservation } from "../../domain/workspace/repair-authority.js";
+
+export interface NestedWorkspaceRepairPorts<A extends WorkspaceRepairAuthority> {
+    resolve(path: string): string;
+    join(...paths: string[]): string;
+    dirname(path: string): string;
+    basename(path: string): string;
+    hasGitMetadata(path: string): boolean;
+    primarySourceRepositoryForWorktree(path: string): string | null;
+    gitLinkKind(path: string): string;
+    assertWorkspaceOwnership(workspace: string, source: string): void;
+    assertWorkspaceRootOwnership(workspace: string, source: string): void;
+    scanUnifiedNestedRepositories(path: string, options: { strict: boolean; allowRegisteredWorktrees: boolean }): WorkspaceEntry[];
+    captureNestedRepositoryIdentity(path: string): A["NestedRepositoryIdentity"];
+    assertNestedRepositoryIdentity(path: string, identity: A["NestedRepositoryIdentity"]): void;
+    ensureNestedWorktreeParent(workspace: string, destination: string, created: Map<string, A["DirectoryIdentity"]>): WorkspaceRepairDestinationFence<A["DirectoryIdentity"]>;
+    assertNestedWorktreeDestinationFence(workspace: string, destination: string, fence: WorkspaceRepairDestinationFence<A["DirectoryIdentity"]>): void;
+    pathExistsStrict(path: string): boolean;
+    captureDirectoryIdentity(path: string): A["DirectoryIdentity"];
+    assertDirectoryIdentity(path: string, identity: A["DirectoryIdentity"]): void;
+    readDirectoryEntries(path: string): string[];
+    createEmptyDirectory(path: string): void;
+    isValidWorktree(destination: string, source: string): boolean;
+    removeDirectoryByQuarantine(path: string, identity: A["DirectoryIdentity"], base: string, allowGitLinks: boolean): void;
+    withPinnedNestedRepository<T>(identity: A["NestedRepositoryIdentity"], operation: () => T): T;
+    captureMissingWorktreeRegistrationFence(source: string, destination: string, branch: string): A["MissingWorktreeRegistrationFence"] | null;
+    managementGitdirBackpointer(path: string): string;
+    staleDestinationNameMatches(recordedGitFile: string, expectedGitFile: string, destination: string): boolean;
+    sameDirectExistingObject(left: string, right: string): boolean;
+    quarantineMissingWorktreeRegistration(source: string, destination: string, fence: A["MissingWorktreeRegistrationFence"], preserve?: boolean): A["QuarantinedMissingWorktreeRegistration"];
+    registeredWorktreePath(source: string, destination: string): boolean;
+    restoreQuarantinedMissingWorktreeRegistration(receipt: A["QuarantinedMissingWorktreeRegistration"]): void;
+    branchExistsInRepo(source: string, branch: string): "local" | "remote" | "none";
+    prepareWorktreeCreation(source: string, destination: string, branch: string, action: WorktreeRepoResult["action"], guard: () => void, base: string): { expectedBranchOid: A["BranchCreationFence"]; destinationIdentity: A["DirectoryIdentity"] };
+    runPreparedWorktreeAdd(source: string, destination: string, branch: string, oid: string, identity: A["DirectoryIdentity"], guard: () => void, sourceIdentity: A["NestedRepositoryIdentity"]): { result: WorkspaceRepairGitObservation; registrationFence: A["WorktreeRegistrationFence"] | null };
+    requireWorktreeRegistrationFence(fence: A["WorktreeRegistrationFence"] | null, destination: string): A["WorktreeRegistrationFence"];
+    pinnedNestedRepositoryEnvironment(identity: A["NestedRepositoryIdentity"]): A["Environment"];
+    removeRegisteredWorktree(source: string, destination: string, identity: WorkspaceRepairDirectoryIdentity, force: boolean, base: string, registration: A["WorktreeRegistrationFence"], environment: A["Environment"], guard: () => void): void;
+    rollbackFailedCreatedBranch(source: string, branch: string, action: WorktreeRepoResult["action"], fence: A["BranchCreationFence"] | null): void;
+    rollbackFailedWorktreeAdd(source: string, destination: string, branch: string, action: WorktreeRepoResult["action"], fence: A["BranchCreationFence"], identity: A["DirectoryIdentity"], registration: A["WorktreeRegistrationFence"] | null, base: string, sourceIdentity: A["NestedRepositoryIdentity"], guard: () => void): void;
+    normalizeOwnerVerifiedWorktreeGitLink(destination: string, source: string): void;
+    noticePreservedRegistration(record: { name: string; source: string; destination: string; registration: A["QuarantinedMissingWorktreeRegistration"] }): void;
+}
