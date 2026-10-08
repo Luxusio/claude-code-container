@@ -2,11 +2,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { deviceLabTestHomeEnvironment, isolateDeviceLabTestEnvironment } from "./device-lab-test-environment.js";
 import { createHash } from "crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join, resolve } from "path";
 import {pathToFileURL} from "node:url";
-import { createBrokerApiClient } from "../../../scripts/real-tests/broker-api-client.ts";
+import { createBrokerApiClient } from "../../../scripts/real-tests/broker-api-client.js";
 
 const clientBrokerModules = new WeakMap<Client, string>();
 const clientEnvironments = new WeakMap<Client, NodeJS.ProcessEnv>();
