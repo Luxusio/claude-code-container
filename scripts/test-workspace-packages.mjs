@@ -4792,7 +4792,10 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
   syncBuiltinESMExports();
   const parseDescriptor = Object.getOwnPropertyDescriptor(JSON,'parse');
   const stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON,'stringify');
+  const originalContainerMarker=process.env.container;
   try {
+    // This isolated child models the host; the compiled container refusal remains tested below.
+    process.env.container='';
     const resolve = relative => {
       const file = path.resolve(payload,relative);
       assert(file.startsWith(path.resolve(payload)+path.sep)); assert(native.existsSync(file),`Missing shipped MCP module ${relative}`);
@@ -4898,6 +4901,21 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       assert(before.includes('model = "keep"'));assert(before.includes('http://host.docker.internal:8181/sse'));
       const config=originalParse(native.readFileSync(target,'utf8'));assert.equal(config.retained,true);assert(config.mcpServers['device-lab']);
     }
+    stage='compiled-container-refusal';
+    const protectedFiles=[host,...[undefined,'work'].flatMap(profile=>[utils.getClaudeJsonFile(profile),utils.getCodexConfigFile(profile)])];
+    const beforeRefusal=protectedFiles.map(file=>{owned(file,true);return native.readFileSync(file,'utf8');});
+    const publicationCount=events.filter(event=>Array.isArray(event)&&event[0]==='publication').length;
+    const mountedCodex=path.join(privateHome,'.codex','config.toml');
+    const mountedCodexExisted=native.existsSync(mountedCodex);
+    let refusedRestores=0;
+    process.env.container='docker';
+    try {
+      assert.throws(()=>facade.buildMcpConfig(undefined,()=>{refusedRestores++;}),/host configuration lock is unavailable/);
+      assert.equal(refusedRestores,0,'in-container refusal must precede restoration');
+      assert.deepEqual(protectedFiles.map(file=>{owned(file,true);return native.readFileSync(file,'utf8');}),beforeRefusal,'in-container refusal must preserve private config bytes');
+      assert.equal(native.existsSync(mountedCodex),mountedCodexExisted,'in-container refusal must not create mounted config');
+      assert.equal(events.filter(event=>Array.isArray(event)&&event[0]==='publication').length,publicationCount,'in-container refusal must not publish');
+    }finally{process.env.container='';}
     // Construction must not select the native publication writer.
     stage='compiled-construction';
     let selections=0;const ports=adapter.createNativeMcpConfigPorts();
@@ -4925,6 +4943,7 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       else assert.equal(Reflect.deleteProperty(object,name),true,'restore original property absence');
     });
     restore(()=>syncBuiltinESMExports());
+    restore(()=>{if(originalContainerMarker===undefined)delete process.env.container;else process.env.container=originalContainerMarker;});
     if(consumerFailed){
       if(cleanupFailures.length)try{console.error(diagnosticStringify({consumer:'MCP-cleanup',stage,cleanupFailures:cleanupFailures.map(error=>String(error?.message??error).slice(0,160)).slice(0,8)}).slice(0,1600));}catch{/* diagnostic only */}
     }else{
