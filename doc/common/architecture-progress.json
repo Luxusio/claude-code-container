@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-08",
+  "updatedAt": "2026-10-09",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -21,8 +21,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "code/security/qa actual PASS; hook receipts absent",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "workspace-repair",
@@ -39,8 +40,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "codex-launch",
@@ -53,8 +55,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "code/security/qa actual PASS; hook receipts absent",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "codex-resume",
@@ -67,8 +70,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "code/security/qa actual PASS; hook receipts absent",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "codex-clipboard",
@@ -81,8 +85,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "broker-observations",
@@ -104,8 +109,9 @@
         "OP-device-owned-list"
       ],
       "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "sandbox-stop",
@@ -118,8 +124,9 @@
         "OP-windows-sandbox-stop"
       ],
       "codeReview": "code/security/qa actual PASS; hook receipts absent, formal source close parked",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "codex-state-ownership",
@@ -132,8 +139,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "lab-state-ownership",
@@ -146,8 +154,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     },
     {
       "id": "clipboard-bridge",
@@ -163,8 +172,9 @@
       ],
       "partialOperationIds": [],
       "codeReview": "independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration",
-      "integration": "pending",
-      "nativeAcceptance": "unverified"
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
     }
   ],
   "planningLanes": [
@@ -185,7 +195,7 @@
         "OP-clipboard-server-ensure",
         "OP-clipboard-server-retire"
       ],
-      "status": "source frozen fb7457c7; independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified"
+      "status": "source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing-hook close remains parked, native acceptance unverified"
     },
     {
       "id": "codex-state-ownership",
@@ -193,7 +203,7 @@
       "coveredOperationIds": [
         "OP-codex-state-ownership-migration"
       ],
-      "status": "source frozen 912ec696; independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified"
+      "status": "source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing-hook close remains parked, native acceptance unverified"
     },
     {
       "id": "lab-state-ownership",
@@ -201,7 +211,31 @@
       "coveredOperationIds": [
         "OP-lab-state-ownership-migration"
       ],
-      "status": "source frozen 75bd30de; independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified"
+      "status": "source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing-hook close remains parked, native acceptance unverified"
+    },
+    {
+      "id": "destructive-admission",
+      "taskId": "TASK__architecture-destructive-admission",
+      "coveredOperationIds": [
+        "OP-device-destructive-admission"
+      ],
+      "status": "2ba3bcfd source candidate code/security PASS; focused QA and next-wave artifact acceptance pending, no operation credit"
+    },
+    {
+      "id": "device-flow",
+      "taskId": "TASK__architecture-device-flow",
+      "coveredOperationIds": [
+        "OP-device-flow"
+      ],
+      "status": "6b50b7aa source candidate with actual facade witness remediation; affected review and QA pending, no operation credit"
+    },
+    {
+      "id": "container-identity-image",
+      "taskId": "TASK__architecture-container-identity-image",
+      "coveredOperationIds": [
+        "OP-container-identity-image"
+      ],
+      "status": "cf8b4306 source candidate code/security PASS; focused QA and next-wave artifact acceptance pending, no operation credit"
     }
   ]
 }

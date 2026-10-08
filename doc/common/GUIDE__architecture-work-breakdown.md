@@ -1,12 +1,12 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-08. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-09. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
 Implemented including unmerged candidates: **52/218 (23.9%)**.
-Integrated source: **31/218 (14.2%)**; historical baseline: **31**. Candidates: **21**; partial: **19**; TODO: **147**.
+Integrated source: **52/218 (23.9%)**; historical baseline: **31**. Candidates: **0**; partial: **19**; TODO: **147**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -22,25 +22,28 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 
 | Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |
 | --- | ---: | ---: | --- | --- | --- |
-| runtime\-launch | 1 | 0 | `02c5a401` | code/security/qa actual PASS; hook receipts absent | pending |
-| workspace\-repair | 5 | 0 | `d7f578d8` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
-| codex\-launch | 1 | 0 | `ea96263f` | code/security/qa actual PASS; hook receipts absent | pending |
-| codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | pending |
-| codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
-| broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
-| sandbox\-stop | 0 | 1 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked | pending |
-| codex\-state\-ownership | 1 | 0 | `912ec696` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | pending |
-| lab\-state\-ownership | 1 | 0 | `75bd30de` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | pending |
-| clipboard\-bridge | 4 | 0 | `fb7457c7` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | pending |
+| runtime\-launch | 1 | 0 | `02c5a401` | code/security/qa actual PASS; hook receipts absent | accepted @ 10c86183 |
+| workspace\-repair | 5 | 0 | `d7f578d8` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
+| codex\-launch | 1 | 0 | `ea96263f` | code/security/qa actual PASS; hook receipts absent | accepted @ 10c86183 |
+| codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | accepted @ 10c86183 |
+| codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
+| broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
+| sandbox\-stop | 0 | 1 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked | accepted @ 10c86183 |
+| codex\-state\-ownership | 1 | 0 | `912ec696` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
+| lab\-state\-ownership | 1 | 0 | `75bd30de` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
+| clipboard\-bridge | 4 | 0 | `fb7457c7` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
 
 ## 0.2 Active next plans
 
 | Lane | Operation ids | State |
 | --- | --- | --- |
 | sandbox\-stop | OP\-windows\-sandbox\-stop | direct binding source frozen and independent code/security/QA PASS; broker binding remains legacy, whole operation partial |
-| clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | source frozen fb7457c7; independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified |
-| codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source frozen 912ec696; independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified |
-| lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source frozen 75bd30de; independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified |
+| clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
+| codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
+| lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
+| destructive\-admission | OP\-device\-destructive\-admission | 2ba3bcfd source candidate code/security PASS; focused QA and next\-wave artifact acceptance pending, no operation credit |
+| device\-flow | OP\-device\-flow | 6b50b7aa source candidate with actual facade witness remediation; affected review and QA pending, no operation credit |
+| container\-identity\-image | OP\-container\-identity\-image | cf8b4306 source candidate code/security PASS; focused QA and next\-wave artifact acceptance pending, no operation credit |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -133,9 +136,9 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-android-wireless-usb-tcpip` — Android wireless usb\-tcpip. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
 - [ ] `OP-android-wireless-pair` — Android wireless pair. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
 - [ ] `OP-android-wireless-connect` — Android wireless connect. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
-- [x] `OP-appium-list` — List selected owner/backend device Appium projections, including idle device entries with appium:null. **implemented candidate**; broker\-observations @ 3f020650.
-- [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **implemented candidate**; broker\-observations @ 3f020650.
-- [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **implemented candidate**; broker\-observations @ 3f020650.
+- [x] `OP-appium-list` — List selected owner/backend device Appium projections, including idle device entries with appium:null. **integrated**; broker\-observations @ 3f020650.
+- [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **integrated**; broker\-observations @ 3f020650.
+- [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **integrated**; broker\-observations @ 3f020650.
 
 ## 9. M08 — Provider capabilities (0/76 implemented)
 
@@ -219,9 +222,9 @@ No separately counted product operations. This packet's foundation/structural ac
 ## 10. M09 — Device Lab entrypoints (3/4 implemented)
 
 - [ ] `OP-broker-supervision` — Supervise authenticated host broker. **TODO**; device\-lab\-mcp/src/broker\.mjs.
-- [x] `OP-device-lifecycle-plan` — Preview one owner\-scoped lifecycle command with validation, idempotency/conflict checks, metadata capacity, incarnation/attachment fences and provider command DTO; execute no planned lifecycle mutation. **implemented candidate**; broker\-observations @ 3f020650.
-- [x] `OP-broker-status` — Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service. **implemented candidate**; broker\-observations @ 3f020650.
-- [x] `OP-broker-service-status` — Observe OS service\-manager installed/running/owner diagnostics for status only, including dry\-run preview. **implemented candidate**; broker\-observations @ 3f020650.
+- [x] `OP-device-lifecycle-plan` — Preview one owner\-scoped lifecycle command with validation, idempotency/conflict checks, metadata capacity, incarnation/attachment fences and provider command DTO; execute no planned lifecycle mutation. **integrated**; broker\-observations @ 3f020650.
+- [x] `OP-broker-status` — Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service. **integrated**; broker\-observations @ 3f020650.
+- [x] `OP-broker-service-status` — Observe OS service\-manager installed/running/owner diagnostics for status only, including dry\-run preview. **integrated**; broker\-observations @ 3f020650.
 
 ## 11. M10 — Sessions and containers (10/14 implemented)
 
@@ -229,7 +232,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-session-acquire` — Acquire and transfer session ownership. **integrated**; src/application/session\-acquisition\.ts.
 - [x] `OP-session-cleanup` — Clean up ended session. **integrated**; src/application/session\-cleanup\.ts.
 - [x] `OP-container-reuse` — Reuse, defer or replace existing container. **integrated**; src/application/container\-existing\-lifecycle\.ts.
-- [x] `OP-container-create` — Create fresh project container. **implemented candidate**; runtime\-launch @ 02c5a401.
+- [x] `OP-container-create` — Create fresh project container. **integrated**; runtime\-launch @ 02c5a401.
 - [x] `OP-container-stop` — Stop project container. **integrated**; src/application/container\-destructive\-lifecycle\.ts.
 - [x] `OP-container-remove` — Remove project container. **integrated**; src/application/container\-destructive\-lifecycle\.ts.
 - [ ] `OP-container-exec` — Execute tool or command in project container. **partial**; src/docker\.ts.
@@ -238,7 +241,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-socket` — Prepare container socket access. **integrated**; src/application/container\-socket\-access\.ts.
 - [ ] `OP-runtime-capabilities` — Observe and cache selected runtime capabilities. **TODO**; src/container\-runtime\.ts.
 - [ ] `OP-container-identity-image` — Prepare validated derived container identity image. **TODO**; src/container\-identity\.ts.
-- [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **implemented candidate**; lab\-state\-ownership @ 75bd30de.
+- [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **integrated**; lab\-state\-ownership @ 75bd30de.
 
 ## 12. M11 — Workspace/profiles/credentials/tools (29/33 implemented)
 
@@ -259,14 +262,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-install-npm` — Ensure container npm installation. **integrated**; src/application/tooling/container\-installation\.ts.
 - [x] `OP-install-bubblewrap` — Ensure container bubblewrap installation. **integrated**; src/application/tooling/container\-installation\.ts.
 - [x] `OP-install-uv` — Ensure container uv installation. **integrated**; src/application/tooling/container\-installation\.ts.
-- [x] `OP-workspace-create-admission` — Admit and dispatch workspace create. **implemented candidate**; workspace\-repair @ d7f578d8.
-- [x] `OP-workspace-remove-admission` — Admit and dispatch workspace remove. **implemented candidate**; workspace\-repair @ d7f578d8.
+- [x] `OP-workspace-create-admission` — Admit and dispatch workspace create. **integrated**; workspace\-repair @ d7f578d8.
+- [x] `OP-workspace-remove-admission` — Admit and dispatch workspace remove. **integrated**; workspace\-repair @ d7f578d8.
 - [ ] `OP-workspace-open` — workspace open. **TODO**; src/index\.ts.
 - [ ] `OP-workspace-content-repair-admission` — workspace content repair admission. **TODO**; src/index\.ts.
 - [ ] `OP-workspace-cli-remove` — workspace cli remove. **TODO**; src/index\.ts.
-- [x] `OP-workspace-nested-repair` — Repair missing or empty nested repository worktrees. **implemented candidate**; workspace\-repair @ d7f578d8.
-- [x] `OP-workspace-root-recovery` — Recover owned workspace root Git metadata. **implemented candidate**; workspace\-repair @ d7f578d8.
-- [x] `OP-workspace-broken-content-repair` — Replace explicitly confirmed broken nested checkout while preserving content. **implemented candidate**; workspace\-repair @ d7f578d8.
+- [x] `OP-workspace-nested-repair` — Repair missing or empty nested repository worktrees. **integrated**; workspace\-repair @ d7f578d8.
+- [x] `OP-workspace-root-recovery` — Recover owned workspace root Git metadata. **integrated**; workspace\-repair @ d7f578d8.
+- [x] `OP-workspace-broken-content-repair` — Replace explicitly confirmed broken nested checkout while preserving content. **integrated**; workspace\-repair @ d7f578d8.
 - [x] `OP-profile-list` — List reserved\-default and named profiles. **integrated**; src/application/profile\-catalog\.ts.
 - [x] `OP-profile-create` — Create explicit named profile. **integrated**; src/application/profile\-catalog\.ts.
 - [x] `OP-profile-ensure` — Ensure builtin named profile. **integrated**; src/application/profile\-catalog\.ts.
@@ -274,14 +277,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-home-config-read` — Read CCC configuration leniently. **integrated**; src/application/home/config\.ts.
 - [x] `OP-home-config-update` — Update CCC configuration atomically. **integrated**; src/application/home/config\.ts.
 - [x] `OP-home-default-ensure` — Ensure marked no\-profile account. **integrated**; src/application/home/layout\-paths\.ts.
-- [x] `OP-codex-state-ownership-migration` — prepareCodexStateOwnership. **implemented candidate**; codex\-state\-ownership @ 912ec696.
+- [x] `OP-codex-state-ownership-migration` — prepareCodexStateOwnership. **integrated**; codex\-state\-ownership @ 912ec696.
 
 ## 13. M12 — Host services/tool sessions/remote (7/16 implemented)
 
-- [x] `OP-clipboard-write` — Publish host clipboard text/image. **implemented candidate**; clipboard\-bridge @ fb7457c7.
+- [x] `OP-clipboard-write` — Publish host clipboard text/image. **integrated**; clipboard\-bridge @ fb7457c7.
 - [ ] `OP-clipboard-x11-sync` — Synchronize X11 and host clipboard. **TODO**; scripts/ccc\-x11\-bridge.
-- [x] `OP-codex-launch` — Prepare interactive Codex daemon launch. **implemented candidate**; codex\-launch @ ea96263f.
-- [x] `OP-codex-resume` — Recover qualified Codex resume once. **implemented candidate**; codex\-resume @ b625854d.
+- [x] `OP-codex-launch` — Prepare interactive Codex daemon launch. **integrated**; codex\-launch @ ea96263f.
+- [x] `OP-codex-resume` — Recover qualified Codex resume once. **integrated**; codex\-resume @ b625854d.
 - [ ] `OP-remote-exec` — Execute command through remote lease. **TODO**; src/remote\.ts.
 - [ ] `OP-localhost-proxy` — Forward transparent localhost connection. **TODO**; src/localhost\-proxy\.ts.
 - [ ] `OP-mcp-forward` — Regenerate per\-profile MCP configuration. **TODO**; src/mcp\-forward\.ts.
@@ -289,10 +292,10 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-remote-setup` — Present remote setup guidance. **TODO**; src/remote\.ts.
 - [ ] `OP-remote-check` — Remote check. **TODO**; src/remote\.ts.
 - [ ] `OP-remote-terminate` — Terminate project Mutagen sync. **TODO**; src/remote\.ts.
-- [x] `OP-clipboard-server-ensure` — Clipboard server ensure. **implemented candidate**; clipboard\-bridge @ fb7457c7.
-- [x] `OP-clipboard-server-retire` — Clipboard server retire. **implemented candidate**; clipboard\-bridge @ fb7457c7.
-- [x] `OP-clipboard-read` — Read coherent host clipboard snapshot. **implemented candidate**; clipboard\-bridge @ fb7457c7.
-- [x] `OP-codex-clipboard-attachment` — Attach clipboard image to eligible Codex invocation. **implemented candidate**; codex\-clipboard @ fb6c26f7.
+- [x] `OP-clipboard-server-ensure` — Clipboard server ensure. **integrated**; clipboard\-bridge @ fb7457c7.
+- [x] `OP-clipboard-server-retire` — Clipboard server retire. **integrated**; clipboard\-bridge @ fb7457c7.
+- [x] `OP-clipboard-read` — Read coherent host clipboard snapshot. **integrated**; clipboard\-bridge @ fb7457c7.
+- [x] `OP-codex-clipboard-attachment` — Attach clipboard image to eligible Codex invocation. **integrated**; codex\-clipboard @ fb6c26f7.
 - [ ] `OP-codex-harness-bootstrap` — Ensure existing Codex Harness integration. **TODO**; src/codex\-harness\.ts.
 
 ## 14. M13 — Composition and distribution (0/6 implemented)

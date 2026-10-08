@@ -1,6 +1,6 @@
 # Reviewed architecture wave integration
 
-Status: integration in progress. Source baseline remains `c284ead3`.
+Status: source integrated locally on 2026-10-09 at `10c86183`. Historical inventory baseline remains `c284ead3`.
 The destination is the local `feature/device-mcp-squashed` branch. No hosted CI,
 workflow rerun, push or global installation is authorized by this wave.
 
@@ -27,17 +27,21 @@ The first combined source point is `ef7ae841`. The progress renderer subsequentl
 gained an accepted-integration projection at `0022718d`: historical inventory
 anchors remain unchanged, whole operations count once and accepted partial
 bindings receive no whole-operation credit. Thirteen private projection cases
-passed, including invalid input preserving existing output. Current lane states
-remain pending until combined verification and local delivery are complete.
+passed, including invalid input preserving existing output. Operation lane states now record accepted local delivery at `10c86183`.
+Historical inventory anchors and native gaps remain unchanged.
 
 Codex retained-state, Lab volume and Clipboard policies were admitted after
 actual independent code/security review and QA PASS. Missing automatic records
-remain explicit formal source-task blocks. Combined compilation passes. The
-two actual shipping forms, full portable suite and final independent combined QA
-remain pending; per-slice results do not substitute for those gates.
+remain explicit formal source-task blocks. Combined compilation, both actual shipping forms and final independent combined
+code/security review and QA passed. The complete direct portable suite passed
+11,459 tests with 151 preserved capability skips across 445 passing files and
+10 skipped files. No failed test or unhandled error remained. The initial stale
+restart-timeout expectation failure is retained; its reviewed correction and
+affected 19-test rerun passed.
 
-The provisional WBS records 52/218 implemented operations (23.9%), including
-21 candidates awaiting combined acceptance and 31 historical integrated operations.
+The provisional WBS records 52/218 implemented operations (23.9%), all integrated
+locally, with zero unmerged candidate credit. The historical inventory baseline
+contains 31 of these operations.
 Nineteen partial operations receive no completion credit; 147 remain TODO.
 
 The final Docker recovery tip `789d09e1` was merged normally at `f855c93e`.
@@ -57,6 +61,21 @@ manifest. Source work, dependencies, private homes and generated artifacts stay
 inside owned worktrees. No live native ownership/resource action has been run.
 Real Windows/macOS/Colima and reliability obligations remain unverified.
 
-Combined test outcomes, exact final source provenance and destination hashes
-will be recorded here after actual verification. This note does not certify the
-full M00–M14 objective or the complete provisional denominator.
+Final independent QA verified all 138 delivered paths byte-for-byte against
+the reviewed source point and all 97 original main-checkout user files unchanged.
+The normal fast-forward landed on `feature/device-mcp-squashed`; no CI or push ran.
+Local delivery first encountered a root-owned `doc` directory without group write
+permission. Only that directory gained group write, with its ownership preserved.
+A byte-identical partial-checkout note was preserved in a private checkpoint
+before retrying the normal fast-forward. No stash, reset, force or user-file
+replacement was used.
+
+The integration task was verified once after actual QA PASS. Its automatic
+review/QA record stream was empty, so formal task close remains parked under
+the recorded continuation exception. Actual review, test and delivery results
+are retained; no hook record or close result was invented.
+
+The next three disjoint lanes cover destructive admission, ordered Device Lab
+flow and container identity-image policy. Their source candidates remain outside
+completion credit until actual QA and integration. This note certifies neither
+the full M00–M14 objective nor the provisional denominator.
