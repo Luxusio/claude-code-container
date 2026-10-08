@@ -4239,7 +4239,11 @@ function identityWitness(source, scenario) {
     code=code.replace(/export\s*\{([^}]+)\}\s*from\s*["']([^"']+)["'];?/g,(_,bindings,id)=>bindings.split(',').filter(x=>x.trim()).map(x=>{const [name,alias]=x.trim().split(/\s+as\s+/);return `exports.${alias||name}=require(${JSON.stringify(id)}).${name};`;}).join('\n'));
     code=code.replace(/\bexport\s+(?=(?:function|const|class))/g,'');
     code+='\n'+names.map(n=>`exports.${n}=${n};`).join('\n');
-    const req=id=>native[id]||load(path.resolve(path.dirname(file),id));
+    // Assembly rewrites this one native dependency in the public facade.
+    // Bind its exact emitted path to the same captured lock observation.
+    const req=id=>file===source&&id==='./packages/device-lab/dist/device-lab-shared-state.js'
+      ? native['@ccc/device-lab/device-lab-shared-state.js']
+      : native[id]||load(path.resolve(path.dirname(file),id));
     const instrumentedJSON = Object.create(JSON);
     instrumentedJSON.stringify = value => {events.push(["JSON.stringify"]);return JSON.stringify(value);};
     instrumentedJSON.parse = text => { const data=JSON.parse(text); if(scenario !== 'inspect-getters') return data; const wrap=(value,prefix)=>value && typeof value==='object' ? new Proxy(value,{get(target,key){events.push(['get',prefix+String(key)]);return wrap(target[key],prefix+String(key)+'.');}}) : value; return data.map(value=>wrap(value,'image.')); };
