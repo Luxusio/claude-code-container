@@ -13,9 +13,12 @@ describe("actual public Sandbox create bindings", () => {
         const context = await createDeviceLabMcpTestContext({ defaultImplicitBroker: false });
         try {
             const args = { backend: "windows-sandbox", name: "Architecture Sandbox", deviceId: "architecture-sandbox" };
-            const invalid = await context.client.callTool({ name: "device_create", arguments: { ...args, memoryMb: 1 } }); expect(invalid.isError).toBe(true);
-            const result = await context.client.callTool({ name: "device_create", arguments: args }); expect(result.isError).not.toBe(true);
-            const duplicate = await context.client.callTool({ name: "device_create", arguments: args }); expect(duplicate.isError).toBe(true);
+            const catalog = await context.client.listTools(); const tool = catalog.tools.find(tool => tool.name === "create_windows_sandbox");
+            expect(tool).toBeDefined(); expect(catalog.tools.some(tool => tool.name === "device_create")).toBe(false);
+            expect(tool?.inputSchema.properties?.memoryMb).toMatchObject({ type: "number" });
+            const invalid = await context.client.callTool({ name: "create_windows_sandbox", arguments: { ...args, memoryMb: 1 } }); expect(invalid.isError).toBe(true);
+            const result = await context.client.callTool({ name: "create_windows_sandbox", arguments: args }); expect(result.isError).not.toBe(true);
+            const duplicate = await context.client.callTool({ name: "create_windows_sandbox", arguments: args }); expect(duplicate.isError).toBe(true);
             expect(JSON.stringify(duplicate)).toContain("Device already exists for this owner");
         } finally { await cleanupDeviceLabMcpTestContext(context); }
     }, 30000);
@@ -34,7 +37,14 @@ describe("actual public Sandbox create bindings", () => {
             expect(lstatSync(configPath).isSymbolicLink()).toBe(false); if (process.platform !== "win32") expect(readFileSync(external, "utf8")).toBe("outside");
             const config = readFileSync(configPath, "utf8"); expect(config).toContain("<MemoryInMB>2048</MemoryInMB>"); expect(config).toContain("<Networking>Enable</Networking>"); expect(config.match(/<MappedFolder>/g)).toHaveLength(5); expect(config).toContain("wscript.exe //B");
             const duplicate = await invoke(params); expect(duplicate.status).toBe(409); expect(await duplicate.json()).toMatchObject({ ok: false, error: "owner-device-already-exists", deviceId: "sandbox" });
-            const invalid = await invoke({ ...params, deviceId: "invalid", memoryMb: "raw" }); expect(invalid.status).toBeGreaterThanOrEqual(400);
+            // The native broker's existing optionalNumber parser omits raw strings.
+            const fallback = await invoke({ ...params, deviceId: "fallback", memoryMb: "raw" }); expect(fallback.status).toBe(200);
+            expect(await fallback.json()).toMatchObject({ ok: true, result: { device: { id: "fallback", memoryMb: 4096 } } });
+            const records = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows"), "devices.json"), "utf8")).devices as Array<{ id: string; memoryMb: number }>;
+            expect(records.find(device => device.id === "fallback")).toMatchObject({ memoryMb: 4096 });
+            expect(readFileSync(join(backendRoot(ownerId, "windows"), "fallback", "fallback.wsb"), "utf8")).toContain("<MemoryInMB>4096</MemoryInMB>");
+            const invalid = await invoke({ ...params, deviceId: "../invalid" }); expect(invalid.status).toBeGreaterThanOrEqual(400);
+            expect(existsSync(join(backendRoot(ownerId, "windows"), "..", "invalid"))).toBe(false);
         } finally { await close(server); restore(); rmSync(home, { recursive: true, force: true }); }
     }, 30000);
     it("compensates an actual RPC config publication fault while preserving generated helper files", async () => {
