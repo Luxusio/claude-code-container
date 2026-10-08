@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -18,6 +18,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {syncBuiltinESMExports} from 'node:module';
 const mode=process.argv[2],log=${JSON.stringify(log)},guid=${JSON.stringify(guid)};
+const blocked=path.join(process.env.HOME,'second-blocked');
+const nativeOpen=fs.openSync,nativeRename=fs.renameSync;let reportedBlocked=false;
+const operationLock=file=>typeof file==='string'&&path.basename(path.dirname(file))==='operations'&&file.endsWith('.lock');
+fs.openSync=function(file,flags,...rest){
+ if(!operationLock(file)||flags!=='wx')return nativeOpen(file,flags,...rest);
+ try{const descriptor=nativeOpen(file,flags,...rest);fs.appendFileSync(log,JSON.stringify({kind:'lock-acquired',actor:mode})+'\\n');return descriptor}
+ catch(error){if(error.code==='EEXIST'&&mode==='second'&&!reportedBlocked){reportedBlocked=true;fs.appendFileSync(log,JSON.stringify({kind:'lock-blocked',actor:mode})+'\\n');fs.writeFileSync(blocked,'observed actual lock contention')}throw error}
+};
+fs.renameSync=function(source,destination){if(operationLock(source)&&destination.endsWith('.release'))fs.appendFileSync(log,JSON.stringify({kind:'lock-release-start',actor:mode})+'\\n');return nativeRename(source,destination)};
 const nativeSpawn=cp.spawnSync;
 cp.spawnSync=function(command,args=[],options){
  const lookup=command==='where'?args[0]:command==='/bin/sh'&&args[0]==='-c'&&args[1]?.startsWith('command -v ')?args[1].slice(11):null;
@@ -26,7 +35,7 @@ cp.spawnSync=function(command,args=[],options){
   assert.deepEqual(args,['stop','--id',guid]); assert.equal(options.timeout,60000); assert.equal(options.windowsHide,true);
   fs.appendFileSync(log,JSON.stringify({kind:'enter',actor:mode,args,timeout:options.timeout})+'\\n');
   process.send?.('native-enter');
-  if(mode==='first')Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1200);
+  if(mode==='first'){const deadline=Date.now()+10000;while(!fs.existsSync(blocked)&&Date.now()<deadline)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);assert.equal(fs.existsSync(blocked),true,'second process must actually observe the held long lock')}
   fs.appendFileSync(log,JSON.stringify({kind:'exit',actor:mode})+'\\n');
   return {status:mode==='failure'?7:0,stdout:'',stderr:mode==='failure'?'native-stop-failed':''};
  }
@@ -68,7 +77,7 @@ describe("actual public Sandbox facade with private native/state adapters", () =
             const execution = f.execute("success"); expect(execution.status, execution.stderr).toBe(0); const value = output(execution.stdout);
             expect(value.result.isError).not.toBe(true); expect(value.device).toMatchObject({ status: "stopped", sandboxId: guid, lifecycle: null, singletonClaimId: null, recording: { active: true, runtimeId: "recording" }, minimizeWatchdogLaunch: { pid: 17 }, helperSessionLaunch: { ok: true, minimizeWatchdogPid: null } });
             expect(value.lockExists).toBe(false); expect(value.cancelExists).toBe(true);
-            const trace = readFileSync(f.log, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line)); expect(trace).toEqual([{ kind: "enter", actor: "success", args: ["stop", "--id", guid], timeout: 60000 }, { kind: "exit", actor: "success" }]);
+            const trace = readFileSync(f.log, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line)); expect(trace.filter(row => row.kind === "enter" || row.kind === "exit")).toEqual([{ kind: "enter", actor: "success", args: ["stop", "--id", guid], timeout: 60000 }, { kind: "exit", actor: "success" }]);
         } finally { rmSync(f.home, { recursive: true, force: true }); }
     });
     it("preserves retry state and actual singleton on native failure", () => {
@@ -97,8 +106,13 @@ describe("actual public Sandbox facade with private native/state adapters", () =
             expect(await firstExit, errorFirst).toBe(0); expect(await secondExit, errorSecond).toBe(0);
             expect(output(outputFirst).device.status).toBe("stopped"); expect(output(outputSecond).device.status).toBe("stopped");
             const trace = readFileSync(f.log, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
-            expect(trace.map(row => [row.kind, row.actor])).toEqual([["enter", "first"], ["exit", "first"]]);
-            expect(readFileSync(f.log, "utf8")).not.toContain('"second"');
+            expect(trace.map(row => [row.kind, row.actor])).toEqual([["lock-acquired", "first"], ["enter", "first"], ["lock-blocked", "second"], ["exit", "first"], ["lock-release-start", "first"], ["lock-acquired", "second"], ["lock-release-start", "second"]]);
+            expect(trace.filter(row => row.kind === "enter")).toHaveLength(1);
+            const captureDirectory = process.env.CCC_SANDBOX_STOP_EVIDENCE_DIR;
+            if (captureDirectory) {
+                expect(resolve(captureDirectory)).toBe(join(root, "doc/harness/checkpoints/recovery-evidence"));
+                writeFileSync(join(captureDirectory, "two-process-native-lock-trace.json"), JSON.stringify({ nativeStopCount: 1, actualNativeLongLockTrace: trace }, null, 2) + "\n");
+            }
         } finally { for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill(); rmSync(f.home, { recursive: true, force: true }); }
     }, 30000);
 });
