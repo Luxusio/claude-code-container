@@ -15,7 +15,7 @@ describe("actual public Sandbox create bindings", () => {
             const args = { backend: "windows-sandbox", name: "Architecture Sandbox", deviceId: "architecture-sandbox" };
             const catalog = await context.client.listTools(); const tool = catalog.tools.find(tool => tool.name === "create_windows_sandbox");
             expect(tool).toBeDefined(); expect(catalog.tools.some(tool => tool.name === "device_create")).toBe(false);
-            expect(tool?.inputSchema.properties?.memoryMb).toMatchObject({ type: "number" });
+            expect(tool?.inputSchema.properties?.memoryMb).toMatchObject({ type: "integer" });
             const invalid = await context.client.callTool({ name: "create_windows_sandbox", arguments: { ...args, memoryMb: 1 } }); expect(invalid.isError).toBe(true);
             const result = await context.client.callTool({ name: "create_windows_sandbox", arguments: args }); expect(result.isError).not.toBe(true);
             const duplicate = await context.client.callTool({ name: "create_windows_sandbox", arguments: args }); expect(duplicate.isError).toBe(true);
