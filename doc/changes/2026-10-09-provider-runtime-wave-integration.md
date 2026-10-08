@@ -39,7 +39,9 @@ provider exports, strict declarations, ordered core flow and bundled public MCP
 admission and flow behavior under effect fences. The first run found an emitted
 relative import missing from the test's native dependency bindings. Its exact
 path now uses the existing frozen lock observation; native import permissions
-remain restricted. The corrected checker is still running.
+remain restricted. The corrected checker completed with exit 0 for both forms,
+including current strict declaration consumers and public MCP checks. Final
+independent combined review and the full portable suite remain pending.
 
 The current WBS remains 52/218 implemented and integrated, with 19 partial
 operations and 147 TODO. These three operations gain credit only after combined
