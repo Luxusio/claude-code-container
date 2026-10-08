@@ -74,8 +74,12 @@ vi.mock("child_process", async original => {
         exec: deniedCapability, execSync: deniedCapability, execFile: deniedCapability,
         execFileSync: (file: string, args: string[], options: Record<string, unknown>) => {
             // Only immutable baseline materialization is allowed in this test.
-            if ((file === "git" && args[0] === "archive" && args[1] === revision)
-                || (file === "tar" && args[0] === "-x" && args[1] === "-C" && args[2] === frozenRoot)) {
+            if ((file === "git" && args.length === 7 && args[0] === "archive" && args[1] === revision
+                && args[2] === "--output=" + archiveFile && args[3] === "device-lab-mcp/src"
+                && args[4] === "packages/device-lab/providers" && args[5] === "packages/hyper-v/src"
+                && args[6] === "packages/hyper-v/powershell" && options.cwd === checkoutRoot)
+                || (file === "tar" && args.length === 4 && args[0] === "-xf" && args[1] === archiveFile
+                    && args[2] === "-C" && args[3] === frozenRoot)) {
                 return actual.execFileSync(file, args, options);
             }
             return deniedCapability();
@@ -87,7 +91,8 @@ vi.mock("net", async original => ({ ...await original<Record<string, unknown>>()
 
 const revision = "10c8618383811ced1f24305c35f6098ab858d25d";
 const checkoutRoot = resolve(".");
-const frozenRoot = resolve(checkoutRoot, "proof/device-flow-baseline");
+let frozenRoot: string;
+let archiveFile: string;
 let privateContext: string;
 let cwdSpy: { mockRestore(): void };
 let baselineCall: (request: any) => Promise<any>;
@@ -106,6 +111,10 @@ function providerFiles(directory: string): string[] {
 beforeAll(async () => {
     // Establish private identity/state before any native facade/provider import.
     privateContext = mkdtempSync(join(tmpdir(), "ccc-flow-paired-"));
+    // Always start without a supplied archive: source-worktree checkpoints must
+    // not hide the materialization branch used by integration and clean checkouts.
+    frozenRoot = join(privateContext, "baseline");
+    archiveFile = join(privateContext, "baseline.tar");
     const home = join(privateContext, "home"), cwd = join(privateContext, "project");
     for (const directory of [home, cwd, join(home, ".ccc", "devices"), join(privateContext, "appdata"), join(privateContext, "localappdata")]) mkdirSync(directory, { recursive: true });
     vi.stubEnv("HOME", home); vi.stubEnv("USERPROFILE", home);
@@ -113,14 +122,14 @@ beforeAll(async () => {
     vi.stubEnv("CCC_PROFILE", "paired-private");
     cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
     vi.stubGlobal("fetch", deniedCapability);
-    // The ignored persistent pre-edit archive is also reproducible on integration.
+    // Reproduce the exact persistent pre-edit revision in this fresh context.
     // Preserve frozen source verbatim; real local schema/normalizer/output modules
     // import within that graph. Package aliases use byte-identical original leaf
     // sources, verified before either graph is started.
     if (!existsSync(join(frozenRoot, "device-lab-mcp/src/server.mjs"))) {
         mkdirSync(frozenRoot, { recursive: true });
-        const archive = execFileSync("git", ["archive", revision, "device-lab-mcp/src", "packages/device-lab/providers", "packages/hyper-v/src", "packages/hyper-v/powershell"], { cwd: checkoutRoot });
-        execFileSync("tar", ["-x", "-C", frozenRoot], { input: archive });
+        execFileSync("git", ["archive", revision, "--output=" + archiveFile, "device-lab-mcp/src", "packages/device-lab/providers", "packages/hyper-v/src", "packages/hyper-v/powershell"], { cwd: checkoutRoot });
+        execFileSync("tar", ["-xf", archiveFile, "-C", frozenRoot]);
     }
     for (const file of providerFiles(join(frozenRoot, "packages/device-lab/providers"))) {
         const relative = file.slice(frozenRoot.length + 1);
