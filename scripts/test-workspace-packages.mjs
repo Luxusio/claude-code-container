@@ -3864,22 +3864,47 @@ async function verifyReviewedBrokerDelivery(root, home) {
     const {default: http} = await import("node:http");
     const {default: https} = await import("node:https");
     const {syncBuiltinESMExports} = await import("node:module");
-    const {existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync} = await import("node:fs");
+    const filesystem = (await import("node:fs")).default;
+    const existsSync = (...args) => filesystem.existsSync(...args), mkdirSync = (...args) => filesystem.mkdirSync(...args);
+    const readFileSync = (...args) => filesystem.readFileSync(...args), readdirSync = (...args) => filesystem.readdirSync(...args), writeFileSync = (...args) => filesystem.writeFileSync(...args);
     const {join, resolve} = await import("node:path");
     const {pathToFileURL} = await import("node:url");
     const privateRequest = http.request;
     const privateConnection = net.createConnection;
+    const privateSocketConnect = net.Socket.prototype.connect;
     assert(!root.includes('/.claude/worktrees/'));
     assert(!existsSync(join(root, 'node_modules')));
     for (const key of Object.keys(process.env)) if (/^(CCC_|ANDROID_)/i.test(key)) delete process.env[key];
     Object.assign(process.env, { HOME: home, USERPROFILE: home, APPDATA: join(home,'AppData/Roaming'), LOCALAPPDATA: join(home,'AppData/Local') });
     mkdirSync(home, {recursive:true});
-    let nativeCalls = 0;
+    let nativeCalls = 0, allocatedMetadata = 0, allocatedConnections = 0;
     const refuse = (...args) => { nativeCalls++; throw new Error('QA forbidden native/process/network call: '+String(args[0])); };
     for(const key of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork']) cp[key] = refuse;
     for(const mod of [net, http, https]) for(const key of ['connect','createConnection','request','get']) if(typeof mod[key] === 'function') mod[key] = refuse;
     globalThis.fetch = refuse;
     process.kill = refuse;
+    net.Socket.prototype.connect = refuse;
+    (await import("node:tls")).default.connect = refuse;
+    const fs = (await import("node:fs")).default;
+    for (const name of ["readFileSync", "writeFileSync", "mkdirSync", "readdirSync", "unlinkSync", "rmSync", "renameSync", "linkSync", "symlinkSync", "copyFileSync", "openSync", "chmodSync"]) {
+        const captured = fs[name];
+        fs[name] = function (...args) {
+            if (name === "readFileSync") {
+                if (args[0] === "/proc/sys/kernel/random/boot_id") { allocatedMetadata++; return "shipping-fixture-boot\n"; }
+                if (args[0] === `/proc/${process.pid}/stat`) { allocatedMetadata++; return `${process.pid} (node) ${Array(20).fill("1").join(" ")}`; }
+                if (args[0] === `/proc/${process.pid}/cmdline`) { allocatedMetadata++; return Buffer.from("node\0shipping-fixture\0"); }
+            }
+            const selected = ["renameSync", "linkSync", "copyFileSync"].includes(name) ? args.slice(0, 2) : name === "symlinkSync" ? [args[1]] : [args[0]];
+            for (const value of selected) {
+                if (typeof value === "number") continue;
+                const resolved = resolve(String(value));
+                if (![home, root].some(base => resolved === base || resolved.startsWith(base + "/"))) return refuse("filesystem:" + resolved);
+            }
+            const writes = !["readFileSync", "readdirSync"].includes(name) && !(name==="openSync" && (args[1]==="r" || args[1]===fs.constants.O_RDONLY));
+            if(writes){const destination=["renameSync","linkSync","copyFileSync","symlinkSync"].includes(name)?args[1]:args[0];if(typeof destination!=="number" && resolve(String(destination))!==home && !resolve(String(destination)).startsWith(home+"/"))return refuse("filesystem-write:"+destination);}
+            return captured.apply(this, args);
+        };
+    }
     syncBuiltinESMExports();
     const source = join(root,'dist/packages/device-lab/dist/device-lab');
     const names = ['application/broker-observation-inventory','application/broker-observation-leases','application/broker-observation-appium','application/broker-observation-status','application/broker-observation-command-plan','domain/broker-observation','domain/broker-observation-command-plan','ports/broker-observation'];
@@ -3969,7 +3994,11 @@ async function verifyReviewedBrokerDelivery(root, home) {
     privateAgent.createConnection = (connection, callback) => {
         assert.equal(connection.host, "127.0.0.1");
         assert.equal(connection.port, port);
-        return privateConnection(connection, callback);
+        const socket = new net.Socket();
+        const nativeSocketConnect = privateSocketConnect;
+        assert.equal(connection.host, "127.0.0.1"); assert.equal(connection.port, port);
+        allocatedConnections++;
+        return nativeSocketConnect.call(socket, connection, callback);
     };
     async function rpc(method, params, bearer = token, claimedOwner = rpcOwner) {
         return new Promise((done, reject) => {
@@ -3998,7 +4027,53 @@ async function verifyReviewedBrokerDelivery(root, home) {
             if (method === "broker.appium.list") eq(allowed.body.result.sessions[0].deviceId, "metadata");
             if (method === "broker.command.plan") eq(allowed.body.result.deviceId, "missing");
         }
+        const create = { backend: "windows-sandbox", command: "device_create", deviceId: "shipping-rpc", name: "Shipping RPC", memoryMb: 2048, networking: true };
+        eq((await rpc("broker.command.invoke", create, "wrong-token")).status, 401);
+        eq((await rpc("broker.command.invoke", create, token, "ffffffffffffffff")).status, 403);
+        const windows = join(home, ".ccc/devices/owners", rpcOwner, "windows");
+        eq((await rpc("broker.command.invoke", { ...create, dryRun: true })).status, 200);
+        eq(existsSync(join(windows, "devices.json")), false);
+        const made = await rpc("broker.command.invoke", create); eq(made.status, 200);
+        const record = JSON.parse(readFileSync(join(windows, "devices.json"), "utf8")).devices[0];
+        eq(record.createdAt, record.updatedAt); eq(record.networking, true);
+        const config = readFileSync(record.configPath, "utf8"); assert.match(config, /<MemoryInMB>2048<\/MemoryInMB>/); eq((config.match(/<MappedFolder>/g) || []).length, 5);
+        const duplicate = await rpc("broker.command.invoke", create); eq(duplicate.status, 409); eq(duplicate.body.error, "owner-device-already-exists");
+        const fallback = await rpc("broker.command.invoke", { ...create, deviceId: "fallback", memoryMb: "raw" }); eq(fallback.status, 200); eq(fallback.body.result.device.memoryMb, 4096);
+        assert.ok((await rpc("broker.command.invoke", { ...create, deviceId: "../invalid" })).status >= 400);
+        const fs = (await import("node:fs")).default;
+        const faultConfig = join(windows, "config-fault/config-fault.wsb"); fs.mkdirSync(faultConfig, { recursive: true }); fs.writeFileSync(join(faultConfig, "keep"), "keep");
+        const failure = await rpc("broker.command.invoke", { ...create, deviceId: "config-fault" }); eq(failure.status, 500); eq(failure.body.error, "windows-sandbox-config-write-failed");
+        assert.equal(JSON.parse(readFileSync(join(windows, "devices.json"), "utf8")).devices.some(d => d.id === "config-fault"), false);
+        eq(readFileSync(join(faultConfig, "keep"), "utf8"), "keep");
+        for (const name of ["ccc-guest-helper.ps1", "ccc-guest-helper-bootstrap.ps1", "ccc-guest-helper-bootstrap.vbs"]) assert.ok(readFileSync(join(windows, "config-fault/tools", name), "utf8").length);
+        const { createBrokerWindowsSandboxCreate } = await import(pathToFileURL(join(source, "application/lifecycle/windows-sandbox-create.js")).href);
+        const { retainAfterWindowsConfigFailure } = await import(pathToFileURL(join(source, "domain/lifecycle/windows-sandbox-create.js")).href);
+        const captured = { id: "same", createdAt: "old" };
+        const sameIdSuccessor = { id: "same", createdAt: "new" }, sameTimeForeign = { id: "different", createdAt: "old" };
+        let survivors = [captured, sameIdSuccessor, sameTimeForeign, null]; const publicationError = { failure: "config" };
+        const outcome = await createBrokerWindowsSandboxCreate({
+            createRecord: () => captured, claimDefinition: () => ({ ok: true }),
+            rollbackAfterClaimFailure: async () => { throw Error("unexpected claim rollback"); },
+            publishConfig: () => { throw publicationError; }, stateErrorCode: () => null,
+            removeMatchingClaim: (id, createdAt) => { eq(id, "same"); eq(createdAt, "old"); return survivors = survivors.filter(d => retainAfterWindowsConfigFailure(d, id, createdAt)); },
+        }).create({});
+        eq(outcome.kind, "config-failure"); assert.equal(outcome.error, publicationError);
+        eq(survivors, [sameIdSuccessor, sameTimeForeign, null]);
+        for (const mode of ["conflict", "claim-throw", "rollback-false", "rollback-throw", "mutation-throw"]) {
+            const raw = { mode }; const trace = [];
+            const app = createBrokerWindowsSandboxCreate({
+                createRecord: () => captured,
+                claimDefinition: () => { trace.push("claim"); if(mode!=="conflict" && mode!=="mutation-throw")throw raw; return mode==="conflict"?{ok:false,error:"owner-device-id-conflict",field:"id",value:"same",existing:sameIdSuccessor}:{ok:true}; },
+                rollbackAfterClaimFailure: async () => { trace.push("rollback"); if(mode==="rollback-throw")throw raw; return {ok:mode!=="rollback-false"}; },
+                publishConfig: () => { trace.push("config"); throw raw; },
+                removeMatchingClaim: () => { trace.push("mutate"); throw raw; }, stateErrorCode: () => null,
+            });
+            if(mode==="rollback-throw" || mode==="mutation-throw")await assert.rejects(app.create({}),error=>error===raw);
+            else { const result=await app.create({}); eq(result.kind,mode==="conflict"?"claim-conflict":"claim-exception"); if(mode!=="conflict")assert.equal(result.error,raw); if(mode==="rollback-false")eq(result.stateCode,"owner-state-write-failed"); }
+            eq(trace,mode==="mutation-throw"?["claim","config","mutate"]:["claim","rollback"]);
+        }
         eq(nativeCalls, 0);
+        console.log(JSON.stringify({ consumer: "sandbox-authenticated-create", result: "PASS", layer: "compiled-RPC/compensation/native-writer", deniedEffects: nativeCalls, allocatedMetadata, allocatedConnections }));
     } finally { server.closeAllConnections(); await new Promise(done => server.close(done)); }
     console.log(JSON.stringify({ result: "PASS", checks, nativeCalls, publicRpcQueries: 8, partialAggregateCeiling: true }));
 }
@@ -4011,12 +4086,42 @@ async function verifyReviewedSandboxDelivery(payload) {
     const { syncBuiltinESMExports } = await import("node:module");
     const { pathToFileURL } = await import("node:url");
     const { createHash } = await import("node:crypto");
+    let deniedEffects = 0, allocatedMetadata = 0, allocatedDiscovery = 0;
+    const deny = () => { deniedEffects++; throw new Error("Unallocated Sandbox process/network effect"); };
+    for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) cp[name] = deny;
+    process.kill = deny;
+    const net = (await import("node:net")).default;
+    net.connect = net.createConnection = net.Socket.prototype.connect = deny;
+    (await import("node:tls")).default.connect = deny;
+    for (const protocol of ["node:http", "node:https"]) { const mod = (await import(protocol)).default; mod.request = mod.get = deny; }
+    globalThis.fetch = deny;
+    const privatePath = selected => {
+        if (typeof selected === "number") return true;
+        const resolved = path.resolve(String(selected));
+        return [process.env.HOME, payload].some(root => resolved === root || resolved.startsWith(root + path.sep));
+    };
+    for (const name of ["readFileSync", "writeFileSync", "mkdirSync", "readdirSync", "unlinkSync", "rmSync", "renameSync", "symlinkSync", "linkSync", "copyFileSync", "openSync", "chmodSync"]) {
+        const captured = fs[name];
+        fs[name] = function (...args) {
+            if (name === "readFileSync") {
+                if (args[0] === "/proc/sys/kernel/random/boot_id") { allocatedMetadata++; return "shipping-fixture-boot\n"; }
+                if (args[0] === `/proc/${process.pid}/stat`) { allocatedMetadata++; return `${process.pid} (node) ${Array(20).fill("1").join(" ")}`; }
+                if (args[0] === `/proc/${process.pid}/cmdline`) { allocatedMetadata++; return Buffer.from("node\0shipping-fixture\0"); }
+            }
+            const paths = ["renameSync", "linkSync", "copyFileSync"].includes(name) ? args.slice(0, 2) : name === "symlinkSync" ? [args[1]] : [args[0]];
+            if (!paths.every(privatePath)) return deny();
+            const writes = !["readFileSync", "readdirSync"].includes(name) && !(name==="openSync" && (args[1]==="r" || args[1]===fs.constants.O_RDONLY));
+            if(writes){const destination = ["renameSync","linkSync","copyFileSync","symlinkSync"].includes(name)?args[1]:args[0];if(typeof destination!=="number" && path.resolve(String(destination))!==process.env.HOME && !path.resolve(String(destination)).startsWith(process.env.HOME+path.sep))return deny();}
+            return captured.apply(this, args);
+        };
+    }
+    syncBuiltinESMExports();
     const providers = path.join(payload, "dist/packages/device-lab/providers");
     assert.equal(createHash("sha256").update(fs.readFileSync(path.join(providers, "backends/windows-helper.ps1"))).digest("hex"),
         "4c00058569e0f42b95c542f329d35d546abfa01afb17a601d606c0849eeb4086", "retained authoritative native Sandbox asset");
     const module = name => import(pathToFileURL(path.join(providers, name)).href);
     let nativeCalls = 0;
-    for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) cp[name] = () => { throw new Error("Unallocated Sandbox native execution"); };
+
     syncBuiltinESMExports();
     const { createWindowsSandboxStop } = await module("application/lifecycle/windows-sandbox-stop.mjs");
     const guid = "11111111-1111-4111-8111-111111111111";
@@ -4046,7 +4151,7 @@ async function verifyReviewedSandboxDelivery(payload) {
     assert.deepEqual(failedNative.run(), { kind: "native-failure", evidence: { raw: "stop failed" } });
     cp.spawnSync = (command, args = [], options) => {
         const lookup = command === "where" ? args[0] : command === "/bin/sh" && args[0] === "-c" && args[1]?.startsWith("command -v ") ? args[1].slice(11) : null;
-        if (lookup !== null) return { status: lookup === "wsb" ? 0 : 1, stdout: lookup === "wsb" ? "private-fake-wsb\n" : "", stderr: "" };
+        if (lookup !== null) { allocatedDiscovery++; assert.ok(["wsb", "powershell", "powershell.exe", "pwsh"].includes(lookup), "only allocated Sandbox discovery observations"); return { status: lookup === "wsb" ? 0 : 1, stdout: lookup === "wsb" ? "private-fake-wsb\n" : "", stderr: "" }; }
         assert.equal(command, "private-fake-wsb"); assert.deepEqual(args, ["stop", "--id", guid]);
         assert.equal(options.timeout, 60000); assert.equal(options.windowsHide, true); nativeCalls++;
         return { status: 0, stdout: "", stderr: "" };
@@ -4064,6 +4169,42 @@ async function verifyReviewedSandboxDelivery(payload) {
     assert.deepEqual(state.findOwnerDevice("windows", "public").recording, { active: true }); assert.equal(fs.existsSync(lock), false);
     assert.notEqual((await backend.handleWindowsTool("device_stop", { deviceId: "public" })).isError, true);
     assert.equal(nativeCalls, 1, "actual facade must stop the captured runtime once");
+    const direct = await module("application/lifecycle/windows-sandbox-create.mjs");
+    const trace = []; let ticks = 0;
+    const definition = direct.createWindowsSandboxCreate({
+        deriveDeviceId: () => { trace.push("derive"); return "compiled-create"; },
+        readDefinitions: () => { trace.push("read"); return []; },
+        readOwnerId: () => { trace.push("owner"); return "owner"; },
+        ensureHelperWorkspace: () => { trace.push("helper"); return { scratch: "private" }; },
+        wallTimestamp: () => { trace.push("clock"); return `tick-${++ticks}`; },
+        claimDefinition: () => { trace.push("claim"); return { ok: true }; },
+    }).create({ backend: "windows-sandbox", name: "Compiled", memoryMb: null, networking: "truthy" });
+    assert.equal(definition.kind, "created");
+    assert.deepEqual(trace, ["derive", "read", "owner", "helper", "clock", "clock", "claim"]);
+    assert.equal(definition.device.memoryMb, null); assert.equal(definition.device.networking, true);
+    assert.notEqual(definition.device.createdAt, definition.device.updatedAt);
+    for (const point of ["read", "owner", "helper", "clock", "claim"]) {
+        const fault = { direct: point }; const observed = [];
+        const observe = (name, value) => () => { observed.push(name); if(name===point) throw fault; return value; };
+        const app = direct.createWindowsSandboxCreate({ deriveDeviceId: observe("derive", "id"), readDefinitions: observe("read", []), readOwnerId: observe("owner", "owner"), ensureHelperWorkspace: observe("helper", { scratch:"owned" }), wallTimestamp: observe("clock", "time"), claimDefinition: observe("claim", {ok:true}) });
+        assert.throws(()=>app.create({backend:"windows-sandbox",name:"Fault"}), error=>error===fault);
+        const frozenOrder = ["derive", "read", "owner", "helper", "clock", "clock", "claim"];
+        assert.deepEqual(observed, frozenOrder.slice(0, frozenOrder.indexOf(point)+1));
+    }
+    let duplicateEffects=0;
+    const dupCore=direct.createWindowsSandboxCreate({deriveDeviceId:()=>"id",readDefinitions:()=>[{id:"id"}],readOwnerId:()=>{duplicateEffects++;return "owner";},ensureHelperWorkspace:()=>{duplicateEffects++;return {};},wallTimestamp:()=>{duplicateEffects++;return "time";},claimDefinition:()=>{duplicateEffects++;return {ok:true};}});
+    assert.equal(dupCore.create({backend:"windows-sandbox"}).kind,"duplicate"); assert.equal(duplicateEffects,0);
+    const created = await backend.handleWindowsTool("device_create", { backend: "windows-sandbox", deviceId: "shipping-create", name: "Shipping", memoryMb: "raw", networking: "yes" });
+    assert.notEqual(created.isError, true);
+    const stored = state.findOwnerDevice("windows", "shipping-create");
+    assert.equal(stored.memoryMb, "raw"); assert.equal(stored.networking, true);
+    const deviceRoot = path.join(process.env.HOME, ".ccc/devices/owners", ownerId(), "windows/shipping-create");
+    for (const name of ["ccc-guest-helper.ps1", "ccc-guest-helper-bootstrap.ps1", "ccc-guest-helper-bootstrap.vbs"]) assert.ok(fs.readFileSync(path.join(deviceRoot, "tools", name), "utf8").length);
+    assert.equal(createHash("sha256").update(fs.readFileSync(path.join(deviceRoot, "tools/ccc-guest-helper.ps1"))).digest("hex"), "4c00058569e0f42b95c542f329d35d546abfa01afb17a601d606c0849eeb4086");
+    const duplicate = await backend.handleWindowsTool("device_create", { backend: "windows-sandbox", deviceId: "shipping-create", name: "Shipping" });
+    assert.equal(duplicate.isError, true); assert.match(JSON.stringify(duplicate), /already exists/);
+    assert.equal(deniedEffects, 0, "caught denial is still an unallocated effect");
+    console.log(JSON.stringify({ consumer: "sandbox-direct-create", result: "PASS", layer: "compiled-public/native-helper", deniedEffects, allocatedMetadata, allocatedDiscovery }));
 }
 
 const LAB_STATE_DELIVERY_BASELINE = [{"name":"migrate","input":{"name":"migrate","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"events":["runtime","volume","runtime","ps","extras","runtime","old","runtime","helper"],"error":null,"callsSha256":"36ae417e0ae9525d02c7158fb109325d27c1b33c8d23f65a0f36164783e4dc1b"},{"name":"verify","input":{"name":"verify"},"events":["runtime","volume","runtime","ps","extras","runtime","helper"],"error":null,"callsSha256":"2d166658bc991f98ca60c2cd6283b479125ae395a3f138e46fc2133ad4d355b6"},{"name":"empty-previous","input":{"name":"empty-previous","previous":""},"events":["runtime","volume","runtime","ps","extras","runtime","helper"],"error":null,"callsSha256":"2d166658bc991f98ca60c2cd6283b479125ae395a3f138e46fc2133ad4d355b6"},{"name":"absent","input":{"name":"absent","listed":""},"events":["runtime","volume"],"error":null,"callsSha256":"ae2c09ea7d8eb47815541555356b689e15b46447643ead09c4152e4b71180aa2"},{"name":"crlf-nonmatch","input":{"name":"crlf-nonmatch","listed":"ccc-example-lab-state\r\n"},"events":["runtime","volume"],"error":null,"callsSha256":"ae2c09ea7d8eb47815541555356b689e15b46447643ead09c4152e4b71180aa2"},{"name":"whitespace-nonmatch","input":{"name":"whitespace-nonmatch","listed":" ccc-example-lab-state\n"},"events":["runtime","volume"],"error":null,"callsSha256":"ae2c09ea7d8eb47815541555356b689e15b46447643ead09c4152e4b71180aa2"},{"name":"users-running","input":{"name":"users-running","users":"running\n"},"events":["runtime","volume","runtime","ps"],"error":{"name":"Error","message":"Lab state volume ccc-example-lab-state may be in use; finish its running work before retrying."},"callsSha256":"ab6bb8ae78a5c165c4db05f73d31162a7ea953a3ed9c7020f2b73060d0f14099"},{"name":"list-failure","input":{"name":"list-failure","listStatus":1},"events":["runtime","volume"],"error":{"name":"Error","message":"Unable to inspect lab state volumes."},"callsSha256":"ae2c09ea7d8eb47815541555356b689e15b46447643ead09c4152e4b71180aa2"},{"name":"users-failure","input":{"name":"users-failure","usersStatus":null},"events":["runtime","volume","runtime","ps"],"error":{"name":"Error","message":"Lab state volume ccc-example-lab-state may be in use; finish its running work before retrying."},"callsSha256":"ab6bb8ae78a5c165c4db05f73d31162a7ea953a3ed9c7020f2b73060d0f14099"},{"name":"old-invalid","input":{"name":"old-invalid","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","old":"0:1001"},"events":["runtime","volume","runtime","ps","extras","runtime","old"],"error":{"name":"Error","message":"Cannot establish previous lab state owner for ccc-example-lab-state; no ownership was changed."},"callsSha256":"b17df65600c68fe64cf14b5e8684a6f0f0c95684511aad35277c2015d7d017ed"},{"name":"old-overflow","input":{"name":"old-overflow","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","old":"1001:4294967295"},"events":["runtime","volume","runtime","ps","extras","runtime","old"],"error":{"name":"Error","message":"Cannot establish previous lab state owner for ccc-example-lab-state; no ownership was changed."},"callsSha256":"b17df65600c68fe64cf14b5e8684a6f0f0c95684511aad35277c2015d7d017ed"},{"name":"old-extra-output","input":{"name":"old-extra-output","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","old":"1001:1002\nextra"},"events":["runtime","volume","runtime","ps","extras","runtime","old"],"error":{"name":"Error","message":"Cannot establish previous lab state owner for ccc-example-lab-state; no ownership was changed."},"callsSha256":"b17df65600c68fe64cf14b5e8684a6f0f0c95684511aad35277c2015d7d017ed"},{"name":"helper-failure","input":{"name":"helper-failure","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","helperStatus":1},"events":["runtime","volume","runtime","ps","extras","runtime","old","runtime","helper"],"error":{"name":"Error","message":"Lab state ownership preparation failed for ccc-example-lab-state. Existing data was retained; repair its ownership before retrying."},"callsSha256":"36ae417e0ae9525d02c7158fb109325d27c1b33c8d23f65a0f36164783e4dc1b"},{"name":"extras-migrate","input":{"name":"extras-migrate","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","extras":["--cgroups=disabled","--userns=keep-id:uid=1000,gid=1000"]},"events":["runtime","volume","runtime","ps","extras","runtime","old","runtime","helper"],"error":null,"callsSha256":"bc1638c8478a0cf0f818a34e4e6bcc3daa5e6cc2f0427cfea5015645cfcd2369"},{"name":"dynamic-identity-migrate","input":{"name":"dynamic-identity-migrate","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","dynamic":true},"events":["runtime","volume","runtime","ps","extras","identity.uid","identity.gid","runtime","old","identity.uid","identity.gid","identity.uid","identity.gid","runtime","helper"],"error":null,"callsSha256":"a3609e9096d938a229c0d36a0f3a5082865f3a13354dfd777806c0ea50932f1a"},{"name":"dynamic-identity-verify","input":{"name":"dynamic-identity-verify","dynamic":true},"events":["runtime","volume","runtime","ps","extras","identity.uid","identity.gid","identity.uid","identity.gid","runtime","helper"],"error":null,"callsSha256":"681e8d291b1f9e70cee6fb858f38b186f4ba15666ce3fc8739566dfdae251bdd"},{"name":"invalid-volume","input":{"name":"invalid-volume","volume":"x,target=/host"},"events":[],"error":{"name":"Error","message":"Invalid lab state volume name."},"callsSha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},{"name":"mutable-image","input":{"name":"mutable-image","image":"ccc:latest"},"events":[],"error":{"name":"Error","message":"Container identity requires an immutable sha256 image ID."},"callsSha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},{"name":"mutable-previous","input":{"name":"mutable-previous","previous":"ccc:old"},"events":[],"error":{"name":"Error","message":"Container identity requires an immutable sha256 image ID."},"callsSha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},{"name":"matched-owner","input":{"name":"matched-owner","previous":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","old":"2001:3001"},"events":["runtime","volume","runtime","ps","extras","runtime","old","runtime","helper"],"error":null,"callsSha256":"0460a5aaa5159651074a84a24f67a18c658a789d95478d930096dc7ced21cb5c"}];
@@ -4349,6 +4490,534 @@ function identityWitness(source, scenario) {
     }
 }
 
+// Frozen original state52/runtime55 row hashes and payload-only isolated consumers.
+// These functions run in isolated checker child processes. Never invoke in checker parent.
+function fence(){
+ let denied=0;const restore=[];
+ const patch=(object,key,value)=>{const d=Object.getOwnPropertyDescriptor(object,key);restore.push(()=>Object.defineProperty(object,key,d));Object.defineProperty(object,key,{configurable:true,writable:true,value});};
+ const deny=(name)=>(...args)=>{denied++;throw Error('unallocated effect: '+name);};
+ for(const key of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])patch(cp,key,deny(key));
+ patch(tls,'connect',deny('tls.connect'));patch(process,'kill',deny('process.kill'));patch(net.Socket.prototype,'connect',deny('Socket.connect'));patch(net.Server.prototype,'listen',deny('Server.listen'));
+ for(const [o,keys] of [[net,['connect','createConnection','createServer']],[http,['request','get','createServer']],[https,['request','get','createServer']],[dgram,['createSocket']]])for(const key of keys)patch(o,key,deny(key));
+ patch(globalThis,'fetch',deny('fetch'));syncBuiltinESMExports();
+ return {patch,deny,finish(){assert.equal(denied,0,'caught denied effects are failures');},restore(){for(const fn of restore.reverse())fn();syncBuiltinESMExports();}};
+}
+async function verifyReviewedStateAccessDelivery(payload,privateHome,golden){
+ const effect=fence(),native={trace:[],fault:null},constructors=[],extra=[];
+ const originals={};for(const key of ['closeSync','fstatSync','ftruncateSync','lstatSync','openSync','readSync','writeSync'])originals[key]=fs[key];
+ const owned=file=>{const p=path.resolve(String(file));if(!(p===privateHome||p.startsWith(privateHome+path.sep)))effect.deny('state filesystem')(p);};
+ for(const key of Object.keys(originals))effect.patch(fs,key,(...args)=>{if(key==='openSync'||key==='lstatSync')owned(args[0]);native.trace.push(key);if(native.fault?.name===key)throw native.fault.error;if(native.adjust)args=native.adjust(key,args);const result=originals[key](...args);if(native.after)native.after(key,args,result);return native.map?native.map(key,result):result;});
+ // Setup/read APIs retain captured authority but refuse non-private mutations and non-payload reads.
+ for(const key of ['writeFileSync','readFileSync','symlinkSync','linkSync','unlinkSync','rmSync','mkdtempSync','mkdirSync']){
+ const original=fs[key];effect.patch(fs,key,(...args)=>{
+ if(key==='readFileSync'){const p=path.resolve(String(args[0]));if(!(p.startsWith(privateHome+path.sep)||p.startsWith(payload+path.sep)))effect.deny('state readFileSync')(p);}
+ else {owned(args[0]);if(key==='symlinkSync'||key==='linkSync')owned(args[1]);}
+ return original(...args);
+ });
+ }
+ syncBuiltinESMExports();
+ // Resolve-only fresh constructor graph. No source loader, TS stripping, or checkout fallback.
+ const hook=registerHooks({resolve(spec,ctx,next){if(ctx.parentURL?.includes('?constructor')&&spec.startsWith('.')){const u=new URL(spec,ctx.parentURL);assert.ok(u.pathname.startsWith(payload+'/'));u.search='?constructor';return next(u.href,ctx);}return next(spec,ctx);}});
+ try{
+const temp=fs.mkdtempSync(path.join(privateHome,'state-access-witness-')),file=path.join(temp,'state.json');
+const out=[];
+const describe=(e)=>({name:e?.name,code:e?.code,message:e?.message?.replaceAll(temp,'ROOT'),cause:e?.cause?.message?.replaceAll(temp,'ROOT')});
+try{for(const form of ['ts','shared']){
+ const target=path.join(payload,form==='ts'?'dist/packages/device-lab/dist/device-lab-state-file.js':'dist/packages/device-lab/providers/state/state-file.mjs');
+ const m=await import(pathToFileURL(target).href);
+ const adapter=await import(pathToFileURL(path.join(payload,form==='ts'?'dist/packages/device-lab/dist/device-lab/adapters/state/state-file.js':'dist/packages/device-lab/providers/adapters/state/state-file.mjs')).href);
+ assert.equal(m.DeviceLabStateFileError,adapter.DeviceLabStateFileError);
+ assert.equal(m.withDeviceLabReadableFile,adapter.withDeviceLabReadableFile);
+ constructors.push(m.DeviceLabStateFileError);
+ const run=(name,fn)=>{native.trace=[];try{const v=fn();out.push({form,name,value:Buffer.isBuffer(v)?v.toString():v,trace:[...native.trace]});}catch(e){out.push({form,name,error:describe(e),trace:[...native.trace]});}finally{native.fault=null;native.adjust=null;native.after=null;native.map=null;}};
+ out.push({form,name:'exports',value:Object.keys(m)});
+ fs.writeFileSync(file,'{"a":1}');run('json-valid',()=>m.readDeviceLabStateFile(file,v=>v,'w'));
+ run('json-missing',()=>m.readDeviceLabStateFile(file+'absent',()=>{throw Error('validator-called');},'w'));
+ const originalParse=JSON.parse;let events=[];
+ Object.defineProperty(JSON,'parse',{configurable:true,get(){events.push('parse-get');return function(s){events.push(this===JSON?'parse-JSON':'parse-other');return originalParse(s);};}});
+ const originalToString=Buffer.prototype.toString;Object.defineProperty(Buffer.prototype,'toString',{configurable:true,get(){events.push('decode-get');return function(...args){events.push(Buffer.isBuffer(this)?'decode-bytes':'decode-other');return originalToString.apply(this,args);};}});
+ run('receiver-order',()=>m.readDeviceLabStateFile(file,function(v){events.push(this===undefined?'validator-bare':'validator-other');return v;},'w'));
+ Object.defineProperty(Buffer.prototype,'toString',{configurable:true,writable:true,value:originalToString});Object.defineProperty(JSON,'parse',{configurable:true,writable:true,value:originalParse});out.push({form,name:'events',value:events});
+ fs.writeFileSync(file,'{');run('invalid-json',()=>m.readDeviceLabStateFile(file,v=>v,'w'));
+ fs.writeFileSync(file,'{"a":1}');run('validator-fault',()=>m.readDeviceLabStateFile(file,()=>{throw Error('validator');},'w'));
+ run('existing-error',()=>{const e=new m.DeviceLabStateFileError('existing');try{m.readDeviceLabStateFile(file,()=>{throw e;},'w');}catch(actual){return {same:actual===e,error:describe(actual)};}});
+ run('read-fault',()=>{native.fault={name:'readSync',error:Error('native-read')};return m.readDeviceLabStateFile(file,v=>v,'w');});
+ run('callback-fault',()=>m.withDeviceLabReadableFile(file,'w',99,()=>{throw Error('callback');}));
+ run('close-priority',()=>{native.fault={name:'closeSync',error:Error('close')};return m.withDeviceLabReadableFile(file,'w',99,()=>{throw Error('callback');});});
+ let recognition=0;Object.defineProperty(m.DeviceLabStateFileError,Symbol.hasInstance,{configurable:true,value(){recognition++;throw Error('recognizer');}});
+ run('hostile-recognition',()=>m.readDeviceLabStateFile(file,()=>{throw Error('validator');},'w'));out.push({form,name:'recognition-count',value:recognition});delete m.DeviceLabStateFileError[Symbol.hasInstance];
+ const NativeError=globalThis.Error;let constructorCalls=0;globalThis.Error=class extends NativeError{constructor(message,options){if(message==='w-state-invalid'){constructorCalls++;throw new NativeError('constructor-fault');}super(message,options);}};
+ const ctorModule=await import(pathToFileURL(target).href+'?constructor');fs.writeFileSync(file,'{');run('error-constructor-fault',()=>ctorModule.readDeviceLabStateFile(file,v=>v,'w'));globalThis.Error=NativeError;out.push({form,name:'constructor-count',value:constructorCalls});fs.writeFileSync(file,'{"a":1}');
+ run('stat-size',()=>m.readDeviceLabBinaryFile(file,'w',1));
+ const link=file+'-link';fs.symlinkSync(file,link);run('symlink',()=>m.readDeviceLabBinaryFile(link,'w'));fs.unlinkSync(link);
+ fs.linkSync(file,link);run('hardlink',()=>m.readDeviceLabBinaryFile(file,'w'));fs.unlinkSync(link);
+ run('nonordinary',()=>m.readDeviceLabBinaryFile(temp,'w'));
+ run('dev-mismatch',()=>{native.map=(n,r)=>n==='lstatSync'?{...r,isFile:()=>true,isSymbolicLink:()=>false,dev:r.dev+1}:r;return m.readDeviceLabBinaryFile(file,'w');});
+ run('ino-mismatch',()=>{native.map=(n,r)=>n==='lstatSync'?{...r,isFile:()=>true,isSymbolicLink:()=>false,ino:r.ino+1}:r;return m.readDeviceLabBinaryFile(file,'w');});
+ run('zero-dev-ino',()=>{native.map=(n,r)=>n==='lstatSync'?{...r,isFile:()=>true,isSymbolicLink:()=>false,dev:0,ino:0}:r;return m.readDeviceLabBinaryFile(file,'w');});
+ run('max-plus-one',()=>{native.map=(n,r)=>n==='readSync'?99:r;return m.readDeviceLabBinaryFile(file,'w',20);});
+ if(form==='ts'){run('root-read',()=>m.readDeviceLabBinaryFileWithinRoot(temp,file,'w'));run('write-existing',()=>{m.writeDeviceLabBinaryFile(temp,file,Buffer.from('replacement'),'w');return fs.readFileSync(file,'utf8');});
+ run('write-partial',()=>{native.adjust=(n,a)=>n==='writeSync'?[a[0],a[1],a[2],Math.max(1,Math.floor(a[3]/2))]:a;m.writeDeviceLabBinaryFile(temp,file,Buffer.from('partial'),'w');return fs.readFileSync(file,'utf8');});
+ run('write-zero',()=>{native.fault={name:'writeSync',error:Error('zero-write')};m.writeDeviceLabBinaryFile(temp,file,Buffer.from('no'),'w');});
+ {native.map=(n,r)=>n==='writeSync'?0:r;let thrown;try{m.writeDeviceLabBinaryFile(temp,file,Buffer.from('no'),'w');}catch(e){thrown=e;}finally{native.map=null;}assert.ok(thrown,'genuine zero-return write must refuse');extra.push('genuine-zero-return');}
+ run('write-preproof-fault',()=>{fs.writeFileSync(file,'preserved');native.fault={name:'fstatSync',error:Error('stat')};try{m.writeDeviceLabBinaryFile(temp,file,Buffer.from('no'),'w');}catch(e){return {error:describe(e),bytes:fs.readFileSync(file,'utf8')};}});
+ run('root-after-read-fault',()=>{fs.writeFileSync(file,'{}');native.after=(n)=>{if(n==='readSync')native.fault={name:'lstatSync',error:Error('post-root')};};return m.readDeviceLabBinaryFileWithinRoot(temp,file,'w');});
+ }
+ }}finally{fs.rmSync(temp,{recursive:true,force:true});}
+assert.equal(out.length,52);compareFrozenRows(out,golden);assert.notEqual(constructors[0],constructors[1]);assert.deepEqual(extra,['genuine-zero-return']);effect.finish();return {consumer:'state-access',ts:out.filter(x=>x.form==='ts').length,shared:out.filter(x=>x.form==='shared').length,genuineZero:true,ownConstructors:true};
+ }finally{hook.deregister();effect.restore();}
+}
+async function verifyRuntimeCapabilitiesDelivery(payload,privateHome,golden){
+ const effect=fence();
+ const state={active:false,trace:[],env:{},platform:'linux',uid:0,probe:null,platformReads:null,failEnv:null,loopback:false};
+ const nativeJoin=path.join;
+ for(const key of ['writeFileSync','appendFileSync','openSync','mkdirSync','rmSync','unlinkSync','renameSync','symlinkSync','linkSync','truncateSync'])effect.patch(fs,key,effect.deny('runtime '+key));
+ effect.patch(cp,'spawnSync',(command,args,options)=>{state.trace.push(['spawn',command,args,options]);const expected=frozenRuntimeProbeWhitelist;if(!expected.some(x=>JSON.stringify(x)===JSON.stringify([command,args,options])))return effect.deny('runtime probe')(command,args,options);return state.probe(command,args);});
+ effect.patch(fs,'existsSync',file=>{state.trace.push(['exists',file]);if(file!=='/sys/class/net/loopback0')return effect.deny('runtime filesystem')(file);return state.loopback;});
+ effect.patch(fs,'readFileSync',effect.deny('native file read'));
+ effect.patch(path,'join',(...args)=>{if(state.active)state.trace.push(['join',...args]);return nativeJoin(...args);});
+ syncBuiltinESMExports();
+ try{
+const originalEnv=process.env,platformDescriptor=Object.getOwnPropertyDescriptor(process,'platform'),uidDescriptor=Object.getOwnPropertyDescriptor(process,'getuid');
+const keys=new Set(['VITEST','CCC_RUNTIME','DOCKER_CONTEXT','DOCKER_HOST','WSL_DISTRO_NAME','CCC_RUNTIME_SOCKET','XDG_RUNTIME_DIR']);
+process.env=new Proxy(originalEnv,{get(target,key){if(keys.has(key)){if(state.active)state.trace.push(['env',key]);if(state.failEnv===key)throw Error('env-fault-'+key);return state.env[key];}return target[key];}});
+Object.defineProperty(process,'platform',{configurable:true,get(){if(state.active)state.trace.push(['platform']);return state.platformReads?.length?state.platformReads.shift():state.platform;}});
+Object.defineProperty(process,'getuid',{configurable:true,get(){if(state.active)state.trace.push(['uid-get']);if(state.uid==='absent')return undefined;if(state.uid==='getter-fault')throw Error('uid-getter');return function(){state.trace.push(['uid-call',this===process]);if(state.uid==='fault')throw Error('uid-fault');return state.uid;};}});
+const source=path.join(payload,'dist/container-runtime.js');const runtime=await import(pathToFileURL(source).href);
+const result=(status,stdout)=>({get status(){state.trace.push(['status']);return status;},get stdout(){state.trace.push(['stdout']);return stdout;}});
+const defaults=(command,args)=>{if(args[0]==='--version')return result(0,command==='docker'?'Docker version 27.1.1':'podman version 5.2.3');if(args[0]==='context')return result(0,'unix:///selected.sock');if(args.at(-1)==='{{.OperatingSystem}}')return result(0,'Ubuntu');if(args.at(-1)==='{{json .SecurityOptions}}')return result(0,'[]');if(args.at(-1)==='{{.Host.Remote}}')return result(0,'false');if(args.at(-1)==='{{.Host.Security.Rootless}}')return result(0,'false');throw Error('unplanned mock command');};
+const outputRows=[];
+function run(name,configure={},effect=()=>runtime.getRuntimeInfo()){
+ state.active=false;runtime._resetRuntimeCacheForTest();Object.assign(state,{trace:[],env:{CCC_RUNTIME:'docker'},platform:'linux',uid:0,probe:defaults,platformReads:null,failEnv:null,loopback:false},configure);state.active=true;
+ try{const value=effect();state.active=false;outputRows.push({name,value,trace:state.trace});}catch(error){state.active=false;outputRows.push({name,error:{name:error.name,message:error.message},trace:state.trace});}
+}
+try{
+ run('docker-native');run('podman-native',{env:{CCC_RUNTIME:'podman'}});run('vitest-stub',{env:{VITEST:'1',CCC_RUNTIME:'invalid'}});run('vitest-override',{env:{VITEST:'1',CCC_RUNTIME:'invalid'}},()=>{runtime.setRuntimeOverride('podman');return runtime.getRuntimeInfo();});
+ run('cache-env-skip',{},()=>{const first=runtime.getRuntimeInfo();state.failEnv='VITEST';first.version='mutated';return {first,same:runtime.getRuntimeInfo()===first,cli:runtime.runtimeCli(),remote:runtime.isContainerHostRemote()};});
+ run('override-noop',{},()=>{const first=runtime.getRuntimeInfo();runtime.setRuntimeOverride('');runtime.setRuntimeOverride(null);return runtime.getRuntimeInfo()===first;});
+ run('invalid-override-preserves',{},()=>{const first=runtime.getRuntimeInfo();let message;try{runtime.setRuntimeOverride('invalid');}catch(e){message=e.message;}return {same:runtime.getRuntimeInfo()===first,message};});
+ run('override-invalidates',{},()=>{const first=runtime.getRuntimeInfo();runtime.setRuntimeOverride('podman');return {same:runtime.getRuntimeInfo()===first,info:runtime.getRuntimeInfo()};});
+ run('preload-order',{},()=>{const input={get runtime(){state.trace.push(['input-runtime']);return 'podman';},get version(){state.trace.push(['input-version']);return '9';}};runtime._setRuntimeInfoForTest(input);return runtime.getRuntimeInfo();});
+ for(const platform of ['darwin','win32'])run('docker-'+platform,{platform});
+ for(const platform of ['darwin','win32'])run('podman-'+platform,{platform,env:{CCC_RUNTIME:'podman'}});
+ run('wsl-nat',{env:{CCC_RUNTIME:'docker',WSL_DISTRO_NAME:'Ubuntu'}});run('wsl-mirrored',{env:{CCC_RUNTIME:'docker',WSL_DISTRO_NAME:'Ubuntu'},loopback:true});run('wsl-falsy',{env:{CCC_RUNTIME:'docker',WSL_DISTRO_NAME:''}});run('wsl-getter-fault',{failEnv:'WSL_DISTRO_NAME'});
+ const modify=(field,status,text)=>(command,args)=>args.at(-1)===field?result(status,text):defaults(command,args);
+ run('desktop-linux',{probe:modify('{{.OperatingSystem}}',0,'Docker Desktop'),failEnv:'WSL_DISTRO_NAME'});
+ run('desktop-win-pipe',{platform:'win32',probe:(c,a)=>a.at(-1)==='{{.OperatingSystem}}'?result(1,''):a[0]==='context'?result(0,'npipe:////./pipe/dockerDesktopLinuxEngine'):defaults(c,a)});
+ run('nondesktop-defeats-pipe',{platform:'win32',env:{CCC_RUNTIME:'docker',DOCKER_HOST:'npipe:////./pipe/dockerDesktopLinuxEngine'}});
+ run('desktop-remote-endpoint',{env:{CCC_RUNTIME:'docker',DOCKER_CONTEXT:'colima',DOCKER_HOST:'unix:///shadowed'},probe:(c,a)=>a.at(-1)==='{{.OperatingSystem}}'?result(0,'Docker Desktop'):a[0]==='context'?result(0,'ssh://remote'):defaults(c,a)});
+ run('desktop-context-raw',{env:{CCC_RUNTIME:'docker',DOCKER_CONTEXT:' --format=hostile ',DOCKER_HOST:'ssh://shadowed'},probe:modify('{{.OperatingSystem}}',0,'Docker Desktop')});
+ run('desktop-context-fail',{env:{CCC_RUNTIME:'docker',DOCKER_CONTEXT:'colima',DOCKER_HOST:'unix:///shadowed'},probe:(c,a)=>a.at(-1)==='{{.OperatingSystem}}'?result(0,'Docker Desktop'):a[0]==='context'?result(1,'unix:///local'):defaults(c,a)});
+ run('docker-rootless-json',{probe:modify('{{json .SecurityOptions}}',0,'["name=rootless"]')});run('docker-rootless-fallback',{probe:modify('{{json .SecurityOptions}}',0,'rootless')});run('docker-rootless-nonarray',{probe:modify('{{json .SecurityOptions}}',0,'"rootless"')});
+ run('podman-remote',{env:{CCC_RUNTIME:'podman'},probe:modify('{{.Host.Remote}}',0,' TRUE ')});run('podman-rootless-true',{env:{CCC_RUNTIME:'podman'},probe:modify('{{.Host.Security.Rootless}}',0,'true')});run('podman-rootless-false',{env:{CCC_RUNTIME:'podman'},uid:1000});
+ for(const uid of [1000,'absent','fault','getter-fault'])run('podman-uid-'+uid,{env:{CCC_RUNTIME:'podman'},uid,probe:modify('{{.Host.Security.Rootless}}',1,'')});
+ run('socket-override',{env:{CCC_RUNTIME:'podman',CCC_RUNTIME_SOCKET:' raw socket '},probe:modify('{{.Host.Security.Rootless}}',0,'true')});run('socket-xdg',{env:{CCC_RUNTIME:'podman',XDG_RUNTIME_DIR:'/run/custom'},probe:modify('{{.Host.Security.Rootless}}',0,'true')});run('socket-uid-fault',{env:{CCC_RUNTIME:'podman'},uid:'fault',probe:modify('{{.Host.Security.Rootless}}',0,'true')});
+ run('changing-platform',{platformReads:['win32','linux','darwin'],probe:modify('{{.OperatingSystem}}',1,'')});
+ run('failed-collection-retries',{probe:()=>{throw Error('probe-fault');}},()=>{const errors=[];for(let i=0;i<2;i++)try{runtime.getRuntimeInfo();}catch(e){errors.push(e.message);}return errors;});
+ for(const [label,field,runtimeName] of [['version','--version','docker'],['desktop','{{.OperatingSystem}}','docker'],['docker-rootless','{{json .SecurityOptions}}','docker'],['podman-remote','{{.Host.Remote}}','podman'],['podman-rootless','{{.Host.Security.Rootless}}','podman']]){
+  run('spawn-fault-'+label,{env:{CCC_RUNTIME:runtimeName},probe:(c,a)=>{if(a[0]===field||a.at(-1)===field)throw Error('spawn-'+label);return defaults(c,a);}});
+  for(const property of ['status','stdout'])run(property+'-fault-'+label,{env:{CCC_RUNTIME:runtimeName},probe:(c,a)=>{if(a[0]===field||a.at(-1)===field)return {get status(){state.trace.push(['status']);if(property==='status')throw Error('status-'+label);return 0;},get stdout(){state.trace.push(['stdout']);throw Error('stdout-'+label);}};return defaults(c,a);}});
+ }
+ run('cache-reentry',{},()=>{const normal=state.probe;let first=true;state.probe=(c,a)=>{if(first){first=false;runtime._setRuntimeInfoForTest({runtime:'podman',version:'inside'});}return normal(c,a);};const info=runtime.getRuntimeInfo();return {info,same:runtime.getRuntimeInfo()===info};});
+ run('version-getters',{probe:(c,a)=>a[0]==='--version'?result(0,{toString(){state.trace.push(['version-toString',this!==null]);return 'custom 7.2';}}):defaults(c,a)});
+}finally{state.active=false;process.env=originalEnv;Object.defineProperty(process,'platform',platformDescriptor);Object.defineProperty(process,'getuid',uidDescriptor);}
+assert.equal(outputRows.length,55);compareFrozenRows(outputRows,golden);await verifyControlledRuntimeCore(payload);effect.finish();return {consumer:'runtime55',executed:55,layer:'compiled-public-and-inward-collection'};
+ }finally{effect.restore();}
+}
+
+const runtimeCapabilitiesDeclarationConsumer = "import { createRuntimeCapabilitiesCollector } from \"./dist/application/runtime-capabilities.js\";\nimport type { RuntimeCapabilitiesPorts, RuntimeCapabilityProbeResult } from \"./dist/ports/runtime-capabilities.js\";\nimport type { RuntimeInfo, RuntimeFlavor } from \"./dist/domain/runtime-capabilities.js\";\nimport { getRuntimeInfo, runtimeCli, type RuntimeInfo as PublicRuntimeInfo, type RuntimeFlavor as PublicRuntimeFlavor } from \"./dist/container-runtime.js\";\nimport type { RuntimeName } from \"./dist/domain/container-runtime.js\";\n\nfunction runtimeCapabilitiesContracts(ports: RuntimeCapabilitiesPorts): void {\n    const collect: () => RuntimeInfo = createRuntimeCapabilitiesCollector(ports);\n    const domainInfo: RuntimeInfo = getRuntimeInfo(); const publicInfo: PublicRuntimeInfo = collect();\n    const flavor: RuntimeFlavor = publicInfo.flavor; const publicFlavor: PublicRuntimeFlavor = flavor;\n    const name: RuntimeName = runtimeCli(); const raw: RuntimeCapabilityProbeResult = ports.observeVersion(name);\n    const wsl: string | undefined = ports.readWslDistributionName();\n    const { readWslDistributionName, ...withoutWsl } = ports;\n    // @ts-expect-error capabilities must include the explicit lazy WSL observation port\n    const missingWsl: RuntimeCapabilitiesPorts = withoutWsl;\n    // @ts-expect-error raw probe status is not a sanitized success boolean\n    const wrongProbe: RuntimeCapabilityProbeResult = { status: true, stdout: \"\" };\n    // @ts-expect-error cache publication must finish synchronously before the collector returns\n    const asyncPublisher: RuntimeCapabilitiesPorts[\"publishCachedInfo\"] = async () => undefined;\n    // @ts-expect-error public info remains synchronous\n    const asyncInfo: Promise<RuntimeInfo> = getRuntimeInfo();\n    void [domainInfo, publicInfo, publicFlavor, raw, wsl, readWslDistributionName, missingWsl, wrongProbe, asyncPublisher, asyncInfo];\n}\n\n// @ts-expect-error permissive void publication loses exact completion contract\nconst voidPublisher: RuntimeCapabilitiesPorts[\"publishCachedInfo\"] = (): void => {};\n";
+
+const stateAccessDeclarationConsumer = "import type { Stats } from \"node:fs\";\nimport {\n    readDeviceLabStateFile,\n    readDeviceLabBinaryFile,\n    readDeviceLabBinaryFileWithinRoot,\n    readDeviceLabTextFile,\n    withDeviceLabReadableFile,\n    writeDeviceLabBinaryFile,\n} from \"./dist/packages/device-lab/dist/device-lab-state-file.js\";\nimport { readValidatedStateFile } from \"./dist/packages/device-lab/providers/application/state-file-read.mjs\";\nimport type { StateFileReadPorts } from \"./dist/packages/device-lab/providers/ports/state-file.mjs\";\n\nconst token = Symbol(\"validated\");\nconst validated: typeof token | null = readDeviceLabStateFile<typeof token>(\"explicit-file\", () => token, \"prefix\");\nconst binary: Buffer | null = readDeviceLabBinaryFile(\"file\", \"prefix\");\nconst fenced: Buffer | null = readDeviceLabBinaryFileWithinRoot(\"root\", \"file\", \"prefix\");\nconst text: string | null = readDeviceLabTextFile(\"file\", \"prefix\");\nconst callback: { descriptor: number; stat: Stats } | null = withDeviceLabReadableFile(\"file\", \"prefix\", 9, (descriptor, stat) => ({ descriptor, stat }));\nwriteDeviceLabBinaryFile(\"root\", \"file\", Buffer.from(\"bytes\"), \"prefix\", { allowNestedCreate: true });\nconst opaque = { content: \"{}\" };\nconst ports: StateFileReadPorts<typeof opaque, typeof token> = {\n    read: () => opaque,\n    decode: bytes => bytes.content,\n    parse: decode => JSON.parse(decode()),\n    validate: () => token,\n    isStateError: () => false,\n    invalidState: cause => new Error(\"invalid\", { cause }),\n};\nconst applicationValue: typeof token | null = readValidatedStateFile(ports);\n// @ts-expect-error read port cannot be omitted in a business construction\nconst incomplete: StateFileReadPorts<typeof opaque, typeof token> = { decode: ports.decode, parse: ports.parse, validate: ports.validate, isStateError: ports.isStateError, invalidState: ports.invalidState };\n// @ts-expect-error native compatibility descriptor is a number, not an opaque business token\nwithDeviceLabReadableFile(\"file\", \"prefix\", 9, (descriptor: string) => descriptor);\nvoid [validated, binary, fenced, text, callback, applicationValue, incomplete];\n";
+
+const stateFrozenRowHashes = Object.freeze([{"identity":"ts:exports","sha256":"66e3b9630d08b51ef3db8ff0410974eb09f727c82c847b21948121002cd977cd"},{"identity":"ts:json-valid","sha256":"bed2716b9f43d0238708062a1500a2eabccaf8f8529aa63fbd0aca355549c141"},{"identity":"ts:json-missing","sha256":"5ccf8453c911d082ea7e0b1caf6206797499dfc6ff126585e4987bfe7362fdfa"},{"identity":"ts:receiver-order","sha256":"3fc2f8ed8b6e4276243ab5a2abf2fd34fbf510fd19300b717954df1b73b336c8"},{"identity":"ts:events","sha256":"ec5f6a3b47e23ac8dd0d9f911a2ed1285cc751300028df6e9ba2834a07834126"},{"identity":"ts:invalid-json","sha256":"30dc42ec0f548b6d6c28fb67a2b012b122108a38ec8688cea39e68a7b2bf29ae"},{"identity":"ts:validator-fault","sha256":"94a33002e3dfc2688ea44a6a0a7ae8a979308fdf193ae0c9c38d4011c55bcfb5"},{"identity":"ts:existing-error","sha256":"af5ce8f62495f8209cefa96ac5f854b59d2360a0ab1610cd9e47a66d1275f560"},{"identity":"ts:read-fault","sha256":"fde5a413d6854c8b09aaed6fdff286a48de3a41493d96d74fc69fa3c22d0b021"},{"identity":"ts:callback-fault","sha256":"7b610e494eae5cdb4c2fcbf2db0f777af97c34f913832320c2923b30025587a1"},{"identity":"ts:close-priority","sha256":"de60fa1975b4cefdf44131529e9bb5ed1e1deb56dde411717279fae3b3c81abc"},{"identity":"ts:hostile-recognition","sha256":"cb6cd08e0a3d6d606badccb8f55efc4671e639e651b523a5abc2e70d5d18b829"},{"identity":"ts:recognition-count","sha256":"921022b15de7ab68125545e3e5208bd5d9f326c18fcfe87f4b5b621e745dc8e8"},{"identity":"ts:error-constructor-fault","sha256":"0303f8404ca7f12fdabd5ecd1fdbc4906d6fbdc171ea38e7138266c36d6fb76d"},{"identity":"ts:constructor-count","sha256":"b09a3239833d0fe15547c4eca65df25f2662a50fe3d97f28494905b24e18c26a"},{"identity":"ts:stat-size","sha256":"8ee3fedc5e3d9f1bb73cee97944b8f8fd2d369d546800c3372715de0c95b6fa7"},{"identity":"ts:symlink","sha256":"b59a99116d33570455597bcd583a2e856593b04712a491bdcccc76c08fef28ba"},{"identity":"ts:hardlink","sha256":"5a5b382514b0ecd11bfd835b4d8bf5a142255e3168ffc07f2a928b710e1e3a95"},{"identity":"ts:nonordinary","sha256":"194134539214a0f12db85ca39ee5329a4e0a5da489842ab7a42c341cd600d4b9"},{"identity":"ts:dev-mismatch","sha256":"daa67300198991bda5a552dfc9325eff362ce84a5b7e53bca5181cfda4eeb23a"},{"identity":"ts:ino-mismatch","sha256":"7aad631e89b770acb5fe0e72a75eef782d229d62c090ff6111ce08044b3de074"},{"identity":"ts:zero-dev-ino","sha256":"35468693cfff08f01e2d5cc9550a8e1207c4cf40071bd0a97da3c50945233e46"},{"identity":"ts:max-plus-one","sha256":"6fe01ecb632482396547577aa2f61b17fe17d736d7db56cd1afbcb554a883a4f"},{"identity":"ts:root-read","sha256":"22ef21a600d30e2266b1546dea17b8519970f5bd2b635502e4277a5f42573cd5"},{"identity":"ts:write-existing","sha256":"17c63af42e20da7079b3050523a0672140c12905e46018a99c5acc845f019662"},{"identity":"ts:write-partial","sha256":"a00d31e452b546ab0b5d716c8b88f7ffb9e09d96f371e461a5c8b2c5cb0cebdd"},{"identity":"ts:write-zero","sha256":"5024018110286ff7c0d7960dcd17176b7c52420935f40376ee2c5f582d33a6b9"},{"identity":"ts:write-preproof-fault","sha256":"e3581ce21597d0ce3878adbf91edd47e3a1e3247a5aa3dacbf42c5370a48d716"},{"identity":"ts:root-after-read-fault","sha256":"5bb838ffe3fa43d35fe8a88da1055d7ba6fedaca255ed780fc0d07aa816f31db"},{"identity":"shared:exports","sha256":"d48f1081a76cba0d41d68faac8c99720272696054946f792520d7ae0cccef6cc"},{"identity":"shared:json-valid","sha256":"35fc9647e62d35de225efa058995414d8f5422d600f3ecdf5de20301520ecb20"},{"identity":"shared:json-missing","sha256":"d73e6c4b257a6ea127a52f2ca925d5cd5d188f87314393bebce605ec3eec98c0"},{"identity":"shared:receiver-order","sha256":"97552cea33967ce930f6df9931147874376a82ef06ca1f09510cd2ac8340edac"},{"identity":"shared:events","sha256":"70f12cee11c0593355e6e875412f6780fc9b315cd02dbbd1d257cd4996b13097"},{"identity":"shared:invalid-json","sha256":"699122bd48373b00584d3f5248dc252fe5af98ec9abe948b306630de8a1b4dd3"},{"identity":"shared:validator-fault","sha256":"6b2df97e680cd7f1fd6cc1204507b0ff90f83ba9fc7ef6f2812747968fb22e57"},{"identity":"shared:existing-error","sha256":"fbf4c7480cf1397110b24b1e77905d0568b813cc2cc393a0a03dc132617ffb6f"},{"identity":"shared:read-fault","sha256":"662680a662d5ee661fbf7560493bd0a00b5d98f23f8ae57c55fa4e2522f4ac1e"},{"identity":"shared:callback-fault","sha256":"925b055d464d8b591ee7a00bdb9676d4ceadcc3131f28e3cd97a20953b38fe89"},{"identity":"shared:close-priority","sha256":"a6ada851a86d46a330add9d72d99a4f81c561f0802d2423d71f720950e7969d1"},{"identity":"shared:hostile-recognition","sha256":"72ae0f95e321077f3bc27788a001069cbe96c654d1e5eac6069156b8f3b5bf9e"},{"identity":"shared:recognition-count","sha256":"c6322ee32e147c6b129d738e830a97ec75cf39c3c4ba1259cb2ca929fc169e50"},{"identity":"shared:error-constructor-fault","sha256":"95d4dc12fa2f9e13dfa9257a02ca01368e5c4eec0872bd10c222ed3fd7d3e0d9"},{"identity":"shared:constructor-count","sha256":"991ee3462dd98064e1930db56b9693de5bb86dc2f7d2305ea19fdb355ecd6a51"},{"identity":"shared:stat-size","sha256":"727268bbfdb5ee94035d464f10cce0c147b107dbf9996075af019cf8833a79d9"},{"identity":"shared:symlink","sha256":"ee7ec9e505da495e2125cb7deeea69fc22f9cceb8e244240fb93a718c288e7cc"},{"identity":"shared:hardlink","sha256":"db92c974456842ccaffaef2660b91915351a970d12b31458c895796a5a7e8394"},{"identity":"shared:nonordinary","sha256":"3a0871e72bf02f862ab3ee4cb861f813d999c2db33fd045d1de70770764d7b49"},{"identity":"shared:dev-mismatch","sha256":"5285ea616b1e596ce6f55f909445fff2c8dd8698c732dbbf292b9f221e5385da"},{"identity":"shared:ino-mismatch","sha256":"d95cbe574f1c7f748e3b743ea76785498fe644e66f1dfbb8f8c42da667d7de57"},{"identity":"shared:zero-dev-ino","sha256":"7e800ecbf5534dd8ea6bd2e5479ef438d9de29c95b047f718e3ef2b63c291d2e"},{"identity":"shared:max-plus-one","sha256":"542d0ccc99dd3f56e65323ff9f6c3c1be4871585c3f8010ab2ec008786ac7d0f"}]);
+
+const runtimeFrozenRowHashes = Object.freeze([{"identity":"docker-native","sha256":"f55eb3d0cf04a2d85cb2b0d363c9abf052ee92fcc4d6705a6ebd801b276ea30d"},{"identity":"podman-native","sha256":"93620e08b5c5491b17a096332857a91d5e6f320e985049b2ccf3ade4f4849ace"},{"identity":"vitest-stub","sha256":"e533a7ba4348449b558b4241c72f5deb46de2115d2144e6ecd95e0f2f7a998ae"},{"identity":"vitest-override","sha256":"734670b9cf0c17604857adfd1ccdfa1b929220b63f1ae9c688de0da8dc308308"},{"identity":"cache-env-skip","sha256":"509bcd92f6b4ec728f4ac9db6112495682ceaab04ed3138f5c7fdbeef1a08677"},{"identity":"override-noop","sha256":"f93e253688a62c9e74aaf0902325fcd6fe7ad896e225b9a09048be030b1708df"},{"identity":"invalid-override-preserves","sha256":"af2c3c0f1967e8d35741be0679708cf41512440b16a815379df65e094c7b1020"},{"identity":"override-invalidates","sha256":"3b19027a65a24f0920eb7403278f5cc360eb24dace43d7cb2891f7f3dd8c3647"},{"identity":"preload-order","sha256":"a9ed4b321831f2650219547a8feb4e5519945c0dda13ce093f82ad6af68bf3bd"},{"identity":"docker-darwin","sha256":"4fc0099a537f578e696315fb2f97214b5337f2b8478c80334878fd47e0e17473"},{"identity":"docker-win32","sha256":"36ebff1fbfd4828ca9cdb2ef5243f1eae04f3617ab954170f7083749b1cd2b6d"},{"identity":"podman-darwin","sha256":"b8ed74db187269c24cd31afe30eeb9b1093481fd8cb71a1ab4e937a1fd4fb356"},{"identity":"podman-win32","sha256":"751130a0c5a9a52c3d89c795d67d58969e72ee0e30cb17ea14bd756137ebceef"},{"identity":"wsl-nat","sha256":"87075edaf3063baa5983f1748182d2c5f6858d81208c91caba50f4375309ea1b"},{"identity":"wsl-mirrored","sha256":"5a3374d21420c9b6e252655a20e8bffb3c4c6392867cf2b02fa58c2feecfcc13"},{"identity":"wsl-falsy","sha256":"e0f46ddbbac4478e9abf635b5a1438ed3c9c73a379bb06b0c2b61c8071226f2c"},{"identity":"wsl-getter-fault","sha256":"bd70031c21dde422a8c68478308ce45ecc5d5cb939adfe5007c8e181e449dc56"},{"identity":"desktop-linux","sha256":"b439ea298293370b4ea63b4fdec7f3cf977a9fa04301521aa7930842e60c19ba"},{"identity":"desktop-win-pipe","sha256":"d701a5b18b4366b2a9bc88f2dfd5a216beb6cd1570404b7287a14a387a17e46e"},{"identity":"nondesktop-defeats-pipe","sha256":"5baab666d879fbf120bbea653e9dddae36e0d304c9296a63727f58d9933cfea1"},{"identity":"desktop-remote-endpoint","sha256":"bc4cc2cef0d8f20b6f3f9a765e9d36a50fcd775c21dfd1cde904604fa9b5af60"},{"identity":"desktop-context-raw","sha256":"337d031061199a906d08c2daa4076ddbd1883c81bdbc17c6a3763a816b62dfeb"},{"identity":"desktop-context-fail","sha256":"c8de9b6d891cb3755d7e2af6964cfb27317bf906b3cc4e32a636a88307acf6f2"},{"identity":"docker-rootless-json","sha256":"c5dbbcf56120c64a89a1d51b65d3361f594193ba24620abc1d0ea20eec56d6bf"},{"identity":"docker-rootless-fallback","sha256":"e1403df5cbed07434657ad61a17dd3e235038896a722decf986162243c69cbb3"},{"identity":"docker-rootless-nonarray","sha256":"ceaf570bb64d3fff21c2534cf139a6d0819b8f922091582310fea926c50fe848"},{"identity":"podman-remote","sha256":"5fb035668d7f2e370e8933fcb64587bd6ec9410546c1f17056bcc29afd96734b"},{"identity":"podman-rootless-true","sha256":"59ce5cdaaee99d8ad23d6e067eb2cb153067a2f38935bdc22264551e19538510"},{"identity":"podman-rootless-false","sha256":"fe5187c2dbce63473d84ea7a54265ad063a7c0c816fab5aeeccafa85f101a706"},{"identity":"podman-uid-1000","sha256":"bd8173e6f5853769c9a1dd96a873c61b41edcae7845c8d58941f2940e95a577a"},{"identity":"podman-uid-absent","sha256":"f00d5d8bf227a22ed2c8269affa998f6dcd960e030000bfb54ae1f748a2b0d48"},{"identity":"podman-uid-fault","sha256":"215b8697890dee5997bd99ca6fbabbd53802ec661c7ece483ee0722402600217"},{"identity":"podman-uid-getter-fault","sha256":"f18871b54e3b1709cf7d065f9ec77c6408a918332a28fd4d00f0868e389b0de8"},{"identity":"socket-override","sha256":"bd4593ada152e103e24c05528647d2daa88f09ff2ab4f053e719da33353c4a87"},{"identity":"socket-xdg","sha256":"f471e2360f7883e35d20fd14e6cec9b8a816596adb23fc119dbef310ee680004"},{"identity":"socket-uid-fault","sha256":"363078a9aac615499bf0421601013f091f997122c08705ef69670e4c36825e33"},{"identity":"changing-platform","sha256":"97ed1c8d84935bb4260c49fc946963aac848bc0a5027af6ebc7337da202492dc"},{"identity":"failed-collection-retries","sha256":"b4547ed462f262af1e5b79ddc134f2a6143d64ce818494513e666a462ffb7580"},{"identity":"spawn-fault-version","sha256":"5d19cf6ab72f5ca4cc4746c72aa08fbffdfad01bb43e5717408016396f6fe706"},{"identity":"status-fault-version","sha256":"f3df0efc2fbe215df9c2ad4e79d4e2ada3d3b003470eceab45b8218e8800aebe"},{"identity":"stdout-fault-version","sha256":"d2526c1ec15761b11ff6c0366abb946b7d2ec480cde3b57c082bf8c793e541e7"},{"identity":"spawn-fault-desktop","sha256":"56e815cca86686591a856f9de8360542002cd54d29a77378c6dbc23b19ce4d1c"},{"identity":"status-fault-desktop","sha256":"d7e18c4bea1444b0bac258928b0a2ae35000f3e2f00c1f4557d4ab0b598e23c1"},{"identity":"stdout-fault-desktop","sha256":"310aa44e43d651d6baeeb251fbb75f39d1f7c9ad1b95eb19a83a8826b37d0119"},{"identity":"spawn-fault-docker-rootless","sha256":"c67a539b60923ffd60e7fff924e9b8fcd4ddf868d0314d991cbc0780b7fa7231"},{"identity":"status-fault-docker-rootless","sha256":"247f86ece84732700f59489a6a5b9d02991777ded34e6e460114de8c9d47377f"},{"identity":"stdout-fault-docker-rootless","sha256":"54ea6afc154284921778900b1ec018102bea9b2f8eea4f58b599c26028fe1323"},{"identity":"spawn-fault-podman-remote","sha256":"f3498ba4ba0190ab5dd58945c226b200878615715e711ba4189050a3c67c2e83"},{"identity":"status-fault-podman-remote","sha256":"9a9232c86cc26b0b50ff4bcb7ca0bf9aac0dfde85c1492769b519242e5ed0355"},{"identity":"stdout-fault-podman-remote","sha256":"7aafe36854814d825557f3975c4523d39d48c932c2457bfe585c91253c2ee3ce"},{"identity":"spawn-fault-podman-rootless","sha256":"a670644605e9d204f2da23fbd5b7603bda999ba6edfa7e54f02b8d54f97eda81"},{"identity":"status-fault-podman-rootless","sha256":"65a18dd3580369636d20477747be5b851212cf7c4f4ebcf92ae02e5875db1073"},{"identity":"stdout-fault-podman-rootless","sha256":"04e98d3bf38a8a7b3344ad05fe9a904ee1924eaad975e87e3ddd44c5f8b7dc15"},{"identity":"cache-reentry","sha256":"32b25bbd3a011e5f6a741698d50d7ee2fef9637f5cff01ec98d46e721014c5d7"},{"identity":"version-getters","sha256":"57e8b992b25fb09c2283a397a4ec9c244c89bfa46bbbf3af40e47c25b0c14a8d"}]);
+
+const frozenRuntimeProbeWhitelist = [["docker",["--version"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["docker",["info","--format","{{.OperatingSystem}}"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["docker",["info","--format","{{json .SecurityOptions}}"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["podman",["--version"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["podman",["info","--format","{{.Host.Remote}}"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["podman",["info","--format","{{.Host.Security.Rootless}}"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["docker",["context","inspect","--format","{{.Endpoints.docker.Host}}"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["docker",["context","inspect","--format","{{.Endpoints.docker.Host}}","--","colima"],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}],["docker",["context","inspect","--format","{{.Endpoints.docker.Host}}","--"," --format=hostile "],{"encoding":"utf-8","stdio":["pipe","pipe","pipe"]}]];
+
+function compareFrozenRows(rows,descriptor){
+ assert.equal(rows.length,descriptor.length);
+ for(let i=0;i<rows.length;i++){
+ const row=rows[i],identity=(row.form?row.form+':':'')+row.name;
+ assert.equal(identity,descriptor[i].identity);
+ assert.equal(createHash('sha256').update(JSON.stringify(row)).digest('hex'),descriptor[i].sha256,'frozen observation '+identity);
+ }
+}
+
+async function verifyControlledRuntimeCore(payload){
+ const {createRuntimeCapabilitiesCollector}=await import(pathToFileURL(path.join(payload,'dist/application/runtime-capabilities.js')).href);
+ const trace=[];let cache=null,failPublication=true;const publicationFault=Error('controlled-publication');
+ const note=(name,result)=>(...args)=>{trace.push([name,...args]);return result;};
+ const ports={readCachedInfo:()=>{trace.push(['cache']);return cache;},publishCachedInfo:info=>{trace.push(['publish']);if(failPublication)throw publicationFault;cache=info;},
+ readVitestFlag:note('vitest','1'),readExplicitOverride:note('override',null),selectRuntime:note('select','docker'),readPlatform:note('platform','linux'),
+ observeVersion:note('version',{status:0,stdout:'Docker 27.1.1'}),observeDockerOperatingSystem:note('os',{status:0,stdout:'Ubuntu'}),readSelectedDockerEndpoint:note('endpoint',null),
+ observePodmanRemote:note('remote',{status:0,stdout:'false'}),observeDockerSecurityOptions:note('security',{status:0,stdout:'[]'}),observePodmanRootless:note('rootless',{status:0,stdout:'false'}),
+ readWslDistributionName:note('wsl',undefined),observeWslMirroredLoopback:note('loopback',false),readRuntimeSocketOverride:note('socket',undefined),readXdgRuntimeDirectory:note('xdg',undefined),readEffectiveUidOrDefault:note('uid',0),joinPodmanSocketPath:note('join','/unused')};
+ const collect=createRuntimeCapabilitiesCollector(ports);assert.deepEqual(trace,[],'construction performs no observations');
+ for(let i=0;i<2;i++){assert.throws(collect,e=>e===publicationFault);assert.equal(cache,null);}
+ assert.deepEqual(trace,[['cache'],['vitest'],['override'],['publish'],['cache'],['vitest'],['override'],['publish']]);
+ failPublication=false;trace.length=0;const first=collect();assert.equal(first.version,'0.0.0');assert.deepEqual(trace,[['cache'],['vitest'],['override'],['publish'],['cache']]);
+ first.version='externally-mutated';trace.length=0;assert.equal(collect(),first);assert.equal(first.version,'externally-mutated');assert.deepEqual(trace,[['cache']]);
+ const {readWslDistributionName,...missing}=ports;assert.throws(()=>createRuntimeCapabilitiesCollector(missing),/readWslDistributionName/);
+}
+// Author-only snippet. Parent must run in an isolated child with HOME equal to privateHome.
+// No checkout module or archived source is imported at runtime.
+async function mcpPayloadConsumer(payload, privateHome, ts) {
+  const {default: assert} = await import('node:assert/strict');
+  const {default: fs} = await import('node:fs');
+  const {default: os} = await import('node:os');
+  const path = await import('node:path');
+  const {pathToFileURL} = await import('node:url');
+  const {syncBuiltinESMExports} = await import('node:module');
+  const {createHash} = await import('node:crypto');
+  assert.equal(os.homedir(), privateHome);
+  const hash = text => createHash('sha256').update(text).digest('hex');
+  const saved = [], denied = [];
+  const replace = (object, name, value) => {
+    saved.push([object, name, Object.getOwnPropertyDescriptor(object, name)]);
+    Object.defineProperty(object, name, {configurable: true, writable: true, value});
+  };
+  const deny = name => (...args) => { denied.push(name); throw new Error(`MCP forbidden effect: ${name}`); };
+  const child = (await import('node:child_process')).default;
+  for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork']) replace(child,name,deny(name));
+  replace(process,'kill',deny('process.kill'));
+  for (const module of ['node:net','node:tls','node:http','node:https','node:dgram']) {
+    const native = (await import(module)).default;
+    for (const name of ['connect','createConnection','request','get','createServer','createSocket']) if (typeof native[name] === 'function') replace(native,name,deny(`${module}.${name}`));
+    for(const constructor of ['Socket','Server','TLSSocket'])if(native[constructor]?.prototype)for(const name of ['connect','listen'])if(typeof native[constructor].prototype[name]==='function')replace(native[constructor].prototype,name,deny(`${module}.${constructor}.${name}`));
+  }
+  if (globalThis.fetch) replace(globalThis,'fetch',deny('fetch'));
+  const native = Object.fromEntries(['existsSync','readFileSync','writeFileSync','mkdirSync','openSync','unlinkSync','renameSync','rmSync','rmdirSync','symlinkSync','linkSync','chmodSync','lstatSync'].map(name=>[name,fs[name]]));
+  const descriptors=new Map();
+  const owned = file => {
+    if(typeof file==='number'){assert(descriptors.has(file),'unowned native descriptor');return;}
+    assert.equal(typeof file,'string');
+    const absolute = path.resolve(file);
+    if (!(absolute === privateHome || absolute.startsWith(privateHome + path.sep))) {
+      denied.push('filesystem-outside-private-home'); throw new Error(`MCP unowned filesystem operation: ${absolute}`);
+    }
+    let ancestor = absolute;
+    while (ancestor !== privateHome) {
+      if (native.existsSync(ancestor)) assert.equal(native.lstatSync(ancestor).isSymbolicLink(), false);
+      ancestor = path.dirname(ancestor);
+    }
+  };
+  // Real native private locks remain enabled. Payload ESM loading uses the loader's FS.
+  replace(fs,'openSync',(file,...args)=>{owned(file);const fd=native.openSync(file,...args);descriptors.set(fd,file);return fd;});
+  const nativeClose=fs.closeSync;replace(fs,'closeSync',(fd)=>{owned(fd);try{return nativeClose(fd);}finally{descriptors.delete(fd);}});
+  for (const name of ['writeFileSync','mkdirSync','unlinkSync','rmSync','rmdirSync','chmodSync']) replace(fs,name,(file,...args)=>{owned(file);return native[name](file,...args);});
+  for (const name of ['renameSync','symlinkSync','linkSync']) replace(fs,name,(from,to,...args)=>{owned(from);owned(to);return native[name](from,to,...args);});
+  replace(fs,'readFileSync',(file,...args)=>{
+    if(file==='/proc/sys/kernel/random/boot_id')return 'mcp-private-fixture-boot\n';
+    if(file===`/proc/${process.pid}/cmdline`)return Buffer.from('node\0mcp-private-fixture\0');
+    if(file===`/proc/${process.pid}/stat`)return `${process.pid} (mcp-fixture) ${Array(19).fill('0').join(' ')} 12345`;
+    if(typeof file==='string'&&path.resolve(file).startsWith(path.resolve(payload)+path.sep))return native.readFileSync(file,...args);
+    owned(file);return native.readFileSync(file,...args);
+  });
+  syncBuiltinESMExports();
+  const parseDescriptor = Object.getOwnPropertyDescriptor(JSON,'parse');
+  const stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON,'stringify');
+  try {
+    const resolve = relative => {
+      const file = path.resolve(payload,relative);
+      assert(file.startsWith(path.resolve(payload)+path.sep)); assert(native.existsSync(file),`Missing shipped MCP module ${relative}`);
+      return pathToFileURL(file).href;
+    };
+    const facade = await import(resolve('dist/mcp-forward.js'));
+    await import(resolve('dist/application/mcp-forward.js'));
+    const adapter = await import(resolve('dist/adapters/mcp-forward.js'));
+    const utils = await import(resolve('dist/utils.js'));
+    const originalParse = parseDescriptor.value, originalStringify = stringifyDescriptor.value;
+    const host = path.join(privateHome,'.claude.json');
+    const raw = new Error('raw-error');
+    let mode, target, events, active = false, existsFile, parserIndex;
+    const restoreJson = () => {Object.defineProperty(JSON,'parse',parseDescriptor);Object.defineProperty(JSON,'stringify',stringifyDescriptor);};
+    replace(fs,'existsSync',(file,...args)=>{
+      if (active && (file === target || file === host)) {existsFile=file;events.push(['exists',file]);}
+      return native.existsSync(file,...args);
+    });
+    replace(fs,'readFileSync',(file,...args)=>{
+      if(file==='/proc/sys/kernel/random/boot_id')return 'mcp-private-fixture-boot\n';
+      if(file===`/proc/${process.pid}/cmdline`)return Buffer.from('node\0mcp-private-fixture\0');
+      if(file===`/proc/${process.pid}/stat`)return `${process.pid} (mcp-fixture) ${Array(19).fill('0').join(' ')} 12345`;
+      if (active && (file === target || file === host)) {
+        events.push(['read',file]);
+        if ((mode==='claude-parser-replacement' && file===target) || (mode==='host-parser-replacement' && file===host)) {
+          Object.defineProperty(JSON,'parse',{configurable:true,writable:true,value:()=>({})});
+        }
+      }
+      if(typeof file==='string'&&path.resolve(file).startsWith(path.resolve(payload)+path.sep))return native.readFileSync(file,...args);
+      owned(file); return native.readFileSync(file,...args);
+    });
+    replace(fs,'writeFileSync',(file,text,...args)=>{
+      owned(file);
+      if(mode==='public'&&typeof file==='string')events.push(['publication',file]);
+      if (active && file===target) {events.push('selected-write');if(mode==='selected-writer-throw') throw raw;}
+      return native.writeFileSync(file,text,...args);
+    });
+    const selectedWriter=fs.writeFileSync;
+    syncBuiltinESMExports();
+    const goldens = {
+      normal:['da0eea1b512abcbb22449202574456b90066c85998112f92b4e4468a320e5826','b42a5706c79ba1e4a34ae771ba8eb3b6d79efecff7332fab1817df8c796cff44'],
+      'writer-replacement':['da0eea1b512abcbb22449202574456b90066c85998112f92b4e4468a320e5826','b42a5706c79ba1e4a34ae771ba8eb3b6d79efecff7332fab1817df8c796cff44'],
+      'serializer-throw':['af7e0e60ef1cb6299c9cf719e651eac394d2005ba01ea0028f5b8c88c6ef992d','b42a5706c79ba1e4a34ae771ba8eb3b6d79efecff7332fab1817df8c796cff44'],
+      'selected-writer-throw':['af7e0e60ef1cb6299c9cf719e651eac394d2005ba01ea0028f5b8c88c6ef992d','b42a5706c79ba1e4a34ae771ba8eb3b6d79efecff7332fab1817df8c796cff44'],
+      'claude-parser-replacement':['06a4d19497feba13ca3d08b1fa06972d0e8ba7f2ae8f47041568bfcc0d4e844a','b83b5af2d2409e7389f4bb1814e47eeca5a9189d2924c76d58542462ae9724d2'],
+      'host-parser-replacement':['da0eea1b512abcbb22449202574456b90066c85998112f92b4e4468a320e5826','b42a5706c79ba1e4a34ae771ba8eb3b6d79efecff7332fab1817df8c796cff44'],
+      'claude-getter-throw':['52e4422e166703ea1fb5e13fc305f26837713cc5e39ac0b960b37d9fcb9b29a5','b42a5706c79ba1e4a34ae771ba8eb3b6d79efecff7332fab1817df8c796cff44'],
+      'host-getter-throw':['06a4d19497feba13ca3d08b1fa06972d0e8ba7f2ae8f47041568bfcc0d4e844a','b83b5af2d2409e7389f4bb1814e47eeca5a9189d2924c76d58542462ae9724d2'],
+    };
+    for (mode of Object.keys(goldens)) {
+      restoreJson();active=false;fs.writeFileSync=selectedWriter;syncBuiltinESMExports();
+      const profile='callee-'+mode;
+      target=utils.getClaudeJsonFile(profile);const codex=utils.getCodexConfigFile(profile);
+      owned(target);owned(codex);fs.mkdirSync(path.dirname(target),{recursive:true});fs.mkdirSync(path.dirname(codex),{recursive:true});
+      native.writeFileSync(target,'{"retained":true}');native.writeFileSync(host,'{"mcpServers":{"host":{"command":"node"}}}');native.writeFileSync(codex,'model = "keep"\n');
+      events=[];parserIndex=0;active=true;
+      Object.defineProperty(JSON,'parse',{configurable:true,get(){
+        const file=existsFile;events.push(['parser:get',file]);parserIndex++;
+        if ((mode==='claude-getter-throw' && parserIndex===1)||(mode==='host-getter-throw' && parserIndex===2)) throw raw;
+        return originalParse;
+      }});
+      Object.defineProperty(JSON,'stringify',{configurable:true,writable:true,value:(...args)=>{
+        if(args[2]!==2)return originalStringify(...args);
+        events.push('serialize');
+        if(mode==='writer-replacement') {fs.writeFileSync=deny('replacement-writer');syncBuiltinESMExports();}
+        if(mode==='serializer-throw') throw raw;
+        return originalStringify(...args);
+      }});
+      let failure,result;
+      try {result=facade.buildMcpConfig(profile);}catch(error){failure=error;}
+      active=false;restoreJson();fs.writeFileSync=selectedWriter;syncBuiltinESMExports();
+      assert.equal(failure,mode==='serializer-throw'||mode==='selected-writer-throw'?raw:undefined);
+      if(!failure) assert.deepEqual(result,mode==='claude-parser-replacement'||mode==='host-getter-throw'?[]:['host']);
+      assert.equal(hash(native.readFileSync(target,'utf8')),goldens[mode][0],mode+' Claude bytes');
+      assert.equal(hash(native.readFileSync(codex,'utf8')),goldens[mode][1],mode+' Codex bytes');
+      for(const file of [target,host]) {
+        const existence=events.findIndex(event=>Array.isArray(event)&&event[0]==='exists'&&event[1]===file);
+        const getter=events.findIndex(event=>Array.isArray(event)&&event[0]==='parser:get'&&event[1]===file);
+        const read=events.findIndex(event=>Array.isArray(event)&&event[0]==='read'&&event[1]===file);
+        assert(getter>existence);assert.equal(read===-1,mode===(file===target?'claude-getter-throw':'host-getter-throw'));
+        if(read!==-1)assert(read>getter);
+      }
+      assert.equal(events.includes('selected-write'),mode!=='serializer-throw');
+      if(events.includes('selected-write'))assert(events.indexOf('selected-write')>events.indexOf('serialize'));
+    }
+    // Public default and named profile regeneration uses real private native locks.
+    for(const profile of [undefined,'work']) {
+      mode='public';events=[];active=false;restoreJson();
+      target=utils.getClaudeJsonFile(profile);const codex=utils.getCodexConfigFile(profile);
+      fs.mkdirSync(path.dirname(target),{recursive:true});fs.mkdirSync(path.dirname(codex),{recursive:true});
+      native.writeFileSync(target,'{"retained":true}');native.writeFileSync(codex,'model = "keep"\n');
+      native.writeFileSync(host,'{"mcpServers":{"host":{"url":"http://localhost:8181/sse"}}}');
+      let restores=0;
+      const lockFile=profile===undefined?path.join(privateHome,'.ccc','codex-config.lock'):path.join(privateHome,'.ccc','run','locks',`codex-config-${hash(codex)}.lock`);
+      const restore=function(){assert.equal(this,undefined);assert(native.existsSync(lockFile),'actual native lock absent during restoration');restores++;};
+      assert.deepEqual(facade.buildMcpConfig(profile,restore),['host']);
+      const before=native.readFileSync(codex,'utf8'), inode=fs.statSync(codex).ino;
+      assert.deepEqual(facade.buildMcpConfig(profile,restore),['host']);assert.equal(restores,2);
+      assert.equal(native.readFileSync(codex,'utf8'),before);assert.equal(fs.statSync(codex).ino,inode);
+      assert.equal(events.filter(event=>Array.isArray(event)&&event[0]==='publication'&&event[1]===codex).length,1,'unchanged Codex publication must be skipped');
+      assert(before.includes('model = "keep"'));assert(before.includes('http://host.docker.internal:8181/sse'));
+      const config=originalParse(native.readFileSync(target,'utf8'));assert.equal(config.retained,true);assert(config.mcpServers['device-lab']);
+    }
+    // Construction must not select the native publication writer.
+    let selections=0;const ports=adapter.createNativeMcpConfigPorts();
+    const descriptor=Object.getOwnPropertyDescriptor(ports,'publishClaudeProfile');
+    Object.defineProperty(ports,'publishClaudeProfile',{...descriptor,get(){selections++;return descriptor.get.call(ports);}});
+    const app=await import(resolve('dist/application/mcp-forward.js'));app.createMcpConfigRegenerator(ports);assert.equal(selections,0);
+    assert(ts,'checker-owned TypeScript compiler required for actual payload CLI8');
+    await mcpPayloadCliConsumer(payload,privateHome,ts,name=>denied.push(name));
+    return {parserCases:4,writerCases:4,publicProfiles:2,cliCases:8};
+  } finally {
+    Object.defineProperty(JSON,'parse',parseDescriptor);Object.defineProperty(JSON,'stringify',stringifyDescriptor);
+    for(const [object,name,descriptor] of saved.reverse())Object.defineProperty(object,name,descriptor);
+    syncBuiltinESMExports();assert.deepEqual(denied,[], 'caught forbidden MCP effects');
+  }
+}
+
+// Parent substitutes a relative emitted-module prefix from its strict .mts location.
+function mcpStrictConsumer(prefix) {
+  return `
+import {buildMcpConfig,readHostMcpServers,rewriteLocalhostUrl,processServerForContainer} from '${prefix}/mcp-forward.js';
+import {createMcpConfigRegenerator} from '${prefix}/application/mcp-forward.js';
+import type {McpConfigRegenerationPorts} from '${prefix}/ports/mcp-forward.js';
+import type {McpServerConfig} from '${prefix}/domain/mcp-forward.js';
+const result:string[]=buildMcpConfig();
+const named:string[]=buildMcpConfig('work',()=>{});
+const explicit:string[]=buildMcpConfig(undefined,undefined);
+const host:Record<string,McpServerConfig>=readHostMcpServers();
+const url:string=rewriteLocalhostUrl('http://localhost');
+const server:McpServerConfig=processServerForContainer('x',{command:'node'});
+type Claude={readonly claude:unique symbol};type Codex={readonly codex:unique symbol};
+declare const c:Claude;declare const d:Codex;
+const ports:McpConfigRegenerationPorts<Claude,Codex>={
+ resolveClaudeProfile:()=>c,
+ readClaudeProfileDocument:binding=>{const opaque:Claude=binding;return ()=>'';},
+ readHostMcpDocument:()=>undefined,
+ withCodexProfileLock:<T>(profile:string|undefined,operation:()=>T):T=>operation(),
+ prepareCodexProfile:()=>({binding:d,existingText:''}),
+ publishCodexProfile:(binding,text)=>{const opaque:Codex=binding;return undefined;},
+ publishClaudeProfile:(binding,text)=>{const opaque:Claude=binding;return undefined;}
+};
+const built:string[]=createMcpConfigRegenerator(ports).build('work',()=>{});
+const locked:number=ports.withCodexProfileLock(undefined,()=>1);
+const optional:(()=>string)|undefined=ports.readHostMcpDocument();
+const codexUndefined:undefined=ports.publishCodexProfile(d,'');
+const claudeUndefined:undefined=ports.publishClaudeProfile(c,'');
+// @ts-expect-error all seven semantic ports are required
+const missing:McpConfigRegenerationPorts<Claude,Codex>={resolveClaudeProfile:()=>c};
+// @ts-expect-error public build remains synchronous
+const asynchronous:Promise<string[]>=buildMcpConfig();
+// @ts-expect-error host reader remains synchronous
+const asynchronousHost:Promise<Record<string,McpServerConfig>>=readHostMcpServers();
+// @ts-expect-error profile remains a string
+buildMcpConfig(1);
+// @ts-expect-error distinct opaque binding
+ports.publishClaudeProfile(d,'');
+// @ts-expect-error distinct opaque binding
+ports.publishCodexProfile(c,'');
+// @ts-expect-error callback capability remains synchronous
+const asyncCapability:McpConfigRegenerationPorts<Claude,Codex>['readHostMcpDocument']=()=>async()=>'';
+// @ts-expect-error document capability acquisition remains synchronous
+const asyncRead:McpConfigRegenerationPorts<Claude,Codex>['readHostMcpDocument']=async()=>()=>'';
+// @ts-expect-error publisher must return undefined, not void
+const voidCodex:McpConfigRegenerationPorts<Claude,Codex>['publishCodexProfile']=()=>{};
+// @ts-expect-error publisher must return undefined, not void
+const voidClaude:McpConfigRegenerationPorts<Claude,Codex>['publishClaudeProfile']=()=>{};
+// @ts-expect-error publisher remains synchronous
+const asyncCodex:McpConfigRegenerationPorts<Claude,Codex>['publishCodexProfile']=async()=>{};
+// @ts-expect-error publisher remains synchronous
+const asyncClaude:McpConfigRegenerationPorts<Claude,Codex>['publishClaudeProfile']=async()=>{};
+// @ts-expect-error prepare retains binding plus original text
+const badPrepare:McpConfigRegenerationPorts<Claude,Codex>['prepareCodexProfile']=()=>d;
+// @ts-expect-error build remains synchronous
+const badBuild:Promise<string[]>=createMcpConfigRegenerator(ports).build();
+`;
+}
+
+// Invoke under the same effect fences as mcpPayloadConsumer, before its finally.
+// `ts` is the checker-owned compiler, never a candidate source loader.
+async function mcpPayloadCliConsumer(payload,privateHome,ts,recordDenied) {
+  const {default:assert}=await import('node:assert/strict');
+  const fs=await import('node:fs');const path=await import('node:path');
+  const {createRequire}=await import('node:module');const {pathToFileURL}=await import('node:url');
+  const {runInThisContext}=await import('node:vm');
+  const emittedRoot=path.resolve(payload,'dist'), cache=new Map(), observed=new Set();
+  const nativeRequire=createRequire(path.join(payload,'dist/index.js'));
+  const f={events:[],positions:[],running:false,profile:undefined,locked:false,claude:'',codex:''};
+  const noop=()=>{};
+  const mockFactories={
+    'container-command.js':()=>({runContainerCommand:async(_runtime,args)=>{assert(args.includes('final-id'));assert.equal(f.events.at(-1),'confirm');f.events.push('command');return 0;}}),
+    'docker.js':()=>({ensureDockerRunning:noop,ensureCredentialHostDir:noop,getContainerName:()=> 'ccc-fixture',getContainerStatus:()=>({exists:true,running:f.running,imageId:'sha256:old',containerId:'old-id'}),startProjectContainer:(...args)=>{f.events.push('start');if(!f.running)args[9]('final-id');args[7]('final-id',{startedByInvocation:!f.running});return 'ccc-fixture';},isContainerRunning:()=>true,restoreCodexConfigHostOwnership:(id,profile)=>{assert.equal(id,'final-id');assert.equal(profile,f.profile);assert.equal(f.locked,true);f.positions.push(fs.existsSync(f.codex));f.events.push('restore');},prepareCodexConfigForContainer:(id,profile)=>{assert.equal(id,'final-id');assert.equal(profile,f.profile);assert(f.locked);f.events.push('prepare');},syncClipboardShims:()=>f.events.push('clipboard'),ensureContainerManagerSocketAccess:noop}),
+    'container-runtime.js':actual=>({...actual,runtimeCli:()=> 'docker',deviceBrokerBindHostForContainer:()=> '127.0.0.1'}),
+    'worktree.js':actual=>({...actual,detectWorktreeWorkspaceBranch:()=>null,getWorktreeGitMounts:()=>[]}),
+    'profile.js':actual=>({...actual,profileExists:()=>true}),
+    'clipboard-server.js':()=>({ensureClipboardServer:async()=>null,hasAnyActiveSessionsExcept:()=>false,retireClipboardServerFromPortFile:noop}),
+    'home-layout.js':actual=>({...actual,ensureDefaultProfileDir:noop,migrateHomeLayout:()=>f.events.push('layout')}),
+    'home-layout-container-guard.js':()=>({hasLegacyHomeLayoutContainerMounts:()=>false}),
+    'device-lab-admin.js':()=>({cleanupOwnerDevices:noop}),
+    'container-setup.js':()=>({CLAUDE_BIN_PATH:'/home/ccc/.local/bin/claude',ensureUvAvailable:()=>f.events.push('uv'),ensureClaudeInContainer:id=>{assert.equal(id,'final-id');f.events.push('claude-ready');},ensureTools:(id,tool)=>{assert.equal(id,'final-id');assert(fs.readFileSync(f.codex,'utf8').includes('url = "http://host.docker.internal:8181/sse"'));assert.equal(JSON.parse(fs.readFileSync(f.claude,'utf8')).mcpServers.forwarded.url,'http://host.docker.internal:8181/sse');assert.deepEqual(f.positions,[false,false]);f.events.push('tool:'+tool.name);}}),
+    'codex-config-lock.js':actual=>({withCodexConfigLock:(operation,profile)=>{assert.equal(profile,f.profile);assert.equal(f.locked,false);return actual.withCodexConfigLock(()=>{f.locked=true;f.events.push('lock');try{return operation();}finally{f.locked=false;f.events.push('unlock');}},profile);}}),
+    'codex-state-ownership.js':()=>({assertCodexStateAccessible:(id,profile)=>{assert.equal(id,'final-id');assert.equal(profile,f.profile);f.events.push('state');}}),
+    'codex-harness.js':()=>({ensureCodexHarness:(id,profile)=>{assert.equal(id,'final-id');assert.equal(profile,f.profile);f.events.push('harness');}}),
+    'localhost-proxy-setup.js':()=>({setupLocalhostProxy:()=>f.events.push('proxy')}),
+    'codex-clipboard-image.js':()=>({maybeAttachCodexClipboardImage:async(_path,args)=>({args})}),
+    'codex-launch.js':()=>({prepareCodexLaunch:(_runtime,args,command)=>{assert(args.includes('final-id'));f.events.push('launch-preparation');return{ok:true,command};}}),
+    'utils.js':actual=>({...actual,DATA_DIR:path.join(privateHome,'.ccc'),collectForwardedEnv:()=>({forwarded:[],skippedDueToLimit:[],totalBytes:0}),writeOwnedEnvFile:()=>({path:path.join(privateHome,'exec.env'),dispose:()=>f.events.push('unlink')})}),
+    'session.js':actual=>({...actual,acquireHostSessionOwnership:async request=>{actual.setSession(path.join(privateHome,'session.lock'),request.projectPath,request.profile,request.toolName);actual.setSessionCleanupEnabled(false);return{lockFile:path.join(privateHome,'session.lock'),existingId:f.running?'old-id':null};},confirmSessionOwnership:async()=>f.events.push('confirm'),createSessionLock:()=>path.join(privateHome,'session.lock'),setupSignalHandlers:noop,getActiveSessionsForContainer:()=>[],cleanupSession:()=>f.events.push('cleanup'),withContainerLifecycleLock:(_key,operation)=>operation(),withContainerSetupLockAsync:async(_key,operation)=>operation()}),
+  };
+  const partial=new Set(['container-runtime.js','worktree.js','profile.js','home-layout.js','codex-config-lock.js','utils.js','session.js']);
+  const load=(file,unmocked=false)=>{
+    file=path.resolve(file);assert(file.startsWith(path.resolve(payload)+path.sep),'CLI checkout fallback');
+    const key=file+(unmocked?'#actual':'');if(cache.has(key))return cache.get(key).exports;
+    const module={exports:{}};cache.set(key,module);
+    const base=path.relative(emittedRoot,file);
+    if(!unmocked&&mockFactories[base]){module.exports=mockFactories[base](partial.has(base)?load(file,true):undefined);return module.exports;}
+    assert(fs.existsSync(file),'missing emitted CLI dependency '+file);observed.add(file);
+    const original=fs.readFileSync(file,'utf8');
+    const compiled=ts.transpileModule(original.replace(/import\.meta\.url/g,JSON.stringify(pathToFileURL(file).href)),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+    const requireMapped=specifier=>{
+      if(specifier==='child_process'||specifier==='node:child_process')return {...nativeRequire(specifier),spawnSync:(_runtime,args,options)=>{
+        try {
+        assert.equal(_runtime,'docker');
+        if(args[1]==='-d'){assert.deepEqual(args,['exec','-d','final-id','/usr/local/bin/ccc-x11-bridge']);assert.deepEqual(options,{stdio:'ignore'});f.events.push('bridge');return{status:0,stdout:'',stderr:''};}
+        assert.deepEqual(options,{stdio:'inherit'});assert.deepEqual(args,['exec','-w',f.projectMount,'final-id','sh','-c','mise trust -a >/dev/null 2>&1 || true; mise install -y || true']);
+        assert.equal(f.running,false);f.events.push('mise');return{status:0,stdout:'',stderr:''};
+        }catch(error){recordDenied('CLI unallocated subprocess');throw error;}
+      }};
+      if(specifier==='@ccc/device-lab/device-lab-broker.js')return{DEVICE_BROKER_DEFAULT_HOST:'127.0.0.1',ensureHostDeviceBroker:async()=>({ok:true})};
+      if(specifier.startsWith('.'))return load(path.resolve(path.dirname(file),specifier));
+      if(specifier.startsWith('@ccc/'))return load(createRequire(file).resolve(specifier));
+      return nativeRequire(specifier);
+    };
+    runInThisContext('(function(require,module,exports,__filename,__dirname){'+compiled+'\n})',{filename:file})(requireMapped,module,module.exports,file,path.dirname(file));
+    return module.exports;
+  };
+  const argv=process.argv,exit=process.exit,cwd=process.cwd();
+  const environment=Object.fromEntries(['CCC_PROFILE','DEBUG','container','VITEST'].map(key=>[key,process.env[key]]));
+  class Exit extends Error {constructor(status){super('fixture exit');this.status=status;}}
+  try {
+    process.env.VITEST='1';process.env.DEBUG='';process.env.container='';process.exit=status=>{throw new Exit(Number(status));};
+    const project=path.join(privateHome,'cli-project');fs.mkdirSync(project,{recursive:true});fs.writeFileSync(path.join(project,'mise.toml'),'[tools]\n');process.chdir(project);
+    const index=load(path.join(emittedRoot,'index.js'));
+    const utils=load(path.join(emittedRoot,'utils.js'));
+    const session=load(path.join(emittedRoot,'session.js'));
+    f.projectMount='/project/'+utils.getProjectId(project);
+    for(const running of [false,true])for(const tool of ['codex','claude'])for(const named of [false,true]) {
+      f.running=running;f.profile=named?'work':undefined;f.events=[];f.positions=[];f.locked=false;
+      process.env.CCC_PROFILE=f.profile??'';process.argv=[process.execPath,'ccc',tool];session.clearSession();
+      f.claude=utils.getClaudeJsonFile(f.profile);f.codex=utils.getCodexConfigFile(f.profile);
+      fs.mkdirSync(path.dirname(f.claude),{recursive:true});if(fs.existsSync(f.codex))fs.unlinkSync(f.codex);
+      fs.writeFileSync(path.join(privateHome,'.claude.json'),'{"mcpServers":{"forwarded":{"url":"http://localhost:8181/sse"}}}');
+      let failure;try{await index.main();}catch(error){failure=error;}
+      assert(failure instanceof Exit,`actual emitted main() route failed: ${failure?.stack}`);assert.equal(failure.status,0);
+      assert(fs.readFileSync(f.codex,'utf8').includes('[mcp_servers.device-lab]'));
+      assert(JSON.parse(fs.readFileSync(f.claude,'utf8')).mcpServers['device-lab'].args.includes('/opt/ccc/dist/device-lab-mcp/server.mjs'));
+      assert.equal(f.events.includes('uv'),!running);assert(f.events.includes('tool:'+tool));assert.deepEqual(f.positions.slice(0,2),[false,false]);
+      assert.equal(f.events.slice(0,f.events.indexOf('tool:'+tool)).filter(event=>event==='restore').length,2);
+      assert(f.positions.slice(2).every(Boolean));assert(f.events.indexOf('command')>f.events.indexOf('tool:'+tool));
+    }
+    for(const relative of ['index.js','mcp-forward.js','application/mcp-forward.js','adapters/mcp-forward.js'])assert(observed.has(path.join(emittedRoot,relative)),`not executed: emitted ${relative}`);
+  } finally {
+    process.argv=argv;process.exit=exit;process.chdir(cwd);
+    for(const [key,value]of Object.entries(environment)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  }
+}
+
+const SANDBOX_CREATE_DECLARATION_CONSUMER = `
+import { createWindowsSandboxCreate } from "./reviewed-sandbox-declarations/application/lifecycle/windows-sandbox-create.mjs";
+import type { WindowsSandboxCreatePorts } from "./reviewed-sandbox-declarations/ports/lifecycle/windows-sandbox-create.mjs";
+import { createBrokerWindowsSandboxCreate } from "./dist/packages/device-lab/dist/device-lab/application/lifecycle/windows-sandbox-create.js";
+import type { BrokerWindowsSandboxCreatePorts } from "./dist/packages/device-lab/dist/device-lab/ports/lifecycle/windows-sandbox-create.js";
+import * as shared from "./reviewed-sandbox-declarations/state/state-file.mjs";
+import type { Stats } from "node:fs";
+declare const direct: WindowsSandboxCreatePorts<{scratch:string}>;
+declare const broker: BrokerWindowsSandboxCreatePorts<{name:string},{id:string;createdAt:string},{ok:boolean;receipt:"native"}>;
+const sync = createWindowsSandboxCreate(direct).create({backend:"windows-sandbox"});
+const pending: Promise<unknown> = createBrokerWindowsSandboxCreate(broker).create({name:"Sandbox"});
+// @ts-expect-error Direct creation remains synchronous.
+const deferred: Promise<unknown> = sync;
+// @ts-expect-error Helper metadata cannot defer its native operation.
+createWindowsSandboxCreate({...direct,ensureHelperWorkspace:async()=>({scratch:"private"})});
+// @ts-expect-error Definitions must be read synchronously.
+createWindowsSandboxCreate({...direct,readDefinitions:async()=>[]});
+// @ts-expect-error Native config publication must complete synchronously.
+createBrokerWindowsSandboxCreate({...broker,publishConfig:async()=>"config"});
+// @ts-expect-error Native compensation mutation remains synchronous.
+createBrokerWindowsSandboxCreate({...broker,removeMatchingClaim:async()=>[]});
+// @ts-expect-error Rollback returns asynchronous evidence.
+createBrokerWindowsSandboxCreate({...broker,rollbackAfterClaimFailure:()=>({ok:true,receipt:"native" as const})});
+// @ts-expect-error Required ports have no native defaults.
+createBrokerWindowsSandboxCreate();
+const token=Symbol("shared-result");
+const generic:typeof token|null=shared.readDeviceLabStateFile("file",()=>token,"prefix");
+const callback:{fd:number;stat:Stats}|null=shared.withDeviceLabReadableFile("file","prefix",99,(fd,stat)=>({fd,stat}));
+// @ts-expect-error Native callback descriptor remains numeric.
+shared.withDeviceLabReadableFile("file","prefix",99,(fd:string)=>fd);
+void[pending,deferred,generic,callback];
+`;
+
 function verifyGuardianStartupClosure(packageRoot) {
     const visited = new Set();
     const visit = file => {
@@ -4375,7 +5044,33 @@ function verifyGuardianStartupClosure(packageRoot) {
     assert.ok(visited.has(join(packageRoot, "dist/application/session-ownership.js")));
 }
 
+function shippingWaveConsumer(consumer, packageRoot, privateHome, golden) {
+    const imports = `import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';
+import {pathToFileURL} from 'node:url';import {syncBuiltinESMExports,registerHooks} from 'node:module';
+import cp from 'node:child_process';import net from 'node:net';import http from 'node:http';import https from 'node:https';
+import dgram from 'node:dgram';import tls from 'node:tls';import {createHash} from 'node:crypto';`;
+    const program = `${imports}
+import ts from ${JSON.stringify(pathToFileURL(join(root, "node_modules/typescript/lib/typescript.js")).href)};
+${mcpPayloadCliConsumer.toString()}
+${fence.toString()}
+${compareFrozenRows.toString()}
+${verifyControlledRuntimeCore.toString()}
+const frozenRuntimeProbeWhitelist=${JSON.stringify(frozenRuntimeProbeWhitelist)};
+const result=await (${consumer.toString()})(${JSON.stringify(packageRoot)},${JSON.stringify(privateHome)},${consumer === mcpPayloadConsumer ? "ts" : JSON.stringify(golden)});
+console.log(JSON.stringify({shippingConsumerResult:result??{completed:true}}));`;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
+        cwd: privateHome, env: { ...env, HOME: privateHome, USERPROFILE: privateHome },
+        encoding: "utf8", timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+    });
+    assert.equal(result.status, 0, String(result.error || result.stderr || result.stdout).slice(-4000));
+    const rows = result.stdout.trim().split("\n").filter(line=>line.startsWith('{')).map(line=>JSON.parse(line));
+    assert.ok(rows.some(row=>row.shippingConsumerResult), "shipping consumer must produce an executed result");
+    return rows.findLast(row=>row.shippingConsumerResult).shippingConsumerResult;
+}
+
 async function smoke(packageRoot) {
+    const coverage = [];
+    const record = (consumer, layer, detail) => { assert.ok(detail, "consumer completion is required"); coverage.push({consumer, result:"PASS", layer, detail}); };
     verifyGuardianStartupClosure(packageRoot);
     const guardianContract = join(packageRoot, "session-guardian-consumer.mts");
     writeFileSync(guardianContract, `import { cleanupSession } from "./dist/session.js";
@@ -4445,6 +5140,8 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
         encoding: "utf8", timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
     });
     assert.equal(sandboxResult.status, 0, String(sandboxResult.error || sandboxResult.stderr || sandboxResult.stdout).slice(-4000));
+    const directProof = sandboxResult.stdout.split("\n").filter(line=>line.startsWith('{')).map(line=>JSON.parse(line)).find(row=>row.consumer==="sandbox-direct-create" && row.result==="PASS");
+    record("sandbox-direct-create", "compiled-public/native-helper", directProof);
     const brokerHome = mkdtempSync(join(temporary, "reviewed-broker-home-"));
     const brokerResult = spawnSync(process.execPath, ["--input-type=module", "-e",
         `await (${verifyReviewedBrokerDelivery.toString()})(${JSON.stringify(packageRoot)},${JSON.stringify(brokerHome)});`], {
@@ -4452,6 +5149,25 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
         encoding: "utf8", timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
     });
     assert.equal(brokerResult.status, 0, String(brokerResult.error || brokerResult.stderr || brokerResult.stdout).slice(-4000));
+    const brokerProof = brokerResult.stdout.split("\n").filter(line=>line.startsWith('{')).map(line=>JSON.parse(line)).find(row=>row.consumer==="sandbox-authenticated-create" && row.result==="PASS");
+    record("sandbox-authenticated-create", "compiled-RPC/compensation/native-writer", brokerProof);
+    const stateHome = mkdtempSync(join(temporary, "state-access-shipping-"));
+    const stateProof = shippingWaveConsumer(verifyReviewedStateAccessDelivery, packageRoot, stateHome, stateFrozenRowHashes);
+    record("state-TS", "compiled-facade/native/golden", stateProof.ts);
+    record("state-shared", "compiled-facade/native/golden", stateProof.shared);
+    const runtimeHome = mkdtempSync(join(temporary, "runtime-capabilities-shipping-"));
+    const runtimeProof = shippingWaveConsumer(verifyRuntimeCapabilitiesDelivery, packageRoot, runtimeHome, runtimeFrozenRowHashes);
+    record("runtime55", "compiled-public/core/native-golden", runtimeProof.executed);
+    const mcpHome = mkdtempSync(join(temporary, "mcp-forward-shipping-"));
+    const mcpProof = shippingWaveConsumer(mcpPayloadConsumer, packageRoot, mcpHome);
+    assert.equal(mcpProof.parserCases, 4); assert.equal(mcpProof.writerCases, 4); assert.equal(mcpProof.cliCases, 8);
+    record("MCP-parser4", "compiled-public/builtin-callee-order", mcpProof.parserCases);
+    record("MCP-writer4", "compiled-public/builtin-publication-order", mcpProof.writerCases);
+    record("MCP-launcher8", "payload-mapped-emitted-main/public/core/native-lock", mcpProof.cliCases);
+    const requiredConsumers = ["sandbox-direct-create", "sandbox-authenticated-create", "state-TS", "state-shared", "runtime55", "MCP-parser4", "MCP-writer4", "MCP-launcher8"];
+    const missing = requiredConsumers.filter(name=>!coverage.some(row=>row.consumer===name && row.result==="PASS"));
+    assert.deepEqual(missing, []); assert.equal(coverage.length, 8);
+    console.log(JSON.stringify({ payload:relative(temporary, packageRoot), executedConsumerLedger:coverage, missing }));
     const toolSessionHome = mkdtempSync(join(temporary, "reviewed-tool-session-home-"));
     const toolSessionResult = spawnSync(process.execPath, ["--input-type=module", "-e",
         `await (${verifyReviewedToolSessionDelivery.toString()})(${JSON.stringify(packageRoot)});`], {
@@ -4508,8 +5224,11 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
     run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--allowJs", "--checkJs", "--strict",
         "--skipLibCheck", "false", "--declaration", "--emitDeclarationOnly", "--module", "NodeNext", "--target", "ES2022",
         "--typeRoots", join(root, "node_modules/@types"), "--rootDir", providerRoot, "--outDir", sandboxDeclarations,
-        ...["domain", "ports", "application"].map(layer => join(providerRoot, layer, "lifecycle/windows-sandbox-stop.mjs"))]);
-    const contracts = [...REVIEWED_WAVE_DECLARATION_CONSUMERS, ["sandbox-stop", REVIEWED_SANDBOX_DECLARATION_CONSUMER]].map(([name, text]) => {
+        ...["domain", "ports", "application"].flatMap(layer => ["windows-sandbox-stop", "windows-sandbox-create"].map(name => join(providerRoot, layer, `lifecycle/${name}.mjs`))),
+        join(providerRoot, "state/state-file.mjs"), join(providerRoot, "adapters/state/state-file.mjs")]);
+    const contracts = [...REVIEWED_WAVE_DECLARATION_CONSUMERS, ["sandbox-stop", REVIEWED_SANDBOX_DECLARATION_CONSUMER],
+        ["runtime-capabilities", runtimeCapabilitiesDeclarationConsumer], ["state-access", stateAccessDeclarationConsumer],
+        ["mcp-forward", mcpStrictConsumer("./dist")], ["sandbox-create", SANDBOX_CREATE_DECLARATION_CONSUMER]].map(([name, text]) => {
         const file = join(packageRoot, `reviewed-wave-${name}-consumer.mts`);
         writeFileSync(file, text);
         return file;
