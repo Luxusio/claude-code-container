@@ -6,6 +6,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const progress = JSON.parse(readFileSync(resolve(root, "doc/common/architecture-progress.json"), "utf8"));
 const inventory = JSON.parse(readFileSync(resolve(root, "doc/common/architecture-operation-inventory.json"), "utf8"));
 if (progress.schemaVersion !== 1 || progress.baselineCommit !== inventory.baselineCommit) throw Error("Progress baseline/schema mismatch");
+if (typeof progress.updatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(progress.updatedAt)
+    || new Date(`${progress.updatedAt}T00:00:00Z`).toISOString().slice(0, 10) !== progress.updatedAt) throw Error("Invalid progress date");
 if (progress.sourceDenominatorCertified && (inventory.closure.exhaustive !== true || inventory.gaps.length)) throw Error("Cannot certify a denominator with unresolved inventory closure");
 const items = new Map();
 for (const item of inventory.workItems) {
@@ -14,7 +16,7 @@ for (const item of inventory.workItems) {
     items.set(item.id, item);
 }
 const excluded = new Set(progress.excludedOperationIds);
-if (excluded.size !== progress.excludedOperationIds.length) throw Error("Duplicate excluded operation");
+if (excluded.size !== 1 || progress.excludedOperationIds.length !== 1 || !excluded.has("OP-opencode-data-access-preparation")) throw Error("Only the authorized OpenCode operation may be excluded");
 const candidates = new Map();
 for (const lane of progress.lanes) {
     if (!/^[a-f0-9]{40}$/.test(lane.commit) || lane.integration !== "pending") throw Error("Invalid candidate provenance: " + lane.id);
@@ -34,10 +36,11 @@ for (const item of items.values()) counts[statusFor(item)]++;
 const total = items.size - counts.excluded;
 const implemented = counts.integrated + counts.candidate;
 const percent = count => (100 * count / total).toFixed(1);
-const cell = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "\\|").replace(/[\r\n]+/g, " ");
+const cell = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replace(/[\\`*_{}\[\]()#+.!|~\-]/g, "\\$&").replace(/[\r\n]+/g, " ");
 const names = ["Baseline and inventory", "Core and ports", "State and identity", "Routes and transport", "Sandbox lifecycle", "Hyper-V lifecycle", "Images/network/admin", "Physical/recording/Appium", "Provider capabilities", "Device Lab entrypoints", "Sessions and containers", "Workspace/profiles/credentials/tools", "Host services/tool sessions/remote", "Composition and distribution", "Enforcement and reliability"];
 const label = { integrated: "integrated", candidate: "implemented candidate", partial: "partial", todo: "TODO", excluded: "excluded" };
-const out = ["# Architecture work breakdown and progress", "", `Updated: ${progress.updatedAt}. Source baseline: \`${inventory.baselineCommit}\`.`, "", "Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).", "",
+const out = ["# Architecture work breakdown and progress", "", `Updated: ${cell(progress.updatedAt)}. Source baseline: \`${inventory.baselineCommit}\`.`, "", "Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).", "",
     `Known in-scope implementation TODOs: **${total}** (${items.size} inventoried, ${counts.excluded} explicitly excluded).`,
     `Implemented including unmerged candidates: **${implemented}/${total} (${percent(implemented)}%)**.`,
     `Integrated baseline: **${counts.integrated}/${total} (${percent(counts.integrated)}%)**. Candidates: **${counts.candidate}**; partial: **${counts.partial}**; TODO: **${counts.todo}**.`, "",
