@@ -20,10 +20,10 @@ export function createMcpConfigRegenerator<ClaudeBinding, CodexBinding>(ports: M
     }
     function build(profile?: string, restoreAccess?: () => void): string[] {
         const claude = ports.resolveClaudeProfile(profile);
-        const document = ports.readClaudeProfileDocument(claude);
+        const readClaudeDocument = ports.readClaudeProfileDocument(claude);
         let config: Record<string, unknown> = {};
-        if (document !== undefined) {
-            try { config = JSON.parse(document()); }
+        if (readClaudeDocument !== undefined) {
+            try { config = JSON.parse(readClaudeDocument()); }
             catch { config = {}; }
         }
         const mcpServers = freshManagedMcpServers();

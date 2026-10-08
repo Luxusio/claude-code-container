@@ -11,7 +11,8 @@ const fixture = vi.hoisted(() => ({
     trace: [] as unknown[],
     results: [] as Array<Record<string, any>>,
     effects: [] as Array<(() => void) | undefined>,
-    scope: 0, nextScope: 0, failure: false,
+    scope: 0, nextScope: 0, failure: false, denials: 0,
+    capabilities: new Set<Function>(),
 }));
 vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({ Server: class {
     setRequestHandler(_schema: unknown, handler: (request: any) => Promise<any>) { fixture.handlers.push(handler); }
@@ -30,16 +31,25 @@ function scopedBroker(actual: Record<string, any>) {
     brokerCommand: deniedCapability, brokerPhysical: deniedCapability,
     brokerRpc: deniedCapability, brokerStatus: deniedCapability };
 }
-function deniedCapability(): never { throw new Error("unused native capability crossed fixture fence"); }
+function registerCapability<Capability extends Function>(capability: Capability): Capability {
+    fixture.capabilities.add(capability);
+    return capability;
+}
+function deniedCapability(): never {
+    fixture.denials += 1;
+    throw new Error("unused native capability crossed fixture fence");
+}
+function assertNoDenials() { expect(fixture.denials, "caught or uncaught fixture capability denial").toBe(0); }
+
 function fencedProvider(actual: Record<string, unknown>) {
     return Object.fromEntries(Object.entries(actual).map(([name, value]) => [name,
-        typeof value !== "function" ? value : name.startsWith("list") ? () => { fixture.trace.push(["inventory", name]); return []; } : deniedCapability]));
+        typeof value !== "function" ? value : name.startsWith("list") ? registerCapability(() => { fixture.trace.push(["inventory", name]); return []; }) : registerCapability(deniedCapability)]));
 }
 vi.mock("../../../device-lab-mcp/src/broker.mjs", async importOriginal => scopedBroker(await importOriginal<Record<string, any>>()));
 vi.mock("@ccc/device-lab/providers/backends/android.mjs", async importOriginal => ({
     ...fencedProvider(await importOriginal<Record<string, unknown>>()),
-    listAndroidDevices: () => { fixture.trace.push(["inventory", "android"]); return [{ id: "target-a" }, { id: "target-b" }]; },
-    handleAndroidTool: async (name: string, args: Record<string, any>) => {
+    listAndroidDevices: registerCapability(() => { fixture.trace.push(["inventory", "android"]); return [{ id: "target-a" }, { id: "target-b" }]; }),
+    handleAndroidTool: registerCapability(async (name: string, args: Record<string, any>) => {
         const index = fixture.calls.length;
         fixture.trace.push(["provider-enter", index, name, fixture.scope]);
         fixture.calls.push({ name, args, scope: fixture.scope });
@@ -53,10 +63,10 @@ vi.mock("@ccc/device-lab/providers/backends/android.mjs", async importOriginal =
         if (fixture.failure) throw new Error("provider-failed");
         if (fixture.results[index]) return fixture.results[index];
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, status: 0, stdout: "", stderr: "", provider: "fixture" }) }], isError: false };
-    },
+    }),
 }));
 vi.mock("@ccc/device-lab/providers/backends/linux-vm.mjs", async importOriginal => ({
-    ...fencedProvider(await importOriginal<Record<string, unknown>>()), handleLinuxVmManagementTool: async () => null, handleLinuxVmTool: async () => null,
+    ...fencedProvider(await importOriginal<Record<string, unknown>>()), handleLinuxVmManagementTool: registerCapability(async () => null), handleLinuxVmTool: registerCapability(async () => null),
 }));
 vi.mock("@ccc/device-lab/providers/backends/android-device.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
 vi.mock("@ccc/device-lab/providers/backends/ios-simulator.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
@@ -66,8 +76,10 @@ vi.mock("@ccc/device-lab/providers/backends/windows-sandbox.mjs", async original
 vi.mock("@ccc/device-lab/providers/backends/windows-vm.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
 vi.mock("@ccc/device-lab/providers/display/x11.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
 vi.mock("@ccc/device-lab/providers/state/device-store.mjs", async original => ({
-    ...fencedProvider(await original<Record<string, unknown>>()), readOwnerDevices: () => [],
+    ...fencedProvider(await original<Record<string, unknown>>()), readOwnerDevices: registerCapability(() => []),
 }));
+// Both flow graphs use this same inert namespace; no native state function survives.
+vi.mock("@ccc/device-lab/providers/state/state-file.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
 vi.mock("child_process", async original => {
     const actual = await original<Record<string, any>>();
     return { ...actual, spawn: deniedCapability, spawnSync: deniedCapability,
@@ -95,6 +107,7 @@ let frozenRoot: string;
 let archiveFile: string;
 let privateContext: string;
 let cwdSpy: { mockRestore(): void };
+let killSpy: { mockRestore(): void };
 let baselineCall: (request: any) => Promise<any>;
 let currentCall: (request: any) => Promise<any>;
 type StepArguments = (tool: string, flow: Record<string, any>, step: Record<string, any>) => Record<string, any>;
@@ -122,36 +135,79 @@ beforeAll(async () => {
     vi.stubEnv("CCC_PROFILE", "paired-private");
     cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
     vi.stubGlobal("fetch", deniedCapability);
+    killSpy = vi.spyOn(process, "kill").mockImplementation(deniedCapability);
     // Reproduce the exact persistent pre-edit revision in this fresh context.
-    // Preserve frozen source verbatim; real local schema/normalizer/output modules
-    // import within that graph. Package aliases use byte-identical original leaf
-    // sources, verified before either graph is started.
+    // Frozen flow policy/response bytes stay verbatim. Package aliases share
+    // controlled providers; this does not prove frozen native-provider equality.
     if (!existsSync(join(frozenRoot, "device-lab-mcp/src/server.mjs"))) {
         mkdirSync(frozenRoot, { recursive: true });
         execFileSync("git", ["archive", revision, "--output=" + archiveFile, "device-lab-mcp/src", "packages/device-lab/providers", "packages/hyper-v/src", "packages/hyper-v/powershell"], { cwd: checkoutRoot });
         execFileSync("tar", ["-xf", archiveFile, "-C", frozenRoot]);
     }
+    assertNoDenials();
+    const admittedProviders: Record<string, { archived: string; current: string; sourceTip: string }> = {
+        "backends/windows-sandbox.mjs": {
+            archived: "adb87857f40652c7da3906ad3e59ab6677050780b3d8ed81f5b37a733288a178",
+            current: "5fcfc1e53d3f0200c2a5568ef6d0196de133e48cd879bd8e1fa0b3741550dc35",
+            sourceTip: "c9261aedb25dccaee620a7a37823396eb9a2586f",
+        },
+        "state/state-file.mjs": {
+            archived: "d3a5d5e21ec8d54137b9a7ffce0b9fc83394210cd9668bc91e15b478b7f13883",
+            current: "66624376f128b384a8af2ae2c9db9385f8680b10d3504484181ae3f3d1da2e6e",
+            sourceTip: "8b74ef39d7987a896962db8224f6ab66d69b1363",
+        },
+    };
     for (const file of providerFiles(join(frozenRoot, "packages/device-lab/providers"))) {
         const relative = file.slice(frozenRoot.length + 1);
-        expect(digest(resolve(checkoutRoot, relative)), relative).toBe(digest(file));
+        const provider = relative.slice("packages/device-lab/providers/".length);
+        const admission = admittedProviders[provider];
+        if (admission) {
+            expect(digest(file), `${provider} frozen ${revision}`).toBe(admission.archived);
+            expect(digest(resolve(checkoutRoot, relative)), `${provider} admitted ${admission.sourceTip}`).toBe(admission.current);
+        } else expect(digest(resolve(checkoutRoot, relative)), relative).toBe(digest(file));
     }
+    // Import archived namespaces only for read-only export comparison. Never
+    // invoke any archived export, including its error constructor.
+    for (const provider of Object.keys(admittedProviders)) {
+        const archived = await import(join(frozenRoot, "packages/device-lab/providers", provider));
+        assertNoDenials();
+        const controlled = provider === "state/state-file.mjs"
+            ? await import("@ccc/device-lab/providers/state/state-file.mjs")
+            : await import("@ccc/device-lab/providers/backends/windows-sandbox.mjs");
+        assertNoDenials();
+        expect(Object.keys(controlled).sort(), provider).toEqual(Object.keys(archived).sort());
+        for (const name of Object.keys(archived)) {
+            const original = archived[name], replacement = (controlled as Record<string, unknown>)[name];
+            expect(typeof replacement, `${provider}:${name}`).toBe(typeof original);
+            if (typeof original === "function") {
+                expect(fixture.capabilities.has(replacement as Function), `${provider}:${name} fixture identity`).toBe(true);
+            } else expect(replacement, `${provider}:${name} exact value`).toStrictEqual(original);
+        }
+    }
+    assertNoDenials();
     const frozenBroker = join(frozenRoot, "device-lab-mcp/src/broker.mjs");
     vi.doMock(frozenBroker, async importOriginal => scopedBroker(await importOriginal<Record<string, any>>()));
     const frozenServer = await import(join(frozenRoot, "device-lab-mcp/src/server.mjs"));
+    assertNoDenials();
     const frozenArgs = await import(join(frozenRoot, "device-lab-mcp/src/tool-arguments.mjs"));
-    await frozenServer.startServer(); baselineCall = fixture.handlers[1];
+    assertNoDenials();
+    await frozenServer.startServer(); assertNoDenials(); baselineCall = fixture.handlers[1];
     frozenArguments = frozenArgs.flowStepArguments;
     const currentServer = await import(resolve(checkoutRoot, "device-lab-mcp/src/server.mjs"));
+    assertNoDenials();
     const currentArgs = await import(resolve(checkoutRoot, "device-lab-mcp/src/tool-arguments.mjs"));
+    assertNoDenials();
     const currentTools = await import(resolve(checkoutRoot, "device-lab-mcp/src/tools.mjs"));
-    await currentServer.startServer(); currentCall = fixture.handlers[3];
+    assertNoDenials();
+    await currentServer.startServer(); assertNoDenials(); currentCall = fixture.handlers[3];
     flowStepArguments = currentArgs.flowStepArguments; TOOLS = currentTools.TOOLS;
 });
 afterAll(() => {
-    cwdSpy?.mockRestore(); vi.unstubAllEnvs(); vi.unstubAllGlobals();
+    killSpy?.mockRestore(); cwdSpy?.mockRestore(); vi.unstubAllEnvs(); vi.unstubAllGlobals();
     if (privateContext) rmSync(privateContext, { recursive: true, force: true });
 });
 function reset(failure = false) {
+    assertNoDenials();
     fixture.calls.length = 0; fixture.trace.length = 0;
     fixture.results.length = 0; fixture.effects.length = 0;
     fixture.scope = 0; fixture.nextScope = 0; fixture.failure = failure;
@@ -169,12 +225,16 @@ async function paired(make: () => Record<string, unknown>) {
             observed.push({ response, calls: structuredClone(fixture.calls), trace: structuredClone(fixture.trace), scopes: fixture.nextScope });
         } catch (error) {
             observed.push({ thrown: { name: (error as Error).name, message: (error as Error).message }, calls: structuredClone(fixture.calls), trace: structuredClone(fixture.trace), scopes: fixture.nextScope });
+        } finally {
+            // Assert before the next invocation resets any fixture state, even
+            // when the flow catches a denial or propagates a getter failure.
+            assertNoDenials();
         }
     }
     expect(observed[1]).toEqual(observed[0]);
     return observed[1];
 }
-describe("actual frozen versus current MCP facade", () => {
+describe("frozen versus current flow policy with shared controlled providers", () => {
     it.each([false, true])("retains public rendering and per-step fresh scope (detail=%s)", async detail => {
         await paired(() => ({ ...shared, detail, steps: [step(), step({ deviceId: "target-b" }), step({}, "home")] }));
         expect(new Set(fixture.calls.map(call => call.scope)).size).toBe(3);
