@@ -39738,7 +39738,6 @@
       "delegatedWorkItemIds": [
         "OP-clipboard-read"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "src/codex-clipboard-image.ts",
         "src/index.ts"
@@ -39914,7 +39913,6 @@
         "OP-codex-ordered-preparation",
         "OP-codex-host-access"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "src/codex-harness.ts",
         "src/index.ts"
@@ -40152,7 +40150,6 @@
       "delegatedWorkItemIds": [
         "OP-install-image-build"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "scripts/install.js"
       ],
@@ -40354,7 +40351,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "scripts/install.js"
       ],
@@ -40569,7 +40565,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "scripts/install.js"
       ],
@@ -40797,7 +40792,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "scripts/install.js"
       ],
@@ -40937,7 +40931,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "inspectedComponentPaths": [
         "device-lab-mcp/src/policy/destructive.mjs",
         "device-lab-mcp/src/server.mjs"
@@ -46911,7 +46904,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_toggle_airplane_mode",
         "PROOF-child-android-emulator-mobile_toggle_airplane_mode",
@@ -47570,7 +47562,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_clear_app_data",
         "PROOF-child-android-emulator-mobile_clear_app_data",
@@ -48924,7 +48915,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_install_app",
         "PROOF-child-android-emulator-device_install_app",
@@ -50311,7 +50301,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_launch_app",
         "PROOF-child-android-emulator-device_launch_app",
@@ -51142,7 +51131,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_stop_app",
         "PROOF-child-android-emulator-mobile_stop_app",
@@ -51864,7 +51852,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_uninstall_app",
         "PROOF-child-android-emulator-mobile_uninstall_app",
@@ -52505,7 +52492,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_back",
         "PROOF-child-android-emulator-mobile_back",
@@ -52986,7 +52972,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_set_battery",
         "PROOF-child-android-emulator-mobile_set_battery",
@@ -55343,7 +55328,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_tap",
         "PROOF-child-android-emulator-mobile_tap",
@@ -56174,7 +56158,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_get_clipboard",
         "PROOF-child-android-emulator-mobile_get_clipboard",
@@ -56895,7 +56878,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_set_clipboard",
         "PROOF-child-android-emulator-mobile_set_clipboard",
@@ -57341,7 +57323,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-x11-display_move"
       ],
@@ -57949,7 +57930,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-windows-sandbox-device_cursor_position",
         "PROOF-child-windows-sandbox-device_cursor_position",
@@ -59016,7 +58996,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_download",
         "PROOF-child-android-emulator-device_download",
@@ -60216,7 +60195,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_drag",
         "PROOF-child-android-emulator-mobile_drag",
@@ -61334,7 +61312,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_exec",
         "PROOF-child-android-emulator-device_exec",
@@ -61931,7 +61908,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-windows-sandbox-device_focus_window",
         "PROOF-child-windows-sandbox-device_focus_window",
@@ -62570,7 +62546,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_forward",
         "PROOF-child-android-emulator-mobile_forward",
@@ -63369,7 +63344,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_home",
         "PROOF-child-android-emulator-mobile_home",
@@ -64628,7 +64602,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_key",
         "PROOF-child-android-emulator-mobile_key",
@@ -65241,7 +65214,6 @@
         "OP-device-dispatch",
         "OP-device-exec"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-ios-simulator-device_list_files",
         "PROOF-child-ios-simulator-device_list_files"
@@ -65874,7 +65846,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_set_location",
         "PROOF-child-android-emulator-mobile_set_location",
@@ -66672,7 +66643,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_lock",
         "PROOF-child-android-emulator-mobile_lock",
@@ -67473,7 +67443,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_long_press",
         "PROOF-child-android-emulator-mobile_long_press",
@@ -67957,7 +67926,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_set_network",
         "PROOF-child-android-emulator-mobile_set_network",
@@ -68675,7 +68643,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_open_url",
         "PROOF-child-android-emulator-mobile_open_url",
@@ -70747,7 +70714,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_set_orientation",
         "PROOF-child-android-emulator-mobile_set_orientation",
@@ -71407,7 +71373,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_grant_permission",
         "PROOF-child-android-emulator-mobile_grant_permission",
@@ -72047,7 +72012,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_revoke_permission",
         "PROOF-child-android-emulator-mobile_revoke_permission",
@@ -72687,7 +72651,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_power",
         "PROOF-child-android-emulator-mobile_power",
@@ -73327,7 +73290,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_recents",
         "PROOF-child-android-emulator-mobile_recents",
@@ -73906,7 +73868,6 @@
       "delegatedWorkItemIds": [
         "OP-device-app-clear-data"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_reset",
         "PROOF-child-android-emulator-device_reset",
@@ -75727,7 +75688,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_screenshot",
         "PROOF-child-android-emulator-device_screenshot",
@@ -76401,7 +76361,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-windows-sandbox-device_scroll",
         "PROOF-child-windows-sandbox-device_scroll",
@@ -77164,7 +77123,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_session_status",
         "PROOF-child-android-emulator-mobile_session_status",
@@ -77475,7 +77433,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-x11-display_current"
       ],
@@ -78262,7 +78219,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_swipe",
         "PROOF-child-android-emulator-mobile_swipe",
@@ -79521,7 +79477,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_type_text",
         "PROOF-child-android-emulator-mobile_type_text",
@@ -80391,7 +80346,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_dump_ui",
         "PROOF-child-android-emulator-mobile_dump_ui",
@@ -81193,7 +81147,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_unlock",
         "PROOF-child-android-emulator-mobile_unlock",
@@ -82262,7 +82215,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-device_upload",
         "PROOF-child-android-emulator-device_upload",
@@ -83087,7 +83039,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_wait_for_app",
         "PROOF-child-android-emulator-mobile_wait_for_app",
@@ -83822,7 +83773,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-android-emulator-mobile_wait_for_text",
         "PROOF-child-android-emulator-mobile_wait_for_text",
@@ -84425,7 +84375,6 @@
         "OP-owner-repository",
         "OP-device-dispatch"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "bindingProofIds": [
         "PROOF-direct-windows-sandbox-device_window_list",
         "PROOF-child-windows-sandbox-device_window_list",
@@ -84606,7 +84555,6 @@
         "OP-workspace-nested-repair",
         "OP-workspace-root-recovery"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "currentCallTrace": [
         "main @branch routes prepareWorktree unless list or @branch rm.",
         "prepareWorktree runs prepareWorktreeUnlocked under project-family guard. Existing workspace: root ownership/confirmed missing registration then branch collision, nested repair and broken-content prompt; new workspace: optional initWithSubmodules prompt then canonical create admission.",
@@ -84807,7 +84755,6 @@
       "delegatedWorkItemIds": [
         "OP-workspace-broken-content-repair"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "currentCallTrace": [
         "prepareWorktreeUnlocked broken inventory/prompt calls repairBrokenWorktree per selected entry.",
         "Initial fixBrokenWorktree confirmed=true; ordinary failure reports and returns. WorktreeContentConflictError lists relative conflicts, asks permission, setAsideConflictingContent then retries exactly once.",
@@ -84985,7 +84932,6 @@
       "delegatedWorkItemIds": [
         "OP-workspace-remove-admission"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
       "currentCallTrace": [
         "main @branch rm computes force then calls handler before generic rm switch.",
         "Guard derives workspaceID; raw project-family claims veto unless force truthy; assertRemovableWorkspace precedes runtime.",
@@ -85302,10 +85248,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "resolve cwd->canonical mount/profile identity:1219\u20131223; owner mismatch rejected before mutation.",
         "ensure 0700 directory chain with link/non-directory rejection:1140\u20131161.",
@@ -85628,10 +85570,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "POST-only:16604\u201316606; bounded/timed body parser:16608\u201316611.",
         "mount/profile grammar and identity:16613\u201316628; safe registered owner read and exact basis/mount/profile match:16631\u201316643.",
@@ -86092,10 +86030,6 @@
       "bindingIds": [],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [],
       "authoritySourceTrace": {
         "executor": "trusted local CLI host process",
@@ -86452,10 +86386,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         {
           "path": "src/device-lab-admin.ts",
@@ -86825,10 +86755,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -87174,10 +87100,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         {
           "path": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts",
@@ -87421,10 +87343,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -87734,10 +87652,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "Concrete specialized handler/native/storage ownership anchored in sources and Hyper-V authority catalog."
       ],
@@ -88229,10 +88143,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "GetInfo returns existing cache before environment; VITEST&&!override publishes fixedDockerstub.",
         "Otherwise canonical selector -> native version -> Desktop -> remote -> rootless -> deriveFlavor -> socket; cache only after all complete.",
@@ -88585,10 +88495,6 @@
       "delegatedWorkItemIds": [
         "OP-runtime-capabilities"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "Canonicalbase digest and UID/GID/contract/mapping validation precede effect.",
         "Labels(base+identity) canonicalJSONhash derive tag/keylock; acquire lock then validate cache actual image immutableID,Config.Userccc,labels and isolated ccc UID/GID/HOME/group/sudo probe.",
@@ -88839,10 +88745,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "Resolve/unifiedsource+linkedsourceowner+rootownership; scan strict managed sourceentries; capture every nested source identity before transactional loop.",
         "Perentry skip nongit and descendantsblocked by invalidnonemptyancestor; parent/destination guards; valid/nonempty content left alone,invalid blocks descendants. Emptydest removed by exactquarantine and recorded for restore.",
@@ -89198,10 +89100,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "Sharedhandler optionalconfirmedpreflight first; alreadyvalid/pathnotrequestedbranch refuses; captureworkspace,.gitbytes/inode,sourceidentity/commonGitdir.",
         "Absentmanagement: none returnsfalse; inspect/confirmed calls recreate helper. Names must missingdirectsourceworktrees child boundlegacyworkspacebasename or receiptDigestregistrationname; nestedownerevidence+branchOID+exclusivity prove authority; inspect returns without effect and suppliespreflightclosure.",
@@ -89486,10 +89384,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "Require confirmation before effects; rootowner; strict managedsources,targetrepo exists; eachnestedancestor valid; capturesource/parent/destfences.",
         "Choose exact stale registrationToDisplace path or destination; capturemissingreceipt; backupdest via privatequarantine; quarantine stale management. Displaced foreign-locationregistration is preserved+warned; destination ownstale maycommitdelete only afterreplacement authoritative.",
@@ -91572,10 +91466,6 @@
         "OP-device-dispatch",
         "OP-device-destructive-admission"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "currentCallTrace": [
         "Public device_run_flow -> handleDeviceRunFlow -> handleRunFlow; each admitted step resolves toolOperation, normalizes target/args and runs dispatchTool within withBrokerOperation."
       ],
@@ -91821,10 +91711,6 @@
       "delegatedWorkItemIds": [
         "OP-recording-finalize",
         "OP-appium-server-stop"
-      ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
       ],
       "implementationRemainingWork": []
     },
@@ -92096,10 +91982,6 @@
         "OP-hyperv-linux-guest-trust",
         "OP-container-qemu-stop",
         "OP-container-qemu-start"
-      ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
       ],
       "implementationRemainingWork": []
     },
@@ -92734,10 +92616,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "container-setup.ts:ensureTools reads current activeTool.name; onlyopencode invokes this operation before createRequestedToolSetup.ensure. index.ts:ensureToolsForSetupContainer calls ensureTools under setupguard finalpinnedID.",
@@ -92998,10 +92876,6 @@
         "OP-appium-server-stop",
         "OP-lease-release"
       ],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "lifecycleCommandInvokeUnlocked physicalTeardown at13501 includes stop/delete; withOwnerPhysicalLeaseReleaseGuard at13505; successful cleanupOwnerPhysicalLease at14628; restorePhysicalBrokerLeaseRelease at14778 on state write failure."
@@ -93156,10 +93030,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "handleAndroidRealToolUnlocked device_wireless case447 selects exact action; status456, usb-tcpip471, pair511, connect553; native adb discovery/command and redacted public payload retained."
@@ -93314,10 +93184,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "handleAndroidRealToolUnlocked device_wireless case447 selects exact action; status456, usb-tcpip471, pair511, connect553; native adb discovery/command and redacted public payload retained."
@@ -93472,10 +93338,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "handleAndroidRealToolUnlocked device_wireless case447 selects exact action; status456, usb-tcpip471, pair511, connect553; native adb discovery/command and redacted public payload retained."
@@ -93630,10 +93492,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "handleAndroidRealToolUnlocked device_wireless case447 selects exact action; status456, usb-tcpip471, pair511, connect553; native adb discovery/command and redacted public payload retained."
@@ -93801,10 +93659,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "Actual exported listImages source lines 887; handleLinuxVmManagementTool retains corresponding existing private device-image/disk/target route and wildcard package export."
@@ -93981,10 +93835,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "Actual exported materializeDisk source lines 1066; handleLinuxVmManagementTool retains corresponding existing private device-image/disk/target route and wildcard package export."
@@ -94152,10 +94002,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "Actual exported listTargets source lines 1619; handleLinuxVmManagementTool retains corresponding existing private device-image/disk/target route and wildcard package export."
@@ -94424,10 +94270,6 @@
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
-      "collaborationContract": "Invalidation advances shared read generation before native write and in finally; source dependency is the shared cache authority, not requiring read migration before write can complete.",
-      "inspectedComponentPaths": [
-        "src/clipboard-server.ts"
-      ],
       "implementationRemainingWork": [],
       "currentCallTrace": [
         "MCP devices default/view:owned -> device_list -> handleDeviceList",
