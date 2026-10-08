@@ -5032,7 +5032,7 @@ const badBuild:Promise<string[]>=createMcpConfigRegenerator(ports).build();
 async function mcpPayloadCliConsumer(payload,privateHome,ts,recordDenied) {
   const {default:assert}=await import('node:assert/strict');
   const fs=await import('node:fs');const path=await import('node:path');
-  const {createRequire}=await import('node:module');const {pathToFileURL}=await import('node:url');
+  const {createRequire,isBuiltin}=await import('node:module');const {pathToFileURL}=await import('node:url');
   const {runInThisContext}=await import('node:vm');
   const emittedRoot=path.resolve(payload,'dist'), cache=new Map(), observed=new Set();
   const nativeRequire=createRequire(path.join(payload,'dist/index.js'));
@@ -5067,7 +5067,22 @@ async function mcpPayloadCliConsumer(payload,privateHome,ts,recordDenied) {
     if(!unmocked&&mockFactories[base]){module.exports=mockFactories[base](partial.has(base)?load(file,true):undefined);return module.exports;}
     assert(fs.existsSync(file),'missing emitted CLI dependency '+file);observed.add(file);
     const original=fs.readFileSync(file,'utf8');
-    const compiled=ts.transpileModule(original.replace(/import\.meta\.url/g,JSON.stringify(pathToFileURL(file).href)),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+    const metadata=context=>{
+      const visit=node=>{
+        const meta=node=>ts.isMetaProperty(node)&&node.keywordToken===ts.SyntaxKind.ImportKeyword;
+        if(ts.isPropertyAccessExpression(node)&&meta(node.expression)&&node.name.text==='url')return ts.factory.createStringLiteral(pathToFileURL(file).href);
+        if(ts.isCallExpression(node)&&ts.isPropertyAccessExpression(node.expression)&&meta(node.expression.expression)&&node.expression.name.text==='resolve'){
+          assert.equal(node.arguments.length,1);assert(ts.isStringLiteral(node.arguments[0]),'only literal emitted import metadata is admitted');
+          const specifier=node.arguments[0].text;
+          const resolved=isBuiltin(specifier)?(specifier.startsWith('node:')?specifier:'node:'+specifier):pathToFileURL(createRequire(file).resolve(specifier)).href;
+          if(!resolved.startsWith('node:'))assert(resolved.startsWith(pathToFileURL(path.resolve(payload)+path.sep).href),'metadata resolution must stay in payload');
+          return ts.factory.createStringLiteral(resolved);
+        }
+        return ts.visitEachChild(node,visit,context);
+      };
+      return tree=>ts.visitNode(tree,visit);
+    };
+    const compiled=ts.transpileModule(original,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true},transformers:{before:[metadata]}}).outputText;
     const requireMapped=specifier=>{
       if(specifier==='child_process'||specifier==='node:child_process')return {...nativeRequire(specifier),spawnSync:(_runtime,args,options)=>{
         try {
@@ -5084,7 +5099,7 @@ async function mcpPayloadCliConsumer(payload,privateHome,ts,recordDenied) {
     };
     // Node ignores only an initial hashbang. Pad it so line/column offsets survive the VM wrapper.
     const wrappedSource=compiled.replace(/^#![^\r\n\u2028\u2029]*/,line=>' '.repeat(line.length));
-    runInThisContext('(function(require,module,exports,__filename,__dirname){'+wrappedSource+'\n})',{filename:file})(requireMapped,module,module.exports,file,path.dirname(file));
+    runInThisContext('(function(require,module,exports){'+wrappedSource+'\n})',{filename:file})(requireMapped,module,module.exports);
     return module.exports;
   };
   const argv=process.argv,exit=process.exit,cwd=process.cwd();
