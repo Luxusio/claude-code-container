@@ -5055,11 +5055,24 @@ function verifyGuardianStartupClosure(packageRoot) {
         const within = relative(packageRoot, file);
         assert.ok(within && !within.startsWith(`..${sep}`) && within !== "..",
             `guardian startup dependency must resolve inside shipped payload: ${file}`);
-        assert.doesNotMatch(within.replaceAll(sep, "/"),
-            /(?:session-cleanup|composition\/session-ownership\.js|device-lab-admin|device-lab-broker|\/providers\/)/,
-            "guardian static startup closure must exclude cleanup/admin/broker/providers");
+        const shippedPath = within.replaceAll(sep, "/");
+        const source = readFileSync(file, "utf8");
+        const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+        if (shippedPath === "dist/packages/device-lab/providers/application/state-file-read.mjs") {
+            // One admitted pure policy dependency; no provider implementation is authorized.
+            assert.equal(createHash("sha256").update(source).digest("hex"),
+                "691d62cfbdbb2339493ef4d127410a471af8656fa8ba55f09d0d6844713688de",
+                "guardian state-read policy must match the immutable admitted source");
+            assert.equal(tree.parseDiagnostics.length, 0, "pure startup policy must parse without errors");
+            assert.ok(tree.statements.length > 0 && tree.statements.every(statement =>
+                ts.isFunctionDeclaration(statement) && statement.name && statement.body),
+                "admitted startup policy permits only function declarations, without runtime imports or top-level effects");
+        } else {
+            assert.doesNotMatch(shippedPath,
+                /(?:session-cleanup|composition\/session-ownership\.js|device-lab-admin|device-lab-broker|\/providers\/)/,
+                "guardian static startup closure must exclude cleanup/admin/broker/provider implementations");
+        }
         visited.add(file);
-        const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
         for (const statement of tree.statements) {
             if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
             const specifier = statement.moduleSpecifier;
