@@ -261,6 +261,7 @@ export function materializeUnixInstallPayload(sourceRoot, targetDir) {
     cpSync(join(resolvedSourceRoot, "dist"), join(resolvedTargetDir, "dist"), { recursive: true });
     cpSync(join(resolvedSourceRoot, "Dockerfile"), join(resolvedTargetDir, "Dockerfile"));
     cpSync(join(resolvedSourceRoot, "Containerfile"), join(resolvedTargetDir, "Containerfile"));
+    cpSync(join(resolvedSourceRoot, "Dockerfile.distribution"), join(resolvedTargetDir, "Dockerfile.distribution"));
     cpSync(join(resolvedSourceRoot, "scripts"), join(resolvedTargetDir, "scripts"), { recursive: true });
 
     const sourcePackage = JSON.parse(readFileSync(join(resolvedSourceRoot, "package.json"), "utf-8"));

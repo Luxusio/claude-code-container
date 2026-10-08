@@ -1,5 +1,6 @@
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createNativeContainerImagePreparation } from "../../composition/container-image-preparation.js";
+import { createNativeContainerImagePreparation, distributionImageBuildCommand, distributionImageBuildHint } from "../../composition/container-image-preparation.js";
 import {
     ensureImage, getImageLabel, isImageExists, pullImage, qualifyImageRefForRuntime, tagImage,
 } from "../../docker.js";
@@ -17,6 +18,10 @@ vi.mock("../../session.js", () => ({
     getSessionLockClaimsForContainer: vi.fn(), withContainerLifecycleLock: vi.fn(), withProjectFamilyLifecycleLock: vi.fn(),
 }));
 
+const localBuildScript = fileURLToPath(new URL("../../../scripts/build-distribution-image.mjs", import.meta.url));
+const expectedBuildHint = (runtime: string) => process.platform === "win32"
+    ? `You can build locally instead (PowerShell): node '${localBuildScript.replace(/'/g, "''")}' --runtime ${runtime}`
+    : `You can build locally instead: node '${localBuildScript.replace(/'/g, "'\\''")}' --runtime ${runtime}`;
 const remote = `${DOCKER_REGISTRY_IMAGE}:${CLI_VERSION}`;
 const pulling = `Pulling ccc image v${CLI_VERSION} from registry...`;
 const staleMessage = `Image version mismatch (have v0.9.0, need v${CLI_VERSION}). Pulling update...`;
@@ -121,7 +126,7 @@ describe("image preparation native composition and public facade", () => {
         expect(ensureImage).toThrow("Failed to pull CCC image; container startup was aborted.");
         expect(trace).toEqual([
             "runtime:docker", "spawn:docker:images", `log:${pulling}`, "runtime:docker", "runtime:docker", "spawn:docker:pull",
-            `error:Error: Failed to pull ${remote}.`, "runtime:docker", "error:You can build locally instead: docker build -t ccc .",
+            `error:Error: Failed to pull ${remote}.`, "runtime:docker", `error:${expectedBuildHint("docker")}`,
         ]);
         expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["images", "pull"]);
         expect(console.warn).not.toHaveBeenCalled();
@@ -311,7 +316,7 @@ describe("runtime qualification and observation schedule", () => {
         vi.mocked(console.error).mockImplementation(message => { trace.push(`error:${message}`); cli = "podman"; });
         expect(ensureImage).toThrow("Failed to pull CCC image; container startup was aborted.");
         expect(trace.slice(-3)).toEqual([
-            `error:Error: Failed to pull ${remote}.`, "runtime:podman", "error:You can build locally instead: podman build -t ccc .",
+            `error:Error: Failed to pull ${remote}.`, "runtime:podman", `error:${expectedBuildHint("podman")}`,
         ]);
     });
 });
@@ -398,7 +403,7 @@ describe("native and presentation fault identity with no downstream effects", ()
         vi.mocked(process.exit).mockImplementation(() => { throw failure; });
         expect(thrown(ensureImage)).toEqual(new Error("Failed to pull CCC image; container startup was aborted."));
         expect(process.exit).not.toHaveBeenCalled();
-        expect(trace).toEqual([...absentPulled, `error:Error: Failed to pull ${remote}.`, "runtime:docker", "error:You can build locally instead: docker build -t ccc ."]);
+        expect(trace).toEqual([...absentPulled, `error:Error: Failed to pull ${remote}.`, "runtime:docker", `error:${expectedBuildHint("docker")}`]);
     });
 
     it.each([new Error("stdout"), { stdout: true }])("existence stdout failure escapes before any report: %s", failure => {
@@ -421,5 +426,19 @@ describe("native and presentation fault identity with no downstream effects", ()
         expect(trace).toEqual([]);
         expect(thrown(() => app.run())).toBe(failure);
         expect(trace).toEqual(absentPre);
+    });
+});
+
+
+describe("packaged image recovery command quoting", () => {
+    it("uses literal POSIX path quoting instead of JSON shell interpolation", () => {
+        expect(distributionImageBuildCommand("docker", "/payload/a'b $x; & 雪/script.mjs", "linux"))
+            .toBe("node '/payload/a'\\''b $x; & 雪/script.mjs' --runtime docker");
+    });
+    it("uses Windows PowerShell literal quotes with an explicit shell label", () => {
+        const command = distributionImageBuildCommand("podman", "C:\\Users\\a'b %PATH% $x & 雪\\script.mjs", "win32");
+        expect(command).toBe("node 'C:\\Users\\a''b %PATH% $x & 雪\\script.mjs' --runtime podman");
+        expect(distributionImageBuildHint("podman", "C:\\payload space\\script.mjs", "win32"))
+            .toBe("You can build locally instead (PowerShell): node 'C:\\payload space\\script.mjs' --runtime podman");
     });
 });

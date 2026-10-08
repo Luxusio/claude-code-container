@@ -9,6 +9,7 @@
   "files": [
     "dist/",
     "Dockerfile",
+    "Dockerfile.distribution",
     "Containerfile",
     "device-lab-mcp/package.json",
     "device-lab-mcp/server.mjs",
@@ -19,6 +20,9 @@
     "scripts/durability/",
     "scripts/real-tests/",
     "scripts/install.js",
+    "scripts/build-distribution-image.mjs",
+    "scripts/localhost-proxy/",
+    "scripts/ccc-entrypoint.sh",
     "scripts/clipboard-shims/",
     "scripts/ccc-x11-bridge",
     "scripts/clipboard-helper-darwin.m",

@@ -1,6 +1,29 @@
+import { fileURLToPath } from "node:url";
+import type { RuntimeName } from "../domain/container-runtime.js";
 import { createContainerImagePreparation } from "../application/container-image-preparation.js";
 import { runtimeCli } from "../container-runtime.js";
 import { CLI_VERSION, IMAGE_NAME } from "../utils.js";
+
+/** Copyable POSIX-shell or Windows PowerShell command; execution uses argv. */
+export function distributionImageBuildCommand(
+    runtime: RuntimeName,
+    commandPath = fileURLToPath(new URL("../../scripts/build-distribution-image.mjs", import.meta.url)),
+    platform: string = process.platform,
+): string {
+    const quotedPath = platform === "win32"
+        ? "'" + commandPath.replace(/'/g, "''") + "'"
+        : "'" + commandPath.replace(/'/g, "'\\''") + "'";
+    return `node ${quotedPath} --runtime ${runtime}`;
+}
+
+export function distributionImageBuildHint(
+    runtime: RuntimeName,
+    commandPath = fileURLToPath(new URL("../../scripts/build-distribution-image.mjs", import.meta.url)),
+    platform: string = process.platform,
+): string {
+    const shell = platform === "win32" ? " (PowerShell)" : "";
+    return `You can build locally instead${shell}: ${distributionImageBuildCommand(runtime, commandPath, platform)}`;
+}
 
 export interface NativeContainerImagePreparationHelpers {
     readonly registryImage: string;
@@ -31,7 +54,7 @@ export function createNativeContainerImagePreparation(helpers: NativeContainerIm
         reportPull: version => { console.log(`Pulling ccc image v${version} from registry...`); },
         reportFallback: ref => { console.warn(`Warning: Failed to pull ${ref}. Using existing image.`); },
         reportFailure: ref => { console.error(`Error: Failed to pull ${ref}.`); },
-        reportBuildHint: () => { console.error(`You can build locally instead: ${runtimeCli()} build -t ccc .`); },
+        reportBuildHint: () => { console.error(distributionImageBuildHint(runtimeCli())); },
         exitFailure: () => { throw new Error("Failed to pull CCC image; container startup was aborted."); },
     });
     const request = {
