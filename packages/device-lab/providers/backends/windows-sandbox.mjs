@@ -1,3 +1,4 @@
+import { createWindowsSandboxStop } from "../application/lifecycle/windows-sandbox-stop.mjs";
 import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
@@ -1166,29 +1167,7 @@ function cancelWindowsMinimizeWatchdog(cancelPath) {
 }
 
 export function cleanupWindowsSandboxMinimizeWatchdogs(device, cancelWatchdog = cancelWindowsMinimizeWatchdog) {
-    const candidates = [
-        device?.minimizeWatchdogLaunch?.pid,
-        device?.helperSessionLaunch?.minimizeWatchdogPid,
-    ].filter((pid, index, values) => Number.isInteger(pid) && pid > 0 && values.indexOf(pid) === index);
-    const hasWatchdog = candidates.length > 0 || device?.minimizeWatchdogLaunch != null;
-    const cancelPath = windowsHelperMetadata(device).minimizeWatchdogCancelPath;
-    const cancellation = hasWatchdog ? cancelWatchdog(cancelPath) : { attempted: false, ok: true, cancelPath };
-    if (!cancellation?.ok) return { ok: false, changed: false, cancellation, attempts: [cancellation], device };
-
-    const helperSessionLaunch = device?.helperSessionLaunch && typeof device.helperSessionLaunch === "object"
-        ? { ...device.helperSessionLaunch, minimizeWatchdogPid: null }
-        : device?.helperSessionLaunch;
-    return {
-        ok: true,
-        changed: hasWatchdog,
-        cancellation,
-        attempts: cancellation.attempted ? [cancellation] : [],
-        device: {
-            ...device,
-            minimizeWatchdogLaunch: null,
-            ...(helperSessionLaunch ? { helperSessionLaunch } : {}),
-        },
-    };
+    return createWindowsSandboxStop(windowsSandboxStopPorts(cancelWatchdog)).cleanupWatchdogs(device);
 }
 
 function runWindowsSandboxCommand(wsb, args, timeoutMs, minimized = true, waitForExit = true) {
@@ -1651,139 +1630,52 @@ function windowsLifecycleConflict(deviceId, operation, transition, rollback = nu
     }));
 }
 
+function windowsSandboxStopPorts(cancelWatchdog = cancelWindowsMinimizeWatchdog) {
+    return {
+        readSingleton: () => readWindowsSingletonLock(),
+        sameSingletonOwner: (singleton, device, sandboxId) => sameWindowsSingletonOwner(singleton, device, sandboxId),
+        newRuntimeId: () => randomUUID(),
+        wallTimestamp: () => new Date().toISOString(),
+        transitionDevice: (deviceId, expected, replacement) => transitionWindowsDevice(deviceId, expected, replacement),
+        findDevice: (deviceId) => findWindowsDevice(deviceId),
+        claimSingleton: (device, sandboxId, claimId) => claimWindowsSingleton(device, sandboxId, claimId),
+        releaseSingleton: (device, claimId) => releaseWindowsSingleton(device, claimId),
+        singletonGenerationMatches: (device) => windowsSingletonGenerationMatches(device),
+        watchdogCancelPath: (device) => windowsHelperMetadata(device).minimizeWatchdogCancelPath,
+        cancelWatchdog: (cancelPath) => cancelWatchdog(cancelPath),
+        discoverRuntime: () => {
+            const discovery = windowsDiscovery();
+            return {
+                get available() { return discovery.available; },
+                get missing() { return discovery.missing; },
+                binding: discovery,
+            };
+        },
+        stopOwnedRuntime: (discovery, device, timeoutMs) => {
+            const result = runWithTimeout(discovery.wsb, ["stop", "--id", device.sandboxId], timeoutMs);
+            return { get ok() { return result.status === 0; }, evidence: result };
+        },
+    };
+}
+
 function claimWindowsLifecycle(deviceId, device, operation) {
-    const singleton = readWindowsSingletonLock();
-    const singletonClaimId = sameWindowsSingletonOwner(singleton, device, device?.sandboxId) ? singleton?.claimId : null;
-    const lifecycle = {
-        runtimeId: randomUUID(),
-        operation,
-        claimedAt: new Date().toISOString(),
-        ...(singletonClaimId ? { singletonClaimId } : {}),
-    };
-    const claimed = {
-        ...device,
-        status: operation === "delete" ? "deleting" : operation === "stop" ? "stopping" : "starting",
-        lifecycle,
-        ...(singletonClaimId ? { singletonClaimId } : {}),
-        updatedAt: new Date().toISOString(),
-    };
-    return { lifecycle, claimed, transition: transitionWindowsDevice(deviceId, device, claimed) };
+    return createWindowsSandboxStop(windowsSandboxStopPorts()).claimLifecycle(deviceId, device, operation);
 }
 
 function currentWindowsLifecycleDevice(deviceId, lifecycle) {
-    const current = findWindowsDevice(deviceId);
-    return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
+    return createWindowsSandboxStop(windowsSandboxStopPorts()).currentLifecycleDevice(deviceId, lifecycle);
 }
 
 function abortWindowsLifecycle(deviceId, lifecycle, original, updates = null) {
-    const current = currentWindowsLifecycleDevice(deviceId, lifecycle);
-    if (!current) return { matched: false, found: Boolean(findWindowsDevice(deviceId)) };
-    const restored = {
-        ...current,
-        ...(updates || {}),
-        status: original.status,
-        updatedAt: new Date().toISOString(),
-    };
-    if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
-    else delete restored.lifecycle;
-    if (Object.prototype.hasOwnProperty.call(original, "singletonClaimId")) restored.singletonClaimId = original.singletonClaimId;
-    else delete restored.singletonClaimId;
-    return transitionWindowsDevice(deviceId, current, restored);
+    return createWindowsSandboxStop(windowsSandboxStopPorts()).abortLifecycle(deviceId, lifecycle, original, updates);
 }
 
 function bindWindowsLifecycleSingleton(deviceId, claim, original) {
-    if (original.status === "stopped" || claim.lifecycle.singletonClaimId) return { ok: true, claim };
-    if (!isGuid(original.sandboxId)) {
-        return { ok: false, error: `Windows Sandbox device ${original.id} is running but has no valid GUID sandboxId` };
-    }
-    const singleton = claimWindowsSingleton(original, original.sandboxId, claim.lifecycle.runtimeId);
-    if (!singleton.ok) return { ok: false, error: singleton.error };
-    const lifecycle = { ...claim.lifecycle, singletonClaimId: singleton.lock.claimId };
-    const claimed = {
-        ...claim.claimed,
-        singletonClaimId: singleton.lock.claimId,
-        lifecycle,
-        updatedAt: new Date().toISOString(),
-    };
-    const transition = transitionWindowsDevice(deviceId, claim.claimed, claimed);
-    if (!transition.matched) {
-        releaseWindowsSingleton({ ...original, singletonClaimId: singleton.lock.claimId }, singleton.lock.claimId);
-        return { ok: false, conflict: transition };
-    }
-    return { ok: true, claim: { ...claim, lifecycle, claimed } };
+    return createWindowsSandboxStop(windowsSandboxStopPorts()).bindLifecycleSingleton(deviceId, claim, original);
 }
 
 function stopWindowsSandboxDevice(device) {
-    if (device.status === "stopped") {
-        const singleton = readWindowsSingletonLock();
-        if (singleton?.claimId === device.singletonClaimId
-            && isGuid(singleton?.sandboxId)
-            && sameWindowsSingletonOwner(singleton, device, singleton.sandboxId)) {
-            device = {
-                ...device,
-                status: "running",
-                sandboxId: singleton.sandboxId,
-            };
-        }
-    }
-    if (device.status !== "stopped" && !windowsSingletonGenerationMatches(device)) {
-        return {
-            ok: false,
-            error: `Windows Sandbox singleton generation is unavailable for ${device.id}; runtime was not stopped`,
-        };
-    }
-    const watchdogCleanup = cleanupWindowsSandboxMinimizeWatchdogs(device);
-    if (!watchdogCleanup.ok) {
-        return {
-            ok: false,
-            error: `Failed to stop Windows Sandbox minimize watchdog for ${device.id}: ${watchdogCleanup.attempts.filter((attempt) => !attempt?.ok).map((attempt) => attempt?.error || `pid ${attempt?.pid}`).join(", ")}`,
-            watchdogCleanup,
-        };
-    }
-    if (watchdogCleanup.changed) {
-        device = watchdogCleanup.device;
-    }
-    if (device.status === "stopped") {
-        const updated = {
-            ...device,
-            status: "stopped",
-            recording: null,
-            minimizeWatchdogLaunch: null,
-            updatedAt: new Date().toISOString(),
-        };
-        return { ok: true, device: updated, watchdogCleanup };
-    }
-
-    const discovery = windowsDiscovery();
-    if (!discovery.available) {
-        return {
-            ok: false,
-            error: `Windows Sandbox backend missing prerequisites: ${discovery.missing.join(", ")}`,
-            device,
-        };
-    }
-
-    if (!isGuid(device.sandboxId)) {
-        return {
-            ok: false,
-            error: `Windows Sandbox device ${device.id} is running but has no valid GUID sandboxId`,
-            device,
-        };
-    }
-
-    const r = runWithTimeout(discovery.wsb, ["stop", "--id", device.sandboxId], WINDOWS_SANDBOX_STOP_TIMEOUT_MS);
-    if (r.status !== 0) {
-        return { ok: false, result: r, device };
-    }
-
-    const updated = {
-        ...device,
-        status: "stopped",
-        recording: null,
-        minimizeWatchdogLaunch: null,
-        updatedAt: new Date().toISOString(),
-    };
-    return { ok: true, device: updated, watchdogCleanup };
+    return createWindowsSandboxStop(windowsSandboxStopPorts()).stopDevice(device);
 }
 
 export function listWindowsDevices() {
@@ -2065,48 +1957,14 @@ async function handleWindowsToolUnlocked(name, args) {
 
         case "device_stop": {
             const { deviceId } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-
-            let claim = claimWindowsLifecycle(deviceId, device, "stop");
-            if (!claim.transition.matched) return windowsLifecycleConflict(deviceId, "stop-claim", claim.transition);
-            const singleton = bindWindowsLifecycleSingleton(deviceId, claim, device);
-            if (!singleton.ok) {
-                abortWindowsLifecycle(deviceId, claim.lifecycle, device);
-                if (singleton.conflict) return windowsLifecycleConflict(deviceId, "stop-singleton", singleton.conflict);
-                return textResult(false, singleton.error);
+            const outcome = createWindowsSandboxStop(windowsSandboxStopPorts()).stop(deviceId);
+            switch (outcome.kind) {
+                case "unhandled": return undefined;
+                case "conflict": return windowsLifecycleConflict(deviceId, outcome.operation, outcome.transition);
+                case "refused": return textResult(false, outcome.error);
+                case "native-failure": return fail(outcome.evidence);
+                case "completed": return jsonResult({ device: withTargetStatus(outcome.device) });
             }
-            claim = singleton.claim;
-            const stopped = stopWindowsSandboxDevice({ ...claim.claimed, status: device.status });
-            if (!stopped.ok) {
-                abortWindowsLifecycle(deviceId, claim.lifecycle, device, stopped.device ? {
-                    minimizeWatchdogLaunch: stopped.device.minimizeWatchdogLaunch,
-                    ...(Object.prototype.hasOwnProperty.call(stopped.device, "helperSessionLaunch")
-                        ? { helperSessionLaunch: stopped.device.helperSessionLaunch }
-                        : {}),
-                } : null);
-                if (stopped.result) return fail(stopped.result);
-                return textResult(false, stopped.error || `Failed to stop Windows Sandbox device ${deviceId}`);
-            }
-            const current = currentWindowsLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) {
-                releaseWindowsSingleton(stopped.device, claim.lifecycle.singletonClaimId);
-                return windowsLifecycleConflict(deviceId, "stop", { found: Boolean(findWindowsDevice(deviceId)), matched: false });
-            }
-            const updated = {
-                ...current,
-                ...(Object.prototype.hasOwnProperty.call(stopped.device, "helperSessionLaunch")
-                    ? { helperSessionLaunch: stopped.device.helperSessionLaunch }
-                    : {}),
-                lifecycle: null,
-                singletonClaimId: null,
-                status: "stopped",
-                updatedAt: new Date().toISOString(),
-            };
-            const transition = transitionWindowsDevice(deviceId, current, updated);
-            releaseWindowsSingleton(stopped.device, claim.lifecycle.singletonClaimId);
-            if (!transition.matched) return windowsLifecycleConflict(deviceId, "stop", transition);
-            return jsonResult({ device: withTargetStatus(updated) });
         }
 
         case "device_exec": {
