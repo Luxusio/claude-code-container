@@ -42870,7 +42870,7 @@
       "businessBoundary": "Require source image/absent target/SSH key policy; Tart clone then unique owner claim; timeout/persist/claim conflict rollback only created target.",
       "completionCriteria": "Whole described policy moves inward through explicit native/storage/process ports, preserving traced authority. Source cutover and native/invariant acceptance are distinct.",
       "implementationStatus": "pending",
-      "statusReason": "Whole workflow remains in effect-facing broker/provider. Existing typed library and owner repository are non-counted support, not complete workflow cutover. Known current advertised broker base-image path is blocked by target lookup/child DTO; direct route remains reachable. Fully inventoried discrepancy is an implementation/negative acceptance obligation.",
+      "statusReason": "Whole JavaScript workflow remains in the native provider and awaits inward policy extraction. Direct Tart creation/clone is reachable. The advertised broker action is rejected by validateDeviceToolParams because it is absent from DEVICE_BROKER_TOOL_METHODS, before owner-device lookup or provider-child dispatch. This known contract discrepancy remains a separate implementation/negative acceptance obligation.",
       "sources": [
         {
           "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -43086,12 +43086,12 @@
           "normalizedHandler": "handleMacosToolUnlocked",
           "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
           "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-          "supportDisposition": "advertised-blocked-current-contract",
+          "supportDisposition": "advertised-supported",
           "workItemIds": [
             "OP-macos-base-image-create"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
@@ -43108,13 +43108,16 @@
               "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
               "line": 1289
             }
+          ],
+          "knownContractDiscrepancyIds": [
+            "CONTRACT-macos-broker-base-image-reachability"
           ]
         },
         {
           "id": "BIND-broker-backend-child-macos-vm-macos-base-image-create",
           "backend": "macos-vm",
-          "provider": "tart",
-          "executor": "broker-backend-child",
+          "provider": "macos-vm",
+          "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
           "route": "broker.device.tool.invoke",
           "action": "device_base_image_create",
           "entrypoint": {
@@ -43125,38 +43128,64 @@
             "line": 1487
           },
           "handler": {
-            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-            "kind": "implementation",
-            "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-            "symbol": "handleMacosToolUnlocked",
-            "line": 1255
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceTool",
+            "line": 5366,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
           },
-          "normalizedHandler": "handleMacosToolUnlocked",
-          "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-          "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
+          "normalizedHandler": "invokeDeviceTool",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
           "supportDisposition": "advertised-blocked-current-contract",
           "workItemIds": [
             "OP-macos-base-image-create"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Global validateDeviceToolParams method gate rejects this action: it is absent from DEVICE_BROKER_TOOL_METHODS, so no owner-device lookup or provider child runs.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "symbol": "handleMacosToolUnlocked",
-              "line": 1255
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_TOOL_METHODS",
+              "line": 549,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             },
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "line": 1289
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+              "line": 537,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "validateDeviceToolParams",
+              "line": 3725,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 5366,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceToolSupportedMethods",
+              "line": 4237,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeBackendDeviceTool",
+              "line": 5343,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
-          ]
+          ],
+          "knownContractDiscrepancyIds": [
+            "CONTRACT-macos-broker-base-image-reachability"
+          ],
+          "lockAuthorityCategoryId": "macos-base-refusal"
         }
       ],
       "aliases": [
@@ -43257,9 +43286,7 @@
         "Clone timeout/persist failure cleans target without publishing device.",
         "Generation replacement during snapshot create/delete/restore preserves exact same-id successor.",
         "Restore registers candidate before primary delete and resumes interrupted activation.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone cannot create missing target due lookup; existing target is rejected; child drops sourceImage/sourceDeviceId/name. Treat as known migration/negative acceptance obligation; no product change required to close inventory trace."
+        "Advertised broker base-image action must retain its current global-method refusal before target lookup, device operation locks or provider-child execution. Direct Tart creation/clone remains separately reachable; future support changes need explicit contract review."
       ],
       "evidence": [],
       "nativeObligations": [
@@ -43316,7 +43343,7 @@
       "businessBoundary": "SourceDeviceId or sourceImage; source lifecycle/stopped/force gate; sorted source+target locks/source claim; optional owned recorder stop; clone then source completion and unique target claim with exact rollback.",
       "completionCriteria": "Whole described policy moves inward through explicit native/storage/process ports, preserving traced authority. Source cutover and native/invariant acceptance are distinct.",
       "implementationStatus": "pending",
-      "statusReason": "Whole workflow remains in effect-facing broker/provider. Existing typed library and owner repository are non-counted support, not complete workflow cutover. Known current advertised broker base-image path is blocked by target lookup/child DTO; direct route remains reachable. Fully inventoried discrepancy is an implementation/negative acceptance obligation.",
+      "statusReason": "Whole JavaScript workflow remains in the native provider and awaits inward policy extraction. Direct Tart creation/clone is reachable. The advertised broker action is rejected by validateDeviceToolParams because it is absent from DEVICE_BROKER_TOOL_METHODS, before owner-device lookup or provider-child dispatch. This known contract discrepancy remains a separate implementation/negative acceptance obligation.",
       "sources": [
         {
           "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -43534,12 +43561,12 @@
           "normalizedHandler": "handleMacosToolUnlocked",
           "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
           "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-          "supportDisposition": "advertised-blocked-current-contract",
+          "supportDisposition": "advertised-supported",
           "workItemIds": [
             "OP-macos-base-image-clone"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
@@ -43556,13 +43583,16 @@
               "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
               "line": 1359
             }
+          ],
+          "knownContractDiscrepancyIds": [
+            "CONTRACT-macos-broker-base-image-reachability"
           ]
         },
         {
           "id": "BIND-broker-backend-child-macos-vm-macos-base-image-clone",
           "backend": "macos-vm",
-          "provider": "tart",
-          "executor": "broker-backend-child",
+          "provider": "macos-vm",
+          "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
           "route": "broker.device.tool.invoke",
           "action": "device_base_image_clone",
           "entrypoint": {
@@ -43573,38 +43603,64 @@
             "line": 1487
           },
           "handler": {
-            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-            "kind": "implementation",
-            "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-            "symbol": "handleMacosToolUnlocked",
-            "line": 1255
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceTool",
+            "line": 5366,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
           },
-          "normalizedHandler": "handleMacosToolUnlocked",
-          "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-          "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
+          "normalizedHandler": "invokeDeviceTool",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
           "supportDisposition": "advertised-blocked-current-contract",
           "workItemIds": [
             "OP-macos-base-image-clone"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Global validateDeviceToolParams method gate rejects this action: it is absent from DEVICE_BROKER_TOOL_METHODS, so no owner-device lookup or provider child runs.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "symbol": "handleMacosToolUnlocked",
-              "line": 1255
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_TOOL_METHODS",
+              "line": 549,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             },
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "line": 1359
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+              "line": 537,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "validateDeviceToolParams",
+              "line": 3725,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 5366,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceToolSupportedMethods",
+              "line": 4237,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeBackendDeviceTool",
+              "line": 5343,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
-          ]
+          ],
+          "knownContractDiscrepancyIds": [
+            "CONTRACT-macos-broker-base-image-reachability"
+          ],
+          "lockAuthorityCategoryId": "macos-base-refusal"
         }
       ],
       "aliases": [
@@ -43705,9 +43761,7 @@
         "Clone timeout/persist failure cleans target without publishing device.",
         "Generation replacement during snapshot create/delete/restore preserves exact same-id successor.",
         "Restore registers candidate before primary delete and resumes interrupted activation.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone cannot create missing target due lookup; existing target is rejected; child drops sourceImage/sourceDeviceId/name. Treat as known migration/negative acceptance obligation; no product change required to close inventory trace."
+        "Advertised broker base-image action must retain its current global-method refusal before target lookup, device operation locks or provider-child execution. Direct Tart creation/clone remains separately reachable; future support changes need explicit contract review."
       ],
       "evidence": [],
       "nativeObligations": [
@@ -43764,7 +43818,7 @@
       "businessBoundary": "Require nonduplicate snapshot name/stopped-or-force; lifecycle claim; optional stop owned recording; clone primary to snapshot instance; fenced append or rollback.",
       "completionCriteria": "Whole described policy moves inward through explicit native/storage/process ports, preserving traced authority. Source cutover and native/invariant acceptance are distinct.",
       "implementationStatus": "pending",
-      "statusReason": "Whole workflow remains in effect-facing broker/provider. Existing typed library and owner repository are non-counted support, not complete workflow cutover.",
+      "statusReason": "Whole JavaScript snapshot workflow remains in the native provider and awaits inward policy extraction. Direct Tart snapshot actions are reachable. The broker global method gate admits the action, then the macos-vm backend method set rejects it before any provider child or owner/device operation guard.",
       "sources": [
         {
           "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -43987,7 +44041,7 @@
             "OP-macos-snapshot-create"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
@@ -44009,8 +44063,8 @@
         {
           "id": "BIND-broker-backend-child-macos-vm-macos-snapshot-create",
           "backend": "macos-vm",
-          "provider": "tart",
-          "executor": "broker-backend-child",
+          "provider": "macos-vm",
+          "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
           "route": "broker.device.tool.invoke",
           "action": "device_snapshot_create",
           "entrypoint": {
@@ -44021,38 +44075,61 @@
             "line": 1487
           },
           "handler": {
-            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-            "kind": "implementation",
-            "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-            "symbol": "handleMacosToolUnlocked",
-            "line": 1255
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeBackendDeviceTool",
+            "line": 5343,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
           },
-          "normalizedHandler": "handleMacosToolUnlocked",
-          "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-          "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-          "supportDisposition": "advertised-supported",
+          "normalizedHandler": "invokeBackendDeviceTool",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
+          "supportDisposition": "advertised-blocked-current-contract",
           "workItemIds": [
             "OP-macos-snapshot-create"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Generic method gate admits this snapshot action, but the macos-vm backend method set contains only desktop/file/recording tools; invokeBackendDeviceTool returns501 before provider child. Direct handleMacosTool snapshot implementation remains separate.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "symbol": "handleMacosToolUnlocked",
-              "line": 1255
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_TOOL_METHODS",
+              "line": 549,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             },
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "line": 1641
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+              "line": 537,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "validateDeviceToolParams",
+              "line": 3725,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 5366,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceToolSupportedMethods",
+              "line": 4237,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeBackendDeviceTool",
+              "line": 5343,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
-          ]
+          ],
+          "lockAuthorityCategoryId": "macos-snapshot-refusal"
         }
       ],
       "aliases": [
@@ -44153,8 +44230,7 @@
         "Clone timeout/persist failure cleans target without publishing device.",
         "Generation replacement during snapshot create/delete/restore preserves exact same-id successor.",
         "Restore registers candidate before primary delete and resumes interrupted activation.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked."
+        "Broker snapshot action passes the global method gate but is refused by the macos-vm backend method set before provider-child dispatch; current owner lookup may fail earlier. Direct Tart snapshot action remains separately supported."
       ],
       "evidence": [],
       "nativeObligations": [
@@ -44205,7 +44281,7 @@
       "businessBoundary": "Resolve stored owned snapshot; stopped/force/lifecycle gate; candidate clone then persist restoreRecovery before primary deletion; phase-aware retry/activation; cleanup candidate/superseded candidates; preserve failed cleanup recovery.",
       "completionCriteria": "Whole described policy moves inward through explicit native/storage/process ports, preserving traced authority. Source cutover and native/invariant acceptance are distinct.",
       "implementationStatus": "pending",
-      "statusReason": "Whole workflow remains in effect-facing broker/provider. Existing typed library and owner repository are non-counted support, not complete workflow cutover.",
+      "statusReason": "Whole JavaScript snapshot workflow remains in the native provider and awaits inward policy extraction. Direct Tart snapshot actions are reachable. The broker global method gate admits the action, then the macos-vm backend method set rejects it before any provider child or owner/device operation guard.",
       "sources": [
         {
           "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -44428,7 +44504,7 @@
             "OP-macos-snapshot-restore"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
@@ -44450,8 +44526,8 @@
         {
           "id": "BIND-broker-backend-child-macos-vm-macos-snapshot-restore",
           "backend": "macos-vm",
-          "provider": "tart",
-          "executor": "broker-backend-child",
+          "provider": "macos-vm",
+          "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
           "route": "broker.device.tool.invoke",
           "action": "device_snapshot_restore",
           "entrypoint": {
@@ -44462,38 +44538,61 @@
             "line": 1487
           },
           "handler": {
-            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-            "kind": "implementation",
-            "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-            "symbol": "handleMacosToolUnlocked",
-            "line": 1255
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeBackendDeviceTool",
+            "line": 5343,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
           },
-          "normalizedHandler": "handleMacosToolUnlocked",
-          "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-          "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-          "supportDisposition": "advertised-supported",
+          "normalizedHandler": "invokeBackendDeviceTool",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
+          "supportDisposition": "advertised-blocked-current-contract",
           "workItemIds": [
             "OP-macos-snapshot-restore"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Generic method gate admits this snapshot action, but the macos-vm backend method set contains only desktop/file/recording tools; invokeBackendDeviceTool returns501 before provider child. Direct handleMacosTool snapshot implementation remains separate.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "symbol": "handleMacosToolUnlocked",
-              "line": 1255
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_TOOL_METHODS",
+              "line": 549,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             },
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "line": 1712
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+              "line": 537,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "validateDeviceToolParams",
+              "line": 3725,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 5366,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceToolSupportedMethods",
+              "line": 4237,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeBackendDeviceTool",
+              "line": 5343,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
-          ]
+          ],
+          "lockAuthorityCategoryId": "macos-snapshot-refusal"
         }
       ],
       "aliases": [
@@ -44594,8 +44693,7 @@
         "Clone timeout/persist failure cleans target without publishing device.",
         "Generation replacement during snapshot create/delete/restore preserves exact same-id successor.",
         "Restore registers candidate before primary delete and resumes interrupted activation.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked."
+        "Broker snapshot action passes the global method gate but is refused by the macos-vm backend method set before provider-child dispatch; current owner lookup may fail earlier. Direct Tart snapshot action remains separately supported."
       ],
       "evidence": [],
       "nativeObligations": [
@@ -44643,7 +44741,7 @@
       "businessBoundary": "Resolve stored owned snapshot/lifecycle claim; delete exact Tart snapshot providerInstance; generation-fenced removal of only that snapshot metadata.",
       "completionCriteria": "Whole described policy moves inward through explicit native/storage/process ports, preserving traced authority. Source cutover and native/invariant acceptance are distinct.",
       "implementationStatus": "pending",
-      "statusReason": "Whole workflow remains in effect-facing broker/provider. Existing typed library and owner repository are non-counted support, not complete workflow cutover.",
+      "statusReason": "Whole JavaScript snapshot workflow remains in the native provider and awaits inward policy extraction. Direct Tart snapshot actions are reachable. The broker global method gate admits the action, then the macos-vm backend method set rejects it before any provider child or owner/device operation guard.",
       "sources": [
         {
           "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -44866,7 +44964,7 @@
             "OP-macos-snapshot-delete"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
@@ -44888,8 +44986,8 @@
         {
           "id": "BIND-broker-backend-child-macos-vm-macos-snapshot-delete",
           "backend": "macos-vm",
-          "provider": "tart",
-          "executor": "broker-backend-child",
+          "provider": "macos-vm",
+          "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
           "route": "broker.device.tool.invoke",
           "action": "device_snapshot_delete",
           "entrypoint": {
@@ -44900,38 +44998,61 @@
             "line": 1487
           },
           "handler": {
-            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-            "kind": "implementation",
-            "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-            "symbol": "handleMacosToolUnlocked",
-            "line": 1255
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeBackendDeviceTool",
+            "line": 5343,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
           },
-          "normalizedHandler": "handleMacosToolUnlocked",
-          "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-          "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-          "supportDisposition": "advertised-supported",
+          "normalizedHandler": "invokeBackendDeviceTool",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
+          "supportDisposition": "advertised-blocked-current-contract",
           "workItemIds": [
             "OP-macos-snapshot-delete"
           ],
           "closureStatus": "source-route-and-known-contract-disposition-traced",
-          "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+          "handlerProof": "Generic method gate admits this snapshot action, but the macos-vm backend method set contains only desktop/file/recording tools; invokeBackendDeviceTool returns501 before provider child. Direct handleMacosTool snapshot implementation remains separate.",
           "invariantAcceptance": "unverified",
           "nativeAcceptance": "unverified",
           "sourceTrace": [
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "symbol": "handleMacosToolUnlocked",
-              "line": 1255
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_TOOL_METHODS",
+              "line": 549,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             },
             {
-              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-              "kind": "implementation",
-              "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-              "line": 1888
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+              "line": 537,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "validateDeviceToolParams",
+              "line": 3725,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 5366,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceToolSupportedMethods",
+              "line": 4237,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeBackendDeviceTool",
+              "line": 5343,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
-          ]
+          ],
+          "lockAuthorityCategoryId": "macos-snapshot-refusal"
         }
       ],
       "aliases": [
@@ -45032,8 +45153,7 @@
         "Clone timeout/persist failure cleans target without publishing device.",
         "Generation replacement during snapshot create/delete/restore preserves exact same-id successor.",
         "Restore registers candidate before primary delete and resumes interrupted activation.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked.",
-        "Advertised broker base create/clone fresh target must either reach creation without existing-target lookup or be intentionally unadvertised; current route is blocked."
+        "Broker snapshot action passes the global method gate but is refused by the macos-vm backend method set before provider-child dispatch; current owner lookup may fail earlier. Direct Tart snapshot action remains separately supported."
       ],
       "evidence": [],
       "nativeObligations": [
@@ -147265,12 +147385,12 @@
       "normalizedHandler": "handleMacosToolUnlocked",
       "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
       "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-      "supportDisposition": "advertised-blocked-current-contract",
+      "supportDisposition": "advertised-supported",
       "workItemIds": [
         "OP-macos-base-image-create"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
@@ -147295,8 +147415,8 @@
     {
       "id": "BIND-broker-backend-child-macos-vm-macos-base-image-create",
       "backend": "macos-vm",
-      "provider": "tart",
-      "executor": "broker-backend-child",
+      "provider": "macos-vm",
+      "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
       "route": "broker.device.tool.invoke",
       "action": "device_base_image_create",
       "entrypoint": {
@@ -147307,41 +147427,64 @@
         "line": 1487
       },
       "handler": {
-        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-        "kind": "implementation",
-        "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-        "symbol": "handleMacosToolUnlocked",
-        "line": 1255
+        "path": "packages/device-lab/src/device-lab-broker.ts",
+        "symbol": "invokeDeviceTool",
+        "line": 5366,
+        "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
       },
-      "normalizedHandler": "handleMacosToolUnlocked",
-      "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-      "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
+      "normalizedHandler": "invokeDeviceTool",
+      "authorityOwner": "authenticated broker owner",
+      "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
       "supportDisposition": "advertised-blocked-current-contract",
       "workItemIds": [
         "OP-macos-base-image-create"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Global validateDeviceToolParams method gate rejects this action: it is absent from DEVICE_BROKER_TOOL_METHODS, so no owner-device lookup or provider child runs.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "symbol": "handleMacosToolUnlocked",
-          "line": 1255
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_TOOL_METHODS",
+          "line": 549,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         },
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "line": 1289
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+          "line": 537,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "validateDeviceToolParams",
+          "line": 3725,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 5366,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "brokerDeviceToolSupportedMethods",
+          "line": 4237,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeBackendDeviceTool",
+          "line": 5343,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
       ],
       "knownContractDiscrepancyIds": [
         "CONTRACT-macos-broker-base-image-reachability"
-      ]
+      ],
+      "lockAuthorityCategoryId": "macos-base-refusal"
     },
     {
       "id": "BIND-direct-native-provider-macos-vm-macos-base-image-clone",
@@ -147367,12 +147510,12 @@
       "normalizedHandler": "handleMacosToolUnlocked",
       "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
       "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-      "supportDisposition": "advertised-blocked-current-contract",
+      "supportDisposition": "advertised-supported",
       "workItemIds": [
         "OP-macos-base-image-clone"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
@@ -147397,8 +147540,8 @@
     {
       "id": "BIND-broker-backend-child-macos-vm-macos-base-image-clone",
       "backend": "macos-vm",
-      "provider": "tart",
-      "executor": "broker-backend-child",
+      "provider": "macos-vm",
+      "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
       "route": "broker.device.tool.invoke",
       "action": "device_base_image_clone",
       "entrypoint": {
@@ -147409,41 +147552,64 @@
         "line": 1487
       },
       "handler": {
-        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-        "kind": "implementation",
-        "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-        "symbol": "handleMacosToolUnlocked",
-        "line": 1255
+        "path": "packages/device-lab/src/device-lab-broker.ts",
+        "symbol": "invokeDeviceTool",
+        "line": 5366,
+        "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
       },
-      "normalizedHandler": "handleMacosToolUnlocked",
-      "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-      "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
+      "normalizedHandler": "invokeDeviceTool",
+      "authorityOwner": "authenticated broker owner",
+      "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
       "supportDisposition": "advertised-blocked-current-contract",
       "workItemIds": [
         "OP-macos-base-image-clone"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Global validateDeviceToolParams method gate rejects this action: it is absent from DEVICE_BROKER_TOOL_METHODS, so no owner-device lookup or provider child runs.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "symbol": "handleMacosToolUnlocked",
-          "line": 1255
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_TOOL_METHODS",
+          "line": 549,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         },
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "line": 1359
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+          "line": 537,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "validateDeviceToolParams",
+          "line": 3725,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 5366,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "brokerDeviceToolSupportedMethods",
+          "line": 4237,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeBackendDeviceTool",
+          "line": 5343,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
       ],
       "knownContractDiscrepancyIds": [
         "CONTRACT-macos-broker-base-image-reachability"
-      ]
+      ],
+      "lockAuthorityCategoryId": "macos-base-refusal"
     },
     {
       "id": "BIND-direct-native-provider-macos-vm-macos-snapshot-create",
@@ -147474,7 +147640,7 @@
         "OP-macos-snapshot-create"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
@@ -147496,8 +147662,8 @@
     {
       "id": "BIND-broker-backend-child-macos-vm-macos-snapshot-create",
       "backend": "macos-vm",
-      "provider": "tart",
-      "executor": "broker-backend-child",
+      "provider": "macos-vm",
+      "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
       "route": "broker.device.tool.invoke",
       "action": "device_snapshot_create",
       "entrypoint": {
@@ -147508,38 +147674,61 @@
         "line": 1487
       },
       "handler": {
-        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-        "kind": "implementation",
-        "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-        "symbol": "handleMacosToolUnlocked",
-        "line": 1255
+        "path": "packages/device-lab/src/device-lab-broker.ts",
+        "symbol": "invokeBackendDeviceTool",
+        "line": 5343,
+        "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
       },
-      "normalizedHandler": "handleMacosToolUnlocked",
-      "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-      "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-      "supportDisposition": "advertised-supported",
+      "normalizedHandler": "invokeBackendDeviceTool",
+      "authorityOwner": "authenticated broker owner",
+      "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
+      "supportDisposition": "advertised-blocked-current-contract",
       "workItemIds": [
         "OP-macos-snapshot-create"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Generic method gate admits this snapshot action, but the macos-vm backend method set contains only desktop/file/recording tools; invokeBackendDeviceTool returns501 before provider child. Direct handleMacosTool snapshot implementation remains separate.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "symbol": "handleMacosToolUnlocked",
-          "line": 1255
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_TOOL_METHODS",
+          "line": 549,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         },
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "line": 1641
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+          "line": 537,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "validateDeviceToolParams",
+          "line": 3725,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 5366,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "brokerDeviceToolSupportedMethods",
+          "line": 4237,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeBackendDeviceTool",
+          "line": 5343,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
-      ]
+      ],
+      "lockAuthorityCategoryId": "macos-snapshot-refusal"
     },
     {
       "id": "BIND-direct-native-provider-macos-vm-macos-snapshot-restore",
@@ -147570,7 +147759,7 @@
         "OP-macos-snapshot-restore"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
@@ -147592,8 +147781,8 @@
     {
       "id": "BIND-broker-backend-child-macos-vm-macos-snapshot-restore",
       "backend": "macos-vm",
-      "provider": "tart",
-      "executor": "broker-backend-child",
+      "provider": "macos-vm",
+      "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
       "route": "broker.device.tool.invoke",
       "action": "device_snapshot_restore",
       "entrypoint": {
@@ -147604,38 +147793,61 @@
         "line": 1487
       },
       "handler": {
-        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-        "kind": "implementation",
-        "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-        "symbol": "handleMacosToolUnlocked",
-        "line": 1255
+        "path": "packages/device-lab/src/device-lab-broker.ts",
+        "symbol": "invokeBackendDeviceTool",
+        "line": 5343,
+        "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
       },
-      "normalizedHandler": "handleMacosToolUnlocked",
-      "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-      "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-      "supportDisposition": "advertised-supported",
+      "normalizedHandler": "invokeBackendDeviceTool",
+      "authorityOwner": "authenticated broker owner",
+      "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
+      "supportDisposition": "advertised-blocked-current-contract",
       "workItemIds": [
         "OP-macos-snapshot-restore"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Generic method gate admits this snapshot action, but the macos-vm backend method set contains only desktop/file/recording tools; invokeBackendDeviceTool returns501 before provider child. Direct handleMacosTool snapshot implementation remains separate.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "symbol": "handleMacosToolUnlocked",
-          "line": 1255
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_TOOL_METHODS",
+          "line": 549,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         },
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "line": 1712
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+          "line": 537,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "validateDeviceToolParams",
+          "line": 3725,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 5366,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "brokerDeviceToolSupportedMethods",
+          "line": 4237,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeBackendDeviceTool",
+          "line": 5343,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
-      ]
+      ],
+      "lockAuthorityCategoryId": "macos-snapshot-refusal"
     },
     {
       "id": "BIND-direct-native-provider-macos-vm-macos-snapshot-delete",
@@ -147666,7 +147878,7 @@
         "OP-macos-snapshot-delete"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Direct Tart provider case is reachable through handleMacosTool; its native owner/device/source and operation guards remain applicable. The separately recorded broker binding is refused before any provider child; no native acceptance is inferred.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
@@ -147688,8 +147900,8 @@
     {
       "id": "BIND-broker-backend-child-macos-vm-macos-snapshot-delete",
       "backend": "macos-vm",
-      "provider": "tart",
-      "executor": "broker-backend-child",
+      "provider": "macos-vm",
+      "executor": "broker-native validation/backend-method refusal; direct provider binding separately retained",
       "route": "broker.device.tool.invoke",
       "action": "device_snapshot_delete",
       "entrypoint": {
@@ -147700,38 +147912,61 @@
         "line": 1487
       },
       "handler": {
-        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-        "kind": "implementation",
-        "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-        "symbol": "handleMacosToolUnlocked",
-        "line": 1255
+        "path": "packages/device-lab/src/device-lab-broker.ts",
+        "symbol": "invokeBackendDeviceTool",
+        "line": 5343,
+        "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
       },
-      "normalizedHandler": "handleMacosToolUnlocked",
-      "authorityOwner": "cwd/profile owner + macos device generation + lifecycle token + Tart providerInstance",
-      "lockOwner": "handleMacosTool owns same shared owner macos/device lock; clone takes sorted source+target locks; repository writes take mutation lock.",
-      "supportDisposition": "advertised-supported",
+      "normalizedHandler": "invokeBackendDeviceTool",
+      "authorityOwner": "authenticated broker owner",
+      "lockOwner": "No owner/device operation or provider-child guard is reached on this exact broker refusal branch.",
+      "supportDisposition": "advertised-blocked-current-contract",
       "workItemIds": [
         "OP-macos-snapshot-delete"
       ],
       "closureStatus": "source-route-and-known-contract-disposition-traced",
-      "handlerProof": "Actual direct/provider-child snapshot/base-image path is fully traced; base-image broker target lookup/DTO discrepancy is known pending migration/negative acceptance, not unknown scope.",
+      "handlerProof": "Generic method gate admits this snapshot action, but the macos-vm backend method set contains only desktop/file/recording tools; invokeBackendDeviceTool returns501 before provider child. Direct handleMacosTool snapshot implementation remains separate.",
       "invariantAcceptance": "unverified",
       "nativeAcceptance": "unverified",
       "sourceTrace": [
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "symbol": "handleMacosToolUnlocked",
-          "line": 1255
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_TOOL_METHODS",
+          "line": 549,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         },
         {
-          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
-          "kind": "implementation",
-          "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
-          "line": 1888
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "DEVICE_BROKER_BACKEND_TOOL_METHODS",
+          "line": 537,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "validateDeviceToolParams",
+          "line": 3725,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 5366,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "brokerDeviceToolSupportedMethods",
+          "line": 4237,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeBackendDeviceTool",
+          "line": 5343,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
-      ]
+      ],
+      "lockAuthorityCategoryId": "macos-snapshot-refusal"
     },
     {
       "id": "BIND-direct-container-provider-linux-vm-qemu-snapshot-list",
