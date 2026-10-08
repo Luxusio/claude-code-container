@@ -2,19 +2,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createResumeProcessRunner } from "./codex-resume-process.js";
 import { runCodexResumeRecovery, type CodexResumeRecoveryPlan } from "./codex-resume-recovery-runtime.js";
+import { parseCodexResumeRecoveryPlan } from "./domain/tool-session/codex-resume.js";
 
 function parsePlan(input: string | undefined): CodexResumeRecoveryPlan {
-    const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
-    try {
-        const value: unknown = JSON.parse(input ?? "");
-        if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-            const plan = value as Record<string, unknown>;
-            if (strings(plan.command) && plan.command.length > 0 && strings(plan.retry) && plan.retry.length > 0
-                && strings(plan.config) && (plan.selector === undefined || typeof plan.selector === "string")) {
-                return { command: plan.command, retry: plan.retry, config: plan.config, selector: plan.selector };
-            }
-        }
-    } catch { /* Do not echo malformed payloads, which may contain configuration values. */ }
+    const plan = parseCodexResumeRecoveryPlan(input);
+    if (plan) return plan;
     throw new Error("Invalid Codex resume recovery invocation.");
 }
 

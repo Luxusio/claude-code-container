@@ -11,8 +11,10 @@ function isolatedPackage(bundle: boolean) {
     const root = mkdtempSync(join(tmpdir(), "ccc-resume-package-"));
     roots.push(root);
     mkdirSync(join(root, "dist"));
+    mkdirSync(join(root, "dist", "domain", "tool-session"), { recursive: true });
     writeFileSync(join(root, "package.json"), '{"type":"module"}');
     copyFileSync(new URL("../../dist/codex-resume-recovery.js", import.meta.url), join(root, "dist/codex-resume-recovery.js"));
+    copyFileSync(new URL("../../dist/domain/tool-session/codex-resume.js", import.meta.url), join(root, "dist/domain/tool-session/codex-resume.js"));
     if (bundle) copyFileSync(new URL("../../dist/codex-resume-runtime.cjs", import.meta.url), join(root, "dist/codex-resume-runtime.cjs"));
     return root;
 }

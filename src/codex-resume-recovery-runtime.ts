@@ -1,6 +1,8 @@
 import { failedResumeRollout, missingResumeMetadata, migrationRepairedThread, supportsRolloutMigration } from "./codex-resume-diagnostics.js";
 import { restoreResumeMetadata, type ResumeMetadataFailureStage } from "./codex-resume-metadata.js";
 import { terminalResumeCommand, type ResumeProcessRunner } from "./codex-resume-process.js";
+import type { ResumeProcessResult } from "./codex-resume-process.js";
+import { createCodexResumeRecovery } from "./application/tool-session/codex-resume-recovery.js";
 
 export interface CodexResumeRecoveryPlan {
     command: string[];
@@ -25,58 +27,30 @@ function failureMessage(stage: ResumeFailureStage): string {
     return `[ccc] ${FAILURE_EXPLANATIONS[stage]} (${stage}).\n`;
 }
 
-/** Run one original launch, at most one native scoped repair, and at most one retry. */
-export async function runCodexResumeRecovery(
+/** Native bindings keep process/protocol authority and the original callee lookup order. */
+export const runCodexResumeRecovery: (
     plan: CodexResumeRecoveryPlan,
     runner: ResumeProcessRunner,
     home: string,
     report: (message: string) => void,
-): Promise<number> {
-    const { command, retry, config, selector } = plan;
-    try {
-        const script = await runner.run(["/usr/bin/script", "--version"], { timeoutMs: 5000 });
-        if (runner.interrupted) return runner.interrupted;
-        if (script.code !== 0 || !script.output.includes("util-linux")) {
-            return (await runner.run(command, { direct: true })).code;
-        }
-        const first = await runner.run(terminalResumeCommand(command), { terminal: true });
-        if (runner.interrupted) return runner.interrupted;
-        if (first.code !== 1 || first.signal) return first.code;
-        const rollout = failedResumeRollout(first.output, home, selector);
-        if (!rollout) return first.code;
-        const { id } = rollout;
-        const help = await runner.run([command[0], "migrate-rollouts", "--help"], { timeoutMs: 5000 });
-        if (runner.interrupted) return runner.interrupted;
-        if (!supportsRolloutMigration(help)) return first.code;
-        report("[ccc] Repairing this session's history index and resuming once.\n");
-        let migrationStage: "migration" | "migration-after-metadata" = "migration";
-        let migration = await runner.run(
-            [command[0], "migrate-rollouts", ...config, "--apply", "--thread", id, "--json"],
-            { timeoutMs: 60000 },
-        );
-        if (runner.interrupted) return runner.interrupted;
-        if (missingResumeMetadata(migration, id)) {
-            const restored = await restoreResumeMetadata(command[0], config, rollout, home, runner);
-            if (runner.interrupted) return runner.interrupted;
-            if (!restored.ok) {
-                report(failureMessage(restored.stage));
-                return first.code;
-            }
-            migrationStage = "migration-after-metadata";
-            migration = await runner.run(
-                [command[0], "migrate-rollouts", ...config, "--apply", "--thread", id, "--json"],
-                { timeoutMs: 60000 },
-            );
-            if (runner.interrupted) return runner.interrupted;
-        }
-        const repaired = migration.code === 0 && !migration.signal && !migration.overflow
-            && migrationRepairedThread(migration.output, id);
-        if (!repaired) {
-            report(failureMessage(migrationStage));
-            return first.code;
-        }
-        return (await runner.run(terminalResumeCommand([...retry, id]), { terminal: true })).code;
-    } finally {
-        runner.dispose();
-    }
-}
+) => Promise<number> = createCodexResumeRecovery<ResumeProcessRunner, string, (message: string) => void, ResumeProcessResult>({
+    probeTerminal: ({ runner }) => runner.run(["/usr/bin/script", "--version"], { timeoutMs: 5000 }),
+    launchOriginal: ({ runner }, command, direct) => direct
+        ? runner.run(command, { direct: true })
+        : runner.run(terminalResumeCommand(command), { terminal: true }),
+    qualifyRollout: ({ home }, first, selector) => failedResumeRollout(first.output, home, selector),
+    probeMigration: ({ runner }, command) => runner.run([command[0], "migrate-rollouts", "--help"], { timeoutMs: 5000 }),
+    supportsMigration: help => supportsRolloutMigration(help),
+    migrateThread: ({ runner }, command, config, id) => runner.run(
+        [command[0], "migrate-rollouts", ...config, "--apply", "--thread", id, "--json"],
+        { timeoutMs: 60000 },
+    ),
+    missingMetadata: (migration, id) => missingResumeMetadata(migration, id),
+    restoreMetadata: ({ runner, home }, command, config, rollout) => restoreResumeMetadata(command[0], config, rollout, home, runner),
+    repairedThread: (migration, id) => migrationRepairedThread(migration.output, id),
+    retryResume: ({ runner }, retry, id) => runner.run(terminalResumeCommand([...retry, id]), { terminal: true }),
+    interruption: ({ runner }) => runner.interrupted,
+    reportRecovery: ({ report }) => { report("[ccc] Repairing this session's history index and resuming once.\n"); },
+    reportFailure: ({ report }, stage) => { report(failureMessage(stage)); },
+    dispose: ({ runner }) => { runner.dispose(); },
+});
