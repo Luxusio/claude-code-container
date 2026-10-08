@@ -8,7 +8,7 @@ export interface DoctorCheck {
 /** Structural native observations retain lazy property reads and object identity. */
 export interface DoctorRuntimeInfo {
     runtime: string;
-    version?: string;
+    version?: string | null;
     flavor: string;
 }
 

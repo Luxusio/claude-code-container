@@ -61,7 +61,7 @@ export function runDoctor(projectPath: string): boolean {
         },
         get sanitizeForTerminal() {
             const sanitize = sanitizeForTerminal;
-            return message => sanitize(message);
+            return (message: string) => sanitize(message);
         },
     })(projectPath);
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createDoctor } from "../../application/doctor.js";
 import type { DoctorPorts } from "../../ports/doctor.js";
 
@@ -77,6 +77,12 @@ describe("complete inward doctor", () => {
             inspectMiseVolume: () => ({ status: 0, get stdout(): never { throw new Error("stdout read"); } }) });
         expect(f.run()).toBe(true);
     });
+    it("preserves native nullable runtime version fallback", () => {
+        const f = fixture({ runtimeInfo: () => ({ runtime: "docker", version: null, flavor: "native" }),
+            runtimeVersion: () => ({ status: 0, stdout: " " }) });
+        expect(f.run()).toBe(true);
+        expect(f.output).toContain("  ✓ Runtime: Docker running (vunknown, native)");
+    });
     it("retains lazy fallback and launcher double trim/getter reads", () => {
         const events: string[] = [];
         const f = fixture({ runtimeInfo: () => ({ runtime: "podman", get version() { events.push("fallback"); return "fallback"; }, flavor: "native" }),
@@ -102,7 +108,10 @@ describe("complete inward doctor", () => {
             return (text: string) => text;
         } });
         const originalPush = Array.prototype.push;
-        const push = vi.spyOn(Array.prototype, "push").mockImplementation(function (this: unknown[], ...values: unknown[]) {
+        // Override only while the real application runs. Calling the captured
+        // native push directly avoids spy bookkeeping and all assertions run
+        // after restoration, so the test runner cannot recursively observe it.
+        Array.prototype.push = function (this: unknown[], ...values: unknown[]) {
             for (const value of values) {
                 if (value && typeof value === "object" && "name" in value && value.name === "Runtime" && "message" in value) {
                     const message = value.message;
@@ -110,8 +119,11 @@ describe("complete inward doctor", () => {
                 }
             }
             return originalPush.apply(this, values);
-        });
-        try { expect(f.run()).toBe(true); expect(sequence.startsWith("select;message;")).toBe(true); }
-        finally { push.mockRestore(); }
+        };
+        let returned: boolean;
+        try { returned = f.run(); }
+        finally { Array.prototype.push = originalPush; }
+        expect(returned).toBe(true);
+        expect(sequence.startsWith("select;message;")).toBe(true);
     });
 });

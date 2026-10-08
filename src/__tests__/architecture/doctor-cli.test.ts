@@ -14,8 +14,28 @@ vi.mock("child_process", () => ({ spawnSync: (command: string, args: string[], o
     if (args[0] === "exec") return { status: native.launcherStatus, stdout: native.launcherText };
     return deny("unexpected subprocess");
 } }));
-vi.mock("fs", () => ({ existsSync: (path: string) => { record("exists", path); return false; },
-    readdirSync: () => deny("unexpected readdir") }));
+vi.mock("fs", async importOriginal => {
+    const actual = await importOriginal<typeof import("node:fs")>();
+    const indexFixture = new URL("../../index.ts", import.meta.url).href;
+    // Export no ambient filesystem capability: every original export is a
+    // counted denial unless explicitly replaced by an exact fixture below.
+    const fenced = Object.fromEntries(Object.keys(actual).map(name => [name,
+        () => deny(`filesystem:${name}`)]));
+    return {
+        ...fenced,
+        existsSync: (path: string) => {
+            if (path !== "/locks") return deny("unexpected exists path");
+            record("exists", path); return false;
+        },
+        readdirSync: () => deny("unexpected readdir"),
+        readFileSync: (path: unknown, encoding: unknown) => {
+            if (!(path instanceof URL) || path.href !== indexFixture || encoding !== "utf8") {
+                return deny("unexpected source read");
+            }
+            return actual.readFileSync(path, "utf8");
+        },
+    };
+});
 vi.mock("../../docker.js", () => ({
     getContainerName: (path: string) => { record("name", path); return "container"; },
     isDockerRunning: () => { record("daemon"); return native.daemon; },
@@ -76,6 +96,10 @@ async function invokeRoute() {
 }
 
 describe("source CLI doctor binding with full native facade", () => {
+    it("counts and denies filesystem reads outside the exact source fixture", () => {
+        expect(() => readFileSync("/forbidden", "utf8")).toThrow("DENIED unexpected source read");
+        expect(native.denied).toBe(1);
+    });
     it.each([true, false])("uses actual boolean exit mapping with daemon %s", async daemon => {
         native.daemon = daemon;
         expect(await invokeRoute()).toEqual({ code: daemon ? 0 : 1, loaded: ["./doctor.js"] });
