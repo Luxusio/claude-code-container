@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, posix, join } from "node:path";
+import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -35,6 +36,43 @@ function replay(candidate: boolean) {
 }
 
 describe("actual baseline and current lab facade", () => {
+    it("retains the originally selected console object during formatting and method getters", () => {
+        const captures = new Map<string, string>(); const attempts: string[] = [];
+        const baselineFile = resolve(checkpoint, "console-receiver-baseline-order.json");
+        const pairedFile = resolve(checkpoint, "console-receiver-paired-order.json");
+        const allowed = new Set([
+            resolve(checkpoint, "baseline/src/lab-runner-admin.ts"),
+            resolve(root, "src/lab-runner-admin.ts"),
+            resolve(root, "src/domain/lab-runner-diagnostics.ts"),
+            resolve(root, "src/application/lab-runner-diagnostics.ts"),
+        ]);
+        const deny = (name: string): never => { attempts.push(name); throw new Error(`denied ${name}`); };
+        const native = {
+            readFileSync(file: string) { if (!allowed.has(resolve(file))) return deny(file); return readFileSync(file, "utf8"); },
+            existsSync(file: string) { if (resolve(file) !== baselineFile) return deny(file); return false; },
+            writeFileSync(file: string, value: string) { if (resolve(file) !== baselineFile && resolve(file) !== pairedFile) return deny(file); captures.set(resolve(file), value); },
+            chmodSync(file: string) { if (resolve(file) !== baselineFile) return deny(file); },
+        };
+        runInNewContext(readFileSync(resolve(checkpoint, "console-receiver-witness.cjs"), "utf8"), {
+            __dirname: checkpoint,
+            require(name: string) {
+                if (name === "node:fs") return native;
+                if (name === "node:path") return {resolve, dirname, posix, join};
+                if (name === "node:vm") return {runInNewContext};
+                if (name === "node:assert/strict") return assert;
+                if (name.endsWith("/typescript/lib/typescript.js")) return ts;
+                return deny(name);
+            },
+            console: {log: () => undefined, error: () => undefined},
+        });
+        const pairs = JSON.parse(captures.get(pairedFile)!) as {baseline: {mode: string; trace: unknown[][]; denied: unknown[]}[]; current: unknown[]};
+        expect(pairs.current).toEqual(pairs.baseline); expect(pairs.baseline).toHaveLength(3);
+        for (const record of pairs.baseline) {
+            expect(record.denied).toEqual([]);
+            expect(record.trace.some(event => Array.isArray(event) && (event[0] === "log:call" || event[0] === "error:call") && event[1] === true)).toBe(true);
+        }
+        expect(attempts).toEqual([]);
+    });
     it("replays immutable actual source against all 33 frozen records", () => { expect(replay(false)).toEqual(frozen); });
     it("preserves actual outputs, partial traces, raw fault identity and receivers", () => { expect(replay(true)).toEqual(frozen); });
     it("retains public defaults and native authority bytes", () => {

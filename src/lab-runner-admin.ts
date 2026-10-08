@@ -36,12 +36,14 @@ function nativeDiagnostics() {
             return () => selected();
         },
         get publishOutput() {
-            const selected = console.log;
-            return (message: string): undefined => { Reflect.apply(selected, console, [message]); return undefined; };
+            const receiver = console;
+            const selected = receiver.log;
+            return (message: string): undefined => { Reflect.apply(selected, receiver, [message]); return undefined; };
         },
         get publishUsage() {
-            const selected = console.error;
-            return (message: string): undefined => { Reflect.apply(selected, console, [message]); return undefined; };
+            const receiver = console;
+            const selected = receiver.error;
+            return (message: string): undefined => { Reflect.apply(selected, receiver, [message]); return undefined; };
         },
     };
     return createLabRunnerDiagnostics(ports);
