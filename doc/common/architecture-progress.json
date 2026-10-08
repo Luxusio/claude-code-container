@@ -106,6 +106,20 @@
       "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
       "integration": "pending",
       "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "sandbox-stop",
+      "branch": "refactor/architecture-sandbox-stop-20261008",
+      "commit": "e80e5afef1c1359cd10c66f9f555ad78913c1abb",
+      "taskId": "TASK__architecture-sandbox-stop",
+      "implementation": "direct-binding-complete",
+      "wholeOperationIds": [],
+      "partialOperationIds": [
+        "OP-windows-sandbox-stop"
+      ],
+      "codeReview": "code/security/qa actual PASS; hook receipts absent, formal source close parked",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
     }
   ],
   "planningLanes": [
@@ -115,7 +129,7 @@
       "coveredOperationIds": [
         "OP-windows-sandbox-stop"
       ],
-      "status": "implementation in progress; production checkpoint 2bc76924; focused tests running, package consumers and guide remain; direct binding only, no whole-operation credit"
+      "status": "direct binding source frozen and independent code/security/QA PASS; broker binding remains legacy, whole operation partial"
     },
     {
       "id": "clipboard-bridge",
@@ -127,6 +141,22 @@
         "OP-clipboard-server-retire"
       ],
       "status": "implementation in progress; private baseline build and 595 tests PASS (15 skipped), fixed core contracts and parallel test author; facade cutover pending, no operation credit"
+    },
+    {
+      "id": "codex-state-ownership",
+      "taskId": "TASK__architecture-codex-state-ownership",
+      "coveredOperationIds": [
+        "OP-codex-state-ownership-migration"
+      ],
+      "status": "source frozen 912ec696; code/security PASS; independent QA running, no completion credit added yet"
+    },
+    {
+      "id": "lab-state-ownership",
+      "taskId": "TASK__architecture-lab-state-ownership",
+      "coveredOperationIds": [
+        "OP-lab-state-ownership-migration"
+      ],
+      "status": "source frozen 75bd30de; code/security PASS; independent QA running, no completion credit added yet"
     }
   ]
 }

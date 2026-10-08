@@ -6,7 +6,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
 Implemented including unmerged candidates: **46/218 (21.1%)**.
-Integrated source: **31/218 (14.2%)**; historical baseline: **31**. Candidates: **15**; partial: **18**; TODO: **154**.
+Integrated source: **31/218 (14.2%)**; historical baseline: **31**. Candidates: **15**; partial: **19**; TODO: **153**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -28,13 +28,16 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | pending |
 | codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
 | broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
+| sandbox\-stop | 0 | 1 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked | pending |
 
 ## 0.2 Active next plans
 
 | Lane | Operation ids | State |
 | --- | --- | --- |
-| sandbox\-stop | OP\-windows\-sandbox\-stop | implementation in progress; production checkpoint 2bc76924; focused tests running, package consumers and guide remain; direct binding only, no whole\-operation credit |
+| sandbox\-stop | OP\-windows\-sandbox\-stop | direct binding source frozen and independent code/security/QA PASS; broker binding remains legacy, whole operation partial |
 | clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | implementation in progress; private baseline build and 595 tests PASS \(15 skipped\), fixed core contracts and parallel test author; facade cutover pending, no operation credit |
+| codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source frozen 912ec696; code/security PASS; independent QA running, no completion credit added yet |
+| lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source frozen 75bd30de; code/security PASS; independent QA running, no completion credit added yet |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -64,7 +67,7 @@ No separately counted product operations. This packet's foundation/structural ac
 
 - [ ] `OP-windows-sandbox-create` — windows\-sandbox create. **TODO**; packages/device\-lab/providers/backends/windows\-sandbox\.mjs.
 - [ ] `OP-windows-sandbox-start` — windows\-sandbox start. **partial**; packages/device\-lab/providers/backends/windows\-sandbox\.mjs.
-- [ ] `OP-windows-sandbox-stop` — windows\-sandbox stop. **TODO**; packages/device\-lab/providers/backends/windows\-sandbox\.mjs.
+- [ ] `OP-windows-sandbox-stop` — windows\-sandbox stop. **partial**; sandbox\-stop @ e80e5afe.
 - [ ] `OP-windows-sandbox-delete` — windows\-sandbox delete. **TODO**; packages/device\-lab/providers/backends/windows\-sandbox\.mjs.
 
 ## 6. M05 — Hyper-V lifecycle (0/15 implemented)
