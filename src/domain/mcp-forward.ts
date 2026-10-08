@@ -56,12 +56,9 @@ export function processServerForContainer(_name: string, server: McpServerConfig
     return { ...server };
 }
 
-export function decodeHostMcpServers(document: string | undefined): Record<string, McpServerConfig> {
-    if (document === undefined) return {};
-    try {
-        const config = JSON.parse(document);
-        if (config?.mcpServers && typeof config.mcpServers === "object") return config.mcpServers;
-    } catch { /* retain the existing permissive host fallback */ }
+export function selectHostMcpServers(parsed: unknown): Record<string, McpServerConfig> {
+    const config = parsed as {mcpServers?: Record<string, McpServerConfig>} | null;
+    if (config?.mcpServers && typeof config.mcpServers === "object") return config.mcpServers;
     return {};
 }
 

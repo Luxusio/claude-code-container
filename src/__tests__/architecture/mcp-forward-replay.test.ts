@@ -46,6 +46,30 @@ function observe(api: Public, claude: string | undefined, host: string | undefin
 describe("actual immutable facade replay", () => {
     let old: Public; let candidate: Public;
     beforeEach(async () => { vi.resetModules(); old = baseline(); candidate = await import("../../mcp-forward.js"); });
+    it.each(["claude-replacement", "host-replacement", "claude-getter-throw", "host-getter-throw"])("pairs parser selection before native read: %s", mode => {
+        function witness(api: Public) {
+            const originalDescriptor = Object.getOwnPropertyDescriptor(JSON, "parse")!;
+            const originalParse = JSON.parse; const originalRead = native.readFileSync;
+            const raw = {mode}; const calls: unknown[] = []; let selection = 0;
+            const selected = function (this: unknown, text: string) { calls.push(["parse", this === JSON]); return originalParse(text); };
+            let parser: typeof JSON.parse = selected;
+            Object.defineProperty(JSON, "parse", {configurable: true, get() {
+                const phase = selection++ === 0 ? "claude" : "host"; calls.push(["select", phase]);
+                if (mode === `${phase}-getter-throw`) throw raw;
+                return parser;
+            }});
+            native.readFileSync = (path, encoding) => {
+                calls.push(["read", path]);
+                if ((mode === "claude-replacement" && path === claudePath) || (mode === "host-replacement" && path === "/fixture/.claude.json")) {
+                    parser = function (this: unknown) { calls.push(["replacement", this === JSON]); return {mcpServers: {replacement: {command: "replacement"}}}; };
+                }
+                return originalRead(path, encoding);
+            };
+            try { return {observation: observe(api, '{"theme":"dark"}', '{"mcpServers":{"original":{"command":"node"}}}'), calls}; }
+            finally { Object.defineProperty(JSON, "parse", originalDescriptor); native.readFileSync = originalRead; }
+        }
+        expect(witness(candidate)).toEqual(witness(old));
+    });
     it.each([undefined, "{broken", "[]", "null", "1", "true", '"string"', '{"theme":"dark"}'])("pairs complete byte/order/error behavior for Claude %s", claude => {
         const host = JSON.stringify({ mcpServers: { remote: { url: "http://localhost:8?q=1", env: { Z: "last", A: "first" }, unknown: 3, unsupported: null }, "with.dot": { command: "node", args: ["x"], beta: false, alpha: "a" }, lab: {}, retired: { command: "/opt/ccc/dist/x11-mcp/server.mjs" } } });
         expect(observe(candidate, claude, host)).toEqual(observe(old, claude, host));

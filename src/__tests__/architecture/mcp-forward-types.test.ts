@@ -46,6 +46,8 @@ const badPublication: McpConfigRegenerationPorts<Claude, Codex>['publishCodexPro
 const badClaudePublication: McpConfigRegenerationPorts<Claude, Codex>['publishClaudeProfile'] = async () => {};
 // @ts-expect-error native document reads cannot become asynchronous
 const badRead: McpConfigRegenerationPorts<Claude, Codex>['readHostMcpDocument'] = async () => '';
+// @ts-expect-error the native read capability itself cannot become asynchronous
+const badCapability: McpConfigRegenerationPorts<Claude, Codex>['readHostMcpDocument'] = () => async () => '';
 // @ts-expect-error prepare must carry binding and existing text
 const badPrepare: McpConfigRegenerationPorts<Claude, Codex>['prepareCodexProfile'] = () => d;
 // @ts-expect-error opaque consumer bindings are distinct

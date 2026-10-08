@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createMcpConfigRegenerator } from "../../application/mcp-forward.js";
-import { decodeHostMcpServers, forwardHostMcpServers, freshManagedMcpServers } from "../../domain/mcp-forward.js";
+import { selectHostMcpServers, forwardHostMcpServers, freshManagedMcpServers } from "../../domain/mcp-forward.js";
 import * as domain from "../../domain/mcp-forward.js";
 
 function fixture(claude: string | undefined = undefined, host: string | undefined = undefined, existing = "") {
@@ -11,8 +11,8 @@ function fixture(claude: string | undefined = undefined, host: string | undefine
     const effect = (name: string) => { events.push(name); if (failures.has(name)) throw failures.get(name); };
     const ports = {
         resolveClaudeProfile(profile?: string) { effect(`resolve:${profile ?? "default"}`); return { path: "claude" }; },
-        readClaudeProfileDocument(binding: { path: string }) { expect(binding.path).toBe("claude"); effect("read-claude"); return claude; },
-        readHostMcpDocument() { effect("read-host"); return host; },
+        readClaudeProfileDocument(binding: { path: string }) { expect(binding.path).toBe("claude"); effect("read-claude"); return claude === undefined ? undefined : () => claude; },
+        readHostMcpDocument() { effect("read-host"); return host === undefined ? undefined : () => host; },
         withCodexProfileLock<T>(profile: string | undefined, operation: () => T): T {
             effect(`lock:${profile ?? "default"}`); locked = true;
             try { return operation(); } finally { locked = false; events.push("unlock"); }
@@ -26,6 +26,24 @@ function fixture(claude: string | undefined = undefined, host: string | undefine
 }
 
 describe("inward synchronous MCP regeneration", () => {
+    it("does not select an accessor publication writer during construction", () => {
+        let selections = 0; let calls = 0;
+        const generator = createMcpConfigRegenerator({
+            resolveClaudeProfile: () => "claude",
+            readClaudeProfileDocument: () => () => "{}",
+            readHostMcpDocument: () => undefined,
+            withCodexProfileLock: <T>(_profile: string | undefined, operation: () => T): T => operation(),
+            prepareCodexProfile: () => ({binding: "codex", existingText: ""}),
+            publishCodexProfile: () => undefined,
+            get publishClaudeProfile() {
+                selections += 1;
+                return () => { calls += 1; return undefined; };
+            },
+        });
+        expect(selections).toBe(0); expect(calls).toBe(0);
+        generator.build();
+        expect(selections).toBe(1); expect(calls).toBe(1);
+    });
     it("requires every semantic port at construction", () => {
         for (const name of ["resolveClaudeProfile", "readClaudeProfileDocument", "readHostMcpDocument", "withCodexProfileLock", "prepareCodexProfile", "publishCodexProfile", "publishClaudeProfile"]) {
             const ports = Object.fromEntries(["resolveClaudeProfile", "readClaudeProfileDocument", "readHostMcpDocument", "withCodexProfileLock", "prepareCodexProfile", "publishCodexProfile", "publishClaudeProfile"].filter(key => key !== name).map(key => [key, () => undefined]));
@@ -56,7 +74,7 @@ describe("inward synchronous MCP regeneration", () => {
         } finally { managed.mockRestore(); }
     });
     it("retains host arrays and unknown primitive entries without schema hardening", () => {
-        const array = decodeHostMcpServers('{"mcpServers":[{"command":"node"}]}');
+        const array = selectHostMcpServers({mcpServers: [{command: "node"}]});
         expect(Array.isArray(array)).toBe(true);
         const map = freshManagedMcpServers();
         expect(forwardHostMcpServers(map, array)).toEqual(["0"]);

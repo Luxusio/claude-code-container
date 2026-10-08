@@ -35,8 +35,8 @@ Claude publication still occurs on every successful build.
 | Semantic port | Native responsibility |
 | --- | --- |
 | resolveClaudeProfile | Existing profile/environment path resolution |
-| readClaudeProfileDocument | Existing existence/read observation and ignored read failure |
-| readHostMcpDocument | Existing host-home document observation and ignored read failure |
+| readClaudeProfileDocument | Existing existence observation and optional synchronous native read capability |
+| readHostMcpDocument | Existing host-home existence observation and optional synchronous native read capability |
 | withCodexProfileLock | Existing profile lock, container refusal and mutation authority |
 | prepareCodexProfile | Resolve profile, create parent and read current Codex text with contextual errors |
 | publishCodexProfile | Existing direct write and contextual write error |
@@ -57,6 +57,9 @@ carrier; asynchronous publishers are not valid inward bindings.
 ## Failure and partial effects
 
 Host decoding retains the original read/JSON/optional-inspection fallback.
+Existence is observed first. A present document supplies one read capability;
+the application invokes `JSON.parse(read())` inside the original catch, selecting
+the parser before native reading. A parser getter failure prevents the read.
 Claude malformed JSON and ignored native read failures retain the empty-object
 fallback. Existence/path failures outside those catches propagate unchanged.
 Valid Claude JSON null, scalars and arrays retain their original behavior;
@@ -68,6 +71,13 @@ Claude mutation and write. Successful Codex publication precedes Claude
 serialization failure or Claude write error therefore leaves any newly published
 Codex bytes in place. There is no rollback. Permission diagnostics and raw error
 precedence remain the original native behavior.
+
+Claude publication selects the native writer before evaluating JSON
+serialization. Its port getter captures that invocation's writer; constructor
+validation recognizes the getter without invoking it. A serializer that changes
+a builtin export therefore cannot redirect the already-selected publication.
+Serializer or selected-writer failures retain their raw identity and preceding
+Codex bytes.
 
 ## Verification and known ceiling
 

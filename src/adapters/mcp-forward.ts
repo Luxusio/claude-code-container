@@ -5,14 +5,13 @@ import { withCodexConfigLock } from "../codex-config-lock.js";
 import { getClaudeJsonFile, getCodexConfigFile } from "../utils.js";
 import type { McpConfigRegenerationPorts } from "../ports/mcp-forward.js";
 
-/** Existence observation remains outside the native read fallback. */
-function readOptionalDocument(file: string): string | undefined {
+/** Observe existence now; defer the native read until after parser selection. */
+function readOptionalDocument(file: string): (() => string) | undefined {
     if (!existsSync(file)) return undefined;
-    try { return readFileSync(file, "utf-8"); }
-    catch { return undefined; }
+    return () => readFileSync(file, "utf-8");
 }
 
-export function readHostMcpDocument(): string | undefined {
+export function readHostMcpDocument(): (() => string) | undefined {
     return readOptionalDocument(join(homedir(), ".claude.json"));
 }
 
@@ -53,6 +52,12 @@ export function createNativeMcpConfigPorts(): McpConfigRegenerationPorts<string,
             catch (error) { throw codexConfigAccessError("write", file, error); }
             return undefined;
         },
-        publishClaudeProfile: (file, text) => { writeFileSync(file, text, {mode: 0o600}); return undefined; },
+        get publishClaudeProfile() {
+            // Select this invocation's native writer before JSON serialization.
+            return ((write: typeof writeFileSync) => (file: string, text: string): undefined => {
+                write(file, text, {mode: 0o600});
+                return undefined;
+            })(writeFileSync);
+        },
     };
 }
