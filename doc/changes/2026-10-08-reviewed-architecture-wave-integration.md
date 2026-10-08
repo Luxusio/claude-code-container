@@ -4,8 +4,8 @@ Status: integration in progress. Source baseline remains `c284ead3`.
 The destination is the local `feature/device-mcp-squashed` branch. No hosted CI,
 workflow rerun, push or global installation is authorized by this wave.
 
-Eight independently reviewed and QA-passed source snapshots have been replayed
-into the isolated integration branch. Twenty-three commits replayed without
+Eleven independently reviewed and QA-passed source slices have been replayed
+into the isolated integration branch. Twenty-nine source commits replayed without
 conflicts; every disjoint source file matched its original snapshot immediately
 after replay. Private commit, path/hash and stable patch manifests are retained.
 
@@ -19,6 +19,9 @@ after replay. Private commit, path/hash and stable patch manifests are retained.
 | Broker observations | `3f020650` | Six complete policies; aggregate/direct bindings remain partial |
 | Direct Sandbox stop | `e80e5afe` | Direct policy only; broker binding remains legacy |
 | Inventory and WBS | `c9419826` | Provisional operation accounting and renderer |
+| Codex retained-state ownership | `912ec696` | Whole migration policy and retained native proofs |
+| Lab state ownership | `75bd30de` | Whole volume migration policy and retained native commands |
+| Clipboard bridge | `fb7457c7` | Four whole policies and current timer port guard correction |
 
 The first combined source point is `ef7ae841`. The progress renderer subsequently
 gained an accepted-integration projection at `0022718d`: historical inventory
@@ -27,11 +30,22 @@ bindings receive no whole-operation credit. Thirteen private projection cases
 passed, including invalid input preserving existing output. Current lane states
 remain pending until combined verification and local delivery are complete.
 
-Codex retained-state and Lab volume policies require their running independent
-QA finals before admission. Clipboard policy requires immutable source freeze
-and all independent review/security/QA results. Existing per-slice results do
-not substitute for combined compilation, the two actual shipping forms, full
-portable test execution or final independent review and QA.
+Codex retained-state, Lab volume and Clipboard policies were admitted after
+actual independent code/security review and QA PASS. Missing automatic records
+remain explicit formal source-task blocks. Combined compilation passes. The
+two actual shipping forms, full portable suite and final independent combined QA
+remain pending; per-slice results do not substitute for those gates.
+
+The provisional WBS records 52/218 implemented operations (23.9%), including
+21 candidates awaiting combined acceptance and 31 historical integrated operations.
+Nineteen partial operations receive no completion credit; 147 remain TODO.
+
+The final Docker recovery tip `789d09e1` was merged normally at `f855c93e`.
+The sole conflict retained the Codex launch facade; its inward application keeps
+both engine-error checks with the original catch and observation order. Eight
+native Docker function bodies match the reviewed recovery tip. Automatic memory
+limits and Cargo job defaults remain removed. Installer and seven disjoint
+recovery paths preserve their final source bytes.
 
 The operator-approved missing-record exception remains the one recorded in
 the [earlier continuation decision](2026-10-07-architecture-receipt-exception.md).
