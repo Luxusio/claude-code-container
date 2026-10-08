@@ -90,7 +90,7 @@ export function ensureIdentityImage(baseImageId: string, identity: ContainerIden
     return prepareIdentityImage(baseImageId, identity, {
         captureLabelsDigest: () => {
             const hash = createHash("sha256");
-            const update = hash.update;
+            const update: (data: string) => typeof hash = hash.update;
             return serialized => update.call(hash, serialized).digest("hex");
         },
         withIdentityLock: (key, operation) => {

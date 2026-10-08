@@ -29,7 +29,7 @@ describe("identity image domain", () => {
         const runtime = {
             get runtime() { reads.push("runtime"); return "podman"; },
             get rootless() { reads.push("rootless"); return true; },
-            get flavor() { throw new Error("short-circuited flavor must not be observed"); },
+            get flavor(): string { throw new Error("short-circuited flavor must not be observed"); },
         };
         expect(resolveIdentity(runtime, "linux", 0, 0)).toEqual({ uid: 1000, gid: 1000, mapping: "podman-keep-id", contractVersion: "1" });
         expect(reads).toEqual(["runtime", "runtime", "rootless"]);
