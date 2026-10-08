@@ -100,7 +100,8 @@
       ],
       "partialOperationIds": [
         "OP-device-inventory",
-        "OP-device-session-status"
+        "OP-device-session-status",
+        "OP-device-owned-list"
       ],
       "codeReview": "pending",
       "integration": "pending",

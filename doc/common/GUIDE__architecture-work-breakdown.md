@@ -6,7 +6,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
 Implemented including unmerged candidates: **46/218 (21.1%)**.
-Integrated baseline: **31/218 (14.2%)**. Candidates: **15**; partial: **17**; TODO: **155**.
+Integrated baseline: **31/218 (14.2%)**. Candidates: **15**; partial: **18**; TODO: **154**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -27,7 +27,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | codex\-launch | 1 | 0 | `ea96263f` | code/security/qa actual PASS; hook receipts absent | pending |
 | codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | pending |
 | codex\-clipboard | 1 | 0 | `fb6c26f7` | discovery in progress; full review/security/QA pending | pending |
-| broker\-observations | 6 | 2 | `3f020650` | pending | pending |
+| broker\-observations | 6 | 3 | `3f020650` | pending | pending |
 
 ## 0.2 Active next plans
 
@@ -58,7 +58,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-backend-discovery` — Backend discovery. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-device-destructive-admission` — Authorize existing destructive Device Lab action. **TODO**; device\-lab\-mcp/src/policy/destructive\.mjs.
 - [ ] `OP-device-flow` — Run bounded ordered Device Lab action flow. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-owned-list` — List current owner device definitions. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-owned-list` — List current owner device definitions. **partial**; broker\-observations @ 3f020650.
 
 ## 5. M04 — Sandbox lifecycle (0/4 implemented)
 

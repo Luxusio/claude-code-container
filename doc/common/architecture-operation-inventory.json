@@ -23486,7 +23486,444 @@
           ]
         }
       },
-      "requiredBindings": [],
+      "requiredBindings": [
+        {
+          "id": "BIND-broker-android-emulator-device_inventory",
+          "backend": "android-emulator",
+          "provider": "android-emulator",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "ANDROID_EMULATOR_CAPABILITIES",
+              "line": 262,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-android-emulator-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-android-device-device_inventory",
+          "backend": "android-device",
+          "provider": "android-device",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "ANDROID_REAL_CAPABILITIES",
+              "line": 283,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-android-device-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-ios-simulator-device_inventory",
+          "backend": "ios-simulator",
+          "provider": "ios-simulator",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "IOS_SIMULATOR_CAPABILITIES",
+              "line": 302,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-ios-simulator-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-ios-device-device_inventory",
+          "backend": "ios-device",
+          "provider": "ios-device",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "IOS_REAL_CAPABILITIES",
+              "line": 317,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-ios-device-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-windows-sandbox-device_inventory",
+          "backend": "windows-sandbox",
+          "provider": "windows-sandbox",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "DESKTOP_DEVICE_CAPABILITIES",
+              "line": 328,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-windows-sandbox-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-macos-vm-device_inventory",
+          "backend": "macos-vm",
+          "provider": "macos-vm",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "MACOS_VM_CAPABILITIES",
+              "line": 337,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": [
+              "DESKTOP_DEVICE_CAPABILITIES"
+            ]
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-macos-vm-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-windows-vm-device_inventory",
+          "backend": "windows-vm",
+          "provider": "hyper-v",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "HYPER_V_VM_CAPABILITIES",
+              "line": 342,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-windows-vm-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        },
+        {
+          "id": "BIND-broker-linux-vm-device_inventory",
+          "backend": "linux-vm",
+          "provider": "hyper-v",
+          "executor": "broker-native",
+          "route": "broker.device.tool.invoke",
+          "action": "device_inventory",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "HYPER_V_LINUX_VM_CAPABILITIES",
+              "line": 350,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": [
+              "HYPER_V_VM_CAPABILITIES"
+            ]
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "symbol": "invokeDeviceInventory",
+            "line": 3769,
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          },
+          "handlerProof": "broker.device.tool.invoke validates device_inventory, returns invokeDeviceInventory before device lookup/backend-tool gate, filters bounded ownerInventory devices.json snapshots by the selected stateKey. Android-device additionally probes host ADB inventory; android-emulator adds creation choices. This is a read observation and does not claim a lease mutation.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "No owner/device operation or lease mutation lock is acquired; authenticated broker reads bounded owner inventory snapshots. Android creation choices/host inventory are additional observations.",
+          "workItemIds": [
+            "OP-device-inventory"
+          ],
+          "closureStatus": "source-contract-traced",
+          "proofIds": [
+            "PROOF-reconciled-broker-linux-vm-device_inventory"
+          ],
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "canonicalActionId": "OP-device-inventory",
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "broker-inventory",
+          "lockAuthorityCategoryId": "inventory"
+        }
+      ],
       "aliases": [],
       "supportComponents": [
         {
@@ -23588,7 +24025,17 @@
         "MCP devices view:available without backend -> availableDevices two-worker eight-backend aggregate",
         "broker.device.tool.invoke params.tool=device_inventory -> invokeDeviceInventory"
       ],
-      "bindingIds": []
+      "bindingIds": [
+        "BIND-broker-android-emulator-device_inventory",
+        "BIND-broker-android-device-device_inventory",
+        "BIND-broker-ios-simulator-device_inventory",
+        "BIND-broker-ios-device-device_inventory",
+        "BIND-broker-windows-sandbox-device_inventory",
+        "BIND-broker-macos-vm-device_inventory",
+        "BIND-broker-windows-vm-device_inventory",
+        "BIND-broker-linux-vm-device_inventory"
+      ],
+      "bindingAssignmentScope": "All eight existing canonical focused broker inventory bindings are linked here. Focused direct and aggregate obligations and their distinct state/publication/owner authority remain recorded in currentCallTrace, sources, authority and implementationRemainingWork; this linkage does not certify their inward migration or exhaustive closure."
     },
     {
       "id": "OP-backend-discovery",

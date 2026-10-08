@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const progress = JSON.parse(readFileSync(resolve(root, "doc/common/architecture-progress.json"), "utf8"));
 const inventory = JSON.parse(readFileSync(resolve(root, "doc/common/architecture-operation-inventory.json"), "utf8"));
-if (progress.schemaVersion !== 1 || progress.baselineCommit !== inventory.baselineCommit) throw Error("Progress baseline/schema mismatch");
+if (progress.schemaVersion !== 1 || !/^[a-f0-9]{40}$/.test(progress.baselineCommit)
+    || progress.baselineCommit !== inventory.baselineCommit) throw Error("Progress baseline/schema mismatch");
 if (typeof progress.updatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(progress.updatedAt)
     || new Date(`${progress.updatedAt}T00:00:00Z`).toISOString().slice(0, 10) !== progress.updatedAt) throw Error("Invalid progress date");
 if (progress.sourceDenominatorCertified && (inventory.closure.exhaustive !== true || inventory.gaps.length)) throw Error("Cannot certify a denominator with unresolved inventory closure");
