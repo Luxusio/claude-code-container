@@ -21,7 +21,7 @@ export function createClipboardTextWriter<Bytes extends ClipboardBytes, Prepared
                 const finish = (success: boolean) => {
                     if (settled) return;
                     settled = true;
-                    ports.clearTimeout(timer);
+                    ports.cancelReadTimer(timer);
                     if (success) resolve();
                     else reject(new Error("Clipboard write failed"));
                 };

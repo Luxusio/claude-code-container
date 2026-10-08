@@ -974,7 +974,7 @@ const writeClipboardText = createClipboardTextWriter<Buffer, PreparedClipboardTe
         ...(plat === "darwin" ? { env: { ...process.env, LC_CTYPE: "UTF-8" } } : {}),
     }),
     scheduleTimeout: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
-    clearTimeout: (timer) => { clearTimeout(timer); return undefined; },
+    cancelReadTimer: (timer) => { clearTimeout(timer); return undefined; },
     onWriterError: (child, callback) => { child.once("error", callback); return undefined; },
     onWriterExit: (child, callback) => { child.once("exit", callback); return undefined; },
     onInputError: (child, callback) => { child.stdin!.on("error", callback); return undefined; },

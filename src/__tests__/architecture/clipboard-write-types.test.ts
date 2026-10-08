@@ -12,7 +12,7 @@ type PublicShape = Assert<Equal<typeof publicWrite, (text: string, plat: import(
 const publicShape: PublicShape = true; void publicShape;
 function compileContracts(ports: ClipboardTextWritePorts<Bytes, Prepared, Writer, Timer>) {
     const state = createClipboardSnapshotState<Bytes>(); const write = createClipboardTextWriter(ports, state);
-    const result: Promise<void> = write("text", "darwin"); const clear: undefined = ports.clearTimeout({ opaque: "timer" });
+    const result: Promise<void> = write("text", "darwin"); const clear: undefined = ports.cancelReadTimer({ opaque: "timer" });
     void [result, clear];
     // @ts-expect-error Shared state must be supplied.
     createClipboardTextWriter(ports);
@@ -25,9 +25,9 @@ function compileContracts(ports: ClipboardTextWritePorts<Bytes, Prepared, Writer
     // @ts-expect-error Launching the opaque writer is synchronous.
     createClipboardTextWriter({ ...ports, launchWriter: async () => ({ opaque: "writer" } as const) }, state);
     // @ts-expect-error Timer cancellation cannot return void.
-    createClipboardTextWriter({ ...ports, clearTimeout: (): void => {} }, state);
+    createClipboardTextWriter({ ...ports, cancelReadTimer: (): void => {} }, state);
     // @ts-expect-error Timer cancellation cannot return a Promise.
-    createClipboardTextWriter({ ...ports, clearTimeout: async () => undefined }, state);
+    createClipboardTextWriter({ ...ports, cancelReadTimer: async () => undefined }, state);
     // @ts-expect-error Writer registration cannot be asynchronous.
     createClipboardTextWriter({ ...ports, onWriterError: async () => undefined }, state);
     // @ts-expect-error Input registration cannot be asynchronous.
@@ -37,7 +37,7 @@ function compileContracts(ports: ClipboardTextWritePorts<Bytes, Prepared, Writer
     // @ts-expect-error End input is an ignored synchronous effect, never an adoption boundary.
     createClipboardTextWriter({ ...ports, endInput: async () => undefined }, state);
     // @ts-expect-error Opaque timers do not accept native numeric IDs.
-    ports.clearTimeout(3);
+    ports.cancelReadTimer(3);
     // @ts-expect-error Writer and preparation receipts cannot be interchanged.
     ports.endInput({ opaque: "prepared" }, { opaque: "writer" });
     // @ts-expect-error Write returns the original named async Promise rather than void.

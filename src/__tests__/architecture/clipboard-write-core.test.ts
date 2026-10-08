@@ -13,7 +13,7 @@ function fixture() {
         prepareWriter: (bytes, platform) => { calls.push(["prepare", bytes, platform, state.generation]); prepared.input = bytes; return prepared; },
         launchWriter: (value, platform) => { calls.push(["launch", value, platform, state.generation, state.cache]); return child; },
         scheduleTimeout: (callback, ms) => { calls.push(["schedule", ms]); timeout = callback; return timer; },
-        clearTimeout: value => { calls.push(["clear", value]); return undefined; },
+        cancelReadTimer: value => { calls.push(["clear", value]); return undefined; },
         onWriterError: (value, callback) => { calls.push(["on-error", value]); error = callback; return undefined; },
         onWriterExit: (value, callback) => { calls.push(["on-exit", value]); exit = callback; return undefined; },
         onInputError: (value, callback) => { calls.push(["on-input-error", value]); inputError = callback; return undefined; },
@@ -68,7 +68,7 @@ describe("Clipboard text-write application transaction", () => {
         f.exit(0); await result; expect(f.state.generation).toBe(2);
     });
     it("keeps a clear-timeout throw outside settlement and ignores subsequent exit callbacks", async () => {
-        const f = fixture(); const failure = new Error("clear failed"); f.ports.clearTimeout = () => { throw failure; };
+        const f = fixture(); const failure = new Error("clear failed"); f.ports.cancelReadTimer = () => { throw failure; };
         const result = f.write("text", "linux-x11"); let settled = false; void result.then(() => { settled = true; }, () => { settled = true; });
         expect(() => f.exit(0)).toThrow(failure); f.exit(1); f.error(); await Promise.resolve();
         expect(settled).toBe(false); expect(f.state.generation).toBe(1);
