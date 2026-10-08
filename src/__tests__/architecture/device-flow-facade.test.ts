@@ -201,17 +201,17 @@ describe("actual frozen versus current MCP facade", () => {
     });
     it.each([false, true])("relooks up changing action after an awaited native dispatch (detail=%s)", async detail => {
         const result = await paired(() => {
-            let action = "list", reads = 0;
-            const args = { implicitBroker: false, get action() {
+            let action = "grant", reads = 0;
+            const args = { implicitBroker: false, appId: "example.app", permission: "android.permission.CAMERA", get action() {
                 fixture.trace.push(["read-action", ++reads, action]); return action;
             } };
-            fixture.effects[0] = () => { fixture.trace.push(["change-action", "delete"]); action = "delete"; };
-            return { ...shared, detail, steps: [{ tool: "snapshot", arguments: args }] };
+            fixture.effects[0] = () => { fixture.trace.push(["change-action", "revoke"]); action = "revoke"; };
+            return { ...shared, detail, steps: [{ tool: "permission", arguments: args }] };
         });
-        expect(result.calls[0].name).toBe("device_snapshot_list");
+        expect(result.calls[0].name).toBe("mobile_grant_permission");
         const changed = result.trace.findIndex((entry: any) => entry[0] === "change-action");
         expect(changed).toBeGreaterThan(result.trace.findIndex((entry: any) => entry[0] === "provider-awaited"));
-        expect(result.trace.slice(changed + 1).some((entry: any) => entry[0] === "read-action" && entry[2] === "delete")).toBe(true);
+        expect(result.trace.slice(changed + 1).some((entry: any) => entry[0] === "read-action" && entry[2] === "revoke")).toBe(true);
     });
     it("observes mutable steps length and validates appended steps after preceding effects", async () => {
         const result = await paired(() => {
@@ -230,7 +230,8 @@ describe("actual frozen versus current MCP facade", () => {
         const result = await paired(() => {
             const first: any = step();
             if (field === "action") {
-                first.tool = "snapshot";
+                first.tool = "permission";
+                first.arguments = { implicitBroker: false, appId: "example.app", permission: "android.permission.CAMERA" };
                 Object.defineProperty(first.arguments, "action", { enumerable: true, get() {
                     fixture.trace.push(["throw-getter", field]); throw new TypeError("getter-" + field);
                 } });
@@ -246,12 +247,12 @@ describe("actual frozen versus current MCP facade", () => {
         const result = await paired(() => {
             let dispatched = false;
             fixture.effects[0] = () => { dispatched = true; fixture.trace.push("dispatch-mutated-action"); };
-            const args = { implicitBroker: false, get action() {
+            const args = { implicitBroker: false, appId: "example.app", permission: "android.permission.CAMERA", get action() {
                 fixture.trace.push(["read-action-after-dispatch", dispatched]);
                 if (dispatched) throw new RangeError("post-await-lookup");
-                return "list";
+                return "grant";
             } };
-            return { ...shared, detail, steps: [{ tool: "snapshot", arguments: args }] };
+            return { ...shared, detail, steps: [{ tool: "permission", arguments: args }] };
         });
         expect(result.thrown).toEqual({ name: "RangeError", message: "post-await-lookup" });
         expect(result.calls).toHaveLength(1);

@@ -51,7 +51,8 @@ function fixture() {
 type Fixture = ReturnType<typeof fixture>;
 function baseline(f: Fixture) {
     const bindings = { ...f.ports, FLOW_MAX_STEPS: 50, textResult: (_ok: boolean, message: string) => f.text(message),
-        flowJsonResult: f.render, compactToolValue: (_tool: string, value: FlowValue) => value };
+        flowJsonResult: (value: FlowValue, rendering: { detail?: boolean }) => f.ports.renderFlow(value, { toolName: options.toolName, detail: rendering.detail }),
+        compactToolValue: (_tool: string, value: FlowValue) => value };
     return new Function(...Object.keys(bindings), frozenLoop + "; return handleRunFlow;")(...Object.values(bindings)) as
         (args: FlowArguments, opts: typeof options) => Promise<Reply>;
 }
