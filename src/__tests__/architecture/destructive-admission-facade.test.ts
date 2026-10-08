@@ -104,7 +104,12 @@ describe("destructive admission compatibility facade", () => {
         expect(existsSync(join(context.homeDir, "admission-armed"))).toBe(true);
         const invalid = await context.client.callTool({ name: "delete", arguments: { deviceId: "android-admission-owned", confirmDestructive: "true" } });
         expect(invalid.isError).toBe(true);
-        expect(payload(invalid)).toMatchObject({ ok: false, policy: { error: "destructive-action-confirmation-required", confirmationField: "confirmDestructive", actions: ["device-delete"] } });
+        expect(payload(invalid)).toMatchObject({ ok: false });
+        expect(payload(invalid)).not.toHaveProperty("policy");
+        expect(readFileSync(join(context.homeDir, "admission-effects.log"), "utf8")).toBe("");
+        const detailed = await context.client.callTool({ name: "delete", arguments: { deviceId: "android-admission-owned", confirmDestructive: "true", detail: true } });
+        expect(detailed.isError).toBe(true);
+        expect(payload(detailed)).toMatchObject({ ok: false, policy: { error: "destructive-action-confirmation-required", confirmationField: "confirmDestructive", actions: ["device-delete"] } });
         const parent = await context.client.callTool({ name: "run_flow", arguments: { confirmDestructive: true,
             steps: [{ tool: "clear_app_data", arguments: { deviceId: "android-admission-owned", appId: "example.app" } }] } });
         expect(parent.isError).toBe(true);
