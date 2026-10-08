@@ -18,216 +18,50 @@ import { observeActiveSessionsForContainer } from "./session.js";
 import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
 import { buildClaudeLauncherReportCommand, sanitizeForTerminal, CLAUDE_BIN_PATH } from "./container-setup.js";
 
-interface DoctorCheck {
-    name: string;
-    status: "ok" | "warn" | "error";
-    message: string;
-}
+import { createDoctor } from "./application/doctor.js";
 
-function printResults(checks: DoctorCheck[]): void {
-    for (const check of checks) {
-        let icon: string;
-        if (check.status === "ok") {
-            icon = "✓";
-        } else if (check.status === "warn") {
-            icon = "!";
-        } else {
-            icon = "✗";
-        }
-        // Sanitize here rather than where each check is built. Several of these
-        // messages carry strings produced inside a container — a path out of a
-        // volume any container can write, a runtime's own version output — and
-        // a rule applied at eighteen call sites is a rule the nineteenth
-        // forgets. This is the only place a check reaches a terminal.
-        console.log(`  ${icon} ${check.name}: ${sanitizeForTerminal(check.message)}`);
-    }
-
-    const errors = checks.filter((c) => c.status === "error").length;
-    const warns = checks.filter((c) => c.status === "warn").length;
-
-    console.log("");
-    if (errors > 0) {
-        console.log(`Summary: ${errors} error(s), ${warns} warning(s)`);
-    } else if (warns > 0) {
-        console.log(`Summary: OK with ${warns} warning(s)`);
-    } else {
-        console.log("Summary: All checks passed");
-    }
-    console.log("");
-}
-
+/** Trusted native composition retains the public synchronous boolean contract. */
 export function runDoctor(projectPath: string): boolean {
-    const checks: DoctorCheck[] = [];
-    const fullPath = resolve(projectPath);
-    const projectId = getProjectId(fullPath);
-    const containerName = getContainerName(fullPath);
-
-    console.log("\n=== CCC Doctor ===\n");
-
-    // 1. Container runtime daemon
-    const runtimeInfo = getRuntimeInfo();
-    const runtimeLabel = runtimeInfo.runtime === "podman" ? "Podman" : "Docker";
-    if (isDockerRunning()) {
-        const vResult = spawnSync(
-            runtimeCli(),
-            ["version", "--format", "{{.Server.Version}}"],
-            { encoding: "utf-8" },
-        );
-        const version = (vResult.stdout ?? "").trim() || runtimeInfo.version || "unknown";
-        checks.push({
-            name: "Runtime",
-            status: "ok",
-            message: `${runtimeLabel} running (v${version}, ${runtimeInfo.flavor})`,
-        });
-    } else {
-        checks.push({
-            name: "Runtime",
-            status: "error",
-            message: `${runtimeLabel} not running`,
-        });
-        printResults(checks);
-        return false;
-    }
-
-    // 2. Image
-    if (isImageExists()) {
-        const label = getImageLabel("ccc", "cli.version");
-        if (label === null) {
-            checks.push({ name: "Image", status: "ok", message: "Built locally (dev)" });
-        } else if (label === CLI_VERSION) {
-            checks.push({ name: "Image", status: "ok", message: `Registry (v${label})` });
-        } else {
-            checks.push({
-                name: "Image",
-                status: "warn",
-                message: `Registry (v${label} -- CLI expects v${CLI_VERSION}, run 'ccc' to update)`,
-            });
-        }
-    } else {
-        checks.push({
-            name: "Image",
-            status: "error",
-            message: `Not found -- run 'ccc' to auto-pull, or '${runtimeCli()} build -t ccc .' for local build`,
-        });
-    }
-
-    // 3. Container
-    if (isContainerRunning(containerName)) {
-        checks.push({
-            name: "Container",
-            status: "ok",
-            message: `Running (${containerName})`,
-        });
-    } else if (isContainerExists(containerName)) {
-        checks.push({
-            name: "Container",
-            status: "warn",
-            message: `Stopped (${containerName})`,
-        });
-    } else {
-        checks.push({
-            name: "Container",
-            status: "warn",
-            message: "Not created yet",
-        });
-    }
-
-    // 4. Volume (mise cache)
-    const miseVolumeName = getIdentityMiseVolumeName(resolveContainerIdentity());
-    const volResult = spawnSync(
-        runtimeCli(),
-        ["volume", "inspect", miseVolumeName, "--format", "{{.Mountpoint}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (volResult.status === 0) {
-        checks.push({
-            name: "Mise cache",
-            status: "ok",
-            message: `Volume '${miseVolumeName}' exists`,
-        });
-    } else {
-        checks.push({
-            name: "Mise cache",
-            status: "warn",
-            message: "Volume not created yet",
-        });
-    }
-
-    // 5. Sessions
-    const activeSessions = observeActiveSessionsForContainer(projectId);
-    if (activeSessions.length > 0) {
-        checks.push({
-            name: "Sessions",
-            status: "ok",
-            message: `${activeSessions.length} active session(s)`,
-        });
-    } else {
-        checks.push({
-            name: "Sessions",
-            status: "ok",
-            message: "No active sessions",
-        });
-    }
-
-    // 6. Stale locks check (scoped to current project)
-    const locksDir = sessionLocksDir();
-    let totalProjectLocks = 0;
-    if (existsSync(locksDir)) {
-        totalProjectLocks = readdirSync(locksDir).filter((f) =>
-            // New format: projectId--sessionId.lock or projectId--p--profile--sessionId.lock
-            // Old format (migration): projectId-sessionId.lock
-            (f.startsWith(`${projectId}--`) || f.startsWith(`${projectId}-`)) && f.endsWith(".lock"),
-        ).length;
-    }
-    const staleLocks = totalProjectLocks - activeSessions.length;
-    if (staleLocks > 0) {
-        checks.push({
-            name: "Stale locks",
-            status: "warn",
-            message: `${staleLocks} stale lock file(s) found`,
-        });
-    }
-
-    // 7. Claude binary (only if container is running)
-    if (isContainerRunning(containerName)) {
-        const claudeCheck = spawnSync(
-            runtimeCli(),
-            [
-                "exec",
-                containerName,
-                "sh",
-                "-c",
-                buildClaudeLauncherReportCommand(CLAUDE_BIN_PATH),
-            ],
-            { encoding: "utf-8", timeout: 10000 },
-        );
-        // Exit 2 means the launcher works but is in the shape the native
-        // updater refuses to manage — `claude update` will report success and
-        // change nothing. Reporting that as ok is how the state stayed
-        // invisible; it is a warning, and the message says why.
-        if (claudeCheck.status === 2 && claudeCheck.stdout?.trim()) {
-            checks.push({
-                name: "Claude",
-                status: "warn",
-                message: claudeCheck.stdout.trim(),
-            });
-        } else if (claudeCheck.status === 0 && claudeCheck.stdout?.trim()) {
-            checks.push({
-                name: "Claude",
-                status: "ok",
-                message: claudeCheck.stdout.trim(),
-            });
-        } else {
-            checks.push({
-                name: "Claude",
-                status: "warn",
-                message: "Not installed in container",
-            });
-        }
-    }
-
-    printResults(checks);
-
-    const hasErrors = checks.some((c) => c.status === "error");
-    return !hasErrors;
+    return createDoctor({
+        resolveProjectPath: value => resolve(value),
+        projectId: value => getProjectId(value),
+        containerName: value => getContainerName(value),
+        runtimeInfo: () => getRuntimeInfo(),
+        daemonRunning: () => isDockerRunning(),
+        runtimeVersion: () => spawnSync(runtimeCli(),
+            ["version", "--format", "{{.Server.Version}}"], { encoding: "utf-8" }),
+        imageExists: () => isImageExists(),
+        imageLabel: () => getImageLabel("ccc", "cli.version"),
+        get cliVersion() { return CLI_VERSION; },
+        containerRunning: name => isContainerRunning(name),
+        containerExists: name => isContainerExists(name),
+        identityMiseVolumeName: () => getIdentityMiseVolumeName(resolveContainerIdentity()),
+        inspectMiseVolume: name => spawnSync(runtimeCli(),
+            ["volume", "inspect", name, "--format", "{{.Mountpoint}}"],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }),
+        observeActiveSessions: id => observeActiveSessionsForContainer(id),
+        captureLocksDirectory: () => {
+            const directory = sessionLocksDir();
+            return {
+                exists: () => existsSync(directory),
+                readNames: () => readdirSync(directory),
+            };
+        },
+        runtimeCli: () => runtimeCli(),
+        claudeLauncherReport: name => spawnSync(runtimeCli(),
+            ["exec", name, "sh", "-c", buildClaudeLauncherReportCommand(CLAUDE_BIN_PATH)],
+            { encoding: "utf-8", timeout: 10000 }),
+        capturePublication: () => {
+            const receiver = console;
+            const publication = receiver.log;
+            return text => {
+                Reflect.apply(publication, receiver, [text]);
+                return undefined;
+            };
+        },
+        get sanitizeForTerminal() {
+            const sanitize = sanitizeForTerminal;
+            return message => sanitize(message);
+        },
+    })(projectPath);
 }
