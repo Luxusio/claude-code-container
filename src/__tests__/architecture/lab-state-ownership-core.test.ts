@@ -84,7 +84,7 @@ describe("Lab ownership inward policy", () => {
     });
     it.each(["list", "users", "account"] as const)("short-circuits %s error before status/output", stage => {
         const f = fixture(), reads: string[] = [];
-        const result = { get error() { reads.push("error"); return { code: "unknown" }; }, get status() { throw new Error("status must not be observed"); }, get stdout() { throw new Error("stdout must not be observed"); } };
+        const result = { get error() { reads.push("error"); return { code: "unknown" }; }, get status(): never { throw new Error("status must not be observed"); }, get stdout(): never { throw new Error("stdout must not be observed"); } };
         if (stage === "list") f.ports.listVolumeNames = () => result;
         if (stage === "users") f.ports.observeVolumeUsers = () => result;
         if (stage === "account") f.ports.observePreviousAccount = () => result;
@@ -94,13 +94,13 @@ describe("Lab ownership inward policy", () => {
     });
     it.each([null, 1, 124, 137])( "rejects list status %s before reading output", status => {
         const f = fixture();
-        f.ports.listVolumeNames = () => ({ status, get stdout() { throw new Error("must not observe stdout"); } });
+        f.ports.listVolumeNames = () => ({ status, get stdout(): never { throw new Error("must not observe stdout"); } });
         expect(() => f.app.run(volume, "current", principal)).toThrow("Unable to inspect lab state volumes.");
         expect(f.ports.observeVolumeUsers).not.toHaveBeenCalled();
     });
     it.each([null, 1, 124, 137])("rejects user status %s before output/capture", status => {
         const f = fixture();
-        f.ports.observeVolumeUsers = () => ({ status, get stdout() { throw new Error("must not observe stdout"); } });
+        f.ports.observeVolumeUsers = () => ({ status, get stdout(): never { throw new Error("must not observe stdout"); } });
         expect(() => f.app.run(volume, "current", principal)).toThrow("may be in use");
         expect(f.ports.captureHelperScope).not.toHaveBeenCalled();
     });
@@ -156,13 +156,13 @@ describe("Lab ownership inward policy", () => {
         expect(f.ports.applyOwnership).toHaveBeenCalledWith(f.scope, volume, "normalized:current", principal, { kind: "migrate", oldUid: uid, oldGid: gid });
     });
     it.each([null, 1, 124, 137])("rejects failed old-account status %s without output or writes", status => {
-        const f = fixture(); f.ports.observePreviousAccount = () => ({ status, get stdout() { throw new Error("must not read output"); } });
+        const f = fixture(); f.ports.observePreviousAccount = () => ({ status, get stdout(): never { throw new Error("must not read output"); } });
         expect(() => f.app.run(volume, "current", principal, "previous")).toThrow("Cannot establish previous lab state owner");
         expect(f.ports.applyOwnership).not.toHaveBeenCalled();
     });
     it("consumes final raw error before status, retaining native observation getters", () => {
         const f = fixture(), reads: string[] = [];
-        f.ports.applyOwnership = () => ({ get error() { reads.push("error"); return { code: "timeout" }; }, get status() { throw new Error("must not read status"); } });
+        f.ports.applyOwnership = () => ({ get error() { reads.push("error"); return { code: "timeout" }; }, get status(): never { throw new Error("must not read status"); } });
         expect(() => f.app.run(volume, "current", principal)).toThrow("Existing data was retained; repair its ownership before retrying.");
         expect(reads).toEqual(["error"]);
     });
@@ -172,7 +172,7 @@ describe("Lab ownership inward policy", () => {
     });
     it.each(["error", "status"] as const)("preserves thrown final %s getter identity", field => {
         const f = fixture(), failure = Symbol(field), reads: string[] = [];
-        f.ports.applyOwnership = () => ({ get error() { reads.push("error"); if (field === "error") throw failure; return undefined; }, get status() { reads.push("status"); throw failure; } });
+        f.ports.applyOwnership = () => ({ get error() { reads.push("error"); if (field === "error") throw failure; return undefined; }, get status(): never { reads.push("status"); throw failure; } });
         expect(thrown(() => f.app.run(volume, "current", principal))).toBe(failure);
         expect(reads).toEqual(field === "error" ? ["error"] : ["error", "status"]);
     });
