@@ -3,6 +3,7 @@ import { lstatSync, realpathSync } from "fs";
 import { dirname, isAbsolute, sep } from "path";
 import { getCodexDir } from "./utils.js";
 import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
+import { createCodexStateOwnershipMigration } from "./application/credentials/codex-state-ownership.js";
 import { normalizeImageId, type ContainerIdentity } from "./container-identity.js";
 
 interface Mount { Type?: string; Source?: string; Destination?: string }
@@ -108,78 +109,34 @@ finally:
         os.close(fd)
 `;
 
-function assertTrustedRoot(CODEX_DIR: string, uid: number, gid: number): { dev: string; ino: string } {
-    let identity: { dev: string; ino: string } | undefined;
-    // Inspect every ancestor: realpath alone would silently follow a substituted symlink.
-    for (let path = CODEX_DIR; ; path = dirname(path)) {
-        const s = lstatSync(path, { bigint: true });
-        if (s.mode & 0o022n) {
-            throw new Error(`Unsafe Codex state directory: ${path}. Remove group/other write permissions on this directory before retrying.`);
-        }
-        if (!s.isDirectory() || s.isSymbolicLink() || (s.uid !== BigInt(uid) && s.uid !== 0n)) {
-            throw new Error(`Unsafe Codex state directory or ancestor: ${path}`);
-        }
-        if ((path === CODEX_DIR || path === dirname(CODEX_DIR)) && (s.uid !== BigInt(uid) || s.gid !== BigInt(gid))) {
-            throw new Error(`Codex state directory must belong to the host user: ${path}`);
-        }
-        if (path === CODEX_DIR) identity = { dev: String(s.dev), ino: String(s.ino) };
-        if (dirname(path) === path) break;
-    }
-    return identity!;
-}
-
-function assertNoActiveUsers(CODEX_DIR: string): void {
-    const ids = checked(["ps", "-q"]).split(/\s+/).filter(Boolean);
-    if (!ids.length) return;
-    const inspected: Array<{ Id?: string; Mounts?: Mount[] }> = JSON.parse(checked(["inspect", ...ids]));
-    if (!Array.isArray(inspected) || inspected.length !== ids.length) throw new Error("Cannot inspect active Codex state users.");
-    for (const container of inspected) {
-        if (!Array.isArray(container.Mounts)) throw new Error("Cannot inspect active container mounts.");
-        for (const mount of container.Mounts) {
-            if (mount.Type !== "bind") continue;
-            if (!mount.Source || !isAbsolute(mount.Source)) throw new Error("Cannot resolve active container bind source.");
-            let source: string;
-            try { source = realpathSync(mount.Source); }
-            catch { throw new Error(`Cannot resolve active container bind source: ${mount.Source}`); }
-            if (source === CODEX_DIR || source.startsWith(CODEX_DIR + sep) || CODEX_DIR.startsWith(source.endsWith(sep) ? source : source + sep)) {
-                throw new Error(`Codex state is in use by container ${container.Id || "unknown"}. Stop its users before retrying.`);
-            }
-        }
-    }
-}
+const ownershipMigration = createCodexStateOwnershipMigration({
+    managedRoot: getCodexDir,
+    nestedContainerMarker: () => process.env.container,
+    runtime: getRuntimeInfo,
+    platform: () => process.platform,
+    effectiveUid: () => process.geteuid?.(),
+    effectiveGid: () => process.getegid?.(),
+    normalizeImage: normalizeImageId,
+    previousAccount: image => checked(["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", image,
+        "-c", 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"']),
+    directory: path => lstatSync(path, { bigint: true }),
+    parent: dirname,
+    activeIds: () => checked(["ps", "-q"]),
+    inspectActive: ids => checked(["inspect", ...ids]),
+    isAbsolute,
+    realpath: realpathSync,
+    separator: sep,
+    migrate: (root, image, oldUid, oldGid, newUid, newGid, receipt) => {
+        checked(["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${root},dst=/state`,
+            "--entrypoint", "python3", image, "-c", codexStateMigrationScript,
+            "/state", oldUid, oldGid, newUid, newGid, receipt.dev, receipt.ino]);
+        return undefined;
+    },
+});
 
 /** Caller holds the global startup lock until the replacement container has started. */
 export function prepareCodexStateOwnership(previous: PreviousContainer, imageId: string, identity: ContainerIdentity, profile?: string, proveSource?: (source: string) => boolean): void {
-    const CODEX_DIR = getCodexDir(profile);
-    if (identity.mapping !== "host" || process.env.container === "docker") return;
-    const runtime = getRuntimeInfo();
-    if (runtime.rootless || runtime.flavor === "podman-machine" || process.platform !== "linux" ||
-        identity.uid !== process.geteuid?.() || identity.gid !== process.getegid?.()) {
-        throw new Error("Unsupported host mapping for Codex state migration.");
-    }
-    const mounts = previous.Mounts?.filter(m => m.Destination === "/home/ccc/.codex") || [];
-    if (!mounts.length) return; // The previous container never mounted this managed store.
-    if (mounts.length !== 1 || mounts[0].Type !== "bind" || (mounts[0].Source !== CODEX_DIR && (!mounts[0].Source || !proveSource?.(mounts[0].Source)))) {
-        throw new Error("Cannot prove the previous container used the exact CCC-managed Codex state directory.");
-    }
-    const previousImage = normalizeImageId(previous.Image || "");
-    const ids = checked(["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", previousImage,
-        "-c", 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"']);
-    const match = /^(\d+):(\d+)$/.exec(ids);
-    if (!match || match.slice(1).some(id => Number(id) <= 0 || Number(id) >= 4294967295)) {
-        throw new Error("Cannot establish previous ccc UID/GID for Codex state migration.");
-    }
-    const [oldUid, oldGid] = match.slice(1).map(Number);
-    if (oldUid === identity.uid && oldGid === identity.gid) return;
-    const rootIdentity = assertTrustedRoot(CODEX_DIR, identity.uid, identity.gid);
-    assertNoActiveUsers(CODEX_DIR);
-    const rechecked = assertTrustedRoot(CODEX_DIR, identity.uid, identity.gid);
-    if (rechecked.dev !== rootIdentity.dev || rechecked.ino !== rootIdentity.ino) {
-        throw new Error("Codex state root changed before helper startup. Retry after stopping its writers.");
-    }
-    checked(["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${CODEX_DIR},dst=/state`,
-        "--entrypoint", "python3", normalizeImageId(imageId), "-c", codexStateMigrationScript,
-        "/state", String(oldUid), String(oldGid), String(identity.uid), String(identity.gid), rootIdentity.dev, rootIdentity.ino]);
+    ownershipMigration.run(previous, imageId, identity, profile, proveSource);
 }
 
 export const codexStateAccessScript = String.raw`
