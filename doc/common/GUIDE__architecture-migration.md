@@ -1,10 +1,14 @@
 # Implementing the CCC architecture migration
 
-The complete Claude/npm/bubblewrap/uv installation policy cutover is in progress.
+The complete Claude/npm/bubblewrap/uv installation policy cutover has passed local verification.
 The [container installation guide](../tooling/GUIDE__container-installation.md)
 requires native callee capture and unchanged assets, runtime selection and
-installation authority. Implementation and focused checks passed; independent review and full QA
-remain pending.
+installation authority. Independent code/security/docs review, 10,566 passing
+full tests (151 skipped), five typechecks, lint, both shipping forms and guarded
+CLI checks passed. The first full run's broker wait-budget failure remains
+recorded with a separate diagnostic follow-up; no test limits were changed.
+Remaining M11-M14 and native acceptance stay separate. CI and push require
+explicit authorization under the current user restriction.
 
 Home resolution and configuration policy extraction is accepted. The
 [home resolution guide](../home/GUIDE__resolution-and-config.md) specifies complete

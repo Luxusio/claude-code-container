@@ -29,6 +29,11 @@ consumers. New core/native tests cover every branch, stage failure, getter order
 metadata identity, live versus pinned runtime and callee/receiver capture. Never
 use real installation, providers, network or credential material as fixtures.
 
+The shipped-payload checks also replace native spawn during installation metadata
+evaluation and replace the logger during message interpolation. They assert the
+previously selected function and receiver are used, then prove later captures see
+the replacement. Restore property descriptors and native bindings in `finally`.
+
 ## Local verification and CI cost
 
 For this architecture migration, use local independent review and QA. Start or
