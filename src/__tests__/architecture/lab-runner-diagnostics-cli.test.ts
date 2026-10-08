@@ -8,7 +8,7 @@ const root = resolve(import.meta.dirname, "../../..");
 const compile = (text: string) => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 
 describe("actual main labs binding under pre-import deny fences", () => {
-    it.each([[], ["status"], ["doctor"], ["smoke"], ["invalid"]])("routes %j into compiled current facade and exits its result", async args => {
+    it.each([{args: [] as string[]}, {args: ["status"]}, {args: ["doctor"]}, {args: ["smoke"]}, {args: ["invalid"]}])("routes $args into compiled current facade and exits its result", async ({args}) => {
         const attempts: string[] = [], output: string[] = [], errors: string[] = [], admitted: string[] = [];
         const exitSignal = {};
         let exit: number | undefined;
