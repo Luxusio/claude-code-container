@@ -39,6 +39,17 @@ replacement and raw failures; facade tests pin actual argv/options and the publi
 entry. Strict contract tests reject missing, noncallable and asynchronous ports.
 The recursive architecture boundary guard covers all three inward files.
 
+The portable candidate checks on 2026-10-08 completed one full build and fresh
+assembly, 139 tests across those three suites, retained-state fixtures and the
+boundary guard, and 474 existing Docker/startup/identity caller tests. Actual npm
+tar extraction and `materializeUnixInstallPayload` consumers each compared 47
+compiled baseline/current cases, including successful single-helper dispatch,
+two full ancestor traversals, refusal, getter failures and exact argv/options.
+Both consumed declarations with `skipLibCheck: false`; the original public
+facade declaration is byte-identical. Their runner is fenced and no live runtime
+or user credential store is accessed. Source checks are not an independent
+review, QA attestation or full migration completion claim.
+
 ## Known ceiling
 
 Portable tests and private Python fixtures do not prove live Docker or Podman
