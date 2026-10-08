@@ -825,12 +825,6 @@ async function exec(
         ["MISE_TRUSTED_CONFIG_PATHS", projectMountPath],
     ];
 
-    // Limit default Rust compiler concurrency for every session, including reused containers.
-    if (!envEntries.some(([key]) => key === "CARGO_BUILD_JOBS")
-        && !Object.prototype.hasOwnProperty.call(options.env ?? {}, "CARGO_BUILD_JOBS")) {
-        envEntries.push(["CARGO_BUILD_JOBS", "2"]);
-    }
-
     // Locale: forward host LANG/LC_* (no longer excluded).
     // If host has no LANG set, inject en_US.UTF-8 as fallback.
     if (!process.env.LANG) {

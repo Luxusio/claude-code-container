@@ -29,7 +29,7 @@ import { createContainerSessionHandoff } from "./application/container-session-h
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
-import { containerEngineFailureHint, ContainerEngineUnavailableError, containerMemoryLimit, validateContainerMemory } from "./domain/container-runtime.js";
+import { containerEngineFailureHint, ContainerEngineUnavailableError } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
 import { createOrderedCodexConfigPreparation } from "./application/credentials/codex-config-preparation.js";
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
@@ -717,7 +717,6 @@ export interface DockerRunArgsOptions {
     codexPackagesVolumeName?: string;
     identity?: ContainerUserIdentity;
     pidsLimit: string;
-    memoryLimit?: string;
     imageName: string;
     hostSshDir: string | null;
     sshAgentSocket: string | null;
@@ -792,23 +791,6 @@ function nativeContainerLaunchArguments() {
 export const CONTAINER_INIT_UNAVAILABLE_HINT = "[ccc] If the error above mentions docker-init, tini or catatonit, "
     + "the container runtime has no init binary for --init: install docker-init/tini (Docker) or catatonit (Podman).";
 
-/** Query only when composing creation args; formatting remains deterministic. */
-export function resolveNewContainerMemoryLimit(): string | undefined {
-    const override = process.env.CCC_CONTAINER_MEMORY;
-    if (override !== undefined) return validateContainerMemory(override);
-    const info = getRuntimeInfo();
-    if (info.runtime !== "docker" || !info.dockerDesktop) return undefined;
-    const result = spawnSync(runtimeCli(), ["info", "--format", "{{.MemTotal}}"], {
-        encoding: "utf-8", timeout: 5000, maxBuffer: 1024 * 1024,
-    });
-    if (result.error || result.status !== 0) {
-        const hint = containerEngineFailureHint(result.stderr);
-        if (hint) throw new ContainerEngineUnavailableError(hint);
-        return containerMemoryLimit("docker-desktop");
-    }
-    return containerMemoryLimit("docker-desktop", Number(result.stdout.trim()));
-}
-
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     // Stable hostname: derived from container name, truncated to 63 chars (RFC 1123).
     // Ensures Claude Code's --resume can find conversations after container recreation,
@@ -832,11 +814,6 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         // children are reaped instead of piling up as zombies under `tail`.
         "--init",
     ];
-
-    if (opts.memoryLimit !== undefined) {
-        const limit = validateContainerMemory(opts.memoryLimit);
-        args.push("--memory", limit, "--memory-swap", limit);
-    }
 
     // Bind mounts (runtime-aware: adds :Z on SELinux podman)
     args.push(...bindMountArgs(opts.fullPath, opts.projectMountPath));
@@ -2769,7 +2746,6 @@ function startProjectContainerLocked(
             profile,
         ),
         prepareRunArgs: () => buildDockerRunArgs({
-            memoryLimit: resolveNewContainerMemoryLimit(),
             containerName,
             fullPath,
             projectMountPath,
