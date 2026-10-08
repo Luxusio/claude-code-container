@@ -312,7 +312,7 @@
       "coveredOperationIds": [
         "OP-mcp-forward"
       ],
-      "status": "0cd28374 source code/security/QA PASS after preserving callee order and correcting fixtures; 179 focused tests including all eight actual CLI bindings; root shipping/integration pending, no whole credit"
+      "status": "0cd28374 source code/security/QA PASS after preserving callee order and correcting fixtures; 179 focused tests include eight source main() generator cases under fenced runtime, four emitted writer cases and four source parser cases; compiled parser and root shipping/integration pending, no whole credit"
     }
   ]
 }

@@ -50,7 +50,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | sandbox\-create | OP\-windows\-sandbox\-create | c9261aed source code/security/QA PASS; both direct and broker create cut over, root shipping/integration pending, no whole credit |
 | state\-access | OP\-state\-storage | 8b74ef39 generic\-read and native adapter source code/security/QA PASS; broader atomic/CAS/repository storage operation remains partial and root integration pending, no whole credit |
 | runtime\-capabilities | OP\-runtime\-capabilities | 8f97651b source code/security/QA PASS; fresh complete build and unchanged 576\-test regression evidence plus 30 affected tests and 55 compiled facade comparisons; root shipping/integration pending, no whole credit |
-| mcp\-forward | OP\-mcp\-forward | 0cd28374 source code/security/QA PASS after preserving callee order and correcting fixtures; 179 focused tests including all eight actual CLI bindings; root shipping/integration pending, no whole credit |
+| mcp\-forward | OP\-mcp\-forward | 0cd28374 source code/security/QA PASS after preserving callee order and correcting fixtures; 179 focused tests include eight source main\(\) generator cases under fenced runtime, four emitted writer cases and four source parser cases; compiled parser and root shipping/integration pending, no whole credit |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
