@@ -3868,7 +3868,7 @@ async function verifyReviewedBrokerDelivery(root, home) {
     const existsSync = (...args) => filesystem.existsSync(...args), mkdirSync = (...args) => filesystem.mkdirSync(...args);
     const readFileSync = (...args) => filesystem.readFileSync(...args), readdirSync = (...args) => filesystem.readdirSync(...args), writeFileSync = (...args) => filesystem.writeFileSync(...args);
     const {join, resolve} = await import("node:path");
-    const {pathToFileURL} = await import("node:url");
+    const {pathToFileURL, fileURLToPath} = await import("node:url");
     const privateRequest = http.request;
     const privateConnection = net.createConnection;
     const privateSocketConnect = net.Socket.prototype.connect;
@@ -3913,11 +3913,11 @@ async function verifyReviewedBrokerDelivery(root, home) {
             const selected = ["renameSync", "linkSync", "copyFileSync"].includes(name) ? args.slice(0, 2) : name === "symlinkSync" ? [args[1]] : [args[0]];
             for (const value of selected) {
                 if (typeof value === "number") continue;
-                const resolved = resolve(String(value));
+                const resolved = resolve(value instanceof URL ? fileURLToPath(value) : String(value));
                 if (![home, root].some(base => resolved === base || resolved.startsWith(base + "/"))) return refuse("filesystem:" + resolved);
             }
-            const writes = !["readFileSync", "readdirSync"].includes(name) && !(name==="openSync" && (args[1]==="r" || args[1]===fs.constants.O_RDONLY));
-            if(writes){const destination=["renameSync","linkSync","copyFileSync","symlinkSync"].includes(name)?args[1]:args[0];if(typeof destination!=="number" && resolve(String(destination))!==home && !resolve(String(destination)).startsWith(home+"/"))return refuse("filesystem-write:"+destination);}
+            const writes = !["readFileSync", "readdirSync"].includes(name) && !(name==="openSync" && (args[1]==="r" || args[1]===fs.constants.O_RDONLY || args[1]===(fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))));
+            if(writes){const destination=["renameSync","linkSync","copyFileSync","symlinkSync"].includes(name)?args[1]:args[0];if(typeof destination!=="number" && resolve(destination instanceof URL ? fileURLToPath(destination) : String(destination))!==home && !resolve(destination instanceof URL ? fileURLToPath(destination) : String(destination)).startsWith(home+"/"))return refuse("filesystem-write:"+destination);}
             return captured.apply(this, args);
         };
     }
@@ -4060,7 +4060,8 @@ async function verifyReviewedBrokerDelivery(root, home) {
         const windows = join(home, ".ccc/devices/owners", rpcOwner, "windows");
         eq((await rpc("broker.command.invoke", { ...create, dryRun: true })).status, 200);
         eq(existsSync(join(windows, "devices.json")), false);
-        const made = await rpc("broker.command.invoke", create); eq(made.status, 200);
+        const made = await rpc("broker.command.invoke", create);
+        assert.equal(made.status, 200, JSON.stringify({ consumer:"sandbox-authenticated-create", response:made, deniedEffects:nativeCalls, allocatedMetadata, allocatedConnections, allocatedServers, allocatedListeners, fixture:{platform:options.platform,providerPaths:options.providerPaths} }).slice(0,2400));
         const record = JSON.parse(readFileSync(join(windows, "devices.json"), "utf8")).devices[0];
         eq(record.createdAt, record.updatedAt); eq(record.networking, true);
         const config = readFileSync(record.configPath, "utf8"); assert.match(config, /<MemoryInMB>2048<\/MemoryInMB>/); eq((config.match(/<MappedFolder>/g) || []).length, 5);
@@ -4111,7 +4112,7 @@ async function verifyReviewedSandboxDelivery(payload) {
     const { default: fs } = await import("node:fs");
     const { default: path } = await import("node:path");
     const { syncBuiltinESMExports } = await import("node:module");
-    const { pathToFileURL } = await import("node:url");
+    const { pathToFileURL, fileURLToPath } = await import("node:url");
     const { createHash } = await import("node:crypto");
     let deniedEffects = 0, allocatedMetadata = 0, allocatedDiscovery = 0;
     const deny = () => { deniedEffects++; throw new Error("Unallocated Sandbox process/network effect"); };
@@ -4127,7 +4128,7 @@ async function verifyReviewedSandboxDelivery(payload) {
     globalThis.fetch = deny;
     const privatePath = selected => {
         if (typeof selected === "number") return true;
-        const resolved = path.resolve(String(selected));
+        const resolved = path.resolve(selected instanceof URL ? fileURLToPath(selected) : String(selected));
         return [process.env.HOME, payload].some(root => resolved === root || resolved.startsWith(root + path.sep));
     };
     for (const name of ["readFileSync", "writeFileSync", "mkdirSync", "readdirSync", "unlinkSync", "rmSync", "renameSync", "symlinkSync", "linkSync", "copyFileSync", "openSync", "chmodSync"]) {
@@ -4140,8 +4141,8 @@ async function verifyReviewedSandboxDelivery(payload) {
             }
             const paths = ["renameSync", "linkSync", "copyFileSync"].includes(name) ? args.slice(0, 2) : name === "symlinkSync" ? [args[1]] : [args[0]];
             if (!paths.every(privatePath)) return deny();
-            const writes = !["readFileSync", "readdirSync"].includes(name) && !(name==="openSync" && (args[1]==="r" || args[1]===fs.constants.O_RDONLY));
-            if(writes){const destination = ["renameSync","linkSync","copyFileSync","symlinkSync"].includes(name)?args[1]:args[0];if(typeof destination!=="number" && path.resolve(String(destination))!==process.env.HOME && !path.resolve(String(destination)).startsWith(process.env.HOME+path.sep))return deny();}
+            const writes = !["readFileSync", "readdirSync"].includes(name) && !(name==="openSync" && (args[1]==="r" || args[1]===fs.constants.O_RDONLY || args[1]===(fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))));
+            if(writes){const destination = ["renameSync","linkSync","copyFileSync","symlinkSync"].includes(name)?args[1]:args[0];if(typeof destination!=="number" && path.resolve(destination instanceof URL ? fileURLToPath(destination) : String(destination))!==process.env.HOME && !path.resolve(destination instanceof URL ? fileURLToPath(destination) : String(destination)).startsWith(process.env.HOME+path.sep))return deny();}
             return captured.apply(this, args);
         };
     }
