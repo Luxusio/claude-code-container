@@ -4986,7 +4986,7 @@ const ports:McpConfigRegenerationPorts<Claude,Codex>={
  resolveClaudeProfile:()=>c,
  readClaudeProfileDocument:binding=>{const opaque:Claude=binding;return ()=>'';},
  readHostMcpDocument:()=>undefined,
- withCodexProfileLock:<T>(profile:string|undefined,operation:()=>T):T=>operation(),
+ withCodexProfileLock:<T,>(profile:string|undefined,operation:()=>T):T=>operation(),
  prepareCodexProfile:()=>({binding:d,existingText:''}),
  publishCodexProfile:(binding,text)=>{const opaque:Codex=binding;return undefined;},
  publishClaudeProfile:(binding,text)=>{const opaque:Claude=binding;return undefined;}
@@ -5013,9 +5013,9 @@ const asyncCapability:McpConfigRegenerationPorts<Claude,Codex>['readHostMcpDocum
 // @ts-expect-error document capability acquisition remains synchronous
 const asyncRead:McpConfigRegenerationPorts<Claude,Codex>['readHostMcpDocument']=async()=>()=>'';
 // @ts-expect-error publisher must return undefined, not void
-const voidCodex:McpConfigRegenerationPorts<Claude,Codex>['publishCodexProfile']=()=>{};
+const voidCodex:McpConfigRegenerationPorts<Claude,Codex>['publishCodexProfile']=():void=>{};
 // @ts-expect-error publisher must return undefined, not void
-const voidClaude:McpConfigRegenerationPorts<Claude,Codex>['publishClaudeProfile']=()=>{};
+const voidClaude:McpConfigRegenerationPorts<Claude,Codex>['publishClaudeProfile']=():void=>{};
 // @ts-expect-error publisher remains synchronous
 const asyncCodex:McpConfigRegenerationPorts<Claude,Codex>['publishCodexProfile']=async()=>{};
 // @ts-expect-error publisher remains synchronous
