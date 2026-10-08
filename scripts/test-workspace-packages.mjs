@@ -4724,7 +4724,7 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
   const {default: fs} = await import('node:fs');
   const {default: os} = await import('node:os');
   const path = await import('node:path');
-  const {pathToFileURL} = await import('node:url');
+  const {pathToFileURL,fileURLToPath} = await import('node:url');
   const {syncBuiltinESMExports} = await import('node:module');
   const {createHash} = await import('node:crypto');
   assert.equal(os.homedir(), privateHome);
@@ -4746,32 +4746,48 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
     for(const constructor of ['Socket','Server','TLSSocket'])if(native[constructor]?.prototype)for(const name of ['connect','listen'])if(typeof native[constructor].prototype[name]==='function')replace(native[constructor].prototype,name,deny(`${module}.${constructor}.${name}`));
   }
   if (globalThis.fetch) replace(globalThis,'fetch',deny('fetch'));
-  const native = Object.fromEntries(['existsSync','readFileSync','writeFileSync','mkdirSync','openSync','unlinkSync','renameSync','rmSync','rmdirSync','symlinkSync','linkSync','chmodSync','lstatSync'].map(name=>[name,fs[name]]));
+  const native = Object.fromEntries(['existsSync','readFileSync','writeFileSync','mkdirSync','openSync','unlinkSync','renameSync','rmSync','rmdirSync','symlinkSync','linkSync','chmodSync','lstatSync','realpathSync'].map(name=>[name,fs[name]]));
   const descriptors=new Map();
-  const owned = file => {
-    if(typeof file==='number'){assert(descriptors.has(file),'unowned native descriptor');return;}
+  const owned = (file,readonly=false) => {
+    const deniedBefore=denied.length;
+    try {
+    if(typeof file==='number'){assert(descriptors.has(file),'unowned native descriptor');return owned(descriptors.get(file),readonly);}
+    if(file instanceof URL){
+      if(file.protocol!=='file:' || file.search || file.hash)return deny('invalid filesystem URL')();
+      try{file=fileURLToPath(file);}catch(error){return deny('invalid filesystem URL')();}
+    }
     assert.equal(typeof file,'string');
     const absolute = path.resolve(file);
-    if (!(absolute === privateHome || absolute.startsWith(privateHome + path.sep))) {
+    const payloadRoot=path.resolve(payload);
+    const payloadRead=readonly && absolute.startsWith(payloadRoot+path.sep);
+    if (!(absolute === privateHome || absolute.startsWith(privateHome + path.sep) || payloadRead)) {
       denied.push('filesystem-outside-private-home'); throw new Error(`MCP unowned filesystem operation: ${absolute}`);
     }
+    const root=payloadRead?payloadRoot:privateHome;
+    if(readonly){
+      const stat=native.lstatSync(absolute);
+      assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink===1,'ordinary single-link shipped read');
+      assert.equal(native.realpathSync(absolute),absolute,'shipped read must resolve exactly');
+      assert(native.lstatSync(root).isDirectory() && !native.lstatSync(root).isSymbolicLink());
+      assert.equal(native.realpathSync(root),root);
+    }
     let ancestor = absolute;
-    while (ancestor !== privateHome) {
+    while (ancestor !== root) {
       if (native.existsSync(ancestor)) assert.equal(native.lstatSync(ancestor).isSymbolicLink(), false);
       ancestor = path.dirname(ancestor);
     }
+    }catch(error){if(denied.length===deniedBefore)denied.push('filesystem-guard');throw error;}
   };
   // Real native private locks remain enabled. Payload ESM loading uses the loader's FS.
-  replace(fs,'openSync',(file,...args)=>{owned(file);const fd=native.openSync(file,...args);descriptors.set(fd,file);return fd;});
-  const nativeClose=fs.closeSync;replace(fs,'closeSync',(fd)=>{owned(fd);try{return nativeClose(fd);}finally{descriptors.delete(fd);}});
+  replace(fs,'openSync',(file,...args)=>{const readonly=args[0]==='r' || args[0]===fs.constants.O_RDONLY || args[0]===(fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW??0));owned(file,readonly);const fd=native.openSync(file,...args);descriptors.set(fd,file);return fd;});
+  const nativeClose=fs.closeSync;replace(fs,'closeSync',(fd)=>{if(!descriptors.has(fd))return deny('unowned native descriptor')();try{return nativeClose(fd);}finally{descriptors.delete(fd);}});
   for (const name of ['writeFileSync','mkdirSync','unlinkSync','rmSync','rmdirSync','chmodSync']) replace(fs,name,(file,...args)=>{owned(file);return native[name](file,...args);});
   for (const name of ['renameSync','symlinkSync','linkSync']) replace(fs,name,(from,to,...args)=>{owned(from);owned(to);return native[name](from,to,...args);});
   replace(fs,'readFileSync',(file,...args)=>{
     if(file==='/proc/sys/kernel/random/boot_id')return 'mcp-private-fixture-boot\n';
     if(file===`/proc/${process.pid}/cmdline`)return Buffer.from('node\0mcp-private-fixture\0');
     if(file===`/proc/${process.pid}/stat`)return `${process.pid} (mcp-fixture) ${Array(19).fill('0').join(' ')} 12345`;
-    if(typeof file==='string'&&path.resolve(file).startsWith(path.resolve(payload)+path.sep))return native.readFileSync(file,...args);
-    owned(file);return native.readFileSync(file,...args);
+    owned(file,true);return native.readFileSync(file,...args);
   });
   syncBuiltinESMExports();
   const parseDescriptor = Object.getOwnPropertyDescriptor(JSON,'parse');
@@ -4806,8 +4822,7 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
           Object.defineProperty(JSON,'parse',{configurable:true,writable:true,value:()=>({})});
         }
       }
-      if(typeof file==='string'&&path.resolve(file).startsWith(path.resolve(payload)+path.sep))return native.readFileSync(file,...args);
-      owned(file); return native.readFileSync(file,...args);
+      owned(file,true); return native.readFileSync(file,...args);
     });
     replace(fs,'writeFileSync',(file,text,...args)=>{
       owned(file);
