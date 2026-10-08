@@ -3872,6 +3872,8 @@ async function verifyReviewedBrokerDelivery(root, home) {
     const privateRequest = http.request;
     const privateConnection = net.createConnection;
     const privateSocketConnect = net.Socket.prototype.connect;
+    const privateCreateServer = http.createServer, privateListen = net.Server.prototype.listen;
+    let creatingFixtureServer = false, listeningFixtureServer = false, fixtureServer, allocatedServers = 0, allocatedListeners = 0;
     assert(!root.includes('/.claude/worktrees/'));
     assert(!existsSync(join(root, 'node_modules')));
     for (const key of Object.keys(process.env)) if (/^(CCC_|ANDROID_)/i.test(key)) delete process.env[key];
@@ -3880,10 +3882,24 @@ async function verifyReviewedBrokerDelivery(root, home) {
     let nativeCalls = 0, allocatedMetadata = 0, allocatedConnections = 0;
     const refuse = (...args) => { nativeCalls++; throw new Error('QA forbidden native/process/network call: '+String(args[0])); };
     for(const key of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork']) cp[key] = refuse;
-    for(const mod of [net, http, https]) for(const key of ['connect','createConnection','request','get']) if(typeof mod[key] === 'function') mod[key] = refuse;
+    for(const mod of [net, http, https]) for(const key of ['connect','createConnection','request','get','createServer']) if(typeof mod[key] === 'function') mod[key] = refuse;
     globalThis.fetch = refuse;
     process.kill = refuse;
     net.Socket.prototype.connect = refuse;
+    net.Server.prototype.listen = function (...args) {
+        if(!listeningFixtureServer || this!==fixtureServer || allocatedListeners!==0 || this.address()!==null
+            || args.length!==3 || args[0]!==0 || args[1]!=="127.0.0.1" || typeof args[2]!=="function")return refuse("unallocated listener");
+        allocatedListeners++;
+        return privateListen.apply(this,args);
+    };
+    http.createServer = (...args) => {
+        if(!creatingFixtureServer || fixtureServer || args.length!==1 || typeof args[0]!=="function")return refuse("unallocated HTTP server");
+        fixtureServer=privateCreateServer(...args); allocatedServers++;
+        return fixtureServer;
+    };
+    const udp = (await import("node:dgram")).default;
+    udp.createSocket = refuse;
+    for(const method of ["bind","send","connect"])udp.Socket.prototype[method]=refuse;
     (await import("node:tls")).default.connect = refuse;
     const fs = (await import("node:fs")).default;
     for (const name of ["readFileSync", "writeFileSync", "mkdirSync", "readdirSync", "unlinkSync", "rmSync", "renameSync", "linkSync", "symlinkSync", "copyFileSync", "openSync", "chmodSync"]) {
@@ -3988,8 +4004,19 @@ async function verifyReviewedBrokerDelivery(root, home) {
     const stateFile = join(home, ".ccc/devices/owners", rpcOwner, "android/devices.json");
     mkdirSync(join(stateFile, ".."), { recursive: true });
     writeFileSync(stateFile, JSON.stringify({ devices: [{ id: "metadata", status: "stopped", appium: { sessionId: "private-session" } }] }));
-    const server = broker.createDeviceBrokerServer({ ...options, ownerId: rpcOwner });
-    const port = await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => done(server.address().port)); });
+    let server;
+    creatingFixtureServer=true;
+    try { server=broker.createDeviceBrokerServer({ ...options, ownerId: rpcOwner }); }
+    finally { creatingFixtureServer=false; }
+    assert.equal(server,fixtureServer); assert.equal(allocatedServers,1);
+    const port = await new Promise((done, reject) => { server.once("error", reject); listeningFixtureServer=true;
+        try { server.listen(0, "127.0.0.1", () => {
+        const address=server.address();
+        if(!address || address.address!=="127.0.0.1" || address.family!=="IPv4" || !Number.isInteger(address.port) || address.port<1 || address.port>65535){try{refuse("invalid allocated listener address");}catch(error){reject(error);}return;}
+        done(address.port);
+        }); } finally { listeningFixtureServer=false; }
+    });
+    assert.equal(allocatedListeners,1);
     const privateAgent = new http.Agent({ keepAlive: false });
     privateAgent.createConnection = (connection, callback) => {
         assert.equal(connection.host, "127.0.0.1");
@@ -4073,7 +4100,7 @@ async function verifyReviewedBrokerDelivery(root, home) {
             eq(trace,mode==="mutation-throw"?["claim","config","mutate"]:["claim","rollback"]);
         }
         eq(nativeCalls, 0);
-        console.log(JSON.stringify({ consumer: "sandbox-authenticated-create", result: "PASS", layer: "compiled-RPC/compensation/native-writer", deniedEffects: nativeCalls, allocatedMetadata, allocatedConnections }));
+        console.log(JSON.stringify({ consumer: "sandbox-authenticated-create", result: "PASS", layer: "compiled-RPC/compensation/native-writer", deniedEffects: nativeCalls, allocatedMetadata, allocatedConnections, allocatedServers, allocatedListeners }));
     } finally { server.closeAllConnections(); await new Promise(done => server.close(done)); }
     console.log(JSON.stringify({ result: "PASS", checks, nativeCalls, publicRpcQueries: 8, partialAggregateCeiling: true }));
 }
@@ -4091,9 +4118,12 @@ async function verifyReviewedSandboxDelivery(payload) {
     for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) cp[name] = deny;
     process.kill = deny;
     const net = (await import("node:net")).default;
-    net.connect = net.createConnection = net.Socket.prototype.connect = deny;
+    net.connect = net.createConnection = net.createServer = net.Socket.prototype.connect = net.Server.prototype.listen = deny;
+    const udp = (await import("node:dgram")).default;
+    udp.createSocket = deny;
+    for(const method of ["bind","send","connect"])udp.Socket.prototype[method]=deny;
     (await import("node:tls")).default.connect = deny;
-    for (const protocol of ["node:http", "node:https"]) { const mod = (await import(protocol)).default; mod.request = mod.get = deny; }
+    for (const protocol of ["node:http", "node:https"]) { const mod = (await import(protocol)).default; mod.request = mod.get = mod.createServer = deny; }
     globalThis.fetch = deny;
     const privatePath = selected => {
         if (typeof selected === "number") return true;
