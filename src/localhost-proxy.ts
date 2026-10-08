@@ -8,6 +8,7 @@
 // On Linux, this is unnecessary because --network host works natively.
 
 import * as net from "net";
+import { createLocalhostProxy } from "./application/localhost-proxy.js";
 
 export const PROXY_PORT = 19999;
 const CONNECT_TIMEOUT = 3000;
@@ -43,49 +44,9 @@ export function tryConnect(host: string, port: number): Promise<net.Socket> {
  * @param hostAddr - Fallback host address (default: host.docker.internal)
  * @param hostPort - Fallback port (default: same as originalPort)
  */
-export async function proxyConnection(
-    client: net.Socket,
-    originalPort: number,
-    localAddr: string = "127.0.0.1",
-    hostAddr: string = "host.docker.internal",
-    hostPort?: number,
-): Promise<void> {
-    const fallbackPort = hostPort ?? originalPort;
-
-    // Buffer data received before upstream connects
-    const pendingData: Buffer[] = [];
-    const onData = (chunk: Buffer) => pendingData.push(chunk);
-    client.on("data", onData);
-
-    let upstream: net.Socket;
-    try {
-        // Try local first (container server)
-        upstream = await tryConnect(localAddr, originalPort);
-    } catch {
-        try {
-            // Fallback to host
-            upstream = await tryConnect(hostAddr, fallbackPort);
-        } catch {
-            // Both failed
-            client.destroy();
-            return;
-        }
-    }
-
-    // Stop buffering, flush pending data, then pipe bidirectionally
-    client.removeListener("data", onData);
-    for (const chunk of pendingData) {
-        upstream.write(chunk);
-    }
-
-    client.pipe(upstream);
-    upstream.pipe(client);
-
-    client.on("error", () => upstream.destroy());
-    upstream.on("error", () => client.destroy());
-    client.on("close", () => upstream.destroy());
-    upstream.on("close", () => client.destroy());
-}
+export const proxyConnection = createLocalhostProxy<Buffer, net.Socket>({
+    connect: (host, port) => tryConnect(host, port),
+}).proxyConnection;
 
 /**
  * Start the transparent proxy server.

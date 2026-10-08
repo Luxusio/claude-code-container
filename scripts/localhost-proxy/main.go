@@ -86,24 +86,13 @@ func pipe(a, b net.Conn) {
 
 // handleConn processes a redirected connection.
 func handleConn(client *net.TCPConn) {
-	defer client.Close()
-
-	port, err := getOriginalDstPort(client)
-	if err != nil || port == 0 {
-		return
-	}
-
-	// Try container-local first, then fall back to host
-	upstream, err := tryConnect("127.0.0.1", port)
-	if err != nil {
-		upstream, err = tryConnect("host.docker.internal", port)
-		if err != nil {
-			return
-		}
-	}
-	defer upstream.Close()
-
-	pipe(client, upstream)
+	routeProxyConnection(client, proxyRoutingPorts[*net.TCPConn, net.Conn]{
+		originalDestinationPort: getOriginalDstPort,
+		connect:                 tryConnect,
+		relay: func(client *net.TCPConn, upstream net.Conn) {
+			pipe(client, upstream)
+		},
+	})
 }
 
 func main() {

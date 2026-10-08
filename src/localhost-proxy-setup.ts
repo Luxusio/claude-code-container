@@ -14,13 +14,14 @@
 //      docker logs.
 
 import { spawnSync } from "child_process";
+import { createLocalhostProxyVerifier } from "./application/localhost-proxy-setup.js";
 import { PROXY_PORT } from "./localhost-proxy.js";
 import { runtimeCli, isContainerHostRemote } from "./container-runtime.js";
 import { detectHostNetworkReach } from "./network-reach.js";
 
 const STEP_TIMEOUT_MS = 5_000;
 
-function isProxyRunning(containerName: string): boolean {
+function observeProxyListener(containerName: string) {
     // Inspect the kernel socket table without ss or a TCP connection: probing
     // the transparent proxy's own port can make it forward back into itself.
     const address = `0100007F:${PROXY_PORT.toString(16).toUpperCase().padStart(4, "0")}`;
@@ -33,30 +34,24 @@ function isProxyRunning(containerName: string): boolean {
         ["exec", containerName, "bash", "-c", script],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
     );
-    return !result.error && result.status === 0;
+    return result;
 }
 
 export function setupLocalhostProxy(containerName: string): void {
-    if (process.platform === "linux" && !isContainerHostRemote()) {
-        return;
-    }
-
-    const reach = detectHostNetworkReach(containerName, { timeoutMs: 1500 });
-    if (reach.reachable) {
-        if (process.env.DEBUG) {
-            console.error(
-                `[ccc] host loopback reachable from container (${reach.latencyMs}ms) — proxy not needed`,
-            );
-        }
-        return;
-    }
-
-    if (!isProxyRunning(containerName)) {
-        console.warn(
-            `[ccc] WARNING: localhost proxy daemon not detected — host port access may fail.`,
-        );
-        console.warn(
-            `[ccc]   check \`${runtimeCli()} logs ${containerName}\` for entrypoint errors.`,
-        );
-    }
+    createLocalhostProxyVerifier({
+        platform: () => process.platform,
+        containerHostRemote: () => isContainerHostRemote(),
+        directReach: (container, timeoutMs) => detectHostNetworkReach(container, {timeoutMs}),
+        proxyListenerObservation: container => observeProxyListener(container),
+        debugFlag: () => process.env.DEBUG,
+        runtimeName: () => runtimeCli(),
+        get reportDebug() {
+            const report = console.error;
+            return (message: string): undefined => { report.call(console, message); return undefined; };
+        },
+        get reportWarning() {
+            const report = console.warn;
+            return (message: string): undefined => { report.call(console, message); return undefined; };
+        },
+    }).setup(containerName);
 }
