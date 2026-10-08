@@ -256,9 +256,20 @@ describe("actual frozen versus current MCP facade", () => {
         expect(result.thrown).toEqual({ name: "RangeError", message: "post-await-lookup" });
         expect(result.calls).toHaveLength(1);
     });
-    it.each([undefined, null, false, 0, "", true, 1, "stop"])("preserves actual stopOnError truthiness %j", async stopOnError => {
+    it.each([false, true])("preserves public boolean stopOnError %s", async stopOnError => {
         const result = await paired(() => ({ ...shared, stopOnError, steps: [{ ...step(), name: undefined }, step()] }));
-        expect(result.calls).toHaveLength(stopOnError === undefined || !!stopOnError ? 0 : 1);
+        expect(result.calls).toHaveLength(stopOnError ? 0 : 1);
+    });
+    it("defaults to stopping when the public stopOnError property is omitted", async () => {
+        const result = await paired(() => ({ ...shared, steps: [{ ...step(), name: undefined }, step()] }));
+        expect(result.calls).toHaveLength(0);
+        expect(JSON.parse(result.response.content[0].text)).toMatchObject({ ok: false, stoppedAt: 0 });
+    });
+    it.each([undefined, null, 0, "", 1, "stop"])("rejects own public nonboolean stopOnError %j before dispatch", async stopOnError => {
+        const result = await paired(() => ({ ...shared, stopOnError, steps: [step()] }));
+        expect(result.calls).toHaveLength(0);
+        expect(result.scopes).toBe(0);
+        expect(JSON.parse(result.response.content[0].text)).toEqual({ ok: false, error: "run_flow stopOnError must be a boolean" });
     });
     it.each([[false, false], [false, true], [true, false], [true, true]] as const)("retains raw failure and ordered native/binary content (detail=%s stop=%s)", async (detail, stopOnError) => {
         const result = await paired(() => {
