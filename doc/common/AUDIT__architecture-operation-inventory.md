@@ -8,10 +8,13 @@ review found missing observation routes, stale authority/reference records and
 an incomplete operation previously counted as migrated. No complete required
 TODO denominator or architecture implementation percentage is certified.
 
-The discovered rows currently contain 31 migrated, 16 partial and 166 pending
-items. The 213 discovered rows are a candidate set, not the complete required
-total. Missing operation proposals and binding corrections remain to be merged
-and reviewed; these counts must not be used as the overall progress fraction.
+The discovered rows currently contain 31 migrated, 16 partial and 172 pending
+items. The 219 discovered rows are a candidate set, not the complete required
+total. The nine review corrections have been applied locally and await independent
+re-review; these counts must not be used as the overall progress fraction.
+Current implementation scope is Codex and Claude; the retained OpenCode candidate
+is excluded. Unmerged source candidates and non-attesting review/QA results do
+not update this baseline's accepted numerator.
 
 This is an unweighted count of operation cutovers, not an estimate of remaining
 effort or overall Goal acceptance. A small installation policy and a large
@@ -29,9 +32,9 @@ accounting; they do not certify native execution or the completed architecture.
 | M04 | 4 | 0 | 1 | 3 |
 | M05 | 15 | 0 | 0 | 15 |
 | M06 | 14 | 0 | 0 | 14 |
-| M07 | 23 | 0 | 10 | 13 |
+| M07 | 26 | 0 | 10 | 16 |
 | M08 | 76 | 0 | 1 | 75 |
-| M09 | 1 | 0 | 0 | 1 |
+| M09 | 4 | 0 | 0 | 4 |
 | M10 | 14 | 8 | 2 | 4 |
 | M11 | 34 | 23 | 1 | 10 |
 | M12 | 16 | 0 | 0 | 16 |

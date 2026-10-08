@@ -1,5 +1,19 @@
 # Implementing the CCC architecture migration
 
+## Current tool scope
+
+The user clarified on 2026-10-08 that the current supported AI tools are **Codex
+and Claude only**. OpenCode is excluded from current architecture implementation
+and acceptance work. Existing code/catalog entries do not authorize work on an
+additional tool. Shared container, session, workspace and Device Lab operations
+remain relevant to Codex and Claude; do not remove legacy tool behavior without
+a separate request.
+
+The user resumed all remaining architecture work with maximum safe parallelism
+on 2026-10-08. The unmerged OpenCode extraction candidate is retained separately
+and must not be integrated or continued unless the user explicitly restores that
+scope. Use Codex/Claude scope rather than the older full tool catalog.
+
 ## Counting migration progress
 
 Use the [operation inventory audit](AUDIT__architecture-operation-inventory.md)
@@ -23,9 +37,9 @@ progress inventory. Follow the dependency graph in the
 [migration plan](PLAN__ccc-architecture-migration.md).
 
 The next proposed independent wave is runtime launch-argument/mount policy
-(`src/container-runtime.ts`, `src/docker.ts`), workspace create/remove admission
-(`src/worktree.ts`), and OpenCode data-access preparation
-(`src/opencode-data-access.ts`). These are pending operations or pending parts
+(`src/container-runtime.ts`, `src/docker.ts`) and workspace create/remove admission
+(`src/worktree.ts`). OpenCode data-access preparation is excluded by the current
+user scope. These are pending operations or pending parts
 of previously bounded cutovers, not rewrites of completed policy. Preserve
 public signatures, command and environment observation order, native scripts,
 state/lock authority and failure behavior. Exact new module/test/guide scopes
