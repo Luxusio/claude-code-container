@@ -21,11 +21,15 @@ const excluded = new Set(progress.excludedOperationIds);
 if (excluded.size !== 1 || progress.excludedOperationIds.length !== 1 || !excluded.has("OP-opencode-data-access-preparation")) throw Error("Only the authorized OpenCode operation may be excluded");
 const candidates = new Map();
 for (const lane of progress.lanes) {
-    if (typeof lane.commit !== "string" || !/^[a-f0-9]{40}$/.test(lane.commit) || lane.integration !== "pending") throw Error("Invalid candidate provenance: " + lane.id);
+    if (typeof lane.commit !== "string" || !/^[a-f0-9]{40}$/.test(lane.commit)
+        || !["pending", "accepted"].includes(lane.integration)
+        || (lane.integration === "accepted"
+            ? typeof lane.acceptedIntegrationCommit !== "string" || !/^[a-f0-9]{40}$/.test(lane.acceptedIntegrationCommit)
+            : lane.acceptedIntegrationCommit !== undefined)) throw Error("Invalid candidate provenance: " + lane.id);
     for (const [ids, status] of [[lane.wholeOperationIds, "candidate"], [lane.partialOperationIds, "partial"]]) {
         for (const id of ids) {
             if (!items.has(id) || excluded.has(id) || candidates.has(id) || items.get(id).implementationStatus === "migrated") throw Error("Invalid/duplicate candidate operation: " + id);
-            candidates.set(id, { status, lane });
+            candidates.set(id, { status: status === "candidate" && lane.integration === "accepted" ? "integrated" : status, lane });
         }
     }
 }
@@ -37,6 +41,7 @@ const counts = { integrated: 0, candidate: 0, partial: 0, todo: 0, excluded: 0 }
 for (const item of items.values()) counts[statusFor(item)]++;
 const total = items.size - counts.excluded;
 const implemented = counts.integrated + counts.candidate;
+const baselineIntegrated = [...items.values()].filter(item => !excluded.has(item.id) && item.implementationStatus === "migrated").length;
 const percent = count => (100 * count / total).toFixed(1);
 const cell = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
     .replace(/[\\`*_{}\[\]()#+.!|~\-]/g, "\\$&").replace(/[\r\n]+/g, " ");
@@ -45,15 +50,15 @@ const label = { integrated: "integrated", candidate: "implemented candidate", pa
 const out = ["# Architecture work breakdown and progress", "", `Updated: ${cell(progress.updatedAt)}. Source baseline: \`${inventory.baselineCommit}\`.`, "", "Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).", "",
     `Known in-scope implementation TODOs: **${total}** (${items.size} inventoried, ${counts.excluded} explicitly excluded).`,
     `Implemented including unmerged candidates: **${implemented}/${total} (${percent(implemented)}%)**.`,
-    `Integrated baseline: **${counts.integrated}/${total} (${percent(counts.integrated)}%)**. Candidates: **${counts.candidate}**; partial: **${counts.partial}**; TODO: **${counts.todo}**.`, "",
+    `Integrated source: **${counts.integrated}/${total} (${percent(counts.integrated)}%)**; historical baseline: **${baselineIntegrated}**. Candidates: **${counts.candidate}**; partial: **${counts.partial}**; TODO: **${counts.todo}**.`, "",
     "These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.", "",
     "## 0. Tracking and update rules", "",
     "- One stable OP id counts once; helper files, ports, aliases and equivalent executor bindings do not add TODOs.",
     "- `[x]` means implemented in the recorded baseline or candidate; the status label distinguishes integration. `[ ]` means partial or unimplemented.",
-    "- Update the overlay when a candidate, review or scope changes. After integration, refresh the source inventory baseline/statuses and remove the integrated lane from the candidate overlay; then run `node scripts/render-architecture-progress.mjs`.",
+    "- Update the overlay when a candidate, review or scope changes. Preserve historical inventory anchors. After verified source integration and local delivery, mark the lane accepted with its immutable acceptedIntegrationCommit; then run `node scripts/render-architecture-progress.mjs`. Partial bindings remain partial. A fresh inventory baseline is a separate validated refresh.",
     "- Keep code implementation, review/QA, integration and native/reliability acceptance separate. Missing hook receipts never become a formal close PASS.",
     "- Never launch hosted CI, workflow reruns or pushes without explicit user authorization.", "", "## 0.1 Current candidate lanes", "", "| Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |", "| --- | ---: | ---: | --- | --- | --- |"];
-for (const lane of progress.lanes) out.push(`| ${cell(lane.id)} | ${lane.wholeOperationIds.length} | ${lane.partialOperationIds.length} | \`${lane.commit.slice(0, 8)}\` | ${cell(lane.codeReview)} | ${cell(lane.integration)} |`);
+for (const lane of progress.lanes) out.push(`| ${cell(lane.id)} | ${lane.wholeOperationIds.length} | ${lane.partialOperationIds.length} | \`${lane.commit.slice(0, 8)}\` | ${cell(lane.codeReview)} | ${cell(lane.integration)}${lane.integration === "accepted" ? ` @ ${lane.acceptedIntegrationCommit.slice(0, 8)}` : ""} |`);
 out.push("", "## 0.2 Active next plans", "", "| Lane | Operation ids | State |", "| --- | --- | --- |");
 for (const lane of progress.planningLanes) out.push(`| ${cell(lane.id)} | ${cell(lane.coveredOperationIds.join(", "))} | ${cell(lane.status)} |`);
 for (let index = 0; index < names.length; index++) {

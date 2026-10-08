@@ -6,7 +6,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
 Implemented including unmerged candidates: **46/218 (21.1%)**.
-Integrated baseline: **31/218 (14.2%)**. Candidates: **15**; partial: **18**; TODO: **154**.
+Integrated source: **31/218 (14.2%)**; historical baseline: **31**. Candidates: **15**; partial: **18**; TODO: **154**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -14,7 +14,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 
 - One stable OP id counts once; helper files, ports, aliases and equivalent executor bindings do not add TODOs.
 - `[x]` means implemented in the recorded baseline or candidate; the status label distinguishes integration. `[ ]` means partial or unimplemented.
-- Update the overlay when a candidate, review or scope changes. After integration, refresh the source inventory baseline/statuses and remove the integrated lane from the candidate overlay; then run `node scripts/render-architecture-progress.mjs`.
+- Update the overlay when a candidate, review or scope changes. Preserve historical inventory anchors. After verified source integration and local delivery, mark the lane accepted with its immutable acceptedIntegrationCommit; then run `node scripts/render-architecture-progress.mjs`. Partial bindings remain partial. A fresh inventory baseline is a separate validated refresh.
 - Keep code implementation, review/QA, integration and native/reliability acceptance separate. Missing hook receipts never become a formal close PASS.
 - Never launch hosted CI, workflow reruns or pushes without explicit user authorization.
 
