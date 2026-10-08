@@ -241,7 +241,7 @@ describe("public Docker session handoff through the real application", () => {
             // Restart rechecks its captured stopped ID before start. This early
             // fence must not become a callback-dependent final identity probe.
             expect(inspections[0]).toEqual(["fixture-runtime", ["inspect", id, "--format", "{{.Id}}|{{.State.Running}}"],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }]);
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }]);
             const startCall = native.spawn.mock.calls.find(call => call[1][0] === "start");
             expect(startCall?.[1]).toEqual(["start", id]);
             expect(native.spawn.mock.calls.indexOf(inspections[0])).toBeLessThan(native.spawn.mock.calls.indexOf(startCall!));
