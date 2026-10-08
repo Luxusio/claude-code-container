@@ -6,11 +6,12 @@ export function buildCodexResumeRecoveryCommand(command: readonly string[]): str
     const selected = selectCodexResumeRecovery(command);
     if (!selected.eligible) return selected.command;
     const plan = selected.plan;
+    const unchanged = plan.command;
     try {
         const runtime = readFileSync(new URL("../dist/codex-resume-runtime.cjs", import.meta.url), "utf8");
         return ["node", "-e", runtime, "--", JSON.stringify(plan)];
     } catch {
         console.error("[ccc] Automatic resume recovery is unavailable; rebuild or reinstall CCC.");
-        return plan.command;
+        return unchanged;
     }
 }
