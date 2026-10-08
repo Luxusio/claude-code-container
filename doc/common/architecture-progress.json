@@ -175,6 +175,48 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
+    },
+    {
+      "id": "destructive-admission",
+      "branch": "refactor/architecture-destructive-admission-20261008",
+      "commit": "b94cb28d087c8c5d35c26b912baf97b6fdc46cb1",
+      "taskId": "TASK__architecture-destructive-admission",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-device-destructive-admission"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security and combined portable QA actual PASS; formal hook attestation pending",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "device-flow",
+      "branch": "refactor/architecture-device-flow-20261008",
+      "commit": "d5b9bfe282f2cca0f077d4a6e1c7721abeefa7e7",
+      "taskId": "TASK__architecture-device-flow",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-device-flow"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security and combined portable QA actual PASS; formal hook attestation pending",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "container-identity-image",
+      "branch": "refactor/architecture-container-identity-image-20261008",
+      "commit": "4be2ab3afcbc98dccb73346e228aae526cbe6c27",
+      "taskId": "TASK__architecture-container-identity-image",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-container-identity-image"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security and combined portable QA actual PASS; formal hook attestation pending",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
     }
   ],
   "planningLanes": [
@@ -219,7 +261,7 @@
       "coveredOperationIds": [
         "OP-device-destructive-admission"
       ],
-      "status": "2ba3bcfd source candidate code/security PASS; focused QA and next-wave artifact acceptance pending, no operation credit"
+      "status": "b94cb28d source and both shipping forms verified; combined code/security/portable QA PASS at68e062b0; local feature delivery pending, no native acceptance"
     },
     {
       "id": "device-flow",
@@ -227,7 +269,7 @@
       "coveredOperationIds": [
         "OP-device-flow"
       ],
-      "status": "6b50b7aa source candidate with actual facade witness remediation; affected review and QA pending, no operation credit"
+      "status": "d5b9bfe2 source and both shipping forms verified; combined code/security/portable QA PASS at68e062b0; local feature delivery pending, no native acceptance"
     },
     {
       "id": "container-identity-image",
@@ -235,7 +277,39 @@
       "coveredOperationIds": [
         "OP-container-identity-image"
       ],
-      "status": "cf8b4306 source candidate code/security PASS; focused QA and next-wave artifact acceptance pending, no operation credit"
+      "status": "4be2ab3a source and both shipping forms verified; combined code/security/portable QA PASS at68e062b0; local feature delivery pending, no native acceptance"
+    },
+    {
+      "id": "sandbox-create",
+      "taskId": "TASK__architecture-sandbox-create",
+      "coveredOperationIds": [
+        "OP-windows-sandbox-create"
+      ],
+      "status": "c9261aed source code/security/QA PASS; both direct and broker create cut over, root shipping/integration pending, no whole credit"
+    },
+    {
+      "id": "state-access",
+      "taskId": "TASK__architecture-state-access",
+      "coveredOperationIds": [
+        "OP-state-storage"
+      ],
+      "status": "8b74ef39 generic-read and native adapter source code/security/QA PASS; broader atomic/CAS/repository storage operation remains partial and root integration pending, no whole credit"
+    },
+    {
+      "id": "runtime-capabilities",
+      "taskId": "TASK__architecture-runtime-capabilities-plan",
+      "coveredOperationIds": [
+        "OP-runtime-capabilities"
+      ],
+      "status": "5d5c0d67 source code/security PASS and independent 55-case comparison; fresh build/regression QA and root shipping/integration pending, no whole credit"
+    },
+    {
+      "id": "mcp-forward",
+      "taskId": "TASK__architecture-mcp-forward",
+      "coveredOperationIds": [
+        "OP-mcp-forward"
+      ],
+      "status": "0f4d1340 source affected code/security PASS after preserving parser/writer evaluation order; independent 31-case comparison, fresh build/regression QA and root shipping/integration pending, no whole credit"
     }
   ]
 }

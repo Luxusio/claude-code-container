@@ -5,8 +5,8 @@ Updated: 2026\-10\-09. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **52/218 (23.9%)**.
-Integrated source: **52/218 (23.9%)**; historical baseline: **31**. Candidates: **0**; partial: **19**; TODO: **147**.
+Implemented including unmerged candidates: **55/218 (25.2%)**.
+Integrated source: **52/218 (23.9%)**; historical baseline: **31**. Candidates: **3**; partial: **19**; TODO: **144**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -32,6 +32,9 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | codex\-state\-ownership | 1 | 0 | `912ec696` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
 | lab\-state\-ownership | 1 | 0 | `75bd30de` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
 | clipboard\-bridge | 4 | 0 | `fb7457c7` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
+| destructive\-admission | 1 | 0 | `b94cb28d` | independent code/security and combined portable QA actual PASS; formal hook attestation pending | pending |
+| device\-flow | 1 | 0 | `d5b9bfe2` | independent code/security and combined portable QA actual PASS; formal hook attestation pending | pending |
+| container\-identity\-image | 1 | 0 | `4be2ab3a` | independent code/security and combined portable QA actual PASS; formal hook attestation pending | pending |
 
 ## 0.2 Active next plans
 
@@ -41,9 +44,13 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
 | codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
 | lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
-| destructive\-admission | OP\-device\-destructive\-admission | 2ba3bcfd source candidate code/security PASS; focused QA and next\-wave artifact acceptance pending, no operation credit |
-| device\-flow | OP\-device\-flow | 6b50b7aa source candidate with actual facade witness remediation; affected review and QA pending, no operation credit |
-| container\-identity\-image | OP\-container\-identity\-image | cf8b4306 source candidate code/security PASS; focused QA and next\-wave artifact acceptance pending, no operation credit |
+| destructive\-admission | OP\-device\-destructive\-admission | b94cb28d source and both shipping forms verified; combined code/security/portable QA PASS at68e062b0; local feature delivery pending, no native acceptance |
+| device\-flow | OP\-device\-flow | d5b9bfe2 source and both shipping forms verified; combined code/security/portable QA PASS at68e062b0; local feature delivery pending, no native acceptance |
+| container\-identity\-image | OP\-container\-identity\-image | 4be2ab3a source and both shipping forms verified; combined code/security/portable QA PASS at68e062b0; local feature delivery pending, no native acceptance |
+| sandbox\-create | OP\-windows\-sandbox\-create | c9261aed source code/security/QA PASS; both direct and broker create cut over, root shipping/integration pending, no whole credit |
+| state\-access | OP\-state\-storage | 8b74ef39 generic\-read and native adapter source code/security/QA PASS; broader atomic/CAS/repository storage operation remains partial and root integration pending, no whole credit |
+| runtime\-capabilities | OP\-runtime\-capabilities | 5d5c0d67 source code/security PASS and independent 55\-case comparison; fresh build/regression QA and root shipping/integration pending, no whole credit |
+| mcp\-forward | OP\-mcp\-forward | 0f4d1340 source affected code/security PASS after preserving parser/writer evaluation order; independent 31\-case comparison, fresh build/regression QA and root shipping/integration pending, no whole credit |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -60,13 +67,13 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-broker-owner-register` — Register canonical host project/profile broker owner mapping. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-broker-owner-resolve` — Resolve registered canonical owner and ensure broker auth material. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 4. M03 — Routes and transport (0/6 implemented)
+## 4. M03 — Routes and transport (2/6 implemented)
 
 - [ ] `OP-device-dispatch` — Select and dispatch supported device operation. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-inventory` — Device inventory. **partial**; broker\-observations @ 3f020650.
 - [ ] `OP-backend-discovery` — Backend discovery. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-device-destructive-admission` — Authorize existing destructive Device Lab action. **TODO**; device\-lab\-mcp/src/policy/destructive\.mjs.
-- [ ] `OP-device-flow` — Run bounded ordered Device Lab action flow. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-destructive-admission` — Authorize existing destructive Device Lab action. **implemented candidate**; destructive\-admission @ b94cb28d.
+- [x] `OP-device-flow` — Run bounded ordered Device Lab action flow. **implemented candidate**; device\-flow @ d5b9bfe2.
 - [ ] `OP-device-owned-list` — List current owner device definitions. **partial**; broker\-observations @ 3f020650.
 
 ## 5. M04 — Sandbox lifecycle (0/4 implemented)
@@ -226,7 +233,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-broker-status` — Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-broker-service-status` — Observe OS service\-manager installed/running/owner diagnostics for status only, including dry\-run preview. **integrated**; broker\-observations @ 3f020650.
 
-## 11. M10 — Sessions and containers (10/14 implemented)
+## 11. M10 — Sessions and containers (11/14 implemented)
 
 - [x] `OP-container-runtime` — Select container runtime. **integrated**; src/application/container\-runtime\-selection\.ts.
 - [x] `OP-session-acquire` — Acquire and transfer session ownership. **integrated**; src/application/session\-acquisition\.ts.
@@ -240,7 +247,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-image` — Prepare container image. **integrated**; src/application/container\-image\-preparation\.ts.
 - [x] `OP-container-socket` — Prepare container socket access. **integrated**; src/application/container\-socket\-access\.ts.
 - [ ] `OP-runtime-capabilities` — Observe and cache selected runtime capabilities. **TODO**; src/container\-runtime\.ts.
-- [ ] `OP-container-identity-image` — Prepare validated derived container identity image. **TODO**; src/container\-identity\.ts.
+- [x] `OP-container-identity-image` — Prepare validated derived container identity image. **implemented candidate**; container\-identity\-image @ 4be2ab3a.
 - [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **integrated**; lab\-state\-ownership @ 75bd30de.
 
 ## 12. M11 — Workspace/profiles/credentials/tools (29/33 implemented)

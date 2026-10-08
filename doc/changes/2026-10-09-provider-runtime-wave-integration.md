@@ -1,6 +1,6 @@
 # Provider and runtime operation integration
 
-Status: combined verification in progress. The local destination remains
+Status: portable/source verification passed at `68e062b0`; local delivery pending. The local destination remains
 `feature/device-mcp-squashed` at `9528cdf9`. No CI, push, global installation,
 or native provider mutation is part of this work.
 
@@ -53,15 +53,27 @@ fixture deadlines remain unchanged. The first original failure missed the ACK
 deadline; attribution of the other two acquisition failures remains unresolved.
 The repair received independent code and security PASS and bounded QA: 294
 tests including all 19 emitted process cases, plus 220 supplemental native claim
-and liveness tests. Replay `39947369` matches original `0828bce3`. Fresh current
-build, both shipping forms and the full combined QA remain required.
+and liveness tests. Replay `39947369` matches original `0828bce3`. The fresh
+current build, lint, 294 targeted tests and both actual shipping forms passed.
+The expanded shipping checks prove the light startup closure, current strict
+declarations and compiled awaited cleanup success/rejection in both payloads.
+Independent code and security review passed the resulting composition.
 
-The current WBS remains 52/218 implemented and integrated, with 19 partial
-operations and 147 TODO. These three operations gain credit only after combined
-acceptance. Historical inventory anchors, the provisional denominator and
+The independent fresh full portable run exited 0 after 2343.98 seconds:
+453 files and 11,583 tests passed; ten files and 151 tests were skipped. All
+19 ownership process cases passed in that same run. The original failing
+logs remain byte-identical. This proves the repaired portable context, while
+native platform/provider acceptance and full architecture completion remain
+unverified.
+
+The current WBS records 55/218 implemented operations: 52 integrated and
+three verified candidates awaiting local delivery, with 19 partial operations
+and 144 TODO. These are provisional unweighted operation counts. The guardian
+repair, shared helper and test infrastructure receive no additional credit. Historical inventory anchors, the provisional denominator and
 unverified Windows/macOS/Colima and reliability requirements remain unchanged.
 Automatic memory limits and Cargo parallel-job defaults remain removed.
 
-Formal missing-hook blocks and the existing actual-results continuation
-decision are recorded separately. No hook receipt, formal close, complete
+Existing formal missing-hook blocks and the actual-results continuation
+decision are recorded separately; this integration still awaits its one
+verification attempt and remaining delivery checks. No hook receipt, formal close, complete
 architecture claim or native acceptance is inferred from these source results.
