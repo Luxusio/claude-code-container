@@ -120,6 +120,51 @@
       "codeReview": "code/security/qa actual PASS; hook receipts absent, formal source close parked",
       "integration": "pending",
       "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "codex-state-ownership",
+      "branch": "refactor/architecture-codex-state-ownership-20261008",
+      "commit": "912ec6966d52bf8e13d88ff45d77e7ebcf5ebd4e",
+      "taskId": "TASK__architecture-codex-state-ownership",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-codex-state-ownership-migration"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "lab-state-ownership",
+      "branch": "refactor/architecture-lab-state-ownership-20261008",
+      "commit": "75bd30de50395f0ca1be598e368b93a8d6f75510",
+      "taskId": "TASK__architecture-lab-state-ownership",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-lab-state-ownership-migration"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
+    },
+    {
+      "id": "clipboard-bridge",
+      "branch": "refactor/architecture-clipboard-bridge-20261008",
+      "commit": "fb7457c75fc2ee11c0128f8369d4920c4d654f5f",
+      "taskId": "TASK__architecture-clipboard-bridge",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-clipboard-read",
+        "OP-clipboard-write",
+        "OP-clipboard-server-ensure",
+        "OP-clipboard-server-retire"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration",
+      "integration": "pending",
+      "nativeAcceptance": "unverified"
     }
   ],
   "planningLanes": [
@@ -140,7 +185,7 @@
         "OP-clipboard-server-ensure",
         "OP-clipboard-server-retire"
       ],
-      "status": "implementation in progress; private baseline build and 595 tests PASS (15 skipped), fixed core contracts and parallel test author; facade cutover pending, no operation credit"
+      "status": "source frozen fb7457c7; independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified"
     },
     {
       "id": "codex-state-ownership",
@@ -148,7 +193,7 @@
       "coveredOperationIds": [
         "OP-codex-state-ownership-migration"
       ],
-      "status": "source frozen 912ec696; code/security PASS; independent QA running, no completion credit added yet"
+      "status": "source frozen 912ec696; independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified"
     },
     {
       "id": "lab-state-ownership",
@@ -156,7 +201,7 @@
       "coveredOperationIds": [
         "OP-lab-state-ownership-migration"
       ],
-      "status": "source frozen 75bd30de; code/security PASS; independent QA running, no completion credit added yet"
+      "status": "source frozen 75bd30de; independent code/security/QA actual PASS; one task_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified"
     }
   ]
 }

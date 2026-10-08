@@ -5,8 +5,8 @@ Updated: 2026\-10\-08. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **46/218 (21.1%)**.
-Integrated source: **31/218 (14.2%)**; historical baseline: **31**. Candidates: **15**; partial: **19**; TODO: **153**.
+Implemented including unmerged candidates: **52/218 (23.9%)**.
+Integrated source: **31/218 (14.2%)**; historical baseline: **31**. Candidates: **21**; partial: **19**; TODO: **147**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -29,15 +29,18 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
 | broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | pending |
 | sandbox\-stop | 0 | 1 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked | pending |
+| codex\-state\-ownership | 1 | 0 | `912ec696` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | pending |
+| lab\-state\-ownership | 1 | 0 | `75bd30de` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | pending |
+| clipboard\-bridge | 4 | 0 | `fb7457c7` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | pending |
 
 ## 0.2 Active next plans
 
 | Lane | Operation ids | State |
 | --- | --- | --- |
 | sandbox\-stop | OP\-windows\-sandbox\-stop | direct binding source frozen and independent code/security/QA PASS; broker binding remains legacy, whole operation partial |
-| clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | implementation in progress; private baseline build and 595 tests PASS \(15 skipped\), fixed core contracts and parallel test author; facade cutover pending, no operation credit |
-| codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source frozen 912ec696; code/security PASS; independent QA running, no completion credit added yet |
-| lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source frozen 75bd30de; code/security PASS; independent QA running, no completion credit added yet |
+| clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | source frozen fb7457c7; independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified |
+| codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source frozen 912ec696; independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified |
+| lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source frozen 75bd30de; independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration, candidate implementation credit recorded; combined QA/local delivery pending, native acceptance unverified |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -220,7 +223,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-broker-status` — Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service. **implemented candidate**; broker\-observations @ 3f020650.
 - [x] `OP-broker-service-status` — Observe OS service\-manager installed/running/owner diagnostics for status only, including dry\-run preview. **implemented candidate**; broker\-observations @ 3f020650.
 
-## 11. M10 — Sessions and containers (9/14 implemented)
+## 11. M10 — Sessions and containers (10/14 implemented)
 
 - [x] `OP-container-runtime` — Select container runtime. **integrated**; src/application/container\-runtime\-selection\.ts.
 - [x] `OP-session-acquire` — Acquire and transfer session ownership. **integrated**; src/application/session\-acquisition\.ts.
@@ -235,9 +238,9 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-socket` — Prepare container socket access. **integrated**; src/application/container\-socket\-access\.ts.
 - [ ] `OP-runtime-capabilities` — Observe and cache selected runtime capabilities. **TODO**; src/container\-runtime\.ts.
 - [ ] `OP-container-identity-image` — Prepare validated derived container identity image. **TODO**; src/container\-identity\.ts.
-- [ ] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **TODO**; src/lab\-state\-ownership\.ts.
+- [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **implemented candidate**; lab\-state\-ownership @ 75bd30de.
 
-## 12. M11 — Workspace/profiles/credentials/tools (28/33 implemented)
+## 12. M11 — Workspace/profiles/credentials/tools (29/33 implemented)
 
 - [x] `OP-home-migrate` — Migrate legacy home layout. **integrated**; src/application/home\-layout\-migration\.ts.
 - [x] `OP-workspace-unified-create` — Create unified workspace. **integrated**; src/application/workspace/unified\-creation\.ts.
@@ -271,11 +274,11 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-home-config-read` — Read CCC configuration leniently. **integrated**; src/application/home/config\.ts.
 - [x] `OP-home-config-update` — Update CCC configuration atomically. **integrated**; src/application/home/config\.ts.
 - [x] `OP-home-default-ensure` — Ensure marked no\-profile account. **integrated**; src/application/home/layout\-paths\.ts.
-- [ ] `OP-codex-state-ownership-migration` — prepareCodexStateOwnership. **TODO**; src/codex\-state\-ownership\.ts.
+- [x] `OP-codex-state-ownership-migration` — prepareCodexStateOwnership. **implemented candidate**; codex\-state\-ownership @ 912ec696.
 
-## 13. M12 — Host services/tool sessions/remote (3/16 implemented)
+## 13. M12 — Host services/tool sessions/remote (7/16 implemented)
 
-- [ ] `OP-clipboard-write` — Publish host clipboard text/image. **TODO**; src/clipboard\-server\.ts.
+- [x] `OP-clipboard-write` — Publish host clipboard text/image. **implemented candidate**; clipboard\-bridge @ fb7457c7.
 - [ ] `OP-clipboard-x11-sync` — Synchronize X11 and host clipboard. **TODO**; scripts/ccc\-x11\-bridge.
 - [x] `OP-codex-launch` — Prepare interactive Codex daemon launch. **implemented candidate**; codex\-launch @ ea96263f.
 - [x] `OP-codex-resume` — Recover qualified Codex resume once. **implemented candidate**; codex\-resume @ b625854d.
@@ -286,9 +289,9 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-remote-setup` — Present remote setup guidance. **TODO**; src/remote\.ts.
 - [ ] `OP-remote-check` — Remote check. **TODO**; src/remote\.ts.
 - [ ] `OP-remote-terminate` — Terminate project Mutagen sync. **TODO**; src/remote\.ts.
-- [ ] `OP-clipboard-server-ensure` — Clipboard server ensure. **TODO**; src/clipboard\-server\.ts.
-- [ ] `OP-clipboard-server-retire` — Clipboard server retire. **TODO**; src/clipboard\-server\.ts.
-- [ ] `OP-clipboard-read` — Read coherent host clipboard snapshot. **TODO**; src/clipboard\-server\.ts.
+- [x] `OP-clipboard-server-ensure` — Clipboard server ensure. **implemented candidate**; clipboard\-bridge @ fb7457c7.
+- [x] `OP-clipboard-server-retire` — Clipboard server retire. **implemented candidate**; clipboard\-bridge @ fb7457c7.
+- [x] `OP-clipboard-read` — Read coherent host clipboard snapshot. **implemented candidate**; clipboard\-bridge @ fb7457c7.
 - [x] `OP-codex-clipboard-attachment` — Attach clipboard image to eligible Codex invocation. **implemented candidate**; codex\-clipboard @ fb6c26f7.
 - [ ] `OP-codex-harness-bootstrap` — Ensure existing Codex Harness integration. **TODO**; src/codex\-harness\.ts.
 
