@@ -3,6 +3,7 @@ import { ensureIdentityImage, getIdentityCodexPackagesVolumeName, getIdentityLab
 import { prepareIdentityImage } from "../../application/container/identity-image.js";
 import type { ContainerIdentity, IdentityImageObservation } from "../../domain/container/identity-image.js";
 import type { IdentityImagePorts } from "../../ports/container/identity-image.js";
+import type { RuntimeInfo } from "../../container-runtime.js";
 
 function contracts(ports: IdentityImagePorts, publicIdentity: PublicIdentity, image: IdentityImageObservation) {
     const inward: ContainerIdentity = publicIdentity;
@@ -37,10 +38,15 @@ it("preserves public facade types and required synchronous inward ports", () => 
     expectTypeOf<PublicIdentity>().toEqualTypeOf<ContainerIdentity>();
     expectTypeOf(ensureIdentityImage).parameters.toEqualTypeOf<[string, ContainerIdentity]>();
     expectTypeOf(ensureIdentityImage).returns.toEqualTypeOf<string>();
+    expectTypeOf<Parameters<typeof resolveContainerIdentity>>().toEqualTypeOf<[RuntimeInfo?, NodeJS.Platform?, (number | undefined)?, (number | undefined)?]>();
     expectTypeOf(resolveContainerIdentity).returns.toEqualTypeOf<ContainerIdentity>();
     expectTypeOf(normalizeImageId).parameters.toEqualTypeOf<[string]>();
+    expectTypeOf<ReturnType<typeof normalizeImageId>>().toEqualTypeOf<string>();
+    expectTypeOf<Parameters<typeof getIdentityLabels>>().toEqualTypeOf<[ContainerIdentity]>();
     expectTypeOf(getIdentityLabels).returns.toEqualTypeOf<Record<string, string>>();
+    expectTypeOf<Parameters<typeof getIdentityMiseVolumeName>>().toEqualTypeOf<[ContainerIdentity]>();
     expectTypeOf(getIdentityMiseVolumeName).returns.toEqualTypeOf<string>();
+    expectTypeOf<Parameters<typeof getIdentityCodexPackagesVolumeName>>().toEqualTypeOf<[ContainerIdentity]>();
     expectTypeOf(getIdentityCodexPackagesVolumeName).returns.toEqualTypeOf<string>();
     expectTypeOf<IdentityImagePorts["tagBase"]>().returns.toEqualTypeOf<undefined>();
     expect(typeof contracts).toBe("function");
