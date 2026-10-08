@@ -169,13 +169,23 @@
     ]
   },
   "closure": {
-    "exhaustive": true,
-    "status": "source-mapped-candidate-pending-independent-review",
-    "blockingGapIds": [],
+    "exhaustive": false,
+    "status": "source-review-remediation-pending",
+    "blockingGapIds": [
+      "GAP-review-create-completion",
+      "GAP-review-observation-routes",
+      "GAP-review-inventory-authority",
+      "GAP-review-retired-references",
+      "GAP-review-macos-dispositions",
+      "GAP-review-binding-authority",
+      "GAP-review-semantic-references",
+      "GAP-review-closure-text",
+      "GAP-review-image-owner"
+    ],
     "totals": null,
-    "sourceScopeClosed": true,
-    "countCertification": "unverified until independent semantic review/QA",
-    "reason": "Tracked scope, canonical actions, source authority and consumer references are assigned. Semantic completeness and count unit await independent review and QA. Native acceptance remains separate."
+    "sourceScopeClosed": false,
+    "countCertification": "not certified; independent source review found unresolved accounting and evidence defects",
+    "reason": "The first formal review rejected scope closure and whole-operation classification. Local source proposals are retained for remediation; no complete denominator or Goal progress fraction is published."
   },
   "provenance": {
     "historicalLedger": {
@@ -1455,8 +1465,8 @@
       "policyOwner": "src/application/container-create-lifecycle.ts",
       "businessBoundary": "Under mount-identity family guard, refuse namespace collision, prepare exact run arguments, assert sources, create and validate returned immutable ID/mounts; compensate exact created ID only for source/mount verification failure. Synchronization and finish occur after that catch.",
       "completionCriteria": "Complete accepted create lifecycle policy inward with exact 64-hex returned ID and absent-after-compensation proof; retain original catch boundary and native preparation/finish authority.",
-      "implementationStatus": "migrated",
-      "statusReason": "Bounded accepted application policy is migrated; retained native collaborators keep their existing authority. Inventory metadata/delegated journal trace gaps and native certification remain explicitly separate and block exhaustive inventory closure.",
+      "implementationStatus": "partial",
+      "statusReason": "Verified bounded creation orchestration is inward, but assigned launch-argument, relabel and mount policy remains legacy. Preserve bounded source evidence without crediting the whole operation.",
       "sources": [
         {
           "path": "src/application/container-create-lifecycle.ts",
@@ -1841,7 +1851,9 @@
         "ACC-M10-reliability",
         "ACC-source-container-create"
       ],
-      "remainingGaps": [],
+      "remainingGaps": [
+        "Assigned launch-argument/relabel/mount decision policy remains in native collaborators."
+      ],
       "countEligibility": "provisional-canonical-operation",
       "currentCallTrace": [
         "startProjectContainerLocked runs existingLifecycle then createNativeContainerCreateLifecycle.run only for continue-to-create.",
@@ -1866,7 +1878,9 @@
         "packages/device-lab/src/device-lab-owner.ts",
         "packages/device-lab/src/project-identity.ts"
       ],
-      "implementationRemainingWork": [],
+      "implementationRemainingWork": [
+        "Move the assigned complete launch-argument and mount decision policy inward while preserving runtime facts, native authority and evaluation order."
+      ],
       "retainedStateDelegateTrace": "One prepareRetainedState callback checks previousimmutableprovenance; invokesCodexonlywithprevious,thenLabwithoptionalpreviousimage; publishesinvocationpreparedflagonlyafterbothsuccess. Boundto existingbeforeStart/beforeRemove and createbeforeCreating.",
       "explicitDelegateRefs": [
         {
@@ -11755,7 +11769,7 @@
           }
         ],
         "scopeNotes": [
-          "Branch proof: platform/powershell641\u2013650; root653/732\u2013735; receipt659/783\u2013785; diagnosticreadiness660\u2013663; guardselection738,parent748\u2013749,guard756,options763; setup/fabric757\u2013761.",
+          "Branch proof: platform/powershell641–650; root653/732–735; receipt659/783–785; diagnosticreadiness660–663; guardselection738,parent748–749,guard756,options763; setup/fabric757–761.",
           "Binding owner explicit Windows host confirmation+separate evaluation flag; lockOwner hosthyper-v.mutation.lock across elevated setup/fabric ensure."
         ],
         "sourceUnknowns": [],
@@ -22258,8 +22272,8 @@
         }
       ],
       "currentCallTrace": [
-        "devices/view=backends normalized discovery -> handleDeviceBackends. optsOutOfImplicitBroker forces brokerStatus autolaunch:false/probe:false:430 and direct report. Default detailfalse reports container display+linux only; detailtrue computes local provider descriptors. Successful broker merge:442; failed broker:459\u2013484 returns okfalse/container backends without promoting mutation fallback.",
-        "directBackendList:388\u2013410 observes Android/iOS/Sandbox/WindowsVM/macOS/Linux descriptors. Descriptor helpers observe FS/env/executable availability; no owner state writers, provider startups, or resource lock.",
+        "devices/view=backends normalized discovery -> handleDeviceBackends. optsOutOfImplicitBroker forces brokerStatus autolaunch:false/probe:false:430 and direct report. Default detailfalse reports container display+linux only; detailtrue computes local provider descriptors. Successful broker merge:442; failed broker:459–484 returns okfalse/container backends without promoting mutation fallback.",
+        "directBackendList:388–410 observes Android/iOS/Sandbox/WindowsVM/macOS/Linux descriptors. Descriptor helpers observe FS/env/executable availability; no owner state writers, provider startups, or resource lock.",
         "broker.backends authenticated dispatch:16440 -> hostBackends:3556; per-provider executable observations; Windows readiness query:3584 bounded <=15s and Ubuntu metadata-only cache advisory.",
         "Method absent from DEVICE_BROKER_MUTATING_RPC_METHODS:576; brokerRpcMutatesOwnerState:16542 returnsfalse; HTTP branch:16705 bypasses owner mutation tail. Common transport setup delegated separately."
       ],
@@ -24318,7 +24332,7 @@
         "brokerApple -> brokerRpcRequest; not imported/called by MCP server and not advertised as standalone public MCP tool. Internal real/test broker-api-client fixture invokes it.",
         "validateAppleTrustParams:7053 (status/pair/connect), then appleTrustStatus:7355 executes xcrun xctrace list devices only:7359 under configured timeout/outputbound, parses visible devices:7033 and composes diagnostics:7079.",
         "status200; connect200 only selected matchingUDID WiFi and not unavailable -> alreadyNetworkVisible/manualRequiredfalse; otherwise pair/connect409 ios-apple-pairing-manual-required. No native pair/connect command.",
-        "Despite observation-only handler, broker.apple.trust is mutation-set member:584, so HTTP:16705\u201316707 awaits owner tail serializeBrokerOwnerMutation:16556. Release/finally deletes tail only if still current:16564\u201316567."
+        "Despite observation-only handler, broker.apple.trust is mutation-set member:584, so HTTP:16705–16707 awaits owner tail serializeBrokerOwnerMutation:16556. Release/finally deletes tail only if still current:16564–16567."
       ],
       "diagnosticBindingVariants": [
         {
@@ -25268,9 +25282,9 @@
                 }
               ],
               "branchReferences": [
-                "windows-sandbox2269\u20132303/record_start2285",
-                "windows-helper.ps1 record_start246\u2013274",
-                "macos-vm2325\u20132391/detachedSSH2342\u20132366/rollback2379\u20132391"
+                "windows-sandbox2269–2303/record_start2285",
+                "windows-helper.ps1 record_start246–274",
+                "macos-vm2325–2391/detachedSSH2342–2366/rollback2379–2391"
               ]
             }
           }
@@ -29759,7 +29773,7 @@
             "section": "native process/state support roles"
           },
           {
-            "source": "cleanupOwnerRuntime:9118\u20139145",
+            "source": "cleanupOwnerRuntime:9118–9145",
             "detail": "native outside short mutation; exact-recordCAS; lease rollback"
           }
         ],
@@ -81000,7 +81014,7 @@
         },
         "lock": {
           "disposition": "retained",
-          "reason": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+          "reason": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
           "sources": [
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -81085,7 +81099,7 @@
             }
           ],
           "authorityOwner": "explicit cwd/profile and optional expectedOwnerId; no HTTP registration route",
-          "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+          "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
           "supportDisposition": "supported",
           "closureStatus": "source-route-and-handler-traced",
           "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -81164,16 +81178,16 @@
         "src/clipboard-server.ts"
       ],
       "currentCallTrace": [
-        "resolve cwd->canonical mount/profile identity:1219\u20131223; owner mismatch rejected before mutation.",
-        "ensure 0700 directory chain with link/non-directory rejection:1140\u20131161.",
-        "build version1 ownerId/basis/mount/hostPath/profile/registeredAt:1227\u20131234.",
-        "lock registrationFile.lock:1236; safe read existing:1237; equivalent basis/mount/profile returns existing and preserves its hostProjectPath:1238\u20131241; else atomic publish:1242."
+        "resolve cwd->canonical mount/profile identity:1219–1223; owner mismatch rejected before mutation.",
+        "ensure 0700 directory chain with link/non-directory rejection:1140–1161.",
+        "build version1 ownerId/basis/mount/hostPath/profile/registeredAt:1227–1234.",
+        "lock registrationFile.lock:1236; safe read existing:1237; equivalent basis/mount/profile returns existing and preserves its hostProjectPath:1238–1241; else atomic publish:1242."
       ],
       "authoritySourceTrace": {
         "executor": "trusted local host broker composition",
         "owner": "explicit cwd/profile and optional expectedOwnerId; no HTTP registration route",
         "state": "homedir/.ccc/devices/broker/owners/<16hexowner>.json via deviceBrokerOwnerRegistrationFile:1165; validator:1184.",
-        "lock": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+        "lock": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
         "journal": "none; current registration authority record",
         "process": "none; broker supervision launches host process separately"
       },
@@ -81261,7 +81275,7 @@
       },
       "authority": {
         "executor": "host HTTP broker bootstrap endpoint",
-        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
+        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
         "state": {
           "disposition": "retained",
           "reason": "Reads broker/owners owner record without registering it; auth broker/auth/<owner>.json via deviceBrokerAuthSecretFile:1433. Secret/token not returned.",
@@ -81306,7 +81320,7 @@
         },
         "lock": {
           "disposition": "retained",
-          "reason": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+          "reason": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
           "sources": [
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -81384,8 +81398,8 @@
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
           ],
-          "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
-          "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+          "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
+          "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
           "supportDisposition": "supported",
           "closureStatus": "source-route-and-handler-traced",
           "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -81490,16 +81504,16 @@
         "src/clipboard-server.ts"
       ],
       "currentCallTrace": [
-        "POST-only:16604\u201316606; bounded/timed body parser:16608\u201316611.",
-        "mount/profile grammar and identity:16613\u201316628; safe registered owner read and exact basis/mount/profile match:16631\u201316643.",
-        "deviceBrokerOwnerSecret:16646 conditionally ensures auth; invalid provision returns503, then owner identity response only:16651\u201316658.",
-        "existing valid secret early return:1438\u20131442; missing/invalid ensures dirs, authFile.lock, concurrent recheck, stale artifact removal/quarantine:1445\u20131452; random32byte secret version/ownerId/createdAt publication:1455\u20131461; quarantine cleanup finally:1463\u20131464."
+        "POST-only:16604–16606; bounded/timed body parser:16608–16611.",
+        "mount/profile grammar and identity:16613–16628; safe registered owner read and exact basis/mount/profile match:16631–16643.",
+        "deviceBrokerOwnerSecret:16646 conditionally ensures auth; invalid provision returns503, then owner identity response only:16651–16658.",
+        "existing valid secret early return:1438–1442; missing/invalid ensures dirs, authFile.lock, concurrent recheck, stale artifact removal/quarantine:1445–1452; random32byte secret version/ownerId/createdAt publication:1455–1461; quarantine cleanup finally:1463–1464."
       ],
       "authoritySourceTrace": {
         "executor": "host HTTP broker bootstrap endpoint",
-        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
+        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
         "state": "Reads broker/owners owner record without registering it; auth broker/auth/<owner>.json via deviceBrokerAuthSecretFile:1433. Secret/token not returned.",
-        "lock": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+        "lock": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
         "journal": "No intent journal; invalid auth quarantine transient recovery.",
         "process": "No launch or signaling; shared lock owner observation only"
       },
@@ -81832,19 +81846,19 @@
         {
           "route": "ccc devices / ccc devices status",
           "scope": "current cwd/profile owner only",
-          "trace": "devicesCliAsync:2356 -> fallback devicesCli:2450 -> default status:2263 -> formatDevicesStatus:2266\u20132268",
+          "trace": "devicesCliAsync:2356 -> fallback devicesCli:2450 -> default status:2263 -> formatDevicesStatus:2266–2268",
           "returnShape": "deviceLabSnapshot:1942 -> {ownerId,backends}; each backend devices/tools/missing/available; formatDevicesStatus:2118 header/count/prerequisite text"
         },
         {
           "route": "ccc devices list",
           "scope": "current cwd/profile owner only",
-          "trace": "devicesCli:2269\u20132273 args.length===1 -> formatDevicesList:2133",
+          "trace": "devicesCli:2269–2273 args.length===1 -> formatDevicesList:2133",
           "returnShape": "Owner/backend grouped labels excluding foreign owner definitions"
         },
         {
           "route": "ccc devices list --all-projects",
           "scope": "explicit local host crossowner read",
-          "gate": "devicesCli:2274 requires args.length===2 and exact literal --all-projects; otherwise usage/exit1:2278\u20132279",
+          "gate": "devicesCli:2274 requires args.length===2 and exact literal --all-projects; otherwise usage/exit1:2278–2279",
           "trace": "formatDevicesAllProjectsList:2152 -> deviceLabAllOwnersSnapshot:1958 -> allOwnerIds:285 -> enumerateDeviceProjectIds:286",
           "returnShape": "{owners:[{ownerId,backends:[{stateKey,name,devices}]}]}; text All Projects, owner/backend definitions, empty(none)"
         }
@@ -81928,9 +81942,9 @@
       "contractAnchors": [],
       "negativeCases": [
         "Wrong --all flag/admin list alias rejected",
-        "Non-directory/linked root: project-state20\u201323",
-        "Linked child:25\u201327",
-        "Changed root identity:29\u201331",
+        "Non-directory/linked root: project-state20–23",
+        "Linked child:25–27",
+        "Changed root identity:29–31",
         "Only initial missing root empty:38"
       ],
       "evidence": [],
@@ -88480,7 +88494,7 @@
           "path": "src/opencode-data-access.ts",
           "kind": "support",
           "gitBlob": "70e3b4ffe425532bfe7bae440771a18e90a28267",
-          "responsibility": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup fa\u00e7ade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
+          "responsibility": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup façade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
         }
       ],
       "regressionAnchors": [
@@ -93536,7 +93550,7 @@
     {
       "path": "packages/device-lab/src/broker-entry.ts",
       "responsibility": "Standalone package binary grammar/exit-code adapter for trusted broker serve",
-      "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
+      "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
       "workItemIds": [
         "OP-broker-supervision",
         "OP-broker-owner-register"
@@ -93611,7 +93625,7 @@
     {
       "path": "packages/device-lab/src/device-lab-safe-cleanup.ts",
       "responsibility": "Native identity-fenced quarantine/recursive removal adapter for HyperV create/delete/image compensation",
-      "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
+      "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
       "workItemIds": [
         "OP-hyperv-image-acquire",
         "OP-windows-vm-create",
@@ -93633,7 +93647,7 @@
     {
       "path": "packages/device-lab/providers/backends/windows-vm.mjs",
       "responsibility": "Native descriptor and validated owner listing composition; no VM lifecycle policy",
-      "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control.'}",
+      "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control.'}",
       "workItemIds": [
         "OP-backend-discovery",
         "OP-device-inventory",
@@ -93654,7 +93668,7 @@
     {
       "path": "packages/device-lab/providers/backends/windows-helper.ps1",
       "responsibility": "Retained native Sandbox guest GUI/process/file effects and one-shot/daemon response transport",
-      "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
+      "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
       "workItemIds": [
         "OP-windows-sandbox-create",
         "OP-windows-sandbox-start",
@@ -93691,7 +93705,7 @@
     {
       "path": "packages/device-lab/providers/backends/android-sdk-inventory.mjs",
       "responsibility": "Bounded selected-SDK installed image/profile observation for device inventory",
-      "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start.'}",
+      "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start.'}",
       "workItemIds": [
         "OP-device-inventory"
       ],
@@ -100331,7 +100345,7 @@
       {
         "id": "M11-REQ-02",
         "packet": "M11",
-        "requirement": "Break concrete registry\u2194installer constant dependency first. Separate workspace create/repair/remove, profile resolution/migration and credential refresh plans. Native source reads/copies/signing rewrite behind scoped adapters.",
+        "requirement": "Break concrete registry↔installer constant dependency first. Separate workspace create/repair/remove, profile resolution/migration and credential refresh plans. Native source reads/copies/signing rewrite behind scoped adapters.",
         "assignedIds": [
           "OP-home-migrate",
           "OP-workspace-unified-create",
@@ -103847,7 +103861,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start.'}"
+        "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start.'}"
       },
       {
         "path": "packages/device-lab/providers/backends/android-wait.mjs",
@@ -104127,7 +104141,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced.'}"
+        "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced.'}"
       },
       {
         "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
@@ -104168,7 +104182,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control.'}"
+        "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control.'}"
       },
       {
         "path": "packages/device-lab/providers/commands.mjs",
@@ -104981,7 +104995,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}"
+        "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}"
       },
       {
         "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -105215,7 +105229,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}"
+        "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}"
       },
       {
         "path": "packages/device-lab/src/device-lab-shared-state.ts",
@@ -114646,7 +114660,7 @@
           "OP-opencode-data-access-preparation"
         ],
         "acceptanceIds": [],
-        "justification": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup fa\u00e7ade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
+        "justification": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup façade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
       },
       {
         "path": "src/ports/codex-config-preparation.ts",
@@ -168834,7 +168848,7 @@
         }
       ],
       "authorityOwner": "explicit cwd/profile and optional expectedOwnerId; no HTTP registration route",
-      "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+      "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
       "supportDisposition": "supported",
       "closureStatus": "source-route-and-handler-traced",
       "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -168875,8 +168889,8 @@
           "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
       ],
-      "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
-      "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+      "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
+      "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
       "supportDisposition": "supported",
       "closureStatus": "source-route-and-handler-traced",
       "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -170422,7 +170436,53 @@
       "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
     }
   ],
-  "gaps": [],
+  "gaps": [
+    {
+      "id": "GAP-review-create-completion",
+      "kind": "inventory",
+      "reason": "Container create retains assigned launch argument and mount policy; bounded extraction is not whole-operation completion."
+    },
+    {
+      "id": "GAP-review-observation-routes",
+      "kind": "inventory",
+      "reason": "Propagate the source-grounded broker observation proposals and reconcile every reachable method before counting a complete denominator."
+    },
+    {
+      "id": "GAP-review-inventory-authority",
+      "kind": "inventory",
+      "reason": "Reconcile owner-definition versus available-candidate inventory and preserve direct iOS metadata reconciliation."
+    },
+    {
+      "id": "GAP-review-retired-references",
+      "kind": "inventory",
+      "reason": "Current proof owners and CLI dependencies must resolve to current canonical operations, not retired IDs."
+    },
+    {
+      "id": "GAP-review-macos-dispositions",
+      "kind": "inventory",
+      "reason": "Preserve supported direct Tart routes and record exact broker refusals in every binding copy."
+    },
+    {
+      "id": "GAP-review-binding-authority",
+      "kind": "inventory",
+      "reason": "Propagate grounded source/caller and lock category proposals to all canonical and operation-local binding records."
+    },
+    {
+      "id": "GAP-review-semantic-references",
+      "kind": "inventory",
+      "reason": "Recheck import/reference relationships; an unrelated nearby AST call is not dependency proof."
+    },
+    {
+      "id": "GAP-review-closure-text",
+      "kind": "inventory",
+      "reason": "Reconcile stale source-scope explanations separately from unverified native acceptance."
+    },
+    {
+      "id": "GAP-review-image-owner",
+      "kind": "inventory",
+      "reason": "Current Hyper-V image-import handler/owner references must identify image-store policy rather than catalog/license support."
+    }
+  ],
   "distributionBoundaries": {
     "sourceComposition": [
       {
@@ -216173,8 +216233,8 @@
         }
       ],
       "semantics": {
-        "state": "Shared payload call:55, captured/rechecked managed directories:63\u201380, nofollow descriptor regular/single-link identity and byte bound:65\u201374, unopened ENOENT->[]:84, writable payload+UTF8 limit:94\u201398.",
-        "lock": "No own lock; broker/admin devices.mutation.lock owns mutation validation+atomic write at broker:5501\u20135502/5528\u20135529, admin:296\u2013297.",
+        "state": "Shared payload call:55, captured/rechecked managed directories:63–80, nofollow descriptor regular/single-link identity and byte bound:65–74, unopened ENOENT->[]:84, writable payload+UTF8 limit:94–98.",
+        "lock": "No own lock; broker/admin devices.mutation.lock owns mutation validation+atomic write at broker:5501–5502/5528–5529, admin:296–297.",
         "journal": "No repository journal; lifecycle journal callers remain distinct.",
         "process": "No process identity/signalling."
       },
@@ -216341,8 +216401,8 @@
         }
       ],
       "semantics": {
-        "state": "Lease payload checks backend/hardware/owner plus optional TTL/date/claim exact fields and caller expectations:14\u201329. Sandbox provider/owner/device/optional claim/boot/runtime:36\u201346. Typed bounded reader delegation:33/50.",
-        "lock": "No own lock. Broker perhardware lease lock, admin hardware\u2192aggregate sublocks, Sandbox host singleton mutation lock owned callers.",
+        "state": "Lease payload checks backend/hardware/owner plus optional TTL/date/claim exact fields and caller expectations:14–29. Sandbox provider/owner/device/optional claim/boot/runtime:36–46. Typed bounded reader delegation:33/50.",
+        "lock": "No own lock. Broker perhardware lease lock, admin hardware→aggregate sublocks, Sandbox host singleton mutation lock owned callers.",
         "journal": "Lease/singleton records authority state; no journal here.",
         "process": "No launch/signals."
       },
@@ -216508,7 +216568,7 @@
         }
       ],
       "semantics": {
-        "state": "Explicit supplied root; linked/non-directory root:20\u201324, linked entries:25\u201327, root inode/device/mode replacement:29\u201331 reject; supplied accepted name predicate and sorted directory names:33\u201336; only initially missing root returns[]:38.",
+        "state": "Explicit supplied root; linked/non-directory root:20–24, linked entries:25–27, root inode/device/mode replacement:29–31 reject; supplied accepted name predicate and sorted directory names:33–36; only initially missing root returns[]:38.",
         "lock": "No acquired lock. Emulator allocation caller separately holds global port lock (broker:6091); admin workflows retain scopes.",
         "journal": "None.",
         "process": "None."
@@ -216749,8 +216809,8 @@
         }
       ],
       "semantics": {
-        "state": "Managed directory capture/recheck:57\u2013127 with birthtime fallback:45\u201354. Exclusive0600 staging+bounded Windows rename+cleanup:177\u2013190; abandoned temp matches generated name/dead PID/regular nonlink/minimum age:153\u2013174; descriptor-bound copied bytes:197\u2013239.",
-        "lock": "Exclusive random token/PID/host/boot/process identity record; malformed/boot/PID reuse/unknown ceiling/foreign host stale rules:434\u2013467. Move/read/token and empty-only restore protect successor:470\u2013513; async holds until settle/finally:637\u2013644; waitBudget avoids queued identity process work:601\u2013603. TS sync only provides reclaimStale:false (519/554/557); MJS and async variants preserve their differing existing API.",
+        "state": "Managed directory capture/recheck:57–127 with birthtime fallback:45–54. Exclusive0600 staging+bounded Windows rename+cleanup:177–190; abandoned temp matches generated name/dead PID/regular nonlink/minimum age:153–174; descriptor-bound copied bytes:197–239.",
+        "lock": "Exclusive random token/PID/host/boot/process identity record; malformed/boot/PID reuse/unknown ceiling/foreign host stale rules:434–467. Move/read/token and empty-only restore protect successor:470–513; async holds until settle/finally:637–644; waitBudget avoids queued identity process work:601–603. TS sync only provides reclaimStale:false (519/554/557); MJS and async variants preserve their differing existing API.",
         "journal": "No journal in adapter; HyperV operation/network callers own schema/recovery.",
         "process": "Liveness/process identity observation and abandoned writer PID check; never device process termination."
       },
@@ -217018,7 +217078,7 @@
         }
       ],
       "semantics": {
-        "state": "No durable state; validates canonical mount/profile grammar:8\u201315/48\u201352, basis containername:mount, hashSHA25616.",
+        "state": "No durable state; validates canonical mount/profile grammar:8–15/48–52, basis containername:mount, hashSHA25616.",
         "lock": "None.",
         "journal": "None.",
         "process": "None."
@@ -217269,7 +217329,7 @@
         }
       ],
       "semantics": {
-        "state": "Regular/single-link descriptor/path identity:26\u201331/82\u201387, bounded bytes:34\u201342, unopened ENOENT null:93; root containment/nonlink parent:111\u2013134. Write verifies existing/new destination descriptor before truncation/write and after:145\u2013172. Nested creation requires explicit allowNestedCreate; ordinary nested download destination preexists:151\u2013154. JSON parse/validator stays invalid-state:184\u2013209.",
+        "state": "Regular/single-link descriptor/path identity:26–31/82–87, bounded bytes:34–42, unopened ENOENT null:93; root containment/nonlink parent:111–134. Write verifies existing/new destination descriptor before truncation/write and after:145–172. Nested creation requires explicit allowNestedCreate; ordinary nested download destination preexists:151–154. JSON parse/validator stays invalid-state:184–209.",
         "lock": "No own lock; caller guards unchanged.",
         "journal": "Reads journal bytes, no policy/schema itself.",
         "process": "None."
@@ -217512,7 +217572,7 @@
         }
       ],
       "semantics": {
-        "state": "Durable logical identity uses lexical resolution:52\u201369 independent of filesystem; Windows realpath/native realpath and case insensitive equivalence:12\u201343; missing leaf canonicalizes parent but other lookup errors remain:19\u201329.",
+        "state": "Durable logical identity uses lexical resolution:52–69 independent of filesystem; Windows realpath/native realpath and case insensitive equivalence:12–43; missing leaf canonicalizes parent but other lookup errors remain:19–29.",
         "lock": "None.",
         "journal": "None.",
         "process": "No subprocess; Windows filesystem observation only."
@@ -221245,7 +221305,7 @@
       "canonicalOperationIds": [
         "OP-opencode-data-access-preparation"
       ],
-      "assignment": "EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup fa\u00e7ade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained.",
+      "assignment": "EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup façade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained.",
       "source": {
         "path": "src/opencode-data-access.ts",
         "gitBlob": "70e3b4ffe425532bfe7bae440771a18e90a28267"
@@ -221559,7 +221619,7 @@
         }
       ],
       "semantics": {
-        "entrypoint": "Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.",
+        "entrypoint": "Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.",
         "state": "Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.",
         "lock": "No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.",
         "journal": "None.",
@@ -221931,8 +221991,8 @@
       "semantics": {
         "authority": "Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.",
         "state": "validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.",
-        "lock": "safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.",
-        "journal": "Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.",
+        "lock": "safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.",
+        "journal": "Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.",
         "process": "No spawned child or process signal; shared lock only observes owner process."
       },
       "regressionReferences": [
@@ -222052,10 +222112,10 @@
         }
       ],
       "semantics": {
-        "state": "listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.",
+        "state": "listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.",
         "lock": "Listing read acquires no owner mutation/operation lock (canonical repository:36).",
         "journal": "None.",
-        "process": "Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control."
+        "process": "Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control."
       },
       "regressionReferences": [
         {
@@ -222240,10 +222300,10 @@
       ],
       "semantics": {
         "authority": "Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.",
-        "state": "Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.",
-        "lock": "OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.",
+        "state": "Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.",
+        "lock": "OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.",
         "journal": "No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.",
-        "process": "Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced."
+        "process": "Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced."
       },
       "regressionReferences": [
         {
@@ -222307,7 +222367,7 @@
       "inventoryNotes": [
         "Direct windows-sandbox.mjs generates equivalent text rather than reading asset; broker reads packaged asset. No WindowsVM dependency.",
         "No move_window, app install/uninstall/clear-data or clipboard action branches exist. Clipboard redirection is WSB creation setting.",
-        "OP-device-list-files composes through exec (MCP server:1116\u20131130/1583\u20131589), not an invented native helper action."
+        "OP-device-list-files composes through exec (MCP server:1116–1130/1583–1589), not an invented native helper action."
       ],
       "residualSourceGaps": [],
       "actionMappings": [
@@ -222471,10 +222531,10 @@
         }
       ],
       "semantics": {
-        "state": "selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.",
+        "state": "selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.",
         "lock": "None.",
         "journal": "None.",
-        "process": "avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start."
+        "process": "avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start."
       },
       "regressionReferences": [
         {
@@ -223172,7 +223232,7 @@
           "workItemIds": [
             "OP-device-inventory"
           ],
-          "retainedResponsibility": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start.'}",
+          "retainedResponsibility": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -224189,7 +224249,7 @@
             "OP-recording-status",
             "OP-recording-finalize"
           ],
-          "retainedResponsibility": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
+          "retainedResponsibility": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -224460,7 +224520,7 @@
             "OP-device-dispatch",
             "OP-owner-repository"
           ],
-          "retainedResponsibility": "{'state': 'listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control.'}",
+          "retainedResponsibility": "{'state': 'listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -227494,7 +227554,7 @@
             "OP-broker-supervision",
             "OP-broker-owner-register"
           ],
-          "retainedResponsibility": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
+          "retainedResponsibility": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -228865,7 +228925,7 @@
             "OP-windows-vm-delete",
             "OP-hyper-v-linux-delete"
           ],
-          "retainedResponsibility": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
+          "retainedResponsibility": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },

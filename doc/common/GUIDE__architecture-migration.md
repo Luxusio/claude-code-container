@@ -13,6 +13,31 @@ changes. Native, installed-package and reliability acceptance remain separate.
 Hosted CI, workflow reruns and CI-triggering pushes require explicit user
 authorization. Use local review and the checks appropriate to the current diff.
 
+## Parallel implementation waves
+
+Implement independent operations in separate branches and worktrees from one
+recorded base. Assign one writer to each legacy facade; new inward modules,
+tests and operation guides belong to that same lane. The integration owner alone
+changes shared entrypoints, package/build manifests, shipping checks and this
+progress inventory. Follow the dependency graph in the
+[migration plan](PLAN__ccc-architecture-migration.md).
+
+The next proposed independent wave is runtime launch-argument/mount policy
+(`src/container-runtime.ts`, `src/docker.ts`), workspace create/remove admission
+(`src/worktree.ts`), and OpenCode data-access preparation
+(`src/opencode-data-access.ts`). These are pending operations or pending parts
+of previously bounded cutovers, not rewrites of completed policy. Preserve
+public signatures, command and environment observation order, native scripts,
+state/lock authority and failure behavior. Exact new module/test/guide scopes
+must be recorded before a lane starts.
+
+Each lane receives focused review and local verification. Integrate accepted
+commits serially into a dedicated candidate, then review the interactions and
+run combined local checks once on that candidate. Re-run an affected check only
+when a change or unresolved failure warrants it. Native acceptance remains
+explicitly incomplete when its host is unavailable. Parallel implementation
+does not authorize hosted CI, a push, or changes to existing user work.
+
 The complete Claude/npm/bubblewrap/uv installation policy cutover has passed local verification.
 The [container installation guide](../tooling/GUIDE__container-installation.md)
 requires native callee capture and unchanged assets, runtime selection and

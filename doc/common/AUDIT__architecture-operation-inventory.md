@@ -3,9 +3,15 @@
 Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-The source-mapped inventory contains **32 migrated / 213 implementation work
-items (15.0%)**; 15 are partial and 166 are pending. Partial and pending together
-leave 181 implementation items unfinished at this baseline.
+Status: **incomplete inventory; source review remediation pending**. The formal
+review found missing observation routes, stale authority/reference records and
+an incomplete operation previously counted as migrated. No complete required
+TODO denominator or architecture implementation percentage is certified.
+
+The discovered rows currently contain 31 migrated, 16 partial and 166 pending
+items. The 213 discovered rows are a candidate set, not the complete required
+total. Missing operation proposals and binding corrections remain to be merged
+and reviewed; these counts must not be used as the overall progress fraction.
 
 This is an unweighted count of operation cutovers, not an estimate of remaining
 effort or overall Goal acceptance. A small installation policy and a large
@@ -26,7 +32,7 @@ accounting; they do not certify native execution or the completed architecture.
 | M07 | 23 | 0 | 10 | 13 |
 | M08 | 76 | 0 | 1 | 75 |
 | M09 | 1 | 0 | 0 | 1 |
-| M10 | 14 | 9 | 1 | 4 |
+| M10 | 14 | 8 | 2 | 4 |
 | M11 | 34 | 23 | 1 | 10 |
 | M12 | 16 | 0 | 0 | 16 |
 | M13 | 6 | 0 | 0 | 6 |
@@ -52,8 +58,9 @@ results, and those results do not certify subsequent changes.
 | native | 0 | 15 | 0 | 0 |
 | reliability | 0 | 15 | 0 | 0 |
 
-To reproduce the implementation count, count `workItems` once by `id`, group by
-`implementationStatus`, and divide migrated by total. For packet counts, group
+To reproduce the discovered counts, count `workItems` once by `id` and group by
+`implementationStatus`. Publish a completion fraction only after source scope
+is closed and independently accepted. For packet counts, group
 by `countingOwner`, not `packets`. Acceptance totals group `acceptanceItems` by
 `kind` and `status`; they use a separate denominator. `closure` records the
 source-mapping claim and its review status, not an architecture acceptance gate.
