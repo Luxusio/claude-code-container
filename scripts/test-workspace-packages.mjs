@@ -4730,6 +4730,8 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
   assert.equal(os.homedir(), privateHome);
   const hash = text => createHash('sha256').update(text).digest('hex');
   const saved = [], denied = [];
+  const diagnosticStringify=JSON.stringify;
+  let stage='install-fences', consumerFailed=false;
   const replace = (object, name, value) => {
     saved.push([object, name, Object.getOwnPropertyDescriptor(object, name)]);
     Object.defineProperty(object, name, {configurable: true, writable: true, value});
@@ -4780,6 +4782,7 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       assert(file.startsWith(path.resolve(payload)+path.sep)); assert(native.existsSync(file),`Missing shipped MCP module ${relative}`);
       return pathToFileURL(file).href;
     };
+    stage='compiled-payload-imports';
     const facade = await import(resolve('dist/mcp-forward.js'));
     await import(resolve('dist/application/mcp-forward.js'));
     const adapter = await import(resolve('dist/adapters/mcp-forward.js'));
@@ -4825,6 +4828,7 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       'host-getter-throw':['06a4d19497feba13ca3d08b1fa06972d0e8ba7f2ae8f47041568bfcc0d4e844a','b83b5af2d2409e7389f4bb1814e47eeca5a9189d2924c76d58542462ae9724d2'],
     };
     for (mode of Object.keys(goldens)) {
+      stage='compiled-'+mode;
       restoreJson();active=false;fs.writeFileSync=selectedWriter;syncBuiltinESMExports();
       const profile='callee-'+mode;
       target=utils.getClaudeJsonFile(profile);const codex=utils.getCodexConfigFile(profile);
@@ -4862,6 +4866,7 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
     }
     // Public default and named profile regeneration uses real private native locks.
     for(const profile of [undefined,'work']) {
+      stage='public-profile-'+(profile??'default');
       mode='public';events=[];active=false;restoreJson();
       target=utils.getClaudeJsonFile(profile);const codex=utils.getCodexConfigFile(profile);
       fs.mkdirSync(path.dirname(target),{recursive:true});fs.mkdirSync(path.dirname(codex),{recursive:true});
@@ -4879,17 +4884,38 @@ async function mcpPayloadConsumer(payload, privateHome, ts) {
       const config=originalParse(native.readFileSync(target,'utf8'));assert.equal(config.retained,true);assert(config.mcpServers['device-lab']);
     }
     // Construction must not select the native publication writer.
+    stage='compiled-construction';
     let selections=0;const ports=adapter.createNativeMcpConfigPorts();
     const descriptor=Object.getOwnPropertyDescriptor(ports,'publishClaudeProfile');
     Object.defineProperty(ports,'publishClaudeProfile',{...descriptor,get(){selections++;return descriptor.get.call(ports);}});
     const app=await import(resolve('dist/application/mcp-forward.js'));app.createMcpConfigRegenerator(ports);assert.equal(selections,0);
     assert(ts,'checker-owned TypeScript compiler required for actual payload CLI8');
+    stage='payload-mapped-CLI8';
     await mcpPayloadCliConsumer(payload,privateHome,ts,name=>denied.push(name));
     return {parserCases:4,writerCases:4,publicProfiles:2,cliCases:8};
+  } catch(error) {
+    consumerFailed=true;
+    // Preserve the exact failure; cleanup diagnostics must never replace it.
+    try { console.error(diagnosticStringify({consumer:'MCP-shipping',stage,
+      error:{name:error?.name,message:String(error?.message??error).slice(0,1200)},
+      deniedEffects:denied.length,denied:denied.slice(0,8).map(name=>String(name).slice(0,160))}).slice(0,2400)); } catch { /* diagnostic only */ }
+    throw error;
   } finally {
-    Object.defineProperty(JSON,'parse',parseDescriptor);Object.defineProperty(JSON,'stringify',stringifyDescriptor);
-    for(const [object,name,descriptor] of saved.reverse())Object.defineProperty(object,name,descriptor);
-    syncBuiltinESMExports();assert.deepEqual(denied,[], 'caught forbidden MCP effects');
+    const cleanupFailures=[];
+    const restore=operation=>{try{operation();}catch(error){cleanupFailures.push(error);}};
+    restore(()=>Object.defineProperty(JSON,'parse',parseDescriptor));
+    restore(()=>Object.defineProperty(JSON,'stringify',stringifyDescriptor));
+    for(const [object,name,descriptor] of saved.reverse())restore(()=>{
+      if(descriptor!==undefined)Object.defineProperty(object,name,descriptor);
+      else assert.equal(Reflect.deleteProperty(object,name),true,'restore original property absence');
+    });
+    restore(()=>syncBuiltinESMExports());
+    if(consumerFailed){
+      if(cleanupFailures.length)try{console.error(diagnosticStringify({consumer:'MCP-cleanup',stage,cleanupFailures:cleanupFailures.map(error=>String(error?.message??error).slice(0,160)).slice(0,8)}).slice(0,1600));}catch{/* diagnostic only */}
+    }else{
+      if(cleanupFailures.length)throw cleanupFailures[0];
+      assert.deepEqual(denied,[], 'caught forbidden MCP effects');
+    }
   }
 }
 
