@@ -1,0 +1,94 @@
+import { describe, expect, it } from "vitest";
+import { createLabRunnerDiagnostics } from "../../application/lab-runner-diagnostics.js";
+import type { LabRunnerConfigObservation } from "../../domain/lab-runner-diagnostics.js";
+
+const config = (status: "ready" | "unsupported" = "ready"): LabRunnerConfigObservation => ({ status, stateVolumeName: "state", stateContainerDir: "/private/state", networkMode: "user", kvmGroupId: 0, kvmDevicePath: "/private/kvm" });
+function fixture() {
+    const trace: unknown[] = [], output: string[] = [];
+    const ports = {
+        resolveProjectPath: (cwd: string) => { trace.push(["resolve", cwd]); return "/private/project"; },
+        containerName: (path: string, profile?: string) => { trace.push(["name", path, profile]); return profile ? "lab" : "default"; },
+        containerVmConfig: (name: string) => { trace.push(["config", name]); return config(); },
+        labRunnerVmConfig: (profile: string, name: string): LabRunnerConfigObservation | null => { trace.push(["lab", profile, name]); return config(); },
+        labProfileName: () => { trace.push("profile"); return "lab-runner"; },
+        stateVolumeName: (name: string) => { trace.push(["volume", name]); return "lab-state"; },
+        stateContainerDir: () => { trace.push("directory"); return "/private/state"; },
+        runtimeSummary: () => { trace.push("runtime"); return "fixture runtime"; },
+        publishOutput: (message: string): undefined => { output.push(message); return undefined; },
+        publishUsage: (message: string): undefined => { output.push(message); return undefined; },
+    };
+    return { ports, trace, output };
+}
+
+describe("whole inward lab diagnostics", () => {
+    it("constructs without observing ports and preserves full snapshot order and group zero", () => {
+        const f = fixture(), app = createLabRunnerDiagnostics(f.ports);
+        expect(f.trace).toEqual([]);
+        const result = app.snapshot("raw cwd");
+        expect(f.trace).toEqual([["resolve", "raw cwd"], ["name", "/private/project", undefined], ["config", "default"], "profile", ["name", "/private/project", "lab-runner"], "profile", ["lab", "lab-runner", "lab"], "profile", ["volume", "lab"], "directory", "runtime"]);
+        expect(result.kvmGroupId).toBe(0); expect(result.defaultContainerVmCapable).toBe(true);
+        expect(result.defaultContainer).not.toBe(result.labRunnerProfile);
+    });
+    it.each([null, false, 0, ""])("preserves raw truthy fallback for %j", raw => {
+        const f = fixture();
+        // Deliberately adversarial runtime observation, outside production static contracts.
+        Object.defineProperty(f.ports, "labRunnerVmConfig", { value: () => raw });
+        createLabRunnerDiagnostics(f.ports).snapshot("cwd");
+        expect(f.trace.filter(x => Array.isArray(x) && x[0] === "config")).toEqual([["config", "default"], ["config", "lab"]]);
+    });
+    it("projects shared raw observations twice without caching or losing getter order", () => {
+        const f = fixture(), reads: string[] = [], raw = config();
+        for (const key of Object.keys(raw) as (keyof LabRunnerConfigObservation)[]) {
+            const value = raw[key]; Object.defineProperty(raw, key, { get: () => { reads.push(key); return value; } });
+        }
+        f.ports.containerVmConfig = () => raw; f.ports.labRunnerVmConfig = () => raw;
+        const snapshot = createLabRunnerDiagnostics(f.ports).snapshot("cwd");
+        const order = ["stateVolumeName", "stateContainerDir", "status", "unsupportedReason", "kvmDevicePath", "kvmGroupId", "networkMode"];
+        // Optional properties must also retain their original observation positions.
+        Object.defineProperty(raw, "unsupportedReason", { get: () => { reads.push("unsupportedReason"); return undefined; } });
+        reads.length = 0; createLabRunnerDiagnostics(f.ports).snapshot("cwd");
+        expect(reads).toEqual([...order, ...order]); expect(snapshot.defaultContainer).not.toBe(snapshot.labRunnerProfile);
+    });
+    it.each(["status", "doctor", "smoke", ""])("dispatches %j synchronously with non-starting diagnostic text", command => {
+        const f = fixture(); f.ports.containerVmConfig = () => config("unsupported"); f.ports.labRunnerVmConfig = () => config("unsupported");
+        expect(createLabRunnerDiagnostics(f.ports).cli([command], "cwd")).toBe(0);
+        expect(f.output[0]).toContain(command === "smoke" ? "result: SKIP" : "this status check does not start labs or VMs");
+    });
+    it.each([["ready", "ready"], ["ready", "unsupported"], ["unsupported", "ready"], ["unsupported", "unsupported"]] as const)("preserves independent default %s and lab %s readiness", (defaultStatus, labStatus) => {
+        const f = fixture(); f.ports.containerVmConfig = () => config(defaultStatus); f.ports.labRunnerVmConfig = () => config(labStatus);
+        const app = createLabRunnerDiagnostics(f.ports), snapshot = app.snapshot("cwd");
+        expect(snapshot.defaultContainer.status).toBe(defaultStatus); expect(snapshot.status).toBe(labStatus);
+        expect(app.formatSmoke("cwd")).toContain(`result: ${defaultStatus === "ready" && labStatus === "ready" ? "PASS" : "SKIP"}`);
+        expect(app.formatStatus("cwd")).toContain("group=0");
+    });
+    it.each([undefined, 0, 7])("retains nullish group projection for %j while empty text becomes null", group => {
+        const f = fixture(); f.ports.labRunnerVmConfig = () => ({ ...config(), unsupportedReason: "", kvmDevicePath: "", kvmGroupId: group });
+        const snapshot = createLabRunnerDiagnostics(f.ports).snapshot("cwd");
+        expect(snapshot.kvmGroupId).toBe(group ?? null); expect(snapshot.unsupportedReason).toBeNull(); expect(snapshot.kvmDevicePath).toBeNull();
+    });
+    it("unknown dispatch never observes native configuration", () => {
+        const f = fixture(); expect(createLabRunnerDiagnostics(f.ports).cli([" STATUS "], "cwd")).toBe(1);
+        expect(f.trace).toEqual([]); expect(f.output).toEqual(["Usage: ccc labs <status|doctor|smoke|shell|run>"]);
+    });
+    it("accepts inherited ports without invoking accessors at construction", () => {
+        const f = fixture(); let reads = 0;
+        const prototype = Object.create(f.ports) as typeof f.ports;
+        Object.defineProperty(prototype, "runtimeSummary", { get: () => { reads++; return () => "runtime"; } });
+        const app = createLabRunnerDiagnostics(Object.create(prototype) as typeof f.ports);
+        expect(reads).toBe(0); app.snapshot("cwd"); expect(reads).toBe(1);
+    });
+    it.each(Object.keys(fixture().ports))("rejects missing or noncallable data port %s without effects", key => {
+        for (const missing of [true, false]) {
+            const f = fixture(), ports = { ...f.ports };
+            if (missing) Reflect.deleteProperty(ports, key); else Object.defineProperty(ports, key, { value: 1 });
+            expect(() => createLabRunnerDiagnostics(ports)).toThrow(); expect(f.trace).toEqual([]);
+        }
+    });
+    it("preserves raw thrown values without fallback or publication", () => {
+        const f = fixture(), fault = {};
+        f.ports.labRunnerVmConfig = () => { throw fault; };
+        try { createLabRunnerDiagnostics(f.ports).cli(["status"], "cwd"); throw new Error("expected raw failure"); }
+        catch (error) { expect(error).toBe(fault); }
+        expect(f.output).toEqual([]); expect(f.trace).not.toContain("runtime");
+    });
+});
