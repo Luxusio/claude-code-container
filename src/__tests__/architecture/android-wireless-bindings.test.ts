@@ -6,6 +6,12 @@ import * as url from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 const root=path.resolve(path.dirname(url.fileURLToPath(import.meta.url)),"../../..");
+// Root authenticated this final reviewed source during the exact serial replay.
+// ORIGINAL_BINDINGS below remains the immutable pre-extraction witness.
+const CURRENT_BROKER_AUTHORITY=Object.freeze({
+    reviewedSourceCommit:"826ba9c3cc9d96a08c2ccfe222446e1a34485253",
+    sha256:"d4a0d26a185e29c4e55f3e53fa2b9b4fcc549a86096c7caaac69f2e4a3b78c7c",
+});
 // Read-only real server/broker/native inputs frozen before candidate source.
 // Each runtime uses the real server dispatch and actual authenticated broker
 // backend child; fake transport exists only below commands.mjs.
@@ -79,8 +85,12 @@ function runBindings(payloadRoot:string) {
     }
 }
 describe("Android wireless actual direct and authenticated broker bindings",()=>{
-    it("pins all untouched direct/broker/native source inputs before current route execution",()=>{
-        for(const [file,expected]of Object.entries(ORIGINAL_BINDINGS))expect(hash(fs.readFileSync(path.join(root,file)))).toBe(expected);
+    it("preserves historical inputs and authenticates current direct/broker/native source before route execution",()=>{
+        expect(ORIGINAL_BINDINGS["packages/device-lab/src/device-lab-broker.ts"]).toBe("94f8c77c8f2939c41b2bb1fbccb9bf94affaa21bc9d870d0f12999321cbb875b");
+        for(const [file,original]of Object.entries(ORIGINAL_BINDINGS)) {
+            const expected=file==="packages/device-lab/src/device-lab-broker.ts"?CURRENT_BROKER_AUTHORITY.sha256:original;
+            expect(hash(fs.readFileSync(path.join(root,file)))).toBe(expected);
+        }
         expect(BACKEND_SCRIPT).toContain("await backend[handlerName](tool, args)");
         expect(CONTROL_RUNNER).not.toContain("deviceToolRunner:");
         expect(CONTROL_RUNNER).not.toContain("commandRunner:");

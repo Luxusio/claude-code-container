@@ -1,8 +1,9 @@
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { parseVerificationArgs, runVerificationSelection, verifyCurrentDeclarationContracts } from "../../scripts/test-workspace-packages.mjs";
+import { parseVerificationArgs, runOwnedShippingProgram, runVerificationSelection, verifyCurrentDeclarationContracts } from "../../scripts/test-workspace-packages.mjs";
 
 const payloadRoot = resolve("assembled payload");
 const preflightArgs = ["--preflight", "--payload-root", payloadRoot];
@@ -297,6 +298,94 @@ describe.skipIf(typeof process.getuid !== "function")("current declaration evide
             expect(readFileSync(join(directory, "unrelated.txt"), "utf8")).toBe("keep me");
             expect(lstatSync(priorEvidence).ino).toBe(priorBirth.ino);
             expect(readFileSync(join(priorEvidence, "result-1.json"), "utf8")).toBe("previous evidence");
+        });
+    });
+});
+
+function shippingProgramFixture(check: (directory: string) => void) {
+    const directory = mkdtempSync(join(tmpdir(), "ccc-owned-shipping-program-"));
+    const birth = lstatSync(directory);
+    try {
+        check(directory);
+        const current = lstatSync(directory);
+        expect([current.dev, current.ino, current.uid]).toEqual([birth.dev, birth.ino, birth.uid]);
+        expect(current.isDirectory() && !current.isSymbolicLink()).toBe(true);
+        rmSync(directory, { recursive: true });
+    } catch (error) {
+        console.error(`Retained shipping program fixture: ${directory}`);
+        throw error;
+    }
+}
+
+function shippingProgramOptions(directory: string) {
+    return {
+        cwd: directory,
+        env: { HOME: directory, USERPROFILE: directory, TMP: directory, TEMP: directory, PATH: "",
+            ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}),
+            SHIPPING_TEST_TOKEN: "private UTF-8 Ω 🦊 'quoted'" },
+        encoding: "utf8" as const,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+        shell: false,
+        windowsHide: true,
+    };
+}
+
+describe("actual owned shipping program stdin transport", () => {
+    it("runs a module above the single-argument limit with exact UTF-8 and literal quotes in its private cwd/environment", () => {
+        shippingProgramFixture(directory => {
+            const literal = "'single' \"double\" `backtick` \\backslash ${literal} $(literal)\n日本語 Ω 🦊\n";
+            const payload = literal.repeat(4096);
+            const program = `import { createHash } from 'node:crypto';
+const payload = ${JSON.stringify(payload)};
+process.stdout.write(JSON.stringify({
+    sha256: createHash('sha256').update(payload, 'utf8').digest('hex'),
+    bytes: Buffer.byteLength(payload, 'utf8'), first: payload.slice(0, ${literal.length}), last: payload.slice(-${literal.length}),
+    cwd: process.cwd(), token: process.env.SHIPPING_TEST_TOKEN, argv: process.argv.slice(1), parentPid: process.ppid,
+}));`;
+            expect(Buffer.byteLength(program, "utf8")).toBeGreaterThan(128 * 1024);
+            const options = shippingProgramOptions(directory);
+            const result = runOwnedShippingProgram(program, options);
+            expect(result.error).toBeUndefined(); expect(result.status, String(result.stderr)).toBe(0); expect(result.signal).toBeNull();
+            expect(typeof result.stdout).toBe("string"); expect(result.stderr).toBe("");
+            expect(JSON.parse(String(result.stdout))).toEqual({
+                sha256: createHash("sha256").update(payload, "utf8").digest("hex"), bytes: Buffer.byteLength(payload, "utf8"),
+                first: literal, last: literal, cwd: directory, token: options.env.SHIPPING_TEST_TOKEN, argv: [], parentPid: process.pid,
+            });
+            expect(options).not.toHaveProperty("input");
+        });
+    });
+
+    it("returns actual nonzero exit, partial stdout and UTF-8 stderr without replacing the native result", () => {
+        shippingProgramFixture(directory => {
+            const program = "process.stdout.write('partial stdout Ω'); process.stderr.write('controlled failure 🦊'); process.exitCode = 19;";
+            const result = runOwnedShippingProgram(program, shippingProgramOptions(directory));
+            expect(result.error).toBeUndefined(); expect(result.status).toBe(19); expect(result.signal).toBeNull();
+            expect(result.stdout).toBe("partial stdout Ω"); expect(result.stderr).toBe("controlled failure 🦊");
+        });
+    });
+
+    it("preserves the caller timeout and raw spawn error/signal when its owned program remains active", () => {
+        shippingProgramFixture(directory => {
+            const options = { ...shippingProgramOptions(directory), timeout: 1000, killSignal: "SIGTERM" as const };
+            const result = runOwnedShippingProgram("await new Promise(resolve => setTimeout(resolve, 10000));", options);
+            expect(result.error).toMatchObject({ code: "ETIMEDOUT" }); expect(result.status).toBeNull(); expect(result.signal).toBe("SIGTERM");
+            expect(options.timeout).toBe(1000);
+        });
+    });
+
+    it("preserves the caller output bound and raw overflow error instead of accepting truncated output", () => {
+        shippingProgramFixture(directory => {
+            const result = runOwnedShippingProgram("process.stdout.write('x'.repeat(65536)); await new Promise(resolve => setTimeout(resolve, 10000));", { ...shippingProgramOptions(directory), maxBuffer: 512 });
+            expect(result.error).toMatchObject({ code: "ENOBUFS" }); expect(result.status).toBeNull();
+            expect(result.signal).toBe("SIGTERM");
+        });
+    });
+
+    it("refuses shell transport before evaluating a supplied program", () => {
+        shippingProgramFixture(directory => {
+            expect(() => runOwnedShippingProgram("process.stdout.write('must not execute');", { ...shippingProgramOptions(directory), shell: true }))
+                .toThrow("shipping program transport does not use a shell");
         });
     });
 });

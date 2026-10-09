@@ -102,6 +102,16 @@ describe("actual baseline and current lab facade", () => {
             "src/index.ts": "b70ba8715cc9c613614eb6bdc4dd357ce0fa36ab54632a8ddd550abf9c23f59a",
             "src/container-identity.ts": "f983981bf9ed20a2daa1121ea6e9161854b3f74404538389f36ee1bbe61dd157"
         };
-        for (const [path, hash] of Object.entries(originalNativeHashes)) expect(createHash("sha256").update(readFileSync(resolve(root, path))).digest("hex")).toBe(hash);
+        // Root authenticated this reviewed final index during serial replay;
+        // retain the original index witness rather than relabel it as current.
+        const currentIndexAuthority = Object.freeze({
+            reviewedSourceCommit: "865ea27eff894bf01545811c282fdc7fb6bc4eb0",
+            sha256: "8ec71a95b2446d43b52c356ba40d46c6cf084f4751efcad6aaa825bb037301b1",
+        });
+        expect(originalNativeHashes["src/index.ts"]).toBe("b70ba8715cc9c613614eb6bdc4dd357ce0fa36ab54632a8ddd550abf9c23f59a");
+        for (const [path, original] of Object.entries(originalNativeHashes)) {
+            const expected = path === "src/index.ts" ? currentIndexAuthority.sha256 : original;
+            expect(createHash("sha256").update(readFileSync(resolve(root, path))).digest("hex")).toBe(expected);
+        }
     });
 });
