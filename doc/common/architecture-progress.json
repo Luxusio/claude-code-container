@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-09",
+  "updatedAt": "2026-10-10",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -280,6 +280,30 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "da5d7d368184aef48ae15ef357be69757688c411"
+    },
+    {
+      "id": "services-clean-harness-integration",
+      "branch": "refactor/architecture-services-clean-harness-integration-20261009",
+      "commit": "ed8dda6c943ad36cf8ba4a712655723b87e511a6",
+      "taskId": "TASK__architecture-services-clean-harness-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-remote-setup",
+        "OP-remote-check",
+        "OP-remote-exec",
+        "OP-remote-terminate",
+        "OP-localhost-proxy",
+        "OP-localhost-proxy-setup",
+        "OP-doctor",
+        "OP-labs-diagnostics",
+        "OP-clean",
+        "OP-codex-harness-bootstrap"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "independent code/security/docs actual PASS; genuine build/BOTH42 each/full portable QA actual PASS; hook records absent, no formal close",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "ed8dda6c943ad36cf8ba4a712655723b87e511a6"
     }
   ],
   "planningLanes": [

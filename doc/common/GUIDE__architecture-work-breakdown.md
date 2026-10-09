@@ -1,12 +1,12 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-09. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-10. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **58/218 (26.6%)**.
-Integrated source: **58/218 (26.6%)**; historical baseline: **31**. Candidates: **0**; partial: **20**; TODO: **140**.
+Implemented including unmerged candidates: **68/218 (31.2%)**.
+Integrated source: **68/218 (31.2%)**; historical baseline: **31**. Candidates: **0**; partial: **20**; TODO: **130**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -39,6 +39,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | state\-access | 0 | 1 | `8b74ef39` | independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending | accepted @ da5d7d36 |
 | runtime\-capabilities | 1 | 0 | `8f97651b` | independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending | accepted @ da5d7d36 |
 | mcp\-forward | 1 | 0 | `0cd28374` | independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending | accepted @ da5d7d36 |
+| services\-clean\-harness\-integration | 10 | 0 | `ed8dda6c` | independent code/security/docs actual PASS; genuine build/BOTH42 each/full portable QA actual PASS; hook records absent, no formal close | accepted @ ed8dda6c |
 
 ## 0.2 Active next plans
 
@@ -237,7 +238,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-broker-status` — Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-broker-service-status` — Observe OS service\-manager installed/running/owner diagnostics for status only, including dry\-run preview. **integrated**; broker\-observations @ 3f020650.
 
-## 11. M10 — Sessions and containers (12/14 implemented)
+## 11. M10 — Sessions and containers (13/14 implemented)
 
 - [x] `OP-container-runtime` — Select container runtime. **integrated**; src/application/container\-runtime\-selection\.ts.
 - [x] `OP-session-acquire` — Acquire and transfer session ownership. **integrated**; src/application/session\-acquisition\.ts.
@@ -247,7 +248,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-stop` — Stop project container. **integrated**; src/application/container\-destructive\-lifecycle\.ts.
 - [x] `OP-container-remove` — Remove project container. **integrated**; src/application/container\-destructive\-lifecycle\.ts.
 - [ ] `OP-container-exec` — Execute tool or command in project container. **partial**; src/docker\.ts.
-- [ ] `OP-clean` — Clean containers/images/volumes. **TODO**; src/clean\.ts.
+- [x] `OP-clean` — Clean containers/images/volumes. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 - [x] `OP-container-image` — Prepare container image. **integrated**; src/application/container\-image\-preparation\.ts.
 - [x] `OP-container-socket` — Prepare container socket access. **integrated**; src/application/container\-socket\-access\.ts.
 - [x] `OP-runtime-capabilities` — Observe and cache selected runtime capabilities. **integrated**; runtime\-capabilities @ 8f97651b.
@@ -290,29 +291,29 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-home-default-ensure` — Ensure marked no\-profile account. **integrated**; src/application/home/layout\-paths\.ts.
 - [x] `OP-codex-state-ownership-migration` — prepareCodexStateOwnership. **integrated**; codex\-state\-ownership @ 912ec696.
 
-## 13. M12 — Host services/tool sessions/remote (8/16 implemented)
+## 13. M12 — Host services/tool sessions/remote (15/16 implemented)
 
 - [x] `OP-clipboard-write` — Publish host clipboard text/image. **integrated**; clipboard\-bridge @ fb7457c7.
 - [ ] `OP-clipboard-x11-sync` — Synchronize X11 and host clipboard. **TODO**; scripts/ccc\-x11\-bridge.
 - [x] `OP-codex-launch` — Prepare interactive Codex daemon launch. **integrated**; codex\-launch @ ea96263f.
 - [x] `OP-codex-resume` — Recover qualified Codex resume once. **integrated**; codex\-resume @ b625854d.
-- [ ] `OP-remote-exec` — Execute command through remote lease. **TODO**; src/remote\.ts.
-- [ ] `OP-localhost-proxy` — Forward transparent localhost connection. **TODO**; src/localhost\-proxy\.ts.
+- [x] `OP-remote-exec` — Execute command through remote lease. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
+- [x] `OP-localhost-proxy` — Forward transparent localhost connection. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 - [x] `OP-mcp-forward` — Regenerate per\-profile MCP configuration. **integrated**; mcp\-forward @ 0cd28374.
-- [ ] `OP-localhost-proxy-setup` — Verify container localhost proxy. **TODO**; src/localhost\-proxy\-setup\.ts.
-- [ ] `OP-remote-setup` — Present remote setup guidance. **TODO**; src/remote\.ts.
-- [ ] `OP-remote-check` — Remote check. **TODO**; src/remote\.ts.
-- [ ] `OP-remote-terminate` — Terminate project Mutagen sync. **TODO**; src/remote\.ts.
+- [x] `OP-localhost-proxy-setup` — Verify container localhost proxy. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
+- [x] `OP-remote-setup` — Present remote setup guidance. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
+- [x] `OP-remote-check` — Remote check. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
+- [x] `OP-remote-terminate` — Terminate project Mutagen sync. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 - [x] `OP-clipboard-server-ensure` — Clipboard server ensure. **integrated**; clipboard\-bridge @ fb7457c7.
 - [x] `OP-clipboard-server-retire` — Clipboard server retire. **integrated**; clipboard\-bridge @ fb7457c7.
 - [x] `OP-clipboard-read` — Read coherent host clipboard snapshot. **integrated**; clipboard\-bridge @ fb7457c7.
 - [x] `OP-codex-clipboard-attachment` — Attach clipboard image to eligible Codex invocation. **integrated**; codex\-clipboard @ fb6c26f7.
-- [ ] `OP-codex-harness-bootstrap` — Ensure existing Codex Harness integration. **TODO**; src/codex\-harness\.ts.
+- [x] `OP-codex-harness-bootstrap` — Ensure existing Codex Harness integration. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 
-## 14. M13 — Composition and distribution (0/6 implemented)
+## 14. M13 — Composition and distribution (2/6 implemented)
 
-- [ ] `OP-doctor` — Diagnose CCC runtime. **TODO**; src/doctor\.ts.
-- [ ] `OP-labs-diagnostics` — Report lab\-runner status/doctor/smoke. **TODO**; src/lab\-runner\-admin\.ts.
+- [x] `OP-doctor` — Diagnose CCC runtime. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
+- [x] `OP-labs-diagnostics` — Report lab\-runner status/doctor/smoke. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 - [ ] `OP-global-install` — Install CCC global entrypoint. **TODO**; scripts/install\.js.
 - [ ] `OP-global-uninstall` — Uninstall CCC global entrypoint. **TODO**; scripts/install\.js.
 - [ ] `OP-source-postinstall` — Handle npm postinstall source/artifact mode. **TODO**; scripts/install\.js.
