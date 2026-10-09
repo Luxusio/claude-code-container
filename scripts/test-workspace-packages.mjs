@@ -23184,7 +23184,7 @@ function authenticateCurrentFollowup(payload) {
     assert.equal(tree.parseDiagnostics.length,0);const staticImports=tree.statements.filter(node=>ts.isImportDeclaration(node)&&!node.importClause?.isTypeOnly).map(node=>node.moduleSpecifier.text).sort();assert.deepEqual(staticImports,FOLLOWUP_CURRENT_INDEX_IMPORTS,'current source imports require the exact admitted topology');
     const index=emission.files['dist/index.js'],broker=emission.files['dist/packages/device-lab/dist/device-lab-broker.js'];
     assert.equal(emission.files['dist/packages/device-lab/dist/device-lab-shared-state.js'].sha256,INDEX_SHARED_STATE_AUTHORITY.sharedStateSha256,'unchanged native shared-state authority');
-    return {sourceCommit:FOLLOWUP_SOURCE_AUTHORITY.sourceCommit,sourcePins:FOLLOWUP_SOURCE_AUTHORITY.sourcePins,emissionPins:emission.files,dependencyPins:emission.dependencies,controllerDependencySource:{sourceRoot:root,pins:emission.controllerDependencies.pins},
+    return {sourceCommit:FOLLOWUP_SOURCE_AUTHORITY.sourceCommit,sourcePins:FOLLOWUP_SOURCE_AUTHORITY.sourcePins,emissionPins:emission.files,dependencyPins:emission.dependencies,controllerDependencySource:{sourceRoot:resolve(root),pins:emission.controllerDependencies.pins},
         index:{sourceSha256:FOLLOWUP_SOURCE_AUTHORITY.sourcePins['src/index.ts'].sha256,emittedSha256:index.sha256,emittedBytes:index.bytes,staticImports},
         broker:{sourceSha256:FOLLOWUP_SOURCE_AUTHORITY.sourcePins['packages/device-lab/src/device-lab-broker.ts'].sha256,emittedSha256:broker.sha256,emittedBytes:broker.bytes}};
 }
