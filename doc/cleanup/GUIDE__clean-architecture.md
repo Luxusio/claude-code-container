@@ -1,0 +1,17 @@
+# Clean architecture
+
+The public named async `cleanContainers(options): Promise<void>` in `src/clean.ts` is composed directly from `createClean` in `src/application/clean.ts`. The application owns the complete inventory, parsing, selection, presentation, confirmation, locked container cleanup, image/volume deletion, count and exit policy. Domain types and required semantic ports have no Node imports or native defaults. The existing facade retains native mechanisms; it supplies no whole-workflow callback.
+
+The sole intentional behavior correction is specified in [the inventory failure requirement](REQ__clean-inventory-failure.md). Every executed inventory command checks raw error first and then requires status zero before stdout. Failure rejects before plan output, confirmation or cleanup effects. Native thrown/getter failures propagate unchanged. Successful parsing, outputs and effects retain their original behavior except these explicit admission reads.
+
+Public fields remain only `volumes`, `all`, `dryRun`, and `yes`; CLI flags are the existing `--volumes`, `--all`, `--dry-run`, `--yes` and `-y` confirmation alias. Recorded all-projects/force wording grants no new flag, label policy or claim bypass. Root reconciliation of that wording remains a whole-operation credit gate.
+
+Inventory chooses the current runtime for every command and still queries both image repositories, preserving first-ID dedupe. Optional volumes use the existing option short-circuit. Repeated option reads are not cached. Only after confirmation does the application capture mutation runtime once. Individual mutation effect getters select the current native spawn callee before application argument evaluation; no future spawn/logger/guard callee is eagerly captured.
+
+Each container uses the existing 180-second synchronous lifecycle guard and raw session-claim veto, including all mode. Application callback code decides skip/stop/remove and interprets raw results. Captured IDs remain the deletion targets; there is no new managed-label, lease, pruning or generation inspection. Images and volumes retain their existing scope and lack an extra claim guard. First mutation failure preserves earlier successful changes and aborts later work.
+
+Publication captures the current console logger and original console receiver at each site before computing its argument. The lifecycle guard and native effect getters likewise retain staged callee selection. The named async application is exported directly so no forwarding Promise boundary is added. Port objects perform no native observation during construction.
+
+Before source edits the task froze actual original source/native dependencies, old tests/index/compiler/package inputs, authenticated completed original JS/declarations, and source/emitted original traces. Original failed-inventory continuation controls remain immutable; candidate failure assertions derive the REQ rather than a candidate golden. Trace parity identifies the intentional new inventory error/status reads separately. Bounded facade traces do not establish independent native lock/claim/readiness acceptance.
+
+Independent code/security release precedes candidate verification. Exact-ID veto/default-running/fail-stop/first-failure cases, strict genuine source/emitted declarations and actual CLI binding are required. Root owns both complete shipping forms, main/full integration, native reliability and shared inventory/WBS/progress. Source helpers receive no separate credit, and mock evidence authorizes no real engine deletion.
