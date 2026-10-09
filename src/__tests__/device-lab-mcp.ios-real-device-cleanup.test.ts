@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { inspectProcessIdentity, waitForProcessIdentity } from "@ccc/device-lab/providers/state/process-identity.mjs";
-import { cleanupFakeIosMcpContext, createFakeIosMcpContext, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
+import { cleanupFakeIosMcpContext, createFakeIosMcpContext, fakeIosFixtureDiagnostics, joinFakeIosFixtureChild, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
 
 type DeviceRecord = Record<string, unknown> & {
     id: string;
@@ -52,13 +52,20 @@ describe.skipIf(process.platform === "win32")("iOS physical runtime cleanup fenc
     let context: FakeIosMcpContext | undefined;
     let child: ChildProcess | undefined;
 
-    afterEach(async () => {
-        if (child?.pid && child.exitCode === null) {
-            try { child.kill("SIGKILL"); } catch { /* process already exited */ }
+    afterEach(async ({ task }) => {
+        const deadline = Date.now() + TIMEOUT;
+        const failures: string[] = [];
+        try {
+            if (child) await joinFakeIosFixtureChild(child, deadline);
+        } catch (error) { failures.push(String(error)); }
+        try { await cleanupFakeIosMcpContext(context, { deadline }); }
+        catch (error) { failures.push(String(error)); }
+        context = undefined; child = undefined;
+        if (failures.length) {
+            const diagnostic = failures.join("; ").slice(0, 8192);
+            if (task.result?.state === "fail") console.error(diagnostic); // Preserve the original assertion failure.
+            else throw new Error(diagnostic);
         }
-        await cleanupFakeIosMcpContext(context);
-        context = undefined;
-        child = undefined;
     }, TIMEOUT);
 
     it.runIf(process.platform !== "win32")("preserves recording metadata and the physical lease when SIGINT delivery does not stop the recorder", { timeout: TIMEOUT }, async () => {
@@ -147,7 +154,7 @@ describe.skipIf(process.platform === "win32")("iOS physical runtime cleanup fenc
         const statePath = statePathFor(context.homeDir, attached);
         const leasePath = leasePathFor(context.homeDir, attached);
         const session = await context.client.callTool({ name: "ui", arguments: { deviceId: attached.deviceId } });
-        expect(session.isError, (session.content as Array<{ text?: string }>)[0]?.text).not.toBe(true);
+        expect(session.isError, ((session.content as Array<{ text?: string }>)[0]?.text ?? "") + "\n" + fakeIosFixtureDiagnostics(context)).not.toBe(true);
 
         child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", windowsHide: true });
         const recordingIdentity = await waitForProcessIdentity(child.pid, 1000);
@@ -194,7 +201,7 @@ describe.skipIf(process.platform === "win32")("iOS physical runtime cleanup fenc
         const statePath = statePathFor(context.homeDir, attached);
         const leasePath = leasePathFor(context.homeDir, attached);
         const session = await context.client.callTool({ name: "ui", arguments: { deviceId: attached.deviceId } });
-        expect(session.isError, (session.content as Array<{ text?: string }>)[0]?.text).not.toBe(true);
+        expect(session.isError, ((session.content as Array<{ text?: string }>)[0]?.text ?? "") + "\n" + fakeIosFixtureDiagnostics(context)).not.toBe(true);
 
         const currentState = readDevice(statePath, attached.deviceId);
         const successor = {
