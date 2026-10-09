@@ -70,9 +70,10 @@ function canonical(value: unknown): string {
     return JSON.stringify(value) ?? "null";
 }
 
-function fixture(test: Case) {
+function fixture(test: Case, canonicalRoot?: string) {
     const allocatedAt = Date.now() / 1000;
-    const root = mkdtempSync(join(tmpdir(), "ccc-codex-bootstrap-replay-")); allocated.push(root);
+    const root = canonicalRoot ?? mkdtempSync(join(tmpdir(), "ccc-codex-bootstrap-replay-"));
+    if (!canonicalRoot) allocated.push(root);
     const home = join(root, "home"); mkdirSync(home); mkdirSync(join(home, "bin")); mkdirSync(join(home, "tmp"));
     const source = join(home, ".codex/harness"), plugin = join(source, "plugins/harness");
     const version = test.version === undefined ? "2.3.0" : test.version;
@@ -127,7 +128,20 @@ function fixture(test: Case) {
     const anchors = [...anchorPaths].map(path => { const stat = statSync(path); return {path: realpathSync(path), dev: stat.dev, ino: stat.ino, uid: stat.uid, mode: stat.mode & 0o7777}; });
     const manifest = {git: authority(join(home, "bin/git")), installer: authority(join(home, "installer.py")), site: authority(join(fenceDirectory, "sitecustomize.py")), interpreter: authority("/usr/bin/python3"), installerDigest: createHash("sha256").update(installer).digest("hex"), forkAllowed: !!test.deadline, root, home, receipts, fenceDirectory, anchors, born: allocatedAt - 1};
     const environment = {HOME: home, PATH: join(home, "bin"), TMPDIR: join(home, "tmp"), FIXTURE_ROOT: root, FIXTURE_AUTHORITY: JSON.stringify(manifest), PYTHONPATH: fenceDirectory, PYTHONDONTWRITEBYTECODE: "1", ...(test.killFault ? {KILL_FAULT: "1"} : {}), ...(test.drainFault ? {DRAIN_FAULT: "1"} : {}), ...(test.cleanupFault ? {CLEANUP_FAULT: "1"} : {})};
-    return {root, home, config, files, environment};
+    // Capture actual initial bytes, including path-dependent trust digests and installer source.
+    // This witness is compared unchanged across all variants BEFORE their target executes.
+    const initialTree: Record<string, unknown> = {};
+    const initialVisit = (directory: string) => {
+        for (const name of readdirSync(directory).sort()) {
+            const path = join(directory, name), observed = statSync(path);
+            const relative = path.slice(root.length + 1);
+            initialTree[relative] = {type: observed.isDirectory() ? "directory" : "file", mode: observed.mode & 0o7777, uid: observed.uid, gid: observed.gid, nlink: observed.nlink, ...(observed.isFile() ? {size: observed.size, digest: createHash("sha256").update(readFileSync(path)).digest("hex")} : {})};
+            if (observed.isDirectory()) initialVisit(path);
+        }
+    };
+    initialVisit(root);
+    const initialIdentity = {root, home, command, config: existsSync(join(home, ".codex/config.toml")) ? readFileSync(join(home, ".codex/config.toml"), "utf8") : null, installerBytes: installer, installerDigest: manifest.installerDigest, gitBytes: git, gitDigest: manifest.git.digest, siteDigest: manifest.site.digest, initialTree};
+    return {root, home, config, files, environment, initialIdentity};
 }
 
 // Shared data-only path/identity rules; recording is narrowly bound to an owned writer FD.
@@ -573,6 +587,7 @@ def finish():
         tree_error = str(error)
     # Snapshot above is the SUBJECT outcome. Emergency cleanup below grants no subject credit.
     emergency = []
+    teardown = []
     for child in children:
         verified,reason = verified_live_group(child.pid)
         if verified:
@@ -582,7 +597,9 @@ def finish():
             emergency.append([children.index(child),'unknown-no-signal'])
         try: real_popen.communicate(child,timeout=2)
         except subprocess.TimeoutExpired: emergency.append([children.index(child),'drain-timeout'])
-    print('__FIXTURE__'+json.dumps({'denied':denied,'descendant_denied':faults,'calls':calls,'actions':actions,'subject':subject,'emergency':emergency,'surviving_tree':surviving_tree,'tree_error':tree_error}),file=sys.stderr)
+        verified,reason = verified_live_group(child.pid)
+        teardown.append([children.index(child),'live' if verified else reason])
+    print('__FIXTURE__'+json.dumps({'denied':denied,'descendant_denied':faults,'calls':calls,'actions':actions,'subject':subject,'emergency':emergency,'surviving_tree':surviving_tree,'tree_error':tree_error,'teardown':teardown}),file=sys.stderr)
 atexit.register(finish)
 def execute_subject(source,bound_installer):
     tree = ast.parse(source)
@@ -611,16 +628,19 @@ def execute_subject(source,bound_installer):
     exec(compile(tree,'<owned-bootstrap-subject>','exec'),globals())
 `;
 
-function execute(script: string, test: Case, expectedDenials: {parent: number; descendant: number} = {parent: 0, descendant: 0}) {
-    const f = fixture(test);
+function execute(script: string, test: Case, expectedDenials: {parent: number; descendant: number} = {parent: 0, descendant: 0}, canonicalRoot?: string, expectedInitialIdentity?: ReturnType<typeof fixture>["initialIdentity"]) {
+    const f = fixture(test, canonicalRoot);
+    if (expectedInitialIdentity) expect(f.initialIdentity, "identical actual canonical initial bytes BEFORE target execution").toEqual(expectedInitialIdentity);
     const result = spawnSync("/usr/bin/python3", ["-"], {input: FENCE + "\nexecute_subject(" + JSON.stringify(script) + "," + (test.deadline ? "True" : "False") + ")\n", encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024, env: f.environment});
     expect(result.error).toBeUndefined();
     const lines = result.stderr.trimEnd().split("\n");
     const receipt = lines.pop()!;
     expect(receipt).toMatch(/^__FIXTURE__/);
-    const effects = JSON.parse(receipt.slice("__FIXTURE__".length)) as {denied: unknown[]; descendant_denied: unknown[]; calls: [string[], string][]; actions: unknown[][]; subject: {role: string; group_index: number; state: string}[]; emergency: unknown[][]; surviving_tree: Record<string, Record<string, unknown>>; tree_error: string | null};
+    const effects = JSON.parse(receipt.slice("__FIXTURE__".length)) as {denied: unknown[]; descendant_denied: unknown[]; calls: [string[], string][]; actions: unknown[][]; subject: {role: string; group_index: number; state: string}[]; emergency: unknown[][]; surviving_tree: Record<string, Record<string, unknown>>; tree_error: string | null; teardown: [number, string][]};
     expect(effects.denied, `${test.name}: counted denied effects`).toHaveLength(expectedDenials.parent);
     expect(effects.descendant_denied, `${test.name}: every descendant's counted denied effects`).toHaveLength(expectedDenials.descendant);
+    expect(effects.teardown).toHaveLength(effects.calls.length);
+    expect(effects.teardown.every(([, outcome]) => outcome === "retired"), "all owned generations verified finished before canonical filesystem reseeding").toBe(true);
     if (test.deadline) {
         const members = effects.subject.filter(member => member.role === "installer");
         expect(members).toHaveLength(2);
@@ -644,16 +664,46 @@ function execute(script: string, test: Case, expectedDenials: {parent: number; d
         if (typeof hexadecimal === "string") {
             const raw = Buffer.from(hexadecimal, "hex");
             expect(raw.length).toBe(value.size);
-            const text = raw.toString("utf8");
-            if (Buffer.from(text, "utf8").equals(raw)) checked.bytes_text = normalize(text);
-            else checked.bytes_hex = hexadecimal;
+            if (path === "home/git-calls") {
+                // Only the existing authenticated fake-transport log contains native random
+                // workspace receipts. Verify every raw byte against the observed git argv;
+                // then retain the existing registered-temp alias in its semantic comparison.
+                const pythonString = (text: string) => JSON.stringify(text).replace(/[\u007f-\uffff]/g, character => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"));
+                const expected = effects.calls.filter(([args]) => args[0] === "git").map(([args]) => "[" + args.slice(1).map(pythonString).join(", ") + "]\n").join("");
+                const actual = raw.toString("utf8");
+                expect(actual).toBe(expected);
+                checked.bytes_text = normalize(actual);
+            } else {
+                // Config, trusted_hash, installer source and all other files compare EXACT
+                // bytes. The paired canonical path eliminates any need to rewrite them.
+                checked.bytes_hex = hexadecimal;
+            }
         }
         snapshot[path] = checked;
     }
     const calls = effects.calls.map(([args, cwd]) => [args.map(normalize), normalize(cwd)]);
     const git = existsSync(join(f.home, "git-calls")) ? normalize(readFileSync(join(f.home, "git-calls"), "utf8")) : "";
     expect(readdirSync(join(f.home, "tmp"))).toEqual([]);
-    return {status: result.status, stdout: normalize(result.stdout), stderr: normalize(lines.join("\n")), snapshot, calls, git, actions: effects.actions, subject: effects.subject, emergency: effects.emergency};
+    return {status: result.status, stdout: normalize(result.stdout), stderr: normalize(lines.join("\n")), snapshot, calls, git, actions: effects.actions, subject: effects.subject, emergency: effects.emergency, initialIdentity: f.initialIdentity};
+}
+
+function pairedExecutions(scripts: readonly string[], test: Case, expectedDenials: {parent: number; descendant: number} = {parent: 0, descendant: 0}) {
+    const root = mkdtempSync(join(tmpdir(), "ccc-codex-bootstrap-replay-")); allocated.push(root);
+    const birth = statSync(root);
+    let initialIdentity: ReturnType<typeof fixture>["initialIdentity"] | undefined;
+    const results: ReturnType<typeof execute>[] = [];
+    for (const script of scripts) {
+        // execute() admits a result only after every owned group generation is retired.
+        // Preserve the canonical directory itself; reseed all children under that authority.
+        const bound = statSync(root);
+        expect(realpathSync(root)).toBe(root);
+        expect([bound.dev, bound.ino, bound.uid, bound.mode]).toEqual([birth.dev, birth.ino, birth.uid, birth.mode]);
+        if (results.length) for (const name of readdirSync(root)) rmSync(join(root, name), {recursive: true, force: true});
+        const result = execute(script, test, expectedDenials, root, initialIdentity);
+        initialIdentity ??= result.initialIdentity;
+        results.push(result);
+    }
+    return results;
 }
 
 const cases: Case[] = [
@@ -701,8 +751,7 @@ describe("whole executed Python bootstrap original/candidate replay", () => {
         "os.rename(sitecustomize.authority['root'],str(pathlib.Path.home()/'rebound-root'))",
         "os.rename('journal-shadow',receipt.name,src_dir_fd=os.open(str(pathlib.Path.home()),os.O_RDONLY|os.O_DIRECTORY),dst_dir_fd=os.open(sitecustomize.authority['receipts'],os.O_RDONLY|os.O_DIRECTORY))",
     ])("preserves the descendant's earlier caught denial against source/destination/anchor/dirfd attacks: %s", journalProbe => {
-        for (const script of [ORIGINAL, CODEX_HARNESS_BOOTSTRAP, emittedBootstrap]) {
-            const result = execute(script, {name: "sealed-descendant-history", stage: "no-failing-stage", journalProbe}, {parent: 0, descendant: 2});
+        for (const result of pairedExecutions([ORIGINAL, CODEX_HARNESS_BOOTSTRAP, emittedBootstrap], {name: "sealed-descendant-history", stage: "no-failing-stage", journalProbe}, {parent: 0, descendant: 2})) {
             expect(result.status).toBe(0); expect(result.calls).toHaveLength(5);
         }
     });
@@ -726,15 +775,13 @@ describe("whole executed Python bootstrap original/candidate replay", () => {
         "os.symlink(str(Path.home()/'.codex/config.toml'),str(Path.home()/'unexpected-symlink'))",
         "os.link(str(Path.home()/'.codex/config.toml'),str(Path.home()/'unexpected-hardlink'))",
     ])("makes every additional HOME node/type/link visible in the complete differential: %s", effect => {
-        const original = execute(ORIGINAL, {name: "ready"});
-        const changed = execute(ORIGINAL + "\n" + effect + "\n", {name: "ready"});
+        const [original, changed] = pairedExecutions([ORIGINAL, ORIGINAL + "\n" + effect + "\n"], {name: "ready"});
         expect(changed.snapshot).not.toEqual(original.snapshot);
         expect(Object.keys(changed.snapshot).length).toBeGreaterThan(Object.keys(original.snapshot).length);
     });
     it("aggregates a caught denial from an authenticated installer interpreter before fixture effects", () => {
         const test = {name: "descendant-caught-denial", stage: "no-failing-stage", descendantProbe: true};
-        for (const script of [ORIGINAL, CODEX_HARNESS_BOOTSTRAP, emittedBootstrap]) {
-            const result = execute(script, test, {parent: 0, descendant: 1});
+        for (const result of pairedExecutions([ORIGINAL, CODEX_HARNESS_BOOTSTRAP, emittedBootstrap], test, {parent: 0, descendant: 1})) {
             expect(result.status).toBe(0); expect(result.calls).toHaveLength(5);
         }
     });
@@ -762,9 +809,7 @@ describe("whole executed Python bootstrap original/candidate replay", () => {
         expect(observed.denied).toHaveLength(1); expect(observed.calls).toEqual([]);
     });
     it.each(cases)("preserves state, command order, diagnostics and zero denied effects: $name", test => {
-        const original = execute(ORIGINAL, test);
-        const current = execute(CODEX_HARNESS_BOOTSTRAP, test);
-        const emitted = execute(emittedBootstrap, test);
+        const [original, current, emitted] = pairedExecutions([ORIGINAL, CODEX_HARNESS_BOOTSTRAP, emittedBootstrap], test);
         expect(current).toEqual(original);
         expect(emitted).toEqual(original);
         if (test.expected) expect(current.stderr).toContain(test.expected);

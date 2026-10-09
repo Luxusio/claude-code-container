@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync, realpathSync, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
@@ -77,6 +77,69 @@ for method in ('exists','is_file','read_text'):
     setattr(pathlib.Path,method,checked)
 atexit.register(lambda: print('__C6__'+json.dumps(denied),file=sys.stderr))
 `;
+
+function assembledCallerOracle(source: string, file: string, refuse: (reason: string) => never): string {
+    const project = fileURLToPath(new URL("../../../", import.meta.url));
+    const scriptPath = join(project, "scripts/workspace-build.mjs");
+    const sealed = new Map<string, {real: string; dev: number; ino: number; uid: number; mode: number; digest: string}>();
+    const readSealed = (path: string) => {
+        const observed = lstatSync(path), real = realpathSync(path);
+        if (!observed.isFile() || observed.nlink !== 1) return refuse("nonordinary assembly input: " + path);
+        const bytes = readFileSync(path), contents = bytes.toString("utf8");
+        const witness = {real, dev: observed.dev, ino: observed.ino, uid: observed.uid, mode: observed.mode, digest: createHash("sha256").update(bytes).digest("hex")};
+        if (sealed.has(path)) expect(witness, "assembly input changed between reads: " + path).toEqual(sealed.get(path));
+        else sealed.set(path, witness);
+        return contents;
+    };
+    const builderSource = readSealed(scriptPath);
+    const parsed = ts.createSourceFile(scriptPath, builderSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const namedFunction = (name: string) => {
+        const declarations = parsed.statements.filter(ts.isFunctionDeclaration).filter(node => node.name?.text === name);
+        if (declarations.length !== 1 || !declarations[0].body) return refuse("assembly function not authenticated: " + name);
+        return declarations[0];
+    };
+    const exportTarget = namedFunction("exportTarget");
+    const importLiteral = namedFunction("importLiteral");
+    const assemble = namedFunction("assembleWorkspaceRuntime");
+    const constants = parsed.statements.filter(ts.isVariableStatement).flatMap(statement => [...statement.declarationList.declarations]);
+    const runtime = constants.find(node => ts.isIdentifier(node.name) && node.name.text === "runtimePackages")?.initializer;
+    if (!runtime || !ts.isArrayLiteralExpression(runtime) || !runtime.elements.every(ts.isStringLiteral)) return refuse("actual runtime package manifest set missing");
+    const packages = runtime.elements.map(node => (node as ts.StringLiteral).text);
+    const manifests = new Map<string, {manifest: unknown; destination: string}>();
+    const destinations: string[] = [];
+    for (const name of packages) {
+        const sourceManifest = readSealed(join(project, "packages", name, "package.json"));
+        const destination = join(project, "dist/packages", name);
+        expect(readSealed(join(destination, "package.json")), "actual assembled manifest bytes: " + name).toBe(sourceManifest);
+        const manifest = JSON.parse(sourceManifest) as {name: string};
+        manifests.set(manifest.name, {manifest, destination}); destinations.push(destination);
+    }
+    const loops = assemble.body!.statements.filter(ts.isForOfStatement).filter(node => ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "filesUnder");
+    if (loops.length !== 1 || !ts.isBlock(loops[0].statement)) return refuse("actual import assembly loop missing");
+    const statements = (loops[0].statement as ts.Block).statements;
+    const variableNamed = (node: ts.Statement, name: string) => ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === name);
+    const start = statements.findIndex(node => variableNamed(node, "parsed"));
+    const write = statements.findIndex(node => ts.isIfStatement(node) && node.getText(parsed).includes("writeFileSync(file, rewritten)"));
+    const pure = statements.slice(start, write);
+    if (start < 0 || write <= start || pure.length !== 6 || !variableNamed(pure[0], "parsed") || !variableNamed(pure[1], "replacements") || !ts.isFunctionDeclaration(pure[2]) || pure[2].name?.text !== "visit" || !ts.isExpressionStatement(pure[3]) || !variableNamed(pure[4], "rewritten") || !ts.isForOfStatement(pure[5])) return refuse("pure assembly AST/body shape changed");
+    // Execute only CURRENT pure function/visitor/replacement bodies. Neither package build,
+    // file traversal, runtime copying nor the actual writeFileSync statement is evaluated.
+    const rewrite = runInNewContext("(function(){\n" + exportTarget.getText(parsed) + "\n" + importLiteral.getText(parsed) + "\nreturn function(source,file,manifests){\n" + pure.map(node => node.getText(parsed)).join("\n") + "\nreturn rewritten;\n};\n})()", {
+        ts, resolve, relative, dirname, sep,
+        existsSync: (target: string) => {
+            if (!destinations.some(destination => target.startsWith(destination + sep))) return refuse("unallocated assembly export target");
+            if (!existsSync(target)) return false;
+            if (!destinations.some(destination => realpathSync(target).startsWith(realpathSync(destination) + sep))) return refuse("assembly export canonical escape");
+            readSealed(target); return true;
+        },
+    }, {filename: scriptPath, timeout: 1000}) as (text: string, targetFile: string, entries: Map<string, {manifest: unknown; destination: string}>) => string;
+    const expected = rewrite(source, file, manifests);
+    for (const [path, witness] of sealed) {
+        const observed = lstatSync(path);
+        expect([realpathSync(path), observed.dev, observed.ino, observed.uid, observed.mode, createHash("sha256").update(readFileSync(path)).digest("hex")], "readonly assembly input lifetime: " + path).toEqual([witness.real, witness.dev, witness.ino, witness.uid, witness.mode, witness.digest]);
+    }
+    return expected;
+}
 
 describe("mandatory current emitted Codex startup route, actual facade and Python (route-only)", () => {
     it.each([false, true].flatMap(reused => [undefined, "work"].flatMap(profile => ["codex", "claude"].map(tool => ({reused, profile, tool})))))("executes the emitted operation with native fences: $tool reused=$reused profile=$profile", async ({reused, profile, tool}) => {
@@ -168,7 +231,8 @@ describe("mandatory current emitted Codex startup route, actual facade and Pytho
             const indexPath = join(emittedRoot, "index.js");
             if (!existsSync(indexPath)) refuse("missing genuine emitted caller");
             const caller = readFileSync(indexPath, "utf8");
-            const expectedCaller = ts.transpileModule(readFileSync(new URL("../../index.ts", import.meta.url), "utf8"), {compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022}}).outputText;
+            const callerBeforeAssembly = ts.transpileModule(readFileSync(new URL("../../index.ts", import.meta.url), "utf8"), {compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022}}).outputText;
+            const expectedCaller = assembledCallerOracle(callerBeforeAssembly, indexPath, refuse);
             expect(caller.trim(), "genuine current emitted caller provenance").toBe(expectedCaller.trim());
             const start = caller.indexOf('if (commandTool?.name === "claude") {', caller.indexOf("This is deliberately the final restart-capable readiness step"));
             const end = caller.indexOf('progress("Syncing clipboard shims...");', start);
