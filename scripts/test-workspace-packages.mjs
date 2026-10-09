@@ -37,6 +37,9 @@ const HOST_CREDENTIAL_ASSET_BASELINE = {
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "ccc-workspace-package-"));
+const temporaryBirth = lstatSync(temporary);
+assert(temporaryBirth.isDirectory()&&!temporaryBirth.isSymbolicLink());assert.equal(realpathSync(temporary),temporary);assert.equal(resolve(temporary),temporary);
+let distributionComplete=false;
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !name.startsWith("CCC_") && !name.startsWith("VITEST") && !["NODE_PATH", "NODE_OPTIONS"].includes(name)));
 Object.assign(env, { HOME: temporary, USERPROFILE: temporary, CCC_DEVICE_BROKER_AUTO_START: "0" });
@@ -5817,6 +5820,7 @@ const DIAGNOSTICS_ORIGINAL_DOCTOR_BRANCH = "        case \"doctor\": {\n        
 const DIAGNOSTICS_ORIGINAL_LABS_BRANCH = "        case \"labs\": {\n            const subcommand = cmdArgs[1] || \"status\";\n            if (subcommand === \"shell\") {\n                ensureProfile(LAB_RUNNER_PROFILE_NAME);\n                await exec(cwd, [\"bash\"], { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);\n                break;\n            }\n            if (subcommand === \"run\") {\n                const labCommand = cmdArgs.slice(2);\n                if (labCommand.length === 0) {\n                    console.error(\"Usage: ccc labs run <command>\");\n                    process.exit(1);\n                }\n                ensureProfile(LAB_RUNNER_PROFILE_NAME);\n                await exec(cwd, labCommand, { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);\n                break;\n            }\n            const status = labsCli(cmdArgs.slice(1), cwd);\n            process.exit(status);\n            break;\n        }\n\n";
 // Closed static import authority: archived original index.ts SHA256 b70ba8715cc9c613614eb6bdc4dd357ce0fa36ab54632a8ddd550abf9c23f59a.
 const DIAGNOSTICS_ORIGINAL_INDEX_IMPORTS = ["./clipboard-server.js", "./codex-clipboard-image.js", "./codex-config-lock.js", "./codex-harness.js", "./codex-launch.js", "./codex-resume-recovery.js", "./codex-state-ownership.js", "./container-command.js", "./container-restart-guidance.js", "./container-runtime.js", "./container-setup.js", "./device-lab-admin.js", "./docker.js", "./home-layout-container-guard.js", "./home-layout.js", "./lab-runner-admin.js", "./localhost-proxy-setup.js", "./mcp-forward.js", "./profile.js", "./remote.js", "./scanner.js", "./session.js", "./tool-detect.js", "./tool-registry.js", "./utils.js", "./worktree.js", "@ccc/device-lab/device-lab-broker.js", "@ccc/device-lab/device-lab-shared-state.js", "child_process", "fs", "path", "url"];
+const INDEX_SHARED_STATE_AUTHORITY = {"sourceIndexSha256":"b70ba8715cc9c613614eb6bdc4dd357ce0fa36ab54632a8ddd550abf9c23f59a","emittedIndexSha256":"f106559bf73a27cbe0eb897b643fba53e28874b61e1968f5ab340abde0e76e07","sharedStateSha256":"1841b2cc77b300a5fcc4d6fc26ded3dd9c289718bffb77d59d3ee0d52de3465c","sourceSpecifier":"@ccc/device-lab/device-lab-shared-state.js","emittedSpecifier":"./packages/device-lab/dist/device-lab-shared-state.js","layer":"NATIVEFIXTURE: prelude observation only; shared native lock body unproved by these rows"};
 async function verifyDiagnosticMain(payload,privateHome,_doctorHashes,_frozenLabs,_frozenDoctor,originalBranches){
  const assert=(await import('node:assert/strict')).default,path=(await import('node:path')).default,vm=await import('node:vm');
  const {pathToFileURL}=await import('node:url'),{createRequire,isBuiltin}=await import('node:module');
@@ -5824,6 +5828,11 @@ async function verifyDiagnosticMain(payload,privateHome,_doctorHashes,_frozenLab
  const sources=new Map(),entries=['index','doctor','application/doctor','domain/doctor','lab-runner-admin','application/lab-runner-diagnostics','domain/lab-runner-diagnostics'];
  read.restrictSources(entries.map(name=>pathToFileURL(path.join(payload,'dist',name+'.js'))));
  for(const name of entries){const file=path.join(payload,'dist',name+'.js');const text=read.read(pathToFileURL(file),'utf8');assert(Buffer.byteLength(text)<1048576);sources.set(file,text);}read.close();
+ const indexFile=path.join(payload,'dist/index.js'),indexSource=sources.get(indexFile);assert.equal(createHash('sha256').update(indexSource).digest('hex'),INDEX_SHARED_STATE_AUTHORITY.emittedIndexSha256);assert(originalBranches.staticImports.includes(INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier));
+ const indexTree=ts.createSourceFile(indexFile,indexSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS),sharedEdges=indexTree.statements.filter(node=>ts.isImportDeclaration(node)&&ts.isStringLiteral(node.moduleSpecifier)&&[INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier,INDEX_SHARED_STATE_AUTHORITY.emittedSpecifier].includes(node.moduleSpecifier.text));assert.equal(sharedEdges.length,1);const sharedEdge=sharedEdges[0];assert.equal(sharedEdge.importClause?.isTypeOnly,false);assert.equal(sharedEdge.importClause?.name,undefined);assert(ts.isNamedImports(sharedEdge.importClause?.namedBindings));const bindings=sharedEdge.importClause.namedBindings.elements;assert.equal(bindings.length,1);assert.equal(bindings[0].name.text,'withSharedMutationLock');assert.equal(bindings[0].propertyName,undefined);assert.equal(bindings[0].isTypeOnly,false);
+ const embeddedManifest=path.join(payload,'dist/packages/device-lab/package.json'),embeddedRead=await createOwnedImportRead(pathToFileURL(payload+path.sep),pathToFileURL(embeddedManifest),'exact prelude shared-state metadata');const sharedFile=path.join(payload,'dist/packages/device-lab/dist/device-lab-shared-state.js');embeddedRead.restrictSources([pathToFileURL(sharedFile)]);const manifestText=embeddedRead.read(pathToFileURL(embeddedManifest),'utf8');assert(Buffer.byteLength(manifestText)<=65536);const embeddedPackage=JSON.parse(manifestText);assert.equal(embeddedPackage.name,'@ccc/device-lab');assert.equal(embeddedPackage.type,'module');assert.equal(embeddedPackage.exports['./*.js'],'./dist/*.js');const sharedBytes=embeddedRead.read(pathToFileURL(sharedFile),'utf8');assert(Buffer.byteLength(sharedBytes)<=1048576);assert.equal(createHash('sha256').update(sharedBytes).digest('hex'),INDEX_SHARED_STATE_AUTHORITY.sharedStateSha256);embeddedRead.close();
+ // This authenticated edge selects only the existing prelude observation; no shared-state native-body credit.
+
  const fs=(await import('node:fs')).default;const snapshots=[];const patch=(object,name,value)=>{snapshots.push([object,name,Object.getOwnPropertyDescriptor(object,name)]);Object.defineProperty(object,name,{configurable:true,writable:true,value});};
  let denied=0;const deny=name=>{denied++;throw Error('unallocated diagnostic '+name);};const trace=[],logs=[],errors=[],admitted=new Set();let unhealthy=false;
  const boxedCwd=path.join(privateHome,'project');
@@ -5843,7 +5852,7 @@ async function verifyDiagnosticMain(payload,privateHome,_doctorHashes,_frozenLab
   './worktree.js':{detectWorktreeWorkspaceBranch:observation('preludeWorktree',cwd=>{assert.equal(cwd,boxedCwd);return null;})},
   './clipboard-server.js':{hasAnyActiveSessionsExcept:observation('preludeSessions',(excluded,directory)=>{assert.equal(excluded,null);assert([path.join(privateHome,'.ccc','locks'),path.join(privateHome,'.ccc','run','locks')].includes(directory));return false;}),retireClipboardServerFromPortFile:()=>deny('clipboard mutation')},
   './home-layout-container-guard.js':{hasLegacyHomeLayoutContainerMounts:observation('preludeMounts',false)},
-  '@ccc/device-lab/device-lab-shared-state.js':{withSharedMutationLock:observation('preludeLock',(file,operation,options)=>{assert.equal(file,path.join(privateHome,'.ccc','codex-state.lock'));assert.deepEqual(hostPlain(options),{waitMs:10000,reclaimStale:false});return operation();})},
+  '@ccc/device-lab/device-lab-shared-state.js':{withSharedMutationLock:observation('preludeLock',(file,operation,options)=>{assert.equal(file,path.join(privateHome,'.ccc','codex-state.lock'));assert.equal(typeof operation,'function');assert.deepEqual(hostPlain(options),{waitMs:10000,reclaimStale:false});return operation();})},
  };
  const guarded=object=>new Proxy(object,{get:(target,key)=>Object.hasOwn(target,key)?target[key]:deny('native helper:'+String(key))});
  const allocatedRequires=new Map();const cache=new Map();const load=file=>{
@@ -5852,6 +5861,7 @@ async function verifyDiagnosticMain(payload,privateHome,_doctorHashes,_frozenLab
   const metadata=context=>tree=>{const visit=node=>ts.isPropertyAccessExpression(node)&&node.name.text==='url'&&ts.isMetaProperty(node.expression)&&node.expression.keywordToken===ts.SyntaxKind.ImportKeyword?ts.factory.createStringLiteral(pathToFileURL(file).href):ts.visitEachChild(node,visit,context);return ts.visitNode(tree,visit);};
   const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},transformers:{before:[metadata]}}).outputText.replace(/^#![^\r\n]*/,line=>' '.repeat(line.length));
   const requireMapped=name=>{
+   if(name===INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier||name===INDEX_SHARED_STATE_AUTHORITY.emittedSpecifier){if(file!==indexFile)return deny('shared prelude importer:'+file);return guarded(helpers[INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier]);}
    if(name==='path'||name==='node:path')return {resolve:observation('resolve',value=>path.resolve(value)),join:path.join,dirname:path.dirname,basename:path.basename,relative:path.relative};
    if(name==='url'||name==='node:url')return {fileURLToPath};
    if(name==='fs'||name==='node:fs')return guarded({existsSync:observation('locksExists',file=>{assert.equal(file,path.join(privateHome,'.ccc','run','locks'));return false;}),readdirSync:()=>deny('unallocated locks scan')});
@@ -5883,7 +5893,7 @@ async function verifyDiagnosticMain(payload,privateHome,_doctorHashes,_frozenLab
  const positiveDenied=denied;
  const mainRequire=allocatedRequires.get(path.join(payload,'dist/index.js'));const prior=denied;for(const operation of [()=>mainRequire('fs').unallocatedDiagnosticMember(),()=>mainRequire('./unallocated-diagnostic-import.js'),()=>process.kill(1),()=>fs.linkSync('/outside','/outside'),()=>fs.promises.readFile('/outside')]){try{operation();}catch{}}assert.equal(denied,prior+5);
  const informational=load(path.join(payload,'dist/index.js')).informationalCommand;assert.equal(informational(['--help']),'help');assert.equal(informational(['--runtime','docker','doctor']),null);
- return {completeMainCases:cases.length,prelude:true,facades:true,healthyFalse:true,positiveDenied,negativeControls:5,earlyInformational:true,earlyMain:early,sourceExtractedCases:2,boxedCwd,nativeConfigObservation:true};
+ return {preludeNativeFixture:INDEX_SHARED_STATE_AUTHORITY.layer,completeMainCases:cases.length,prelude:true,facades:true,healthyFalse:true,positiveDenied,negativeControls:5,earlyInformational:true,earlyMain:early,sourceExtractedCases:2,boxedCwd,nativeConfigObservation:true};
  }catch(error){primaryFailed=true;throw error;}finally{const cleanup=[];for(const [object,name,descriptor]of snapshots.reverse())try{if(descriptor===undefined)Reflect.deleteProperty(object,name);else Object.defineProperty(object,name,descriptor);}catch(error){cleanup.push(error);}(await import('node:module')).syncBuiltinESMExports();if(!primaryFailed&&cleanup.length)throw cleanup[0];}
 }
 
@@ -5928,13 +5938,17 @@ function diagnosticShippingConsumer(consumer,payload,home){
  const compiler=pathToFileURL(join(root,'node_modules/typescript/lib/typescript.js')).href;
  const script=`import ts from ${JSON.stringify(compiler)};import path from 'node:path';import * as vm from 'node:vm';import {createHash} from 'node:crypto';import {fileURLToPath} from 'node:url';
 const createOwnedImportRead=${createOwnedImportRead.toString()};
+const INDEX_SHARED_STATE_AUTHORITY=${JSON.stringify(INDEX_SHARED_STATE_AUTHORITY)};
 ${diagnosticDoctorCases.toString()}
 ${captureDoctorPayload.toString()}
 ${diagnosticDoctorEdgeCases.toString()}
 ${captureDoctorPayloadEdges.toString()}
 const result=await (${consumer.toString()})(${JSON.stringify(payload)},${JSON.stringify(home)},${JSON.stringify(DIAGNOSTICS_FROZEN_DOCTOR_HASHES)},${JSON.stringify(DIAGNOSTICS_FROZEN_LABS_SOURCE)},${JSON.stringify(DIAGNOSTICS_FROZEN_DOCTOR_SOURCE)},${JSON.stringify({doctor:DIAGNOSTICS_ORIGINAL_DOCTOR_BRANCH,labs:DIAGNOSTICS_ORIGINAL_LABS_BRANCH,staticImports:DIAGNOSTICS_ORIGINAL_INDEX_IMPORTS})});console.log(JSON.stringify({diagnosticsShippingResult:result}));`;
- const child=spawnSync(process.execPath,['--input-type=module','-e',script],{cwd:home,env:{...env,HOME:home,USERPROFILE:home},encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
- assert.equal(child.status,0,String(child.error||child.stderr||child.stdout).slice(-4000));
+ const homeBirth=lstatSync(home);assert(homeBirth.isDirectory()&&!homeBirth.isSymbolicLink());assert.equal(realpathSync(home),home);assert(home.startsWith(temporary+sep));
+ const scriptFile=join(home,'diagnostic-eval.mjs');assert(Buffer.byteLength(script)<=4*1024*1024);writeFileSync(scriptFile,script,{flag:'wx',mode:0o600});const scriptBirth=lstatSync(scriptFile);assert(scriptBirth.isFile()&&!scriptBirth.isSymbolicLink());assert.equal(scriptBirth.nlink,1);assert.equal(realpathSync(scriptFile),scriptFile);
+ const childArgs=['--input-type=module','-e',script];const child=spawnSync(process.execPath,childArgs,{cwd:home,env:{...env,HOME:home,USERPROFILE:home},encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
+ let evidenceFailure;try{const observed=lstatSync(home);assert.deepEqual([observed.dev,observed.ino,observed.uid],[homeBirth.dev,homeBirth.ino,homeBirth.uid]);assert(observed.isDirectory()&&!observed.isSymbolicLink());assert.equal(realpathSync(home),home);for(const [name,bytes]of [['diagnostic.stdout.log',String(child.stdout??'')],['diagnostic.stderr.log',String(child.stderr??'')]]){assert(Buffer.byteLength(bytes)<=4*1024*1024);writeFileSync(join(home,name),bytes,{flag:'wx',mode:0o600});}writeFileSync(join(home,'diagnostic.receipt.json'),JSON.stringify({executable:process.execPath,args:childArgs,cwd:home,status:child.status,signal:child.signal,error:child.error?.message,scriptSha256:createHash('sha256').update(script).digest('hex'),identity:{dev:homeBirth.dev,ino:homeBirth.ino,uid:homeBirth.uid},preludeAuthority:INDEX_SHARED_STATE_AUTHORITY},null,2)+'\n',{flag:'wx',mode:0o600});}catch(error){evidenceFailure=error;}
+ assert.equal(child.status,0,String(child.error||child.stderr||child.stdout).slice(-4000));if(evidenceFailure)throw evidenceFailure;
  const rows=child.stdout.trim().split('\n').filter(line=>line.startsWith('{')).map(line=>JSON.parse(line));const result=rows.findLast(row=>row.diagnosticsShippingResult)?.diagnosticsShippingResult;assert(result);return result;
 }
 
@@ -6008,6 +6022,11 @@ async function verifyCleanMain(payload,privateHome,originalBranches){
  const sources=new Map(),entries=['index','doctor','application/doctor','domain/doctor','lab-runner-admin','application/lab-runner-diagnostics','domain/lab-runner-diagnostics','clean','application/clean','domain/clean','ports/clean'];
  read.restrictSources(entries.map(name=>pathToFileURL(path.join(payload,'dist',name+'.js'))));
  for(const name of entries){const file=path.join(payload,'dist',name+'.js');const text=read.read(pathToFileURL(file),'utf8');assert(Buffer.byteLength(text)<1048576);sources.set(file,text);}read.close();
+ const indexFile=path.join(payload,'dist/index.js'),indexSource=sources.get(indexFile);assert.equal(createHash('sha256').update(indexSource).digest('hex'),INDEX_SHARED_STATE_AUTHORITY.emittedIndexSha256);assert(originalBranches.staticImports.includes(INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier));
+ const indexTree=ts.createSourceFile(indexFile,indexSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS),sharedEdges=indexTree.statements.filter(node=>ts.isImportDeclaration(node)&&ts.isStringLiteral(node.moduleSpecifier)&&[INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier,INDEX_SHARED_STATE_AUTHORITY.emittedSpecifier].includes(node.moduleSpecifier.text));assert.equal(sharedEdges.length,1);const sharedEdge=sharedEdges[0];assert.equal(sharedEdge.importClause?.isTypeOnly,false);assert.equal(sharedEdge.importClause?.name,undefined);assert(ts.isNamedImports(sharedEdge.importClause?.namedBindings));const bindings=sharedEdge.importClause.namedBindings.elements;assert.equal(bindings.length,1);assert.equal(bindings[0].name.text,'withSharedMutationLock');assert.equal(bindings[0].propertyName,undefined);assert.equal(bindings[0].isTypeOnly,false);
+ const embeddedManifest=path.join(payload,'dist/packages/device-lab/package.json'),embeddedRead=await createOwnedImportRead(pathToFileURL(payload+path.sep),pathToFileURL(embeddedManifest),'exact prelude shared-state metadata');const sharedFile=path.join(payload,'dist/packages/device-lab/dist/device-lab-shared-state.js');embeddedRead.restrictSources([pathToFileURL(sharedFile)]);const manifestText=embeddedRead.read(pathToFileURL(embeddedManifest),'utf8');assert(Buffer.byteLength(manifestText)<=65536);const embeddedPackage=JSON.parse(manifestText);assert.equal(embeddedPackage.name,'@ccc/device-lab');assert.equal(embeddedPackage.type,'module');assert.equal(embeddedPackage.exports['./*.js'],'./dist/*.js');const sharedBytes=embeddedRead.read(pathToFileURL(sharedFile),'utf8');assert(Buffer.byteLength(sharedBytes)<=1048576);assert.equal(createHash('sha256').update(sharedBytes).digest('hex'),INDEX_SHARED_STATE_AUTHORITY.sharedStateSha256);embeddedRead.close();
+ // This authenticated edge selects only the existing prelude observation; no shared-state native-body credit.
+
  const fs=(await import('node:fs')).default;const snapshots=[];const patch=(object,name,value)=>{snapshots.push([object,name,Object.getOwnPropertyDescriptor(object,name)]);Object.defineProperty(object,name,{configurable:true,writable:true,value});};
  let denied=0;const deny=name=>{denied++;throw Error('unallocated diagnostic '+name);};const trace=[],logs=[],errors=[],admitted=new Set();let unhealthy=false,cleanMode={},cleanInventory=0,lifecycle=false;
  const boxedCwd=path.join(privateHome,'project');
@@ -6028,7 +6047,7 @@ async function verifyCleanMain(payload,privateHome,originalBranches){
   './worktree.js':{detectWorktreeWorkspaceBranch:observation('preludeWorktree',cwd=>{assert.equal(cwd,boxedCwd);return null;})},
   './clipboard-server.js':{hasAnyActiveSessionsExcept:observation('preludeSessions',(excluded,directory)=>{assert.equal(excluded,null);assert([path.join(privateHome,'.ccc','locks'),path.join(privateHome,'.ccc','run','locks')].includes(directory));return false;}),retireClipboardServerFromPortFile:()=>deny('clipboard mutation')},
   './home-layout-container-guard.js':{hasLegacyHomeLayoutContainerMounts:observation('preludeMounts',false)},
-  '@ccc/device-lab/device-lab-shared-state.js':{withSharedMutationLock:observation('preludeLock',(file,operation,options)=>{assert.equal(file,path.join(privateHome,'.ccc','codex-state.lock'));assert.deepEqual(hostPlain(options),{waitMs:10000,reclaimStale:false});return operation();})},
+  '@ccc/device-lab/device-lab-shared-state.js':{withSharedMutationLock:observation('preludeLock',(file,operation,options)=>{assert.equal(file,path.join(privateHome,'.ccc','codex-state.lock'));assert.equal(typeof operation,'function');assert.deepEqual(hostPlain(options),{waitMs:10000,reclaimStale:false});return operation();})},
  };
  const guarded=object=>new Proxy(object,{get:(target,key)=>Object.hasOwn(target,key)?target[key]:deny('native helper:'+String(key))});
  const allocatedRequires=new Map();const cache=new Map();const load=file=>{
@@ -6037,6 +6056,7 @@ async function verifyCleanMain(payload,privateHome,originalBranches){
   const metadata=context=>tree=>{const visit=node=>ts.isPropertyAccessExpression(node)&&node.name.text==='url'&&ts.isMetaProperty(node.expression)&&node.expression.keywordToken===ts.SyntaxKind.ImportKeyword?ts.factory.createStringLiteral(pathToFileURL(file).href):ts.visitEachChild(node,visit,context);return ts.visitNode(tree,visit);};
   const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},transformers:{before:[metadata]}}).outputText.replace(/^#![^\r\n]*/,line=>' '.repeat(line.length));
   const requireMapped=name=>{
+   if(name===INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier||name===INDEX_SHARED_STATE_AUTHORITY.emittedSpecifier){if(file!==indexFile)return deny('shared prelude importer:'+file);return guarded(helpers[INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier]);}
    if(name==='path'||name==='node:path')return {resolve:observation('resolve',value=>path.resolve(value)),join:path.join,dirname:path.dirname,basename:path.basename,relative:path.relative};
    if(name==='url'||name==='node:url')return {fileURLToPath};
    if(name==='fs'||name==='node:fs')return guarded({existsSync:observation('locksExists',file=>{assert.equal(file,path.join(privateHome,'.ccc','run','locks'));return false;}),readdirSync:()=>deny('unallocated locks scan')});
@@ -6056,7 +6076,7 @@ async function verifyCleanMain(payload,privateHome,originalBranches){
  const main=load(path.join(payload,'dist/index.js')).main;assert.equal(denied,0);
  const cases=[{args:['clean','--yes']},{args:['clean','--all','-y']},{args:['clean','--volumes','--yes']},{args:['clean','--dry-run']},{args:['clean'],decline:true},{args:['clean','--yes'],empty:true},{args:['clean','--all','--yes'],partial:true},{args:['clean','--all','--yes'],claims:true}];let successes=0,inventoryErrors=0;
  for(const item of [...cases,...[1,2,3,4].map(inventoryFailure=>({args:['clean','--all','--yes'],inventoryFailure}))]){cleanMode=item;cleanInventory=0;trace.length=0;logs.length=0;errors.length=0;proc.argv=['node',path.join(payload,'dist/index.js'),...item.args];let exit;try{await main();}catch(error){exit=error.status;if(exit===undefined)throw error;}assert.equal(denied,0,'clean actual main EACH success/throw');assert(trace.some(row=>row[0]==='preludeLock'));assert(trace.some(row=>row[0]==='preludeMigration'));if(item.inventoryFailure){assert.equal(exit,1);assert(!trace.some(row=>row[0]==='cleanPrompt'||row[0]==='cleanLock'));assert(errors.some(text=>text.includes('Failed to list')&&text.includes('cleanup aborted')));inventoryErrors++;}else if(item.partial){assert.equal(exit,1);assert(errors.some(text=>text.includes('Failed to remove container')));assert(trace.some(row=>row[0]==='cleanLock'));assert(!trace.some(row=>row[0]==='probe'&&(row[2][0]==='rmi'||row[2][0]==='volume'&&row[2][1]==='rm')));successes++;}else{assert(exit===undefined||exit===0);if(item.decline||item.empty||item.args.includes('--dry-run'))assert(!trace.some(row=>row[0]==='cleanLock'));successes++;}}
- return {mainCases:successes,inventoryErrors,fullEmittedMain:true,actualPrelude:true,actualClean:true,positiveDenied:denied};
+ return {preludeNativeFixture:INDEX_SHARED_STATE_AUTHORITY.layer,mainCases:successes,inventoryErrors,fullEmittedMain:true,actualPrelude:true,actualClean:true,positiveDenied:denied};
  }catch(error){primaryFailed=true;throw error;}finally{const failures=[];for(const [object,name,descriptor]of snapshots.reverse())try{if(descriptor===undefined)Reflect.deleteProperty(object,name);else Object.defineProperty(object,name,descriptor);}catch(error){failures.push(error);}(await import('node:module')).syncBuiltinESMExports();if(!primaryFailed&&failures.length)throw failures[0];}
 }
 
@@ -6299,7 +6319,7 @@ async function verifyHarnessMainShipping(payload,privateHome,purpose='harness'){
 
 function servicesShippingChild(consumer,payload,home,args){
  const prelude=`import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';import {pathToFileURL} from 'node:url';import {syncBuiltinESMExports} from 'node:module';import cp from 'node:child_process';import net from 'node:net';import http from 'node:http';import https from 'node:https';import dgram from 'node:dgram';import tls from 'node:tls';import ts from ${JSON.stringify(pathToFileURL(join(root,'node_modules/typescript/lib/typescript.js')).href)};`;
- const script=prelude+`const createOwnedImportRead=${createOwnedImportRead.toString()};${fence.toString()}${servicesFence.toString()}${harnessPayloadMainConsumer.toString()}const result=await (${consumer.toString()})(${JSON.stringify(payload)},${JSON.stringify(home)},...${JSON.stringify(args)});console.log(JSON.stringify({servicesShippingResult:result}));`;
+ const script=prelude+`const createOwnedImportRead=${createOwnedImportRead.toString()};const INDEX_SHARED_STATE_AUTHORITY=${JSON.stringify(INDEX_SHARED_STATE_AUTHORITY)};${fence.toString()}${servicesFence.toString()}${harnessPayloadMainConsumer.toString()}const result=await (${consumer.toString()})(${JSON.stringify(payload)},${JSON.stringify(home)},...${JSON.stringify(args)});console.log(JSON.stringify({servicesShippingResult:result}));`;
  const result=spawnSync(process.execPath,['--input-type=module','-e',script],{cwd:home,env:{HOME:home,USERPROFILE:home,TMPDIR:home,PATH:'/usr/bin:/bin',LANG:'C.UTF-8',TZ:'UTC',container:'',VITEST:'1',DEBUG:'',CCC_PROFILE:''},encoding:'utf8',timeout:135000,maxBuffer:4*1024*1024,windowsHide:true});assert.equal(result.status,0,String(result.error||result.stderr||result.stdout).slice(-5000));const records=result.stdout.trim().split('\n').filter(line=>line.startsWith('{')).map(line=>JSON.parse(line));const value=records.findLast(row=>row.servicesShippingResult)?.servicesShippingResult;assert(value);return value;
 }
 function runServicesShipping(payload){
@@ -7647,8 +7667,15 @@ try {
     run(process.execPath, ["--input-type=module", "-e",
         `const {materializeUnixInstallPayload}=await import(${JSON.stringify(installer)});materializeUnixInstallPayload(${JSON.stringify(packed)},${JSON.stringify(installed)});`]);
     await smoke(installed);
+    distributionComplete=true;
     console.log("PASS workspace distribution: obsolete X11 output removed; extracted npm package and materialized install CLI, broker, Hyper-V assets, Device Lab MCP, session liveness, claims, cleanup, existing, explicit destructive and fresh creation container lifecycle, image preparation, container session handoff and runtime readiness core/facade and declarations; exec readiness core and compiled public guarded startProjectContainer retry success/exhaustion preservation");
+} catch(error){
+    distributionComplete=false;throw error;
 } finally {
-    if(retainedHarnessPythonRoots.size)console.error('Retained unjoined Harness Python controller evidence: '+[...retainedHarnessPythonRoots].join(', '));
-    else rmSync(temporary, { recursive: true, force: true });
+    if(!distributionComplete||retainedHarnessPythonRoots.size)console.error('Retained distribution evidence: '+temporary);
+    else {
+        try {const current=lstatSync(temporary);assert(current.isDirectory()&&!current.isSymbolicLink());assert.equal(realpathSync(temporary),temporary);assert.deepEqual([current.dev,current.ino,current.uid,current.mode&0o7777],[temporaryBirth.dev,temporaryBirth.ino,temporaryBirth.uid,temporaryBirth.mode&0o7777]);}
+        catch(error){console.error('Retained distribution evidence: '+temporary);throw error;}
+        rmSync(temporary, { recursive: true, force: true });
+    }
 }
