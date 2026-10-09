@@ -5841,7 +5841,7 @@ const INDEX_BROKER_AUTHORITY = {"sourceIndexSha256":"b70ba8715cc9c613614eb6bdc4d
 const DIAGNOSTICS_DOCTOR_TYPE_AUTHORITY = {"sourcePath":"src/domain/doctor.ts","sourceSha256":"1d967865564371dd1d69e2025f9a1f5a9560cee0e9b23569d1e188fa98654b90","interfaces":["DoctorCheck","DoctorRuntimeInfo","DoctorProbeResult"],"emptyEmittedSha256":"8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881","layer":"Type-only source interfaces and current strict source/emitted declarations; not runtime execution"};
 async function verifyDiagnosticMain(payload,privateHome,_doctorHashes,_frozenLabs,_frozenDoctor,originalBranches){
  const assert=(await import('node:assert/strict')).default,path=(await import('node:path')).default,vm=await import('node:vm');
- const {pathToFileURL}=await import('node:url'),{createRequire,isBuiltin}=await import('node:module');
+ const {pathToFileURL,fileURLToPath}=await import('node:url'),{createRequire,isBuiltin}=await import('node:module');
  const read=await createOwnedImportRead(pathToFileURL(payload+path.sep),pathToFileURL(path.join(payload,'package.json')),'diagnostic complete main');
  const sources=new Map(),entries=['index','doctor','application/doctor','domain/doctor','lab-runner-admin','application/lab-runner-diagnostics','domain/lab-runner-diagnostics'];
  read.restrictSources(entries.map(name=>pathToFileURL(path.join(payload,'dist',name+'.js'))));
@@ -6051,7 +6051,7 @@ function verifyHarnessPythonShipping(actualPython,originalPython,controllerSourc
 
 async function verifyCleanMain(payload,privateHome,originalBranches){
  const assert=(await import('node:assert/strict')).default,path=(await import('node:path')).default,vm=await import('node:vm');
- const {pathToFileURL}=await import('node:url'),{createRequire,isBuiltin}=await import('node:module');
+ const {pathToFileURL,fileURLToPath}=await import('node:url'),{createRequire,isBuiltin}=await import('node:module');
  const read=await createOwnedImportRead(pathToFileURL(payload+path.sep),pathToFileURL(path.join(payload,'package.json')),'diagnostic complete main');
  const sources=new Map(),entries=['index','doctor','application/doctor','domain/doctor','lab-runner-admin','application/lab-runner-diagnostics','domain/lab-runner-diagnostics','clean','application/clean','domain/clean','ports/clean'];
  read.restrictSources(entries.map(name=>pathToFileURL(path.join(payload,'dist',name+'.js'))));
