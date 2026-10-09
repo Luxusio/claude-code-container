@@ -232,7 +232,11 @@ export function createNativeCleanupRealm(original: boolean) {
         const mod = { exports: {} }; modules.set(file, mod); loaded.push(path.relative(sourceRoot, file));
         const body = fs.readFileSync(file, "utf8");
         const common = ts.transpileModule(body.replace(/import\.meta\.url/g, JSON.stringify(url.pathToFileURL(file).href)), {
-            fileName: file, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+            // Compiler-only CTS identity prevents a genuine .mjs asset from
+            // retaining ESM syntax inside this CommonJS sandbox. Read paths,
+            // hash authority, resolution/cache keys and VM stack filename stay
+            // bound to the actual captured/candidate file above and below.
+            fileName: `${file}.cts`, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
         }).outputText;
         const requireNative = (specifier: string) => {
             const builtin = specifier.replace(/^node:/, "");

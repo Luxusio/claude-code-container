@@ -11,11 +11,12 @@ import { createNativeCleanupRealm, nativeCleanupRoot, originalPayload, project }
 function checkDeclarationConsumers(candidate: string, original: string) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-native-cleanup-types-"));
     const fixture = path.join(directory, "consumer.ts");
+    const implementationSpecifier = (file: string) => file.replace(/\.d\.ts$/, ".js").replace(/\.ts$/, ".js");
     fs.writeFileSync(fixture, `
-        import * as Previous from ${JSON.stringify(original)};
-        import * as Candidate from ${JSON.stringify(candidate)};
-        import * as PreviousNative from ${JSON.stringify(path.join(originalPayload, "dist/adapters/session-cleanup.d.ts"))};
-        import * as CandidateNative from ${JSON.stringify(path.join(nativeCleanupRoot, candidate.endsWith(".d.ts") ? "dist/adapters/session-cleanup.d.ts" : "src/adapters/session-cleanup.ts"))};
+        import * as Previous from ${JSON.stringify(implementationSpecifier(original))};
+        import * as Candidate from ${JSON.stringify(implementationSpecifier(candidate))};
+        import * as PreviousNative from ${JSON.stringify(path.join(originalPayload, "dist/adapters/session-cleanup.js"))};
+        import * as CandidateNative from ${JSON.stringify(path.join(nativeCleanupRoot, candidate.endsWith(".d.ts") ? "dist/adapters/session-cleanup.js" : "src/adapters/session-cleanup.js"))};
         const legacy: typeof Previous = Candidate;
         const current: typeof Candidate = Previous;
         type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -24,7 +25,9 @@ function checkDeclarationConsumers(candidate: string, original: string) {
         type CleanupParams = Assert<Equal<Parameters<typeof Previous.cleanupOwnerDevices>, Parameters<typeof Candidate.cleanupOwnerDevices>>>;
         type CleanupResult = Assert<Equal<ReturnType<typeof Previous.cleanupOwnerDevices>, ReturnType<typeof Candidate.cleanupOwnerDevices>>>;
         type AsyncCliParams = Assert<Equal<Parameters<typeof Previous.devicesCliAsync>, Parameters<typeof Candidate.devicesCliAsync>>>;
-        const result = Candidate.cleanupOwnerDevices("/project", 5000, "work");
+        const equalityProofs: [PublicNames, CleanupParams, CleanupResult, AsyncCliParams] = [true, true, true, true];
+        const cleanupArguments: Parameters<typeof Candidate.cleanupOwnerDevices> = ["/project", 5000, "work"];
+        const result = Candidate.cleanupOwnerDevices(...cleanupArguments);
         const originalResult: ReturnType<typeof Previous.cleanupOwnerDevices> = result;
         const backend: typeof Previous.DEVICE_BACKENDS[number] = Candidate.DEVICE_BACKENDS[0];
         // Meaningful negative fixtures bind BOTH whole genuine namespaces.
@@ -49,7 +52,7 @@ function checkDeclarationConsumers(candidate: string, original: string) {
         PreviousNative.stopNativeSessionContainer();
         // @ts-expect-error current native stop still requires its reader
         CandidateNative.stopNativeSessionContainer();
-        void legacy; void current; void originalResult; void backend;
+        void legacy; void current; void originalResult; void backend; void equalityProofs;
         void asyncPrevious; void asyncCandidate; void wrongPrevious; void wrongCandidate;
     `);
     try {
