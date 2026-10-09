@@ -6626,7 +6626,7 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
         join(providerRoot, "state/state-file.mjs"), join(providerRoot, "adapters/state/state-file.mjs")]);
     const contracts = [...REVIEWED_WAVE_DECLARATION_CONSUMERS, ["sandbox-stop", REVIEWED_SANDBOX_DECLARATION_CONSUMER],
         ["runtime-capabilities", runtimeCapabilitiesDeclarationConsumer], ["state-access", stateAccessDeclarationConsumer],
-        ["mcp-forward", mcpStrictConsumer("./dist")], ["sandbox-create", SANDBOX_CREATE_DECLARATION_CONSUMER],["remote-services",REMOTE_SHIPPING_DECLARATIONS],["localhost-proxy",PROXY_SHIPPING_DECLARATIONS],["diagnostics",DIAGNOSTICS_DECLARATION_CONSUMER],["diagnostics-source",DIAGNOSTICS_DECLARATION_CONSUMER.replaceAll('"./dist/','"'+root+'/src/')],["services-clean",SERVICES_CLEAN_DECLARATIONS],["services-harness",SERVICES_HARNESS_DECLARATIONS],["services-clean-source",SERVICES_CLEAN_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")],["services-harness-source",SERVICES_HARNESS_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")]].map(([name, text]) => {
+        ["mcp-forward", mcpStrictConsumer("./dist")], ["sandbox-create", SANDBOX_CREATE_DECLARATION_CONSUMER],["remote-services",REMOTE_SHIPPING_DECLARATIONS],["distribution-image",DISTRIBUTION_IMAGE_DECLARATIONS],["distribution-image-source",DISTRIBUTION_IMAGE_DECLARATIONS.replaceAll('"./dist/','"'+root+'/src/')],["localhost-proxy",PROXY_SHIPPING_DECLARATIONS],["diagnostics",DIAGNOSTICS_DECLARATION_CONSUMER],["diagnostics-source",DIAGNOSTICS_DECLARATION_CONSUMER.replaceAll('"./dist/','"'+root+'/src/')],["services-clean",SERVICES_CLEAN_DECLARATIONS],["services-harness",SERVICES_HARNESS_DECLARATIONS],["services-clean-source",SERVICES_CLEAN_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")],["services-harness-source",SERVICES_HARNESS_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")]].map(([name, text]) => {
         const file = join(packageRoot, `reviewed-wave-${name}-consumer.mts`);
         writeFileSync(file, text);
         return file;
@@ -7302,15 +7302,23 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
     assert.match(imageApplicationDeclarations, /createContainerImagePreparation\(ports: ContainerImagePreparationPorts\)/);
     assert.match(imageApplicationDeclarations, /run: \(request: ContainerImagePreparationRequest\) => undefined;/);
     const imageCompositionDeclarations = readFileSync(join(packageRoot, "dist/composition/container-image-preparation.d.ts"), "utf8");
-    assert.match(imageCompositionDeclarations, /readonly registryImage: string;/);
-    assert.match(imageCompositionDeclarations, /isImageExists\(\): boolean;/);
-    assert.match(imageCompositionDeclarations, /getImageLabel\(imageName: string, key: string\): string \| null;/);
-    assert.match(imageCompositionDeclarations, /qualifyImageRefForRuntime\(ref: string\): string;/);
-    assert.match(imageCompositionDeclarations, /pullImage\(ref: string\): boolean;/);
-    assert.match(imageCompositionDeclarations, /tagImage\(source: string, target: string\): void;/);
-    assert.match(imageCompositionDeclarations, /createNativeContainerImagePreparation\(helpers: NativeContainerImagePreparationHelpers\)/);
-    assert.match(imageCompositionDeclarations, /run: \(\) => undefined;/);
-    assert.doesNotMatch(imageCompositionDeclarations, /Promise<|\?:/);
+    const imageCompositionTree=ts.createSourceFile("container-image-preparation.d.ts",imageCompositionDeclarations,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+    const nativeCompositionNodes=imageCompositionTree.statements.filter(node=>
+        (ts.isInterfaceDeclaration(node)&&node.name.text==="NativeContainerImagePreparationHelpers")
+        ||(ts.isFunctionDeclaration(node)&&node.name?.text==="createNativeContainerImagePreparation"));
+    assert.equal(nativeCompositionNodes.length,2,"exact required native interface/factory must exist");
+    assert.equal(nativeCompositionNodes.filter(ts.isInterfaceDeclaration).length,1);
+    assert.equal(nativeCompositionNodes.filter(ts.isFunctionDeclaration).length,1);
+    const nativeCompositionDeclarations=nativeCompositionNodes.map(node=>node.getText(imageCompositionTree)).join("\n");
+    assert.match(nativeCompositionDeclarations, /readonly registryImage: string;/);
+    assert.match(nativeCompositionDeclarations, /isImageExists\(\): boolean;/);
+    assert.match(nativeCompositionDeclarations, /getImageLabel\(imageName: string, key: string\): string \| null;/);
+    assert.match(nativeCompositionDeclarations, /qualifyImageRefForRuntime\(ref: string\): string;/);
+    assert.match(nativeCompositionDeclarations, /pullImage\(ref: string\): boolean;/);
+    assert.match(nativeCompositionDeclarations, /tagImage\(source: string, target: string\): void;/);
+    assert.match(nativeCompositionDeclarations, /createNativeContainerImagePreparation\(helpers: NativeContainerImagePreparationHelpers\)/);
+    assert.match(nativeCompositionDeclarations, /run: \(\) => undefined;/);
+    assert.doesNotMatch(nativeCompositionDeclarations, /Promise<|\?:/);
     assert.match(readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8"), /ensureImage\(\): void;/);
     run(process.execPath, ["--input-type=module", "-e", [
         "import assert from 'node:assert/strict';",
