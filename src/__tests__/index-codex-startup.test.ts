@@ -38,6 +38,7 @@ vi.mock("../home-layout-container-guard.js", () => ({ hasLegacyHomeLayoutContain
 vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({ ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(), withSharedMutationLock: (_key: string, operation: () => unknown) => operation() }));
 vi.mock("@ccc/device-lab/device-lab-broker.js", () => ({ DEVICE_BROKER_DEFAULT_HOST: "127.0.0.1", ensureHostDeviceBroker: async () => ({ ok: true }) }));
 vi.mock("../device-lab-admin.js", () => ({ cleanupOwnerDevices: f.devices }));
+vi.mock("../device-lab-cleanup.js", () => ({ cleanupOwnerDevices: f.devices }));
 vi.mock("../session.js", async original => {
     const actual = await original<typeof import("../session.js")>();
     return { ...actual,
