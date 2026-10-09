@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 // Immutable whole accepted-source/genuine-emission/native closure frozen before
@@ -17,11 +17,29 @@ const controller = "'use strict';\nconst fs=require('fs'), vm=require('vm'), cry
 describe("content repair complete original/current CLI and native guard", () => {
     it("preserves full main caller, fixed class and held native guard through prompt suspension", () => {
         const privateRoot = mkdtempSync(join(tmpdir(), "ccc-content-admission-"));
+        const originalRoot = lstatSync(privateRoot);
+        const canonicalRoot = realpathSync(privateRoot);
+        if (!originalRoot.isDirectory() || originalRoot.isSymbolicLink()
+            || process.getuid && originalRoot.uid !== process.getuid()) {
+            throw new Error(`Allocated facade root is not owned: ${privateRoot}`);
+        }
+        const assertOwnedRoot = () => {
+            const observed = lstatSync(privateRoot);
+            if (!observed.isDirectory() || observed.isSymbolicLink()
+                || observed.dev !== originalRoot.dev || observed.ino !== originalRoot.ino
+                || observed.uid !== originalRoot.uid || realpathSync(privateRoot) !== canonicalRoot) {
+                throw new Error(`Allocated facade root identity changed: ${privateRoot}`);
+            }
+        };
+        let completed = false;
+        let submittedPayload = "";
+        let child: SpawnSyncReturns<string> | undefined;
         try {
-            const prefix = `const ARCHIVE=${JSON.stringify(immutableOriginalClosure)};const PRIVATE_ROOT=${JSON.stringify(privateRoot)};`;
-            const child = spawnSync(process.execPath, ["--experimental-vm-modules", "-"], {
+            const prefix = `'use strict';const ARCHIVE=${JSON.stringify(immutableOriginalClosure)};const PRIVATE_ROOT=${JSON.stringify(privateRoot)};`;
+            submittedPayload = prefix + controller;
+            child = spawnSync(process.execPath, ["--experimental-vm-modules", "-"], {
                 cwd: process.cwd(), encoding: "utf8", timeout: 180_000,
-                input: prefix + controller, stdio: ["pipe", "pipe", "pipe"],
+                input: submittedPayload, stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env, HOME: privateRoot },
                 maxBuffer: 4 * 1024 * 1024,
             });
@@ -33,6 +51,25 @@ describe("content repair complete original/current CLI and native guard", () => 
             expect(report.operationDenied).toBe(0);
             expect(report.deniedCaughtWitnesses).toBe(1248);
             expect(report.tiers).toEqual(["original-source", "original-genuine-emission", "current-source", "current-genuine-emission"]);
-        } finally { rmSync(privateRoot, { recursive: true, force: true }); }
+            completed = true;
+        } catch (error) {
+            // Keep the exact submitted stdin and raw child frames when any
+            // assertion fails. Never dump the inherited environment or clean
+            // up an unknown actor/root after a failed identity check.
+            assertOwnedRoot();
+            writeFileSync(join(privateRoot, "failed-stdin.cjs"), submittedPayload, { mode: 0o600, flag: "wx" });
+            writeFileSync(join(privateRoot, "failed-child.json"), JSON.stringify({
+                root: { path: privateRoot, canonicalPath: canonicalRoot, dev: originalRoot.dev, ino: originalRoot.ino, uid: originalRoot.uid },
+                stdout: child?.stdout, stderr: child?.stderr, status: child?.status, signal: child?.signal,
+                childError: child?.error && { name: child.error.name, message: child.error.message, stack: child.error.stack },
+                assertionError: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+            }, null, 2), { mode: 0o600, flag: "wx" });
+            throw new Error(`Facade failed; allocated evidence retained in ${privateRoot}`, { cause: error });
+        } finally {
+            if (completed) {
+                assertOwnedRoot();
+                rmSync(privateRoot, { recursive: true, force: true });
+            }
+        }
     }, 190_000);
 });
