@@ -1,3 +1,5 @@
+import { createAndroidWirelessApplication } from "../application/android-wireless.mjs";
+import { androidWifiSerial, androidWifiTransport, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
 import { waitForAndroidText, waitForAndroidApp } from "./android-wait.mjs";
 import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
@@ -17,6 +19,17 @@ import { claimRecordingFinalization, recordingGenerationMatches, transitionRecor
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus, withTargetStatuses } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
+
+// Native leaf steps retain timeout-runner selection before argument coercion.
+const androidWireless = createAndroidWirelessApplication({
+    discover: () => androidDiscovery(),
+    listDevices: (discovery) => run(discovery.adb, ["devices", "-l"]),
+    tcpip: (adb, argv, timeoutMs) => runWithTimeout(adb, argv, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))),
+    pair: (adb, argv, timeoutMs) => runWithTimeout(adb, argv, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))),
+    connect: (adb, argv, timeoutMs) => runWithTimeout(adb, argv, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))),
+    selectJsonPublisher: () => jsonResult,
+    selectTextPublisher: () => textResult,
+});
 
 const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -129,82 +142,10 @@ function androidRealRecordingLocalPath(device) {
     return join(androidRealRecordingDir(device), `recording-${Date.now()}.mp4`);
 }
 
-function parseAdbDevices(text) {
-    return String(text || "")
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith("List of devices"))
-        .map((line) => {
-            const [serial, state, ...detailParts] = line.split(/\s+/);
-            const details = Object.fromEntries(detailParts.map((part) => {
-                const index = part.indexOf(":");
-                return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, true];
-            }));
-            const emulator = serial?.startsWith("emulator-") || false;
-            const connection = !emulator && parseAndroidWifiEndpoint(serial) ? "wifi" : "usb";
-            return { serial, state: state || "unknown", details, emulator, connection };
-        })
-        .filter((device) => device.serial);
-}
-
-function parseAndroidWifiEndpoint(value, fallbackPort = null) {
-    const input = String(value || "").trim();
-    if (!input) return null;
-    const bracketed = input.match(/^\[([^\]]+)](?::(\d+))?$/);
-    if (bracketed) {
-        const port = bracketed[2] ? Number(bracketed[2]) : Number(fallbackPort);
-        return Number.isInteger(port) && port > 0 && port <= 65535 ? { host: bracketed[1], port } : null;
-    }
-    const colonCount = (input.match(/:/g) || []).length;
-    if (colonCount === 1) {
-        const separator = input.lastIndexOf(":");
-        const port = Number(input.slice(separator + 1));
-        if (Number.isInteger(port) && port > 0 && port <= 65535) return { host: input.slice(0, separator), port };
-    }
-    const port = Number(fallbackPort);
-    if (colonCount !== 1 && Number.isInteger(port) && port > 0 && port <= 65535) return { host: input, port };
-    return null;
-}
-
-function androidWifiSerial(host, port = 5555) {
-    const endpoint = parseAndroidWifiEndpoint(host, port || 5555);
-    if (!endpoint) return null;
-    const formattedHost = endpoint.host.includes(":") ? `[${endpoint.host}]` : endpoint.host;
-    return `${formattedHost}:${endpoint.port}`;
-}
-
-function androidWifiTarget(host, port = 5555, serial = "") {
-    if (serial) return androidWifiSerial(serial, port);
-    if (!host) return null;
-    return androidWifiSerial(host, port);
-}
-
-function androidWifiTransport(serial, host, port) {
-    const endpoint = parseAndroidWifiEndpoint(serial, port || 5555);
-    return {
-        type: "wifi",
-        host: parseAndroidWifiEndpoint(host, port || 5555)?.host || endpoint?.host || null,
-        port: endpoint?.port || Number(port || 5555),
-    };
-}
-
-function androidWifiAttachNext(backend, target, fallbackPort = 5555) {
-    const endpoint = parseAndroidWifiEndpoint(target, fallbackPort);
-    return endpoint ? { tool: "device_attach", arguments: { backend, connection: "wifi", ...endpoint } } : null;
-}
-
 function hostAndroidDevices(discovery = androidDiscovery()) {
     if (!discovery.adb) return { available: false, missing: ["adb"], devices: [] };
     const r = run(discovery.adb, ["devices", "-l"]);
-    if (r.status !== 0) {
-        return {
-            available: false,
-            missing: [],
-            devices: [],
-            error: r.stderr || r.stdout || `exit ${r.status}`,
-        };
-    }
-    return { available: true, missing: [], devices: parseAdbDevices(r.stdout) };
+    return androidWirelessDeviceList(r);
 }
 
 function targetSerial(device) {
@@ -273,27 +214,6 @@ function runAdbDeviceCommand(device, adb, args, options = {}) {
 function adbJsonResult(device, adb, args, payload, options = {}) {
     const r = runAdbDeviceCommand(device, adb, args, options);
     return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
-}
-
-function wirelessFailure(error, detail = {}) {
-    return textResult(false, JSON.stringify({ ok: false, error, ...detail }, null, 2));
-}
-
-function runWirelessAdb(adb, args, timeoutMs) {
-    return runWithTimeout(adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000)));
-}
-
-function androidWirelessCommandPayload(command, result, redactedIndices = []) {
-    const redacted = new Set(redactedIndices);
-    return {
-        provider: "adb",
-        args: command.map((value, index) => redacted.has(index) ? "[redacted]" : value),
-        status: result.status,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        signal: result.signal || null,
-        error: result.error?.message || null,
-    };
 }
 
 function appiumStatus(device, android) {
@@ -448,126 +368,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
         }
 
         case "device_wireless": {
-            const { backend = "android-device", action = "status", serial, host, port = 5555, pairHost, pairPort, pairingCode, connect = false, timeoutMs = 15000 } = args;
-            if (backend !== "android-device") return undefined;
-            const discovery = androidDiscovery();
-            if (!discovery.adb) return wirelessFailure("android-wireless-missing-adb", { missing: ["adb"] });
-
-            if (action === "status") {
-                return jsonResult({
-                    ok: true,
-                    backend,
-                    provider: "adb",
-                    actions: ["status", "usb-tcpip", "pair", "connect"],
-                    hostDevices: hostAndroidDevices(discovery),
-                    notes: [
-                        "usb-tcpip requires a USB-connected Android device already trusted by adb",
-                        "pair requires an Android 11+ wireless debugging pairing host, port, and pairing code",
-                        "device_attach still claims the owner-scoped physical lease after the transport is visible",
-                    ],
-                });
-            }
-
-            if (action === "usb-tcpip") {
-                if (!serial) return wirelessFailure("android-wireless-usb-tcpip-requires-serial");
-                const tcpipArgs = ["-s", serial, "tcpip", String(port || 5555)];
-                const tcpip = runWirelessAdb(discovery.adb, tcpipArgs, timeoutMs);
-                if (tcpip.status !== 0) {
-                    return wirelessFailure("android-wireless-usb-tcpip-failed", { command: androidWirelessCommandPayload(tcpipArgs, tcpip) });
-                }
-                const connectTarget = androidWifiTarget(host, port, "");
-                if (connect || connectTarget) {
-                    if (!connectTarget) return wirelessFailure("android-wireless-connect-requires-host", { tcpip: androidWirelessCommandPayload(tcpipArgs, tcpip) });
-                    const connectArgs = ["connect", connectTarget];
-                    const connected = runWirelessAdb(discovery.adb, connectArgs, timeoutMs);
-                    if (connected.status !== 0) {
-                        return wirelessFailure("android-wireless-connect-failed", {
-                            tcpip: androidWirelessCommandPayload(tcpipArgs, tcpip),
-                            command: androidWirelessCommandPayload(connectArgs, connected),
-                        });
-                    }
-                    return jsonResult({
-                        ok: true,
-                        backend,
-                        action,
-                        serial,
-                        target: connectTarget,
-                        tcpip: androidWirelessCommandPayload(tcpipArgs, tcpip),
-                        connect: androidWirelessCommandPayload(connectArgs, connected),
-                        stateMutated: false,
-                        attachNext: androidWifiAttachNext(backend, connectTarget, port),
-                    });
-                }
-                return jsonResult({
-                    ok: true,
-                    backend,
-                    action,
-                    serial,
-                    tcpip: androidWirelessCommandPayload(tcpipArgs, tcpip),
-                    stateMutated: false,
-                });
-            }
-
-            if (action === "pair") {
-                if (!pairHost || !pairPort || !pairingCode) return wirelessFailure("android-wireless-pair-requires-host-port-code");
-                const pairTarget = androidWifiSerial(pairHost, pairPort);
-                if (!pairTarget) return wirelessFailure("android-wireless-pair-requires-host-port-code");
-                const pairArgs = ["pair", pairTarget, String(pairingCode)];
-                const paired = runWirelessAdb(discovery.adb, pairArgs, timeoutMs);
-                if (paired.status !== 0) {
-                    return wirelessFailure("android-wireless-pair-failed", { command: androidWirelessCommandPayload(pairArgs, paired, [2]) });
-                }
-                const connectTarget = androidWifiTarget(host, port, serial);
-                if (connect || connectTarget) {
-                    if (!connectTarget) return wirelessFailure("android-wireless-connect-requires-host", { pair: androidWirelessCommandPayload(pairArgs, paired, [2]) });
-                    const connectArgs = ["connect", connectTarget];
-                    const connected = runWirelessAdb(discovery.adb, connectArgs, timeoutMs);
-                    if (connected.status !== 0) {
-                        return wirelessFailure("android-wireless-connect-failed", {
-                            pair: androidWirelessCommandPayload(pairArgs, paired, [2]),
-                            command: androidWirelessCommandPayload(connectArgs, connected),
-                        });
-                    }
-                    return jsonResult({
-                        ok: true,
-                        backend,
-                        action,
-                        pairTarget,
-                        target: connectTarget,
-                        pair: androidWirelessCommandPayload(pairArgs, paired, [2]),
-                        connect: androidWirelessCommandPayload(connectArgs, connected),
-                        stateMutated: false,
-                        attachNext: androidWifiAttachNext(backend, connectTarget, port),
-                    });
-                }
-                return jsonResult({
-                    ok: true,
-                    backend,
-                    action,
-                    pairTarget,
-                    pair: androidWirelessCommandPayload(pairArgs, paired, [2]),
-                    stateMutated: false,
-                });
-            }
-
-            if (action === "connect") {
-                const connectTarget = androidWifiTarget(host, port, serial);
-                if (!connectTarget) return wirelessFailure("android-wireless-connect-requires-host");
-                const connectArgs = ["connect", connectTarget];
-                const connected = runWirelessAdb(discovery.adb, connectArgs, timeoutMs);
-                if (connected.status !== 0) return wirelessFailure("android-wireless-connect-failed", { command: androidWirelessCommandPayload(connectArgs, connected) });
-                return jsonResult({
-                    ok: true,
-                    backend,
-                    action,
-                    target: connectTarget,
-                    connect: androidWirelessCommandPayload(connectArgs, connected),
-                    stateMutated: false,
-                    attachNext: androidWifiAttachNext(backend, connectTarget, port),
-                });
-            }
-
-            return wirelessFailure("unsupported-android-wireless-action", { action });
+            return androidWireless.handle(args);
         }
 
         case "device_attach": {
