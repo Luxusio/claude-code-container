@@ -59,6 +59,9 @@ const mockCleanupOwnerDevices = vi.fn();
 vi.mock("../device-lab-cleanup.js", () => ({
     cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
 }));
+vi.mock("../device-lab-admin.js", () => ({
+    cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
+}));
 
 vi.mock("@ccc/device-lab/windows-system-powershell.js", () => ({
     canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
