@@ -12256,7 +12256,7 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
         execute: (command, options) => normalized.commandRunner(command, options),
         executable: name => executableFor(name, normalized),
         now: () => Date.now(),
-        sleep: milliseconds => sleepSync(milliseconds),
+        sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
         timestamp: () => new Date().toISOString(),
         avdHome: () => androidAvdHome(),
         validPort: port => validAndroidEmulatorPort(port),

@@ -37,7 +37,7 @@ export interface BrokerAndroidEmulatorLifecyclePorts {
     readonly execute: (command: BrokerAndroidProviderCommand, options: { timeoutMs: number; outputLimit: number }) => BrokerAndroidProviderResult;
     readonly executable: (name: string) => string | null;
     readonly now: () => number;
-    readonly sleep: (milliseconds: number) => void;
+    readonly sleep: (milliseconds: number) => undefined;
     readonly timestamp: () => string;
     readonly avdHome: () => string;
     readonly validPort: (port: unknown) => boolean;
