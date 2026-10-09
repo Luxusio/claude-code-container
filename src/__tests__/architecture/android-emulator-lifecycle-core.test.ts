@@ -75,7 +75,7 @@ describe("distinct canonical authenticated broker Android policy", () => {
         expect(f.current()).toBe(winner); expect(f.trace).toContain("remove-avd");
     });
     it("committed auxiliary cleanup advances the complete expected snapshot before stopped publication", async () => {
-        const original = { ...brokerDevice(), status: "running", recording: { active: false, raw: "metadata" } }, f = brokerLifecyclePorts(original);
+        const original: Record<string, unknown> = { ...brokerDevice(), status: "running", recording: { active: false, raw: "metadata" } }, f = brokerLifecyclePorts(original);
         const cleaned = { ...original, recording: null };
         f.ports.cleanupAuxiliary = (_owner, _parsed, expected) => { expect(expected).toBe(original); f.trace.push("cleanup"); f.replace(cleaned); return { committed: true, device: cleaned, result: { ok: true, changed: true, appium: {}, recording: { cleared: true }, minimizeWatchdog: {} } }; };
         const result = await createBrokerAndroidEmulatorLifecycle(f.ports).stop(f.input("device_stop"));
@@ -180,7 +180,7 @@ describe("canonical direct Android emulator lifecycle policy", () => {
         expect(f.trace.slice(-3)).toEqual(["transition", "run:-s emulator-5630 emu kill", "terminate:Android Emulator superseded startup:3000"]);
     });
     it("stop recorder observations precede ADB/runtime cleanup and clear metadata through exact current-record CAS", async () => {
-        const original = { ...stoppedDevice(), status: "running", recording: { active: true, pid: 8 }, runtime: { pid: 9 }, appium: { raw: true } }, f = directLifecyclePorts(original);
+        const original: AndroidEmulatorDevice = { ...stoppedDevice(), status: "running", recording: { active: true, pid: 8 }, runtime: { pid: 9 }, appium: { raw: true } }, f = directLifecyclePorts(original);
         f.ports.signalOwnedRuntimeProcess = () => { f.trace.push("recorder-signal"); return { signaled: true }; };
         const result = await createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id });
         expect(result).toMatchObject({ ok: true, payload: { device: { status: "stopped", pid: null, runtime: null, appium: null, recording: null, lifecycle: null, extra: original.extra } } });
