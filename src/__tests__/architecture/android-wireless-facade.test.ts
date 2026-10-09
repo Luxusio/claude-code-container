@@ -75,11 +75,20 @@ function realm(original: boolean, mode: Mode = {}) {
             textPublisher = function(ok,value) {trace.push(["changedText"]); return {kind:"changed",ok,text:value}; };},
         deny};
 }
-const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+const plain = (value: unknown) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const semanticTrace = (trace: unknown[][]) => trace.filter(row => ["discovery","run","runWithTimeout","json","text"].includes(String(row[0])))
     .map(row => row[0] === "run" ? row.slice(0,3) : row[0] === "runWithTimeout" ? row.slice(0,4) : row.slice(0,1));
 
 describe("Android wireless whole original/fresh facade parity", () => {
+    it("preserves exported async settlement to undefined for another backend without native effects", async () => {
+        for (const original of [true, false]) {
+            const actor = realm(original);
+            const promise = actor.native.handleAndroidRealTool("device_wireless", { backend: "other" });
+            expect(Object.prototype.toString.call(promise)).toBe("[object Promise]");
+            expect(await promise).toBeUndefined();
+            actor.assertZero(); expect(actor.trace).toEqual([]);
+        }
+    });
     it("authenticates original whole source, native bodies, namespace and eight original observations", async () => {
         expect(createHash("sha256").update(ORIGINAL_FACADE).digest("hex")).toBe(ORIGINAL_SHA);
         for (const [file, sha] of Object.entries(ORIGINAL_NATIVE_HASHES)) {
