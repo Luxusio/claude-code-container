@@ -77,7 +77,7 @@ describe("Codex Harness complete synchronous host policy", () => {
                 get publishUnavailable() {
                     trace.push("warning-selected");
                     if (mode === "warning-getter-fault") throw fault;
-                    return message => { trace.push(["warning", message]); return undefined; };
+                    return (message: string) => { trace.push(["warning", message]); return undefined; };
                 },
             };
             let escaped: unknown;
