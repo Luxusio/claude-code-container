@@ -71,7 +71,14 @@ async function observe(scenario: Scenario, original: boolean) {
     let failure: unknown;
     try { expect(await pending).toBeUndefined(); } catch (error) { failure = error; }
     const rejection = failure === undefined ? "none" : failure === f.failure ? "raw" : failure === f.retryFailure ? "retry" : "other";
-    return { synchronous, trace: f.trace, calls: f.calls, rejection };
+    const selectionError = (scenario.fault === "select-relative" || scenario.fault === "select-aside") && failure
+        ? { rawSame: failure === f.failure, name: (failure as Error).name,
+            // Reading the known raw fixture message getter would itself append
+            // an effect after failure. Its fixed literal is already constructor
+            // data; the historical VM ReferenceError is inspected directly.
+            message: failure === f.failure ? "raw failure" : (failure as Error).message }
+        : undefined;
+    return { synchronous, trace: f.trace, calls: f.calls, rejection, selectionError };
 }
 const scenarios: Scenario[] = [
     { initial: "true" }, { initial: "null" }, { initial: "ordinary" }, { initial: "lookalike" },
@@ -86,7 +93,28 @@ describe("content repair admission immutable original differential", () => {
     for (const [index, scenario] of scenarios.entries()) it(`preserves branch and exceptional order ${index}: ${JSON.stringify(scenario)}`, async () => {
         const before = await observe(scenario, true);
         const after = await observe(scenario, false);
-        expect(after).toEqual(before);
+        if (scenario.fault === "select-relative" || scenario.fault === "select-aside") {
+            // These two historical global-identifier accessor fixtures expose
+            // a VM-only surface: ESM named imports have no getter lookup fault.
+            // Preserve the actual historical ReferenceError and the raw port
+            // selector failure separately; never normalize one into the other
+            // or label this pair native imported-binding equivalence.
+            expect(before.rejection).toBe("other");
+            expect(before.selectionError).toEqual({ rawSame: false, name: "ReferenceError",
+                message: scenario.fault === "select-relative" ? "relative is not defined" : "setAsideConflictingContent is not defined" });
+            expect(after.rejection).toBe("raw");
+            expect(after.selectionError).toEqual({ rawSame: true, name: "Error", message: "raw failure" });
+            expect(after.synchronous).toEqual(before.synchronous);
+            expect(after.trace).toEqual(before.trace);
+            expect(after.calls).toBe(before.calls);
+            expect(after.trace.at(-1)).toBe(scenario.fault);
+            expect(after.calls).toBe(1);
+            if (scenario.fault === "select-relative") expect(after.trace).not.toContain("root-get");
+            else {
+                const postPrompt = after.trace.slice(after.trace.indexOf("prompt-settled") + 1);
+                expect(postPrompt).toEqual(["select-aside"]);
+            }
+        } else expect(after).toEqual(before);
         expect(after.calls).toBeLessThanOrEqual(2);
         expect(after.synchronous[0]).toBe("repair:1");
         if (scenario.fault === "aside") { expect(after.calls).toBe(1); expect(after.rejection).toBe("raw"); }

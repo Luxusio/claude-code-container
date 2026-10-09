@@ -19,8 +19,9 @@ describe("content repair complete original/current CLI and native guard", () => 
         const privateRoot = mkdtempSync(join(tmpdir(), "ccc-content-admission-"));
         try {
             const prefix = `const ARCHIVE=${JSON.stringify(immutableOriginalClosure)};const PRIVATE_ROOT=${JSON.stringify(privateRoot)};`;
-            const child = spawnSync(process.execPath, ["--experimental-vm-modules", "-e", prefix + controller], {
+            const child = spawnSync(process.execPath, ["--experimental-vm-modules", "-"], {
                 cwd: process.cwd(), encoding: "utf8", timeout: 180_000,
+                input: prefix + controller, stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env, HOME: privateRoot },
                 maxBuffer: 4 * 1024 * 1024,
             });
