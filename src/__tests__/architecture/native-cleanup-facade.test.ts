@@ -3,12 +3,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import ts from "typescript";
-import { createNativeCleanupRealm, nativeCleanupRoot, originalPayload, project } from "../helpers/native-cleanup-fixture.js";
+import { createNativeCleanupRealm, nativeCleanupRoot, materializeOriginalPayload, NATIVE_CLEANUP_ORIGINAL, project } from "../helpers/native-cleanup-fixture.js";
 
 /** Whole authentic declaration namespaces are compared, including the private
  * carriers referenced by exported signatures. No tiny replacement declaration
  * or skipLibCheck waiver is supplied by these fixtures. */
-function checkDeclarationConsumers(candidate: string, original: string) {
+function checkDeclarationConsumers(candidate: string) {
+    const originalFiles = materializeOriginalPayload();
+    const originalPayload = originalFiles.root;
+    const original = path.join(originalPayload, "dist/device-lab-admin.d.ts");
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-native-cleanup-types-"));
     const fixture = path.join(directory, "consumer.ts");
     const implementationSpecifier = (file: string) => file.replace(/\.d\.ts$/, ".js").replace(/\.ts$/, ".js");
@@ -56,16 +59,36 @@ function checkDeclarationConsumers(candidate: string, original: string) {
         void asyncPrevious; void asyncCandidate; void wrongPrevious; void wrongCandidate;
     `);
     try {
+        originalFiles.assertAuthenticated();
         const configFile = ts.readConfigFile(path.join(nativeCleanupRoot, "tsconfig.json"), ts.sys.readFile);
         const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, nativeCleanupRoot);
-        const program = ts.createProgram([fixture], { ...parsed.options, rootDir: undefined, noEmit: true,
+        const options: ts.CompilerOptions = { ...parsed.options, rootDir: undefined, noEmit: true,
             skipLibCheck: false, declaration: false, incremental: false,
             baseUrl: nativeCleanupRoot, paths: { "@ccc/device-lab/*.js": ["packages/device-lab/dist/*.d.ts"],
                 "@ccc/hyper-v": ["packages/hyper-v/dist/index.d.ts"], "@ccc/hyper-v/*.js": ["packages/hyper-v/dist/*.d.ts"] },
             typeRoots: [path.join(nativeCleanupRoot, "node_modules/@types")],
-        });
+        };
+        const host = ts.createCompilerHost(options);
+        const readFile = host.readFile, fileExists = host.fileExists;
+        const isOriginal = (file: string) => file === originalPayload || file.startsWith(originalPayload + path.sep);
+        const originalKey = (file: string) => path.relative(originalPayload, file).split(path.sep).join("/");
+        host.fileExists = file => isOriginal(file) ? Object.hasOwn(NATIVE_CLEANUP_ORIGINAL.files, originalKey(file)) : fileExists(file);
+        host.readFile = file => isOriginal(file) ? originalFiles.read(file) : readFile(file);
+        // Original package imports resolve to original declarations and actual
+        // package metadata, never candidate carriers via the project's aliases.
+        host.resolveModuleNames = (names, containingFile) => names.map(name => ts.resolveModuleName(name, containingFile,
+            isOriginal(containingFile) ? { ...options, baseUrl: originalPayload, paths: {
+                "@ccc/device-lab/*.js": ["dist/packages/device-lab/dist/*.d.ts"],
+                "@ccc/hyper-v": ["dist/packages/hyper-v/dist/index.d.ts"],
+                "@ccc/hyper-v/*.js": ["dist/packages/hyper-v/dist/*.d.ts"],
+            } } : options, host).resolvedModule);
+        const originalDeclarations = Object.keys(NATIVE_CLEANUP_ORIGINAL.files).filter(file => file.endsWith(".d.ts"))
+            .map(file => path.join(originalPayload, file));
+        expect(originalDeclarations).toHaveLength(52);
+        const program = ts.createProgram([fixture, ...originalDeclarations], options, host);
         expect(ts.getPreEmitDiagnostics(program).map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"))).toEqual([]);
-    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+        originalFiles.assertAuthenticated();
+    } finally { originalFiles.cleanup(); fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
 describe("native cleanup exact facade and whole declaration compatibility", () => {
@@ -93,10 +116,10 @@ describe("native cleanup exact facade and whole declaration compatibility", () =
         } finally { original.cleanup(); candidate.cleanup(); }
     });
     it("strictly checks whole authentic original versus current source declarations", () => {
-        checkDeclarationConsumers(path.join(nativeCleanupRoot, "src/device-lab-admin.ts"), path.join(originalPayload, "dist/device-lab-admin.d.ts"));
+        checkDeclarationConsumers(path.join(nativeCleanupRoot, "src/device-lab-admin.ts"));
     }, 30000);
     it("strictly checks whole authentic original versus current emitted declarations", () => {
-        checkDeclarationConsumers(path.join(nativeCleanupRoot, "dist/device-lab-admin.d.ts"), path.join(originalPayload, "dist/device-lab-admin.d.ts"));
+        checkDeclarationConsumers(path.join(nativeCleanupRoot, "dist/device-lab-admin.d.ts"));
     }, 30000);
     it("passes through the same raw stop object and preserves original error-field short circuit", () => {
         const snapshots: unknown[] = [];
