@@ -1228,6 +1228,9 @@ if (args[0] === '-s' && args[2] === 'shell' && args[3] === 'getprop' && args[4] 
         });
         expect(start.isError).not.toBe(true);
         const pid = (parseToolJson(start) as { device: { pid: number } }).device.pid;
+        // Nonblocking start does not wait for the fixture child to register with ADB.
+        // This case requires an ADB-visible runtime before verifying both stop paths.
+        await expect.poll(() => existsSync(join(homeDir, "fake-adb-active-emulator-5666")), { timeout: TIMEOUT }).toBe(true);
         const beforeLog = readFileSync(logPath, "utf8");
 
         const deleted = await client.callTool({
