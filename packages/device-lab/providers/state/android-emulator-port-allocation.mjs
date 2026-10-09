@@ -1,12 +1,11 @@
+import { addAndroidEmulatorUsedPorts, selectAndroidEmulatorPort, validateAndroidEmulatorPortRequest, validAndroidEmulatorPort } from "../domain/lifecycle/android-emulator-lifecycle.mjs";
+export { ANDROID_EMULATOR_PORT_MIN, ANDROID_EMULATOR_PORT_MAX, validAndroidEmulatorPort } from "../domain/lifecycle/android-emulator-lifecycle.mjs";
 import { createHash } from "crypto";
 import { lstatSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { readOwnerDeviceStateFile } from "./owner-device-state.mjs";
 import { withSharedMutationLockAsync } from "./shared-mutation-lock.mjs";
-
-export const ANDROID_EMULATOR_PORT_MIN = 5554;
-export const ANDROID_EMULATOR_PORT_MAX = 5682;
 
 const ANDROID_EMULATOR_PORT_LOCK_WAIT_MS = 30000;
 const ANDROID_EMULATOR_PORT_LOCK_STALE_MS = 15 * 60 * 1000;
@@ -54,13 +53,6 @@ function enumerateProjectIds(root) {
     }
 }
 
-export function validAndroidEmulatorPort(port) {
-    return Number.isInteger(port)
-        && port >= ANDROID_EMULATOR_PORT_MIN
-        && port <= ANDROID_EMULATOR_PORT_MAX
-        && port % 2 === 0;
-}
-
 function allocatedAndroidEmulatorPorts() {
     const ports = new Set();
     const ownersRoot = join(deviceStateRoot(), "owners");
@@ -74,13 +66,8 @@ function allocatedAndroidEmulatorPorts() {
 }
 
 export function resolveAndroidEmulatorPort(projectId, deviceId, requestedPort, additionalUsedPorts = []) {
-    if (requestedPort !== undefined && !validAndroidEmulatorPort(requestedPort)) {
-        return {
-            ok: false,
-            error: "invalid-android-emulator-port",
-            allowed: `even integer ${ANDROID_EMULATOR_PORT_MIN}-${ANDROID_EMULATOR_PORT_MAX}`,
-        };
-    }
+    const invalid = validateAndroidEmulatorPortRequest(requestedPort);
+    if (invalid) return invalid;
 
     let used;
     try {
@@ -92,23 +79,11 @@ export function resolveAndroidEmulatorPort(projectId, deviceId, requestedPort, a
             detail: error?.code || "android-emulator-port-inventory-read-failed",
         };
     }
-    for (const port of additionalUsedPorts) {
-        if (validAndroidEmulatorPort(port)) used.add(port);
-    }
-
-    if (requestedPort !== undefined) {
-        return used.has(requestedPort)
-            ? { ok: false, error: "android-emulator-port-conflict", detail: `port-${requestedPort}-already-allocated` }
-            : { ok: true, port: requestedPort };
-    }
-
-    const slotCount = ((ANDROID_EMULATOR_PORT_MAX - ANDROID_EMULATOR_PORT_MIN) / 2) + 1;
-    const initialSlot = Number.parseInt(createHash("sha256").update(`${projectId}\0${deviceId}`).digest("hex").slice(0, 8), 16) % slotCount;
-    for (let offset = 0; offset < slotCount; offset += 1) {
-        const port = ANDROID_EMULATOR_PORT_MIN + (((initialSlot + offset) % slotCount) * 2);
-        if (!used.has(port)) return { ok: true, port };
-    }
-    return { ok: false, error: "android-emulator-port-pool-exhausted" };
+    addAndroidEmulatorUsedPorts(used, additionalUsedPorts);
+    const initialSeed = requestedPort === undefined
+        ? Number.parseInt(createHash("sha256").update(`${projectId}\0${deviceId}`).digest("hex").slice(0, 8), 16)
+        : undefined;
+    return selectAndroidEmulatorPort(used, requestedPort, initialSeed);
 }
 
 export function withAndroidEmulatorPortAllocation(operation) {
