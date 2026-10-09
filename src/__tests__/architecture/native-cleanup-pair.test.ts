@@ -245,4 +245,99 @@ describe("real native cleanup original/candidate pairs", () => {
         }
     });
 
+    it("allows only exact retained Docker probe options through the actual mocked spawn binding", () => {
+        const realm = createNativeCleanupRealm(false);
+        const commands = [["--version"], ["info", "--format", "{{.OperatingSystem}}"],
+            ["info", "--format", "{{json .SecurityOptions}}"]];
+        const valid = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
+        try {
+            realm.assertZero();
+            for (const args of commands) {
+                expect(realm.childProcess.spawnSync("docker", args, valid).status).toBe(0);
+                realm.assertZero();
+            }
+            let expectedDenials = 0;
+            for (const args of commands) {
+                for (const wrong of [
+                    { ...valid, shell: true }, { ...valid, extra: true }, { ...valid, timeout: 1 },
+                    { ...valid, stdio: "inherit" }, { ...valid, encoding: "utf8" },
+                    { encoding: "utf-8" },
+                ]) {
+                    expect(() => realm.childProcess.spawnSync("docker", args, wrong)).toThrow("DENIED runtime probe options");
+                    expect(realm.denied).toBe(++expectedDenials);
+                }
+            }
+            for (const args of commands) {
+                const inaccessible = { encoding: "utf-8", get stdio(): never { throw new Error("unallocated options getter"); } };
+                expect(() => realm.childProcess.spawnSync("docker", args, inaccessible)).toThrow("DENIED runtime probe options");
+                expect(realm.denied).toBe(++expectedDenials);
+            }
+            let getterCalls = 0;
+            const successfulGetter = { encoding: "utf-8", get stdio() { getterCalls++; return ["pipe", "pipe", "pipe"]; } };
+            const nonEnumerableEncoding = Object.defineProperty({ stdio: ["pipe", "pipe", "pipe"] }, "encoding", { value: "utf-8" });
+            const nonEnumerableStdio = Object.defineProperty({ encoding: "utf-8" }, "stdio", { value: ["pipe", "pipe", "pipe"] });
+            const accessorArray = ["pipe", "pipe", "pipe"];
+            Object.defineProperty(accessorArray, "0", { enumerable: true, configurable: true, get() { getterCalls++; return "pipe"; } });
+            for (const args of commands) {
+                for (const wrong of [successfulGetter, nonEnumerableEncoding, nonEnumerableStdio,
+                    Object.assign(Object.create({ shell: true }), valid),
+                    Object.assign(Object.create({ env: { PATH: "/outside" } }), valid),
+                    Object.assign(Object.create({ cwd: "/outside" }), valid),
+                    new Proxy(valid, {}), { ...valid, stdio: new Proxy(["pipe", "pipe", "pipe"], {}) },
+                    { ...valid, stdio: new Array(3) }, { ...valid, stdio: accessorArray },
+                    { ...valid, [Symbol("extra")]: true },
+                    Object.defineProperty({ ...valid }, "extra", { value: true }),
+                ]) {
+                    expect(() => realm.childProcess.spawnSync("docker", args, wrong)).toThrow("DENIED runtime probe options");
+                    expect(realm.denied).toBe(++expectedDenials);
+                    expect(getterCalls).toBe(0);
+                }
+            }
+            expect(() => realm.childProcess.spawnSync("docker", ["info", "--format", "unallocated"], valid)).toThrow("DENIED unexpected subprocess");
+            expect(realm.denied).toBe(++expectedDenials);
+        } finally { realm.cleanup(); }
+    });
+
+    it("admits literal Docker options from the actual original and candidate VM adapters", () => {
+        for (const original of [true, false]) {
+            const realm = createNativeCleanupRealm(original);
+            try {
+                const adapter = realm.load("src/adapters/runtime-capabilities.ts");
+                realm.assertZero();
+                const observations = adapter.createNativeRuntimeCapabilitiesObservations(() => null);
+                expect(observations.observeVersion("docker").status).toBe(0); realm.assertZero();
+                expect(observations.observeDockerOperatingSystem().status).toBe(0); realm.assertZero();
+                expect(observations.observeDockerSecurityOptions().status).toBe(0); realm.assertZero();
+            } finally { realm.cleanup(); }
+        }
+    });
+    it("counts owned VM prototype mutations without invoking inherited accessors", () => {
+        const mutations = [
+            "Object.prototype.detached = true",
+            "Object.prototype.uid = 123",
+            "Object.prototype[Symbol('unallocated')] = true",
+            "Object.prototype.toString = function () { return 'replacement'; }",
+            "Object.defineProperty(Object.prototype, 'getter', { configurable: true, get() { globalThis.getterCalls++; return true; } })",
+            "Object.defineProperty(Object.prototype, 'toJSON', { configurable: true, get() { globalThis.getterCalls++; return undefined; } })",
+            "Array.prototype.maxBuffer = 123",
+            "Array.prototype.map = function () { return []; }",
+            "Object.defineProperty(Array.prototype, 'getter', { configurable: true, get() { globalThis.getterCalls++; return true; } })",
+        ];
+        for (const mutation of mutations) {
+            const realm = createNativeCleanupRealm(false);
+            try {
+                const adapter = realm.load("src/adapters/runtime-capabilities.ts"); realm.assertZero();
+                const observations = adapter.createNativeRuntimeCapabilitiesObservations(() => null);
+                vm.runInContext(`globalThis.getterCalls = 0; ${mutation}`, realm.context);
+                let expectedDenials = 0;
+                for (const observe of [() => observations.observeVersion("docker"),
+                    () => observations.observeDockerOperatingSystem(), () => observations.observeDockerSecurityOptions()]) {
+                    expect(observe).toThrow("DENIED runtime probe options");
+                    expect(realm.denied).toBe(++expectedDenials);
+                    expect(vm.runInContext("globalThis.getterCalls", realm.context)).toBe(0);
+                }
+            } finally { realm.cleanup(); }
+        }
+    });
+
 });

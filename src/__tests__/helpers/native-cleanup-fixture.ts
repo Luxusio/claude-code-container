@@ -148,28 +148,120 @@ export function createNativeCleanupRealm(original: boolean) {
         get signal() { record("stop.signal"); return state.stopSignal; },
         get status() { record("stop.status"); return state.stopStatus; },
     };
+    // Admit literals from the controller and this owned VM realm, not arbitrary
+    // objects with an Object-looking constructor or a foreign/custom prototype.
+    const objectPrototypes = new Set<object>();
+    const arrayPrototypes = new Set<object>();
+    const prototypeSnapshots = new Map<object, {
+        parent: object | null; keys: PropertyKey[]; descriptors: Map<PropertyKey, PropertyDescriptor>;
+    }>();
+    const registerPrototype = (prototype: object, admitted: Set<object>) => {
+        admitted.add(prototype);
+        let current: object | null = prototype;
+        while (current !== null && !prototypeSnapshots.has(current)) {
+            const parent: object | null = Object.getPrototypeOf(current);
+            const keys = Reflect.ownKeys(current);
+            const descriptors = new Map<PropertyKey, PropertyDescriptor>();
+            for (const key of keys) {
+                const descriptor = Object.getOwnPropertyDescriptor(current, key);
+                if (!descriptor) return deny("prototype registration changed");
+                descriptors.set(key, descriptor);
+            }
+            prototypeSnapshots.set(current, { parent, keys, descriptors });
+            current = parent;
+        }
+    };
+    const prototypeChainUnchanged = (prototype: object): boolean => {
+        let current: object | null = prototype;
+        while (current !== null) {
+            const snapshot = prototypeSnapshots.get(current);
+            if (!snapshot || util.types.isProxy(current) || Object.getPrototypeOf(current) !== snapshot.parent) return false;
+            const keys = Reflect.ownKeys(current);
+            if (keys.length !== snapshot.keys.length || keys.some((key, index) => key !== snapshot.keys[index])) return false;
+            for (const key of keys) {
+                const before = snapshot.descriptors.get(key);
+                const after = Object.getOwnPropertyDescriptor(current, key);
+                if (!before || !after) return false;
+                for (const field of ["value", "get", "set", "writable", "enumerable", "configurable"] as const) {
+                    if (Object.hasOwn(before, field) !== Object.hasOwn(after, field) || !Object.is(before[field], after[field])) return false;
+                }
+            }
+            current = snapshot.parent;
+        }
+        return true;
+    };
+    registerPrototype(Object.prototype, objectPrototypes);
+    registerPrototype(Array.prototype, arrayPrototypes);
+    const literalData = (descriptor: PropertyDescriptor | undefined) => descriptor !== undefined
+        && Object.hasOwn(descriptor, "value") && descriptor.enumerable === true
+        && descriptor.writable === true && descriptor.configurable === true;
+    const dockerLiteralOptions = (options: unknown): boolean => {
+        if (!options || typeof options !== "object" || util.types.isProxy(options)) return false;
+        const prototype = Object.getPrototypeOf(options);
+        if (!objectPrototypes.has(prototype) || !prototypeChainUnchanged(prototype)) return false;
+        const descriptors = Object.getOwnPropertyDescriptors(options);
+        const keys = Reflect.ownKeys(descriptors);
+        if (keys.length !== 2 || !keys.includes("encoding") || !keys.includes("stdio")
+            || !literalData(descriptors.encoding) || !literalData(descriptors.stdio)
+            || descriptors.encoding.value !== "utf-8") return false;
+        const stdio: unknown = descriptors.stdio.value;
+        if (!Array.isArray(stdio) || util.types.isProxy(stdio)) return false;
+        const arrayPrototype = Object.getPrototypeOf(stdio);
+        if (!arrayPrototypes.has(arrayPrototype) || !prototypeChainUnchanged(arrayPrototype)) return false;
+        const arrayDescriptors = Object.getOwnPropertyDescriptors(stdio as object);
+        const arrayKeys = Reflect.ownKeys(arrayDescriptors);
+        const length = arrayDescriptors.length;
+        return arrayKeys.length === 4 && ["0", "1", "2", "length"].every(key => arrayKeys.includes(key))
+            && length.value === 3 && length.writable === true && length.enumerable === false && length.configurable === false
+            && ["0", "1", "2"].every(key => literalData(arrayDescriptors[key]) && arrayDescriptors[key].value === "pipe");
+    };
     const childProcess: Record<string, any> = Object.fromEntries(["spawn", "exec", "execSync", "execFile", "execFileSync", "fork"].map(name => [name, () => deny(`child_process.${name}`)]));
     childProcess.spawnSync = (command: string, args: string[], options: Record<string, unknown>) => {
-        record("spawnSync", command, args, { ...options, env: options.env ? "same realm env" : undefined });
-        if (command === "/bin/sh" && args[0] === "-c" && /^command -v (adb|wsb|xcrun|tart|vz|utmctl)$/.test(args[1])) {
-            if (options.encoding !== "utf-8" || options.env !== nativeProcess.env || options.windowsHide !== true) return deny("lookup options");
-            return { status: 0, stdout: `/controlled/${args[1].slice("command -v ".length)}\n`, stderr: "" };
+        const deniedBefore = denied;
+        try {
+            // Authenticate registered chains before even argv serialization:
+            // a mutated inherited toJSON accessor must not be evaluated first.
+            if (command === "docker" && [...prototypeSnapshots.keys()].some(prototype => !prototypeChainUnchanged(prototype))) {
+                return deny("runtime probe options");
+            }
+            const dockerProbe = JSON.stringify(args);
+            const runtimeProbe = command === "docker" && [
+                '["--version"]', '["info","--format","{{.OperatingSystem}}"]',
+                '["info","--format","{{json .SecurityOptions}}"]',
+            ].includes(dockerProbe);
+            // Authenticate descriptors BEFORE reading or spreading options;
+            // rejecting a successful/throwing accessor must never invoke it.
+            if (runtimeProbe && !dockerLiteralOptions(options)) return deny("runtime probe options");
+            let recordedOptions: Record<string, unknown>;
+            try { recordedOptions = { ...options, env: options.env ? "same realm env" : undefined }; }
+            catch { return deny("subprocess options access"); }
+            record("spawnSync", command, args, recordedOptions);
+            if (command === "/bin/sh" && args[0] === "-c" && /^command -v (adb|wsb|xcrun|tart|vz|utmctl)$/.test(args[1])) {
+                if (options.encoding !== "utf-8" || options.env !== nativeProcess.env || options.windowsHide !== true) return deny("lookup options");
+                return { status: 0, stdout: `/controlled/${args[1].slice("command -v ".length)}\n`, stderr: "" };
+            }
+            const approvedProvider = command === "/controlled/adb" && args[0] === "-s" && ["emulator-5554", "physical-serial"].includes(args[1])
+                && (JSON.stringify(args.slice(2)) === '["emu","kill"]' || JSON.stringify(args.slice(2)) === '["shell","pkill","-2","screenrecord"]')
+                || command === "/controlled/wsb" && JSON.stringify(args) === '["stop","--id","12345678-1234-1234-1234-123456789abc"]';
+            if (approvedProvider) {
+                if (options.encoding !== "utf-8" || options.env !== nativeProcess.env || options.timeout !== 5000 || options.windowsHide !== true || options.input !== undefined) return deny("provider options");
+                state.afterCommand?.(); state.afterCommand = undefined;
+                return { status: state.commandStatus, stdout: "", stderr: state.commandStatus ? "fixture provider failure" : "" };
+            }
+            if (command === "docker" && JSON.stringify(args) === '["stop","fixture-container"]') {
+                if (options.stdio !== "ignore" || options.timeout !== 30000 || options.killSignal !== "SIGKILL") return deny("stop options");
+                return rawStop;
+            }
+            // Exact retained src/adapters/runtime-capabilities.ts tuples above.
+            if (runtimeProbe) {
+                return { status: 0, stdout: dockerProbe === '["--version"]' ? "Docker version 27"
+                    : args[2] === "{{.OperatingSystem}}" ? "Linux" : "[]", stderr: "" };
+            }
+            return deny("unexpected subprocess");
+        } catch (error) {
+            if (denied === deniedBefore) return deny("subprocess observation access");
+            throw error;
         }
-        const approvedProvider = command === "/controlled/adb" && args[0] === "-s" && ["emulator-5554", "physical-serial"].includes(args[1])
-            && (JSON.stringify(args.slice(2)) === '["emu","kill"]' || JSON.stringify(args.slice(2)) === '["shell","pkill","-2","screenrecord"]')
-            || command === "/controlled/wsb" && JSON.stringify(args) === '["stop","--id","12345678-1234-1234-1234-123456789abc"]';
-        if (approvedProvider) {
-            if (options.encoding !== "utf-8" || options.env !== nativeProcess.env || options.timeout !== 5000 || options.windowsHide !== true || options.input !== undefined) return deny("provider options");
-            state.afterCommand?.(); state.afterCommand = undefined;
-            return { status: state.commandStatus, stdout: "", stderr: state.commandStatus ? "fixture provider failure" : "" };
-        }
-        if (command === "docker" && JSON.stringify(args) === '["stop","fixture-container"]') {
-            if (options.stdio !== "ignore" || options.timeout !== 30000 || options.killSignal !== "SIGKILL") return deny("stop options");
-            return rawStop;
-        }
-        if (command === "docker" && JSON.stringify(args) === '["--version"]') return { status: 0, stdout: "Docker version 27", stderr: "" };
-        if (command === "docker" && args[0] === "info" && args[1] === "--format") return { status: 0, stdout: args[2] === "{{.OperatingSystem}}" ? "Linux" : "[]", stderr: "" };
-        return deny("unexpected subprocess");
     };
     const env = { HOME: home, PATH: "/controlled", CCC_RUNTIME: "docker", VITEST: "true" };
     const nativeProcess = {
@@ -203,6 +295,8 @@ export function createNativeCleanupRealm(original: boolean) {
         setTimeout: () => deny("setTimeout"), setInterval: () => deny("setInterval"), setImmediate: () => deny("setImmediate"), clearTimeout: () => deny("clearTimeout"), clearInterval: () => deny("clearInterval"), clearImmediate: () => deny("clearImmediate"),
         fetch: () => deny("fetch"), performance: { now: () => fixedTime + clock++ },
     });
+    registerPrototype(vm.runInContext("Object.prototype", context), objectPrototypes);
+    registerPrototype(vm.runInContext("Array.prototype", context), arrayPrototypes);
     const builtins: Record<string, unknown> = {
         fs: fencedFs, "fs/promises": fencedFs.promises, path, crypto: nativeCrypto, util, url,
         os: { homedir: () => home, hostname: () => "fixture-host", uptime: () => 1 },
