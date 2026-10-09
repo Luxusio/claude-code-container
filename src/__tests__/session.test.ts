@@ -56,7 +56,7 @@ vi.mock("../docker.js", () => ({
 }));
 
 const mockCleanupOwnerDevices = vi.fn();
-vi.mock("../device-lab-admin.js", () => ({
+vi.mock("../device-lab-cleanup.js", () => ({
     cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
 }));
 

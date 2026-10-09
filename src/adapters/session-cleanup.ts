@@ -1,7 +1,7 @@
 import { spawnSync } from "child_process";
 import { existsSync, unlinkSync } from "fs";
 import { runtimeCli } from "../container-runtime.js";
-import { cleanupOwnerDevices } from "../device-lab-admin.js";
+import { cleanupOwnerDevices } from "../device-lab-cleanup.js";
 
 export function removeNativeSessionClaim(lockFile: string): undefined {
     try {

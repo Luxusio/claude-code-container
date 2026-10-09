@@ -18,7 +18,7 @@ vi.mock("child_process", async original => ({ ...await original<typeof import("n
 vi.mock("../../home-layout.js", () => ({ locksDir: () => "/fixture/locks" }));
 vi.mock("../../utils.js", () => ({ getProjectId: effects.identity }));
 vi.mock("../../container-runtime.js", () => ({ runtimeCli: effects.runtime }));
-vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: effects.devices }));
+vi.mock("../../device-lab-cleanup.js", () => ({ cleanupOwnerDevices: effects.devices }));
 vi.mock("../../session-lock-liveness.js", async original => ({
     ...await original<typeof import("../../session-lock-liveness.js")>(),
     processStartToken: effects.token, observeProcessStarts: effects.observe, sessionLockLiveness: effects.classify,
