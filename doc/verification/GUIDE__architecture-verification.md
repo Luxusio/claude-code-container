@@ -77,6 +77,8 @@ canonical, owned path and the required package layout. Ownership alone does not
 authenticate its code. Reject invalid flags and paths before allocating scratch
 files or dispatching checks. Preflight runs current declaration contracts and
 the whole image-preparation gate; the command without flags runs full verification.
+Preflight requires POSIX user ownership and permission checks. Its filesystem
+tests are unavailable on Windows; parser and dispatch tests still run there.
 
 Do not reconstruct temporary copies of checker functions to choose a check.
 Use the explicit runner entry point. A targeted diagnostic remains useful

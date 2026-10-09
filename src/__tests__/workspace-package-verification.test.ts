@@ -152,7 +152,9 @@ function evidenceDirectory(directory: string) {
     return join(directory, entries[0]);
 }
 
-describe("current declaration evidence and owned cleanup", () => {
+// These ownership checks require real POSIX UID and permission semantics.
+// Argument parsing and dispatch coverage above runs on every platform.
+describe.skipIf(typeof process.getuid !== "function")("current declaration evidence and owned cleanup with POSIX ownership and modes", () => {
     it.each([1, 2])("retains submitted inputs, sidecars and the raw failed result at compiler call %i", failedCall => {
         declarationFixture(directory => {
             const failure = { status: 23, signal: "SIGTERM", stdout: "compiler output marker", stderr: "compile failure marker" };
