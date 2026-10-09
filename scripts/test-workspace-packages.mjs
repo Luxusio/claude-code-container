@@ -23339,7 +23339,7 @@ void[doctorCheck,doctorRuntime,doctorProbe,doctorStatus,runtimeVersion,probeStat
 function diagnosticShippingConsumer(consumer,payload,home,currentAuthority){
  const compiler=pathToFileURL(join(root,'node_modules/typescript/lib/typescript.js')).href;
  const doctorTypeSource=readFileSync(join(root,DIAGNOSTICS_DOCTOR_TYPE_AUTHORITY.sourcePath),'utf8');assert.equal(createHash('sha256').update(doctorTypeSource).digest('hex'),DIAGNOSTICS_DOCTOR_TYPE_AUTHORITY.sourceSha256);
- const script=`import ts from ${JSON.stringify(compiler)};import path from 'node:path';import * as vm from 'node:vm';import {createHash} from 'node:crypto';import {fileURLToPath} from 'node:url';
+ const script=`import assert from 'node:assert/strict';import ts from ${JSON.stringify(compiler)};import path from 'node:path';import * as vm from 'node:vm';import {createHash} from 'node:crypto';import {fileURLToPath} from 'node:url';
 const createOwnedImportRead=${createOwnedImportRead.toString()};
 const INDEX_SHARED_STATE_AUTHORITY=${JSON.stringify(INDEX_SHARED_STATE_AUTHORITY)};
 const INDEX_BROKER_AUTHORITY=${JSON.stringify(INDEX_BROKER_AUTHORITY)};
