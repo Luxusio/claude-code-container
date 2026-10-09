@@ -5439,7 +5439,14 @@ async function verifyRemoteShippingDelivery(payload,privateHome,golden,fixtureSo
  for(const item of indexAst.statements){
   if(!ts.isImportDeclaration(item)||!item.importClause||item.importClause.isTypeOnly)continue;
   const spec=item.moduleSpecifier.text;if(spec==='./remote.js'||!(spec.startsWith('./')||spec.startsWith('@ccc/')))continue;
-  const binds=item.importClause.namedBindings;assert(binds&&ts.isNamedImports(binds));
+  const binds=item.importClause.namedBindings;
+  if(spec==='./application/workspace/cli-removal.js'){
+   assert.equal(item.importClause.name,undefined);assert(binds&&ts.isNamespaceImport(binds));assert.equal(binds.name.text,'workspaceCliRemoval');continue;
+  }
+  if(spec==='./application/workspace/content-repair-admission.js'){
+   assert.equal(item.importClause.name,undefined);assert(binds&&ts.isNamedImports(binds));assert.equal(binds.elements.length,1);const binding=binds.elements[0];assert.equal(binding.name.text,'createWorkspaceContentRepairAdmission');assert.equal(binding.propertyName,undefined);assert.equal(binding.isTypeOnly,false);continue;
+  }
+  assert(binds&&ts.isNamedImports(binds));
   const names=binds.elements.filter(e=>!e.isTypeOnly).map(e=>(e.propertyName??e.name).text);
   let body='const deny=name=>{globalThis.__remoteDenied.push(name);throw Error("unallocated CLI dependency:"+name);};';
   for(const name of names){const val=['normalizeProfile','detectWorktreeWorkspaceBranch'].includes(name)?'()=>undefined':name==='getAllTools'||name==='getAllCredentialMounts'?'()=>[]':name==='CONTAINER_ENV_KEY'?'"CCC_CONTAINER"':name==='CONTAINER_ENV_VALUE'?'"1"':name==='CLI_VERSION'?'"qa-fixture"':name==='DEFAULT_PROFILE_NAME'?'"default"':name==='DATA_DIR'?JSON.stringify(path.join(privateHome,'.ccc')):`(...args)=>deny(${JSON.stringify(name)})`;body+=`export const ${name}=${val};`;}cliMocks.set(spec,body);
@@ -5486,7 +5493,7 @@ for(let index=0;index<cliRows.length;index++){
 }
 }finally{Object.defineProperty(console,'log',original.log);Object.defineProperty(console,'error',original.error);process.stdout.write=original.write;process.exit=original.exit;process.kill=original.kill;process.once=original.once;process.removeListener=original.remove;globalThis.setInterval=original.interval;globalThis.clearInterval=original.clear;globalThis.setTimeout=original.sleep;Date.now=original.now;process.env=original.env;}
 
- for(const name of ['remote','application/remote-services','application/remote-sync','adapters/remote-services','adapters/remote-shell'])assert(imported.has(pathToFileURL(path.join(payload,'dist',name+'.js')).href),'actual Remote module must execute:'+name);
+ for(const name of ['remote','application/remote-services','application/remote-sync','adapters/remote-services','adapters/remote-shell','application/workspace/cli-removal','application/workspace/content-repair-admission'])assert(imported.has(pathToFileURL(path.join(payload,'dist',name+'.js')).href),'actual Remote module must execute:'+name);
  assert.deepEqual(globalThis.__remoteDenied,[]);effectFence.finish();
  return {consumer:'Remote4',result:'PASS',layer:'actual-emitted-index/public-facade/shell/sync',baselineRows:53,cliRoutes:5,operations:['setup','check','terminate','exec-saved','exec-host']};
  }catch(error){primaryFailed=true;throw error;}
@@ -23429,7 +23436,7 @@ async function verifyCleanMain(payload,privateHome,originalBranches){
  const assert=(await import('node:assert/strict')).default,path=(await import('node:path')).default,vm=await import('node:vm');
  const {pathToFileURL,fileURLToPath}=await import('node:url'),{createRequire,isBuiltin}=await import('node:module');
  const read=await createOwnedImportRead(pathToFileURL(payload+path.sep),pathToFileURL(path.join(payload,'package.json')),'diagnostic complete main');
- const sources=new Map(),entries=['index','doctor','application/doctor','domain/doctor','lab-runner-admin','application/lab-runner-diagnostics','domain/lab-runner-diagnostics','clean','application/clean','domain/clean','ports/clean'];
+ const sources=new Map(),entries=['index','doctor','application/doctor','domain/doctor','lab-runner-admin','application/lab-runner-diagnostics','domain/lab-runner-diagnostics','clean','application/clean','domain/clean','ports/clean','application/workspace/cli-removal','application/workspace/content-repair-admission'];
  read.restrictSources(entries.map(name=>pathToFileURL(path.join(payload,'dist',name+'.js'))));
  for(const name of entries){const file=path.join(payload,'dist',name+'.js');const text=read.read(pathToFileURL(file),'utf8');assert(Buffer.byteLength(text)<1048576);sources.set(file,text);}read.close();
  const indexFile=path.join(payload,'dist/index.js'),indexSource=sources.get(indexFile);assertCurrentIndexAuthority(indexFile,indexSource,CURRENT_FOLLOWUP_AUTHORITY);assert(originalBranches.staticImports.includes(INDEX_SHARED_STATE_AUTHORITY.sourceSpecifier));
@@ -24228,11 +24235,18 @@ ${verifyControlledRuntimeCore.toString()}
 const frozenRuntimeProbeWhitelist=${JSON.stringify(frozenRuntimeProbeWhitelist)};
 const result=await (${consumer.toString()})(${JSON.stringify(packageRoot)},${JSON.stringify(privateHome)},${consumer === mcpPayloadConsumer ? "ts" : JSON.stringify(golden)}${consumer === verifyRemoteShippingDelivery ? ","+JSON.stringify(REMOTE_SHIPPING_FIXTURE_SOURCE)+","+JSON.stringify(REMOTE_FROZEN_CLI_EXPECTATIONS) : ""});
 console.log(JSON.stringify({shippingConsumerResult:result??{completed:true}}));`;
-    const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
+    const birth=lstatSync(privateHome);assert(birth.isDirectory()&&!birth.isSymbolicLink());assert.equal(realpathSync(privateHome),privateHome);assert.equal(birth.uid,process.getuid());assert.equal(birth.mode&0o022,0);assert(privateHome.startsWith(temporary+sep));
+    const ownedFile=(name,bytes)=>{const current=lstatSync(privateHome);assert(current.isDirectory()&&!current.isSymbolicLink());assert.equal(realpathSync(privateHome),privateHome);assert.deepEqual([current.dev,current.ino,current.uid],[birth.dev,birth.ino,birth.uid]);assert(Buffer.byteLength(bytes)<=8*1024*1024);const file=join(privateHome,name);writeFileSync(file,bytes,{flag:'wx',mode:0o600});const stat=lstatSync(file);assert(stat.isFile()&&!stat.isSymbolicLink());assert.equal(stat.nlink,1);assert.equal(stat.uid,birth.uid);assert.equal(realpathSync(file),file);return file;};
+    const programSha256=createHash('sha256').update(program).digest('hex'),programBytes=Buffer.byteLength(program,'utf8'),args=['--input-type=module'];
+    ownedFile('shipping-wave-program.mjs',program);
+    ownedFile('shipping-wave-input.json',JSON.stringify({executable:process.execPath,args,inputTransport:'stdin',programSha256,programBytes,cwd:privateHome,timeout:120000,maxBuffer:4*1024*1024,windowsHide:true}));
+    const result = runOwnedShippingProgram(program, {
         cwd: privateHome, env: { ...env, HOME: privateHome, USERPROFILE: privateHome },
         encoding: "utf8", timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
     });
+    let evidenceFailure;try{ownedFile('shipping-wave.stdout.log',String(result.stdout??''));ownedFile('shipping-wave.stderr.log',String(result.stderr??''));ownedFile('shipping-wave.receipt.json',JSON.stringify({status:result.status,signal:result.signal,error:result.error?{name:result.error.name,message:result.error.message,code:result.error.code,errno:result.error.errno,syscall:result.error.syscall,path:result.error.path,spawnargs:result.error.spawnargs}:null,programSha256,programBytes,inputTransport:'stdin',identity:{dev:birth.dev,ino:birth.ino,uid:birth.uid}},null,2)+'\n');}catch(error){evidenceFailure=error;}
     assert.equal(result.status, 0, String(result.error || result.stderr || result.stdout).slice(-4000));
+    if(evidenceFailure)throw evidenceFailure;
     const rows = result.stdout.trim().split("\n").filter(line=>line.startsWith('{')).map(line=>JSON.parse(line));
     assert.ok(rows.some(row=>row.shippingConsumerResult), "shipping consumer must produce an executed result");
     return rows.findLast(row=>row.shippingConsumerResult).shippingConsumerResult;
