@@ -1,3 +1,4 @@
+import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
 import { createHash, randomUUID } from "crypto";
 import { spawn } from "child_process";
@@ -12,6 +13,20 @@ import { appiumGenerationMatches, transitionAppiumGeneration } from "../state/ru
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus, withTargetStatuses } from "../status.mjs";
 import { fetchIosAppiumJson, iosAppiumDiscovery, iosDiscovery, normalizeIosOrientation } from "./ios-simulator.mjs";
+
+const physicalStop = createPhysicalStopApplication({
+    backend: "ios-device",
+    find: findIosRealDevice,
+    transition: transitionIosRealDevice,
+    now,
+    runtimeId: randomUUID,
+    signalRecording: signalOwnedRuntimeProcess,
+    textResult,
+    jsonResult,
+    withTargetStatus,
+    waitRecordingExit: waitForOwnedRuntimeExit,
+    stopOwnedAppium,
+});
 
 const IOS_REAL_CAPABILITIES = [
     "device_inventory", "device_attach", "device_detach", "device_start", "device_stop",
@@ -67,23 +82,15 @@ function iosRealStateConflict(deviceId, operation, transition) {
 }
 
 function claimIosRealLifecycle(deviceId, device, operation) {
-    const lifecycle = { runtimeId: randomUUID(), operation, claimedAt: now() };
-    const claimed = { ...device, lifecycle, status: operation === "detach" ? "detaching" : "stopping", updatedAt: now() };
-    return { lifecycle, transition: transitionIosRealDevice(deviceId, device, claimed) };
+    return physicalStop.claimLifecycle(deviceId, device, operation);
 }
 
 function currentIosRealLifecycleDevice(deviceId, lifecycle) {
-    const current = findIosRealDevice(deviceId);
-    return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
+    return physicalStop.currentLifecycleDevice(deviceId, lifecycle);
 }
 
 function abortIosRealLifecycle(deviceId, lifecycle, original, actual = {}) {
-    const current = currentIosRealLifecycleDevice(deviceId, lifecycle);
-    if (!current) return { matched: false, found: Boolean(findIosRealDevice(deviceId)) };
-    const restored = { ...current, status: original.status, ...actual, updatedAt: now() };
-    if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
-    else delete restored.lifecycle;
-    return transitionIosRealDevice(deviceId, current, restored);
+    return physicalStop.abortLifecycle(deviceId, lifecycle, original, actual);
 }
 
 function refreshIosRealDeviceLease(device, waitBudget) {
@@ -175,17 +182,6 @@ function appiumStatus(device, ios) {
     };
 }
 
-function stoppedIosRealDevice(device) {
-    return {
-        ...device,
-        status: "attached",
-        pid: null,
-        appium: null,
-        recording: null,
-        updatedAt: now(),
-    };
-}
-
 async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -202,35 +198,8 @@ async function waitForOwnedRuntimeExit(runtime, timeoutMs = 3000) {
     return finalObservation.status === "exited" || finalObservation.status === "mismatch";
 }
 
-async function stopOwnedRecording(recording, deviceId, timeoutMs = 3000) {
-    if (!recording?.active) return { exited: true };
-    const recorderSignal = signalOwnedRuntimeProcess(recording, "SIGINT");
-    if (recorderSignal.reason === "runtime-process-exited") return { exited: true };
-    if (!recorderSignal.signaled) {
-        return {
-            exited: false,
-            error: `iOS physical recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); recording metadata and physical lease were preserved for retry.`,
-        };
-    }
-    if (await waitForOwnedRuntimeExit(recording, timeoutMs)) return { exited: true };
-    return {
-        exited: false,
-        error: `iOS physical recording did not exit within ${timeoutMs}ms for ${deviceId}; recording metadata and physical lease were preserved for retry.`,
-    };
-}
-
-async function stopVolatileProcesses(device) {
-    const recording = await stopOwnedRecording(device.recording, device.id);
-    if (!recording.exited) return recording;
-    const appium = await stopOwnedAppium(device.appium, "iOS physical Appium");
-    if (!appium.exited) {
-        return {
-            ...appium,
-            recordingStopped: Boolean(device.recording?.active),
-            error: `${appium.error}; Appium metadata and physical lease were preserved for retry.`,
-        };
-    }
-    return { exited: true };
+function stopVolatileProcesses(device) {
+    return physicalStop.cleanup(device);
 }
 
 function processIsAlive(pid) {
@@ -679,24 +648,7 @@ async function handleIosRealToolUnlocked(name, args) {
 
         case "device_stop": {
             const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const claim = claimIosRealLifecycle(deviceId, device, "stop");
-            if (!claim.transition.matched) return iosRealStateConflict(deviceId, "stop-claim", claim.transition);
-            const stopped = await stopVolatileProcesses(device);
-            if (!stopped.exited) {
-                abortIosRealLifecycle(deviceId, claim.lifecycle, device, stopped.recordingStopped
-                    ? { recording: { ...device.recording, active: false, endedAt: now() } }
-                    : {});
-                return textResult(false, stopped.error);
-            }
-            const current = currentIosRealLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return iosRealStateConflict(deviceId, "stop", { found: Boolean(findIosRealDevice(deviceId)), matched: false });
-            const updated = stoppedIosRealDevice(current);
-            delete updated.lifecycle;
-            const transition = transitionIosRealDevice(deviceId, current, updated);
-            if (!transition.matched) return iosRealStateConflict(deviceId, "stop", transition);
-            return jsonResult({ device: withTargetStatus(updated), stopped: false, detached: false, physicalDevicePoweredOff: false });
+            return physicalStop.stop(deviceId);
         }
 
         case "device_status": {

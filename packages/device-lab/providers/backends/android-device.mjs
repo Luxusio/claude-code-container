@@ -1,3 +1,4 @@
+import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
 import { createAndroidWirelessApplication } from "../application/android-wireless.mjs";
 import { androidWifiSerial, androidWifiTransport, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
 import { waitForAndroidText, waitForAndroidApp } from "./android-wait.mjs";
@@ -35,6 +36,22 @@ const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const ANDROID_TRANSFER_TIMEOUT_MS = 300_000;
 const ANDROID_HELPER_MAX_TIMEOUT_MS = 300_000;
+
+const physicalStop = createPhysicalStopApplication({
+    backend: "android-device",
+    find: findAndroidRealDevice,
+    transition: transitionAndroidRealDevice,
+    now,
+    runtimeId: randomUUID,
+    signalRecording: signalOwnedRuntimeProcess,
+    textResult,
+    jsonResult,
+    withTargetStatus,
+    discoverAdb: () => androidDiscovery().adb,
+    // The selected native runner uses default UTF-8; retain its raw result.
+    stopAdbRecording: (adb, serial) => /** @type {import("../ports/physical-stop.mjs").PhysicalCommandResult} */ (run(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"])),
+    waitRecordingExit: waitForProcessExit,
+});
 
 const ANDROID_REAL_CAPABILITIES = [
     "device_list_files",
@@ -92,23 +109,15 @@ function androidRealStateConflict(deviceId, operation, transition) {
 }
 
 function claimAndroidRealLifecycle(deviceId, device, operation) {
-    const lifecycle = { runtimeId: randomUUID(), operation, claimedAt: now() };
-    const claimed = { ...device, lifecycle, status: operation === "detach" ? "detaching" : "stopping", updatedAt: now() };
-    return { lifecycle, transition: transitionAndroidRealDevice(deviceId, device, claimed) };
+    return physicalStop.claimLifecycle(deviceId, device, operation);
 }
 
 function currentAndroidRealLifecycleDevice(deviceId, lifecycle) {
-    const current = findAndroidRealDevice(deviceId);
-    return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
+    return physicalStop.currentLifecycleDevice(deviceId, lifecycle);
 }
 
 function abortAndroidRealLifecycle(deviceId, lifecycle, original) {
-    const current = currentAndroidRealLifecycleDevice(deviceId, lifecycle);
-    if (!current) return { matched: false, found: Boolean(findAndroidRealDevice(deviceId)) };
-    const restored = { ...current, status: original.status, updatedAt: now() };
-    if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
-    else delete restored.lifecycle;
-    return transitionAndroidRealDevice(deviceId, current, restored);
+    return physicalStop.abortLifecycle(deviceId, lifecycle, original);
 }
 
 function refreshAndroidRealDeviceLease(device) {
@@ -304,44 +313,8 @@ function monitorAndroidRealRecordingExit(deviceId, recording) {
 }
 
 
-
-function stoppedAndroidRealDevice(device) {
-    return {
-        ...device,
-        status: "attached",
-        pid: null,
-        appium: null,
-        recording: null,
-        updatedAt: now(),
-    };
-}
-
-async function stopVolatileProcesses(device, adb) {
-    if (!device.recording?.active) return { exited: true };
-
-    const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-    const adbFallback = adb && device.serial
-        ? run(adb, ["-s", device.serial, "shell", "pkill", "-2", "screenrecord"])
-        : null;
-
-    if (recorderSignal.signaled) {
-        const exited = await waitForProcessExit(device.recording.pid, 3000);
-        if (exited) return { exited: true };
-        return {
-            exited: false,
-            error: `Android real-device recording did not exit within 3000ms for ${device.id}; recording metadata and physical lease were preserved for retry.`,
-        };
-    }
-    if (recorderSignal.exited || adbFallback?.status === 0) return { exited: true };
-
-    const signalFailure = recorderSignal.reason || "owned recorder signaling failed";
-    const adbFailure = adbFallback
-        ? adbFallback.stderr || adbFallback.stdout || `exit ${adbFallback.status}`
-        : "ADB fallback unavailable";
-    return {
-        exited: false,
-        error: `Android real-device recording cleanup failed for ${device.id}: ${signalFailure}; ${adbFailure}. Recording metadata and physical lease were preserved for retry.`,
-    };
+function stopVolatileProcesses(device, adb) {
+    return physicalStop.cleanup(device, adb);
 }
 
 export function listAndroidRealDevices() {
@@ -526,23 +499,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
 
         case "device_stop": {
             const { deviceId } = args;
-            const device = findAndroidRealDevice(deviceId);
-            if (!device) return undefined;
-            const claim = claimAndroidRealLifecycle(deviceId, device, "stop");
-            if (!claim.transition.matched) return androidRealStateConflict(deviceId, "stop-claim", claim.transition);
-            const discovery = androidDiscovery();
-            const stopped = await stopVolatileProcesses(device, discovery.adb);
-            if (!stopped.exited) {
-                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, stopped.error);
-            }
-            const current = currentAndroidRealLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return androidRealStateConflict(deviceId, "stop", { found: Boolean(findAndroidRealDevice(deviceId)), matched: false });
-            const updated = stoppedAndroidRealDevice(current);
-            delete updated.lifecycle;
-            const transition = transitionAndroidRealDevice(deviceId, current, updated);
-            if (!transition.matched) return androidRealStateConflict(deviceId, "stop", transition);
-            return jsonResult({ device: withTargetStatus(updated), stopped: false, detached: false, physicalDevicePoweredOff: false });
+            return physicalStop.stop(deviceId);
         }
 
         case "device_status": {
