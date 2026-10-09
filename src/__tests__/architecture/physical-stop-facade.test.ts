@@ -6,8 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { createFakeAndroidMcpContext, cleanupFakeAndroidMcpContext } from "../helpers/fake-android-mcp-fixture.js";
-import { createFakeIosMcpContext, cleanupFakeIosMcpContext } from "../helpers/fake-ios-mcp-fixture.js";
+import { createFakeAndroidMcpContext, cleanupFakeAndroidMcpContext, type FakeAndroidMcpContext } from "../helpers/fake-android-mcp-fixture.js";
 import { deviceLabTestHomeEnvironment } from "../helpers/device-lab-test-environment.js";
 import type { PhysicalStopResponse } from "../../../packages/device-lab/providers/ports/physical-stop.mjs";
 
@@ -34,6 +33,13 @@ type BrokerChildModule = {
         options: { cwd: string; timeoutMs: number; outputLimit: number },
     ) => Promise<{ timedOut: boolean; status: number | null; stdout: string; stderr: string }>;
 };
+// This existing fixture owns native process identity and cleanup. Load the
+// genuine fixture at runtime without adding its native leaves to core checkJs.
+type IosFixtureModule = {
+    createFakeIosMcpContext: () => Promise<FakeAndroidMcpContext>;
+    cleanupFakeIosMcpContext: (context: FakeAndroidMcpContext) => Promise<void>;
+};
+const iosFixturePath = "../helpers/fake-ios-mcp-fixture.js";
 // Existing broker child invocation, captured before extraction. The test also
 // checks that the current genuine broker still contains these literal steps.
 const childScript = "import { readFileSync } from 'fs';\nconst payload = JSON.parse(readFileSync(0, 'utf8') || '{}');\nconst { moduleUrl, tool, args, handlerName } = payload;\nconst backend = await import(moduleUrl);\nif (!handlerName || typeof backend[handlerName] !== 'function') throw new Error(`Missing backend handler: ${handlerName || '<empty>'}`);\nconst result = await backend[handlerName](tool, args);\nprocess.stdout.write(JSON.stringify({ result: result || null }));";
@@ -159,7 +165,8 @@ describe.skipIf(process.platform === "win32")("physical stop genuine emitted pub
         const broker = readFileSync(brokerFile, "utf8");
         const { runBrokerBackendChild } = await import(pathToFileURL(brokerFile).href) as BrokerChildModule;
         for (const line of childScript.split("\n")) expect(broker).toContain(JSON.stringify(line));
-        const context = await (platform === "android" ? createFakeAndroidMcpContext() : createFakeIosMcpContext());
+        const iosFixture = platform === "ios" ? await import(iosFixturePath) as IosFixtureModule : undefined;
+        const context = await (platform === "android" ? createFakeAndroidMcpContext() : iosFixture!.createFakeIosMcpContext());
         let emittedClient: Client | undefined; const failures: unknown[] = [];
         try {
             const backend = platform + "-device", deviceId = platform + "-physical-policy-binding";
@@ -196,7 +203,7 @@ describe.skipIf(process.platform === "win32")("physical stop genuine emitted pub
         } catch (error) { failures.push(error); }
         finally {
             try { await emittedClient?.close(); } catch (error) { failures.push(error); }
-            try { if (platform === "android") await cleanupFakeAndroidMcpContext(context); else await cleanupFakeIosMcpContext(context); }
+            try { if (platform === "android") await cleanupFakeAndroidMcpContext(context); else await iosFixture!.cleanupFakeIosMcpContext(context); }
             catch (error) { failures.push(error); }
         }
         if (failures.length) throw new AggregateError(failures, "physical stop assertion failed before cleanup failures");
