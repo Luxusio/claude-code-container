@@ -474,20 +474,42 @@ process.on('exit',()=>originalClose(denyFd));
             expect(rpcs.filter(rpc => rpc.method === "broker.appium.session.ensure")).toHaveLength(1);
             const observations = rpcs.filter(rpc => rpc.method === "broker.appium.request");
             expect(observations.length).toBeGreaterThan(0);
-            if (stallBody) {
-                expect(payload.ok).toBe(false);
-                expect(payload.found).toBeUndefined();
-                expect(observations).toHaveLength(1);
+            for (const rpc of observations) {
+                expect(Number.isFinite(rpc.params.requestTimeoutMs)).toBe(true);
+                expect(rpc.params.requestTimeoutMs).toBeGreaterThan(0);
+                expect(rpc.params.requestTimeoutMs).toBeLessThanOrEqual(500);
+            }
+            expect(count("phase:rpc-started")).toBe(observations.length);
+            if (stallBody || payload.ok === false) {
+                expect(payload, JSON.stringify(payload)).toMatchObject({
+                    ok: false, ownerId: ownerId(), method: "broker.appium.request",
+                    error: "broker-rpc-unavailable", selected: null,
+                });
+                expect(payload).not.toHaveProperty("found");
+                expect(payload.attempts).toHaveLength(1);
+                expect(payload.attempts[0]).toMatchObject({
+                    host: "127.0.0.1", port: options.port,
+                    endpoint: `http://127.0.0.1:${options.port}/v1/owners/${ownerId()}/rpc`,
+                    ok: false, status: null, error: "timeout",
+                    transportCode: "timeout", transportRetryable: false,
+                    timeoutMs: observations[observations.length - 1].params.requestTimeoutMs,
+                });
+                if (stallBody) expect(observations).toHaveLength(1);
             } else {
                 expect(payload.found, JSON.stringify(payload)).toBe(false);
                 expect(payload).toMatchObject({ timeoutMs: 500, provider: "broker-appium", backend: "android-emulator" });
+                expect(result.isError).not.toBe(true);
+                expect(payload).not.toHaveProperty("error");
+                expect(payload).not.toHaveProperty("attempts");
+                expect(payload).not.toHaveProperty("selected");
+                expect(payload).not.toHaveProperty("status");
                 expect(requests()).toContain("phase:observation-success");
                 if (tool === "wait_for_text") expect(payload.source).toBe("<App>absent</App>");
                 else expect(payload.appState).toBe(1);
             }
             expect(count("/health")).toBe(0);
             const extra = count("/status") - rpcs.length;
-            if (stallBody) assertAdmission();
+            if (stallBody || payload.ok === false) assertAdmission();
             else {
                 expect([0, 1]).toContain(extra);
                 if (extra === 1) {
