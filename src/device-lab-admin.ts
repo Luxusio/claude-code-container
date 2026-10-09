@@ -3,7 +3,6 @@ import {
     commandPath,
     deviceLabOwnerId,
     hardwareIdForPhysicalDevice,
-    now,
     physicalLeaseAggregateFile,
     physicalLeaseAggregateMutationLockFile,
     physicalLeaseLockFile,
