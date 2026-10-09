@@ -167,7 +167,7 @@ describe("explicit distribution image recovery command", () => {
         expect(result.capture).toEqual({ runtime, args: ["build", "-t", "ccc", "-f", join(f.payload, "Dockerfile.distribution"), f.payload], options: { cwd: f.payload, stdio: "inherit", shell: false, timeout: 1200000 } });
         expect(result.stdout).toContain("CCC distribution image built (tag: ccc).");
     });
-    it.each([[], ["--runtime"], ["--runtime", "other"], ["--runtime", "docker", "--label", "extra"]])("rejects invalid required runtime arguments before effects: %j", args => {
+    it.each([[], ["--runtime"], ["--runtime", "other"], ["--runtime", "docker", "--label", "extra"]].map(args => ({ args })))("rejects invalid required runtime arguments before effects: $args", ({ args }) => {
         const result = distributionCommandFixture().run(args); expect(result.status).toBe(1); expect(result.capture).toBeNull(); expect(result.stderr).toContain("Usage:");
     });
     it.each([

@@ -59,10 +59,11 @@ beforeAll(() => {
         emittedBootstrap = emitted.CODEX_HARNESS_BOOTSTRAP as string;
     } finally { expect(denied).toEqual([]); }
 });
-afterEach(() => { for (const root of allocated.splice(0)) rmSync(root, {recursive: true, force: true}); });
+function cleanupAllocatedRoots() { for (const root of allocated.splice(0)) rmSync(root, {recursive: true, force: true}); }
+afterEach(cleanupAllocatedRoots);
 type Hook = {type: string; command?: string; timeout?: unknown; statusMessage?: unknown};
 type Group = {hooks: Hook[]; matcher?: unknown};
-type Case = {name: string; config?: string; replaceConfig?: [string, string]; version?: unknown; manifest?: string; rawHooks?: string; hooks?: Record<string, Group[]>; trust?: string; missing?: number; missingHook?: boolean; marker?: string; stage?: string; revision?: string; post?: string; deadline?: boolean; killFault?: boolean; drainFault?: boolean; cleanupFault?: boolean; descendantProbe?: boolean; journalProbe?: string; expected?: string};
+type Case = {name: string; config?: string; replaceConfig?: [string, string]; version?: unknown; manifest?: string; rawHooks?: string; hooks?: Record<string, Group[]>; trust?: string; missing?: number; missingHook?: boolean; marker?: string; stage?: string; revision?: string; post?: string; deadline?: boolean; killFault?: boolean; drainFault?: boolean; cleanupFault?: boolean; descendantProbe?: boolean; journalProbe?: string; observerProbe?: boolean; expected?: string};
 
 function canonical(value: unknown): string {
     if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -118,7 +119,8 @@ function fixture(test: Case, canonicalRoot?: string) {
     const installer = "import sitecustomize\nassert sitecustomize.ready, 'descendant fence missing'\n" + (test.descendantProbe ? "import subprocess\ntry:\n subprocess.Popen(['/usr/bin/true'])\nexcept Exception:\n pass\n" : "") + journalProbe + installerBody;
     writeFileSync(join(home, "installer.py"), installer, {mode: 0o400});
     const git = `#!/usr/bin/python3\nimport sitecustomize\nassert sitecustomize.ready, 'descendant fence missing'\nimport json,os,pathlib,shutil,sys\nh=pathlib.Path.home()\nargs=sys.argv[1:]\nwith (h/"git-calls").open("a") as f:f.write(json.dumps(args)+"\\n")\nkind="fetch" if "fetch" in args else args[0]\nif kind == ${JSON.stringify(test.stage ?? "none")}:\n print("fixture stage failed",file=sys.stderr)\n sys.exit(2)\nif kind == "rev-parse":print(${JSON.stringify(test.revision ?? PIN)})\nif kind == "checkout":shutil.copy(h/"installer.py",pathlib.Path.cwd()/"install.py")\n`;
-    writeFileSync(join(home, "bin/git"), git, {mode: 0o500});
+    const ownedGit = git + (test.observerProbe ? 'print("owned-observer-ready",flush=True)\nsys.stdin.read()\n' : "");
+    writeFileSync(join(home, "bin/git"), ownedGit, {mode: 0o500});
     const fenceDirectory = join(root, "interpreter-fence"); mkdirSync(fenceDirectory);
     const receipts = join(root, "descendant-receipts"); mkdirSync(receipts);
     writeFileSync(join(fenceDirectory, "sitecustomize.py"), DESCENDANT_FENCE, {mode: 0o400});
@@ -140,7 +142,7 @@ function fixture(test: Case, canonicalRoot?: string) {
         }
     };
     initialVisit(root);
-    const initialIdentity = {root, home, command, config: existsSync(join(home, ".codex/config.toml")) ? readFileSync(join(home, ".codex/config.toml"), "utf8") : null, installerBytes: installer, installerDigest: manifest.installerDigest, gitBytes: git, gitDigest: manifest.git.digest, siteDigest: manifest.site.digest, initialTree};
+    const initialIdentity = {root, home, command, config: existsSync(join(home, ".codex/config.toml")) ? readFileSync(join(home, ".codex/config.toml"), "utf8") : null, installerBytes: installer, installerDigest: manifest.installerDigest, gitBytes: ownedGit, gitDigest: manifest.git.digest, siteDigest: manifest.site.digest, initialTree};
     return {root, home, config, files, environment, initialIdentity};
 }
 
@@ -311,7 +313,7 @@ def proc(pid):
     try:
         with open('/proc/'+str(pid)+'/stat') as stream: fields = stream.read().rsplit(') ',1)[1].split()
         return {'pid':int(pid),'state':fields[0],'group':int(fields[2]),'session':int(fields[3]),'start':fields[19]}
-    except FileNotFoundError: return None
+    except (FileNotFoundError, ProcessLookupError): return None
 def descendant_receipts():
     authenticate_anchors()
     members = []
@@ -628,10 +630,84 @@ def execute_subject(source,bound_installer):
     exec(compile(tree,'<owned-bootstrap-subject>','exec'),globals())
 `;
 
+// Admission is data-only: a prefix cannot authorize deleting an owned process root.
+function completeCleanupReceipt(result: Pick<ReturnType<typeof spawnSync>, "stderr" | "status" | "signal" | "error">, expectedStatus?: number): boolean {
+    if (result.error || result.signal !== null || ![0, 1].includes(result.status ?? -1) || expectedStatus !== undefined && result.status !== expectedStatus) return false;
+    const line = String(result.stderr ?? "").trimEnd().split("\n").pop() ?? "";
+    if (!line.startsWith("__FIXTURE__")) return false;
+    try {
+        const value: unknown = JSON.parse(line.slice("__FIXTURE__".length));
+        const record = (item: unknown): item is Record<string, unknown> => item !== null && typeof item === "object" && !Array.isArray(item);
+        if (!record(value)) return false;
+        const {denied, descendant_denied, calls, actions, subject, emergency, surviving_tree: tree, tree_error, teardown} = value;
+        if (![denied, descendant_denied, calls, actions, subject, emergency, teardown].every(Array.isArray) || !record(tree) || tree_error !== null) return false;
+        // Narrow the arrays individually; malformed values never reach outcome assertions.
+        if (!Array.isArray(denied) || !Array.isArray(descendant_denied) || !Array.isArray(calls) || !Array.isArray(actions) || !Array.isArray(subject) || !Array.isArray(emergency) || !Array.isArray(teardown)) return false;
+        if (!record(tree["."]) || tree["."].type !== "directory" || Object.keys(tree).length > 2048) return false;
+        if (Object.values(tree).some(node => !record(node) || !["file", "directory", "symlink"].includes(String(node.type)) || node.times_bounded !== true)) return false;
+        if (calls.some(call => !Array.isArray(call) || call.length !== 2 || !Array.isArray(call[0]) || !call[0].length || call[0].some(arg => typeof arg !== "string") || typeof call[1] !== "string")) return false;
+        if (teardown.length !== calls.length || teardown.some((entry, index) => !Array.isArray(entry) || entry.length !== 2 || entry[0] !== index || entry[1] !== "retired")) return false;
+        if (emergency.some(entry => !Array.isArray(entry) || entry.length !== 2 || !Number.isInteger(entry[0]) || entry[0] < 0 || entry[0] >= calls.length || entry[1] !== "verified-live-signalled")) return false;
+        const journals = Object.entries(tree).filter(([, node]) => record(node) && node.accounted_journal !== undefined);
+        if (journals.length !== subject.length) return false;
+        const journalDenials: unknown[] = [];
+        const memberCounts = new Map<string, number>();
+        for (const member of subject) {
+            if (!record(member) || !Number.isInteger(member.group_index) || typeof member.group_index !== "number" || member.group_index < 0 || member.group_index >= calls.length || !["git", "installer"].includes(String(member.role))) return false;
+            if (member.state !== "stopped" && !(member.state === "live" && emergency.some(entry => entry[0] === member.group_index))) return false;
+            const key = member.group_index + ":" + member.role;
+            memberCounts.set(key, (memberCounts.get(key) ?? 0) + 1);
+        }
+        for (const [path, node] of journals) {
+            if (!record(node) || node.type !== "file" || !record(node.accounted_journal)) return false;
+            const journal = node.accounted_journal;
+            if (typeof journal.group_index !== "number" || !Number.isInteger(journal.group_index) || journal.group_index < 0 || journal.group_index >= calls.length || !["git", "installer"].includes(String(journal.role)) || !Array.isArray(journal.events) || journal.records !== journal.events.length + 1) return false;
+            if (!["leader", "fork-child"].some(lineage => path === `descendant-receipts/group-${journal.group_index}-${journal.role}-${lineage}.jsonl`)) return false;
+            const key = journal.group_index + ":" + journal.role;
+            const remaining = memberCounts.get(key) ?? 0;
+            if (remaining === 0) return false;
+            memberCounts.set(key, remaining - 1);
+            let finished = false;
+            for (const event of journal.events) {
+                if (!record(event) || finished || Object.keys(event).length !== 1) return false;
+                if ("finished" in event) { if (event.finished !== true) return false; finished = true; }
+                else if ("denied" in event) journalDenials.push(event.denied);
+                else return false;
+            }
+            const stoppedBySignal = actions.some(action => Array.isArray(action) && action[0] === "killpg" && action[1] === journal.group_index && action[2] === 9)
+                || emergency.some(entry => entry[0] === journal.group_index);
+            if (!finished && !stoppedBySignal) return false;
+        }
+        for (let index = 0; index < calls.length; index++) {
+            const role = calls[index][0][0] === "git" ? "git" : "installer";
+            if (!tree[`descendant-receipts/group-${index}-${role}-leader.jsonl`]) return false;
+        }
+        if ([...memberCounts.values()].some(count => count !== 0)) return false;
+        const denialKeys = (items: unknown[]) => items.map(item => JSON.stringify(item)).sort();
+        return JSON.stringify(denialKeys(journalDenials)) === JSON.stringify(denialKeys(descendant_denied));
+    } catch { return false; } // Parse/schema failures retain evidence; no process exception is normalized.
+}
+
+function retainIncompleteFixture(f: ReturnType<typeof fixture>, program: string, result: ReturnType<typeof spawnSync>, expectedStatus?: number) {
+    if (completeCleanupReceipt(result, expectedStatus)) return;
+    // Revoke deletion before any diagnostic write or assertion can itself fail.
+    const index = allocated.indexOf(f.root);
+    if (index >= 0) allocated.splice(index, 1);
+    const evidence = mkdtempSync(join(tmpdir(), "ccc-codex-bootstrap-failure-"));
+    writeFileSync(join(evidence, "initial-identity.json"), JSON.stringify(f.initialIdentity, null, 2));
+    writeFileSync(join(evidence, "controller.py"), program);
+    writeFileSync(join(evidence, "stdout.txt"), String(result.stdout ?? ""));
+    writeFileSync(join(evidence, "stderr.txt"), String(result.stderr ?? ""));
+    writeFileSync(join(evidence, "terminal.json"), JSON.stringify({status: result.status, signal: result.signal, error: result.error?.stack, retainedOwnedRoot: f.root}, null, 2));
+    expect.fail("incomplete owned Python fixture; retained evidence: " + evidence);
+}
+
 function execute(script: string, test: Case, expectedDenials: {parent: number; descendant: number} = {parent: 0, descendant: 0}, canonicalRoot?: string, expectedInitialIdentity?: ReturnType<typeof fixture>["initialIdentity"]) {
     const f = fixture(test, canonicalRoot);
     if (expectedInitialIdentity) expect(f.initialIdentity, "identical actual canonical initial bytes BEFORE target execution").toEqual(expectedInitialIdentity);
-    const result = spawnSync("/usr/bin/python3", ["-"], {input: FENCE + "\nexecute_subject(" + JSON.stringify(script) + "," + (test.deadline ? "True" : "False") + ")\n", encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024, env: f.environment});
+    const program = FENCE + "\nexecute_subject(" + JSON.stringify(script) + "," + (test.deadline ? "True" : "False") + ")\n";
+    const result = spawnSync("/usr/bin/python3", ["-"], {input: program, encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024, env: f.environment});
+    retainIncompleteFixture(f, program, result);
     expect(result.error).toBeUndefined();
     const lines = result.stderr.trimEnd().split("\n");
     const receipt = lines.pop()!;
@@ -739,6 +815,96 @@ const cases: Case[] = [
 ];
 
 describe("whole executed Python bootstrap original/candidate replay", () => {
+    it.each(["malformed-prefix", "unknown-no-signal", "live", "drain-timeout", "missing-generation", "final-tree-error", "missing-final-tree", "missing-journal"])("retains owned root and journal through actual cleanup on %s", failure => {
+        const f = fixture({name: "data-only-retention-control"});
+        const journalPath = join(f.root, "descendant-receipts", "data-only-proof.jsonl");
+        const journal = "data-only generation proof; no PID or process capability\n";
+        writeFileSync(journalPath, journal);
+        const receipt = {denied: [], descendant_denied: [], calls: [[["git", "init"], f.home]], actions: [], subject: [{role: "git", group_index: 0, state: "stopped"}], emergency: [] as unknown[][],
+            surviving_tree: {".": {type: "directory", times_bounded: true}, "descendant-receipts/group-0-git-leader.jsonl": {type: "file", times_bounded: true, accounted_journal: {role: "git", group_index: 0, events: [{finished: true}], records: 2}}} as Record<string, unknown>, tree_error: null as string | null, teardown: [[0, "retired"]] as unknown[][]};
+        if (failure === "unknown-no-signal" || failure === "drain-timeout") receipt.teardown[0][1] = failure;
+        if (failure === "live") { receipt.subject[0].state = "live"; receipt.teardown[0][1] = "live"; }
+        if (failure === "missing-generation") receipt.subject = [];
+        if (failure === "final-tree-error") receipt.tree_error = "owned tree binding changed";
+        if (failure === "missing-final-tree") receipt.surviving_tree = {};
+        if (failure === "missing-journal") delete receipt.surviving_tree["descendant-receipts/group-0-git-leader.jsonl"];
+        const raw = "__FIXTURE__" + (failure === "malformed-prefix" ? "{incomplete" : JSON.stringify(receipt));
+        const result = {pid: 0, output: [null, "raw owned stdout", raw], stdout: "raw owned stdout", stderr: raw, status: 0, signal: null} as ReturnType<typeof spawnSync>;
+        let evidence = "";
+        try { retainIncompleteFixture(f, "data-only controller; no subprocess or signal", result); }
+        catch (error) { evidence = String(error).split("retained evidence: ")[1]?.split("\n")[0] ?? ""; }
+        expect(evidence).toMatch(/ccc-codex-bootstrap-failure-/);
+        expect(readFileSync(join(evidence, "stdout.txt"), "utf8")).toBe("raw owned stdout");
+        expect(readFileSync(join(evidence, "stderr.txt"), "utf8")).toBe(raw);
+        expect(JSON.parse(readFileSync(join(evidence, "terminal.json"), "utf8")).retainedOwnedRoot).toBe(f.root);
+        cleanupAllocatedRoots(); // The exact afterEach binding must not delete the revoked root.
+        expect(existsSync(f.root)).toBe(true);
+        expect(readFileSync(journalPath, "utf8")).toBe(journal);
+        expect(receipt.actions).toEqual([]); expect(receipt.emergency).toEqual([]);
+    });
+    it("cleans a stable root only after complete zero-generation accounting", () => {
+        const f = fixture({name: "stable-retention-control"});
+        const receipt = {denied: [], descendant_denied: [], calls: [], actions: [], subject: [], emergency: [], surviving_tree: {".": {type: "directory", times_bounded: true}}, tree_error: null, teardown: []};
+        const raw = "__FIXTURE__" + JSON.stringify(receipt);
+        const result = {pid: 0, output: [null, "", raw], stdout: "", stderr: raw, status: 0, signal: null} as ReturnType<typeof spawnSync>;
+        retainIncompleteFixture(f, "data-only stable controller", result);
+        expect(allocated).toContain(f.root);
+        cleanupAllocatedRoots();
+        expect(existsSync(f.root)).toBe(false);
+    });
+    it("observes an authenticated live generation and its retirement between stat open and read", () => {
+        const f = fixture({name: "owned-proc-observer", observerProbe: true});
+        const program = FENCE + String.raw`
+with tempfile.TemporaryDirectory(prefix="ccc-codex-harness-") as temp:
+    child = subprocess.Popen(["git","init","--quiet",temp],cwd=temp,start_new_session=True,
+                             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    assert child.stdout.readline() == "owned-observer-ready\n"
+    live = proc(child.pid)
+    assert live['state'] not in ('Z','X')
+    assert all(live[key] == groups[child.pid][key] for key in ('pid','start','group','session'))
+    members,faults = descendant_receipts()
+    assert not faults and len(members) == 1
+    assert all(members[0][key] == live[key] for key in ('pid','start','group','session'))
+    real_open = open
+    drained = []
+    def retire_after_open(path,*args,**kwargs):
+        assert path == '/proc/'+str(child.pid)+'/stat'
+        held = real_open(path,*args,**kwargs)
+        globals()['open'] = real_open # Group verification during drain uses the real observer.
+        try:
+            drained.append(child.communicate(input='',timeout=2))
+            assert child.returncode == 0 and drained == [('', '')]
+        except BaseException:
+            held.close()
+            raise
+        return held
+    globals()['open'] = retire_after_open
+    try:
+        retired = proc(child.pid)
+    finally:
+        globals()['open'] = real_open
+    assert retired is None
+    assert verified_live_group(child.pid) == (False,'retired')
+    print('__OBSERVER__'+json.dumps({'initial':live,'retired':retired,'stdout':drained[0][0],
+                                   'stderr':drained[0][1],'exit':child.returncode,'joined':True}))
+`;
+        const result = spawnSync("/usr/bin/python3", ["-"], {input: program, encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, env: f.environment});
+        retainIncompleteFixture(f, program, result, 0);
+        expect(result.error).toBeUndefined(); expect(result.status).toBe(0);
+        const observation = JSON.parse(result.stdout.trim().slice("__OBSERVER__".length)) as {initial: {pid: number; start: string; group: number; session: number}; retired: null; stdout: string; stderr: string; exit: number; joined: boolean};
+        expect(result.stdout).toMatch(/^__OBSERVER__/);
+        expect(observation.initial.pid).toBeGreaterThan(0);
+        expect(observation.initial.start).toMatch(/^\d+$/);
+        expect(observation.initial.group).toBe(observation.initial.pid);
+        expect(observation.initial.session).toBe(observation.initial.pid);
+        expect(observation).toMatchObject({retired: null, stdout: "", stderr: "", exit: 0, joined: true});
+        const receipt = JSON.parse(result.stderr.trimEnd().split("\n").pop()!.slice("__FIXTURE__".length)) as {denied: unknown[]; descendant_denied: unknown[]; calls: unknown[]; actions: unknown[][]; subject: unknown[]; emergency: unknown[]; teardown: unknown[]; tree_error: unknown};
+        expect(receipt.denied).toEqual([]); expect(receipt.descendant_denied).toEqual([]);
+        expect(receipt.calls).toHaveLength(1); expect(receipt.actions).toEqual([["communicate", 0, "bounded"]]);
+        expect(receipt.subject).toEqual([{role: "git", group_index: 0, state: "stopped"}]);
+        expect(receipt.emergency).toEqual([]); expect(receipt.teardown).toEqual([[0, "retired"]]);
+        expect(receipt.tree_error).toBeNull();
+    });
     it.each([
         "os.rename(str(shadow),str(receipt))",
         "os.link(str(shadow),str(receipt))",
@@ -802,6 +968,7 @@ describe("whole executed Python bootstrap original/candidate replay", () => {
         const f = fixture({name: "ready"});
         const program = FENCE + "\ntry:\n " + attempt + "\nexcept Exception:\n pass\n";
         const result = spawnSync("/usr/bin/python3", ["-"], {input: program, encoding: "utf8", timeout: 5000, env: f.environment});
+        retainIncompleteFixture(f, program, result, 0);
         expect(result.error).toBeUndefined(); expect(result.status).toBe(0);
         const receipt = result.stderr.trimEnd().split("\n").pop()!;
         expect(receipt).toMatch(/^__FIXTURE__/);
