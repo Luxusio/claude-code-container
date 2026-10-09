@@ -51,6 +51,8 @@ type Owner = {
     readonly journal: Readonly<Journal>;
     transport?: StdioClientTransport; mcp?: Runtime; snapshots: string[];
     activeRequests: number; historyBytes: string; coverageError?: string;
+    transportStarted: boolean; transportClosed: boolean; transportClosing: boolean;
+    closeObserved?: Promise<void>; reportTransportClosed?: () => void;
 };
 const owners = new WeakMap<FakeIosMcpContext, Owner>();
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -166,6 +168,28 @@ export function fakeIosFixtureDiagnostics(context: FakeIosMcpContext): string {
         } else events.push({ phase: "diagnostics-over-limit", bytes: size });
     }
     return JSON.stringify({ events, retainedPaths: [owner.homeDir, owner.binDir] }).slice(0, 8192);
+}
+function instrumentOwnedTransport(owner: Owner): void {
+    const transport = owner.transport;
+    if (!transport) return;
+    transport.close = new Proxy(transport.close, {
+        apply(target, receiver, args) {
+            owner.transportClosing = true;
+            return Reflect.apply(target, receiver, args);
+        },
+    });
+    transport.start = new Proxy(transport.start, {
+        apply(target, receiver, args) {
+            owner.transportStarted = true; owner.transportClosed = false; owner.transportClosing = false;
+            owner.closeObserved = new Promise<void>(resolve => { owner.reportTransportClosed = resolve; });
+            const previous = transport.onclose;
+            transport.onclose = function(this: StdioClientTransport) {
+                owner.transportClosed = true; owner.transportClosing = false; owner.reportTransportClosed?.();
+                previous?.call(this);
+            };
+            return Reflect.apply(target, receiver, args).then((value: unknown) => { captureMcp(owner); return value; });
+        },
+    });
 }
 function captureMcp(owner: Owner): void {
     const pid = owner.transport?.pid;
@@ -494,9 +518,10 @@ exit 0
         );
 
         context = { client, homeDir, binDir, logPath };
-        owners.set(context, { token, homeDir, binDir, logPath, client, journal, transport, snapshots: [], activeRequests: 0, historyBytes: header, roots: Object.freeze([homeDir, binDir].map(path => {
+        owners.set(context, { token, homeDir, binDir, logPath, client, journal, transport, snapshots: [], activeRequests: 0, historyBytes: header, transportStarted: false, transportClosed: false, transportClosing: false, roots: Object.freeze([homeDir, binDir].map(path => {
             const stat = lstatSync(path); return Object.freeze({ path, dev: stat.dev, ino: stat.ino });
         })) });
+        instrumentOwnedTransport(owners.get(context)!);
         instrumentRequests(owners.get(context)!, true);
         options.onAllocated?.(context);
         await (options.connect ? options.connect(client, transport) : client.connect(transport));
@@ -537,12 +562,36 @@ export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | unde
     catch (error) { throw new Error((String(error) + "; UNKNOWN allocation coverage; retained private fixture: " + owner.homeDir + " " + owner.binDir).slice(0, 8192)); }
     owner.snapshots.push(fakeIosFixtureDiagnostics(context)); // Pre-close evidence survives removal.
     captureMcp(owner);
-    let transportUnverified = Boolean(owner.transport?.pid && !owner.mcp);
-    try { await bounded(owner.client.close(), deadline); }
-    catch (error) { failures.push("client-close: " + String(error).slice(0, 512)); }
-    if (!owner.transport?.pid) transportUnverified = false;
-    let verified = !transportUnverified;
-    const runtimes: Runtime[] = owner.mcp ? [owner.mcp] : [];
+    let verified = true;
+    const observeTransport = () => {
+        if (!owner.mcp || owner.transport?.pid !== owner.mcp.pid) throw new Error("SDK transport generation unavailable");
+        const observation = effects.inspect(owner.mcp.identity, owner.mcp.pid);
+        if (observation.status !== "match" && observation.status !== "exited") throw new Error("SDK transport generation " + observation.status);
+        return observation.status;
+    };
+    // The captured SDK handle owns/reaps this child. Never drive its exit transition
+    // with a naked PID polling/signal loop or interpret null identity as exit.
+    try {
+        if (owner.transportStarted && !owner.transportClosed) {
+            const status = observeTransport();
+            if (status === "match") {
+                try { await bounded(owner.client.close(), deadline); }
+                catch (error) { failures.push("client-close: " + String(error).slice(0, 512)); }
+                if (!owner.transportClosed && !owner.transportClosing) {
+                    // Partial connect may never attach the transport to Client.close.
+                    // Authenticate again before allowing this exact handle to close.
+                    if (observeTransport() === "match") await bounded(owner.transport!.close(), deadline);
+                }
+            }
+            if (!owner.closeObserved) throw new Error("SDK close observation unavailable");
+            await bounded(owner.closeObserved, deadline); // Actual SDK child 'close', not early pid-null alone.
+            if (!owner.transportClosed || owner.transport?.pid !== null) throw new Error("SDK child join incomplete");
+        } else {
+            try { await bounded(owner.client.close(), deadline); }
+            catch (error) { failures.push("client-close: " + String(error).slice(0, 512)); }
+        }
+    } catch (error) { verified = false; failures.push("transport: " + String(error).slice(0, 512)); }
+    const runtimes: Runtime[] = [];
     const markerBytes = new Map<string, string>();
     const markerNames = readdirSync(owner.homeDir).filter(name => /^fake-ios-appium-.*\.pid$/.test(name)).sort();
     const markersUnchanged = () => {

@@ -126,9 +126,23 @@ describe.skipIf(process.platform === "win32")("fake iOS fixture owned lifetime (
     it("partial SDK transport startup failure joins its actually allocated Node child", { timeout: TIMEOUT }, async () => {
         let allocated: FakeIosMcpContext | undefined;
         const primary = new Error("primary post-spawn connect failure");
+        let closed = false;
+        let capturedTransport: import("@modelcontextprotocol/sdk/client/stdio.js").StdioClientTransport | undefined;
+        let closeCalls = 0;
         await expect(createFakeIosMcpContext({ onAllocated: value => { allocated = value; },
-            connect: async (_client, transport) => { await transport.start(); throw primary; },
+            connect: async (_client, transport) => {
+                capturedTransport = transport;
+                await transport.start();
+                expect(transport.pid).not.toBeNull();
+                const originalClose = transport.close.bind(transport);
+                vi.spyOn(transport, "close").mockImplementation(async () => { closeCalls++; await originalClose(); });
+                const originalOnClose = transport.onclose;
+                transport.onclose = function() { closed = true; originalOnClose?.call(transport); };
+                throw primary;
+            },
         })).rejects.toBe(primary);
+        expect(closed).toBe(true); expect(closeCalls).toBe(1); expect(capturedTransport?.pid).toBeNull();
+        expect(primary.message).toBe("primary post-spawn connect failure");
         expect(allocated).toBeDefined(); expect(existsSync(allocated!.homeDir)).toBe(false);
         expect(existsSync(allocated!.binDir)).toBe(false);
     });
