@@ -13,7 +13,7 @@ import { handleMacosTool, listMacosDevices, macosBackend } from "@ccc/device-lab
 import { handleLinuxVmManagementTool, handleLinuxVmTool, linuxVmBackend, listLinuxVmDevices } from "@ccc/device-lab/providers/backends/linux-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "@ccc/device-lab/providers/backends/windows-sandbox.mjs";
 import { listWindowsVmDevices, windowsVmBackend } from "@ccc/device-lab/providers/backends/windows-vm.mjs";
-import { brokerAppium, brokerCommand, brokerDeviceTool, brokerPhysical, brokerRpc, brokerStatus, implicitBrokerProbeOptions, withBrokerOperation } from "./broker.mjs";
+import { brokerAppium, brokerCommand, brokerDeviceTool, brokerPhysical, brokerRpc, brokerStatus, implicitBrokerProbeOptions, isLocalObservationBudgetExhaustion, withBrokerOperation } from "./broker.mjs";
 import { ownerId } from "@ccc/device-lab/providers/context.mjs";
 import { currentDisplayTarget, handleDisplayTool } from "@ccc/device-lab/providers/display/x11.mjs";
 import { evaluateDestructivePolicy } from "./policy/destructive.mjs";
@@ -1262,7 +1262,8 @@ async function handleBrokerMobileTool(name, args) {
         let observed = false;
         let lastSource = "";
         while (wait.remaining() > 0) {
-            const request = await brokerAppium({
+            const observe = brokerAppium;
+            const requestOptions = {
                 ...selectedBrokerProbeOptions(appiumOptions, ensure),
                 autolaunch: false,
                 requestTimeoutMs: wait.requestTimeout(600000),
@@ -1271,8 +1272,13 @@ async function handleBrokerMobileTool(name, args) {
                 deviceId,
                 method: "GET",
                 path: "/source",
-            });
-            if (!request.ok) return jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+            };
+            if (requestOptions.requestTimeoutMs <= 0) break;
+            const request = await observe(requestOptions);
+            if (!request.ok) {
+                if (observed && isLocalObservationBudgetExhaustion(request)) break;
+                return jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+            }
             if (wait.remaining() <= 0) return textResult(false, "Appium wait deadline exhausted during observation");
             observed = true;
             lastSource = String(request.result?.response?.body?.value ?? "");
@@ -1290,7 +1296,8 @@ async function handleBrokerMobileTool(name, args) {
         let lastState = null;
         const expectedAppId = appIdForBackend(args, resolvedBackend);
         while (wait.remaining() > 0) {
-            const request = await brokerAppium({
+            const observe = brokerAppium;
+            const requestOptions = {
                 ...selectedBrokerProbeOptions(appiumOptions, ensure),
                 autolaunch: false,
                 requestTimeoutMs: wait.requestTimeout(600000),
@@ -1300,8 +1307,13 @@ async function handleBrokerMobileTool(name, args) {
                 method: mapped.method,
                 path: mapped.path,
                 body: mapped.body,
-            });
-            if (!request.ok) return jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+            };
+            if (requestOptions.requestTimeoutMs <= 0) break;
+            const request = await observe(requestOptions);
+            if (!request.ok) {
+                if (observed && isLocalObservationBudgetExhaustion(request)) break;
+                return jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+            }
             if (wait.remaining() <= 0) return textResult(false, "Appium wait deadline exhausted during observation");
             observed = true;
             lastState = request.result?.response?.body?.value ?? request.result?.response?.body ?? null;

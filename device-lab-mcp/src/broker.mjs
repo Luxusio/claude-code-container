@@ -15,6 +15,11 @@ import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, h
 
 const brokerOperations = new AsyncLocalStorage();
 const brokerSetupEvidence = new WeakMap();
+const localObservationBudgetExhaustions = new WeakSet();
+
+export function isLocalObservationBudgetExhaustion(result) {
+    return localObservationBudgetExhaustions.has(result);
+}
 
 export function withBrokerOperation(callback) {
     const operation = { setups: new Map() };
@@ -2470,8 +2475,15 @@ async function brokerRpcRequestUncached(options = {}) {
     }
 
     const attempts = [];
+    let observationRpcStarted = false;
+    let candidateAttemptFailed = false;
+    let observationBudgetExhausted = false;
     for (const host of probeOptions.hostCandidates) {
-        if (waitBudget && waitBudget.remaining() <= 0) break;
+        if (waitBudget && waitBudget.remaining() <= 0) {
+            // Owner/body/token admission already succeeded; no attestation or RPC is started here.
+            observationBudgetExhausted = !observationRpcStarted && !candidateAttemptFailed;
+            break;
+        }
         let attemptTimeoutMs = rpcTimeoutMs;
         const rpcPath = `/v1/owners/${encodeURIComponent(owner)}/rpc`;
         const endpoint = `http://${host}:${probeOptions.port}${rpcPath}`;
@@ -2491,11 +2503,16 @@ async function brokerRpcRequestUncached(options = {}) {
             }
             if (waitBudget) {
                 attemptTimeoutMs = waitBudget.requestTimeout(rpcTimeoutMs);
-                if (attemptTimeoutMs <= 0) break;
+                if (attemptTimeoutMs <= 0) {
+                    // This generation was genuinely attested, but its observation never started.
+                    observationBudgetExhausted = !observationRpcStarted && !candidateAttemptFailed;
+                    break;
+                }
                 requestBody = JSON.stringify({ ownerId: owner, method, params: {
                     ...options.params, requestTimeoutMs: attemptTimeoutMs,
                 } });
             }
+            observationRpcStarted = true;
             const response = await brokerRpcHttpJsonRequest({
                 host,
                 port: probeOptions.port,
@@ -2569,6 +2586,7 @@ async function brokerRpcRequestUncached(options = {}) {
                 attempts,
             };
         } catch (error) {
+            candidateAttemptFailed = true; // Preserve prior failures across every host candidate.
             invalidateBrokerSetup();
             const failure = brokerTransportFailure(error);
             attempts.push({
@@ -2608,15 +2626,17 @@ async function brokerRpcRequestUncached(options = {}) {
             },
         };
     }
-    return {
+    const result = {
         ok: false,
         ownerId: owner,
         method,
         selected: null,
-        error: "broker-rpc-unavailable",
+        error: observationBudgetExhausted ? "broker-observation-budget-exhausted-before-rpc" : "broker-rpc-unavailable",
         launch,
         attempts,
     };
+    if (observationBudgetExhausted) localObservationBudgetExhaustions.add(result);
+    return result;
 }
 
 export async function brokerLease(options = {}) {
