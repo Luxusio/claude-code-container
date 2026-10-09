@@ -5408,6 +5408,22 @@ function mutateOwnerDevices(ownerId: string, stateKey: string, updater: (devices
     });
 }
 
+// Selected lifecycle publications share the native owner inventory authority.
+function transitionOwnerLifecycleDevice(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replace: (current: Record<string, unknown>) => unknown) {
+    return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
+        const devices = readOwnerDevices(ownerId, stateKey);
+        const index = devices.findIndex(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string, unknown>).id === deviceId);
+        const current = index < 0 ? null : devices[index] as Record<string, unknown>;
+        if (!current || !isDeepStrictEqual(current, expected)) return { found: index >= 0, matched: false, device: current };
+        const replacement = replace(current);
+        const next = replacement === null ? devices.filter((_, candidateIndex) => candidateIndex !== index) : devices.map((candidate, candidateIndex) => candidateIndex === index ? replacement : candidate);
+        assertUniqueOwnerDeviceIds(next);
+        assertOwnerDeviceStateWritable(next, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
+        writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices: next });
+        return { found: true, matched: true, device: replacement };
+    });
+}
+
 function claimOwnerDevice(ownerId: string, stateKey: string, device: Record<string, unknown>, uniqueFields: Array<string | string[]>) {
     return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
         const devices = readOwnerDevices(ownerId, stateKey);
@@ -9420,11 +9436,10 @@ function persistHyperVLinuxSshHostIdentity(
     knownHostsPath: string,
     networkAddress: string,
     fingerprint: string,
+    publication?: { expected: unknown; committed?: unknown },
 ): boolean {
     let persisted = false;
-    mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
-        if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== deviceId) return candidate;
-        const current = candidate as Record<string, unknown>;
+    const replace = (current: Record<string, unknown>) => {
         if (current.sshHostPublicKeyPath !== hostPublicKeyPath
             || current.sshKnownHostsPath !== knownHostsPath
             || current.networkAddress !== networkAddress
@@ -9435,7 +9450,7 @@ function persistHyperVLinuxSshHostIdentity(
                 knownHostsPath,
                 networkAddress,
                 fingerprint,
-            )) return candidate;
+            )) return current;
         persisted = true;
         return {
             ...current,
@@ -9443,7 +9458,16 @@ function persistHyperVLinuxSshHostIdentity(
             sshHostKeySource: "authenticated-bootstrap",
             updatedAt: new Date().toISOString(),
         };
-    }));
+    };
+    if (publication) {
+        const transition = transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, publication.expected, replace);
+        if (transition.matched && persisted) publication.committed = structuredClone(transition.device);
+    } else {
+        mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
+            if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== deviceId) return candidate;
+            return replace(candidate as Record<string, unknown>);
+        }));
+    }
     return persisted;
 }
 
@@ -9454,6 +9478,7 @@ function reconcileHyperVLinuxSshHostIdentity(
     hostPublicKeyPath: string,
     knownHostsPath: string,
     networkAddress: string,
+    publication?: { expected: unknown; committed?: unknown },
 ): { fingerprint: string } | null {
     return reconcileHyperVLinuxSshHostIdentityWithRuntime(
         hyperVNetworkStateRuntime(),
@@ -9470,6 +9495,7 @@ function reconcileHyperVLinuxSshHostIdentity(
             knownHostsPath,
             networkAddress,
             fingerprint,
+            publication,
         ),
     );
 }
@@ -12205,99 +12231,90 @@ function waitForBrokerAndroidEmulatorBoot(parsed: CommandParamSuccess, device: u
 }
 
 function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, providerCommand?: ProviderCommand, macosBoot?: MacosVmBootRegistration | null, androidBoot?: AndroidEmulatorBootRegistration | null, windowsMinimizeWatchdog?: ProviderCommandResult | null, windowsMinimizeConfirmation?: ProviderCommandResult | null, execution?: ProviderCommandResult, hyperVGuestReady?: ReturnType<typeof parseHyperVGuestReadyObservation> | null) {
-    if (parsed.command === "device_status") return device;
+    if (parsed.command === "device_status") return { found: true, matched: true, device };
     if (parsed.command === "device_delete") {
-        mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.filter((candidate) => {
-            return !(candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
-        }));
-        return null;
+        return transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, device, () => null);
     }
     const physical = parsed.stateKey === "android-device" || parsed.stateKey === "ios-device";
     const status = physical
         ? parsed.command === "device_start" ? "attached" : "detached"
         : parsed.command === "device_start" || parsed.command === "device_reboot" ? "running" : "stopped";
-    let updated: unknown = null;
-    mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.map((candidate) => {
-        if (candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId) {
-            updated = {
-                ...(candidate as object),
-                status,
-                ...(isHyperVBackend(parsed.backend) && execution ? (() => {
-                    const observation = parseHyperVVmObservation(execution.stdout || "");
-                    return observation ? {
-                        vmId: observation.vmId,
-                        vmName: observation.vmName,
-                        runtimeState: observation.state,
-                        hyperVStatus: observation.status,
-                    } : {};
-                })() : {}),
-                ...(isHyperVBackend(parsed.backend) && (parsed.command === "device_start" || parsed.command === "device_reboot") ? {
-                    bootReady: Boolean(hyperVGuestReady),
-                    lastBootCheck: hyperVGuestReady
-                        ? { ready: true, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", computerName: hyperVGuestReady.computerName, attempts: hyperVGuestReady.attempts }
-                        : null,
-                } : {}),
-                ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" ? {
-                    minimized: typeof parsed.minimized === "boolean"
-                        ? parsed.minimized
-                        : (candidate as Record<string, unknown>).minimized !== false,
-                    minimizeConfirmed: providerCommand?.windowStyle === "minimized"
-                        && Boolean(windowsMinimizeConfirmation && commandSucceeded(windowsMinimizeConfirmation)),
-                    ...(providerCommand?.windowStyle === "minimized" && (!windowsMinimizeConfirmation || !commandSucceeded(windowsMinimizeConfirmation)) ? {
-                        minimizeWarning: windowsMinimizeConfirmation?.error
-                            || windowsMinimizeConfirmation?.stderr
-                            || "Windows Sandbox started, but window minimization was not confirmed",
-                    } : { minimizeWarning: null }),
-                } : {}),
-                ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && providerCommand?.sandboxId ? { sandboxId: providerCommand.sandboxId } : {}),
-                ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && providerCommand?.requestedSandboxId ? { requestedSandboxId: providerCommand.requestedSandboxId } : {}),
-                ...(physical && parsed.command === "device_stop" ? { leaseClaimId: null, leaseClaimNonce: null } : {}),
-                ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && typeof windowsMinimizeWatchdog?.pid === "number" ? {
-                    minimizeWatchdog: {
-                        pid: windowsMinimizeWatchdog.pid,
-                        processOwner: "host-broker",
-                        startedBy: "broker.windows-sandbox.minimize-watchdog",
-                        timeoutMs: DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,
-                        cancelPath: brokerWindowsHelperPaths(ownerId, parsed.deviceId).minimizeWatchdogCancelPath,
-                        startedAt: new Date().toISOString(),
+    return transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, device, (candidate) => {
+        return {
+            ...(candidate as object),
+            status,
+            ...(isHyperVBackend(parsed.backend) && execution ? (() => {
+                const observation = parseHyperVVmObservation(execution.stdout || "");
+                return observation ? {
+                    vmId: observation.vmId,
+                    vmName: observation.vmName,
+                    runtimeState: observation.state,
+                    hyperVStatus: observation.status,
+                } : {};
+            })() : {}),
+            ...(isHyperVBackend(parsed.backend) && (parsed.command === "device_start" || parsed.command === "device_reboot") ? {
+                bootReady: Boolean(hyperVGuestReady),
+                lastBootCheck: hyperVGuestReady
+                    ? { ready: true, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", computerName: hyperVGuestReady.computerName, attempts: hyperVGuestReady.attempts }
+                    : null,
+            } : {}),
+            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" ? {
+                minimized: typeof parsed.minimized === "boolean"
+                    ? parsed.minimized
+                    : (candidate as Record<string, unknown>).minimized !== false,
+                minimizeConfirmed: providerCommand?.windowStyle === "minimized"
+                    && Boolean(windowsMinimizeConfirmation && commandSucceeded(windowsMinimizeConfirmation)),
+                ...(providerCommand?.windowStyle === "minimized" && (!windowsMinimizeConfirmation || !commandSucceeded(windowsMinimizeConfirmation)) ? {
+                    minimizeWarning: windowsMinimizeConfirmation?.error
+                        || windowsMinimizeConfirmation?.stderr
+                        || "Windows Sandbox started, but window minimization was not confirmed",
+                } : { minimizeWarning: null }),
+            } : {}),
+            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && providerCommand?.sandboxId ? { sandboxId: providerCommand.sandboxId } : {}),
+            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && providerCommand?.requestedSandboxId ? { requestedSandboxId: providerCommand.requestedSandboxId } : {}),
+            ...(physical && parsed.command === "device_stop" ? { leaseClaimId: null, leaseClaimNonce: null } : {}),
+            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && typeof windowsMinimizeWatchdog?.pid === "number" ? {
+                minimizeWatchdog: {
+                    pid: windowsMinimizeWatchdog.pid,
+                    processOwner: "host-broker",
+                    startedBy: "broker.windows-sandbox.minimize-watchdog",
+                    timeoutMs: DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,
+                    cancelPath: brokerWindowsHelperPaths(ownerId, parsed.deviceId).minimizeWatchdogCancelPath,
+                    startedAt: new Date().toISOString(),
+                },
+            } : {}),
+            ...(parsed.backend === "macos-vm" && parsed.command === "device_start" && macosBoot?.ok ? {
+                bootReady: macosBoot.ready,
+                lastBootCheck: {
+                    ready: macosBoot.ready,
+                    skipped: macosBoot.skipped === true,
+                    provider: "tart",
+                    ip: macosBoot.sshHost || null,
+                    result: macosBoot.result || null,
+                },
+                ...(macosBoot.sshHost ? {
+                    ssh: {
+                        ...((candidate as { ssh?: object }).ssh || {}),
+                        host: macosBoot.sshHost,
                     },
                 } : {}),
-                ...(parsed.backend === "macos-vm" && parsed.command === "device_start" && macosBoot?.ok ? {
-                    bootReady: macosBoot.ready,
-                    lastBootCheck: {
-                        ready: macosBoot.ready,
-                        skipped: macosBoot.skipped === true,
-                        provider: "tart",
-                        ip: macosBoot.sshHost || null,
-                        result: macosBoot.result || null,
-                    },
-                    ...(macosBoot.sshHost ? {
-                        ssh: {
-                            ...((candidate as { ssh?: object }).ssh || {}),
-                            host: macosBoot.sshHost,
-                        },
-                    } : {}),
-                } : {}),
-                ...(parsed.backend === "android-emulator" && parsed.command === "device_start" && androidBoot?.ok ? {
-                    bootReady: androidBoot.ready,
-                    lastBootCheck: {
-                        ready: androidBoot.ready,
-                        skipped: androidBoot.skipped === true,
-                        provider: "adb",
-                        result: androidBoot.result || null,
-                    },
-                } : {}),
-                ...(parsed.backend === "android-emulator" && parsed.command === "device_stop" ? {
-                    bootReady: false,
-                    lastBootCheck: null,
-                } : {}),
-                updatedAt: new Date().toISOString(),
-            };
-            return updated;
-        }
-        return candidate;
-    }));
-    return updated || device;
+            } : {}),
+            ...(parsed.backend === "android-emulator" && parsed.command === "device_start" && androidBoot?.ok ? {
+                bootReady: androidBoot.ready,
+                lastBootCheck: {
+                    ready: androidBoot.ready,
+                    skipped: androidBoot.skipped === true,
+                    provider: "adb",
+                    result: androidBoot.result || null,
+                },
+            } : {}),
+            ...(parsed.backend === "android-emulator" && parsed.command === "device_stop" ? {
+                bootReady: false,
+                lastBootCheck: null,
+            } : {}),
+            updatedAt: new Date().toISOString(),
+        };
+    });
 }
 
 function observedDeviceAfterStatus(ownerId: string, parsed: CommandParamSuccess, device: unknown, execution: ProviderCommandResult) {
@@ -12366,11 +12383,15 @@ function cancelBrokerWindowsMinimizeWatchdog(ownerId: string, deviceId: string) 
     }
 }
 
-function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions): { result: LifecycleAuxiliaryCleanup; device: unknown } | null {
+function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, expected: unknown): { result: LifecycleAuxiliaryCleanup; device: unknown; committed: boolean } {
     const observed = readOwnerDevices(ownerId, parsed.stateKey).find((candidate) => {
         return candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as { id?: unknown }).id === parsed.deviceId;
     });
-    if (!observed) return null;
+    if (!observed || !isDeepStrictEqual(observed, expected)) return {
+        result: { ok: false, changed: false, stateConflict: true, appium: { cleared: false }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } },
+        device: observed || null,
+        committed: false,
+    };
     const record = observed as Record<string, unknown>;
     const hasAppium = record.appium !== undefined && record.appium !== null;
     const appiumSignal = hasAppium ? terminateBrokerOwnedAppium(record.appium, normalized) : null;
@@ -12384,26 +12405,16 @@ function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamS
     const recordingCleared = Boolean(recordingSignal?.ok);
     const minimizeWatchdogCleared = Boolean(minimizeWatchdogCancellation?.ok);
     const changed = appiumCleared || recordingCleared || minimizeWatchdogCleared;
-    const updated = {
-        ...record,
-        ...(appiumCleared ? { appium: null } : {}),
-        ...(recordingCleared ? { recording: null } : {}),
-        ...(minimizeWatchdogCleared ? { minimizeWatchdog: null } : {}),
-        ...(changed ? { updatedAt: new Date().toISOString() } : {}),
-    };
-    let stateConflict = false;
-    let currentDevice: unknown = updated;
-    if (changed) {
-        mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.map((candidate) => {
-            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || (candidate as { id?: unknown }).id !== parsed.deviceId) return candidate;
-            if (!isDeepStrictEqual(candidate, observed)) {
-                stateConflict = true;
-                currentDevice = candidate;
-                return candidate;
-            }
-            return updated;
-        }));
-    }
+    const transition = changed
+        ? transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, expected, () => ({
+            ...record,
+            ...(appiumCleared ? { appium: null } : {}),
+            ...(recordingCleared ? { recording: null } : {}),
+            ...(minimizeWatchdogCleared ? { minimizeWatchdog: null } : {}),
+            updatedAt: new Date().toISOString(),
+        }))
+        : { found: true, matched: true, device: observed };
+    const stateConflict = !transition.matched;
     const cleanup: LifecycleAuxiliaryCleanup = {
         ok: (!appiumSignal || appiumCleared) && (!recordingSignal || recordingCleared) && (!minimizeWatchdogCancellation || minimizeWatchdogCleared) && !stateConflict,
         changed: changed && !stateConflict,
@@ -12414,7 +12425,7 @@ function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamS
             ? { cleared: minimizeWatchdogCleared, cancellation: minimizeWatchdogCancellation }
             : { cleared: false, ...(minimizeWatchdog ? { skipped: true, reason: "not-broker-owned" } : {}) },
     };
-    return { result: cleanup, device: currentDevice };
+    return { result: cleanup, device: transition.device, committed: changed && transition.matched };
 }
 
 function redactBrokerDeviceSecrets(device: unknown) {
@@ -12460,10 +12471,10 @@ function hyperVCreateConfigurationConflicts(device: Record<string, unknown>, par
     return hyperVPreviewConflicts(device, parsed, () => hyperVSecureBootConfiguration(parsed.backend));
 }
 
-function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: NormalizedBrokerOptions, redactSecrets = true) {
+function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: NormalizedBrokerOptions, redactSecrets = true, expected?: { device?: unknown }) {
     const parsed = validateCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
-    const observation = observeLifecyclePreview(ownerId, parsed, normalized, redactSecrets);
+    const observation = observeLifecyclePreview(ownerId, parsed, normalized, redactSecrets, expected);
     if (observation.kind === "state-failed") return ownerDeviceStateFailure(observation.error, { backend: parsed.backend, stateKey: parsed.stateKey });
     if (observation.kind === "allocation-failed") {
         const allocation = observation.evidence;
@@ -12482,8 +12493,13 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
     return { status: 200, payload: { ok: true, result: { ...value, providerCommand: providerPlan, execution: { mode: "planned", providerExecution: providerAvailable ? "available" : "deferred", mutatesHost: false } } } };
 }
 
-const observeLifecyclePreview = createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, ReturnType<typeof redactBrokerDeviceSecrets>, ReturnType<typeof redactBrokerCreateSecrets> | ReturnType<typeof publicHyperVCreateConfiguration>, ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | { mode: string; provider: string }, AndroidEmulatorPortAllocation>({
-    read: (ownerId, parsed: CommandParamSuccess) => readOwnerDevices(ownerId, parsed.stateKey),
+function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions | undefined, redactSecrets: boolean, expected?: { device?: unknown }) {
+    return createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, ReturnType<typeof redactBrokerDeviceSecrets>, ReturnType<typeof redactBrokerCreateSecrets> | ReturnType<typeof publicHyperVCreateConfiguration>, ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | { mode: string; provider: string }, AndroidEmulatorPortAllocation>({
+    read: (ownerId, parsed: CommandParamSuccess) => {
+        const devices = readOwnerDevices(ownerId, parsed.stateKey);
+        if (expected) expected.device = structuredClone(devices.find(candidate => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId));
+        return devices;
+    },
     hyperV: parsed => isHyperVBackend(parsed.backend),
     validIncarnation: parsed => validHyperVIncarnationId(parsed.expectedIncarnationId),
     incarnation: device => hyperVDeviceIncarnationId(device),
@@ -12499,7 +12515,8 @@ const observeLifecyclePreview = createLifecyclePreview<CommandParamSuccess, Norm
     createPlan: (ownerId, parsed, normalized: NormalizedBrokerOptions) => providerCommandForCreate(ownerId, parsed, normalized),
     existingPlan: (ownerId, parsed, device, normalized) => providerCommandFor(ownerId, parsed, device, normalized),
     attachmentMatches: (ownerId, parsed, device) => physicalDeviceLeaseMatches(ownerId, parsed.stateKey, parsed.deviceId, device),
-});
+})(ownerId, parsed, normalized, redactSecrets);
+}
 
 async function lifecycleCommandInvokeUnlocked(
     ownerId: string,
@@ -12516,7 +12533,9 @@ async function lifecycleCommandInvokeUnlocked(
         && parsed.create?.createAvd === true
         ? androidAvdHome()
         : null;
-    const plan = lifecycleCommandPlan(ownerId, params, normalized, false);
+    const expectedObservation: { device?: unknown } = {};
+    const plan = lifecycleCommandPlan(ownerId, params, normalized, false, expectedObservation);
+    let expectedDevice = expectedObservation.device;
     if (plan.status !== 200) return plan;
     const payload = plan.payload as { result?: { create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: ProviderCommand | { error: string; missing: string[] } } };
     if (parsed.dryRun) {
@@ -13366,8 +13385,9 @@ async function lifecycleCommandInvokeUnlocked(
         }
     }
     const auxiliaryCleanup = parsed.command === "device_stop" || parsed.command === "device_delete"
-        ? cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized)
+        ? cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expectedDevice)
         : null;
+    if (auxiliaryCleanup?.committed) expectedDevice = structuredClone(auxiliaryCleanup.device);
     if (auxiliaryCleanup?.result.ok === false) {
         return {
             status: 502,
@@ -13379,15 +13399,18 @@ async function lifecycleCommandInvokeUnlocked(
                         ? redactHyperVResultSecrets(payload.result)
                         : payload.result || {}),
                     device: isHyperVBackend(parsed.backend)
-                        ? redactHyperVDeviceSecrets(auxiliaryCleanup.device || payload.result?.device)
-                        : redactBrokerDeviceSecrets(auxiliaryCleanup.device || payload.result?.device),
+                        ? redactHyperVDeviceSecrets(auxiliaryCleanup.device)
+                        : redactBrokerDeviceSecrets(auxiliaryCleanup.device),
                     auxiliaryCleanup: auxiliaryCleanup.result,
                     invoked: false,
                     dryRun: false,
                     execution: {
                         mode: "preflight",
                         providerExecution: "blocked",
-                        mutatesHost: auxiliaryCleanup.result.changed === true,
+                        mutatesHost: auxiliaryCleanup.result.changed === true
+                            || auxiliaryCleanup.result.appium.cleared === true
+                            || auxiliaryCleanup.result.recording.cleared === true
+                            || auxiliaryCleanup.result.minimizeWatchdog.cleared === true,
                     },
                 },
             },
@@ -13767,6 +13790,7 @@ async function lifecycleCommandInvokeUnlocked(
                 const networkPrefix = field(device, "networkPrefix") || "";
                 let fingerprint = field(device, "sshHostKeyFingerprint") || "";
                 assertHyperVPrivateDeviceRoot(ownerId, "linux-vm", parsed.deviceId, privateRoot);
+                const identityPublication: { expected: unknown; committed?: unknown } = { expected: expectedDevice };
                 const reconciledIdentity = privateRoot === expectedPrivateRoot
                     && hostPublicKeyPath === join(expectedPrivateRoot, "secrets", "ssh_host_ed25519_key.pub")
                     ? reconcileHyperVLinuxSshHostIdentity(
@@ -13776,8 +13800,10 @@ async function lifecycleCommandInvokeUnlocked(
                         hostPublicKeyPath,
                         knownHostsPath,
                         networkAddress,
+                        identityPublication,
                     )
                     : null;
+                if (identityPublication.committed !== undefined) expectedDevice = identityPublication.committed;
                 if (reconciledIdentity) {
                     fingerprint = reconciledIdentity.fingerprint;
                     device.sshHostKeyFingerprint = reconciledIdentity.fingerprint;
@@ -14393,13 +14419,13 @@ async function lifecycleCommandInvokeUnlocked(
         };
     }
     let updatedDevice: unknown;
+    let publication: ReturnType<typeof transitionOwnerLifecycleDevice> | undefined;
     try {
         if (!success
             && (hyperVGuestReadyExecution || hyperVContainedRuntimeState)
             && isHyperVBackend(parsed.backend)
             && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
-            mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.map((candidate) => {
-                if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== parsed.deviceId) return candidate;
+            publication = transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, expectedDevice, (candidate) => {
                 const observedRuntimeState = hyperVContainedRuntimeState || hyperVGuestBootDiagnostic?.state || "Running";
                 updatedDevice = {
                     ...(candidate as Record<string, unknown>),
@@ -14428,13 +14454,13 @@ async function lifecycleCommandInvokeUnlocked(
                     updatedAt: new Date().toISOString(),
                 };
                 return updatedDevice;
-            }));
+            });
         }
         updatedDevice = success
             ? parsed.command === "device_status"
                 ? observedDeviceAfterStatus(ownerId, parsed, payload.result?.device, execution)
-                : mutateDeviceAfterCommand(ownerId, parsed, payload.result?.device, effectiveProviderCommand, macosBoot, androidBoot, windowsMinimizeWatchdog, windowsMinimizeConfirmation, execution, hyperVGuestReady)
-            : updatedDevice || payload.result?.device;
+                : (publication = mutateDeviceAfterCommand(ownerId, parsed, expectedDevice, effectiveProviderCommand, macosBoot, androidBoot, windowsMinimizeWatchdog, windowsMinimizeConfirmation, execution, hyperVGuestReady)).device
+            : publication ? publication.device : updatedDevice || payload.result?.device;
     } catch (error) {
         if (!physicalTeardown || !physicalLeaseGuard?.parsed || !physicalLeaseGuard.file || !physicalLeaseGuard.existing || physicalLeaseCleanup?.status !== 200) throw error;
         const leaseRollback = restorePhysicalBrokerLeaseRelease(ownerId, physicalLeaseGuard.parsed, physicalLeaseGuard.file, physicalLeaseGuard.existing);
@@ -14465,10 +14491,18 @@ async function lifecycleCommandInvokeUnlocked(
         };
     }
     return {
-        status: success ? 200 : 502,
+        status: publication && !publication.matched ? 409 : success ? 200 : 502,
         payload: {
-            ok: success,
-            ...(success ? {} : {
+            ok: success && (!publication || publication.matched),
+            ...(publication && !publication.matched ? {
+                error: "owner-device-state-conflict",
+                ownerId,
+                backend: parsed.backend,
+                deviceId: parsed.deviceId,
+                found: publication.found,
+                ...(!success ? { providerFailure: hyperVGuestReadyExecution ? "hyper-v-guest-not-ready" : "provider-command-failed" } : {}),
+            } : {}),
+            ...(success || (publication && !publication.matched) ? {} : {
                 error: hyperVGuestReadyExecution
                     ? "hyper-v-guest-not-ready"
                     : windowsMinimizeWatchdog && (registration === windowsMinimizeWatchdog || registration?.provider === "windows-sandbox-window")
