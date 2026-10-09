@@ -23,8 +23,10 @@ registrations are refused and preserved. There is no automatic repair or merge.
 MCP and hook executable/file lookups retain their short-circuit and first-missing
 order. Hook lookup precedes event validation. Only the existing
 `PYTHONDONTWRITEBYTECODE=1` prefix is stripped. Identity keeps original command,
-event/index/options, literal booleans, timeout normalization and sorted compact
-JSON SHA256 digest. No command hooks, stale hash or disabled trust refuses ready.
+event name, command, async value, normalized timeout and optional matcher/status
+message in the sorted compact JSON SHA256 digest. Group and hook indices select
+the trust key separately and are not included in the digest. No command hooks,
+stale hash or disabled trust refuses ready.
 
 Only absent state prints installation progress and opens the original temporary
 scope. Application supplies exact pinned Git commands, compares fetched revision
