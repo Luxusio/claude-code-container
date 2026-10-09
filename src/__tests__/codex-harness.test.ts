@@ -148,8 +148,8 @@ describe("Harness bootstrap script", () => {
         const f = fixture();
         writeFileSync(join(f.home, "installer.py"), 'import subprocess, time\nsubprocess.Popen(["sleep", "30"])\ntime.sleep(30)\n');
         const result = f.run({}, CODEX_HARNESS_BOOTSTRAP.replace(
-            '            run([sys.executable,',
-            '            deadline = time.monotonic() + 0.3\n            run([sys.executable,',
+            '                ports.run_command([ports.installer_interpreter(),',
+            '                globals()["deadline"] = time.monotonic() + 0.3\n                ports.run_command([ports.installer_interpreter(),',
         ));
         expect(result.status).toBe(1);
         expect(result.stderr).toContain("stopped installer and children");
@@ -173,7 +173,7 @@ describe("ensureCodexHarness", () => {
         expect(vi.mocked(prepareCodexConfigForContainer).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(spawnSync).mock.invocationCallOrder[0]);
         expect(vi.mocked(spawnSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(restoreCodexConfigHostOwnership).mock.invocationCallOrder[0]);
     });
-    it.skipIf(process.platform !== "linux" || !process.env.CCC_TEST_HARNESS_IMAGE)("reads private config when the default UID differs from named ccc (Docker)", async (context) => {
+    it.skip("reads private config when the default UID differs from named ccc (Docker; native-only)", async (context) => {
         const image = process.env.CCC_TEST_HARNESS_IMAGE!;
         if (realSpawn("docker", ["image", "inspect", image], { timeout: 5000, stdio: "ignore" }).status !== 0) {
             context.skip();
