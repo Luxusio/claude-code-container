@@ -2,10 +2,10 @@ import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-envir
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { handleIosRealTool } from "@ccc/device-lab/providers/backends/ios-device.mjs";
 import { iosRealDeviceE2ECapability } from "../../scripts/real-tests/ios-e2e.ts";
-import { exerciseStaleExternalIosSession, cleanupFakeIosMcpContext, createFakeIosMcpContext, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
+import { exerciseStaleExternalIosSession, cleanupFakeIosMcpContext, createFakeIosMcpContext, fakeIosFixtureDiagnostics, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
 
 function parseToolJson(result: { content?: unknown }) {
     return JSON.parse((((result.content as Array<{ text?: string }> | undefined) ?? [])[0]?.text ?? "{}")) as Record<string, unknown>;
@@ -26,6 +26,16 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS real-device fl
         binDir = context.binDir;
         logPath = context.logPath;
     }, TIMEOUT);
+
+    afterEach(({ task }) => {
+        if (task.result?.state !== "fail") return;
+        // Capture startup phases before suite cleanup removes the owned fixture roots.
+        try {
+            console.error("Failed iOS fixture startup diagnostics: " + fakeIosFixtureDiagnostics(context));
+        } catch {
+            console.error("Failed iOS fixture startup diagnostics unavailable; original assertion and cleanup preserved.");
+        }
+    });
 
     afterAll(async () => {
         await cleanupFakeIosMcpContext(context);
