@@ -43,6 +43,11 @@ async function withBroker(name: string, check: (c: BrokerControl) => Promise<voi
         // A structural boundary avoids pulling native JS into core checkJs.
         const brokerUrl = pathToFileURL(join(project, "packages/device-lab/dist/device-lab-broker.js")).href;
         const ownerUrl = pathToFileURL(join(project, "packages/device-lab/dist/device-lab-owner.js")).href;
+        const emittedBroker = readFileSync(join(project, "packages/device-lab/dist/device-lab-broker.js"), "utf8");
+        expect(emittedBroker).toContain("createBrokerAndroidEmulatorLifecycle");
+        expect(emittedBroker).toContain("./device-lab/application/lifecycle/android-emulator-lifecycle.js");
+        const emittedPolicy = readFileSync(join(project, "packages/device-lab/dist/device-lab/application/lifecycle/android-emulator-lifecycle.js"), "utf8");
+        expect(emittedPolicy).toContain("function createBrokerAndroidEmulatorLifecycle(");
         const broker = await import(brokerUrl) as BrokerModule;
         const owner = await import(ownerUrl) as { deviceLabOwnerId(cwd: string): string };
         host = await import(hostFixturePath) as HostFixture;
@@ -76,7 +81,8 @@ async function withBroker(name: string, check: (c: BrokerControl) => Promise<voi
     finally {
         try { if (server && host) await host.close(server); } catch (error) { failures.push(error); }
         try { originalObservation(name + "-terminal", { calls, denied, outcomes, failures: failures.map(error => String(error)) }); } catch (error) { failures.push(error); }
-        restore(); fixture.remove();
+        try { restore(); } catch (error) { failures.push(error); }
+        try { fixture.remove(); } catch (error) { failures.push(error); }
     }
     if (failures.length) throw new AggregateError(failures, name + ": assertion precedes cleanup failures");
 }

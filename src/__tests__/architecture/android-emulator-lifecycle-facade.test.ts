@@ -1,9 +1,48 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
-import { ANDROID_SYSTEM_IMAGE, ORIGINAL_ANDROID_LIFECYCLE, androidRawState, androidStatePath, originalObservation, toolJson, toolText, withAndroidLifecycleFixture } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { ANDROID_SYSTEM_IMAGE, ORIGINAL_ANDROID_LIFECYCLE, androidRawState, androidStatePath, assertCurrentAndroidLifecycleEmission, originalObservation, toolJson, toolText, withAndroidLifecycleFixture } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { deviceLabTestHomeEnvironment } from "../helpers/device-lab-test-environment.js";
+
+const project = fileURLToPath(new URL("../../../", import.meta.url));
 
 describe("Android emulator lifecycle original direct public MCP witnesses", () => {
+    it("genuine current emitted MCP executes all four policies through existing native SDK authority", async () => {
+        assertCurrentAndroidLifecycleEmission();
+        await withAndroidLifecycleFixture("emitted-direct-four", async (c, ownerId) => {
+            const emitted = new Client({ name: "android-lifecycle-emitted", version: "1" }, { capabilities: {} });
+            const failures: unknown[] = [], deviceId = "android-emitted-four";
+            try {
+                await emitted.connect(new StdioClientTransport({ command: process.execPath,
+                    args: [join(project, "dist/device-lab-mcp/server.mjs")], cwd: project,
+                    env: { ...deviceLabTestHomeEnvironment(c.homeDir), PATH: c.binDir, NODE_ENV: "test", FAKE_ANDROID_LOG: c.logPath,
+                        NODE_OPTIONS: "--require=" + JSON.stringify(join(c.homeDir, "node-provider-routing.cjs")) },
+                }));
+                const call = (name: string, args: Record<string, unknown>) => emitted.callTool({ name, arguments: { ...args, implicitBroker: false, detail: true } });
+                const created = await call("create_android_emulator", { name: "Emitted Four", deviceId, port: 5676, systemImage: ANDROID_SYSTEM_IMAGE });
+                expect(created.isError, toolText(created)).not.toBe(true);
+                expect(toolJson(created).device).toMatchObject({ deviceId, status: "stopped", provisioned: true });
+                const started = await call("start", { deviceId, bootTimeoutMs: 5000 });
+                expect(started.isError, toolText(started)).not.toBe(true);
+                expect(toolJson(started)).toMatchObject({ device: { status: "running" }, boot: { ready: true } });
+                const runtime = androidRawState(c.homeDir, ownerId).devices[0].runtime as { pid: number };
+                const stopped = await call("stop", { deviceId });
+                expect(stopped.isError, toolText(stopped)).not.toBe(true);
+                expect(toolJson(stopped).device).toMatchObject({ status: "stopped" });
+                await expect.poll(() => { try { process.kill(runtime.pid, 0); return true; } catch { return false; } }, { timeout: 5000 }).toBe(false);
+                const deleted = await call("delete", { deviceId, deleteAvd: true, confirmDestructive: true });
+                expect(deleted.isError, toolText(deleted)).not.toBe(true);
+                expect(toolJson(deleted)).toMatchObject({ deleted: deviceId, avdDeleted: true });
+                expect(androidRawState(c.homeDir, ownerId).devices).toEqual([]);
+            } catch (error) { failures.push(error); }
+            finally { try { await emitted.close(); } catch (error) { failures.push(error); } }
+            if (failures.length) throw new AggregateError(failures, "emitted lifecycle assertion precedes cleanup failures");
+        });
+    }, 30000);
+
     it("create/start/stop/delete retain raw carriers, command order and owned runtime joins", async () => {
         await withAndroidLifecycleFixture("direct-four", async (c, ownerId) => {
             const deviceId = "android-original-four", avdName = `ccc-${ownerId}-original-four`;

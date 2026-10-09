@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
 import { ORIGINAL_ANDROID_LIFECYCLE, originalObservation, privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { addAndroidEmulatorUsedPorts, selectAndroidEmulatorPort, validateAndroidEmulatorPortRequest } from "../../../packages/device-lab/providers/domain/lifecycle/android-emulator-lifecycle.mjs";
 
 type Allocation = { ok: true; port: number } | { ok: false; error: string; detail?: string; allowed?: string };
 type NativeAllocation = { resolveAndroidEmulatorPort(owner: string, id: string, requested?: number, additional?: Iterable<number>): Allocation };
@@ -13,6 +14,14 @@ const project = fileURLToPath(new URL("../../../", import.meta.url));
 const allocatorUrl = pathToFileURL(join(project, "packages/device-lab/providers/state/android-emulator-port-allocation.mjs")).href;
 
 describe("Android emulator original native allocation witnesses", () => {
+    it("moved pure pool selection preserves the immutable native observations and mutable used-port carrier", () => {
+        const used = new Set<number>();
+        expect(validateAndroidEmulatorPortRequest(5555)).toEqual({ ok: false, error: "invalid-android-emulator-port", allowed: "even integer 5554-5682" });
+        expect(selectAndroidEmulatorPort(used, undefined, 38)).toEqual({ ok: true, port: ORIGINAL_ANDROID_LIFECYCLE.firstPort });
+        addAndroidEmulatorUsedPorts(used, [5555, 0, NaN, ORIGINAL_ANDROID_LIFECYCLE.firstPort]);
+        expect(used).toEqual(new Set([ORIGINAL_ANDROID_LIFECYCLE.firstPort]));
+        expect(selectAndroidEmulatorPort(used, undefined, 38)).toEqual({ ok: true, port: ORIGINAL_ANDROID_LIFECYCLE.nextPort });
+    });
     it("retains deterministic selection, live-port filtering, scan order and bounded exhaustion", async () => {
         const fixture = privateBrokerHome(), restore = isolateDeviceLabTestEnvironment(fixture.home);
         try {
