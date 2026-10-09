@@ -11,7 +11,7 @@
  * @typedef {{[key: string]: unknown, ok?: boolean, args?: unknown}} QemuExecution
  * @typedef {{[key: string]: unknown, labId?: unknown, force?: unknown, dryRun?: unknown}} QemuDiskArguments
  * @typedef {{[key: string]: unknown, labId?: unknown}} QemuTargetArguments
- * @typedef {null | boolean | number | string | QemuImageMetadata[] | {[key: string]: QemuImageMetadata}} QemuImageMetadata
+ * @typedef {import('./qemu-image-disk-target.d.mts').QemuImageMetadata} QemuImageMetadata
  * @typedef {{kind: string, path: string, backingPath: string, backingFormat: string, materializedAt: string, forced: boolean}} QemuDiskMetadata
  * @typedef {{ok: true, command: string, args: string[], dryRun?: boolean, providerStatus?: QemuProviderStatus, result?: QemuExecution | null}} QemuOverlaySuccess
  * @typedef {QemuOverlaySuccess | QemuFailure} QemuOverlayResult
