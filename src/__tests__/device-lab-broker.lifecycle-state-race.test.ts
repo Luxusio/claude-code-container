@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -27,7 +27,7 @@ describe("frozen original lifecycle race premises", () => {
     });
 });
 
-type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean};
+type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean; guiExecutableProbe?: boolean};
 type StateSnapshot = {bytes: string; dev: string; ino: string; mtime: string; mode: string; nlink: string};
 type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};
 
@@ -199,6 +199,16 @@ if(settings.openRouteProbe){
  let leaseFile,initialExpiry;
  if(physical)controller(()=>{leaseFile=path.join(home,'.ccc/devices/physical-leases/android-device/locks/FIXTURE-USB.json');fs.mkdirSync(path.dirname(leaseFile),{recursive:true});initialExpiry=new Date(Date.now()+10000).toISOString();fs.writeFileSync(leaseFile,JSON.stringify({backend:'android-device',hardwareId:'FIXTURE-USB',ownerId:owner,deviceId:id,claimId:'fixture-claim',claimNonce:'fixture-nonce',expiresAt:initialExpiry}),{mode:0o600});});
  let state=scenario.command==='device_reboot'?'Running':'Off';
+ const fixtureProviderPaths={tart:path.join(home,'fake/tart'),'powershell.exe':path.join(home,'fake/powershell.exe'),adb:path.join(home,'fake/adb'),'ssh.exe':path.join(home,'fake/ssh.exe'),ssh:path.join(home,'fake/ssh')};
+ // The broker's Windows SSH selection prefers providerPaths['ssh.exe']; both its
+ // configured selection and the expected GUI producer use this independent fixture token.
+ const expectedGui=linux?hyperv.hyperVLinuxGuiReadyCommand({executable:fixtureProviderPaths['ssh.exe'],deviceRoot:initial.deviceRoot,privateRoot:initial.privateRoot,sshPrivateKeyPath:initial.sshPrivateKeyPath,knownHostsPath:initial.sshKnownHostsPath,guestUsername:initial.guestUsername,networkAddress:initial.networkAddress,timeoutMs:30000}):null;
+ function ownedSshResponse(command){
+  if(command.executable!==fixtureProviderPaths['ssh.exe'])return deny('unallocated SSH executable',[command.executable]);
+  const exactGui=command.mode===expectedGui.mode&&command.executable===expectedGui.executable&&JSON.stringify(command.args)===JSON.stringify(expectedGui.args);
+  return{...command,status:scenario.guestFailure?1:0,stdout:scenario.guestFailure?'':exactGui?'CCC_HYPER_V_GUI_READY\n':'ccc-hyper-v-linux-ready\n',stderr:scenario.guestFailure?'fixture-private-provider-output':''};
+ }
+ let guiProbeDone=false;
  const runner=(command,runnerOptions)=>{
   let native=null;try{const envelope=JSON.parse(Buffer.from(command.input||'','base64').toString('utf8'));if(typeof envelope.script==='string')native=JSON.parse(envelope.input);}catch{}
   if(!native&&command.input){try{const value=JSON.parse(command.input);if(value.operation)native=value;}catch{}}
@@ -207,7 +217,8 @@ if(settings.openRouteProbe){
   if(command.provider==='hyper-v-ssh'){
    if(reconciledRecordAtSsh===undefined)reconciledRecordAtSsh=controller(()=>JSON.parse(raw.readFileSync(ownerFile,'utf8')).devices.find(item=>item.id===id));
    if(scenario.phase==='after-ssh')race();
-   return{...command,status:scenario.guestFailure?1:0,stdout:scenario.guestFailure?'':'ccc-hyper-v-linux-ready\n',stderr:scenario.guestFailure?'fixture-private-provider-output':''};
+   if(scenario.guiExecutableProbe&&!guiProbeDone&&JSON.stringify(command.args)===JSON.stringify(expectedGui.args)){guiProbeDone=true;try{ownedSshResponse({...command,executable:path.join(path.dirname(home),'unallocated-ssh.exe')});}catch{}}
+   return ownedSshResponse(command);
   }
   if(command.provider==='tart'){
    if(command.args?.[0]==='get'){
@@ -233,7 +244,7 @@ if(settings.openRouteProbe){
   }
   return{...command,status:0,stdout:JSON.stringify({schemaVersion:1,operation:native.operation,ok:true,items}),stderr:''};
  };
- server=broker.createDeviceBrokerServer({cwd,host:'127.0.0.1',port:0,platform:hv?'win32':'linux',providerPaths:{tart:path.join(home,'fake/tart'),'powershell.exe':path.join(home,'fake/powershell.exe'),adb:path.join(home,'fake/adb'),'ssh.exe':path.join(home,'fake/ssh.exe'),ssh:path.join(home,'fake/ssh')},commandRunner:runner});
+ server=broker.createDeviceBrokerServer({cwd,host:'127.0.0.1',port:0,platform:hv?'win32':'linux',providerPaths:fixtureProviderPaths,commandRunner:runner});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));port=server.address().port;
  const token=broker.deviceBrokerOwnerToken(owner);protectedSnapshot=snapshot();expected=[structuredClone(initial),structuredClone(other)];rpcActive=true;
  let outcome;try{outcome=await rpc('http://127.0.0.1:'+port,owner,scenario.auth==='missing'?undefined:scenario.auth==='wrong'?'not-the-owner-token':token,{backend:scenario.backend,command:scenario.command,deviceId:id,force:true,...(scenario.dryRun?{dryRun:true}:{}),...(hv?{incarnationId,bootTimeoutMs:1000}:physical?{}:{waitForBoot:false})});}finally{rpcActive=false;await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
@@ -243,18 +254,31 @@ if(settings.openRouteProbe){
 })().catch(error=>{console.log(JSON.stringify({fatal:String(error),stack:error.stack,denied,calls,mutations}));process.exitCode=1;});
 `;
 
-function executeCurrent(lens: "source" | "emitted", scenario: Scenario): Receipt {
+function executeCurrent(lens: "source" | "emitted", scenario: Scenario, expectedDenials = 0): Receipt {
     const root = mkdtempSync(join(tmpdir(), "ccc-lifecycle-state-race-"));
     const home = join(root, "home"); mkdirSync(home);
     const worker = join(root, "worker.cjs"), loader = join(root, "source-loader.mjs");
     writeFileSync(worker, WORKER, {mode: 0o400}); writeFileSync(loader, SOURCE_LOADER, {mode: 0o400});
     const settings = {project, home, lens, scenario, sourceFiles: [...sourceFiles], emittedFiles: [...emittedFiles]};
     const settingsFile = join(root, "fixture-input.json"); writeFileSync(settingsFile, JSON.stringify(settings), {mode: 0o400});
+    const diagnostics = mkdtempSync(join(tmpdir(), "ccc-lifecycle-state-receipt-"));
+    // Assertions in the caller run AFTER this function returns. Keep complete private output
+    // until Vitest reports the final test result, so a later status assertion cannot erase it.
+    onTestFinished(context => {
+        if (context.task.result?.state === "pass") rmSync(diagnostics, {recursive: true, force: true});
+        else console.error(`[lifecycle fixture failure diagnostics] ${diagnostics}`);
+    });
     try {
         const output = spawnSync(process.execPath, [...(lens === "source" ? ["--experimental-loader", loader] : []), worker], {cwd: project, encoding: "utf8", timeout: 20000, maxBuffer: 2 * 1024 * 1024, env: {HOME: home, USERPROFILE: home, PATH: join(home, "fake"), CCC_LIFECYCLE_FIXTURE_FILE: settingsFile}});
+        writeFileSync(join(diagnostics, "stdout.json"), output.stdout ?? "", {mode: 0o600});
+        writeFileSync(join(diagnostics, "stderr.log"), output.stderr ?? "", {mode: 0o600});
+        writeFileSync(join(diagnostics, "metadata.json"), JSON.stringify({lens, scenario, exit: output.status, signal: output.signal, error: output.error ? String(output.error) : null, fixtureHome: home, workerSha: createHash("sha256").update(WORKER).digest("hex"), loaderSha: createHash("sha256").update(SOURCE_LOADER).digest("hex"), sourceFiles: [...sourceFiles], emittedFiles: [...emittedFiles]}, null, 2), {mode: 0o600});
         expect(output.error).toBeUndefined(); expect(output.status, output.stdout + output.stderr).toBe(0);
         const observed = JSON.parse(output.stdout.trim()) as Receipt;
-        expect(observed.denied, "all denials count before potentially caught native errors").toEqual([]);
+        // Includes actual public body, persisted/protected bytes and metadata, native/helper
+        // calls and caught-denial counters. HOME's ordinary cleanup below remains unchanged.
+        writeFileSync(join(diagnostics, "receipt.json"), JSON.stringify(observed, null, 2), {mode: 0o600});
+        expect(observed.denied, "all denials count before potentially caught native errors").toHaveLength(expectedDenials);
         return observed;
     } finally { rmSync(root, {recursive: true, force: true}); }
 }
@@ -296,6 +320,12 @@ const macRaces: Scenario[] = ["device_start", "device_stop", "device_delete"].fl
 const hyperVRaces: Scenario[] = ["device_start", "device_reboot"].flatMap(command => [false, true].flatMap(guestFailure => ["created", "runtime", "incarnation", "missing"].map(race => ({name: `HyperV ${command} guestFailure=${guestFailure} ${race}`, backend: "windows-vm", command, race, guestFailure, phase: "provider"} as Scenario))));
 
 describe.each(["source", "emitted"] as const)("actual authenticated %s broker lifecycle state transitions", lens => {
+    it("rejects an unallocated executable through the actual GUI response discriminator even when caught", () => {
+        const observed = executeCurrent(lens, {name: "GUI executable negative", backend: "linux-vm", command: "device_start", guiExecutableProbe: true}, 1);
+        expect(observed.denied).toEqual([{kind: "unallocated SSH executable", args: [expect.stringContaining("unallocated-ssh.exe")]}]);
+        expect(observed.outcome.status).toBe(200);
+        expect(JSON.parse(observed.after.bytes).devices.find((entry: {id: string}) => entry.id === "race")).toMatchObject({bootReady: true});
+    });
     it.each(["plan", "dry-run", "status"] as const)("keeps readonly %s paths outside lifecycle publication", mode => {
         const observed = executeCurrent(lens, {name: "readonly gate", backend: "macos-vm", command: mode === "status" ? "device_status" : "device_start", planOnly: mode === "plan", dryRun: mode === "dry-run"});
         expect(observed.outcome.status).toBe(200); expect(observed.after).toEqual(observed.protectedSnapshot);
