@@ -168,7 +168,7 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
         execute: (command, options) => { trace.push("execute:" + command.provider); commands.push({ provider: command.provider, args: command.args, timeoutMs: options.timeoutMs }); return { ...command, status: 0, stdout: command.args?.includes("sys.boot_completed") ? "1\n" : command.args?.[0] === "devices" ? "List of devices attached\n" : "raw native output", stderr: "" }; },
         executable: name => name,
         now: () => time,
-        sleep: ms => { time += ms; trace.push("sleep:" + ms); },
+        sleep: ms => { time += ms; trace.push("sleep:" + ms); return undefined; },
         timestamp: () => { trace.push("timestamp"); return "native-timestamp"; },
         avdHome: () => "/owned-avd",
         validPort: port => typeof port === "number" && port % 2 === 0 && port >= 5554 && port <= 5682,

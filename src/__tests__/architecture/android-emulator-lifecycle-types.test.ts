@@ -56,6 +56,8 @@ function directOperationContractNegatives(): void {
 void directOperationContractNegatives;
 
 function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecyclePorts): void {
+    // @ts-expect-error polling pacing must finish synchronously, not return a Promise
+    const asyncSleep: BrokerAndroidEmulatorLifecyclePorts = { ...broker, sleep: async () => undefined };
     // @ts-expect-error provider command result is a synchronous native observation
     const asyncExecution: BrokerAndroidEmulatorLifecyclePorts = { ...broker, execute: async () => ({ mode: "exec", provider: "adb", status: 0 }) };
     // @ts-expect-error committed auxiliary cleanup must carry its complete result/device observation
@@ -67,7 +69,7 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     const { now, ...withoutClock } = broker; void now;
     // @ts-expect-error native capacity clock is required even with every other step present
     const missingClock: BrokerAndroidEmulatorLifecyclePorts = withoutClock;
-    void asyncExecution; void weakCleanup; void asyncPublication; void weakInventory; void missingClock;
+    void asyncSleep; void asyncExecution; void weakCleanup; void asyncPublication; void weakInventory; void missingClock;
 }
 void brokerOperationContractNegatives;
 
