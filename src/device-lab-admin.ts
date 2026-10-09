@@ -1,3 +1,6 @@
+import { admitDeviceAdminInventoryCommand } from "./domain/device-admin-inventory.js";
+import { createDeviceAdminInventory } from "./application/device-admin-inventory.js";
+import type { DeviceAdminOwnerSnapshot } from "./ports/device-admin-inventory.js";
 import {
     DEVICE_BACKENDS,
     commandPath,
@@ -142,8 +145,6 @@ function assertPlainDirectoryPath(path: string, label: string): void {
         if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`${label}-path-invalid`);
     }
 }
-type AdminBackendSnapshot = { stateKey: string; name: string; devices: DeviceRecord[] };
-type AdminOwnerSnapshot = { ownerId: string; backends: AdminBackendSnapshot[] };
 type BenchDeviceStatus = "healthy" | "lease-ok" | "missing-hardware-id" | "missing-lease" | "expired-lease" | "foreign-lease" | "device-mismatch" | "inventory-missing";
 type BenchDeviceCheck = {
     deviceId: string;
@@ -162,11 +163,6 @@ type BenchBackendHealth = {
     devices: BenchDeviceCheck[];
 };
 export type DeviceLabBenchHealth = { ownerId: string; backends: BenchBackendHealth[] };
-type BackendToolSnapshot = {
-    tools: Record<string, string | null>;
-    missing: string[];
-    available: boolean;
-};
 type DeviceLabWiringDiagnostic = {
     stateRoot: string;
     stateExists: boolean;
@@ -183,24 +179,6 @@ const OPT_SOURCE_DEVICE_LAB_MCP_SERVER = "/opt/ccc/device-lab-mcp/server.mjs";
 
 function ownersRoot(): string {
     return join(homedir(), ".ccc/devices/owners");
-}
-
-function backendToolSnapshot(backend: Backend): BackendToolSnapshot {
-    const tools = Object.fromEntries(backend.tools.map((tool) => [tool, commandPath(tool)])) as Record<string, string | null>;
-    if (backend.name === "macos-vm") {
-        const providerAvailable = backend.tools.some((tool) => Boolean(tools[tool]));
-        return {
-            tools,
-            missing: providerAvailable ? [] : [...backend.tools],
-            available: providerAvailable,
-        };
-    }
-    const missing = backend.tools.filter((tool) => !tools[tool]);
-    return {
-        tools,
-        missing,
-        available: missing.length === 0,
-    };
 }
 
 function deviceLabWiringDiagnostic(_cwd = process.cwd(), _profile?: string): DeviceLabWiringDiagnostic {
@@ -1352,43 +1330,20 @@ function deleteMacosProviderResources(device: DeviceRecord, timeoutMs?: number):
     return results;
 }
 
+const deviceAdminInventory = createDeviceAdminInventory({
+    backends: DEVICE_BACKENDS,
+    resolveOwnerId: deviceLabOwnerId,
+    enumerateOwnerIds: allOwnerIds,
+    readDevices,
+    commandPath,
+});
+
 export function deviceLabSnapshot(cwd = process.cwd(), profile?: string) {
-    const ownerId = deviceLabOwnerId(cwd, profile);
-    const backends = DEVICE_BACKENDS.map((backend) => {
-        const devices = readDevices(ownerId, backend.stateKey);
-        const snapshot = backendToolSnapshot(backend);
-        return {
-            ...backend,
-            devices,
-            tools: snapshot.tools,
-            missing: snapshot.missing,
-            available: snapshot.available,
-        };
-    });
-    return { ownerId, backends };
+    return deviceAdminInventory.snapshot(cwd, profile);
 }
 
-export function deviceLabAllOwnersSnapshot(): { owners: AdminOwnerSnapshot[] } {
-    const owners = allOwnerIds().map((ownerId) => ({
-        ownerId,
-        backends: DEVICE_BACKENDS.map((backend) => ({
-            stateKey: backend.stateKey,
-            name: backend.name,
-            devices: readDevices(ownerId, backend.stateKey),
-        })),
-    }));
-    return { owners };
-}
-
-function deviceLabel(device: unknown): string {
-    if (!device || typeof device !== "object") return "(unknown)";
-    const d = device as Record<string, unknown>;
-    return [
-        d.id,
-        d.name ? `name=${d.name}` : null,
-        d.status ? `status=${d.status}` : null,
-        d.platform ? `platform=${d.platform}` : null,
-    ].filter(Boolean).join("  ");
+export function deviceLabAllOwnersSnapshot(): { owners: DeviceAdminOwnerSnapshot[] } {
+    return deviceAdminInventory.allOwnersSnapshot();
 }
 
 export function stopOwnerDevice(deviceId: string, cwd = process.cwd(), profile?: string): { ok: boolean; text: string } {
@@ -1529,62 +1484,15 @@ export function pruneAllProjectDevices(): { ok: boolean; text: string } {
 }
 
 export function formatDevicesStatus(cwd = process.cwd(), profile?: string): string {
-    const snapshot = deviceLabSnapshot(cwd, profile);
-    const lines = [
-        "=== CCC Devices Status ===",
-        "",
-        `owner: ${snapshot.ownerId}`,
-        "",
-        "Backends:",
-    ];
-    for (const backend of snapshot.backends) {
-        lines.push(`  ${backend.name}: ${backend.devices.length} device(s), ${backend.available ? "available" : `missing ${backend.missing.join(", ")}`}`);
-    }
-    return `${lines.join("\n")}\n`;
+    return deviceAdminInventory.formatStatus(cwd, profile);
 }
 
 export function formatDevicesList(cwd = process.cwd(), profile?: string): string {
-    const snapshot = deviceLabSnapshot(cwd, profile);
-    const lines = [
-        "=== CCC Devices ===",
-        "",
-        `owner: ${snapshot.ownerId}`,
-        "",
-    ];
-    for (const backend of snapshot.backends) {
-        lines.push(`${backend.name}:`);
-        if (backend.devices.length === 0) {
-            lines.push("  (none)");
-        } else {
-            for (const device of backend.devices) lines.push(`  ${deviceLabel(device)}`);
-        }
-    }
-    return `${lines.join("\n")}\n`;
+    return deviceAdminInventory.formatList(cwd, profile);
 }
 
 export function formatDevicesAllProjectsList(): string {
-    const snapshot = deviceLabAllOwnersSnapshot();
-    const lines = [
-        "=== CCC Devices: All Projects ===",
-        "",
-    ];
-    if (snapshot.owners.length === 0) {
-        lines.push("(none)");
-        return `${lines.join("\n")}\n`;
-    }
-    for (const owner of snapshot.owners) {
-        lines.push(`project: ${owner.ownerId}`);
-        for (const backend of owner.backends) {
-            lines.push(`${backend.name}:`);
-            if (backend.devices.length === 0) {
-                lines.push("  (none)");
-            } else {
-                for (const device of backend.devices) lines.push(`  ${deviceLabel(device)}`);
-            }
-        }
-        lines.push("");
-    }
-    return `${lines.join("\n").trimEnd()}\n`;
+    return deviceAdminInventory.formatAllProjectsList();
 }
 
 export function formatDevicesBackends(cwd = process.cwd(), profile?: string): string {
@@ -1677,19 +1585,14 @@ export function devicesCli(args: string[], cwd = process.cwd(), profile?: string
     try {
         switch (subcommand) {
         case "status":
-            console.log(formatDevicesStatus(cwd, profile));
-            return 0;
-        case "list":
-            if (args.length === 1) {
-                console.log(formatDevicesList(cwd, profile));
-                return 0;
-            }
-            if (args.length === 2 && args[1] === "--all-projects") {
-                console.log(formatDevicesAllProjectsList());
-                return 0;
-            }
-            console.error("Usage: ccc devices list [--all-projects]");
-            return 1;
+        case "list": {
+            const admission = admitDeviceAdminInventoryCommand(args, subcommand);
+            const publisher = console;
+            const publish = admission === "invalid-list" ? publisher.error : publisher.log;
+            const result = deviceAdminInventory.command(args, cwd, profile, admission)!;
+            Reflect.apply(publish, publisher, [result.text]);
+            return result.ok ? 0 : 1;
+        }
         case "backends":
             console.log(formatDevicesBackends(cwd, profile));
             return 0;

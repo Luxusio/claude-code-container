@@ -1,3 +1,5 @@
+import { createQemuImageDiskTargetApplication } from "../application/qemu-image-disk-target.mjs";
+import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
 import { buildListFilesCommand, listFilesFromExecResult } from "../file-listing.mjs";
 import { randomUUID } from "crypto";
 import { spawn, spawnSync } from "child_process";
@@ -25,11 +27,9 @@ const SECRET_CONTENT_PATTERNS = [
     { label: "slack-token", re: /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/ },
     { label: "secret-assignment", re: /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|private[_-]?key)\b\s*[:=]\s*["']?[A-Za-z0-9_./+=:@-]{12,}/i },
 ];
-const SUPPORTED_IMAGE_FORMATS = new Set(["qcow2", "raw"]);
 const DEFAULT_GUEST_ROOTS = ["/workspace", "/artifacts", "/tmp/ccc-lab"];
 const DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 5;
 const DEFAULT_GUEST_EXEC_TIMEOUT_MS = 30000;
-const MAX_GUEST_EXEC_TIMEOUT_MS = 600000;
 const DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS = 120000;
 const PROVIDER_COMMAND_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 const MAX_GUEST_EXEC_COMMAND_LENGTH = 4096;
@@ -178,14 +178,7 @@ function boundedUserPath(value, label) {
 }
 
 function inferImageFormat(args = {}, sourcePath = "") {
-    const lowerPath = String(sourcePath).toLowerCase();
-    const format = args.format
-        ? String(args.format).toLowerCase()
-        : lowerPath.endsWith(".qcow2") ? "qcow2"
-            : lowerPath.endsWith(".raw") ? "raw"
-                : null;
-    if (!SUPPORTED_IMAGE_FORMATS.has(format)) return null;
-    return format;
+    return inferQemuImageFormat(args, sourcePath);
 }
 
 function pathInsideAny(roots, candidate) {
@@ -769,10 +762,7 @@ function validateGuestCommand(value) {
 }
 
 function boundedTimeout(value, fallback = DEFAULT_GUEST_EXEC_TIMEOUT_MS) {
-    if (value === undefined || value === null || value === "") return fallback;
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < 1) return fallback;
-    return Math.min(parsed, MAX_GUEST_EXEC_TIMEOUT_MS);
+    return qemuCommandTimeout(value, fallback);
 }
 
 function redactProviderString(value, lab, ssh, extraProviderPaths = []) {
@@ -884,21 +874,42 @@ export function listLabs(options = {}) {
     return { ok: true, ownerId: ctx.owner, labs };
 }
 
-export function listImages(options = {}) {
+function qemuImageDiskTargetApplication(options) {
     const ctx = context(options);
     const imagesRoot = join(ctx.ownerRoot, "images");
-    if (!existsSync(imagesRoot)) return { ok: true, ownerId: ctx.owner, images: [] };
-    const images = readdirSync(imagesRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => {
-            try {
-                return readJson(join(imagesRoot, entry.name, "image.json"));
-            } catch {
-                return null;
-            }
-        })
-        .filter(Boolean);
-    return { ok: true, ownerId: ctx.owner, images };
+    return createQemuImageDiskTargetApplication({
+        ownerId: ctx.owner,
+        get providerCommandTimeoutMs() { return options.providerCommandTimeoutMs; },
+        imagesRootExists: () => existsSync(imagesRoot),
+        imageEntries: () => readdirSync(imagesRoot, { withFileTypes: true }),
+        readImageMetadata: (name) => readJson(join(imagesRoot, name, "image.json")),
+        readLab: (labId) => readLab(ctx, labId),
+        validateImageSource: (sourcePath, format) => validateImageSource(ctx, sourcePath, { format }, "source-image"),
+        validateDiskPath: (lab) => validateLabDiskPath(lab),
+        diskExists: (diskPath) => existsSync(diskPath),
+        providerStatus: () => labProviderStatus(options),
+        ensureDiskParent: (diskPath) => { mkdirSync(dirname(diskPath), { recursive: true }); },
+        qemuImageRunner: () => options.commandRunner || ((command, commandArgs, runOptions) => {
+            const result = spawnSync(command, commandArgs, {
+                cwd: runOptions.cwd,
+                env: runOptions.env,
+                encoding: "utf8",
+                timeout: runOptions.timeoutMs,
+                maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
+            });
+            return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args: commandArgs };
+        }),
+        commandEnvironment: () => options.env || process.env,
+        now: () => nowIso(options),
+        writeLab: (lab) => writeLab(ctx, lab),
+        presentLab: publicLab,
+        presentExecution: publicExecution,
+        ownerLabs: () => listLabs(options).labs,
+    });
+}
+
+export function listImages(options = {}) {
+    return qemuImageDiskTargetApplication(options).listImages();
 }
 
 export function importImage(args = {}, options = {}) {
@@ -947,11 +958,7 @@ function resolveBaseImage(ctx, imageId) {
     return { ok: true, image: { ...loaded.image, path: source.path, format: source.format, sizeBytes: source.stat.size } };
 }
 
-function validateLabSourceImage(ctx, lab) {
-    const sourcePath = lab.image?.sourceImage;
-    const format = lab.image?.format || inferImageFormat({}, sourcePath || "");
-    return validateImageSource(ctx, sourcePath, { format }, "source-image");
-}
+
 
 function validateLabDiskPath(lab) {
     const diskPath = resolve(lab.image?.diskImage || "");
@@ -968,39 +975,7 @@ function validateLabDiskPath(lab) {
     return { ok: true, diskPath };
 }
 
-function qemuImgCreateOverlay(lab, source, options = {}, dryRun = false) {
-    const disk = validateLabDiskPath(lab);
-    if (!disk.ok) return disk;
-    const status = labProviderStatus(options);
-    const args = [
-        "create",
-        "-f", "qcow2",
-        "-F", source.format,
-        "-b", source.path,
-        disk.diskPath,
-    ];
-    if (dryRun) return { ok: true, dryRun: true, command: status.qemuImg || "qemu-img", args, providerStatus: status };
-    if (!status.available) return { ok: false, error: "lab-provider-unsupported", providerStatus: status };
-    if (!status.qemuImg) return { ok: false, error: "qemu-img-unavailable", providerStatus: status };
-    mkdirSync(dirname(disk.diskPath), { recursive: true });
-    const runner = options.commandRunner || ((command, commandArgs, runOptions) => {
-        const result = spawnSync(command, commandArgs, {
-            cwd: runOptions.cwd,
-            env: runOptions.env,
-            encoding: "utf8",
-            timeout: runOptions.timeoutMs,
-            maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
-        });
-        return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args: commandArgs };
-    });
-    const result = runner(status.qemuImg, args, {
-        cwd: lab.paths.labDir,
-        env: options.env || process.env,
-        timeoutMs: boundedTimeout(options.providerCommandTimeoutMs, DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS),
-    });
-    if (!result?.ok) return { ok: false, error: "qemu-img-create-failed", result: publicExecution(result) };
-    return { ok: true, command: status.qemuImg, args, result: publicExecution(result) };
-}
+
 
 export function createLab(args = {}, options = {}) {
     const ctx = context(options);
@@ -1064,44 +1039,7 @@ export function createLab(args = {}, options = {}) {
 }
 
 export function materializeDisk(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const lab = loaded.lab;
-    if (lab.runtimeState === "running") return { ok: false, error: "lab-running", labId: lab.id };
-    const source = validateLabSourceImage(ctx, lab);
-    if (!source.ok) return source;
-    const diskPathResult = validateLabDiskPath(lab);
-    if (!diskPathResult.ok) return diskPathResult;
-    const diskPath = diskPathResult.diskPath;
-    const exists = existsSync(diskPath);
-    if (exists && args.force !== true) {
-        return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), materialized: false, reused: true, diskImage: diskPath };
-    }
-    if (args.dryRun === true) {
-        const planned = qemuImgCreateOverlay(lab, source, options, true);
-        return planned.ok
-            ? { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(lab), materialized: false, diskImage: diskPath, plan: publicExecution(planned) }
-            : planned;
-    }
-    const created = qemuImgCreateOverlay(lab, source, options, false);
-    if (!created.ok) return created;
-    const timestamp = nowIso(options);
-    const diskMetadata = {
-        kind: "qcow2-overlay",
-        path: diskPath,
-        backingPath: source.path,
-        backingFormat: source.format,
-        materializedAt: timestamp,
-        forced: args.force === true,
-    };
-    const next = {
-        ...lab,
-        updatedAt: timestamp,
-        image: { ...lab.image, diskImage: diskPath, disk: diskMetadata },
-    };
-    writeLab(ctx, next);
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(next), materialized: true, diskImage: diskPath, disk: diskMetadata, result: created.result };
+    return qemuImageDiskTargetApplication(options).materializeDisk(args);
 }
 
 export function buildQemuArgs(lab, options = {}) {
@@ -1131,39 +1069,7 @@ function safeReadinessState(value, fallback = "process-running") {
 }
 
 function targetForLab(lab) {
-    const running = lab.runtimeState === "running";
-    const latestReadiness = running ? lab.readiness?.latest || null : null;
-    const readiness = running ? safeReadinessState(latestReadiness?.state, "process-running") : "stopped";
-    const hasGuestSsh = Boolean(lab.guest?.ssh);
-    const hasGuestAgent = Boolean(lab.guest?.agent);
-    return {
-        id: `${lab.id}:vm`,
-        labId: lab.id,
-        name: lab.name,
-        targetKind: "lab-vm",
-        provider: lab.provider || PROVIDER_NAME,
-        runtimeState: lab.runtimeState,
-        readiness,
-        sessionState: running && readiness !== "failed" ? "attachable" : "unavailable",
-        attachable: running && readiness !== "failed",
-        creatable: false,
-        runtime: publicRuntime(lab.runtime),
-        readinessProbe: latestReadiness,
-        paths: {
-            workspaceDir: lab.paths.workspaceDir,
-            artifactsDir: lab.paths.artifactsDir,
-        },
-        sessionHints: {
-            monitor: running ? "bounded-monitor-proxy-required" : "start-lab-before-opening-monitor-session",
-            metadata: "available",
-            guestSsh: running
-                ? hasGuestSsh ? "bounded-guest-ssh-session-available" : "configure-guest-ssh-before-opening-guest-session"
-                : "start-lab-before-opening-guest-session",
-            guestAgent: running
-                ? hasGuestAgent ? "bounded-guest-agent-session-available" : "configure-guest-agent-before-opening-agent-session"
-                : "start-lab-before-opening-agent-session",
-        },
-    };
+    return qemuTargetForLab(lab);
 }
 
 function publicRuntime(runtime) {
@@ -1617,17 +1523,7 @@ export function rebootLab(args = {}, options = {}) {
 }
 
 export function listTargets(args = {}, options = {}) {
-    const ctx = context(options);
-    if (args.labId !== undefined) {
-        const loaded = readLab(ctx, String(args.labId || ""));
-        if (!loaded.ok) return loaded;
-        return { ok: true, ownerId: ctx.owner, targets: [targetForLab(loaded.lab)] };
-    }
-    return {
-        ok: true,
-        ownerId: ctx.owner,
-        targets: listLabs(options).labs.map((lab) => targetForLab(lab)),
-    };
+    return qemuImageDiskTargetApplication(options).listTargets(args);
 }
 
 export function probeReadiness(args = {}, options = {}) {
