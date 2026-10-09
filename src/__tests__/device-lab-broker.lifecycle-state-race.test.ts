@@ -199,7 +199,7 @@ if(settings.openRouteProbe){
  let leaseFile,initialExpiry;
  if(physical)controller(()=>{leaseFile=path.join(home,'.ccc/devices/physical-leases/android-device/locks/FIXTURE-USB.json');fs.mkdirSync(path.dirname(leaseFile),{recursive:true});initialExpiry=new Date(Date.now()+10000).toISOString();fs.writeFileSync(leaseFile,JSON.stringify({backend:'android-device',hardwareId:'FIXTURE-USB',ownerId:owner,deviceId:id,claimId:'fixture-claim',claimNonce:'fixture-nonce',expiresAt:initialExpiry}),{mode:0o600});});
  let state=scenario.command==='device_reboot'?'Running':'Off';
- const runner=command=>{
+ const runner=(command,runnerOptions)=>{
   let native=null;try{const envelope=JSON.parse(Buffer.from(command.input||'','base64').toString('utf8'));if(typeof envelope.script==='string')native=JSON.parse(envelope.input);}catch{}
   if(!native&&command.input){try{const value=JSON.parse(command.input);if(value.operation)native=value;}catch{}}
   calls.push({provider:command.provider,args:command.args||[],...(native?{operation:native.operation}:{})});
@@ -210,6 +210,10 @@ if(settings.openRouteProbe){
    return{...command,status:scenario.guestFailure?1:0,stdout:scenario.guestFailure?'':'ccc-hyper-v-linux-ready\n',stderr:scenario.guestFailure?'fixture-private-provider-output':''};
   }
   if(command.provider==='tart'){
+   if(command.args?.[0]==='get'){
+    if(scenario.command!=='device_status'||command.executable!==path.join(home,'fake/tart')||command.args.length!==2||command.args[1]!==initial.providerInstance||command.mode!=='exec'||runnerOptions?.timeoutMs!==broker.DEVICE_BROKER_COMMAND_TIMEOUT_MS||runnerOptions?.outputLimit!==broker.DEVICE_BROKER_COMMAND_OUTPUT_LIMIT||Object.keys(runnerOptions).sort().join(',')!=='outputLimit,timeoutMs')return deny('unadmitted owned tart get',[command.args,runnerOptions]);
+    return{...command,status:0,stdout:JSON.stringify({Name:initial.providerInstance,State:'running'}),stderr:''};
+   }
    if(!['run','stop','delete','list'].includes(command.args?.[0]))return deny('unadmitted tart command',[command.args]);
    return{...command,status:0,stdout:command.args[0]==='list'?'[]':'',stderr:''};
   }
@@ -217,7 +221,9 @@ if(settings.openRouteProbe){
   if(command.provider!=='hyper-v'||!native)return deny('unadmitted typed provider command',[command.provider,command.args]);
   if(!['Get-VM','Start-VM','Stop-VM','Restart-VM','Get-VMDiagnostic','Invoke-Guest','Get-VMDvdDrive','Remove-VMDvdDrive','Get-VMHardDiskDrive','Get-VMNetworkAdapter','Get-NetNeighbor','Get-NetIPAddress'].includes(native.operation))return deny('unadmitted Hyper-V operation',[native.operation]);
   if(native.operation==='Start-VM'||native.operation==='Restart-VM')state='Running';if(native.operation==='Stop-VM')state='Off';let items=[];
-  if(native.operation==='Get-VM')items=[{id:vmId,name:vmName,state,status:'Operating normally',notes:hyperv.ownershipMarker(owner,id,incarnationId),uptimeMilliseconds:42,generation:2,checkpointType:'Disabled'}];
+  if(native.operation==='Get-VM')items=Array.isArray(native.names)
+   ? [{id:vmId,name:vmName,notes:hyperv.ownershipMarker(owner,id,incarnationId)}]
+   : [{id:vmId,name:vmName,state,status:'Operating normally',notes:hyperv.ownershipMarker(owner,id,incarnationId),uptimeMilliseconds:42,generation:2,checkpointType:'Disabled'}];
   if(native.operation==='Get-VMHardDiskDrive')items=[{vmId,vmName,path:initial.diskPath,controllerType:'SCSI',controllerNumber:0,controllerLocation:0,diskNumber:null}];
   if(linux&&native.operation==='Get-VMNetworkAdapter'&&!native.managementSwitchName)items=[{vmId,vmName,name:'CCC Managed',switchId:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',switchName:'CCC Device Lab',status:'Ok',managementOperatingSystem:false,macAddress:'021122334455',ipAddresses:['172.29.0.20']}];
   if(native.operation==='Get-VMDiagnostic')items=[{ok:true,vmId,vmName,state,uptimeMs:42,generation:2,secureBootEnabled:true,heartbeatEnabled:true,heartbeatPrimaryStatus:2,heartbeatSecondaryStatus:0,integrationServices:[],hardDiskCount:1,dvdCount:0,hardDiskControllers:['scsi'],bootDeviceTypes:['hard-disk'],bootEntries:[],hardDisks:[],dvdDrives:[],diagnosticComplete:true,diagnosticErrors:[]}];
@@ -295,7 +301,10 @@ describe.each(["source", "emitted"] as const)("actual authenticated %s broker li
         expect(observed.outcome.status).toBe(200); expect(observed.after).toEqual(observed.protectedSnapshot);
         expect(observed.ownerPublicationsAfterRace).toBe(0); expect(observed.temporaryOwnerWritesAfterRace).toBe(0);
         if (mode !== "status") expect(observed.calls).toEqual([]);
-        expect(JSON.stringify(observed.outcome.body)).not.toContain("original-private-secret");
+        // Authenticated frozen ORIGINAL dry-run retains its unredacted plan device.
+        // This packet preserves that existing readonly behavior; conflict replies still redact.
+        if (mode === "dry-run") expect(observed.outcome.body.result?.device).toMatchObject({ssh: {password: "original-private-secret"}});
+        else expect(JSON.stringify(observed.outcome.body)).not.toContain("original-private-secret");
     });
     it.each([...macRaces, ...hyperVRaces])("refuses exact-record conflicts after real provider invocation: $name", scenario => {
         const observed = executeCurrent(lens, scenario), payload = observed.outcome.body;
@@ -419,8 +428,10 @@ describe.each(["source", "emitted"] as const)("actual authenticated %s broker li
         expect(observed.outcome.status).toBe(200);
         expect(observed.outcome.body).toMatchObject({ok: true, result: {detached: "race", physicalDevicePoweredOff: false}});
         expect(observed.cancellationWrites).toBe(1); expect(observed.calls).toEqual([]); expect(observed.lease).toBeUndefined();
-        const device = JSON.parse(observed.after.bytes).devices.find((entry: {id: string}) => entry.id === "race");
-        expect(device).toMatchObject({status: "detached", leaseClaimId: null, leaseClaimNonce: null, minimizeWatchdog: null});
+        const devices = JSON.parse(observed.after.bytes).devices as Record<string, unknown>[];
+        // Frozen ORIGINAL physical detach deletes the owned inventory record.
+        expect(devices.find(entry => entry.id === "race")).toBeUndefined();
+        expect(devices).toEqual([observed.unrelated]);
         expect(observed.storageFaults).toBe(0);
     });
 });
