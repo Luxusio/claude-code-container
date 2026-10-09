@@ -4,7 +4,7 @@ import { NATIVE_CLEANUP_ORIGINAL } from "../src/__tests__/helpers/native-cleanup
 import ts from "typescript";
 import { createRequire, isBuiltin } from "node:module";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, realpathSync, readlinkSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, realpathSync, readlinkSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, relative as relativePath, resolve, parse, posix, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -36,13 +36,35 @@ const HOST_CREDENTIAL_ASSET_BASELINE = {
 };
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const temporary = mkdtempSync(join(tmpdir(), "ccc-workspace-package-"));
-const temporaryBirth = lstatSync(temporary);
-assert(temporaryBirth.isDirectory()&&!temporaryBirth.isSymbolicLink());assert.equal(realpathSync(temporary),temporary);assert.equal(resolve(temporary),temporary);
-let distributionComplete=false;
-const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
-    !name.startsWith("CCC_") && !name.startsWith("VITEST") && !["NODE_PATH", "NODE_OPTIONS"].includes(name)));
-Object.assign(env, { HOME: temporary, USERPROFILE: temporary, CCC_DEVICE_BROKER_AUTO_START: "0" });
+let temporary,temporaryBirth,env;let distributionComplete=false,preflightComplete=false;
+
+export function parseVerificationArgs(args) {
+    if(args.length===0)return {mode:'full'};
+    assert(args.length===3&&args[0]==='--preflight'&&args[1]==='--payload-root', 'Usage: test-workspace-packages.mjs [--preflight --payload-root ABSOLUTE_PAYLOAD]');
+    const payloadRoot=args[2];assert(typeof payloadRoot==='string'&&resolve(payloadRoot)===payloadRoot&&parse(payloadRoot).root!==''&&payloadRoot!==parse(payloadRoot).root,'payload root must be absolute and lexically canonical');
+    return {mode:'preflight',payloadRoot};
+}
+
+export async function runVerificationSelection(selection,operations) {
+    if(selection.mode==='preflight'){
+        await operations.validate(selection.payloadRoot);await operations.prepare();
+        await operations.declarations(selection.payloadRoot);await operations.imagePreparation(selection.payloadRoot);
+        const report={mode:'preflight',partial:true,complete:false,gates:['current-declarations','image-preparation'],payloadRoot:selection.payloadRoot};operations.report(report);return report;
+    }
+    assert.equal(selection.mode,'full');await operations.prepare();await operations.full();return {mode:'full',partial:false,complete:true};
+}
+
+function validateVerificationPayload(payloadRoot) {
+    const birth=lstatSync(payloadRoot);assert(birth.isDirectory()&&!birth.isSymbolicLink());assert.equal(realpathSync(payloadRoot),payloadRoot);assert.equal(typeof process.getuid,'function','preflight requires supported UID ownership validation');assert.equal(birth.uid,process.getuid(),'payload must be owned by the checker user');assert.equal(birth.mode&0o022,0,'payload must not permit group/other writers');
+    const owned=(file,directory=false)=>{let parent=dirname(file);while(parent!==parse(parent).root){const stat=lstatSync(parent);assert(stat.isDirectory()&&!stat.isSymbolicLink());assert.equal(realpathSync(parent),parent);assert(!(stat.mode&0o022)||(stat.mode&0o1000),'payload ancestor must not permit unprotected group/other writers');parent=dirname(parent);}const stat=lstatSync(file);assert(!stat.isSymbolicLink());assert.equal(realpathSync(file),file);assert.equal(stat.uid,birth.uid);if(directory){assert(stat.isDirectory());assert.equal(stat.mode&0o022,0,'payload directory must not permit group/other writers');}else{assert(stat.isFile());assert.equal(stat.nlink,1);}};
+    for(const name of ['package.json','dist/index.js','dist/docker.js','dist/docker.d.ts','dist/application/container-image-preparation.js','dist/ports/container-image-preparation.js','dist/ports/container-image-preparation.d.ts','dist/composition/container-image-preparation.js','dist/composition/container-image-preparation.d.ts','scripts/build-distribution-image.mjs','Dockerfile.distribution','dist/packages/device-lab/package.json','dist/packages/hyper-v/package.json'])owned(join(payloadRoot,name));
+    owned(join(payloadRoot,'dist/packages/device-lab/providers'),true);assert(lstatSync(join(payloadRoot,'package.json')).size<=65536,'bounded assembled manifest');const manifest=JSON.parse(readFileSync(join(payloadRoot,'package.json'),'utf8'));assert.equal(manifest.type,'module');assert.equal(manifest.name,'claude-code-container');
+}
+
+function prepareVerificationScratch() {
+    temporary=mkdtempSync(join(tmpdir(),'ccc-workspace-package-'));temporaryBirth=lstatSync(temporary);assert(temporaryBirth.isDirectory()&&!temporaryBirth.isSymbolicLink());assert.equal(realpathSync(temporary),temporary);assert.equal(resolve(temporary),temporary);
+    env=Object.fromEntries(Object.entries(process.env).filter(([name])=>!name.startsWith('CCC_')&&!name.startsWith('VITEST')&&!['NODE_PATH','NODE_OPTIONS'].includes(name)));Object.assign(env,{HOME:temporary,USERPROFILE:temporary,CCC_DEVICE_BROKER_AUTO_START:'0'});
+}
 
 function run(executable, args, cwd = temporary) {
     const result = spawnSync(executable, args, { cwd, env, encoding: "utf8", timeout: 120000,
@@ -460,7 +482,11 @@ async function verifyImagePreparation(applicationUrl, portsUrl, compositionUrl, 
         assert.throws(() => failed.run(), { name: "Error", message: "Failed to pull CCC image; container startup was aborted." });
         assert.equal(failureTrace.length, 2);
         assert.ok(failureTrace[0].startsWith("Error: Failed to pull team/image:"));
-        assert.equal(failureTrace[1], "You can build locally instead: docker build -t ccc .");
+        const historicalParentHint="You can build locally instead: docker build -t ccc .";
+        const {fileURLToPath}=await import('node:url');const commandPath=fileURLToPath(new URL('../../scripts/build-distribution-image.mjs',compositionUrl));
+        const quoted=process.platform==='win32'?"'"+commandPath.replace(/'/g,"''")+"'":"'"+commandPath.replace(/'/g,"'"+String.fromCharCode(92)+"''")+"'";
+        const expectedHint='You can build locally instead'+(process.platform==='win32'?' (PowerShell)':'')+': node '+quoted+' --runtime docker';
+        assert.notEqual(expectedHint,historicalParentHint,'reviewed distribution command intentionally supersedes historical source-root hint');assert.equal(failureTrace[1],expectedHint);
     } finally { console.error = originalError; console.log = originalLog; process.exit = originalExit; }
     const names = ["exists", "label", "qualify", "pull", "tag", "reportStale", "reportPull",
         "reportFallback", "reportFailure", "reportBuildHint", "exitFailure"];
@@ -6439,7 +6465,111 @@ console.log(JSON.stringify({shippingConsumerResult:result??{completed:true}}));`
     return rows.findLast(row=>row.shippingConsumerResult).shippingConsumerResult;
 }
 
+export function verifyCurrentDeclarationContracts(packageRoot, compiler = spawnSync) {
+    assert.equal(resolve(packageRoot),packageRoot);assert.equal(realpathSync(packageRoot),packageRoot);
+    const payloadBirth=lstatSync(packageRoot);assert(payloadBirth.isDirectory()&&!payloadBirth.isSymbolicLink());assert.equal(payloadBirth.uid,process.getuid());assert.equal(payloadBirth.mode&0o022,0,'payload must not permit group/other writers');
+    for(let parent=dirname(packageRoot);;parent=dirname(parent)){const stat=lstatSync(parent);assert(stat.isDirectory()&&!stat.isSymbolicLink());assert.equal(realpathSync(parent),parent);assert(!(stat.mode&0o022)||(stat.mode&0o1000),'payload ancestor must not permit unprotected group/other writers');if(parent===parse(parent).root)break;}
+    const identity=file=>{for(let parent=dirname(file);file!==packageRoot&&parent!==dirname(packageRoot);parent=dirname(parent)){const ancestor=lstatSync(parent);assert(ancestor.isDirectory()&&!ancestor.isSymbolicLink());assert.equal(realpathSync(parent),parent);assert.equal(ancestor.uid,payloadBirth.uid);assert.equal(ancestor.mode&0o022,0,'declaration write/read parent must not permit group/other writers');}const stat=lstatSync(file);assert(!stat.isSymbolicLink());assert.equal(realpathSync(file),file);assert.equal(stat.uid,payloadBirth.uid);assert(stat.isDirectory()||stat.isFile());if(stat.isFile())assert.equal(stat.nlink,1);assert.equal(stat.mode&0o022,0);return [stat.dev,stat.ino,stat.uid,stat.mode,stat.isFile()?stat.nlink:null,stat.isFile()?stat.size:null,stat.isFile()?stat.mtimeMs:null];};
+    const evidence=mkdtempSync(join(packageRoot,'reviewed-declaration-evidence-'));
+    const evidenceBirth=identity(evidence),payloadIdentity=identity(packageRoot),consumerIdentities=new Map();let sandboxBirth,sidecarIdentities,call=0;
+    const evidenceIdentities=new Map([[evidence,evidenceBirth]]);
+    const writeEvidence=(name,contents)=>{assert.deepEqual(identity(packageRoot),payloadIdentity);assert.deepEqual(identity(evidence),evidenceBirth);const file=join(evidence,name);writeFileSync(file,contents,{flag:'wx',mode:0o600});evidenceIdentities.set(file,identity(file));};
+    const sandboxDeclarations=join(packageRoot,'reviewed-sandbox-declarations');
+    const snapshotTree=directory=>{const entries=new Map();const visit=file=>{entries.set(file,identity(file));if(lstatSync(file).isDirectory())for(const name of readdirSync(file).sort())visit(join(file,name));};visit(directory);return entries;};
+    const checkTree=(directory,expected)=>{const current=snapshotTree(directory);assert.deepEqual([...current].sort(([a],[b])=>a.localeCompare(b)),[...expected].sort(([a],[b])=>a.localeCompare(b)),'declaration output changed or contains unknown entries');};
+    const compile=args=>{
+        ++call;assert.deepEqual(identity(packageRoot),payloadIdentity);assert.deepEqual(identity(evidence),evidenceBirth);assert.deepEqual(identity(sandboxDeclarations),sandboxBirth);
+        if(sidecarIdentities)checkTree(sandboxDeclarations,sidecarIdentities);
+        for(const [file,birth] of consumerIdentities)assert.deepEqual(identity(file),birth);
+        const inputs=args.filter(file=>/\.(?:mjs|mts)$/.test(file)).map((file,index)=>{const birth=identity(file),stat=lstatSync(file);assert(stat.isFile());assert(stat.size<=1024*1024,'bounded declaration input');const contents=readFileSync(file);assert(contents.length<=1024*1024);assert.deepEqual(identity(file),birth);const snapshot=`input-${call}-${index}.txt`;writeEvidence(snapshot,contents);return {path:file,size:contents.length,sha256:createHash('sha256').update(contents).digest('hex'),snapshot};});
+        const options={cwd:temporary??packageRoot,env,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024,windowsHide:true};
+        writeEvidence(`invocation-${call}.json`,JSON.stringify({executable:process.execPath,args,cwd:options.cwd,options:{encoding:options.encoding,timeout:options.timeout,maxBuffer:options.maxBuffer,windowsHide:options.windowsHide},inputs}));
+        let result;try{result=compiler(process.execPath,args,options);}catch(error){result={status:null,stdout:'',stderr:'',error};}
+        const raw={status:result.status??null,signal:result.signal??null,error:result.error?{name:String(result.error.name),message:String(result.error.message).slice(0,2000),code:result.error.code??null}:null,stdout:String(result.stdout??'').slice(0,options.maxBuffer),stderr:String(result.stderr??'').slice(0,options.maxBuffer)};
+        try {assert.deepEqual(identity(packageRoot),payloadIdentity);assert.deepEqual(identity(evidence),evidenceBirth);writeEvidence(`result-${call}.json`,JSON.stringify(raw));}
+        catch(evidenceError){console.error('Declaration evidence recording failed: '+String(evidenceError).slice(0,2000));if(result.error)throw result.error;if(result.status!==0)throw new Error(String(result.stderr||result.stdout||'declaration command failed').slice(0,2000));throw evidenceError;}
+        if(result.error)throw result.error;
+        assert.equal(result.status,0,String(result.stderr||result.stdout||'declaration command failed').slice(0,2000));
+        assert.deepEqual(identity(sandboxDeclarations),sandboxBirth);if(sidecarIdentities)checkTree(sandboxDeclarations,sidecarIdentities);else sidecarIdentities=snapshotTree(sandboxDeclarations);
+    };
+    const providerRoot = join(packageRoot, "dist/packages/device-lab/providers");
+    try {
+        mkdirSync(sandboxDeclarations,{mode:0o700});sandboxBirth=identity(sandboxDeclarations);
+    const contracts = [...REVIEWED_WAVE_DECLARATION_CONSUMERS, ["sandbox-stop", REVIEWED_SANDBOX_DECLARATION_CONSUMER],
+        ["runtime-capabilities", runtimeCapabilitiesDeclarationConsumer], ["state-access", stateAccessDeclarationConsumer],
+        ["mcp-forward", mcpStrictConsumer("./dist")], ["sandbox-create", SANDBOX_CREATE_DECLARATION_CONSUMER],["remote-services",REMOTE_SHIPPING_DECLARATIONS],["distribution-image",DISTRIBUTION_IMAGE_DECLARATIONS],["distribution-image-source",DISTRIBUTION_IMAGE_DECLARATIONS.replaceAll('"./dist/','"'+root+'/src/')],["localhost-proxy",PROXY_SHIPPING_DECLARATIONS],["diagnostics",DIAGNOSTICS_DECLARATION_CONSUMER],["diagnostics-source",DIAGNOSTICS_DECLARATION_CONSUMER.replaceAll('"./dist/','"'+root+'/src/')],["services-clean",SERVICES_CLEAN_DECLARATIONS],["services-harness",SERVICES_HARNESS_DECLARATIONS],["services-clean-source",SERVICES_CLEAN_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")],["services-harness-source",SERVICES_HARNESS_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")]].map(([name, text]) => {
+        const file = join(packageRoot, `reviewed-wave-${name}-consumer.mts`);
+        writeFileSync(file, text, {flag:"wx",mode:0o600});
+        consumerIdentities.set(file,identity(file));
+        return file;
+    });
+    compile([join(root, "node_modules/typescript/bin/tsc"), "--allowJs", "--checkJs", "--strict",
+        "--skipLibCheck", "false", "--declaration", "--emitDeclarationOnly", "--module", "NodeNext", "--target", "ES2022",
+        "--typeRoots", join(root, "node_modules/@types"), "--rootDir", providerRoot, "--outDir", sandboxDeclarations,
+        ...["domain", "ports", "application"].flatMap(layer => ["windows-sandbox-stop", "windows-sandbox-create"].map(name => join(providerRoot, layer, `lifecycle/${name}.mjs`))),
+        join(providerRoot, "state/state-file.mjs"), join(providerRoot, "adapters/state/state-file.mjs")]);
+        compile([join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict",
+            "--skipLibCheck", "false", "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext",
+            "--typeRoots", join(root, "node_modules/@types"), ...contracts]);
+        assert.deepEqual(identity(packageRoot),[payloadBirth.dev,payloadBirth.ino,payloadBirth.uid,payloadBirth.mode,null,null,null]);
+        assert.deepEqual(identity(evidence),evidenceBirth);checkTree(sandboxDeclarations,sidecarIdentities);checkTree(evidence,evidenceIdentities);
+        for(const [file,birth] of consumerIdentities)assert.deepEqual(identity(file),birth);
+        for(const [file,birth] of consumerIdentities){assert.deepEqual(identity(file),birth);rmSync(file);}
+        for(const entries of [sidecarIdentities,evidenceIdentities])for(const [file] of [...entries].sort(([a],[b])=>b.length-a.length)){assert.deepEqual(identity(file),entries.get(file));if(lstatSync(file).isDirectory())rmdirSync(file);else rmSync(file);}
+        return {contractCount:contracts.length,sourceAndEmitted:true,skipLibCheck:false};
+    } catch(error){console.error('Retained declaration evidence: '+evidence);throw error;}
+}
+
+function verifyImagePreparationGate(packageRoot) {
+    const imageDeclarations = readFileSync(join(packageRoot, "dist/ports/container-image-preparation.d.ts"), "utf8");
+    for (const name of ["imageName", "version", "registryImage"]) {
+        assert.match(imageDeclarations, new RegExp(`${name}: string;`));
+    }
+    assert.match(imageDeclarations, /exists\(\): boolean;/);
+    assert.match(imageDeclarations, /label\(imageName: string, key: string\): string \| null;/);
+    assert.match(imageDeclarations, /qualify\(ref: string\): string;/);
+    assert.match(imageDeclarations, /pull\(ref: string\): boolean;/);
+    assert.match(imageDeclarations, /tag\(source: string, target: string\): undefined;/);
+    assert.match(imageDeclarations, /reportStale\(label: string, version: string\): undefined;/);
+    assert.match(imageDeclarations, /reportPull\(version: string\): undefined;/);
+    for (const name of ["reportFallback", "reportFailure"]) {
+        assert.match(imageDeclarations, new RegExp(`${name}\\(ref: string\\): undefined;`));
+    }
+    for (const name of ["reportBuildHint", "exitFailure"]) {
+        assert.match(imageDeclarations, new RegExp(`${name}\\(\\): undefined;`));
+    }
+    assert.doesNotMatch(imageDeclarations, /Promise<|\?:|\): void;|\): never;/);
+    const imageApplicationDeclarations = readFileSync(join(packageRoot, "dist/application/container-image-preparation.d.ts"), "utf8");
+    assert.match(imageApplicationDeclarations, /createContainerImagePreparation\(ports: ContainerImagePreparationPorts\)/);
+    assert.match(imageApplicationDeclarations, /run: \(request: ContainerImagePreparationRequest\) => undefined;/);
+    const imageCompositionDeclarations = readFileSync(join(packageRoot, "dist/composition/container-image-preparation.d.ts"), "utf8");
+    const imageCompositionTree=ts.createSourceFile("container-image-preparation.d.ts",imageCompositionDeclarations,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+    const nativeCompositionNodes=imageCompositionTree.statements.filter(node=>
+        (ts.isInterfaceDeclaration(node)&&node.name.text==="NativeContainerImagePreparationHelpers")
+        ||(ts.isFunctionDeclaration(node)&&node.name?.text==="createNativeContainerImagePreparation"));
+    assert.equal(nativeCompositionNodes.length,2,"exact required native interface/factory must exist");
+    assert.equal(nativeCompositionNodes.filter(ts.isInterfaceDeclaration).length,1);
+    assert.equal(nativeCompositionNodes.filter(ts.isFunctionDeclaration).length,1);
+    const nativeCompositionDeclarations=nativeCompositionNodes.map(node=>node.getText(imageCompositionTree)).join("\n");
+    assert.match(nativeCompositionDeclarations, /readonly registryImage: string;/);
+    assert.match(nativeCompositionDeclarations, /isImageExists\(\): boolean;/);
+    assert.match(nativeCompositionDeclarations, /getImageLabel\(imageName: string, key: string\): string \| null;/);
+    assert.match(nativeCompositionDeclarations, /qualifyImageRefForRuntime\(ref: string\): string;/);
+    assert.match(nativeCompositionDeclarations, /pullImage\(ref: string\): boolean;/);
+    assert.match(nativeCompositionDeclarations, /tagImage\(source: string, target: string\): void;/);
+    assert.match(nativeCompositionDeclarations, /createNativeContainerImagePreparation\(helpers: NativeContainerImagePreparationHelpers\)/);
+    assert.match(nativeCompositionDeclarations, /run: \(\) => undefined;/);
+    assert.doesNotMatch(nativeCompositionDeclarations, /Promise<|\?:/);
+    assert.match(readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8"), /ensureImage\(\): void;/);
+    const imageUrls = ["application/container-image-preparation", "ports/container-image-preparation", "composition/container-image-preparation", "docker"]
+        .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
+    run(process.execPath, ["--input-type=module", "-e",
+        `await (${verifyImagePreparation.toString()})(...${JSON.stringify(imageUrls)});`]);
+    return {wholeConsumer:true,nativePortsRequired:true,synchronous:true};
+}
+
 async function smoke(packageRoot) {
+    const currentDeclarations=verifyCurrentDeclarationContracts(packageRoot);verifyImagePreparationGate(packageRoot);
  const pairHome=mkdtempSync(join(temporary,'diagnostics-pairs-')),mainHome=mkdtempSync(join(temporary,'diagnostics-main-'));
  mkdirSync(join(mainHome,'project'));
  const pairs=diagnosticShippingConsumer(verifyDiagnosticPayloadPairs,packageRoot,pairHome);
@@ -6617,25 +6747,7 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
         writeFileSync(join(capturedCopy, "package.json"), '{"type":"module"}');
         assert.equal(clipboardConsumer(capturedCopy, "capture").version, originalClipboard.version);
     } finally { rmSync(capturedCopy, { recursive: true, force: true }); }
-    const providerRoot = join(packageRoot, "dist/packages/device-lab/providers");
-    const sandboxDeclarations = join(packageRoot, "reviewed-sandbox-declarations");
-    run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--allowJs", "--checkJs", "--strict",
-        "--skipLibCheck", "false", "--declaration", "--emitDeclarationOnly", "--module", "NodeNext", "--target", "ES2022",
-        "--typeRoots", join(root, "node_modules/@types"), "--rootDir", providerRoot, "--outDir", sandboxDeclarations,
-        ...["domain", "ports", "application"].flatMap(layer => ["windows-sandbox-stop", "windows-sandbox-create"].map(name => join(providerRoot, layer, `lifecycle/${name}.mjs`))),
-        join(providerRoot, "state/state-file.mjs"), join(providerRoot, "adapters/state/state-file.mjs")]);
-    const contracts = [...REVIEWED_WAVE_DECLARATION_CONSUMERS, ["sandbox-stop", REVIEWED_SANDBOX_DECLARATION_CONSUMER],
-        ["runtime-capabilities", runtimeCapabilitiesDeclarationConsumer], ["state-access", stateAccessDeclarationConsumer],
-        ["mcp-forward", mcpStrictConsumer("./dist")], ["sandbox-create", SANDBOX_CREATE_DECLARATION_CONSUMER],["remote-services",REMOTE_SHIPPING_DECLARATIONS],["distribution-image",DISTRIBUTION_IMAGE_DECLARATIONS],["distribution-image-source",DISTRIBUTION_IMAGE_DECLARATIONS.replaceAll('"./dist/','"'+root+'/src/')],["localhost-proxy",PROXY_SHIPPING_DECLARATIONS],["diagnostics",DIAGNOSTICS_DECLARATION_CONSUMER],["diagnostics-source",DIAGNOSTICS_DECLARATION_CONSUMER.replaceAll('"./dist/','"'+root+'/src/')],["services-clean",SERVICES_CLEAN_DECLARATIONS],["services-harness",SERVICES_HARNESS_DECLARATIONS],["services-clean-source",SERVICES_CLEAN_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")],["services-harness-source",SERVICES_HARNESS_DECLARATIONS.replaceAll("'./dist/", "'"+root+"/src/")]].map(([name, text]) => {
-        const file = join(packageRoot, `reviewed-wave-${name}-consumer.mts`);
-        writeFileSync(file, text);
-        return file;
-    });
-    try {
-        run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict",
-            "--skipLibCheck", "false", "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext",
-            "--typeRoots", join(root, "node_modules/@types"), ...contracts]);
-    } finally { for (const file of contracts) rmSync(file); rmSync(sandboxDeclarations, { recursive: true, force: true }); }
+    assert(currentDeclarations.contractCount>0);
     diagnosticsLedger.push({consumer:"current-strict-declarations",result:"PASS",nativeConfigStructAssignability:true});
     servicesLedger.push({consumer:"Clean-declarations",result:"PASS",layer:"current emitted strict semantic/public contracts"},{consumer:"Harness-declarations",result:"PASS",layer:"current emitted strict host/generator contracts"});
     const unifiedLedger=[...nativeLedger,...coverage,...remoteProxyCoverage,...diagnosticsLedger,...servicesLedger];
@@ -7280,46 +7392,6 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
     assert.match(createContextDeclarations, /labWarning\(\): \{\s*unsupportedReason\?: string;\s*\} \| null;/);
     assert.match(createContextDeclarations, /explicitlyNotFound\(result: ReturnType<typeof spawnSync>\): boolean;/);
     assert.doesNotMatch(createContextDeclarations, /Promise</);
-    const imageDeclarations = readFileSync(join(packageRoot, "dist/ports/container-image-preparation.d.ts"), "utf8");
-    for (const name of ["imageName", "version", "registryImage"]) {
-        assert.match(imageDeclarations, new RegExp(`${name}: string;`));
-    }
-    assert.match(imageDeclarations, /exists\(\): boolean;/);
-    assert.match(imageDeclarations, /label\(imageName: string, key: string\): string \| null;/);
-    assert.match(imageDeclarations, /qualify\(ref: string\): string;/);
-    assert.match(imageDeclarations, /pull\(ref: string\): boolean;/);
-    assert.match(imageDeclarations, /tag\(source: string, target: string\): undefined;/);
-    assert.match(imageDeclarations, /reportStale\(label: string, version: string\): undefined;/);
-    assert.match(imageDeclarations, /reportPull\(version: string\): undefined;/);
-    for (const name of ["reportFallback", "reportFailure"]) {
-        assert.match(imageDeclarations, new RegExp(`${name}\\(ref: string\\): undefined;`));
-    }
-    for (const name of ["reportBuildHint", "exitFailure"]) {
-        assert.match(imageDeclarations, new RegExp(`${name}\\(\\): undefined;`));
-    }
-    assert.doesNotMatch(imageDeclarations, /Promise<|\?:|\): void;|\): never;/);
-    const imageApplicationDeclarations = readFileSync(join(packageRoot, "dist/application/container-image-preparation.d.ts"), "utf8");
-    assert.match(imageApplicationDeclarations, /createContainerImagePreparation\(ports: ContainerImagePreparationPorts\)/);
-    assert.match(imageApplicationDeclarations, /run: \(request: ContainerImagePreparationRequest\) => undefined;/);
-    const imageCompositionDeclarations = readFileSync(join(packageRoot, "dist/composition/container-image-preparation.d.ts"), "utf8");
-    const imageCompositionTree=ts.createSourceFile("container-image-preparation.d.ts",imageCompositionDeclarations,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
-    const nativeCompositionNodes=imageCompositionTree.statements.filter(node=>
-        (ts.isInterfaceDeclaration(node)&&node.name.text==="NativeContainerImagePreparationHelpers")
-        ||(ts.isFunctionDeclaration(node)&&node.name?.text==="createNativeContainerImagePreparation"));
-    assert.equal(nativeCompositionNodes.length,2,"exact required native interface/factory must exist");
-    assert.equal(nativeCompositionNodes.filter(ts.isInterfaceDeclaration).length,1);
-    assert.equal(nativeCompositionNodes.filter(ts.isFunctionDeclaration).length,1);
-    const nativeCompositionDeclarations=nativeCompositionNodes.map(node=>node.getText(imageCompositionTree)).join("\n");
-    assert.match(nativeCompositionDeclarations, /readonly registryImage: string;/);
-    assert.match(nativeCompositionDeclarations, /isImageExists\(\): boolean;/);
-    assert.match(nativeCompositionDeclarations, /getImageLabel\(imageName: string, key: string\): string \| null;/);
-    assert.match(nativeCompositionDeclarations, /qualifyImageRefForRuntime\(ref: string\): string;/);
-    assert.match(nativeCompositionDeclarations, /pullImage\(ref: string\): boolean;/);
-    assert.match(nativeCompositionDeclarations, /tagImage\(source: string, target: string\): void;/);
-    assert.match(nativeCompositionDeclarations, /createNativeContainerImagePreparation\(helpers: NativeContainerImagePreparationHelpers\)/);
-    assert.match(nativeCompositionDeclarations, /run: \(\) => undefined;/);
-    assert.doesNotMatch(nativeCompositionDeclarations, /Promise<|\?:/);
-    assert.match(readFileSync(join(packageRoot, "dist/docker.d.ts"), "utf8"), /ensureImage\(\): void;/);
     run(process.execPath, ["--input-type=module", "-e", [
         "import assert from 'node:assert/strict';",
         `const core=await import(${JSON.stringify(core)});`,
@@ -7435,10 +7507,6 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
         .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",
         `await (${verifyCreateLifecycle.toString()})(...${JSON.stringify(createUrls)});`]);
-    const imageUrls = ["application/container-image-preparation", "ports/container-image-preparation", "composition/container-image-preparation", "docker"]
-        .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
-    run(process.execPath, ["--input-type=module", "-e",
-        `await (${verifyImagePreparation.toString()})(...${JSON.stringify(imageUrls)});`]);
     const handoffUrls = ["application/container-session-handoff", "ports/container-session-handoff", "docker"]
         .map(path => pathToFileURL(join(packageRoot, `dist/${path}.js`)).href);
     run(process.execPath, ["--input-type=module", "-e",
@@ -7670,7 +7738,7 @@ void [guardian, disconnect, publicCleanup, capturedCleanup, applicationCleanup, 
     await mcpSmoke(packageRoot, "device-lab-mcp");
 }
 
-try {
+async function runFullDistributionVerification() {
     run(process.execPath, ["--test", join(root, "scripts/fixtures/owned-import-read.test.mjs")], root);
     run(process.execPath, ["--test", join(root, "scripts/tests/workspace-windows-lx-links.test.mjs")], root);
     const npmCli = process.env.npm_execpath;
@@ -7718,13 +7786,13 @@ try {
     await smoke(installed);
     distributionComplete=true;
     console.log("PASS workspace distribution: obsolete X11 output removed; extracted npm package and materialized install CLI, broker, Hyper-V assets, Device Lab MCP, session liveness, claims, cleanup, existing, explicit destructive and fresh creation container lifecycle, image preparation, container session handoff and runtime readiness core/facade and declarations; exec readiness core and compiled public guarded startProjectContainer retry success/exhaustion preservation");
-} catch(error){
-    distributionComplete=false;throw error;
-} finally {
-    if(!distributionComplete||retainedHarnessPythonRoots.size)console.error('Retained distribution evidence: '+temporary);
-    else {
-        try {const current=lstatSync(temporary);assert(current.isDirectory()&&!current.isSymbolicLink());assert.equal(realpathSync(temporary),temporary);assert.deepEqual([current.dev,current.ino,current.uid,current.mode&0o7777],[temporaryBirth.dev,temporaryBirth.ino,temporaryBirth.uid,temporaryBirth.mode&0o7777]);}
-        catch(error){console.error('Retained distribution evidence: '+temporary);throw error;}
-        rmSync(temporary, { recursive: true, force: true });
-    }
 }
+
+async function runWorkspaceVerification(args) {
+    const selection=parseVerificationArgs(args);
+    try {const result=await runVerificationSelection(selection,{validate:validateVerificationPayload,prepare:prepareVerificationScratch,declarations:verifyCurrentDeclarationContracts,imagePreparation:verifyImagePreparationGate,full:runFullDistributionVerification,report:report=>console.log(JSON.stringify({verificationPreflight:report,doesNotReplace:'BOTH42/native52/full suite/CLI/local delivery'}))});if(result.partial)preflightComplete=true;}
+    catch(error){distributionComplete=false;preflightComplete=false;throw error;}
+    finally {if(temporary!==undefined){const complete=selection.mode==='full'?distributionComplete:preflightComplete;if(!complete||retainedHarnessPythonRoots.size)console.error('Retained verification evidence: '+temporary);else{try{const current=lstatSync(temporary);assert(current.isDirectory()&&!current.isSymbolicLink());assert.equal(realpathSync(temporary),temporary);assert.deepEqual([current.dev,current.ino,current.uid,current.mode&0o7777],[temporaryBirth.dev,temporaryBirth.ino,temporaryBirth.uid,temporaryBirth.mode&0o7777]);}catch(error){console.error('Retained verification evidence: '+temporary);throw error;}rmSync(temporary,{recursive:true,force:true});}}}
+}
+
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))await runWorkspaceVerification(process.argv.slice(2));
