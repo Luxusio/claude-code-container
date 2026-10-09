@@ -266,4 +266,3 @@ export function createNativeCleanupRealm(original: boolean) {
         identity: (pid = 999002) => ({ pid, startToken: "linux:123", commandHash: crypto.createHash("sha256").update("fixture-runtime").digest("hex") }),
     };
 }
-
