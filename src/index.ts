@@ -2,6 +2,7 @@
 
 import { spawnSync } from "child_process";
 import { runContainerCommand } from "./container-command.js";
+import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
 import {
     existsSync,
     mkdirSync,
@@ -1040,48 +1041,29 @@ function handleWorktreeList(cwd: string): void {
  * it can do is move the local versions somewhere safe so the branch's versions can be checked
  * out, which loses nothing and is undone by moving them back.
  */
-async function repairBrokenWorktree(
+// Capture invocation once; message/getter evaluation must not introduce a new
+// mutable .call/.apply lookup after the native console method was selected.
+const invokeWorkspaceContentRepairLog = Reflect.apply;
+const admitWorkspaceContentRepair = createWorkspaceContentRepairAdmission({
+    repairConfirmed: (cwd, wsPath, name, branch, confirmed) => fixBrokenWorktree(cwd, wsPath, name, branch, confirmed),
+    isContentConflict: (cause): cause is WorktreeContentConflictError => cause instanceof WorktreeContentConflictError,
+    selectLog: () => {
+        const receiver = console;
+        const log = receiver.log;
+        return (message) => invokeWorkspaceContentRepairLog(log, receiver, [message]);
+    },
+    selectRelative: () => relative,
+    prompt: (question, normalize) => prompt(question, normalize),
+    selectSetAside: () => setAsideConflictingContent,
+});
+
+function repairBrokenWorktree(
     cwd: string,
     wsPath: string,
     name: string,
     branch: string,
 ): Promise<void> {
-    try {
-        const fixed = fixBrokenWorktree(cwd, wsPath, name, branch, true);
-        console.log(fixed
-            ? `  ${name}: fixed (content preserved)`
-            : `  ${name}: failed to fix (content unchanged)`);
-        return;
-    } catch (error) {
-        if (!(error instanceof WorktreeContentConflictError)) {
-            // Not a disagreement about content. The repair already rolled itself back, so the
-            // directory is as it was; report it and leave the rest of the workspace alone.
-            console.log(`  ${name}: failed to fix (content unchanged) - ${(error as Error).message}`);
-            return;
-        }
-        const relativeConflicts = error.conflicts.map((path) => relative(error.worktreeRoot, path));
-        console.log(`  ${name}: cannot merge - these files differ between your copy and branch '${branch}':`);
-        for (const conflict of relativeConflicts) console.log(`      ${conflict}`);
-        console.log("      Nothing was changed or lost; the directory is exactly as it was.");
-        console.log("      ccc can move your versions aside so the branch's versions can be checked out.");
-        console.log("      Your versions stay on disk and can be moved back or merged by hand.");
-        const answer = await prompt("  Move them aside and repair? (y/N) ", true);
-        if (answer !== "y" && answer !== "yes") {
-            console.log(`  ${name}: left unrepaired (content unchanged)`);
-            return;
-        }
-        const preserved = setAsideConflictingContent(error.worktreeRoot, error.conflicts);
-        console.log(`  ${name}: your versions moved to ${preserved}`);
-        try {
-            const fixed = fixBrokenWorktree(cwd, wsPath, name, branch, true);
-            console.log(fixed
-                ? `  ${name}: fixed (remaining content preserved)`
-                : `  ${name}: failed to fix (content unchanged)`);
-        } catch (retryError) {
-            console.log(`  ${name}: failed to fix (content unchanged) - ${(retryError as Error).message}`);
-            console.log(`      Your set-aside versions remain in ${preserved}`);
-        }
-    }
+    return admitWorkspaceContentRepair(cwd, wsPath, name, branch);
 }
 
 async function prepareWorktreeUnlocked(
