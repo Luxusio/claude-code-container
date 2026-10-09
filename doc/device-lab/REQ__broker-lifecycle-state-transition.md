@@ -6,6 +6,8 @@ Publication refusal returns HTTP 409 with `ok:false`, `error:"owner-device-state
 
 Stop/delete auxiliary cleanup checks its observation against the captured expected record before signaling resources. Missing or changed observations retain the existing auxiliary cleanup preflight failure. Cleanup advances the expected record only when its conditional publication actually commits its replacement. Disappearance or replacement during cleanup publication reports `changed:false` and a state conflict; successful native signals remain reported truthfully.
 
+The physical detach caller of this shared auxiliary cleanup supplies its original raw device observation as the expected record. Matching detach retains existing lease and cleanup behavior; its later inventory removal remains outside the selected lifecycle publication contract.
+
 Linux Hyper-V start/reboot authenticated SSH host identity reconciliation also conditions fingerprint/source/timestamp publication on the captured complete record under the same mutation authority. It retains existing authenticated known-host, fingerprint and path validation. Only the actual committed replacement advances the expected record for later success or failed-readiness publication; a concurrent successor is never adopted by a later read.
 
 Ordinary publication conflicts do not trigger physical lease restoration. Genuine matched inventory storage exceptions retain existing physical lease rollback and error behavior. Create, status, dry-run, idempotent, authentication, provider authority, native cleanup policy and operation budgets retain their existing contracts.

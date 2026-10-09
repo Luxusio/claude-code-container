@@ -7300,7 +7300,7 @@ function detachPhysicalDevice(ownerId: string, params: unknown, normalized: Norm
                 },
             };
         }
-        const auxiliaryCleanup = cleanupLifecycleAuxiliaryRuntime(ownerId, lifecycleParams, normalized);
+        const auxiliaryCleanup = cleanupLifecycleAuxiliaryRuntime(ownerId, lifecycleParams, normalized, device);
         if (auxiliaryCleanup?.result.ok === false) {
             return {
                 status: 502,

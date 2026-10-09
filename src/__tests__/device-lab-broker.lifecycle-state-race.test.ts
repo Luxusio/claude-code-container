@@ -27,7 +27,7 @@ describe("frozen original lifecycle race premises", () => {
     });
 });
 
-type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean};
+type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean};
 type StateSnapshot = {bytes: string; dev: string; ino: string; mtime: string; mode: string; nlink: string};
 type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};
 
@@ -162,7 +162,7 @@ fs.promises.open=async(...args)=>deny('fs.promises.open',args);
 const realListen=net.Server.prototype.listen;net.Server.prototype.listen=function(...args){if(args[0]!==0||args[1]!=='127.0.0.1')return deny('listen',args);return realListen.apply(this,args);};
 const realConnect=net.Socket.prototype.connect;net.Socket.prototype.connect=function(...args){const value=Array.isArray(args[0])?args[0][0]:args[0];if(value&&typeof value==='object'&&Number(value.port)===port&&['127.0.0.1','localhost'].includes(value.host))return realConnect.apply(this,args);return deny('connect',args);};
 os.totalmem=()=>64*1024**3;os.freemem=()=>48*1024**3;syncBuiltinESMExports();
-function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{const request=http.request(base+'/v1/owners/'+owner+'/rpc',{method:'POST',headers:{'content-type':'application/json',...(token===undefined?{}:{'x-ccc-device-token':token})}},response=>{let body='';response.on('data',chunk=>body+=chunk);response.on('end',()=>resolve({status:response.statusCode,body:JSON.parse(body)}));});request.on('error',reject);request.end(JSON.stringify({method:scenario.planOnly?'broker.command.plan':'broker.command.invoke',params}));});}
+function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{const request=http.request(base+'/v1/owners/'+owner+'/rpc',{method:'POST',headers:{'content-type':'application/json',...(token===undefined?{}:{'x-ccc-device-token':token})}},response=>{let body='';response.on('data',chunk=>body+=chunk);response.on('end',()=>resolve({status:response.statusCode,body:JSON.parse(body)}));});request.on('error',reject);request.end(JSON.stringify({method:scenario.detach?'broker.physical.detach':scenario.planOnly?'broker.command.plan':'broker.command.invoke',params:scenario.detach?{backend:params.backend,deviceId:params.deviceId}:params}));});}
 if(settings.fenceProbe){
  for(const attempt of [()=>cp.spawn('forbidden-provider-command',[]),()=>process.kill(987654,'SIGKILL'),()=>fs.writeFileSync(path.join(path.dirname(home),'outside-home-forbidden'),'forbidden'),()=>net.createServer().listen(0,'0.0.0.0')]){try{attempt();}catch{}}
  console.log(JSON.stringify({denied,calls}));process.exit(0);
@@ -413,5 +413,14 @@ describe.each(["source", "emitted"] as const)("actual authenticated %s broker li
         expect(observed.outcome.body.result).not.toHaveProperty("leaseRollback");
         expect(observed.storageFaults).toBe(0); expect(observed.lease).toBeUndefined();
         expect(observed.after).toEqual(observed.protectedSnapshot); expect(observed.ownerPublicationsAfterRace).toBe(0);
+    });
+    it("retains normal authenticated physical detach through the shared auxiliary-cleanup caller", () => {
+        const observed = executeCurrent(lens, {name: "normal physical detach caller", backend: "android-device", command: "device_stop", cleanup: true, detach: true});
+        expect(observed.outcome.status).toBe(200);
+        expect(observed.outcome.body).toMatchObject({ok: true, result: {detached: "race", physicalDevicePoweredOff: false}});
+        expect(observed.cancellationWrites).toBe(1); expect(observed.calls).toEqual([]); expect(observed.lease).toBeUndefined();
+        const device = JSON.parse(observed.after.bytes).devices.find((entry: {id: string}) => entry.id === "race");
+        expect(device).toMatchObject({status: "detached", leaseClaimId: null, leaseClaimNonce: null, minimizeWatchdog: null});
+        expect(observed.storageFaults).toBe(0);
     });
 });
