@@ -467,7 +467,7 @@ process.on('exit',()=>originalClose(denyFd));
         try {
             const result = await client.callTool({ name: tool, arguments: {
                 ...options, viaBroker: true, deviceId: "pixel",
-                text: "matching text", packageName: "com.example.target", timeoutMs: 500, intervalMs: 300, detail: true,
+                ...(tool === "wait_for_app" ? { appId: "com.example.target" } : { text: "matching text" }), timeoutMs: 500, intervalMs: 300, detail: true,
             } });
             const payload = JSON.parse((result.content as Array<{ text: string }>)[0].text);
             const rpcs = requests().filter(line => line.startsWith("{")).map(line => JSON.parse(line));
@@ -529,7 +529,7 @@ process.on('exit',()=>originalClose(denyFd));
         writeFileSync(behavior, JSON.stringify({ ...state, value, publicRoute: true }));
         const { client, close } = await publicClient(true);
         try {
-            const result = await client.callTool({ name: tool, arguments: { ...options, viaBroker: true, deviceId: "pixel", text: "matching text", packageName: "com.example.target", timeoutMs: 500, intervalMs: 300, detail: true } });
+            const result = await client.callTool({ name: tool, arguments: { ...options, viaBroker: true, deviceId: "pixel", ...(tool === "wait_for_app" ? { appId: "com.example.target" } : { text: "matching text" }), timeoutMs: 500, intervalMs: 300, detail: true } });
             const text = (result.content as Array<{ text: string }>)[0].text;
             let payload: Record<string, unknown>;
             try { payload = JSON.parse(text); } catch { payload = { error: text }; }
