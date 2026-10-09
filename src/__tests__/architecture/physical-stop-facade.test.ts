@@ -12,7 +12,28 @@ import { deviceLabTestHomeEnvironment } from "../helpers/device-lab-test-environ
 import type { PhysicalStopResponse } from "../../../packages/device-lab/providers/ports/physical-stop.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const parse = (result: { content?: unknown }) => JSON.parse((result.content as Array<{ text: string }>)[0].text) as Record<string, unknown>;
+const parse = (result: unknown): Record<string, unknown> => {
+    if (typeof result !== "object" || result === null || !("content" in result) || !Array.isArray(result.content)) {
+        throw new TypeError("Expected an MCP result with content");
+    }
+    const first: unknown = result.content[0];
+    if (typeof first !== "object" || first === null || !("text" in first) || typeof first.text !== "string") {
+        throw new TypeError("Expected MCP text content");
+    }
+    const parsed: unknown = JSON.parse(first.text);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new TypeError("Expected an MCP JSON object");
+    }
+    return parsed as Record<string, unknown>;
+};
+// The emitted broker is a runtime boundary; describe only the actual child
+// runner inputs and observations used here without importing its native closure.
+type BrokerChildModule = {
+    runBrokerBackendChild: (
+        script: string, input: string,
+        options: { cwd: string; timeoutMs: number; outputLimit: number },
+    ) => Promise<{ timedOut: boolean; status: number | null; stdout: string; stderr: string }>;
+};
 // Existing broker child invocation, captured before extraction. The test also
 // checks that the current genuine broker still contains these literal steps.
 const childScript = "import { readFileSync } from 'fs';\nconst payload = JSON.parse(readFileSync(0, 'utf8') || '{}');\nconst { moduleUrl, tool, args, handlerName } = payload;\nconst backend = await import(moduleUrl);\nif (!handlerName || typeof backend[handlerName] !== 'function') throw new Error(`Missing backend handler: ${handlerName || '<empty>'}`);\nconst result = await backend[handlerName](tool, args);\nprocess.stdout.write(JSON.stringify({ result: result || null }));";
@@ -136,7 +157,7 @@ describe.skipIf(process.platform === "win32")("physical stop genuine emitted pub
         }
         const brokerFile = join(root, "packages/device-lab/dist/device-lab-broker.js");
         const broker = readFileSync(brokerFile, "utf8");
-        const { runBrokerBackendChild } = await import(pathToFileURL(brokerFile).href) as typeof import("@ccc/device-lab/device-lab-broker.js");
+        const { runBrokerBackendChild } = await import(pathToFileURL(brokerFile).href) as BrokerChildModule;
         for (const line of childScript.split("\n")) expect(broker).toContain(JSON.stringify(line));
         const context = await (platform === "android" ? createFakeAndroidMcpContext() : createFakeIosMcpContext());
         let emittedClient: Client | undefined; const failures: unknown[] = [];
