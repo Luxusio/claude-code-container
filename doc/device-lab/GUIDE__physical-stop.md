@@ -3,7 +3,8 @@
 The Android and iOS direct `device_stop` handlers compose the checked
 `createPhysicalStopApplication` policy. The application finds the attachment,
 claims its exact raw record, cleans auxiliary runtime, checks the current
-lifecycle generation, commits a stopped record with raw CAS, and presents the
+lifecycle generation, commits an attached record with auxiliary runtime cleared
+using raw CAS, and presents the
 existing response. Failed cleanup restores only the matching lifecycle; a
 successor remains untouched. Shared detach helpers delegate to the same
 lifecycle and cleanup policy.
