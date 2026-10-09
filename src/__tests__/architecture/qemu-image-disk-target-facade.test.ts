@@ -94,11 +94,12 @@ function controlledFacade() {
         if(cache.has(file))return cache.get(file)!;
         const exports:Record<string,unknown>={};cache.set(file,exports);
         const compiled=ts.transpileModule(readFileSync(path.join(root,file),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+        // The trusted catalog clones plain schema data with Node's pure primitive.
         runInNewContext(compiled,{exports,require:(name:string)=>{
             if(Object.hasOwn(modules,name))return modules[name];
             if(name.startsWith("."))return load(path.posix.normalize(path.posix.join(path.posix.dirname(file),name)));
             return deny("import:"+name);
-        },process:{env:environment,cwd:()=>deny("cwd"),pid:123,kill:()=>deny("kill")},console:guarded("console",{}),Buffer});
+        },process:{env:environment,cwd:()=>deny("cwd"),pid:123,kill:()=>deny("kill")},console:guarded("console",{}),Buffer,structuredClone});
         return exports;
     };
     const api=load(facade) as Api;
