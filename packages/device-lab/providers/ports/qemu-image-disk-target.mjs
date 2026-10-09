@@ -1,3 +1,4 @@
+/** @import {QemuImageMetadata as QemuImageMetadataDeclaration} from './qemu-image-disk-target.mjs' */
 /** Raw metadata stays mutable and retains fields outside these operations.
  * @typedef {{[key: string]: unknown, pid?: unknown, command?: unknown, startedAt?: unknown}} QemuRuntime
  * @typedef {{[key: string]: unknown, id: string, name: string, provider?: string, runtimeState: string,
@@ -11,7 +12,7 @@
  * @typedef {{[key: string]: unknown, ok?: boolean, args?: unknown}} QemuExecution
  * @typedef {{[key: string]: unknown, labId?: unknown, force?: unknown, dryRun?: unknown}} QemuDiskArguments
  * @typedef {{[key: string]: unknown, labId?: unknown}} QemuTargetArguments
- * @typedef {import('./qemu-image-disk-target.d.mts').QemuImageMetadata} QemuImageMetadata
+ * @typedef {QemuImageMetadataDeclaration} QemuImageMetadata
  * @typedef {{kind: string, path: string, backingPath: string, backingFormat: string, materializedAt: string, forced: boolean}} QemuDiskMetadata
  * @typedef {{ok: true, command: string, args: string[], dryRun?: boolean, providerStatus?: QemuProviderStatus, result?: QemuExecution | null}} QemuOverlaySuccess
  * @typedef {QemuOverlaySuccess | QemuFailure} QemuOverlayResult
