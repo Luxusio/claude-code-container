@@ -70,7 +70,12 @@ function realm(original: boolean, mode: Mode = {}) {
     };
     const native = load(path.join(root, "packages/device-lab/providers/backends/android-device.mjs"), original ? ORIGINAL_FACADE : undefined);
     expect(denied).toBe(0);
-    return {native, trace, context, get denied() {return denied;}, assertZero: () => expect(denied).toBe(0),
+    // Physical-stop composition captures publishers during current facade load.
+    // Assert every bootstrap event before starting the operation trace.
+    const bootstrapTrace = trace.slice();
+    expect(bootstrapTrace).toEqual(original ? [] : [["selectText"], ["selectJson"]]);
+    trace.length = 0;
+    return {native, trace, bootstrapTrace, context, get denied() {return denied;}, assertZero: () => expect(denied).toBe(0),
         replacePublishers() {jsonPublisher = function(value) { trace.push(["changedJson"]); return {kind:"changed",value}; };
             textPublisher = function(ok,value) {trace.push(["changedText"]); return {kind:"changed",ok,text:value}; };},
         deny};
@@ -83,6 +88,7 @@ describe("Android wireless whole original/fresh facade parity", () => {
     it("preserves exported async settlement to undefined for another backend without native effects", async () => {
         for (const original of [true, false]) {
             const actor = realm(original);
+            expect(actor.bootstrapTrace).toEqual(original ? [] : [["selectText"], ["selectJson"]]);
             const promise = actor.native.handleAndroidRealTool("device_wireless", { backend: "other" });
             expect(Object.prototype.toString.call(promise)).toBe("[object Promise]");
             expect(await promise).toBeUndefined();
