@@ -1370,7 +1370,6 @@ describe("device-lab host broker daemon", () => {
 
     it("reuses the shared host runtime port across project owners", async () => {
         const cwd = "/project/broker-auto-runtime-port-test";
-        const ownerId = deviceLabOwnerId(cwd);
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
         const baseUrl = await listen(server);
         const port = Number(new URL(baseUrl).port);
@@ -1636,7 +1635,9 @@ describe("device-lab host broker daemon", () => {
             expect(child.unref).toHaveBeenCalled();
             const attempts = JSON.stringify(result.attempts);
             const incompatibleStatus = result.attempts?.find((attempt) =>
-                "compatible" in attempt
+                attempt !== null
+                && typeof attempt === "object"
+                && "compatible" in attempt
                 && attempt.compatible === false
                 && "protocolVersion" in attempt
             );
@@ -1943,7 +1944,6 @@ describe("device-lab host broker daemon", () => {
 
     it("diagnoses an unmanaged incompatible broker that cannot be restarted", async () => {
         const ownerId = "cccccccccccccccc";
-        const protocolVersion = DEVICE_BROKER_PROTOCOL_VERSION;
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
                 res.writeHead(200, { "content-type": "application/json" });
@@ -2261,7 +2261,6 @@ describe("device-lab host broker daemon", () => {
 
     it("does not trust status or persisted PIDs when the port process is unrelated", async () => {
         const ownerId = "ffffffffffffffff";
-        const protocolVersion = DEVICE_BROKER_PROTOCOL_VERSION;
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
                 res.writeHead(200, { "content-type": "application/json" });
