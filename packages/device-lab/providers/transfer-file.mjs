@@ -4,9 +4,20 @@ import { basename, dirname, join, resolve } from "path";
 import { validateLocalInputPath, validateLocalOutputPath } from "./policy/files.mjs";
 import { copyFileAtomically } from "./state/shared-mutation-lock.mjs";
 
+/**
+ * @typedef {{ok:false,error:string,message:string}} TransferFailure
+ * @typedef {import("./policy/files.mjs").FilePolicyFailure | TransferFailure} NativeTransferFailure
+ * @typedef {{ok:true,path:string,stagedPath:string,cleanup:()=>void}} NativeTransferStage
+ * @typedef {NativeTransferStage & {stageRoot:string}} NativeOutputStage
+ * @typedef {NativeTransferStage | NativeTransferFailure} InputStageResult
+ * @typedef {NativeOutputStage | NativeTransferFailure} OutputStageResult
+ * @typedef {{ok:true,path:string,bytes:number} | NativeTransferFailure} TransferCopyResult
+ */
+
 const DEVICE_UPLOAD_LIMIT_BYTES = 16 * 1024 * 1024;
 const DEVICE_DOWNLOAD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
 
+/** @returns {TransferFailure} */
 function transferFailure(error, fallback) {
     const detail = error?.code || error?.message || fallback;
     return { ok: false, error: detail, message: detail };
@@ -20,6 +31,7 @@ function cleanupTempRoot(root) {
     }
 }
 
+/** @returns {InputStageResult} */
 export function stageLocalInputFile(value, options = {}) {
     const label = options.label || "upload-local-path";
     const limitBytes = options.limitBytes ?? DEVICE_UPLOAD_LIMIT_BYTES;
@@ -60,6 +72,7 @@ export function stageLocalInputFile(value, options = {}) {
     }
 }
 
+/** @returns {TransferCopyResult} */
 export function copyStagedInputFile(stage, destination, options = {}) {
     const label = options.label || "upload-local-path";
     const limitBytes = options.limitBytes ?? DEVICE_UPLOAD_LIMIT_BYTES;
@@ -71,6 +84,7 @@ export function copyStagedInputFile(stage, destination, options = {}) {
     }
 }
 
+/** @returns {OutputStageResult} */
 export function createLocalOutputStage(value, options = {}) {
     const label = options.label || "download-local-path";
     const policy = validateLocalOutputPath(value, { label });
@@ -93,6 +107,7 @@ export function createLocalOutputStage(value, options = {}) {
     };
 }
 
+/** @returns {OutputStageResult} */
 export function restoreLocalOutputStage(value, stagedPath, options = {}) {
     const label = options.label || "download-local-path";
     const policy = validateLocalOutputPath(value, { label });
@@ -116,6 +131,7 @@ export function restoreLocalOutputStage(value, stagedPath, options = {}) {
     };
 }
 
+/** @returns {{ok:true}|TransferFailure} */
 export function discardLocalOutputStage(stagedPath, options = {}) {
     const label = options.label || "download-local-path";
     if (typeof stagedPath !== "string" || stagedPath.length === 0) {
@@ -132,6 +148,7 @@ export function discardLocalOutputStage(stagedPath, options = {}) {
     return { ok: true };
 }
 
+/** @returns {TransferCopyResult} */
 export function commitLocalOutputStage(stage, options = {}) {
     const label = options.label || "download-local-path";
     const limitBytes = options.limitBytes ?? DEVICE_DOWNLOAD_LIMIT_BYTES;
@@ -159,6 +176,7 @@ export function commitLocalOutputStage(stage, options = {}) {
     }
 }
 
+/** @returns {TransferCopyResult} */
 export function populateLocalOutputStage(source, stage, options = {}) {
     const label = options.label || "download-remote-path";
     const limitBytes = options.limitBytes ?? DEVICE_DOWNLOAD_LIMIT_BYTES;

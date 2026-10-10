@@ -262,6 +262,12 @@ function windowsHelperMetadata(device) {
     };
 }
 
+/**
+ * @param {string|undefined} remotePath
+ * @param {ReturnType<typeof ensureHelperWorkspace>} helper
+ * @param {string} label
+ * @returns {ReturnType<typeof validateGuestPath>}
+ */
 function validateWindowsGuestTransferPath(remotePath, helper, label) {
     const remotePolicy = validateGuestPath(remotePath, { label, platform: "windows" });
     if (!remotePolicy.ok) return remotePolicy;
@@ -1528,7 +1534,10 @@ const windowsDesktopPorts = {
         try {
             assertDeviceLabPathWithinRoot(helper.uploadsDir, hostUploadPath, "windows-helper-upload");
         } catch (error) {
-            return { ok: false, message: `Windows helper upload staging path is unsafe: ${error?.code || error?.message || String(error)}` };
+            const carrier = error !== null && (typeof error === "object" || typeof error === "function") ? error : null;
+            const detail = (carrier && "code" in carrier ? carrier.code : undefined)
+                || (carrier && "message" in carrier ? carrier.message : undefined) || String(error);
+            return { ok: false, message: `Windows helper upload staging path is unsafe: ${detail}` };
         }
         const staged = copyWindowsSandboxFile(path, hostUploadPath, "windows-helper-upload", WINDOWS_SANDBOX_UPLOAD_LIMIT_BYTES);
         if (!staged.ok) return { ok: false, message: `Windows helper upload staging failed: ${staged.error}` };

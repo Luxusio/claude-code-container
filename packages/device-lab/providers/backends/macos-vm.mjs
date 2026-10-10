@@ -988,6 +988,7 @@ export async function waitForMacosGuestHelper(device, deadlineAt, {
     return { ok: false, error: "macos-helper-readiness-timeout", provisioning: { ...last?.provisioning, status: "failed", updatedAt: new Date().toISOString() } };
 }
 
+/** @returns {{target:string, discovery:ReturnType<typeof sshDiscovery>, error?:undefined}|{error:ReturnType<typeof textResult>, target?:undefined, discovery?:undefined}} */
 function sshBridge(device, toolName) {
     const target = sshTarget(device);
     if (!target) return { error: helperRequiredResult(device, toolName) };
@@ -1012,7 +1013,7 @@ const macosDesktopPorts = {
     parseHelper: stdout => macosHelperJson(stdout),
     bridge: (device, operation) => {
         const bridge = sshBridge(device, operation);
-        return "error" in bridge ? { ok: false, result: bridge.error } : { ok: true, bridge };
+        return bridge.error !== undefined ? { ok: false, result: bridge.error } : { ok: true, bridge };
     },
     guestPath: (path, label) => {
         const policy = validateGuestPath(path, { label: `${label}-remote-path`, platform: "posix", transport: "scp" });
