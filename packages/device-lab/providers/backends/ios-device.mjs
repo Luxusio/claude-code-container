@@ -1,3 +1,4 @@
+import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
@@ -14,7 +15,7 @@ import { inspectProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwned
 import { appiumGenerationMatches, transitionAppiumGeneration } from "../state/runtime-generation.mjs";
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus } from "../status.mjs";
-import { fetchIosAppiumJson, iosAppiumDiscovery, iosDiscovery, normalizeIosOrientation } from "./ios-simulator.mjs";
+import { fetchIosAppiumJson, iosAppiumDiscovery, iosDiscovery } from "./ios-simulator.mjs";
 
 const physicalStop = createPhysicalStopApplication({
     backend: "ios-device",
@@ -380,18 +381,6 @@ async function ensureIosRealAppiumSession(deviceId) {
     return { device: updated, serverUrl, sessionId };
 }
 
-function appiumPointerActions(type, steps) {
-    return {
-        actions: [{
-            type: "pointer",
-            id: "finger1",
-            parameters: { pointerType: "touch" },
-            actions: steps,
-        }],
-        gesture: type,
-    };
-}
-
 async function iosRealAppiumSessionOrResult(deviceId) {
     let session;
     try {
@@ -709,131 +698,20 @@ async function handleIosRealToolUnlocked(name, args) {
             return r.status === 0 ? jsonResult({ launched: bundleId, udid: device.udid, provider: "xcrun-devicectl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
         }
 
-        case "mobile_tap": {
-            const { deviceId, x, y } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions("tap", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ tapped: { x, y }, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_double_tap": {
-            const { deviceId, x, y } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions("doubleTap", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-                { type: "pause", duration: 80 },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ doubleTapped: { x, y }, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_long_press": {
-            const { deviceId, x, y, durationMs = 700 } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions("longPress", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pause", duration: durationMs },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ longPressed: { x, y, durationMs }, provider: "appium-xcuitest", physical: true });
-        }
-
+        case "mobile_tap":
+        case "mobile_double_tap":
+        case "mobile_long_press":
         case "mobile_swipe":
-        case "mobile_drag": {
-            const { deviceId, x1, y1, x2, y2, durationMs = name === "mobile_drag" ? 700 : 300 } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions(name === "mobile_drag" ? "drag" : "swipe", [
-                { type: "pointerMove", duration: 0, x: x1, y: y1 },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerMove", duration: durationMs, x: x2, y: y2 },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ [name === "mobile_drag" ? "dragged" : "swiped"]: { x1, y1, x2, y2, durationMs }, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_type_text": {
-            const { deviceId, text } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/keys", { text: String(text), value: [...String(text)] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ typed: true, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_key": {
-            const { deviceId, key, keyCode } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const resolvedKey = key ?? keyCode;
-            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") return textResult(false, "mobile_key requires key or keyCode");
-            const posted = await postIosRealAppium(deviceId, "/keys", { text: String(resolvedKey), value: [String(resolvedKey)] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ key: resolvedKey, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_home": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: pressButton", args: [{ name: "home" }] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ home: true, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_lock": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: lock", args: [] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ locked: true, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_unlock": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: unlock", args: [] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ unlocked: true, provider: "appium-xcuitest", physical: true });
-        }
-
-        case "mobile_rotate_left": {
-            const { deviceId } = args;
-            return handleIosRealTool("mobile_set_orientation", { deviceId, orientation: "LANDSCAPE" });
-        }
-
-        case "mobile_rotate_right": {
-            const { deviceId } = args;
-            return handleIosRealTool("mobile_set_orientation", { deviceId, orientation: "PORTRAIT" });
-        }
-
-        case "mobile_set_orientation": {
-            const { deviceId, orientation } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const resolved = normalizeIosOrientation(orientation);
-            if (!resolved) return textResult(false, "iOS real-device mobile_set_orientation requires portrait, landscape, reverse-portrait, or reverse-landscape");
-            const posted = await postIosRealAppium(deviceId, "/orientation", { orientation: resolved.orientation });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ ...resolved, provider: "appium-xcuitest", physical: true });
-        }
+        case "mobile_drag":
+        case "mobile_type_text":
+        case "mobile_key":
+        case "mobile_home":
+        case "mobile_lock":
+        case "mobile_unlock":
+        case "mobile_rotate_left":
+        case "mobile_rotate_right":
+        case "mobile_set_orientation":
+            return controlTransfer.handle(name, args);
 
         case "mobile_wait_for_text": {
             const { deviceId, text, timeoutMs, intervalMs } = args;
@@ -968,3 +846,22 @@ export async function handleIosRealTool(name, args) {
 }
 
 const deviceObservation = createDeviceObservation({ kind: "ios-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: IOS_REAL_CAPABILITIES, simulatorPrerequisites: () => iosDiscovery(), executable: name => commandPath(name), records: () => readIosRealDevices(), hostResult: xcrun => { const result = run(xcrun, ["xctrace", "list", "devices"]); return { ...result, devices: result.status === 0 ? parseXctraceDevices(result.stdout) : [] }; } });
+
+const controlTransfer = createIosControlTransfer({
+    kind: "physical",
+    findDevice: id => findIosRealDevice(id),
+    resolveSession: async id => {
+        try {
+            return await withOwnerDeviceOperation("ios-device", id, () => ensureIosRealAppiumSession(id));
+        } catch (error) {
+            if (error?.code !== "shared-mutation-lock-timeout") throw error;
+            return { error: `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+    },
+    requestSession: (session, path, body) => fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+    }),
+    jsonResult: value => jsonResult(value),
+    textResult: (ok, message) => textResult(ok, message),
+});

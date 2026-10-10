@@ -1,5 +1,5 @@
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -432,6 +432,23 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS real-device fl
         });
         expect(missingRealIosKey.isError).toBe(true);
         expect((missingRealIosKey.content as Array<{ text?: string }>)[0].text).toContain("key requires exactly one of key or keyCode");
+
+        const transferInput = join(homeDir, "physical-transfer-input.txt");
+        const transferOutput = join(homeDir, "physical-transfer-output.txt");
+        writeFileSync(transferInput, "physical-transfer-is-unsupported");
+        for (const [name, localPath] of [["upload", transferInput], ["download", transferOutput]] as const) {
+            const refused = await client.callTool({ name, arguments: {
+                deviceId: "ios-device-real-iphone", localPath, remotePath: "Documents/file.txt",
+                appId: "com.example.Real", implicitBroker: false,
+            } });
+            expect(refused.isError).toBe(true);
+            expect(parseToolJson(refused)).toMatchObject({
+                ok: false, error: "device-tool-unsupported", tool: `device_${name}`,
+                deviceId: "ios-device-real-iphone", backend: "ios-device",
+            });
+        }
+        expect(readFileSync(transferInput, "utf8")).toBe("physical-transfer-is-unsupported");
+        expect(existsSync(transferOutput)).toBe(false);
 
         const invalidRealIosOrientation = await client.callTool({
             name: "set_orientation",

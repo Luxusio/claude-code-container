@@ -1,3 +1,5 @@
+import { iosControlOrientation, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
+import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
@@ -48,11 +50,7 @@ export function iosAppiumDiscovery(ios = iosDiscovery()) {
 }
 
 export function normalizeIosOrientation(orientation) {
-    const requestedOrientation = String(orientation || "");
-    const normalized = requestedOrientation.toLowerCase();
-    if (normalized === "portrait" || normalized === "reverse-portrait") return { orientation: "PORTRAIT", requestedOrientation };
-    if (normalized === "landscape" || normalized === "reverse-landscape") return { orientation: "LANDSCAPE", requestedOrientation };
-    return null;
+    return iosControlOrientation(orientation);
 }
 
 export function iosBackend(discovery = iosDiscovery()) { return deviceObservation.backend(discovery); }
@@ -519,18 +517,6 @@ async function ensureIosAppiumSession(deviceId) {
     return { device: updated, serverUrl, sessionId };
 }
 
-function appiumPointerActions(type, steps) {
-    return {
-        actions: [{
-            type: "pointer",
-            id: "finger1",
-            parameters: { pointerType: "touch" },
-            actions: steps,
-        }],
-        gesture: type,
-    };
-}
-
 async function iosAppiumSessionOrResult(deviceId) {
     let session;
     try {
@@ -542,21 +528,6 @@ async function iosAppiumSessionOrResult(deviceId) {
     if (session.unknown) return { unknown: true };
     if (session.error) return { result: textResult(false, session.error) };
     return { session };
-}
-
-async function postIosAppium(deviceId, path, body, provider = "appium-xcuitest") {
-    const resolved = await iosAppiumSessionOrResult(deviceId);
-    if (resolved.unknown || resolved.result) return resolved;
-    const { session } = resolved;
-    try {
-        const response = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
-            method: "POST",
-            body: JSON.stringify(body),
-        });
-        return { result: jsonResult({ provider, sessionId: session.sessionId, response: response?.value ?? response }) };
-    } catch (error) {
-        return { result: textResult(false, `iOS Simulator Appium request failed: ${error.message}`) };
-    }
 }
 
 function guardIosObservation(deviceId, original, session) {
@@ -631,7 +602,7 @@ function resolveOwnedSimulatorTarget(xcrun, device, inventory) {
 function pathInsideContainer(containerRoot, requestedPath) {
     const stripped = String(requestedPath || "").replace(/^[/\\]+/, "");
     const relativePath = normalize(stripped);
-    if (!relativePath || relativePath === "." || isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${"/"}`) || relativePath.startsWith(`..${"\\"}`)) {
+    if (!iosContainerRelativePathAllowed({ relativePath, absolute: isAbsolute(relativePath) })) {
         return { error: `Refusing path outside iOS app container: ${requestedPath}` };
     }
     return { path: join(containerRoot, relativePath), relativePath };
@@ -964,78 +935,9 @@ async function handleIosToolUnlocked(name, args) {
             catch (error) { return jsonResult({ ok: false, error: "list-files-container-read-failed", detail: error.code || error.message }); }
         }
 
-        case "device_upload": {
-            const { deviceId, localPath, remotePath, bundleId, containerType } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!isOwnedSimulatorName(device.simulatorName)) return textResult(false, `Refusing iOS Simulator upload for non-owned simulator name: ${device.simulatorName}`);
-            if (!bundleId) return textResult(false, "iOS Simulator upload requires bundleId to resolve an app container");
-            if (!localPath || !remotePath) return textResult(false, "iOS Simulator upload requires localPath and remotePath");
-            const localStage = stageLocalInputFile(localPath, { label: "upload-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-
-            try {
-                const discovery = iosDiscovery();
-                if (!discovery.available) return missingPrereqResult(discovery);
-                const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-                if (ownedTarget.error) return textResult(false, ownedTarget.error);
-
-                const type = iosContainerType(containerType);
-                const container = resolveIosAppContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
-                if (container.error) return fail(container.error);
-                const target = pathInsideContainer(container.containerRoot, remotePath);
-                if (target.error) return textResult(false, target.error);
-                const containment = ensureContainerPathForWrite(container.containerRoot, target.path);
-                if (containment.error) return textResult(false, containment.error);
-                const copied = copyStagedInputFile(localStage, target.path, { label: "upload-local-path" });
-                if (!copied.ok) return textResult(false, copied.message);
-                return jsonResult({
-                    uploaded: { localPath: localStage.path, remotePath: target.relativePath, bundleId, containerType: type },
-                    containerRoot: container.containerRoot,
-                    provider: "simctl-app-container",
-                });
-            } finally {
-                localStage.cleanup();
-            }
-        }
-
-        case "device_download": {
-            const { deviceId, remotePath, localPath, bundleId, containerType } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!isOwnedSimulatorName(device.simulatorName)) return textResult(false, `Refusing iOS Simulator download for non-owned simulator name: ${device.simulatorName}`);
-            if (!bundleId) return textResult(false, "iOS Simulator download requires bundleId to resolve an app container");
-            if (!remotePath || !localPath) return textResult(false, "iOS Simulator download requires remotePath and localPath");
-            const localStage = createLocalOutputStage(localPath, { label: "download-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-
-            try {
-                const discovery = iosDiscovery();
-                if (!discovery.available) return missingPrereqResult(discovery);
-                const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-                if (ownedTarget.error) return textResult(false, ownedTarget.error);
-
-                const type = iosContainerType(containerType);
-                const container = resolveIosAppContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
-                if (container.error) return fail(container.error);
-                const source = pathInsideContainer(container.containerRoot, remotePath);
-                if (source.error) return textResult(false, source.error);
-                if (!existsSync(source.path)) return textResult(false, `iOS Simulator download remotePath does not exist in app container: ${source.relativePath}`);
-                const containment = ensureContainerPathForRead(container.containerRoot, source.path);
-                if (containment.error) return textResult(false, containment.error);
-                const staged = populateLocalOutputStage(source.path, localStage, { label: "download-remote-path" });
-                if (!staged.ok) return textResult(false, staged.message);
-                const committed = commitLocalOutputStage(localStage, { label: "download-local-path" });
-                if (!committed.ok) return textResult(false, committed.message);
-                return jsonResult({
-                    downloaded: { remotePath: source.relativePath, localPath: committed.path, bundleId, containerType: type },
-                    containerRoot: container.containerRoot,
-                    provider: "simctl-app-container",
-                });
-            } finally {
-                localStage.cleanup();
-            }
-        }
+        case "device_upload":
+        case "device_download":
+            return controlTransfer.handle(name, args);
 
         case "device_reset": {
             const { deviceId, bundleId, containerType, eraseSimulator = false } = args;
@@ -1264,131 +1166,20 @@ async function handleIosToolUnlocked(name, args) {
             return jsonResult({ ...result, bundleId, provider: "simctl" });
         }
 
-        case "mobile_tap": {
-            const { deviceId, x, y } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions("tap", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ tapped: { x, y }, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_double_tap": {
-            const { deviceId, x, y } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions("doubleTap", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-                { type: "pause", duration: 80 },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ doubleTapped: { x, y }, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_long_press": {
-            const { deviceId, x, y, durationMs = 700 } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions("longPress", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pause", duration: durationMs },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ longPressed: { x, y, durationMs }, provider: "appium-xcuitest" });
-        }
-
+        case "mobile_tap":
+        case "mobile_double_tap":
+        case "mobile_long_press":
         case "mobile_swipe":
-        case "mobile_drag": {
-            const { deviceId, x1, y1, x2, y2, durationMs = name === "mobile_drag" ? 700 : 300 } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions(name === "mobile_drag" ? "drag" : "swipe", [
-                { type: "pointerMove", duration: 0, x: x1, y: y1 },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerMove", duration: durationMs, x: x2, y: y2 },
-                { type: "pointerUp", button: 0 },
-            ]));
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ [name === "mobile_drag" ? "dragged" : "swiped"]: { x1, y1, x2, y2, durationMs }, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_type_text": {
-            const { deviceId, text } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/keys", { text: String(text), value: [...String(text)] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ typed: true, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_key": {
-            const { deviceId, key, keyCode } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const resolvedKey = key ?? keyCode;
-            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") return textResult(false, "mobile_key requires key or keyCode");
-            const posted = await postIosAppium(deviceId, "/keys", { text: String(resolvedKey), value: [String(resolvedKey)] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ key: resolvedKey, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_home": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/execute/sync", { script: "mobile: pressButton", args: [{ name: "home" }] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ home: true, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_lock": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/execute/sync", { script: "mobile: lock", args: [] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ locked: true, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_unlock": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const posted = await postIosAppium(deviceId, "/execute/sync", { script: "mobile: unlock", args: [] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ unlocked: true, provider: "appium-xcuitest" });
-        }
-
-        case "mobile_rotate_left": {
-            const { deviceId } = args;
-            return handleIosTool("mobile_set_orientation", { deviceId, orientation: "LANDSCAPE" });
-        }
-
-        case "mobile_rotate_right": {
-            const { deviceId } = args;
-            return handleIosTool("mobile_set_orientation", { deviceId, orientation: "PORTRAIT" });
-        }
-
-        case "mobile_set_orientation": {
-            const { deviceId, orientation } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const resolved = normalizeIosOrientation(orientation);
-            if (!resolved) return textResult(false, "iOS Simulator mobile_set_orientation requires portrait, landscape, reverse-portrait, or reverse-landscape");
-            const posted = await postIosAppium(deviceId, "/orientation", { orientation: resolved.orientation });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ ...resolved, provider: "appium-xcuitest" });
-        }
+        case "mobile_drag":
+        case "mobile_type_text":
+        case "mobile_key":
+        case "mobile_home":
+        case "mobile_lock":
+        case "mobile_unlock":
+        case "mobile_rotate_left":
+        case "mobile_rotate_right":
+        case "mobile_set_orientation":
+            return controlTransfer.handle(name, args);
 
         case "mobile_wait_for_text": {
             const { deviceId, text, timeoutMs, intervalMs } = args;
@@ -1509,3 +1300,50 @@ const deviceObservation = createDeviceObservation({ kind: "ios-simulator", owner
         "mobile_wait_for_text",
         "mobile_wait_for_app",
     ], executable: name => commandPath(name), records: () => readIosDevices(), simulators: (xcrun, args) => simctlJson(xcrun, args), ownedTarget: (xcrun, device, inventory) => resolveOwnedSimulatorTarget(xcrun, device, inventory), publishObserved: (device, status, simulatorName) => updateIosDevice(device.id, item => item.updatedAt === device.updatedAt && item.status === device.status && item.udid === device.udid && item.simulatorName === device.simulatorName ? { ...item, simulatorName: simulatorName || item.simulatorName, status, updatedAt: now() } : item) });
+
+const controlTransfer = createIosControlTransfer({
+    kind: "simulator",
+    findDevice: id => findIosDevice(id),
+    resolveSession: async id => {
+        try {
+            return await withOwnerDeviceOperation("ios", id, () => ensureIosAppiumSession(id));
+        } catch (error) {
+            if (error?.code !== "shared-mutation-lock-timeout") throw error;
+            return { error: `iOS Simulator Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+    },
+    requestSession: (session, path, body) => fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+    }),
+    jsonResult: value => jsonResult(value),
+    textResult: (ok, message) => textResult(ok, message),
+    ownedSimulatorName: name => isOwnedSimulatorName(name),
+    discovery: () => iosDiscovery(),
+    missingPrerequisites: facts => missingPrereqResult(facts),
+    verifyTarget: (xcrun, device) => resolveOwnedSimulatorTarget(xcrun, device),
+    appContainerCommand: (xcrun, target, bundleId, type) => run(xcrun, ["simctl", "get_app_container", target, bundleId, type]),
+    pathFacts: (root, requestedPath) => {
+        const stripped = String(requestedPath || "").replace(/^[/\\]+/, "");
+        const relativePath = normalize(stripped);
+        return { relativePath, absolute: isAbsolute(relativePath), path: join(root, relativePath) };
+    },
+    guardWrite: (root, path) => ensureContainerPathForWrite(root, path),
+    guardRead: (root, path) => ensureContainerPathForRead(root, path),
+    exists: path => existsSync(path),
+    stageInput: path => {
+        const stage = stageLocalInputFile(path, { label: "upload-local-path" });
+        if (!stage.ok) return { ok: false, message: stage.message };
+        return { ok: true, path: stage.path, stagedPath: stage.stagedPath, cleanup: stage.cleanup };
+    },
+    stageOutput: path => {
+        const stage = createLocalOutputStage(path, { label: "download-local-path" });
+        if (!stage.ok) return { ok: false, message: stage.message };
+        return { ok: true, path: stage.path, stagedPath: stage.stagedPath, cleanup: stage.cleanup };
+    },
+    copyInput: (stage, path) => copyStagedInputFile(stage, path, { label: "upload-local-path" }),
+    populateOutput: (path, stage) => populateLocalOutputStage(path, stage, { label: "download-remote-path" }),
+    commitOutput: stage => commitLocalOutputStage(stage, { label: "download-local-path" }),
+    disposeStage: stage => { stage.cleanup(); },
+    fail: result => fail(result),
+});

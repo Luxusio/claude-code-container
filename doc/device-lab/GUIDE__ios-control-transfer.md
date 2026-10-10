@@ -1,0 +1,7 @@
+# iOS control and simulator transfer
+
+`createIosControlTransfer` owns the selected iOS pointer, text, key, home, lock, unlock and orientation operations in one application. Its domain builds gesture bodies and defaults, resolves key/orientation admission and decides container-relative path admission. Simulator and physical adapters supply the existing owned-device and Appium-session peers and native HTTP transport. Physical results retain their physical marker; unknown devices or sessions still fall through, and failed requests never become success.
+
+Simulator upload/download additionally use native owned-target verification, simctl app-container commands, realpath containment guards and the shared transfer-file primitives. The application owns input/output staging order, copy/population, successful output commit and disposal in finally. Public aliases and appId normalization remain in the existing request boundary. Physical iOS transfer remains unsupported; no filesystem transport was added.
+
+The native owner operation locks, simulator identity, physical lease/session generation, descriptor/link checks and atomic file mechanisms remain outward. Lifecycle, observation, waits, recording and app management remain their existing peers. Portable fixtures can check request bodies, public results and transfer failures; actual macOS simulator/device/XCUITest execution remains a separate native acceptance requirement. This iOS cohort alone does not complete global control or transfer operations.
