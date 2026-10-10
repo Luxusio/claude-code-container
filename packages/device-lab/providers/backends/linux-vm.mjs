@@ -831,9 +831,9 @@ function waitQemuRuntimeExit(runtime, timeoutMs) {
     do {
         const observed = inspectQemuRuntime(runtime);
         if (observed.status === "exited") return { exited: true };
-        if (observed.status !== "match") return { exited: false, reason: observed.status };
+        if (observed.status === "mismatch") return { exited: false, reason: observed.status };
         const remaining = deadline - performance.now();
-        if (remaining <= 0) return { exited: false, reason: "runtime-process-still-running" };
+        if (remaining <= 0) return { exited: false, reason: observed.status === "unavailable" ? "unavailable" : "runtime-process-still-running" };
         Atomics.wait(qemuExitWaiter, 0, 0, Math.min(25, remaining));
     } while (true);
 }

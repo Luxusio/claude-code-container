@@ -1,3 +1,5 @@
+import { spawn } from "child_process";
+import { waitForProcessIdentity, terminateOwnedRuntimeProcess } from "../state/process-identity.mjs";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
@@ -18,12 +20,15 @@ import {
     stopLab,
 } from "./linux-vm.mjs";
 
-function defaultCommandRunner(command, args) {
+/** @param {string} command @param {string[]} args @param {import('../state/process-identity.mjs').RuntimeProcessRecord|null} runtime */
+function defaultCommandRunner(command, args, runtime) {
     if (basename(command) === "qemu-img" && args[0] === "create") {
         writeFileSync(args[args.length - 1], "fake-overlay");
         return { ok: true, command, args };
     }
-    return { ok: true, command, args, pid: 424242 };
+    return runtime
+        ? { ok: true, command, args, pid: runtime.pid, processIdentity: runtime.processIdentity }
+        : { ok: false, error: "fake-provider-runtime-unavailable" };
 }
 
 function defaultGuestTransportRunner(transport) {
@@ -69,13 +74,23 @@ export async function runLabMcpSmoke(options = {}) {
         CCC_LAB_RUNNER: "1",
         CCC_LAB_RUNNER_STATUS: "ready",
     };
+    /** @type {import('child_process').ChildProcess|null} */
+    let child = null;
+    /** @type {Promise<unknown>|null} */
+    let closed = null;
+    /** @type {import('../state/process-identity.mjs').RuntimeProcessRecord|null} */
+    let runtime = null;
+    /** @type {Error|null} */
+    let childError = null;
+    /** @type {{ok:boolean;steps:Array<{name:string,status:string,error?:string,result?:unknown}>;error?:string}|undefined} */
+    let report;
     const baseOptions = {
         env,
         stateRoot,
         qemuPath: "/usr/bin/qemu-system-x86_64",
         qemuImgPath: "/usr/bin/qemu-img",
         kvmAvailable: true,
-        commandRunner: options.commandRunner || defaultCommandRunner,
+        commandRunner: options.commandRunner || ((command, args) => defaultCommandRunner(command, args, runtime)),
         guestTransportRunner: options.guestTransportRunner || defaultGuestTransportRunner,
         sshPath: "/usr/bin/ssh",
         scpPath: "/usr/bin/scp",
@@ -130,7 +145,17 @@ export async function runLabMcpSmoke(options = {}) {
             guestSshKeyPath: sshKeyPath,
         }, baseOptions)));
         step("disk-materialize", () => assertOk("disk-materialize", materializeDisk({ labId: "smoke-vm" }, baseOptions)));
-        step("lab-start", () => assertOk("lab-start", startLab({ labId: "smoke-vm" }, baseOptions)));
+        if (!options.commandRunner) {
+            const ownedChild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+            child = ownedChild;
+            closed = new Promise((resolve) => { ownedChild.once("close", resolve);ownedChild.once("error", (error) => { childError = error; }); });
+            const identity = await waitForProcessIdentity(ownedChild.pid, 2000);
+            if (identity && identity.pid === ownedChild.pid && !childError) runtime = { runtimeId: "owned-smoke-child", pid: identity.pid, processIdentity: identity };
+        }
+        step("lab-start", () => {
+            if (childError) throw childError;
+            return assertOk("lab-start", startLab({ labId: "smoke-vm" }, baseOptions));
+        });
         step("readiness-probe", () => assertOk("readiness-probe", probeReadiness({ labId: "smoke-vm" }, baseOptions)));
         step("guest-push", () => assertOk("guest-push", guestPush({
             labId: "smoke-vm",
@@ -149,22 +174,49 @@ export async function runLabMcpSmoke(options = {}) {
         step("lab-stop", () => assertOk("lab-stop", stopLab({
             labId: "smoke-vm",
             force: true,
-        }, { ...baseOptions, killProcess: () => {} })));
+        }, baseOptions)));
         step("snapshot-create", () => assertOk("snapshot-create", snapshotLab("create", {
             labId: "smoke-vm",
             snapshotName: "smoke",
         }, baseOptions)));
         step("lab-delete", () => assertOk("lab-delete", deleteLab({ labId: "smoke-vm" }, baseOptions)));
 
-        return { ok: true, steps };
+        report = { ok: true, steps };
     } catch (error) {
-        return { ok: false, steps, error: error?.message || String(error) };
+        report = { ok: false, steps, error: error?.message || String(error) };
     } finally {
-        if (options.cleanup !== false) {
+        let joined = !child;
+        /** @type {ReturnType<typeof setTimeout>|undefined} */
+        let timer;
+        try {
+            if (child) {
+                let terminationError;
+                try {
+                    if (child.exitCode === null && child.signalCode === null) {
+                        if (runtime) {
+                            const stopped = await terminateOwnedRuntimeProcess(runtime, "Fake-provider smoke", { timeoutMs: 1000 });
+                            if (!stopped.exited) terminationError = new Error(stopped.error || "fake-provider child exit unconfirmed");
+                        } else {
+                            // Birth acquisition failed: close only the child handle created here.
+                            child.kill("SIGKILL");
+                        }
+                    }
+                } catch (error) { terminationError = error; }
+                await Promise.race([closed, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error("fake-provider child join timed out")), 2000); })]);
+                joined = true;
+                if (terminationError) throw terminationError;
+            }
+        } catch (error) {
+            report = { ...report, ok: false, error: report?.error || error?.message || String(error) };
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+        if (options.cleanup !== false && joined) {
             rmSync(stateRoot, { recursive: true, force: true });
             rmSync(workspace, { recursive: true, force: true });
         }
     }
+    return report;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

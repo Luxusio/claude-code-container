@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { createSessionCleanup } from "../../application/session-cleanup.js";
 import type { SessionCleanupPorts } from "../../ports/session-cleanup.js";
@@ -6,6 +8,17 @@ const portNames = ["projectId", "withLifecycleLock", "hasOtherClaims", "removeCl
     "reportDeviceCleanupFailure", "stopContainer"] as const;
 const initial = { lockFile: null, projectPath: null, profile: undefined, toolName: null };
 const active = { lockFile: "/claims/own.lock", projectPath: "/project", profile: "work", toolName: "custom" };
+
+it("keeps session cleanup policy inward and its native adapter out of Admin and broker entrypoints", () => {
+    const imports = (url: URL) => ts.createSourceFile(url.pathname, readFileSync(url, "utf8"), ts.ScriptTarget.Latest, true)
+        .statements.flatMap(statement => ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)
+            ? [statement.moduleSpecifier.text] : []);
+    const adapter = imports(new URL("../../adapters/session-cleanup.ts", import.meta.url));
+    expect(adapter).toContain("../device-lab-cleanup.js");
+    expect(adapter.some(specifier => /device-lab-(?:admin|broker)/.test(specifier))).toBe(false);
+    const application = imports(new URL("../../application/session-cleanup.ts", import.meta.url));
+    expect(application.every(specifier => specifier.startsWith("../domain/") || specifier.startsWith("../ports/"))).toBe(true);
+});
 
 function fixture(mode?: "retryable-owner" | "ended-owner") {
     const trace: unknown[][] = [];

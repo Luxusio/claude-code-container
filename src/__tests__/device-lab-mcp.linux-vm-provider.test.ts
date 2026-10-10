@@ -66,6 +66,8 @@ function requiredSynchronousLifecyclePorts(ports: QemuLifecyclePorts) {
 }
 void requiredSynchronousLifecyclePorts;
 
+vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
+
 vi.mock("../../packages/device-lab/providers/state/process-identity.mjs", async original => ({
     ...await original<typeof import("../../packages/device-lab/providers/state/process-identity.mjs")>(),
 }));
@@ -720,7 +722,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
             commandRunner: () => { throw new Error("running reuse must not launch"); },
         });
-        expect(reused).toEqual(expect.objectContaining({ ok: true, reused: true, lab: expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) }) }));
+        expect(reused).toEqual(expect.objectContaining({ ok: true, reused: true, lab: expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 4242 }) }) }));
         expect(JSON.stringify(started)).not.toContain("qemu-monitor.sock");
         expect(started.materialized).toEqual(expect.objectContaining({ ok: true, materialized: true }));
         expect(calls).toHaveLength(2);

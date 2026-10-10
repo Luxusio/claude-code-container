@@ -132,8 +132,8 @@ describe("device-lab Linux VM foundation", () => {
         expect(JSON.parse(((stopped.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
             expect.objectContaining({ ok: true, stopped: false, device: expect.objectContaining({ runtimeState: "stopped" }) }),
         );
-        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId: "mcp-lab" } });
-        expect(deleted.isError).not.toBe(true);
+        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId: "mcp-lab", confirmDestructive: true } });
+        expect(deleted.isError, JSON.stringify(deleted.content)).not.toBe(true);
         expect(JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
             expect.objectContaining({ ok: true, deleted: true, labId: "mcp-lab" }),
         );

@@ -367,7 +367,7 @@ describe("device-admin cleanup current policy traces", () => {
         ["macos", { id: "unit", status: "running", provider: "utmctl", providerInstance: "owned" }, ["stop", "owned"], "utmctl"],
     ] as const)("preserves %s provider selection and raw command arguments", (stateKey, record, args, command) => {
         const backend = { stateKey, name: stateKey };
-        const pair = cleanupFixtures({ [`owner/${stateKey}`]: [record] }, { backends: [backend] });
+        const pair = cleanupFixtures({ [`owner/${stateKey}`]: [record] }, { backends: [backend], ...(stateKey === "android-device" ? { hardwareId: "physical" } : {}) });
         for (const f of pair) {
             expect(f.policy.owner("/chosen", 37).results[0].status).toBe("stopped");
             expect(f.trace.filter(row => row[0] === "command")).toEqual([["command", "/allocated/" + command, [...args], 37]]);

@@ -1,24 +1,9 @@
 # Device admin inventory
 
-`OP-device-admin-inventory` enters through compiled `index.main`, then
-`devicesCliAsync` and `devicesCli`. The legacy snapshot and status/list exports
-remain available from `device-lab-admin`; cleanup exports retain their original
-binding identity. Backends and doctor share the same inventory snapshot.
+The public CLI enters inventory through `index.main`, `devicesCliAsync` and `devicesCli`. Snapshot and status/list exports remain available from `device-lab-admin`; backends and doctor use the same inventory application.
 
-The application owns owner selection, ordered backend/device/executable reads,
-both current-owner and all-project snapshots, grouping and status/list text.
-The domain classifies macOS availability when any provider exists; other
-backends require every prerequisite. It also owns device labels and exact list
-flag admission. Status retains its existing extra-argument acceptance.
+The application owns owner selection, current-owner/all-project reads, grouping and status/list presentation. The domain owns backend availability, device labels and flag admission. The facade supplies canonical owner/profile resolution, guarded project enumeration, device-record reads and executable lookup through finite ports. Native root, link, generation and storage checks remain at their effect boundaries.
 
-The facade supplies individual native observations: canonical owner/profile
-resolution, guarded project enumeration, device-record reads and executable
-lookup. Construction performs no observation. Native owner, root, link,
-generation and storage guards remain in their existing authorities. Project
-enumeration errors retain the public CLI classification; other raw errors and
-publisher failures propagate at the same boundary.
+Use current application/domain and type-contract tests for policy and required port contracts. `src/__tests__/device-lab-admin.test.ts` exercises owner namespaces, inventory, diagnostics and formatting; the ordinary Admin smoke/cleanup tests exercise public commands and native safety. Build when production inputs change and run `npm run test:packages` for actual shipped entry points, assets and MCP startup in both distribution forms.
 
-Verification must exercise immutable original expectations, actual facade and
-compiled caller bindings, ordered reads and failures, strict port declarations,
-and both distribution forms. Static extraction does not certify native OS or
-real-provider behavior, and this guide makes no runtime acceptance claim.
+Package smoke does not qualify native OS/provider behavior. Report real-host checks and unavailable hosts separately. Follow [architecture verification](../verification/GUIDE__architecture-verification.md); do not retain archived implementations, internal read-order replay or custom VM facade consumers as acceptance gates.
