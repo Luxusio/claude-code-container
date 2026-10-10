@@ -214,7 +214,7 @@ describe("device-lab admin smoke diagnostics", () => {
         // Exercise timeout classification, without racing Node startup against
         // a 50ms deadline on busy Windows hosts. Other probes still execute.
         const routedSpawn = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
-        vi.mocked(childProcess.spawnSync).mockImplementation(((command: string, args: string[] = [], options = {}) => {
+        vi.mocked(childProcess.spawnSync).mockImplementation(((command: string, args: string[] = [], options: childProcess.SpawnSyncOptions = {}) => {
             if (command === join(binDir, "emulator.mjs") && args[0] === "-list-avds") {
                 const error = Object.assign(new Error("emulator inventory timed out"), { code: "ETIMEDOUT" });
                 return { status: null, signal: "SIGTERM", pid: 0, stdout: "", stderr: "", output: [null, "", ""], error };
@@ -268,7 +268,7 @@ describe("device-lab admin smoke diagnostics", () => {
             [join(binDir, "emulator.mjs"), ["-list-avds"]],
             [join(binDir, "adb.mjs"), ["devices", "-l"]],
         ] as const;
-        vi.mocked(childProcess.spawnSync).mockImplementation(((command: string, args: string[] = [], options = {}) => {
+        vi.mocked(childProcess.spawnSync).mockImplementation(((command: string, args: string[] = [], options: childProcess.SpawnSyncOptions = {}) => {
             if (readiness.some(([tool, expectedArgs]) => command === tool && JSON.stringify(args) === JSON.stringify(expectedArgs))) {
                 return { status: 0, signal: null, pid: 0, stdout: "ok\n", stderr: "", output: [null, "ok\n", ""] };
             }

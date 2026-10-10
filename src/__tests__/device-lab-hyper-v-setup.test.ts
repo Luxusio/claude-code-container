@@ -1,6 +1,6 @@
 import { canonicalWindowsPowerShellPath } from "@ccc/device-lab/windows-system-powershell.js";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -90,7 +90,7 @@ describe("Hyper-V host setup CLI", () => {
     it("runs diagnostics without enabling Windows features when confirmation is absent", async () => {
         const root = join(tmpdir(), `ccc-hyper-v-diagnostic-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
-        const runner = vi.fn(() => ({
+        const runner = vi.fn((_command: string, _args: string[], _timeoutMs: number, _input?: string) => ({
             command: "powershell.exe",
             status: 0,
             stdout: JSON.stringify({
@@ -133,7 +133,7 @@ describe("Hyper-V host setup CLI", () => {
         expect(result.text).toContain("qemu-img.exe is available for Hyper-V Linux images at that exact path, with no junction or symbolic link in any path component");
         expect(result.text).toContain("linuxBaseImage: acquisition-required");
         expect(result.text).not.toContain("SDK Manager");
-        const encodedScript = Buffer.from(runner.mock.calls[0][1].at(-1), "base64").toString("utf16le");
+        const encodedScript = Buffer.from(runner.mock.calls[0][1].at(-1) || "", "base64").toString("utf16le");
         expect(encodedScript).not.toContain("Enable-WindowsOptionalFeature");
     });
 
@@ -580,7 +580,7 @@ describe("Hyper-V host setup CLI", () => {
         const root = join(tmpdir(), `ccc-hyper-v-setup-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         mkdirSync(root, { recursive: true });
-        const runner = vi.fn(() => ({
+        const runner = vi.fn((_command: string, _args: string[], _timeoutMs: number, _input?: string) => ({
             command: "powershell.exe",
             status: 0,
             stdout: JSON.stringify({
@@ -603,7 +603,7 @@ describe("Hyper-V host setup CLI", () => {
         expect(result.text).toContain("hostRebooted: false");
         const encodedScript = runner.mock.calls[0][3]
             ? Buffer.from(runner.mock.calls[0][3], "base64").toString("utf8")
-            : Buffer.from(runner.mock.calls[0][1].at(-1), "base64").toString("utf16le");
+            : Buffer.from(runner.mock.calls[0][1].at(-1) || "", "base64").toString("utf16le");
         expect(encodedScript).toContain("Start-Process -FilePath $Executable -Verb RunAs");
         expect(encodedScript).toContain("-WindowStyle Hidden -PassThru");
         expect(encodedScript).not.toContain("Restart-Computer");
@@ -820,7 +820,7 @@ describe("Hyper-V host setup CLI", () => {
     });
 
     it("routes the public CLI confirmation and rejects malformed setup commands", async () => {
-        const setupHyperV = vi.fn(() => ({ ok: true, text: "setup-ok" }));
+        const setupHyperV = vi.fn(async (_confirm: boolean, _options?: Parameters<typeof setupHyperVHost>[1]) => ({ ok: true, text: "setup-ok" }));
         const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
         const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
