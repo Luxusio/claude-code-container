@@ -24,6 +24,8 @@ vi.mock("../utils.js", async original => ({
 vi.mock("../container-command.js", () => ({ runContainerCommand: f.command }));
 vi.mock("../docker.js", () => ({
     ensureDockerRunning: vi.fn(), ensureCredentialHostDir: vi.fn(),
+    inspectSessionContainerOwnership: () => ({ known: true, containerId: f.exists ? "old-id" : null }),
+    isDockerDesktop: () => false,
     getContainerName: () => "ccc-fixture", getContainerStatus: () => ({ exists: f.exists, running: f.running, imageId: "sha256:old", containerId: "old-id" }),
     startProjectContainer: f.start, isContainerRunning: f.probeRunning,
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
@@ -55,6 +57,7 @@ vi.mock("../session.js", async original => {
 }; });
 vi.mock("../container-setup.js", () => ({
     CLAUDE_BIN_PATH: "/home/ccc/.local/bin/claude", ensureUvAvailable: () => f.events.push("uv"),
+    ensureClaudeInContainer: () => { throw new Error("unexpected Claude setup in Codex fixture"); },
     ensureTools: (id: string, tool: {name: string}) => { expect(id).toBe("final-id"); f.events.push(`tool:${tool.name}`); if (f.failTool) throw new Error("tool unavailable"); },
 }));
 vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: (operation: () => unknown, profile?: string) => {
