@@ -1633,10 +1633,14 @@ require('node:module').syncBuiltinESMExports();`);
         const logBefore = readFileSync(logPath, { encoding: "utf-8", flag: "a+" });
 
         try {
-            await expect(client.callTool({
+            const started = await client.callTool({
                 name: "start",
                 arguments: { waitForBoot: false, deviceId: "windows-malformed-lock" },
-            })).rejects.toThrow("windows-sandbox-lock-state-invalid");
+            });
+            expect(started.isError).toBe(true);
+            expect(started.content).toEqual(expect.arrayContaining([
+                expect.objectContaining({ type: "text", text: expect.stringContaining("windows-sandbox-lock-state-invalid") }),
+            ]));
             expect(readFileSync(lockPath, "utf8")).toBe("{not-json");
             expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" }).slice(logBefore.length)).not.toContain("wsb start");
         } finally {

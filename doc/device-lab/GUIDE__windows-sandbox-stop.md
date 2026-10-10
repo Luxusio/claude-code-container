@@ -15,8 +15,10 @@ can therefore leave files after the record is gone.
 `createBrokerWindowsSandboxLifecycle` owns the distinct authenticated broker
 start/stop/delete execution and response policy. It refreshes canonical configs,
 advances the expected record after auxiliary cleanup, interprets runtime and
-window observations, and publishes through the native CAS boundary. Registration
-uncertainty retains singleton ownership. Teardown checks the expected record
+window observations, and publishes through the native CAS boundary. Before claiming
+or launching, its runtime baseline rejects a requested GUID that already exists;
+that preflight neither cancels watchdog markers nor starts or stops a runtime.
+Uncertainty after an actual launch retains singleton ownership. Teardown checks the expected record
 before releasing ownership or deleting artifacts; artifact-cleanup failure is
 reported before final record removal.
 

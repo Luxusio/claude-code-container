@@ -58,6 +58,22 @@ describe("broker Windows Sandbox lifecycle application", () => {
         expect(f.read()).toBeNull();
         expect(f.effects).toContain("remove-artifacts");
     });
+    it("blocks a preexisting requested runtime before claiming or canceling markers", async () => {
+        const f = fixture(), before = f.read();
+        f.ports.execute = command => {
+            f.commands.push(command);
+            return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify([guid]) };
+        };
+        f.ports.removeMarker = () => { f.effects.push("remove-marker"); return undefined; };
+        expect(await f.app.start(f.input("device_start"))).toMatchObject({
+            status: 502,
+            payload: { ok: false, error: "windows-sandbox-runtime-already-present", result: { invoked: false, execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: false } } },
+        });
+        expect(f.locked()).toBe(false);
+        expect(f.read()).toBe(before);
+        expect(f.effects).not.toContain("remove-marker");
+        expect(f.commands.some(command => command.args?.[0] === "start" || command.args?.[0] === "stop" || command.mode === "detached")).toBe(false);
+    });
     it("keeps ownership and reports concrete ambiguous registration evidence", async () => {
         const f = fixture();
         let launched = false;

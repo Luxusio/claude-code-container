@@ -7721,7 +7721,7 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
-    it("fails closed when Windows Sandbox start produces no new owned runtime", async () => {
+    it("blocks Windows Sandbox start before claiming a preexisting requested runtime", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-windows-no-new-runtime-test");
         const windowsRoot = backendRoot(ownerId, "windows");
         const configPath = join(windowsRoot, "no-new-runtime.wsb");
@@ -7761,16 +7761,17 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(started.status).toBe(502);
             expect(await started.json()).toEqual(expect.objectContaining({
                 ok: false,
+                error: "windows-sandbox-runtime-already-present",
+                detail: expect.stringContaining("existed before launch; no new owned runtime appeared"),
                 result: expect.objectContaining({
-                    execution: expect.objectContaining({
-                        command: expect.objectContaining({
-                            registration: expect.objectContaining({
-                                error: expect.stringContaining("existed before launch; no new owned runtime appeared"),
-                            }),
-                        }),
-                    }),
+                    invoked: false,
+                    execution: expect.objectContaining({ mode: "preflight", providerExecution: "blocked", mutatesHost: false }),
                 }),
             }));
+            expect(commandRunner).not.toHaveBeenCalledWith(expect.objectContaining({
+                provider: "wsb",
+                args: expect.arrayContaining(["start"]),
+            }), expect.any(Object));
             expect(commandRunner).not.toHaveBeenCalledWith(expect.objectContaining({
                 provider: "wsb",
                 args: ["stop", "--id", foreignSandboxId],

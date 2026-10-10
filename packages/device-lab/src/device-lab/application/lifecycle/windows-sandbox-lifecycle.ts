@@ -86,6 +86,25 @@ export function createBrokerWindowsSandboxLifecycle(ports: BrokerWindowsSandboxL
         }
         if (!command || 'error' in command)
             return { status: 400, payload: { ok: false, error: command?.error || 'missing-provider-command', missing: command?.missing || [], plan: plan ? { ...plan, device: ports.redactDevice(plan.device) } : null } };
+        const baseline = parsed.command === 'device_start' && ports.platform === 'win32' ? runtimeSnapshot(command, ports) : null;
+        if (baseline && !baseline.ok) {
+            return { status: 502, payload: { ok: false, error: 'windows-sandbox-runtime-snapshot-failed', detail: ports.failureDetail(baseline.error), result: { ...(plan || {}), invoked: false, dryRun: false, execution: { mode: 'preflight', providerExecution: 'blocked', mutatesHost: false, command: baseline.error } } } };
+        }
+        const collision = baseline?.ok && command.sandboxId
+            ? brokerWindowsSandboxRuntimeChoice(baseline.sandboxIds, baseline.sandboxIds, command.sandboxId)
+            : null;
+        if (collision?.kind === 'preexisting') {
+            return {
+                status: 502,
+                payload: {
+                    ok: false, error: 'windows-sandbox-runtime-already-present', detail: collision.error,
+                    result: {
+                        ...(plan || {}), invoked: false, dryRun: false,
+                        execution: { mode: 'preflight', providerExecution: 'blocked', mutatesHost: false },
+                    },
+                },
+            };
+        }
         let effective = command;
         if (parsed.command === 'device_start') {
             const lock = ports.claimSingleton(ownerId, plan?.device, command.sandboxId);
@@ -101,11 +120,6 @@ export function createBrokerWindowsSandboxLifecycle(ports: BrokerWindowsSandboxL
         if (helper) {
             ports.removeMarker(helper.minimizeWatchdogCancelPath);
             ports.removeMarker(helper.minimizeWatchdogResultPath);
-        }
-        const baseline = helper && ports.platform === 'win32' ? runtimeSnapshot(command, ports) : null;
-        if (baseline && !baseline.ok) {
-            ports.releaseSingleton(ownerId, plan?.device, command.sandboxId);
-            return { status: 502, payload: { ok: false, error: 'windows-sandbox-runtime-snapshot-failed', detail: ports.failureDetail(baseline.error), result: { ...(plan || {}), invoked: false, dryRun: false, execution: { mode: 'preflight', providerExecution: 'blocked', mutatesHost: false, command: baseline.error } } } };
         }
         const startedAfter = helper ? ports.timestampBefore(2000) : null;
         const windowSnapshot = helper && command.windowStyle === 'minimized' && ports.platform === 'win32' ? ports.execute(ports.windowSnapshotCommand(), { timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit }) : null;
