@@ -485,6 +485,48 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "b669bf6ce416f0cdff04589a663adfcc09728a2c"
+    },
+    {
+      "id": "mobile-control-transfer",
+      "branch": "refactor/architecture-device-control-snapshots-integration-20261011",
+      "commit": "5122a56a3e804f033dcfbc3c6f61422dca09ec85",
+      "taskId": "TASK__architecture-device-control-snapshots-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-device-long-press",
+        "OP-device-swipe",
+        "OP-device-back",
+        "OP-device-home",
+        "OP-device-forward",
+        "OP-device-recents",
+        "OP-device-power-key",
+        "OP-device-lock",
+        "OP-device-unlock"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent composed and affected Code, Security and Guide PASS; independent current binding-accounting confirms complete mobile9 and Windows/Linux snapshots5. Original genuine build stages complete with unchanged early-stage carries and two narrowly corrected fixture type aliases. Fresh authenticated Android2/iOS1/Linuxsnapshot1 witnesses, 16 affected files416 cases0skip, 22 qualified core cases/strict native constructor-body scopes, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS. Source locally FF-delivered at5122 preserving all97 user paths and diff bytes. Unrelated legacy native-JS diagnostics are not accepted; native host certification and formal hook attestation remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "5122a56a3e804f033dcfbc3c6f61422dca09ec85"
+    },
+    {
+      "id": "hyper-v-snapshot-workflows",
+      "branch": "refactor/architecture-device-control-snapshots-integration-20261011",
+      "commit": "5122a56a3e804f033dcfbc3c6f61422dca09ec85",
+      "taskId": "TASK__architecture-device-control-snapshots-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-hyperv-snapshot-list",
+        "OP-hyperv-snapshot-create",
+        "OP-hyperv-snapshot-restore",
+        "OP-hyperv-snapshot-delete",
+        "OP-hyperv-snapshot-repair"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent composed and affected Code, Security and Guide PASS; independent current binding-accounting confirms complete mobile9 and Windows/Linux snapshots5. Original genuine build stages complete with unchanged early-stage carries and two narrowly corrected fixture type aliases. Fresh authenticated Android2/iOS1/Linuxsnapshot1 witnesses, 16 affected files416 cases0skip, 22 qualified core cases/strict native constructor-body scopes, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS. Source locally FF-delivered at5122 preserving all97 user paths and diff bytes. Unrelated legacy native-JS diagnostics are not accepted; native host certification and formal hook attestation remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "5122a56a3e804f033dcfbc3c6f61422dca09ec85"
     }
   ],
   "planningLanes": [
@@ -650,7 +692,7 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "Full independent planning GO and exact ten-path canonical admission. Android emulator/physical cohort planned; source release requires normal reconciliation to this actually accepted parent. Zero whole operation credit until all required other-provider/public/broker bindings close."
+      "status": "Android emulator/physical source accepted in5122 after actual independent review and joint QA. Nine mobile whole operations count once in mobile-control-transfer; shared desktop/transfer IDs remain incomplete and Android orientation remains native. Formal close/native host certification unverified."
     },
     {
       "id": "ios-control-transfer",
@@ -669,7 +711,7 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "Full independent planning GO and exact ten-path canonical admission. Simulator/physical control and simulator transfer planned; physical iOS transfer remains unsupported. Source release requires accepted-parent reconciliation. Zero whole operation credit until required global bindings close."
+      "status": "Simulator/physical control and simulator transfer source accepted in5122 after actual independent review and joint QA. Nine shared mobile whole operations count once; physical iOS transfer stays unsupported. Orientation and desktop/transfer require remaining other bindings; formal/native acceptance unverified."
     },
     {
       "id": "hyper-v-snapshot-workflows",
@@ -681,7 +723,34 @@
         "OP-hyperv-snapshot-delete",
         "OP-hyperv-snapshot-repair"
       ],
-      "status": "Full independent planning GO and exact eight-path canonical admission. Both Windows/Linux snapshot flows and all repair callers planned; exclusive broker author begins after accepted-parent reconciliation. Five whole operations remain pending; no lifecycle/reboot/native-host credit."
+      "status": "All five Windows/Linux snapshot workflows accepted and locally delivered at5122 with four repair contexts and genuine authenticated native-transport witnesses. No other lifecycle/reboot/native-host credit; formal hook close unverified."
+    },
+    {
+      "id": "qemu-guest-transfer",
+      "taskId": "TASK__architecture-qemu-guest-transfer",
+      "coveredOperationIds": [
+        "OP-device-upload",
+        "OP-device-download"
+      ],
+      "status": "Independent current-source planning GO ataccepted6cac; eight-path source/test cohort authored in isolated worktree, reviewed/runtime acceptance pending. Normalize to actual accepted5122 parent before joint QA. Current destination materialization/exception behavior retained. Zero whole operation credit until remaining global bindings close."
+    },
+    {
+      "id": "desktop-control-transfer",
+      "taskId": "TASK__architecture-desktop-control-transfer",
+      "coveredOperationIds": [
+        "OP-device-click",
+        "OP-device-drag",
+        "OP-device-key",
+        "OP-device-type",
+        "OP-device-scroll",
+        "OP-device-cursor-move",
+        "OP-device-cursor-query",
+        "OP-device-focus-window",
+        "OP-device-window-list",
+        "OP-device-upload",
+        "OP-device-download"
+      ],
+      "status": "Independent current-source planning GO; seventeen user-disjoint paths admitted. Shared finite core and X11/Windows/macOS adapters plus core/type cases authored, actual reviews/runtime pending. Pure point/drag rule move has compatibility reexports. Authentic default broker child witnesses held until accepted parent reconciliation. Zero whole operation credit until remaining Hyper-V and global bindings close."
     }
   ]
 }
