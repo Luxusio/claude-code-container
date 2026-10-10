@@ -108,7 +108,9 @@ const ELEVATED_MUTATION_PROVEN_NOT_STARTED = new Set([
 export function createDeviceLabHyperVHostNetworkEffects(client: HyperVWindowsNetworkClient): HyperVHostNetworkEffects {
     return {
         observe: network => inspectHostFabric(client, network),
-        execute: action => executeHyperVHostNetworkAction(client, action),
+        execute: action => action.operation === "ensure"
+            ? executeHyperVHostNetworkAction(client, action)
+            : executeHyperVHostNetworkAction(client, action),
         exactVirtualMachines: names => client.getVMsByExactNames({ names }),
     };
 }
