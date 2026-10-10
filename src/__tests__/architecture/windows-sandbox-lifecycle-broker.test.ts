@@ -109,7 +109,7 @@ describe("broker Windows Sandbox lifecycle application", () => {
         request.parsed.minimized = true;
         request.plan!.providerCommand = { mode: "exec", provider: "wsb", executable: "fake-wsb", args: ["start"], sandboxId: guid, windowStyle: "minimized" };
         const execute = f.ports.execute;
-        f.ports.execute = command => command.mode === "detached" ? { mode: command.mode, provider: command.provider, status: null, error: "watchdog unavailable" } : command.provider === "powershell" ? { mode: command.mode, provider: command.provider, status: 0, stdout: "[101]" } : execute(command);
+        f.ports.execute = (command, options) => command.mode === "detached" ? { mode: command.mode, provider: command.provider, status: null, error: "watchdog unavailable" } : command.provider === "powershell" ? { mode: command.mode, provider: command.provider, status: 0, stdout: "[101]" } : execute(command, options);
         expect(await f.app.start(request)).toMatchObject({ status: 200, payload: { ok: true, result: { device: { status: "running", minimizeConfirmed: false, minimizeWarning: "watchdog unavailable" } } } });
         expect(f.locked()).toBe(true);
         expect(f.commands.some(command => command.args?.[0] === "stop")).toBe(false);
