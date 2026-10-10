@@ -3,17 +3,65 @@ export interface DesktopRpcResult {
     status: number;
     payload: unknown;
 }
+/** Raw request fields retain their input types until the application admits them. */
+export interface DesktopArguments {
+    incarnationId?: unknown;
+    helperTimeoutMs?: unknown;
+    command?: unknown;
+    key?: unknown;
+    text?: unknown;
+    x?: unknown;
+    y?: unknown;
+    x1?: unknown;
+    y1?: unknown;
+    x2?: unknown;
+    y2?: unknown;
+    durationMs?: unknown;
+    button?: unknown;
+    direction?: unknown;
+    amount?: unknown;
+    handle?: unknown;
+    maxFileBytes?: unknown;
+    [extension: string]: unknown;
+}
+/** The native owner record is observed in place; admission narrows reached fields. */
+export interface DesktopDevice {
+    id?: unknown;
+    incarnationId?: unknown;
+    vmId?: unknown;
+    vmName?: unknown;
+    diskPath?: unknown;
+    deviceRoot?: unknown;
+    privateRoot?: unknown;
+    guestCredentialPath?: unknown;
+    sshPrivateKeyPath?: unknown;
+    sshHostPublicKeyPath?: unknown;
+    sshHostKeyFingerprint?: unknown;
+    sshKnownHostsPath?: unknown;
+    guestUsername?: unknown;
+    networkAddress?: unknown;
+    [extension: string]: unknown;
+}
+export interface DesktopWindow {
+    handle: string;
+    title: string;
+    processId?: number;
+}
+export interface DesktopWindowList {
+    windows: DesktopWindow[];
+    truncated?: boolean;
+}
 export interface DesktopRequest {
     tool: string;
     deviceId: string | null;
     localPath: string | null;
     remotePath: string | null;
-    params: DesktopRecord;
+    params: DesktopArguments;
 }
 export interface DesktopTarget {
     backend: string | null;
     stateKey: string;
-    device: DesktopRecord;
+    device: DesktopDevice;
 }
 export interface DesktopIdentity {
     selector: {
@@ -135,7 +183,7 @@ export interface DesktopSshFacts {
     timeoutMs: number;
 }
 export function desktopRecord(value: unknown): value is DesktopRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
-export function desktopField(record: DesktopRecord, key: string): string | null { return typeof record[key] === 'string' ? record[key] : null; }
+export function desktopField(record: DesktopDevice, key: string): string | null { return typeof record[key] === 'string' ? record[key] : null; }
 export function desktopSucceeded(result: DesktopExecution) { return result.status === 0 && !result.error; }
 export const DESKTOP_CONSOLE_TOOLS: ReadonlySet<string> = new Set(['device_screenshot', 'device_click', 'device_double_click', 'device_drag', 'device_key', 'device_type', 'device_scroll', 'device_cursor_position']);
 export function desktopReadOnly(tool: string) { return ['device_screenshot', 'device_cursor_position', 'device_window_list'].includes(tool); }
@@ -204,7 +252,7 @@ export function parseGuestFocusWindow(stdout: string): {
         ok: true
     };
 }
-export function parseWindowsGuestWindowList(stdout: string, byteLength: number): Record<string, unknown> {
+export function parseWindowsGuestWindowList(stdout: string, byteLength: number): DesktopWindowList {
     if (byteLength > 1024 * 1024)
         throw new Error("window-list-invalid-result");
     let result: unknown;
@@ -224,7 +272,7 @@ export function parseWindowsGuestWindowList(stdout: string, byteLength: number):
             throw new Error("window-list-invalid-result");
         const { title, handle, processId } = row;
         if (typeof title !== "string" || title.length > 512 || typeof handle !== "string" || !/^\d+$/.test(handle)
-            || !Number.isSafeInteger(processId) || Number(processId) <= 0)
+            || typeof processId !== "number" || !Number.isSafeInteger(processId) || Number(processId) <= 0)
             throw new Error("window-list-invalid-result");
         return {
             title, handle, processId

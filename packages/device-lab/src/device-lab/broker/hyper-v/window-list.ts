@@ -1,4 +1,4 @@
-import { validateWindowHandle, parseWindowsGuestWindowList } from "../../domain/hyper-v-desktop-transfer.js";
+import { validateWindowHandle, parseWindowsGuestWindowList, type DesktopWindowList } from "../../domain/hyper-v-desktop-transfer.js";
 import { X11_WINDOW_LIST_COMMAND, parseX11WindowList } from "../../../../providers/display/window-list.mjs";
 
 export function linuxWindowListCommand(): string {
@@ -128,7 +128,7 @@ ${worker}
 }`.replace(/^[ \t]+/gm, "");
 }
 
-export function parseGuestWindowList(backend: string, stdout: string): Record<string, unknown> {
+export function parseGuestWindowList(backend: string, stdout: string): DesktopWindowList {
     return backend === "linux-vm" ? parseX11WindowList(stdout) : parseWindowsGuestWindowList(stdout, Buffer.byteLength(stdout));
 }
 export { parseGuestFocusWindow } from "../../domain/hyper-v-desktop-transfer.js";

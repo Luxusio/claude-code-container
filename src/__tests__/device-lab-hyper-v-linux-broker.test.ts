@@ -3035,7 +3035,7 @@ describe("device-lab Hyper-V broker", () => {
             writeFileSync(downloadPath, "retain-current-output");
             const invalidDownload = await tool("device_download", { remotePath: "/tmp/download.txt", localPath: downloadPath });
             expect(invalidDownload.status).toBe(502);
-            expect(await invalidDownload.json()).toMatchObject({ ok: false, error: "hyper-v-linux-guest-download-invalid-base64" });
+            expect(await invalidDownload.json()).toMatchObject({ ok: false, error: "hyper-v-linux-guest-download-invalid-artifact" });
             expect(readFileSync(downloadPath, "utf8")).toBe("retain-current-output");
             expect(readdirSync(transferRoot)).toEqual([]);
             invalidDownloadEncoding = false;

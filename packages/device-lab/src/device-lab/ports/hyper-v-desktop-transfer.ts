@@ -1,4 +1,4 @@
-import type { DesktopRecord, DesktopRpcResult, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopCommand, DesktopSshFacts } from '../domain/hyper-v-desktop-transfer.js';
+import type { DesktopDevice, DesktopWindowList, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopCommand, DesktopSshFacts } from '../domain/hyper-v-desktop-transfer.js';
 export interface DesktopRoots {
     deviceRoot: string;
     privateRoot: string;
@@ -9,7 +9,7 @@ export interface DesktopRoots {
 }
 export interface DesktopRepair {
     ok: true;
-    device: DesktopRecord;
+    device: DesktopDevice;
     reconciled: boolean;
 }
 export interface DesktopRepairFailure {
@@ -22,22 +22,22 @@ export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
     readonly length: number;
 }> {
     executable(name: string): string | null;
-    incarnation(device: DesktopRecord): string | null;
+    incarnation(device: DesktopDevice): string | null;
     validIncarnation(value: unknown): value is string;
     pendingJournal(ownerId: string, stateKey: string, deviceId: string): boolean;
-    repair(ownerId: string, stateKey: string, deviceId: string, device: DesktopRecord, powershell: string): Promise<DesktopRepair | DesktopRepairFailure>;
+    repair(ownerId: string, stateKey: string, deviceId: string, device: DesktopDevice, powershell: string): Promise<DesktopRepair | DesktopRepairFailure>;
     ownershipNotes(ownerId: string, deviceId: string, incarnationId: string): string;
     createConsole(executable: string): Console;
     withConsoleLock<T>(ownerId: string, backend: string, deviceId: string, operation: () => Promise<T>): Promise<T>;
     capture(console: Console, identity: DesktopIdentity): Promise<DesktopCapture>;
     cursor(console: Console, identity: DesktopIdentity): Promise<DesktopCursor>;
     vms(console: Console, id: string): Promise<DesktopVm[]>;
-    input(console: Console, input: DesktopInput): Promise<unknown>;
+    input(console: Console, input: DesktopInput): Promise<void>;
     frame(ownerId: string, backend: string, deviceId: string, incarnationId: string): DesktopFrame | null;
     rememberFrame(ownerId: string, backend: string, deviceId: string, frame: DesktopFrame): undefined;
     timestamp(): string;
     windowCommand(backend: string, handle: string | null): string;
-    linuxWindows(stdout: string): DesktopRecord;
+    linuxWindows(stdout: string): DesktopWindowList;
     utf8Length(text: string): number;
     linuxTypeCommand(text: string): string;
     linuxScrollCommand(direction: 'up' | 'down', amount: number): string;

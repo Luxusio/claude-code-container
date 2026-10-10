@@ -1,4 +1,4 @@
-import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopRpcResult, type DesktopCommand, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
+import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopRpcResult, type DesktopCommand, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
 import type { HyperVDesktopTransferPorts } from '../ports/hyper-v-desktop-transfer.js';
 export function createHyperVDesktopTransferApplication<Console, Stage, Bytes extends {
     readonly length: number;
@@ -62,12 +62,17 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     }
                 };
             }
+            let windowHandle: string | null = null;
+            if (parsed.tool === "device_focus_window") {
+                windowHandle = String(parsed.params.handle);
+                validateWindowHandle(windowHandle);
+            }
             const result = await invoke(ownerId, {
                 ...parsed, tool: "device_exec",
                 params: {
                     ...parsed.params, incarnationId,
                     command: parsed.tool === "device_focus_window"
-                        ? ports.windowCommand(match.backend || "", String(parsed.params.handle))
+                        ? ports.windowCommand(match.backend || "", windowHandle)
                         : ports.windowCommand(match.backend || "", null)
                 },
             }, {
