@@ -6058,8 +6058,8 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
             restoreRouting = installNodeProviderFixtureRouting(context.binDir);
             server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
             const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
-            const invoke = (action: string) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
-                method: "broker.device.tool.invoke", params: { tool: "device_wireless", backend: "ios-device", action, udid },
+            const invoke = (action: string, selectedUdid: string = udid) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                method: "broker.device.tool.invoke", params: { tool: "device_wireless", backend: "ios-device", action, udid: selectedUdid },
             }) });
             const status = await invoke("status");
             expect(status.status).toBe(200);
@@ -6077,6 +6077,25 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                 ]) },
             });
             expect(payload.inventory.devices.some(device => /Simulator|Build Mac/.test(device.name))).toBe(false);
+            const wifiUdid = "00008120-00AA00BB00CC00DD";
+            const wifiStatus = await invoke("status", wifiUdid);
+            expect(wifiStatus.status).toBe(200);
+            const wifiBody = await wifiStatus.json() as typeof body;
+            expect(wifiBody).toMatchObject({ ok: true, result: { ownerId, backend: "ios-device", provider: "device-lab-backend-child" } });
+            expect(wifiBody.result.mcpResult.isError).not.toBe(true);
+            expect(JSON.parse(wifiBody.result.mcpResult.content[0].text)).toMatchObject({
+                ok: true, backend: "ios-device", provider: "xcrun-xctrace", udid: wifiUdid, networkVisible: true,
+                selected: { name: "Network iPhone", udid: wifiUdid, connection: "wifi", version: "17.5" },
+            });
+            const unknownUdid = "00008199-00AA00BB00CC00DD";
+            const unknownStatus = await invoke("status", unknownUdid);
+            expect(unknownStatus.status).toBe(200);
+            const unknownBody = await unknownStatus.json() as typeof body;
+            expect(unknownBody).toMatchObject({ ok: true, result: { ownerId, backend: "ios-device", provider: "device-lab-backend-child" } });
+            expect(unknownBody.result.mcpResult.isError).not.toBe(true);
+            expect(JSON.parse(unknownBody.result.mcpResult.content[0].text)).toMatchObject({
+                ok: true, backend: "ios-device", provider: "xcrun-xctrace", udid: unknownUdid, selected: null, networkVisible: true,
+            });
             const logBeforePair = readFileSync(context.logPath, "utf8");
             expect(logBeforePair).toContain("xcrun xctrace list devices\n");
             const refused = await invoke("pair");
