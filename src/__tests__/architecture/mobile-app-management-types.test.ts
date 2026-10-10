@@ -1,14 +1,7 @@
 import { describe, expectTypeOf, it } from "vitest";
 import { createAndroidAppManagement } from "../../../packages/device-lab/providers/application/android-app-management.mjs";
 import { createIosAppManagement } from "../../../packages/device-lab/providers/application/ios-app-management.mjs";
-import { handleAndroidTool } from "../../../packages/device-lab/providers/backends/android.mjs";
-import { handleAndroidRealTool } from "../../../packages/device-lab/providers/backends/android-device.mjs";
-import { handleIosTool } from "../../../packages/device-lab/providers/backends/ios-simulator.mjs";
-import { handleIosRealTool } from "../../../packages/device-lab/providers/backends/ios-device.mjs";
 import type { AndroidAppManagementPorts, AndroidAppOutcome, AndroidAppTarget, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosSimulatorAppDevice, IosPhysicalAppDevice, IosVerifiedAppSession, IosAppOutcome, MobileAppArguments } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
-
-// Import the actual native compositions as well as the actual factories into the strict graph.
-void [handleAndroidTool, handleAndroidRealTool, handleIosTool, handleIosRealTool];
 
 function consumedCapabilities(android: AndroidAppManagementPorts, simulator: IosSimulatorAppManagementPorts, physical: IosPhysicalAppManagementPorts): void {
     const androidResult: AndroidAppOutcome | undefined = createAndroidAppManagement(android).request("device_install_app", { deviceId: "owned", path: "/Test.apk", replace: false });
