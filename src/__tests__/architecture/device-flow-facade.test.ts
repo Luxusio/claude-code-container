@@ -176,6 +176,11 @@ beforeAll(async () => {
             current: "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0",
             sourceTip: "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
         },
+        "backends/macos-vm.mjs": {
+            archived: "0dc325978de01e8681c9f297f14eda217ea890f1b46eafd25a5b5f59dcdb9abe",
+            current: "a206a44894802efae5e511b013782313c0536dd251256ee610f4e724bd3045ee",
+            sourceTip: "2f13b63dac281b5f710b737698284022df8f84ed",
+        },
         "backends/linux-vm.mjs": {
             archived: "f27fba0d138d2d6390f7076d699a3ec93435a8d9c149a4221cfd3c26bb2a64a9",
             current: "d7dc7669ac6c1201a567fddafb6478aa2b813c0b09688020b3c5ab054f6e54c8",
@@ -197,15 +202,20 @@ beforeAll(async () => {
             sourceTip: "8b74ef39d7987a896962db8224f6ab66d69b1363",
         },
     };
+    const providerMismatches: Array<{ path: string; kind: string; expected: string; actual: string; provenance: string }> = [];
     for (const file of providerFiles(join(frozenRoot, "packages/device-lab/providers"))) {
         const relative = file.slice(frozenRoot.length + 1);
         const provider = relative.slice("packages/device-lab/providers/".length);
         const admission = admittedProviders[provider];
+        const archivedSha = digest(file);
+        const currentSha = digest(resolve(checkoutRoot, relative));
         if (admission) {
-            expect(digest(file), `${provider} frozen ${revision}`).toBe(admission.archived);
-            expect(digest(resolve(checkoutRoot, relative)), `${provider} admitted ${admission.sourceTip}`).toBe(admission.current);
-        } else expect(digest(resolve(checkoutRoot, relative)), relative).toBe(digest(file));
+            if (archivedSha !== admission.archived) providerMismatches.push({ path: relative, kind: "archived", expected: admission.archived, actual: archivedSha, provenance: revision });
+            if (currentSha !== admission.current) providerMismatches.push({ path: relative, kind: "current", expected: admission.current, actual: currentSha, provenance: admission.sourceTip });
+        } else if (currentSha !== archivedSha) providerMismatches.push({ path: relative, kind: "unchanged", expected: archivedSha, actual: currentSha, provenance: revision });
     }
+    expect(providerMismatches, "all frozen-provider original/current authority mismatches").toEqual([]);
+
     // Import archived namespaces only for read-only export comparison. Never
     // invoke any archived export, including its error constructor.
     for (const provider of Object.keys(admittedProviders)) {
