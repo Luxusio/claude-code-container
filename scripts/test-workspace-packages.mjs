@@ -42081,7 +42081,7 @@ function createIosFollowupBoundary(payload,privateHome,currentAuthority,assets) 
   assert.equal(process.versions.node,'22.23.2');
   assert.equal(process.platform,'linux','this existing proc/process-group fixture is Linux only');
   assert(path.isAbsolute(payload)&&path.resolve(payload)===payload);assert(path.isAbsolute(privateHome)&&path.resolve(privateHome)===privateHome);
-  const sourcePins={"packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.mjs": {"sha256": "c98e60faae41e4f723df991a892eb083b5491648b1fbd08e13a2f5729092770d", "bytes": 22184}, "packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.d.mts": {"sha256": "7522212f72fef6002746b06c37cb6d605d7e7fdb750411694e889dcf305f4c5d", "bytes": 608}, "packages/device-lab/providers/domain/lifecycle/ios-simulator-lifecycle.mjs": {"sha256": "ddffcd9d6da5adce9cb3b972aeb78c66d24e7178f4307077eff3992f3160ba22", "bytes": 1371}, "packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.mjs": {"sha256": "a77c1a190ad31aab462c33abec3aacce24d573fa86b69df3a36ed9cafcf88a8d", "bytes": 152}, "packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.d.mts": {"sha256": "e4066eab4ab29d1f862825165e6556a45d22bd87f51f56f4aaa9b3a69f37122c", "bytes": 4362}, "packages/device-lab/providers/backends/ios-simulator.mjs": {"sha256": "85d2c1d509c3d9e10b43c4a93af8314c1abefe55e0926e13bda71bf07373aeb2", "bytes": 76126}, "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts": {"sha256": "56db5e6cba8ff977fa2facfd716a93f1f86a34ec54345d4210fc9b90f704fa65", "bytes": 8917}, "packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.ts": {"sha256": "4807f53e6e79c04bb6db357772b09ad1321f7b89a1e85b2ed27db951bf57650e", "bytes": 4887}, "packages/device-lab/src/device-lab/ports/lifecycle/ios-simulator-lifecycle.ts": {"sha256": "689f547c80fd02e0c18fe84b49adbff10e16fa0c5c6da441cfd19a3a54eca154", "bytes": 2204}};for(const [relative,pin]of Object.entries(sourcePins)){assert(currentAuthority.sourcePins?.[relative],relative+' missing source authority');assert.equal(currentAuthority.sourcePins[relative].sha256,pin.sha256);assert.equal(currentAuthority.sourcePins[relative].bytes,pin.bytes);}
+  const sourcePins={"packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.mjs": {"sha256": "c98e60faae41e4f723df991a892eb083b5491648b1fbd08e13a2f5729092770d", "bytes": 22184}, "packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.d.mts": {"sha256": "7522212f72fef6002746b06c37cb6d605d7e7fdb750411694e889dcf305f4c5d", "bytes": 608}, "packages/device-lab/providers/domain/lifecycle/ios-simulator-lifecycle.mjs": {"sha256": "ddffcd9d6da5adce9cb3b972aeb78c66d24e7178f4307077eff3992f3160ba22", "bytes": 1371}, "packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.mjs": {"sha256": "a77c1a190ad31aab462c33abec3aacce24d573fa86b69df3a36ed9cafcf88a8d", "bytes": 152}, "packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.d.mts": {"sha256": "e4066eab4ab29d1f862825165e6556a45d22bd87f51f56f4aaa9b3a69f37122c", "bytes": 4362}, "packages/device-lab/providers/backends/ios-simulator.mjs": {"sha256": "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0", "bytes": 76231}, "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts": {"sha256": "56db5e6cba8ff977fa2facfd716a93f1f86a34ec54345d4210fc9b90f704fa65", "bytes": 8917}, "packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.ts": {"sha256": "4807f53e6e79c04bb6db357772b09ad1321f7b89a1e85b2ed27db951bf57650e", "bytes": 4887}, "packages/device-lab/src/device-lab/ports/lifecycle/ios-simulator-lifecycle.ts": {"sha256": "689f547c80fd02e0c18fe84b49adbff10e16fa0c5c6da441cfd19a3a54eca154", "bytes": 2204}};for(const [relative,pin]of Object.entries(sourcePins)){assert(currentAuthority.sourcePins?.[relative],relative+' missing source authority');assert.equal(currentAuthority.sourcePins[relative].sha256,pin.sha256);assert.equal(currentAuthority.sourcePins[relative].bytes,pin.bytes);}
   assert(currentAuthority.emissionPins,'real artifact pins required');
   assert.equal(fs.existsSync(path.join(payload,'node_modules')),false,'packed subjects must not contain node_modules');
   for(const relative of ['dist/device-lab-mcp/server.mjs','dist/packages/device-lab/dist/device-lab-broker.js','dist/packages/device-lab/providers/backends/ios-simulator.mjs','dist/packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.mjs','dist/packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.d.mts','dist/packages/device-lab/providers/domain/lifecycle/ios-simulator-lifecycle.mjs','dist/packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.mjs','dist/packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.d.mts','dist/packages/device-lab/dist/device-lab/application/lifecycle/ios-simulator-lifecycle.js','dist/packages/device-lab/dist/device-lab/domain/lifecycle/ios-simulator-lifecycle.js'])assert(currentAuthority.emissionPins[relative],relative+' missing genuine pin');
@@ -42425,7 +42425,7 @@ const LIFECYCLE_REQUIRED_EMISSION_PATHS=[
   "dist/packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs"
 ];
 const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
-  "sourceCommit": "9901d3d9cbbe76eb144ce7954356f0004bf309e9",
+  "sourceCommit": "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
   "sourcePins": {
     "packages/device-lab/providers/application/android-wireless.mjs": {
       "sha256": "145900a614c2e4175ac74d09b54d3f8966cff22cee70616853ebdbae49bd1d92",
@@ -42476,16 +42476,16 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 50740
     },
     "packages/device-lab/providers/backends/android.mjs": {
-      "sha256": "1e4e313ea9e89839389e27676afeddec65d155b569eacaf1eb1eae4d072b12bc",
-      "bytes": 66184
+      "sha256": "5d8fa7a8521131016bcaea0ba1f155e7c91d03a904bbaf31923bcc3ca338e96c",
+      "bytes": 66284
     },
     "packages/device-lab/providers/backends/ios-device.mjs": {
       "sha256": "56a75969fd6047e0b83c0b19d26c6c2adf44a2be7ecca44783bfc1e106d30d00",
       "bytes": 47469
     },
     "packages/device-lab/providers/backends/ios-simulator.mjs": {
-      "sha256": "85d2c1d509c3d9e10b43c4a93af8314c1abefe55e0926e13bda71bf07373aeb2",
-      "bytes": 76126
+      "sha256": "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0",
+      "bytes": 76231
     },
     "packages/device-lab/providers/backends/linux-vm.mjs": {
       "sha256": "d7dc7669ac6c1201a567fddafb6478aa2b813c0b09688020b3c5ab054f6e54c8",
@@ -43718,8 +43718,8 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 2883
     },
     "doc/verification/GUIDE__architecture-verification.md": {
-      "sha256": "80d9c09f950ce59a80db04bc422e68ee986ba4892c3ffe0dbce5df6159384aec",
-      "bytes": 5739
+      "sha256": "c6e674d027865ef72778ef191d36f26ae4b10f64249b968158df2f19b5c4a0cf",
+      "bytes": 6226
     },
     "doc/verification/GUIDE__ios-sdk-node-fixture.md": {
       "sha256": "a560544519b573e83025c5f48c92ffff8822dfbf325fcb90e273471d2abb2af4",
@@ -43962,16 +43962,16 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 2952
     },
     "packages/device-lab/providers/backends/android.mjs": {
-      "sha256": "1e4e313ea9e89839389e27676afeddec65d155b569eacaf1eb1eae4d072b12bc",
-      "bytes": 66184
+      "sha256": "5d8fa7a8521131016bcaea0ba1f155e7c91d03a904bbaf31923bcc3ca338e96c",
+      "bytes": 66284
     },
     "packages/device-lab/providers/backends/ios-device.mjs": {
       "sha256": "56a75969fd6047e0b83c0b19d26c6c2adf44a2be7ecca44783bfc1e106d30d00",
       "bytes": 47469
     },
     "packages/device-lab/providers/backends/ios-simulator.mjs": {
-      "sha256": "85d2c1d509c3d9e10b43c4a93af8314c1abefe55e0926e13bda71bf07373aeb2",
-      "bytes": 76126
+      "sha256": "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0",
+      "bytes": 76231
     },
     "packages/device-lab/providers/backends/linux-vm-smoke.mjs": {
       "sha256": "4eac15ac76c93dde1815528f27292da07103a89efe4590c554b05437742ec092",
@@ -43994,8 +43994,8 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 22458
     },
     "packages/device-lab/providers/backends/windows-sandbox.mjs": {
-      "sha256": "5fcfc1e53d3f0200c2a5568ef6d0196de133e48cd879bd8e1fa0b3741550dc35",
-      "bytes": 129994
+      "sha256": "deb025c9c4ac9b019dead292acd54450b3ec3b2ecc15e62f3315f38f6cf5e5d7",
+      "bytes": 130101
     },
     "packages/device-lab/providers/backends/windows-vm.mjs": {
       "sha256": "02f7176697c9166a86b5509952b1c76795a95a29a88f9a5203fd4d53f59e1d91",
@@ -45338,8 +45338,8 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 10112
     },
     "scripts/test-workspace-packages.mjs": {
-      "sha256": "bb470b92a1f5f6cda8fb2ad8234f2af5e8b5afc3f29fa21848e466b4fdcd6a66",
-      "bytes": 3679317
+      "sha256": "75239c298f678d0bbf445b8e76d318f1f6c88f21984cb0a56af9037d957e0996",
+      "bytes": 6415605
     },
     "scripts/tests/workspace-windows-lx-links.test.mjs": {
       "sha256": "d0eddfca46af576b7aded912ac97a58a4e6222c8e3f038ef8b31d1cd05e1addf",
@@ -45858,8 +45858,8 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 6371
     },
     "src/__tests__/architecture/ios-simulator-lifecycle-broker.test.ts": {
-      "sha256": "77d90d5e88ec63fdc036c0fe7ac39d7eb3ef224af70fd43469c78f99815cd068",
-      "bytes": 70520
+      "sha256": "cde4b88ac07f64bd1c0c71a4c01518385de36902ec374aefe6e8958c7d6ca9ff",
+      "bytes": 75401
     },
     "src/__tests__/architecture/ios-simulator-lifecycle-core.test.ts": {
       "sha256": "46b42b7bf0897fbba6abe48c93ade1cd94dcb5567e44af44723ef4baa824556f",
@@ -45926,8 +45926,8 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 9268
     },
     "src/__tests__/architecture/macos-vm-lifecycle-broker.test.ts": {
-      "sha256": "4c6072661b6dfd085f67044dc4a6dbedb8ca2f8c325e58a283f255761fa31457",
-      "bytes": 912180
+      "sha256": "6613c063751da0f59ecbed5364a8757d39a592e27982a97bba1a35fd5eb51dc7",
+      "bytes": 915730
     },
     "src/__tests__/architecture/macos-vm-lifecycle-core.test.ts": {
       "sha256": "0af7235e359750cfc73de93a0e9979c0533d0576b207a294ff5012ddc46aa2af",
@@ -47218,8 +47218,8 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
       "bytes": 17396
     },
     "src/__tests__/fake-ios-sdk-node-portability.test.ts": {
-      "sha256": "2645c7f68ada013be28c81e66310a9953eef6c6b1e9836ad3ea472b2ad6478f3",
-      "bytes": 30745
+      "sha256": "82d1cd358958ad4add29f21ffc4635a0a38e24dc6584694bfc9b0f5ceecc5660",
+      "bytes": 30668
     },
     "src/__tests__/global-tools.test.ts": {
       "sha256": "cc7aa8c32b486193acfbe17f903e60710854772ba3b84fe421df99aef4bd0d20",
@@ -48556,13 +48556,17 @@ const LIFECYCLE_CURRENT_SOURCE_AUTHORITY={
     "src/__tests__/ios-simulator-lifecycle-public-mcp.test.ts": {
       "sha256": "6310effd4a137dfb3770272bb8dc018141f05277ee418fa00be1d052f8048900",
       "bytes": 3152
+    },
+    "src/__tests__/device-lab-create-backend-routing.test.ts": {
+      "sha256": "60be86d388624c4cf50f2476f3869514895d4b6133b754a51249468b6d111447",
+      "bytes": 4930
     }
   },
-  "trackedCount": 1456,
-  "captureSha256": "22eb833ded590fbb43a3fd8d5c98c57afe0c8ae60493bb7e4d55c22f1404ff63"
+  "trackedCount": 1457,
+  "captureSha256": "cbbeef3c90a68d4cddf2029177d1724fd97872a24760e6a4022ae8d323378c11"
 }; // Final independently captured live closure; full build inputs retained as historical provenance.
 const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
-  "sourceCommit": "9901d3d9cbbe76eb144ce7954356f0004bf309e9",
+  "sourceCommit": "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
   "files": {
     "dist/adapters/codex-harness-bootstrap.d.ts": {
       "sha256": "8b041b3721330c1505e5d8176f973a50333e0166b7ed68c93fbb5670c53aa4e7",
@@ -49417,8 +49421,8 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 26442
     },
     "dist/device-lab-mcp/server.mjs": {
-      "sha256": "8d2d1e8e9877c7f0b4dbf7801081b6a2f2fc7497393e4abbb9fc8b9fb0592596",
-      "bytes": 1916806
+      "sha256": "e4c33309352999885128a87a69fd73ea4489f6fc63f6f207a61a118ccce8ef90",
+      "bytes": 1917103
     },
     "dist/docker.d.ts": {
       "sha256": "c9c2370fbbf35d73e5058a10a211043bb926334d120ab385c353279a3fdabcc1",
@@ -50653,16 +50657,16 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 2952
     },
     "dist/packages/device-lab/providers/backends/android.mjs": {
-      "sha256": "1e4e313ea9e89839389e27676afeddec65d155b569eacaf1eb1eae4d072b12bc",
-      "bytes": 66184
+      "sha256": "5d8fa7a8521131016bcaea0ba1f155e7c91d03a904bbaf31923bcc3ca338e96c",
+      "bytes": 66284
     },
     "dist/packages/device-lab/providers/backends/ios-device.mjs": {
       "sha256": "56a75969fd6047e0b83c0b19d26c6c2adf44a2be7ecca44783bfc1e106d30d00",
       "bytes": 47469
     },
     "dist/packages/device-lab/providers/backends/ios-simulator.mjs": {
-      "sha256": "85d2c1d509c3d9e10b43c4a93af8314c1abefe55e0926e13bda71bf07373aeb2",
-      "bytes": 76126
+      "sha256": "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0",
+      "bytes": 76231
     },
     "dist/packages/device-lab/providers/backends/linux-vm-smoke.mjs": {
       "sha256": "4eac15ac76c93dde1815528f27292da07103a89efe4590c554b05437742ec092",
@@ -50685,8 +50689,8 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 22458
     },
     "dist/packages/device-lab/providers/backends/windows-sandbox.mjs": {
-      "sha256": "5fcfc1e53d3f0200c2a5568ef6d0196de133e48cd879bd8e1fa0b3741550dc35",
-      "bytes": 129994
+      "sha256": "deb025c9c4ac9b019dead292acd54450b3ec3b2ecc15e62f3315f38f6cf5e5d7",
+      "bytes": 130101
     },
     "dist/packages/device-lab/providers/backends/windows-vm.mjs": {
       "sha256": "02f7176697c9166a86b5509952b1c76795a95a29a88f9a5203fd4d53f59e1d91",
@@ -66600,8 +66604,8 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 26442
     },
     "dist/device-lab-mcp/server.mjs": {
-      "sha256": "8d2d1e8e9877c7f0b4dbf7801081b6a2f2fc7497393e4abbb9fc8b9fb0592596",
-      "bytes": 1916806
+      "sha256": "e4c33309352999885128a87a69fd73ea4489f6fc63f6f207a61a118ccce8ef90",
+      "bytes": 1917103
     },
     "dist/docker.d.ts": {
       "sha256": "c9c2370fbbf35d73e5058a10a211043bb926334d120ab385c353279a3fdabcc1",
@@ -67836,16 +67840,16 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 2952
     },
     "dist/packages/device-lab/providers/backends/android.mjs": {
-      "sha256": "1e4e313ea9e89839389e27676afeddec65d155b569eacaf1eb1eae4d072b12bc",
-      "bytes": 66184
+      "sha256": "5d8fa7a8521131016bcaea0ba1f155e7c91d03a904bbaf31923bcc3ca338e96c",
+      "bytes": 66284
     },
     "dist/packages/device-lab/providers/backends/ios-device.mjs": {
       "sha256": "56a75969fd6047e0b83c0b19d26c6c2adf44a2be7ecca44783bfc1e106d30d00",
       "bytes": 47469
     },
     "dist/packages/device-lab/providers/backends/ios-simulator.mjs": {
-      "sha256": "85d2c1d509c3d9e10b43c4a93af8314c1abefe55e0926e13bda71bf07373aeb2",
-      "bytes": 76126
+      "sha256": "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0",
+      "bytes": 76231
     },
     "dist/packages/device-lab/providers/backends/linux-vm-smoke.mjs": {
       "sha256": "4eac15ac76c93dde1815528f27292da07103a89efe4590c554b05437742ec092",
@@ -67868,8 +67872,8 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 22458
     },
     "dist/packages/device-lab/providers/backends/windows-sandbox.mjs": {
-      "sha256": "5fcfc1e53d3f0200c2a5568ef6d0196de133e48cd879bd8e1fa0b3741550dc35",
-      "bytes": 129994
+      "sha256": "deb025c9c4ac9b019dead292acd54450b3ec3b2ecc15e62f3315f38f6cf5e5d7",
+      "bytes": 130101
     },
     "dist/packages/device-lab/providers/backends/windows-vm.mjs": {
       "sha256": "02f7176697c9166a86b5509952b1c76795a95a29a88f9a5203fd4d53f59e1d91",
@@ -69832,12 +69836,12 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
       "bytes": 3671
     }
   },
-  "gateCaptureSha256": "2b3a672eb3f988ca074e98f974b516a6b22f2d6c2ad236a5c29b3205804687d8",
-  "allOutputsCaptureSha256": "9890200f9149b44f9593771f2af46f124c9a6e238c9062cbeb4fdea4f24e6c4f",
+  "gateCaptureSha256": "086f0e2c0ef630c64a39f9c8a84d44b89b982e1c514892e15933f937520bd55f",
+  "allOutputsCaptureSha256": "bb26c71c2d507d2bb9a73630b90d85b54269e1bd2fce7bd733d0cc48568a526f",
   "buildProvenance": {
-    "buildMode": "Actual complete original stage continuation; not uninterrupted full build",
-    "sourceCommit": "9901d3d9cbbe76eb144ce7954356f0004bf309e9",
-    "sourceCount": 1456,
+    "buildMode": "Actual complete original stage chain; ONLY unchanged HyperVstatic carried, not uninterrupted full build",
+    "sourceCommit": "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
+    "sourceCount": 1457,
     "allGenuineOutputs": 1021,
     "threeOutputRoots": {
       "dist": 801,
@@ -69848,63 +69852,78 @@ const LIFECYCLE_CURRENT_EMISSION_AUTHORITY={
     "controllerIndependentExpectedPins": 3492,
     "freshStages": [
       {
-        "originalCommand": "tsc",
+        "originalCommand": "npm run build:packages",
         "exit": 0,
-        "elapsed": 2.9178648750239518
-      },
-      {
-        "originalCommand": "npm run typecheck:hyper-v:windows:contracts",
-        "exit": 0,
-        "elapsed": 1.366458934993716
-      },
-      {
-        "originalCommand": "npm run typecheck:real-tests",
-        "exit": 0,
-        "elapsed": 2.7259855060256086
-      },
-      {
-        "originalCommand": "npm run typecheck:tests",
-        "exit": 0,
-        "elapsed": 1.0758172669738997
-      },
-      {
-        "originalCommand": "npm run bundle:hyper-v:windows:library-test",
-        "exit": 0,
-        "elapsed": 9.528658927971264
-      },
-      {
-        "originalCommand": "npm run bundle:hyper-v:windows:library-privileged-test",
-        "exit": 0,
-        "elapsed": 9.468012477009324
-      },
-      {
-        "originalCommand": "npm run bundle:hyper-v:windows:network-host-test",
-        "exit": 0,
-        "elapsed": 9.532668077008566
-      },
-      {
-        "originalCommand": "node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\"",
-        "exit": 0,
-        "elapsed": 0.017730588995618746
-      },
-      {
-        "originalCommand": "npm run build:device-lab-mcp",
-        "exit": 0,
-        "elapsed": 1.4960582060157321
-      },
-      {
-        "originalCommand": "npm run bundle:codex-resume-runtime",
-        "exit": 0,
-        "elapsed": 9.516071009013103
+        "elapsed": 4.976197817013599
       },
       {
         "originalCommand": "npm run assemble:packages",
         "exit": 0,
-        "elapsed": 1.2176168820005842
+        "elapsed": 1.2679473719908856
+      },
+      {
+        "originalCommand": "tsc",
+        "exit": 0,
+        "elapsed": 2.7767636089993175
+      },
+      {
+        "originalCommand": "npm run typecheck:hyper-v:windows:contracts",
+        "exit": 0,
+        "elapsed": 1.4397474889992736
+      },
+      {
+        "originalCommand": "npm run typecheck:real-tests",
+        "exit": 0,
+        "elapsed": 2.5569444469874725
+      },
+      {
+        "originalCommand": "npm run typecheck:tests",
+        "exit": 0,
+        "elapsed": 1.1061209710023832
+      },
+      {
+        "originalCommand": "npm run typecheck:architecture",
+        "exit": 0,
+        "elapsed": 9.218392861977918
+      },
+      {
+        "originalCommand": "npm run bundle:hyper-v:windows:library-test",
+        "exit": 0,
+        "elapsed": 9.718958647979889
+      },
+      {
+        "originalCommand": "npm run bundle:hyper-v:windows:library-privileged-test",
+        "exit": 0,
+        "elapsed": 9.730184792977525
+      },
+      {
+        "originalCommand": "npm run bundle:hyper-v:windows:network-host-test",
+        "exit": 0,
+        "elapsed": 9.70942621998256
+      },
+      {
+        "originalCommand": "node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\"",
+        "exit": 0,
+        "elapsed": 0.023394834017381072
+      },
+      {
+        "originalCommand": "npm run build:device-lab-mcp",
+        "exit": 0,
+        "elapsed": 1.5229559679864906
+      },
+      {
+        "originalCommand": "npm run bundle:codex-resume-runtime",
+        "exit": 0,
+        "elapsed": 10.039039606024744
+      },
+      {
+        "originalCommand": "npm run assemble:packages",
+        "exit": 0,
+        "elapsed": 1.34553525299998
       }
     ],
-    "carriedStagesProvenance": "future-original-stage-continuation-provenance.json",
-    "completeAuthenticationSha256": "12cfa78cc1381d60c6675ed530d3a2034cb02099a60e45be6a07fff612b2c6c1"
+    "carriedStagesProvenance": "routing-build-original-stage-provenance.json",
+    "completeAuthenticationSha256": "5e10995a7e256bbd3037b8c1cca967efe8e2508904e2af761b82839213dfb010"
   }
 }; // Complete independent genuine capture; original stage continuation provenance is retained.
 const MACOS_DIRECT_DECLARATIONS="import { createMacosVmLifecycleApplication } from \"./dist/packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs\";\nimport type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from \"./dist/packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs\";\n\n// These are strict source AND genuine-emission consumer controls. Vitest alone\n// does not check their directives; QA must use skipLibCheck=false on both.\ntype Result={ok:boolean;value:unknown};\nconst device:MacosVmDevice={id:\"unit\",status:\"stopped\",extra:{raw:true}};\nconst child={pid:71,unref(){return undefined;}};\nconst plan={available:true,missing:[],selectedProvider:\"tart\",providerCommand:\"tart\",providerInstance:\"instance\",startCommand:{command:\"tart\",args:[\"run\",\"instance\"]},stopCommand:{command:\"tart\",args:[\"stop\",\"instance\"]}};\nconst ports:MacosVmLifecyclePorts<Result,typeof child>={\n    read:()=>[device],find:()=>device,claim:()=>({ok:true}),transition:()=>({matched:false,found:true}),\n    owner:()=>\"owner\",deviceId:()=>\"unit\",timestamp:()=>\"now\",now:()=>1,runtimeId:()=>\"claim\",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),\n    validateSshKey:()=>({ok:true,path:null}),helperMetadata:()=>({}),\n    providerPlan:()=>plan,tartPlan:()=>({plan}),publicDevice:value=>value,\n    providerCommand:()=>({status:0,stdout:\"raw out\",stderr:\"raw err\"}),commandTimedOut:()=>false,tartStartArgs:()=>[],supportsFeature:()=>false,\n    spawn:()=>child,waitProviderStart:async()=>null,waitBoot:async()=>({ready:false,skipped:true}),\n    waitGuestHelper:async()=>({ok:true}),provisionHelper:()=>({ok:true}),signalRecording:()=>({signaled:false}),waitRecordingExit:async()=>true,\n    sshBridge:()=>({discovery:{ssh:\"ssh\"},target:\"host\"}),sshBaseArgs:()=>[],shellQuote:value=>value,sshCommandOptions:()=>({}),\n    helperCommand:()=>({status:0,stdout:\"\",stderr:\"\"}),textResult:(ok,value)=>({ok,value}),jsonResult:value=>({ok:true,value}),fail:value=>({ok:false,value}),\n};\ntype OptionalKeys<T>={[K in keyof T]-?:object extends Pick<T,K>?K:never}[keyof T];\nconst allLeavesRequired:[OptionalKeys<typeof ports>]extends[never]?true:false=true;void allLeavesRequired;\nconst app=createMacosVmLifecycleApplication(ports);\nconst synchronousCreate:Result|undefined=app.create({backend:\"other\"});\nconst synchronousImage:Result|undefined=app.createImage({backend:\"other\"});\nfunction positiveAsyncContract(){const asynchronousStart:Promise<Result|undefined>=app.start({deviceId:\"missing\"});void asynchronousStart;}\nvoid synchronousCreate;void synchronousImage;void positiveAsyncContract;\nfunction negativeContracts(){\n    const {parseLifecycleClaimedAt,...missingParse}=ports;void parseLifecycleClaimedAt;\n    // @ts-expect-error original claimed-at parsing requires its explicit native leaf\n    createMacosVmLifecycleApplication(missingParse);\n    // @ts-expect-error claimed-at parsing returns its native number synchronously\n    const asyncParse:typeof ports={...ports,parseLifecycleClaimedAt:async()=>1};\n    // @ts-expect-error claimed-at parsing cannot replace the native number with text\n    const textParse:typeof ports={...ports,parseLifecycleClaimedAt:()=>\"1\"};\n    void asyncParse;void textParse;\n    const {spawn,...missingSpawn}=ports;void spawn;\n    // @ts-expect-error spawn is required even for applications used only to create\n    createMacosVmLifecycleApplication(missingSpawn);\n    const {transition,...missingTransition}=ports;void transition;\n    // @ts-expect-error complete-record publication must be provided\n    createMacosVmLifecycleApplication(missingTransition);\n    // @ts-expect-error owner inventory remains synchronous\n    const asyncRead:typeof ports={...ports,read:async()=>[device]};\n    // @ts-expect-error current record observation remains synchronous\n    const asyncFind:typeof ports={...ports,find:async()=>device};\n    // @ts-expect-error claim result must be immediate\n    const asyncClaim:typeof ports={...ports,claim:async()=>({ok:true})};\n    // @ts-expect-error publication cannot return an unawaited Promise\n    const asyncTransition:typeof ports={...ports,transition:async()=>({matched:true,found:true,device})};\n    // @ts-expect-error publication must report match and found, not only a device\n    const malformedTransition:typeof ports={...ports,transition:()=>({device})};\n    // @ts-expect-error key-policy observation cannot be asynchronous\n    const asyncKey:typeof ports={...ports,validateSshKey:async()=>({ok:true,path:null})};\n    // @ts-expect-error native commands remain immediate raw observations\n    const asyncCommand:typeof ports={...ports,providerCommand:async()=>({status:0,stdout:\"\",stderr:\"\"})};\n    // @ts-expect-error command stdout remains a string\n    const malformedCommand:typeof ports={...ports,providerCommand:()=>({status:0,stdout:1,stderr:\"\"})};\n    // @ts-expect-error launch returns the actual native handle immediately\n    const asyncSpawn:typeof ports={...ports,spawn:async()=>child};\n    // @ts-expect-error a pid-only handle cannot preserve native unref\n    const missingUnref:MacosVmProcessHandle={pid:71};\n    // @ts-expect-error launch wait is asynchronous\n    const syncWait:typeof ports={...ports,waitProviderStart:()=>null};\n    // @ts-expect-error boot readiness is asynchronous\n    const syncBoot:typeof ports={...ports,waitBoot:()=>({ready:true})};\n    // @ts-expect-error helper readiness carries async completion\n    const syncHelper:typeof ports={...ports,waitGuestHelper:()=>({ok:true})};\n    // @ts-expect-error immediate provisioning cannot become a Promise\n    const asyncProvision:typeof ports={...ports,provisionHelper:async()=>({ok:true})};\n    // @ts-expect-error signal has an immediate structured result\n    const weakSignal:typeof ports={...ports,signalRecording:()=>false};\n    // @ts-expect-error recorder exit is awaited\n    const syncExit:typeof ports={...ports,waitRecordingExit:()=>true};\n    // @ts-expect-error mutable device identity is still a string\n    const malformedDevice:MacosVmDevice={id:3};\n    // @ts-expect-error start is asynchronous, even on an early refusal\n    const synchronousStart:Result|undefined=app.start({deviceId:\"missing\"});\n    // @ts-expect-error create stays synchronous\n    const promisedCreate:Promise<Result|undefined>=app.create({backend:\"other\"});\n    void asyncRead;void asyncFind;void asyncClaim;void asyncTransition;void malformedTransition;void asyncKey;\n    void asyncCommand;void malformedCommand;void asyncSpawn;void missingUnref;void syncWait;void syncBoot;\n    void syncHelper;void asyncProvision;void weakSignal;void syncExit;void malformedDevice;void synchronousStart;void promisedCreate;\n}\nvoid negativeContracts;\n";
