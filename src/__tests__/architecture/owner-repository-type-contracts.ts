@@ -1,6 +1,6 @@
 import { createOwnerDeviceRepository } from "../../../packages/device-lab/providers/application/owner-device-repository.mjs";
 
-type RecordValue = Record<string, unknown>;
+type RecordValue = ReturnType<Ports["read"]>[number];
 type Ports = Parameters<typeof createOwnerDeviceRepository>[0];
 
 const devices: RecordValue[] = [{ id: "compile-consumer" }];

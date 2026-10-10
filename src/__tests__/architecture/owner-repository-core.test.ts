@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createOwnerDeviceRepository } from "../../../packages/device-lab/providers/application/owner-device-repository.mjs";
 
-type RecordValue = Record<string, unknown>;
+type RecordValue = ReturnType<Ports["read"]>[number];
 type Ports = Parameters<typeof createOwnerDeviceRepository>[0];
 type Fault = "read" | "exists" | "validate" | "publish" | "acquire" | "release";
 
