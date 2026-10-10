@@ -41988,7 +41988,7 @@ async function verifyQemuFollowup(payload, privateHome, currentAuthority) {
                     if(label==='images-missing'){
                         const routed=await facade.handleLinuxVmManagementTool('device_image_list',intoRealm({backend:'linux-vm'}),intoRealm(options));
                         ownedFile(path.join(consumerRoot,'qemu-images-dispatcher-raw.json'),JSON.stringify({routed:plain(routed),denied}));
-                        assert.deepEqual(JSON.parse(fromRealm(routed).content[0].text),row.result);
+                        assert.deepEqual(JSON.parse(fromRealm(routed).content[0].text),{...row.result,backend:'linux-vm'});
                     }
                     if(label==='target-explicit'){
                         const routed=await facade.handleLinuxVmTool('device_target_list',intoRealm({backend:'linux-vm',labId:'unit'}),intoRealm(options));
