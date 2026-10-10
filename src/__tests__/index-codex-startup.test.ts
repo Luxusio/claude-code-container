@@ -4,7 +4,7 @@ const f = vi.hoisted(() => ({
     handoffStarted: undefined as boolean | undefined,
     realCleanup: false, devices: vi.fn(),
     locked: false, failPostExitLock: false, failTool: false, failState: false, launchFailure: false,
-    probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), confirm: vi.fn(), command: vi.fn(), clipboard: vi.fn(), socket: vi.fn(),
+    probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), claude: vi.fn(), confirm: vi.fn(), command: vi.fn(), clipboard: vi.fn(), socket: vi.fn(),
 }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: f.spawn }));
 // Native filesystem metadata stays real. Only the exact synthetic claim is removed
@@ -57,7 +57,7 @@ vi.mock("../session.js", async original => {
 }; });
 vi.mock("../container-setup.js", () => ({
     CLAUDE_BIN_PATH: "/home/ccc/.local/bin/claude", ensureUvAvailable: () => f.events.push("uv"),
-    ensureClaudeInContainer: () => { throw new Error("unexpected Claude setup in Codex fixture"); },
+    ensureClaudeInContainer: f.claude,
     ensureTools: (id: string, tool: {name: string}) => { expect(id).toBe("final-id"); f.events.push(`tool:${tool.name}`); if (f.failTool) throw new Error("tool unavailable"); },
 }));
 vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: (operation: () => unknown, profile?: string) => {
@@ -104,6 +104,7 @@ beforeEach(() => {
     f.restore.mockImplementation((id, profile) => { expect(id).toBe("final-id"); expect(profile).toBe(f.profile); expect(f.locked).toBe(true); f.events.push("restore"); });
     f.prepare.mockImplementation((id, profile) => { expect(id).toBe("final-id"); expect(profile).toBe(f.profile); expect(f.locked).toBe(true); f.events.push("prepare"); });
     f.state.mockImplementation((id, profile) => { expect(id).toBe("final-id"); expect(profile).toBe(f.profile); f.events.push("state"); if (f.failState) throw new Error("state inaccessible"); });
+    f.claude.mockImplementation((id: string) => { expect(id).toBe("final-id"); f.events.push("claude"); });
     f.harness.mockImplementation((id, profile) => { expect(id).toBe("final-id"); expect(profile).toBe(f.profile); f.events.push("harness"); });
     f.spawn.mockImplementation((_runtime, args: string[]) => { if (args.includes("codex")) f.events.push("command"); return { status: 0, stdout: "", stderr: "" }; });
 });
@@ -118,6 +119,7 @@ it.each([false, true])("preserves final-ID Codex setup and resume ordering when 
     expect(f.events.slice(-4)).toEqual(["command", "restore", "unlink", "cleanup"]);
     expect(f.spawn.mock.calls.some(([, args]) => args[0] === "rm" || args[0] === "rmi")).toBe(false);
     expect(f.start).toHaveBeenCalledOnce();
+    expect(f.claude).not.toHaveBeenCalled();
     const command = f.command.mock.calls[0][1];
     expect(command).toContain("resume"); expect(command).toContain("--last");
     expect(f.clipboard).toHaveBeenCalledWith("final-id", expect.any(String));
@@ -253,4 +255,16 @@ it("awaits the captured start acknowledgement before CLI cleanup after a helper 
     cleanupSession();
     expect(f.devices).toHaveBeenCalledOnce();
     expect(f.spawn).toHaveBeenCalledWith("docker", ["stop", "final-id"], { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL" });
+});
+
+
+it("public Claude startup verifies the final container and runs without Codex Harness", async () => {
+    process.argv = [process.execPath, "ccc", "claude", "hello"];
+    await expect(main()).rejects.toMatchObject({ status: 0 });
+    expect(f.claude).toHaveBeenCalledWith("final-id");
+    expect(f.command).toHaveBeenCalledOnce();
+    expect(f.command.mock.calls[0][1]).toContain("final-id");
+    expect(f.command.mock.calls[0][1]).toContain("hello");
+    expect(f.harness).not.toHaveBeenCalled();
+    expect(f.events.indexOf("command")).toBeGreaterThan(f.events.indexOf("claude"));
 });

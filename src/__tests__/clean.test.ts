@@ -33,7 +33,7 @@ vi.mock("../session.js", () => ({
 const { cleanContainers } = await import("../clean.js");
 
 function makeResult(
-    status: number,
+    status: number | null,
     stdout = "",
 ): SpawnSyncReturns<string> {
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
@@ -76,6 +76,40 @@ describe("cleanContainers", () => {
         spawnSyncMock.mockReturnValue(makeResult(0, ""));
         await cleanContainers({ yes: true });
         expect(console.log).toHaveBeenCalledWith("Nothing to clean.");
+    });
+
+    it.each([
+        { stage: "containers", kind: "containers", result: { ...makeResult(0), error: new Error("container inventory unavailable") } },
+        { stage: "local images", kind: "images", result: makeResult(2, "ccc\tsha256local\t500MB") },
+        { stage: "registry images", kind: "images", result: makeResult(null, "registry/ccc\tsha256registry\t500MB") },
+        { stage: "requested volumes", kind: "volumes", result: makeResult(1, "ccc-mise-cache") },
+    ])("aborts before confirmation or mutation when $stage inventory fails", async ({ stage, kind, result }) => {
+        let failureObserved = false;
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const command = args as string[];
+            const inventory = command[0] === "ps" ? "containers"
+                : command[0] === "images" ? (command[command.length - 1] === "ccc" ? "local images" : "registry images")
+                    : command[0] === "volume" && command[1] === "ls" ? "requested volumes" : null;
+            if (inventory === stage) {
+                failureObserved = true;
+                return result;
+            }
+            if (inventory === "containers") return makeResult(0, "111111111111\tccc-running-aabbcc112233\tUp 10 minutes");
+            if (inventory === "local images") return makeResult(0, "ccc\tsha256local\t500MB");
+            if (inventory === "registry images") return makeResult(0, "registry/ccc\tsha256registry\t500MB");
+            return makeResult(0, "");
+        });
+        promptMock.mockResolvedValue("yes");
+
+        await expect(cleanContainers({ all: true, volumes: true })).rejects.toThrow(`Failed to list ${kind}; cleanup aborted.`);
+
+        expect(failureObserved).toBe(true);
+        expect(promptMock).not.toHaveBeenCalled();
+        const commands = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+        expect(commands.some(command => ["stop", "rm", "rmi"].includes(command[0])
+            || command[0] === "volume" && command[1] === "rm")).toBe(false);
+        expect(process.exit).not.toHaveBeenCalled();
+        expect(console.log).not.toHaveBeenCalled();
     });
 
     it("default clean: removes stopped containers and ccc images", async () => {
@@ -217,9 +251,8 @@ describe("cleanContainers", () => {
 
         await expect(cleanContainers({ all: true, yes: true })).rejects.toThrow("process.exit called");
 
-        const calls = spawnSyncMock.mock.calls.map((c) => (c[1] as string[]).join(" "));
-        expect(calls.some((c) => c.startsWith("stop ccc-live"))).toBe(false);
-        expect(calls.some((c) => c.startsWith("rm ccc-live"))).toBe(false);
+        const commands = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+        expect(commands.some(command => command[0] === "stop" || command[0] === "rm")).toBe(false);
         expect(console.log).toHaveBeenCalledWith("Skipping ccc-live-aabbcc112233: 1 CCC session ownership claim(s).");
     });
 

@@ -1,5 +1,7 @@
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
+import { createServer } from "node:http";
+import type { Socket } from "node:net";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -7,6 +9,7 @@ import {
     buildCodexClipboardImageRelativePath,
     injectCodexClipboardImageArgs,
     maybeAttachCodexClipboardImage,
+    readClipboardImagePng,
 } from "../codex-clipboard-image.js";
 
 const tempDirs: string[] = [];
@@ -139,5 +142,46 @@ describe("maybeAttachCodexClipboardImage", () => {
         });
 
         expect(result).toEqual({ args: ["codex", "prompt"] });
+    });
+});
+
+
+describe("readClipboardImagePng", () => {
+    it.each([
+        { name: "returns exact nonempty 200 bytes", status: 200, body: Buffer.from([137, 80, 78, 71, 0, 255]), disconnect: false },
+        { name: "returns null for empty 200", status: 200, body: Buffer.alloc(0), disconnect: false },
+        { name: "returns null for non-200 with a body", status: 503, body: Buffer.from("unavailable"), disconnect: false },
+        { name: "returns null when the owned connection closes before headers", status: 200, body: Buffer.alloc(0), disconnect: true },
+    ])("$name", async ({ status, body, disconnect }) => {
+        const requests: { path: string | undefined; authorization: string | undefined }[] = [];
+        const sockets = new Set<Socket>();
+        const closedSockets: Promise<void>[] = [];
+        const server = createServer((request, response) => {
+            requests.push({ path: request.url, authorization: request.headers.authorization });
+            if (disconnect) request.socket.destroy();
+            else { response.writeHead(status); response.end(body); }
+        });
+        server.on("connection", socket => {
+            sockets.add(socket);
+            closedSockets.push(new Promise(resolve => socket.once("close", () => {
+                sockets.delete(socket);
+                resolve();
+            })));
+        });
+        try {
+            await new Promise<void>((resolve, reject) => {
+                server.once("error", reject);
+                server.listen(0, "127.0.0.1", resolve);
+            });
+            const address = server.address();
+            if (!address || typeof address === "string") throw new Error("Expected an owned TCP listener");
+            const result = await readClipboardImagePng(`http://127.0.0.1:${address.port}`, "fixture-token");
+            expect(result).toEqual(status === 200 && body.length > 0 && !disconnect ? body : null);
+            expect(requests).toEqual([{ path: "/clipboard/image/png", authorization: "Bearer fixture-token" }]);
+        } finally {
+            for (const socket of sockets) socket.destroy();
+            if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+            await Promise.all(closedSockets);
+        }
     });
 });
