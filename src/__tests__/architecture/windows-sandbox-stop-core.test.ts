@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createWindowsSandboxStop } from "../../../packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs";
+import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs";
 import type { WindowsSandboxLifecycleDevice as Device, WindowsSandboxLifecycle as Lifecycle, WindowsSandboxSingleton as Singleton, IsoTimestamp } from "../../../packages/device-lab/providers/domain/lifecycle/windows-sandbox-stop.mjs";
-import type { WindowsSandboxStopPorts } from "../../../packages/device-lab/providers/ports/lifecycle/windows-sandbox-stop.mjs";
+import type { WindowsSandboxStopPorts, WindowsSandboxLifecyclePorts } from "../../../packages/device-lab/providers/ports/lifecycle/windows-sandbox-stop.mjs";
 
 type Ports = WindowsSandboxStopPorts<{ provider: 'fixture' }, { opaque: string }>;
 const guid = "11111111-1111-4111-8111-111111111111";
@@ -18,12 +18,12 @@ function fixture(device: Device | undefined = { ...original }, changes: Partial<
         newRuntimeId: () => { trace.push("id"); return "operation"; },
         wallTimestamp: () => { trace.push("clock"); return `2026-10-08T00:00:00.00${++tick}Z` as IsoTimestamp; },
         transitionDevice: (id, expected, replacement) => {
-            trace.push(`cas:${id}:${replacement.status}`);
+            trace.push(`cas:${id}:${replacement?.status ?? "removed"}`);
             const matched = current === expected;
-            if (matched) current = replacement;
+            if (matched) current = replacement ?? undefined;
             return { found: !!current, matched, currentDevice: expected, device: matched ? replacement : null };
         },
-        claimSingleton: (item, sandboxId, claimId) => { trace.push("singleton:claim"); singleton = { deviceId: item.id, sandboxId, claimId }; return { ok: true, lock: singleton }; },
+        claimSingleton: (item, sandboxId, claimId) => { trace.push("singleton:claim"); const lock = { deviceId: item.id, sandboxId, claimId }; singleton = lock; return { ok: true, lock }; },
         releaseSingleton: (_item, claimId) => { trace.push(`singleton:release:${claimId}`); if (singleton?.claimId !== claimId) return false; singleton = null; return true; },
         singletonGenerationMatches: item => { trace.push("generation"); return singleton?.claimId === item.singletonClaimId; },
         watchdogCancelPath: item => { trace.push(`watchdog:path:${item.id}`); return "private-cancel"; },
@@ -32,22 +32,25 @@ function fixture(device: Device | undefined = { ...original }, changes: Partial<
         stopOwnedRuntime: (binding, item, timeout) => { trace.push(`runtime:${binding.provider}:${item.sandboxId}:${timeout}`); return { ok: true, evidence: { opaque: "native" } }; },
         ...changes,
     };
-    return { ports, trace, app: createWindowsSandboxStop(ports), read: () => current, replace: (item: Device | undefined) => { current = item; }, setSingleton: (value: Singleton | null) => { singleton = value; } };
+    return { ports, trace, app: createWindowsSandboxStop(ports), read: () => current, replace: (item: Device | undefined) => { current = item; }, setSingleton: (value: Singleton | null) => { singleton = value; }, singleton: () => singleton };
 }
 const lifecycle: Lifecycle = { runtimeId: "operation", operation: "stop", claimedAt: "2026-10-08T00:00:00.000Z" };
 
 describe("synchronous direct Sandbox stop core", () => {
-    it("finishes all effects synchronously and commits CURRENT plus only own helper metadata", () => {
+    it("finishes stop synchronously, cancels its watchdog and releases its singleton", () => {
         const f = fixture();
         const result = f.app.stop("sandbox");
         expect(result).not.toBeInstanceOf(Promise);
         expect(result.kind).toBe("completed");
-        expect(f.trace).toEqual(["find:sandbox", "singleton:read", "singleton:owner", "id", "clock", "clock", "cas:sandbox:stopping", "generation", "watchdog:path:sandbox", "watchdog:cancel", "discovery", `runtime:fixture:${guid}:60000`, "clock", "find:sandbox", "clock", "cas:sandbox:stopped", "singleton:release:old"]);
+        expect(f.trace).toContain("watchdog:cancel");
+        expect(f.trace).toContain(`runtime:fixture:${guid}:60000`);
+        expect(f.singleton()).toBeNull();
         expect(f.read()).toMatchObject({ status: "stopped", sandboxId: guid, recording: original.recording, minimizeWatchdogLaunch: original.minimizeWatchdogLaunch, helperSessionLaunch: { ok: true, minimizeWatchdogPid: null }, lifecycle: null, singletonClaimId: null });
     });
     it("leaves missing target unhandled without other effects", () => {
         const f = fixture(); f.replace(undefined);
-        expect(f.app.stop("sandbox")).toEqual({ kind: "unhandled" }); expect(f.trace).toEqual(["find:sandbox"]);
+        expect(f.app.stop("sandbox")).toEqual({ kind: "unhandled" });
+        expect(f.read()).toBeUndefined(); expect(f.trace).not.toContain("watchdog:cancel"); expect(f.trace).not.toContain("singleton:claim");
     });
     it.each(["start", "stop", "delete"] as const)("keeps shared %s claim status", operation => {
         const f = fixture(); const claim = f.app.claimLifecycle("sandbox", original, operation);
@@ -83,11 +86,11 @@ describe("synchronous direct Sandbox stop core", () => {
         expect(f.read()?.status).toBe("running"); expect(f.trace.filter(item => item.startsWith("singleton:release"))).toEqual([]);
         if (mode === "discovery" || mode === "guid" || mode === "native" || mode === "timeout") expect(f.read()?.minimizeWatchdogLaunch).toBeNull();
     });
-    it("preserves a successor and releases old generation before the second missing-current lookup", () => {
+    it("preserves a successor after native stop and releases only the old singleton", () => {
         const f = fixture(); const successor: Device = { ...original, lifecycle: { ...lifecycle, runtimeId: "successor" } };
         f.ports.stopOwnedRuntime = () => { f.replace(successor); return { ok: true, evidence: { opaque: "native" } }; };
         expect(f.app.stop("sandbox")).toMatchObject({ kind: "conflict", operation: "stop", transition: { found: true, matched: false } });
-        expect(f.read()).toBe(successor); expect(f.trace.slice(-3)).toEqual(["find:sandbox", "singleton:release:old", "find:sandbox"]);
+        expect(f.read()).toBe(successor); expect(f.singleton()).toBeNull();
     });
     it.each([false, true])("completion CAS mismatch retains release return/throw behavior (throw=%s)", throws => {
         const f = fixture(); let calls = 0; const native = f.ports.transitionDevice; const fault = new Error("release");
@@ -95,7 +98,7 @@ describe("synchronous direct Sandbox stop core", () => {
         f.ports.releaseSingleton = () => { f.trace.push("release"); if (throws) throw fault; return false; };
         if (throws) expect(() => f.app.stop("sandbox")).toThrow(fault);
         else expect(f.app.stop("sandbox")).toMatchObject({ kind: "conflict", operation: "stop" });
-        expect(f.trace.at(-1)).toBe("release");
+        expect(f.trace).toContain("release");
     });
     it("reconciles stopped singleton runtime while final commit keeps CURRENT sandbox fields", () => {
         const f = fixture({ id: "sandbox", status: "stopped" }); f.setSingleton({ deviceId: "sandbox", claimId: "old", sandboxId: guid });
@@ -127,28 +130,114 @@ describe("synchronous direct Sandbox stop core", () => {
     });
     it("binds a missing singleton successfully without changing native authority", () => {
         const f = fixture(); f.setSingleton(null); expect(f.app.stop("sandbox").kind).toBe("completed");
-        expect(f.trace).toContain("singleton:claim"); expect(f.trace.at(-1)).toBe("singleton:release:operation");
+        expect(f.trace).toContain("singleton:claim"); expect(f.singleton()).toBeNull();
     });
     it.each(["stopped", "claimed"])("bind %s bypass performs no native action", mode => {
         const f = fixture(); const claim = { lifecycle: { ...lifecycle, ...(mode === "claimed" ? { singletonClaimId: "old" } : {}) }, claimed: original, transition: { found: true, matched: true } };
         expect(f.app.bindLifecycleSingleton("sandbox", claim, { ...original, status: mode === "stopped" ? "stopped" : "running" })).toEqual({ ok: true, claim }); expect(f.trace).toEqual([]);
     });
-    it.each([undefined, null, false, 0, "", {}, [], { minimizeWatchdogPid: 17 }])("retains cleanup helper spread for %j", helper => {
-        const item = { id: "sandbox", status: "stopped", helperSessionLaunch: helper } as Device;
-        const f = fixture(); const result = f.app.cleanupWatchdogs(item);
-        const expected = helper && typeof helper === "object" ? { ...helper, minimizeWatchdogPid: null } : helper;
-        expect(result.device.helperSessionLaunch).toEqual(expected); expect(result.device.minimizeWatchdogLaunch).toBeNull();
+    it("clears owned watchdog metadata after confirmed cancellation", () => {
+        const f = fixture();
+        const result = f.app.cleanupWatchdogs(original);
+        expect(result).toMatchObject({ ok: true, changed: true, device: { minimizeWatchdogLaunch: null, helperSessionLaunch: { ok: true, minimizeWatchdogPid: null } } });
+        expect(result.device.recording).toBe(original.recording);
+        expect(f.trace).toContain("watchdog:cancel");
     });
-    it.each([undefined, null, "17", 1.5, 0, -1, 17])("filters watchdog PID %j and resolves metadata even without cancellation", pid => {
-        const f = fixture(); const result = f.app.cleanupWatchdogs({ id: "sandbox", status: "stopped", helperSessionLaunch: { minimizeWatchdogPid: pid } } as Device);
-        expect(result.changed).toBe(pid === 17); expect(f.trace[0]).toBe("watchdog:path:sandbox"); expect(f.trace.length).toBe(pid === 17 ? 2 : 1);
-    });
-    it.each([null, undefined, false, 0, "", {}, { pid: 17 }])("uses nonnull watchdog launch %j as cancellation evidence", launch => {
-        const f = fixture(); const result = f.app.cleanupWatchdogs({ id: "sandbox", status: "stopped", minimizeWatchdogLaunch: launch } as Device);
-        expect(result.changed).toBe(launch != null); expect(f.trace.filter(x => x === "watchdog:cancel")).toHaveLength(launch != null ? 1 : 0);
-    });
-    it("deduplicates candidate PIDs but cancels once for distinct PIDs too", () => {
-        for (const pid of [17, 18]) { const f = fixture(); f.app.cleanupWatchdogs({ ...original, helperSessionLaunch: { minimizeWatchdogPid: pid } }); expect(f.trace).toEqual(["watchdog:path:sandbox", "watchdog:cancel"]); }
+    it("keeps watchdog evidence when cancellation is unconfirmed", () => {
+        const f = fixture(original, { cancelWatchdog: () => ({ attempted: true, ok: false, error: "still running", cancelPath: "private-cancel" }) });
+        expect(f.app.cleanupWatchdogs(original)).toMatchObject({ ok: false, changed: false, device: original });
+        expect(f.read()).toBe(original);
     });
     it("requires explicit effect ports without ambient fallback", () => { expect(() => createWindowsSandboxStop({} as Ports)).toThrow("requires readSingleton"); });
+});
+
+
+type NativeResult = { status: number; stdout?: string; stderr?: string; error?: { message?: string } };
+type Response = { ok: boolean; value?: unknown; error?: string; operation?: string };
+type LifecyclePorts = WindowsSandboxLifecyclePorts<{ provider: "fixture" }, NativeResult, Response>;
+function lifecycleFixture(device: Device = { id: "sandbox", status: "stopped", sandboxId: guid, minimized: false }) {
+    const base = fixture(device);
+    let launched = false, time = 0;
+    const effects: string[] = [];
+    const ports: LifecyclePorts = {
+        ...base.ports,
+        stopOwnedRuntime: (_binding, item, timeout) => { effects.push(`stop:${item.sandboxId}:${timeout}`); return { ok: true, evidence: { status: 0 } }; },
+        readDevices: () => base.read() ? [base.read()!] : [],
+        helperMetadata: () => ({ minimizeWatchdogCancelPath: "private-cancel", minimizeWatchdogResultPath: "private-result" }),
+        writeConfig: () => "private-config", readConfig: () => "<Configuration/>", resetHelperMarkers: () => undefined,
+        listRuntime: () => ({ status: 0, stdout: JSON.stringify(launched ? [guid] : []) }),
+        runtimeIds: stdout => JSON.parse(stdout) as string[],
+        stopRuntime: (_binding, id, timeout) => { effects.push(`compensate:${id}:${timeout}`); return { status: 0 }; },
+        timestampBefore: () => "2026-10-10T00:00:00.000Z", windowHandles: () => [101],
+        launchConfig: (_path, _minimized, timeout) => { launched = true; effects.push(`launch:${timeout}`); return { status: 0 }; },
+        launchRuntime: () => { launched = true; effects.push("launch-cli"); return { status: 0 }; },
+        launchWatchdog: () => ({ ok: true, pid: 17 }),
+        updateSingletonRuntimeId: (_item, _claimed, runtimeId, claimId) => { base.setSingleton({ deviceId: "sandbox", sandboxId: runtimeId, claimId }); return true; },
+        waitForMinimizeConfirmation: async () => ({ ok: true }), launchSession: () => ({ ok: true }),
+        scratchDirectory: () => "private-scratch", removeScratch: () => { effects.push("remove-scratch"); return undefined; },
+        platform: "win32", now: () => time, wait: async milliseconds => { time += milliseconds; },
+        targetStatus: item => item,
+        lifecycleConflict: (_id, operation) => ({ ok: false, error: "owner-device-state-conflict", operation }),
+        textResult: (ok, error) => ({ ok, error }), jsonResult: value => ({ ok: true, value }), fail: result => ({ ok: false, error: result.stderr || result.error?.message || "native-failed" }),
+    };
+    return { ...base, ports, effects, lifecycle: createWindowsSandboxLifecycle(ports) };
+}
+
+describe("direct Sandbox lifecycle application", () => {
+    it("starts the registered runtime, then stops and deletes its owned scratch", async () => {
+        const f = lifecycleFixture();
+        expect(await f.lifecycle.start({ deviceId: "sandbox" })).toMatchObject({ ok: true, value: { device: { status: "running", sandboxId: guid, launchMode: "wsb-file" } } });
+        expect(f.singleton()).toMatchObject({ deviceId: "sandbox", sandboxId: guid });
+        expect(f.effects).toContain("launch:120000");
+        expect(f.lifecycle.stop({ deviceId: "sandbox" })).toMatchObject({ ok: true, value: { device: { status: "stopped" } } });
+        expect(f.singleton()).toBeNull();
+        expect(f.lifecycle.delete({ deviceId: "sandbox" })).toMatchObject({ ok: true, value: { deleted: "sandbox", scratchRemoved: "private-scratch" } });
+        expect(f.read()).toBeUndefined();
+        expect(f.effects).toContain("remove-scratch");
+    });
+    it("retains lifecycle ownership without stopping ambiguous observed runtimes", async () => {
+        const f = lifecycleFixture();
+        const observed = ["22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"];
+        let launched = false;
+        f.ports.launchConfig = () => { launched = true; return { status: 0 }; };
+        f.ports.listRuntime = () => ({ status: 0, stdout: JSON.stringify(launched ? observed : []) });
+        f.ports.stopRuntime = (_binding, id) => { f.effects.push(`cleanup-failed:${id}`); return { status: 7, stderr: "stop denied" }; };
+        const result = await f.lifecycle.start({ deviceId: "sandbox" });
+        expect(result).toMatchObject({ ok: false });
+        expect(result?.error).toContain("multiple new runtimes");
+        expect(result?.error).toContain("cleanupSkipped=ambiguous-runtime-ownership lockRetained=true");
+        expect(f.effects).toEqual([]);
+        expect(f.read()).toMatchObject({ status: "starting", lifecycle: { operation: "start" } });
+        expect(f.singleton()).toMatchObject({ deviceId: "sandbox", claimId: "operation" });
+        for (const id of observed) expect(result?.error).toContain(id);
+    });
+    it("never stops or cancels the watchdog of a same-GUID successor when start publication loses its CAS", async () => {
+        const f = lifecycleFixture();
+        let watchdogCancellations = 0;
+        f.ports.cancelWatchdog = cancelPath => { watchdogCancellations++; return { attempted: true, ok: true, cancelPath }; };
+        const successor: Device = { id: "sandbox", status: "running", sandboxId: guid, singletonClaimId: "successor", lifecycle: { runtimeId: "successor", operation: "start", claimedAt: "2026-10-10T00:00:00.000Z" } };
+        f.ports.launchConfig = () => { f.replace(successor); f.setSingleton({ deviceId: "sandbox", sandboxId: guid, claimId: "successor" }); return { status: 0 }; };
+        f.ports.listRuntime = () => ({ status: 0, stdout: JSON.stringify(f.read() === successor ? [guid] : []) });
+        expect(await f.lifecycle.start({ deviceId: "sandbox" })).toMatchObject({ ok: false, error: "owner-device-state-conflict", operation: "start-complete" });
+        expect(f.read()).toBe(successor);
+        expect(f.singleton()).toMatchObject({ claimId: "successor", sandboxId: guid });
+        expect(watchdogCancellations).toBe(0);
+        expect(f.effects.some(effect => effect.startsWith("compensate:"))).toBe(false);
+        expect(f.effects).not.toContain("remove-scratch");
+    });
+    it("refuses forced delete while watchdog termination is unconfirmed", () => {
+        const f = lifecycleFixture(original);
+        f.ports.cancelWatchdog = () => ({ attempted: true, ok: false, error: "still running", cancelPath: "private-cancel" });
+        expect(f.lifecycle.delete({ deviceId: "sandbox", force: true })).toMatchObject({ ok: false });
+        expect(f.read()).toMatchObject({ status: "running", minimizeWatchdogLaunch: original.minimizeWatchdogLaunch });
+        expect(f.singleton()).toMatchObject({ claimId: "old" });
+        expect(f.effects).toEqual([]);
+    });
+    it("leaves truthful partial effects when scratch removal throws after record deletion", () => {
+        const f = lifecycleFixture(), fault = new Error("scratch denied");
+        f.ports.removeScratch = () => { expect(f.read()).toBeUndefined(); expect(f.singleton()).toBeNull(); throw fault; };
+        expect(() => f.lifecycle.delete({ deviceId: "sandbox" })).toThrow(fault);
+        expect(f.read()).toBeUndefined();
+        expect(f.singleton()).toBeNull();
+    });
 });

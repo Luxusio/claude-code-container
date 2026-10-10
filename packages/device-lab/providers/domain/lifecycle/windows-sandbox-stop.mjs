@@ -6,7 +6,9 @@
  * Checked projections of existing records, not a new runtime state validator.
  * Unprojected fields survive the source's object spreads and exact native CAS.
  * @typedef {{
- *   id: string, status: string, sandboxId?: string | null,
+ *   id: string, status: string, sandboxId?: string | null, minimized?: boolean,
+ *   helper?: unknown, configPath?: string, launchMode?: string, requestedSandboxId?: string,
+ *   minimizeConfirmed?: boolean, minimizeWarning?: string | null,
  *   singletonClaimId?: string | null, lifecycle?: WindowsSandboxLifecycle | null,
  *   updatedAt?: IsoTimestamp, minimizeWatchdogLaunch?: WindowsSandboxWatchdogLaunch,
  *   helperSessionLaunch?: WindowsSandboxHelperSessionLaunch,

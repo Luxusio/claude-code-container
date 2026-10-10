@@ -1,3 +1,6 @@
+import { createBrokerWindowsSandboxLifecycle, planBrokerWindowsSandboxCommand } from "./device-lab/application/lifecycle/windows-sandbox-lifecycle.js";
+import { brokerWindowsSandboxReplacement } from "./device-lab/domain/lifecycle/windows-sandbox-lifecycle.js";
+import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/lifecycle/windows-sandbox-lifecycle.js";
 import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, planBrokerIosCreateCommand, planBrokerIosExistingCommand, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, planBrokerMacosCreateCommand, planBrokerMacosExistingCommand, rollbackBrokerMacosCreate, waitForBrokerMacosBoot } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
@@ -9952,57 +9955,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         return { mode: "noop", provider: "ios-device", reason: "physical iOS stop/delete does not power off, erase, or disconnect the real device" };
     }
 
-    if (parsed.backend === "windows-sandbox") {
-        if (parsed.command === "device_status") {
-            return { mode: "noop", provider: "wsb", reason: "Windows Sandbox status/delete is represented by owner state in this broker layer" };
-        }
-        const wsb = executableFor("wsb", normalized);
-        if (parsed.command === "device_stop" || (parsed.command === "device_delete" && shouldStopOwnerDevice(parsed.stateKey, (device as { status?: unknown })?.status))) {
-            const sandboxId = brokerWindowsSandboxIdForStop(ownerId, device);
-            if (!isGuid(sandboxId)) return { error: "missing-provider-metadata", missing: ["sandboxId GUID"] };
-            return { mode: "exec", provider: "wsb", executable: wsb, args: ["stop", "--id", sandboxId], sandboxId };
-        }
-        if (parsed.command === "device_delete") {
-            return { mode: "noop", provider: "wsb", reason: "Stopped Windows Sandbox delete is represented by owner state in this broker layer" };
-        }
-        const recordedConfigPath = field(device, "configPath") || field(device, "wsbConfigPath");
-        const configPath = recordedConfigPath || brokerWindowsConfigPath(ownerId, parsed.deviceId);
-        const windowsRoot = join(brokerRoot(), "owners", ownerId, "windows");
-        if (!pathWithin(windowsRoot, configPath)) return { error: "invalid-provider-metadata", missing: ["owner-scoped configPath"] };
-        if (!recordedConfigPath) {
-            try {
-                lstatSync(configPath);
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-                    return { error: "missing-provider-metadata", missing: ["configPath"] };
-                }
-                return { error: "invalid-provider-metadata", missing: ["owner-scoped configPath readable"] };
-            }
-        }
-        let config: string;
-        try {
-            assertDeviceLabPathWithinRoot(windowsRoot, configPath, "windows-sandbox-config");
-            const content = readDeviceLabTextFile(configPath, "windows-sandbox-config", DEVICE_BROKER_WINDOWS_CONFIG_LIMIT_BYTES);
-            if (content === null) throw new Error("windows-sandbox-config-missing");
-            config = content;
-        } catch {
-            return { error: "invalid-provider-metadata", missing: ["owner-scoped configPath readable"] };
-        }
-        const existingSandboxId = field(device, "sandboxId");
-        const sandboxId = isGuid(existingSandboxId) ? existingSandboxId : randomGuid();
-        const minimized = typeof parsed.minimized === "boolean"
-            ? parsed.minimized
-            : booleanField(device, "minimized") !== false;
-        return {
-            mode: "exec",
-            provider: "wsb",
-            executable: wsb,
-            args: ["start", "--id", sandboxId, "--config", config],
-            sandboxId,
-            waitForExit: false,
-            ...(minimized ? { windowStyle: "minimized" } : {}),
-        };
-    }
+    if (parsed.backend === "windows-sandbox") return planBrokerWindowsSandboxCommand(ownerId,parsed,device,brokerWindowsLifecyclePorts(normalized));
 
     if (isHyperVBackend(parsed.backend)) {
         const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
@@ -11674,125 +11627,15 @@ export function waitForBrokerWindowsMinimizeConfirmation(resultPath: string, tim
     };
 }
 
-type WindowsSandboxRuntimeRegistration =
-    | { ok: true; sandboxId: string; requestedSandboxId?: string; matchedRequested: boolean; result?: ProviderCommandResult }
-    | { ok: false; error: ProviderCommandResult };
-
-type WindowsSandboxRuntimeSnapshot =
-    | { ok: true; sandboxIds: string[]; result?: ProviderCommandResult }
-    | { ok: false; error: ProviderCommandResult };
-
 type MacosVmBootRegistration =
     | { ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: ProviderCommandResult; attempts?: ProviderCommandResult[] }
     | { ok: false; error: ProviderCommandResult; attempts?: ProviderCommandResult[] };
-
-function brokerWindowsSandboxRuntimeSnapshot(command: ProviderCommand, normalized: NormalizedBrokerOptions): WindowsSandboxRuntimeSnapshot {
-    if (normalized.platform !== "win32") {
-        return { ok: true, sandboxIds: [] };
-    }
-    if (!command.executable || !command.sandboxId) {
-        return { ok: false, error: {
-            mode: "exec",
-            provider: command.provider,
-            executable: command.executable,
-            args: command.args || [],
-            status: null,
-            error: "windows-sandbox-start-missing-registration-metadata",
-        } };
-    }
-    const result = normalized.commandRunner({
-        mode: "exec",
-        provider: "wsb",
-        executable: command.executable,
-        args: ["list", "--raw"],
-    }, {
-        timeoutMs: DEVICE_BROKER_WINDOWS_SANDBOX_LIST_TIMEOUT_MS,
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-    });
-    if (!commandSucceeded(result)) {
-        return { ok: false, error: {
-            ...result,
-            error: result.error || "windows-sandbox-runtime-snapshot-failed",
-        } };
-    }
-    return {
-        ok: true,
-        sandboxIds: windowsSandboxSessionIdsFromBrokerListOutput(result.stdout || ""),
-        result,
-    };
-}
-
-function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized: NormalizedBrokerOptions, baselineSandboxIds: string[]): WindowsSandboxRuntimeRegistration {
-    if (normalized.platform !== "win32") {
-        return { ok: true, sandboxId: command.sandboxId || "", matchedRequested: true };
-    }
-    if (!command.executable || !command.sandboxId) {
-        return { ok: false, error: {
-            mode: "exec",
-            provider: command.provider,
-            executable: command.executable,
-            args: command.args || [],
-            status: null,
-            error: "windows-sandbox-start-missing-registration-metadata",
-        } };
-    }
-    const expected = command.sandboxId.toLowerCase();
-    const baseline = new Set(baselineSandboxIds.map((sandboxId) => sandboxId.toLowerCase()));
-    const deadline = Date.now() + DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS;
-    let last: ProviderCommandResult | null = null;
-    while (Date.now() <= deadline) {
-        last = normalized.commandRunner({
-            mode: "exec",
-            provider: "wsb",
-            executable: command.executable,
-            args: ["list", "--raw"],
-        }, {
-            timeoutMs: Math.min(DEVICE_BROKER_WINDOWS_SANDBOX_LIST_TIMEOUT_MS, Math.max(1000, deadline - Date.now())),
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        });
-        if (commandSucceeded(last)) {
-            const ids = windowsSandboxSessionIdsFromBrokerListOutput(last.stdout || "");
-            const launchedIds = ids.filter((sandboxId) => !baseline.has(sandboxId));
-            if (launchedIds.includes(expected)) {
-                return { ok: true, sandboxId: expected, matchedRequested: true, result: last };
-            }
-            if (launchedIds.length === 1) {
-                return { ok: true, sandboxId: launchedIds[0], requestedSandboxId: command.sandboxId, matchedRequested: false, result: last };
-            }
-            if (launchedIds.length > 1) {
-                return { ok: false, error: {
-                    ...last,
-                    error: `Windows Sandbox launch produced ambiguous runtimes: ${launchedIds.join(", ")}`,
-                } };
-            }
-            if (baseline.has(expected)) {
-                return { ok: false, error: {
-                    ...last,
-                    error: `Windows Sandbox runtime ${command.sandboxId} existed before launch; no new owned runtime appeared`,
-                } };
-            }
-        }
-        sleepSync(500);
-    }
-    return { ok: false, error: {
-        mode: "exec",
-        provider: "wsb",
-        executable: command.executable,
-        args: ["list", "--raw"],
-        status: last?.status ?? null,
-        signal: last?.signal,
-        stdout: last?.stdout,
-        stderr: last?.stderr,
-        timedOut: last?.timedOut,
-        error: `No new Windows Sandbox runtime for ${command.sandboxId} appeared in wsb list within ${DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS}ms`,
-    } };
-}
 
 function waitForBrokerMacosVmBoot(parsed: CommandParamSuccess, device: unknown, command: ProviderCommand, normalized: NormalizedBrokerOptions): MacosVmBootRegistration {
     return waitForBrokerMacosBoot(parsed, device, command, brokerMacosLifecyclePorts(normalized));
 }
 
-function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, providerCommand?: ProviderCommand, macosBoot?: MacosVmBootRegistration | null, windowsMinimizeWatchdog?: ProviderCommandResult | null, windowsMinimizeConfirmation?: ProviderCommandResult | null, execution?: ProviderCommandResult, hyperVGuestReady?: ReturnType<typeof parseHyperVGuestReadyObservation> | null) {
+function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, macosBoot?: MacosVmBootRegistration | null, execution?: ProviderCommandResult, hyperVGuestReady?: ReturnType<typeof parseHyperVGuestReadyObservation> | null) {
     if (parsed.command === "device_status") return { found: true, matched: true, device };
     if (parsed.backend === "ios-simulator" || parsed.backend === "macos-vm") {
         const kind = parsed.command === "device_start" || parsed.command === "device_reboot" ? "start" : parsed.command === "device_delete" ? "delete" : "stop";
@@ -11827,31 +11670,7 @@ function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, 
                     ? { ready: true, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", computerName: hyperVGuestReady.computerName, attempts: hyperVGuestReady.attempts }
                     : null,
             } : {}),
-            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" ? {
-                minimized: typeof parsed.minimized === "boolean"
-                    ? parsed.minimized
-                    : (candidate as Record<string, unknown>).minimized !== false,
-                minimizeConfirmed: providerCommand?.windowStyle === "minimized"
-                    && Boolean(windowsMinimizeConfirmation && commandSucceeded(windowsMinimizeConfirmation)),
-                ...(providerCommand?.windowStyle === "minimized" && (!windowsMinimizeConfirmation || !commandSucceeded(windowsMinimizeConfirmation)) ? {
-                    minimizeWarning: windowsMinimizeConfirmation?.error
-                        || windowsMinimizeConfirmation?.stderr
-                        || "Windows Sandbox started, but window minimization was not confirmed",
-                } : { minimizeWarning: null }),
-            } : {}),
-            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && providerCommand?.sandboxId ? { sandboxId: providerCommand.sandboxId } : {}),
-            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && providerCommand?.requestedSandboxId ? { requestedSandboxId: providerCommand.requestedSandboxId } : {}),
             ...(physical && parsed.command === "device_stop" ? { leaseClaimId: null, leaseClaimNonce: null } : {}),
-            ...(parsed.backend === "windows-sandbox" && parsed.command === "device_start" && typeof windowsMinimizeWatchdog?.pid === "number" ? {
-                minimizeWatchdog: {
-                    pid: windowsMinimizeWatchdog.pid,
-                    processOwner: "host-broker",
-                    startedBy: "broker.windows-sandbox.minimize-watchdog",
-                    timeoutMs: DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,
-                    cancelPath: brokerWindowsHelperPaths(ownerId, parsed.deviceId).minimizeWatchdogCancelPath,
-                    startedAt: new Date().toISOString(),
-                },
-            } : {}),
             updatedAt: new Date().toISOString(),
         };
     });
@@ -12086,6 +11905,67 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
     };
 }
 
+function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerWindowsSandboxLifecyclePorts {
+    return {
+        execute: (command,options) => normalized.commandRunner(command,options),
+        executable: name => executableFor(name,normalized),
+        stopRuntimeId: (ownerId,device) => brokerWindowsSandboxIdForStop(ownerId,device),
+        newRuntimeId: () => randomGuid(),
+        readConfig: (ownerId,deviceId,recordedPath) => {
+            const configPath=recordedPath || brokerWindowsConfigPath(ownerId,deviceId);
+            const root=join(brokerRoot(),"owners",ownerId,"windows");
+            if(!pathWithin(root,configPath)) return {ok:false,error:"invalid-provider-metadata",missing:["owner-scoped configPath"]};
+            if(!recordedPath) {
+                try { lstatSync(configPath); }
+                catch(error) { return (error as NodeJS.ErrnoException).code === "ENOENT"
+                    ? {ok:false,error:"missing-provider-metadata",missing:["configPath"]}
+                    : {ok:false,error:"invalid-provider-metadata",missing:["owner-scoped configPath readable"]}; }
+            }
+            try {
+                assertDeviceLabPathWithinRoot(root,configPath,"windows-sandbox-config");
+                const config=readDeviceLabTextFile(configPath,"windows-sandbox-config",DEVICE_BROKER_WINDOWS_CONFIG_LIMIT_BYTES);
+                if(config === null) throw new Error("windows-sandbox-config-missing");
+                return {ok:true,config};
+            } catch { return {ok:false,error:"invalid-provider-metadata",missing:["owner-scoped configPath readable"]}; }
+        },
+        isCanonicalConfig: (ownerId,deviceId,path) => resolve(path) === resolve(brokerWindowsConfigPath(ownerId,deviceId)),
+        writeConfig: (ownerId,deviceId,device) => {writeBrokerWindowsConfig(ownerId,deviceId,device,normalized); return undefined;},
+        claimSingleton: (ownerId,device,id) => claimBrokerWindowsSandboxLock(ownerId,device,id),
+        releaseSingleton: (ownerId,device,id) => {releaseBrokerWindowsSandboxLock(ownerId,device,id); return undefined;},
+        updateSingletonRuntimeId: (ownerId,device,claimed,runtime) => {updateBrokerWindowsSandboxLockRuntimeId(ownerId,device,claimed,runtime); return undefined;},
+        helperPaths: (ownerId,deviceId) => brokerWindowsHelperPaths(ownerId,deviceId),
+        removeMarker: path => {rmSync(path,{force:true}); return undefined;},
+        runtimeIds: output => windowsSandboxSessionIdsFromBrokerListOutput(output),
+        windowSnapshotCommand: () => ({mode:"exec",provider:"powershell",executable:"powershell.exe",args:windowsSandboxWindowHandleSnapshotArgs()}),
+        windowHandles: output => windowsSandboxWindowHandlesFromOutput(output),
+        watchdogCommand: (startedAfter,paths,handles) => ({mode:"detached",provider:"powershell",executable:"powershell.exe",args:windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,startedAfter,paths.minimizeWatchdogCancelPath,handles,paths.minimizeWatchdogResultPath)}),
+        waitForMinimizeConfirmation: path => waitForBrokerWindowsMinimizeConfirmation(path),
+        cancelWatchdog: (ownerId,deviceId) => cancelBrokerWindowsMinimizeWatchdog(ownerId,deviceId),
+        cleanupAuxiliary: (ownerId,parsed,expected) => cleanupLifecycleAuxiliaryRuntime(ownerId,parsed,normalized,expected),
+        cleanArtifacts: (ownerId,deviceId) => normalized.windowsDeviceArtifactCleaner(ownerId,deviceId),
+        inspectExpectedRecord: (ownerId,stateKey,deviceId,expected) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId,stateKey), () => {
+            const device=readOwnerDevices(ownerId,stateKey).find(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string,unknown>).id === deviceId);
+            return {found:Boolean(device),matched:Boolean(device && isDeepStrictEqual(device,expected)),device:device || null};
+        }),
+        publish: (ownerId,stateKey,deviceId,expected,change) => transitionOwnerLifecycleDevice(ownerId,stateKey,deviceId,expected,candidate => {
+            const replacement=brokerWindowsSandboxReplacement(candidate,change);
+            if(replacement === null) return null;
+            if(change.kind === "start" && typeof change.watchdog?.pid === "number") {
+                (replacement.minimizeWatchdog as Record<string,unknown>).startedAt=new Date().toISOString();
+            }
+            return {...replacement,updatedAt:new Date().toISOString()};
+        }),
+        redactDevice: device => redactBrokerDeviceSecrets(device),
+        failureDetail: result => providerFailureDetail(result),
+        now: () => Date.now(),
+        timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
+        sleep: milliseconds => {sleepSync(milliseconds); return undefined;},
+        get platform() {return normalized.platform;},
+        get commandTimeoutMs() {return normalized.commandTimeoutMs;},
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    };
+}
+
 function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts {
     return {
         execute: (command, options) => normalized.commandRunner(command, options),
@@ -12203,6 +12083,13 @@ async function lifecycleCommandInvokeUnlocked(
         if (parsed.command === "device_start") return lifecycle.start(input);
         if (parsed.command === "device_stop") return lifecycle.stop(input);
         if (parsed.command === "device_delete") return lifecycle.delete(input);
+    }
+    if (parsed.backend === "windows-sandbox" && ["device_start","device_stop","device_delete"].includes(parsed.command)) {
+        const lifecycle=createBrokerWindowsSandboxLifecycle(brokerWindowsLifecyclePorts(normalized));
+        const input={ownerId,parsed,plan:payload.result,expectedDevice};
+        if(parsed.command === "device_start") return lifecycle.start(input);
+        if(parsed.command === "device_stop") return lifecycle.stop(input);
+        return lifecycle.delete(input);
     }
     if (parsed.command === "device_create") {
         const providerCommand = payload.result?.providerCommand;
@@ -12760,29 +12647,6 @@ async function lifecycleCommandInvokeUnlocked(
         if (leaseFailure) return leaseFailure;
     }
     let providerCommand = payload.result?.providerCommand;
-    if (parsed.backend === "windows-sandbox" && parsed.command === "device_start" && !parsed.dryRun) {
-        const device = payload.result?.device;
-        const recordedConfigPath = field(device, "configPath") || field(device, "wsbConfigPath");
-        const canonicalConfigPath = brokerWindowsConfigPath(ownerId, parsed.deviceId);
-        if (recordedConfigPath && resolve(recordedConfigPath) === resolve(canonicalConfigPath)) {
-            try {
-                writeBrokerWindowsConfig(ownerId, parsed.deviceId, device as Record<string, unknown>, normalized);
-                providerCommand = providerCommandFor(ownerId, parsed, device, normalized);
-            } catch (error) {
-                return {
-                    status: 500,
-                    payload: {
-                        ok: false,
-                        error: "windows-sandbox-config-refresh-failed",
-                        ownerId,
-                        backend: parsed.backend,
-                        deviceId: parsed.deviceId,
-                        detail: error instanceof Error ? error.message : String(error),
-                    },
-                };
-            }
-        }
-    }
     if (!providerCommand || "error" in providerCommand) {
         return {
             status: 400,
@@ -12802,21 +12666,6 @@ async function lifecycleCommandInvokeUnlocked(
         };
     }
     let effectiveProviderCommand = providerCommand;
-    if (parsed.backend === "windows-sandbox" && parsed.command === "device_start") {
-        const lock = claimBrokerWindowsSandboxLock(ownerId, payload.result?.device, providerCommand.sandboxId);
-        if (!lock.ok) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "windows-sandbox-host-busy",
-                    detail: lock.error,
-                    lock: lock.lock,
-                    plan: payload.result || null,
-                },
-            };
-        }
-    }
     const auxiliaryCleanup = parsed.command === "device_stop" || parsed.command === "device_delete"
         ? cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expectedDevice)
         : null;
@@ -12850,53 +12699,6 @@ async function lifecycleCommandInvokeUnlocked(
         };
     }
     let physicalLeaseCleanup: ReturnType<typeof cleanupOwnerPhysicalLease> | null = null;
-    const windowsHelper = parsed.backend === "windows-sandbox" && parsed.command === "device_start"
-        ? brokerWindowsHelperPaths(ownerId, parsed.deviceId)
-        : null;
-    if (windowsHelper) {
-        rmSync(windowsHelper.minimizeWatchdogCancelPath, { force: true });
-        rmSync(windowsHelper.minimizeWatchdogResultPath, { force: true });
-    }
-    const windowsSandboxRuntimeBaseline = windowsHelper && normalized.platform === "win32"
-        ? brokerWindowsSandboxRuntimeSnapshot(providerCommand, normalized)
-        : null;
-    if (windowsSandboxRuntimeBaseline && !windowsSandboxRuntimeBaseline.ok) {
-        releaseBrokerWindowsSandboxLock(ownerId, payload.result?.device, providerCommand.sandboxId);
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "windows-sandbox-runtime-snapshot-failed",
-                detail: providerFailureDetail(windowsSandboxRuntimeBaseline.error),
-                result: {
-                    ...(payload.result || {}),
-                    invoked: false,
-                    dryRun: false,
-                    execution: {
-                        mode: "preflight",
-                        providerExecution: "blocked",
-                        mutatesHost: false,
-                        command: windowsSandboxRuntimeBaseline.error,
-                    },
-                },
-            },
-        };
-    }
-    const windowsSandboxStartedAfter = windowsHelper ? new Date(Date.now() - 2000).toISOString() : null;
-    const windowsSandboxWindowSnapshot = windowsHelper && providerCommand.windowStyle === "minimized" && normalized.platform === "win32"
-        ? normalized.commandRunner({
-            mode: "exec",
-            provider: "powershell",
-            executable: "powershell.exe",
-            args: windowsSandboxWindowHandleSnapshotArgs(),
-        }, {
-            timeoutMs: normalized.commandTimeoutMs,
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        })
-        : null;
-    const windowsSandboxBaselineHandles = windowsSandboxWindowSnapshot && commandSucceeded(windowsSandboxWindowSnapshot)
-        ? windowsSandboxWindowHandlesFromOutput(windowsSandboxWindowSnapshot.stdout || "")
-        : null;
     const hyperVStatusDevice = isHyperVBackend(parsed.backend) && parsed.command === "device_status"
         && payload.result?.device && typeof payload.result.device === "object" && !Array.isArray(payload.result.device)
         ? payload.result.device as Record<string, unknown>
@@ -12983,7 +12785,6 @@ async function lifecycleCommandInvokeUnlocked(
             && observation.vmName === expectedVmName
             && (parsed.command !== "device_delete" || resolve(observation.diskPath || "") === resolve(expectedDiskPath || "")));
     }
-    let registration: ProviderCommandResult | null = null;
     let macosBoot: MacosVmBootRegistration | null = null;
     let hyperVGuestReadyExecution: ProviderCommandResult | null = null;
     let hyperVGuestReady: ReturnType<typeof parseHyperVGuestReadyObservation> | null = null;
@@ -12995,59 +12796,6 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestReadyTrace: HyperVLinuxGuestReadyTrace | null = null;
     let hyperVContainedRuntimeState: "Off" | null = null;
     let hyperVScrubContainmentFailed = false;
-    let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
-    let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
-    let windowsMinimizeWatchdogCleanup: ReturnType<typeof cancelBrokerWindowsMinimizeWatchdog> | null = null;
-    if (success && parsed.backend === "windows-sandbox" && parsed.command === "device_start") {
-        const runtime = success ? waitForBrokerWindowsSandboxRuntime(
-            providerCommand,
-            normalized,
-            windowsSandboxRuntimeBaseline?.ok ? windowsSandboxRuntimeBaseline.sandboxIds : [],
-        ) : null;
-        if (runtime?.ok) {
-            if (runtime.sandboxId && runtime.sandboxId !== providerCommand.sandboxId) {
-                updateBrokerWindowsSandboxLockRuntimeId(ownerId, payload.result?.device, providerCommand.sandboxId, runtime.sandboxId);
-                effectiveProviderCommand = {
-                    ...providerCommand,
-                    sandboxId: runtime.sandboxId,
-                    requestedSandboxId: providerCommand.sandboxId,
-                };
-            }
-            if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper && windowsSandboxStartedAfter && windowsSandboxBaselineHandles !== null) {
-                windowsMinimizeWatchdog = normalized.commandRunner({
-                    mode: "detached",
-                    provider: "powershell",
-                    executable: "powershell.exe",
-                    args: windowsSandboxMinimizeWatchdogArgs(
-                        DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,
-                        windowsSandboxStartedAfter,
-                        windowsHelper.minimizeWatchdogCancelPath,
-                        windowsSandboxBaselineHandles,
-                        windowsHelper.minimizeWatchdogResultPath,
-                    ),
-                }, {
-                    timeoutMs: normalized.commandTimeoutMs,
-                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                });
-                if (!commandSucceeded(windowsMinimizeWatchdog)) {
-                    windowsMinimizeConfirmation = windowsMinimizeWatchdog;
-                }
-            } else if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper) {
-                windowsMinimizeConfirmation = {
-                    mode: "exec",
-                    provider: "windows-sandbox-window",
-                    status: null,
-                    error: "windows-sandbox-window-baseline-unavailable",
-                };
-            }
-            if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper && windowsMinimizeWatchdog && commandSucceeded(windowsMinimizeWatchdog)) {
-                windowsMinimizeConfirmation = waitForBrokerWindowsMinimizeConfirmation(windowsHelper.minimizeWatchdogResultPath);
-            }
-        } else if (runtime && !runtime.ok) {
-            registration = runtime.error;
-            success = false;
-        }
-    }
     if (success && parsed.backend === "macos-vm" && parsed.command === "device_start") {
         macosBoot = waitForBrokerMacosVmBoot(parsed, payload.result?.device, providerCommand, normalized);
         if (!macosBoot.ok) {
@@ -13680,17 +13428,6 @@ async function lifecycleCommandInvokeUnlocked(
             scrubContainmentFailed: true as const,
         };
     }
-    if (!success && windowsMinimizeWatchdog?.pid) {
-        windowsMinimizeWatchdogCleanup = cancelBrokerWindowsMinimizeWatchdog(ownerId, parsed.deviceId);
-    }
-    if (parsed.backend === "windows-sandbox") {
-        if (parsed.command === "device_start" && !success) {
-            releaseBrokerWindowsSandboxLock(ownerId, payload.result?.device, effectiveProviderCommand.sandboxId);
-        }
-        if (success && (parsed.command === "device_stop" || parsed.command === "device_delete")) {
-            releaseBrokerWindowsSandboxLock(ownerId, payload.result?.device, effectiveProviderCommand.sandboxId);
-        }
-    }
     if (success && physicalTeardown) {
         physicalLeaseCleanup = cleanupOwnerPhysicalLease(ownerId, physicalLeaseGuard!);
         if (!physicalLeaseCleanup.ok) {
@@ -13717,36 +13454,6 @@ async function lifecycleCommandInvokeUnlocked(
                 },
             };
         }
-    }
-    const windowsDeviceArtifactCleanup = success
-        && parsed.backend === "windows-sandbox"
-        && parsed.command === "device_delete"
-        ? normalized.windowsDeviceArtifactCleaner(ownerId, parsed.deviceId)
-        : null;
-    if (windowsDeviceArtifactCleanup?.ok === false) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "windows-sandbox-device-artifact-cleanup-failed",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                result: {
-                    ...(payload.result || {}),
-                    device: redactBrokerDeviceSecrets(auxiliaryCleanup?.device || payload.result?.device),
-                    windowsDeviceArtifactCleanup,
-                    invoked: true,
-                    dryRun: false,
-                    execution: {
-                        mode: execution.mode,
-                        providerExecution: "executed",
-                        mutatesHost: true,
-                        command: execution,
-                    },
-                },
-            },
-        };
     }
     const hyperVNetworkAllocationCleanup = success
         && isHyperVBackend(parsed.backend)
@@ -13839,7 +13546,7 @@ async function lifecycleCommandInvokeUnlocked(
         updatedDevice = success
             ? parsed.command === "device_status"
                 ? observedDeviceAfterStatus(ownerId, parsed, payload.result?.device, execution)
-                : (publication = mutateDeviceAfterCommand(ownerId, parsed, expectedDevice, effectiveProviderCommand, macosBoot, windowsMinimizeWatchdog, windowsMinimizeConfirmation, execution, hyperVGuestReady)).device
+                : (publication = mutateDeviceAfterCommand(ownerId, parsed, expectedDevice, macosBoot, execution, hyperVGuestReady)).device
             : publication ? publication.device : updatedDevice || payload.result?.device;
     } catch (error) {
         if (!physicalTeardown || !physicalLeaseGuard?.parsed || !physicalLeaseGuard.file || !physicalLeaseGuard.existing || physicalLeaseCleanup?.status !== 200) throw error;
@@ -13885,8 +13592,6 @@ async function lifecycleCommandInvokeUnlocked(
             ...(success || (publication && !publication.matched) ? {} : {
                 error: hyperVGuestReadyExecution
                     ? "hyper-v-guest-not-ready"
-                    : windowsMinimizeWatchdog && (registration === windowsMinimizeWatchdog || registration?.provider === "windows-sandbox-window")
-                    ? "windows-sandbox-minimize-watchdog-failed"
                     : "provider-command-failed",
                 detail: hyperVGuestReadyExecution
                     ? hyperVGuestReadyFailureCode || "guest-not-ready"
@@ -13932,12 +13637,8 @@ async function lifecycleCommandInvokeUnlocked(
                             ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                         },
                 } : {}),
-                ...(windowsMinimizeWatchdog ? { minimizeWatchdog: windowsMinimizeWatchdog } : {}),
-                ...(windowsMinimizeConfirmation ? { minimizeConfirmation: windowsMinimizeConfirmation } : {}),
-                ...(windowsMinimizeWatchdogCleanup ? { minimizeWatchdogCleanup: windowsMinimizeWatchdogCleanup } : {}),
                 ...(auxiliaryCleanup ? { auxiliaryCleanup: auxiliaryCleanup.result } : {}),
                 ...(physicalLeaseCleanup ? { physicalLeaseCleanup } : {}),
-                ...(windowsDeviceArtifactCleanup ? { windowsDeviceArtifactCleanup } : {}),
                 ...(hyperVDeviceArtifactCleanup ? {
                     hyperVDeviceArtifactCleanup: publicHyperVArtifactCleanup(
                         hyperVDeviceArtifactCleanup,
@@ -13998,8 +13699,8 @@ async function lifecycleCommandInvokeUnlocked(
                                 ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                             },
                         }
-                        : registration || (macosBoot && !macosBoot.ok)
-                        ? { ...execution, registration, macosBoot, androidBoot: null }
+                        : macosBoot && !macosBoot.ok
+                        ? { ...execution, registration: null, macosBoot, androidBoot: null }
                         : execution,
                 },
             },

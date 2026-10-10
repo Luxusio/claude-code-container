@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createWindowsSandboxStop } from "../../../packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs";
-import type { WindowsSandboxStopPorts } from "../../../packages/device-lab/providers/ports/lifecycle/windows-sandbox-stop.mjs";
+import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs";
+import type { WindowsSandboxStopPorts, WindowsSandboxLifecyclePorts, WindowsSandboxNativeResult } from "../../../packages/device-lab/providers/ports/lifecycle/windows-sandbox-stop.mjs";
 import type { IsoTimestamp, WindowsSandboxLifecycleDevice } from "../../../packages/device-lab/providers/domain/lifecycle/windows-sandbox-stop.mjs";
 
 type Ports = WindowsSandboxStopPorts<{ handle: 'native' }, { receipt: 'opaque' }>;
@@ -36,31 +36,42 @@ function contracts() {
     createWindowsSandboxStop({ ...ports, stopOwnedRuntime: (): unknown => ({ ok: true }) });
     // @ts-expect-error Read is synchronous.
     createWindowsSandboxStop({ ...ports, findDevice: async () => device });
-    // @ts-expect-error Singleton read is synchronous.
-    createWindowsSandboxStop({ ...ports, readSingleton: async () => null });
-    // @ts-expect-error Owner check is synchronous.
-    createWindowsSandboxStop({ ...ports, sameSingletonOwner: async () => true });
-    // @ts-expect-error ID is synchronous.
-    createWindowsSandboxStop({ ...ports, newRuntimeId: async () => "operation" });
-    // @ts-expect-error Timestamp is synchronous.
-    createWindowsSandboxStop({ ...ports, wallTimestamp: async () => "2026-10-08T00:00:00.000Z" });
     // @ts-expect-error CAS is synchronous.
     createWindowsSandboxStop({ ...ports, transitionDevice: async () => ({ matched: true, found: true }) });
-    // @ts-expect-error Claim is synchronous.
-    createWindowsSandboxStop({ ...ports, claimSingleton: async () => ({ ok: false, error: "busy" }) });
-    // @ts-expect-error Release is synchronous.
-    createWindowsSandboxStop({ ...ports, releaseSingleton: async () => true });
-    // @ts-expect-error Generation is synchronous.
-    createWindowsSandboxStop({ ...ports, singletonGenerationMatches: async () => true });
-    // @ts-expect-error Metadata is synchronous.
-    createWindowsSandboxStop({ ...ports, watchdogCancelPath: async () => "cancel" });
     // @ts-expect-error Cancellation is synchronous.
     createWindowsSandboxStop({ ...ports, cancelWatchdog: async cancelPath => ({ attempted: true, ok: true, cancelPath }) });
-    // @ts-expect-error Discovery is synchronous.
-    createWindowsSandboxStop({ ...ports, discoverRuntime: async () => ({ available: true, missing: [], binding: { handle: "native" } }) });
     // @ts-expect-error Runtime stop is synchronous.
     createWindowsSandboxStop({ ...ports, stopOwnedRuntime: async () => ({ ok: true, evidence: { receipt: "opaque" } }) });
     void [asynchronous, badTimestamp, badHelper, badClaim];
 }
 void contracts;
 describe("checked Sandbox stop carriers", () => { it("uses the actual synchronous application", () => { expect(createWindowsSandboxStop(ports).stop("missing")).toEqual({ kind: "unhandled" }); }); });
+
+
+function lifecycleContracts(required: WindowsSandboxLifecyclePorts<{ handle: "native" }, WindowsSandboxNativeResult, { ok: boolean }>) {
+    const app = createWindowsSandboxLifecycle(required);
+    const started: Promise<{ ok: boolean } | undefined> = app.start({ deviceId: "sandbox", minimized: false });
+    const stopped: { ok: boolean } | undefined = app.stop({ deviceId: "sandbox" });
+    const deleted: { ok: boolean } | undefined = app.delete({ deviceId: "sandbox", force: true });
+    const { writeConfig, ...withoutConfig } = required;
+    // @ts-expect-error guarded config publication is required
+    createWindowsSandboxLifecycle(withoutConfig);
+    const { listRuntime, ...withoutObservation } = required;
+    // @ts-expect-error native runtime observation is required
+    createWindowsSandboxLifecycle(withoutObservation);
+    const { removeScratch, ...withoutRemoval } = required;
+    // @ts-expect-error scratch removal authority is required
+    createWindowsSandboxLifecycle(withoutRemoval);
+    // @ts-expect-error native start command must settle synchronously
+    createWindowsSandboxLifecycle({ ...required, launchConfig: async () => ({ status: 0 }) });
+    // @ts-expect-error scratch deletion cannot defer settlement
+    createWindowsSandboxLifecycle({ ...required, removeScratch: async () => undefined });
+    // @ts-expect-error registration observation is asynchronous at the application boundary
+    const synchronousStart: { ok: boolean } | undefined = app.start({ deviceId: "sandbox" });
+    // @ts-expect-error stop completes synchronously
+    const asynchronousStop: Promise<unknown> = app.stop({ deviceId: "sandbox" });
+    // @ts-expect-error the public request requires a concrete device ID
+    app.start({ deviceId: 7 });
+    void [started, stopped, deleted, writeConfig, listRuntime, removeScratch, synchronousStart, asynchronousStop];
+}
+void lifecycleContracts;

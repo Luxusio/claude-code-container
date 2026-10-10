@@ -7856,6 +7856,96 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    it("retains ambiguous Windows registration evidence without adopting or stopping an unrelated runtime", async () => {
+        const cwd = "/project/broker-windows-registration-ambiguous";
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "win-ambiguous";
+        const windowsRoot = backendRoot(ownerId, "windows"), configPath = join(windowsRoot, "ambiguous.wsb");
+        const sandboxId = "12345678-1234-4234-9234-1234567890aa";
+        const observedIds = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+        mkdirSync(windowsRoot, { recursive: true });
+        writeFileSync(configPath, "<Configuration>ambiguous</Configuration>");
+        writeBrokerDevices(ownerId, "windows", [{ id: deviceId, backend: "windows-sandbox", status: "stopped", configPath, sandboxId, minimized: false }]);
+        let launched = false;
+        const commandRunner = vi.fn((command) => {
+            if (command.provider === "wsb" && command.args?.[0] === "start") launched = true;
+            return { mode: command.mode, provider: command.provider, status: 0, stdout: command.args?.[0] === "list" ? JSON.stringify({ WindowsSandboxEnvironments: (launched ? observedIds : []).map(Id => ({ Id })) }) : "", stderr: "" };
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { wsb: "wsb" }, commandRunner });
+        try {
+            const baseUrl = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-sandbox", command: "device_start", deviceId, dryRun: false } }) });
+            expect(response.status).toBe(502);
+            const payload = await response.json();
+            expect(payload.ok).toBe(false);
+            expect(JSON.stringify(payload)).toContain("ambiguous runtimes");
+            for (const id of observedIds) expect(JSON.stringify(payload)).toContain(id);
+            expect(commandRunner.mock.calls.some(([command]) => command.provider === "wsb" && command.args?.[0] === "stop")).toBe(false);
+            const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf8")) as { devices: Array<{ id: string; status: string; sandboxId: string }> };
+            expect(state.devices[0]).toMatchObject({ id: deviceId, status: "stopped", sandboxId });
+            const lock = JSON.parse(readFileSync(join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json"), "utf8"));
+            expect(lock).toMatchObject({ ownerId, deviceId, sandboxId });
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each(["device_stop", "device_delete"] as const)("preserves a Windows successor published during %s", async commandName => {
+        const cwd = `/project/broker-windows-successor-${commandName}`;
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "win-successor";
+        const sandboxId = "12345678-1234-4234-9234-1234567890cc";
+        const successorClaimId = "abcdef0123456789abcdef0123456789";
+        const successor = { id: deviceId, backend: "windows-sandbox", status: "running", sandboxId, singletonClaimId: successorClaimId, lifecycle: { runtimeId: "new-operation", operation: "start" }, successor: true };
+        writeBrokerDevices(ownerId, "windows", [{ id: deviceId, backend: "windows-sandbox", status: "running", sandboxId }]);
+        const lockPath = join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json");
+        let bootId: string;
+        try { bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); }
+        catch { bootId = `${hostname()}:${Math.floor((Date.now() - uptime() * 1000) / 1000)}`; }
+        mkdirSync(dirname(lockPath), { recursive: true });
+        writeFileSync(lockPath, JSON.stringify({ provider: "windows-sandbox", host: hostname(), bootId, ownerId, deviceId, sandboxId, claimId: "1234567890abcdef1234567890abcdef", pid: process.pid, acquiredAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+        let successorLock: unknown;
+        const commandRunner = vi.fn(command => {
+            if (command.provider === "wsb" && command.args?.[0] === "stop") {
+                writeBrokerDevices(ownerId, "windows", [successor]);
+                if (existsSync(lockPath)) {
+                    successorLock = { ...JSON.parse(readFileSync(lockPath, "utf8")), claimId: successorClaimId };
+                    writeFileSync(lockPath, JSON.stringify(successorLock));
+                }
+            }
+            return { mode: command.mode, provider: command.provider, status: 0, stdout: "", stderr: "" };
+        });
+        const artifactCleaner = vi.fn(() => ({ ok: true, removed: false, deviceRoot: join(backendRoot(ownerId, "windows"), deviceId) }));
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { wsb: "wsb" }, commandRunner, windowsDeviceArtifactCleaner: artifactCleaner });
+        try {
+            const baseUrl = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-sandbox", command: commandName, deviceId, dryRun: false } }) });
+            expect(response.status).toBe(409);
+            expect(await response.json()).toMatchObject({ ok: false, error: "owner-device-state-conflict" });
+            const state = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows"), "devices.json"), "utf8"));
+            expect(state.devices).toEqual([successor]);
+            expect(artifactCleaner).not.toHaveBeenCalled();
+            expect(successorLock).toBeDefined();
+            expect(JSON.parse(readFileSync(lockPath, "utf8"))).toEqual(successorLock);
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it("refuses Windows stop when a broker-owned watchdog cancellation marker cannot be written", async () => {
+        const cwd = "/project/broker-windows-watchdog-cleanup-refusal";
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "win-watchdog-refusal";
+        const sandboxId = "12345678-1234-4234-9234-1234567890cc";
+        const watchdog = { pid: 17, processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" };
+        writeBrokerDevices(ownerId, "windows", [{ id: deviceId, backend: "windows-sandbox", status: "running", sandboxId, minimizeWatchdog: watchdog }]);
+        mkdirSync(join(backendRoot(ownerId, "windows"), deviceId, "downloads", "ccc-minimize-watchdog.cancel"), { recursive: true });
+        const commandRunner = vi.fn(command => ({ mode: command.mode, provider: command.provider, status: 0, stdout: "", stderr: "" }));
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { wsb: "wsb" }, commandRunner });
+        try {
+            const baseUrl = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-sandbox", command: "device_stop", deviceId, dryRun: false } }) });
+            expect(response.status).toBe(502);
+            expect(await response.json()).toMatchObject({ ok: false, error: "auxiliary-runtime-cleanup-failed", result: { invoked: false, auxiliaryCleanup: { ok: false, minimizeWatchdog: { cleared: false, cancellation: { ok: false } } } } });
+            expect(commandRunner).not.toHaveBeenCalled();
+            const state = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows"), "devices.json"), "utf8"));
+            expect(state.devices[0]).toMatchObject({ status: "running", minimizeWatchdog: watchdog });
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
     it("validates lifecycle command params and keeps plans owner scoped", async () => {
         const ownerA = deviceLabOwnerId("/project/broker-command-guard-test");
         const ownerBPath = "/project/broker-command-guard-foreign-test";

@@ -1,5 +1,5 @@
 import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
-import { createWindowsSandboxStop } from "../application/lifecycle/windows-sandbox-stop.mjs";
+import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../application/lifecycle/windows-sandbox-stop.mjs";
 import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
@@ -19,11 +19,7 @@ import { copyFileAtomically, withSharedMutationLock, writeFileAtomically, writeJ
 import { assertDeviceLabPathWithinRoot, readDeviceLabBinaryFile, readDeviceLabTextFile } from "../state/state-file.mjs";
 import { withTargetStatus } from "../status.mjs";
 
-const WINDOWS_SANDBOX_START_TIMEOUT_MS = 120000;
-const WINDOWS_SANDBOX_STOP_TIMEOUT_MS = 60000;
 const WINDOWS_SANDBOX_EXEC_TIMEOUT_MS = 30000;
-const WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS = 60000;
-const WINDOWS_SANDBOX_LIST_TIMEOUT_MS = 10000;
 const WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS = 180000;
 const WINDOWS_SANDBOX_MINIMIZE_CONFIRM_TIMEOUT_MS = 30000;
 const WINDOWS_SANDBOX_CONFIG_LIMIT_BYTES = 256 * 1024;
@@ -87,75 +83,7 @@ export function windowsSandboxRuntimeDelta(previousIds = [], currentIds = []) {
     return currentIds.map((id) => String(id).toLowerCase()).filter((id) => !previous.has(id));
 }
 
-function listWindowsSandboxRuntimeIds(wsb) {
-    const result = runWithTimeout(wsb, ["list", "--raw"], WINDOWS_SANDBOX_LIST_TIMEOUT_MS);
-    return {
-        ok: result.status === 0,
-        ids: result.status === 0 ? windowsSandboxSessionIdsFromListOutput(result.stdout || "") : [],
-        result,
-    };
-}
 
-function stopWindowsSandboxRuntimeIds(wsb, ids) {
-    const stopped = [];
-    const failed = [];
-    for (const id of ids) {
-        const result = runWithTimeout(wsb, ["stop", "--id", id], WINDOWS_SANDBOX_STOP_TIMEOUT_MS);
-        if (result.status === 0) stopped.push(id);
-        else failed.push({ id, result });
-    }
-    return { ok: failed.length === 0, stopped, failed };
-}
-
-async function waitForWindowsSandboxRuntime(wsb, sandboxId, timeoutMs = WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS, options = {}) {
-    if (process.platform !== "win32") return { ok: true, skipped: true, sandboxId };
-    const expected = String(sandboxId).toLowerCase();
-    const previousIds = (options.previousIds || []).map((id) => String(id).toLowerCase());
-    const requireNewRuntime = options.requireNewRuntime === true;
-    const deadline = Date.now() + Math.max(0, timeoutMs);
-    let lastResult = null;
-    let lastIds = [];
-    let lastNewIds = [];
-    while (Date.now() <= deadline) {
-        lastResult = runWithTimeout(wsb, ["list", "--raw"], Math.min(WINDOWS_SANDBOX_LIST_TIMEOUT_MS, Math.max(1000, deadline - Date.now())));
-        if (lastResult.status === 0) {
-            const ids = windowsSandboxSessionIdsFromListOutput(lastResult.stdout || "");
-            lastIds = ids;
-            lastNewIds = windowsSandboxRuntimeDelta(previousIds, ids);
-            if (requireNewRuntime) {
-                if (lastNewIds.includes(expected)) {
-                    return { ok: true, sandboxId: expected, matchedRequested: true, result: lastResult, observedIds: ids, newIds: lastNewIds };
-                }
-                if (lastNewIds.length === 1) {
-                    return { ok: true, sandboxId: lastNewIds[0], requestedSandboxId: sandboxId, matchedRequested: false, result: lastResult, observedIds: ids, newIds: lastNewIds };
-                }
-                if (lastNewIds.length > 1) {
-                    return { ok: false, result: lastResult, observedIds: ids, newIds: lastNewIds, error: `Windows Sandbox launch produced multiple new runtimes: ${lastNewIds.join(", ")}` };
-                }
-                await sleep(500);
-                continue;
-            }
-            if (ids.includes(expected)) {
-                return { ok: true, sandboxId: expected, matchedRequested: true, result: lastResult };
-            }
-            if (ids.length === 1) {
-                return { ok: true, sandboxId: ids[0], requestedSandboxId: sandboxId, matchedRequested: false, result: lastResult };
-            }
-        }
-        await sleep(500);
-    }
-    return {
-        ok: false,
-        result: lastResult,
-        observedIds: lastIds,
-        newIds: lastNewIds,
-        error: `Windows Sandbox runtime ${sandboxId} did not appear in wsb list within ${timeoutMs}ms`,
-    };
-}
-
-function windowsRuntimeSandboxId(device) {
-    return isGuid(device?.sandboxId) ? device.sandboxId : randomUUID();
-}
 
 function windowsSingletonLockPath() {
     return join(homedir(), ".ccc/devices/host-locks/windows-sandbox.json");
@@ -1178,18 +1106,6 @@ function runWindowsSandboxCommand(wsb, args, timeoutMs, minimized = true, waitFo
     return runWithTimeout(wsb, args, timeoutMs);
 }
 
-function startWindowsSandboxDeviceRuntime(wsb, claimedSandboxId, configPath, config, minimized, cancelPath, resultPath) {
-    if (process.platform === "win32") {
-        const startedAfter = new Date(Date.now() - 2000).toISOString();
-        const baselineHandles = minimized ? windowsSandboxWindowHandles() : null;
-        const result = runWithTimeout("powershell.exe", windowsWsbConfigLaunchArgs(configPath, minimized), WINDOWS_SANDBOX_START_TIMEOUT_MS);
-        const minimizeWatchdogLaunch = minimized ? launchWindowsSandboxMinimizeWatchdog(startedAfter, cancelPath, WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS, baselineHandles, resultPath) : { ok: true, skipped: true };
-        return { ...result, launchMode: "wsb-file", minimizeWatchdogLaunch };
-    }
-    const result = runWindowsSandboxCommand(wsb, ["start", "--id", claimedSandboxId, "--config", config], WINDOWS_SANDBOX_START_TIMEOUT_MS, minimized, false);
-    return { ...result, launchMode: "wsb-cli-start" };
-}
-
 export function launchWindowsSandboxSession(wsb, sandboxId, minimized = true, timeoutMs = 10000, {
     platform = process.platform, runLauncher = runWithTimeout, spawnSession = spawn,
 } = {}) {
@@ -1659,24 +1575,36 @@ function windowsSandboxStopPorts(cancelWatchdog = cancelWindowsMinimizeWatchdog)
     };
 }
 
-function claimWindowsLifecycle(deviceId, device, operation) {
-    return createWindowsSandboxStop(windowsSandboxStopPorts()).claimLifecycle(deviceId, device, operation);
-}
-
-function currentWindowsLifecycleDevice(deviceId, lifecycle) {
-    return createWindowsSandboxStop(windowsSandboxStopPorts()).currentLifecycleDevice(deviceId, lifecycle);
-}
-
-function abortWindowsLifecycle(deviceId, lifecycle, original, updates = null) {
-    return createWindowsSandboxStop(windowsSandboxStopPorts()).abortLifecycle(deviceId, lifecycle, original, updates);
-}
-
-function bindWindowsLifecycleSingleton(deviceId, claim, original) {
-    return createWindowsSandboxStop(windowsSandboxStopPorts()).bindLifecycleSingleton(deviceId, claim, original);
-}
-
-function stopWindowsSandboxDevice(device) {
-    return createWindowsSandboxStop(windowsSandboxStopPorts()).stopDevice(device);
+function windowsSandboxLifecyclePorts() {
+    return {
+        ...windowsSandboxStopPorts(),
+        readDevices: () => readWindowsDevices(),
+        helperMetadata: device => windowsHelperMetadata(device),
+        writeConfig: device => writeWsbConfig(device),
+        readConfig: path => readWsbConfig(path),
+        resetHelperMarkers: helper => {resetWindowsHelperSessionMarkers(helper); return undefined;},
+        listRuntime: (discovery, timeoutMs) => runWithTimeout(discovery.wsb, ["list", "--raw"], timeoutMs),
+        runtimeIds: output => windowsSandboxSessionIdsFromListOutput(output),
+        stopRuntime: (discovery, id, timeoutMs) => runWithTimeout(discovery.wsb, ["stop", "--id", id], timeoutMs),
+        timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
+        windowHandles: () => windowsSandboxWindowHandles(),
+        launchConfig: (path, minimized, timeoutMs) => runWithTimeout("powershell.exe",windowsWsbConfigLaunchArgs(path,minimized),timeoutMs),
+        launchRuntime: (discovery, id, config, minimized, timeoutMs) => runWindowsSandboxCommand(discovery.wsb,["start","--id",id,"--config",config],timeoutMs,minimized,false),
+        launchWatchdog: (startedAfter, cancelPath, timeoutMs, handles, resultPath) => launchWindowsSandboxMinimizeWatchdog(startedAfter,cancelPath,timeoutMs,handles,resultPath),
+        updateSingletonRuntimeId: (device, claimedId, runtimeId, claimId) => updateWindowsSingletonRuntimeId(device,claimedId,runtimeId,claimId),
+        waitForMinimizeConfirmation: path => waitForWindowsSandboxMinimizeConfirmation(path),
+        launchSession: (discovery, id, minimized) => launchWindowsSandboxSession(discovery.wsb,id,minimized),
+        scratchDirectory: device => windowsScratchDir(device),
+        removeScratch: device => {removeWindowsScratch(device); return undefined;},
+        platform: process.platform,
+        now: () => Date.now(),
+        wait: milliseconds => sleep(milliseconds),
+        targetStatus: device => withTargetStatus(device),
+        lifecycleConflict: (id, operation, transition, detail) => windowsLifecycleConflict(id,operation,transition,detail),
+        textResult: (ok, text) => textResult(ok,text),
+        jsonResult: value => jsonResult(value),
+        fail: result => fail(result),
+    };
 }
 
 export function listWindowsDevices() {
@@ -1722,45 +1650,7 @@ async function handleWindowsToolUnlocked(name, args) {
             return jsonResult({ device: withTargetStatus(outcome.device) });
         }
 
-        case "device_delete": {
-            const { deviceId, force = false } = args;
-            const devices = readWindowsDevices();
-            const device = devices.find((item) => item.id === deviceId);
-            if (!device) return undefined;
-            if (!force && device.status !== "stopped") {
-                return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
-            }
-            let claim = claimWindowsLifecycle(deviceId, device, "delete");
-            if (!claim.transition.matched) return windowsLifecycleConflict(deviceId, "delete-claim", claim.transition);
-            const singleton = bindWindowsLifecycleSingleton(deviceId, claim, device);
-            if (!singleton.ok) {
-                abortWindowsLifecycle(deviceId, claim.lifecycle, device);
-                if (singleton.conflict) return windowsLifecycleConflict(deviceId, "delete-singleton", singleton.conflict);
-                return textResult(false, singleton.error);
-            }
-            claim = singleton.claim;
-            const stopped = stopWindowsSandboxDevice({ ...claim.claimed, status: device.status });
-            if (!stopped.ok) {
-                abortWindowsLifecycle(deviceId, claim.lifecycle, device, stopped.device ? {
-                    minimizeWatchdogLaunch: stopped.device.minimizeWatchdogLaunch,
-                    ...(Object.prototype.hasOwnProperty.call(stopped.device, "helperSessionLaunch")
-                        ? { helperSessionLaunch: stopped.device.helperSessionLaunch }
-                        : {}),
-                } : null);
-                if (stopped.result) return fail(stopped.result);
-                return textResult(false, stopped.error || `Failed to stop Windows Sandbox before deleting ${deviceId}`);
-            }
-            const current = currentWindowsLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) {
-                releaseWindowsSingleton(stopped.device, claim.lifecycle.singletonClaimId);
-                return windowsLifecycleConflict(deviceId, "delete", { found: Boolean(findWindowsDevice(deviceId)), matched: false });
-            }
-            const transition = transitionWindowsDevice(deviceId, current, null);
-            releaseWindowsSingleton(stopped.device, claim.lifecycle.singletonClaimId);
-            if (!transition.matched) return windowsLifecycleConflict(deviceId, "delete", transition);
-            removeWindowsScratch(stopped.device);
-            return jsonResult({ deleted: deviceId, scratchRemoved: windowsScratchDir(device) });
-        }
+        case "device_delete": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).delete(args);
 
         case "device_status": {
             const { deviceId } = args;
@@ -1769,183 +1659,9 @@ async function handleWindowsToolUnlocked(name, args) {
             return jsonResult({ device: withTargetStatus({ ...device, helper: windowsHelperMetadata(device) }), backend: windowsBackend() });
         }
 
-        case "device_start": {
-            const { deviceId } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (device.status !== "stopped") {
-                return textResult(false, `Refusing to start ${deviceId} while status is ${device.status}`);
-            }
+        case "device_start": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).start(args);
 
-            const discovery = windowsDiscovery();
-            if (!discovery.available) {
-                return textResult(false, `Windows Sandbox backend missing prerequisites: ${discovery.missing.join(", ")}`);
-            }
-
-            const lifecycleClaim = claimWindowsLifecycle(deviceId, device, "start");
-            if (!lifecycleClaim.transition.matched) return windowsLifecycleConflict(deviceId, "start-claim", lifecycleClaim.transition);
-
-            const helper = windowsHelperMetadata(device);
-            const configPath = writeWsbConfig(device);
-            const config = readWsbConfig(configPath);
-            resetWindowsHelperSessionMarkers(helper);
-            const claimedSandboxId = windowsRuntimeSandboxId(device);
-            const lock = claimWindowsSingleton(device, claimedSandboxId, lifecycleClaim.lifecycle.runtimeId);
-            if (!lock.ok) {
-                abortWindowsLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                return textResult(false, lock.error);
-            }
-            const starting = {
-                ...lifecycleClaim.claimed,
-                sandboxId: claimedSandboxId,
-                singletonClaimId: lock.lock.claimId,
-                lifecycle: { ...lifecycleClaim.lifecycle, singletonClaimId: lock.lock.claimId },
-                updatedAt: new Date().toISOString(),
-            };
-            const lockTransition = transitionWindowsDevice(deviceId, lifecycleClaim.claimed, starting);
-            if (!lockTransition.matched) {
-                releaseWindowsSingleton({ ...device, sandboxId: claimedSandboxId }, lock.lock.claimId);
-                return windowsLifecycleConflict(deviceId, "start-lock", lockTransition);
-            }
-            const minimized = typeof args.minimized === "boolean" ? args.minimized : device.minimized !== false;
-            let previousRuntimeIds = [];
-            if (process.platform === "win32") {
-                const beforeLaunch = listWindowsSandboxRuntimeIds(discovery.wsb);
-                if (!beforeLaunch.ok) {
-                    releaseWindowsSingleton(starting, lock.lock.claimId);
-                    abortWindowsLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                    return fail(beforeLaunch.result);
-                }
-                if (beforeLaunch.ids.length > 0) {
-                    releaseWindowsSingleton(starting, lock.lock.claimId);
-                    abortWindowsLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                    return textResult(false, `Windows Sandbox already has a running runtime before ${deviceId} start: ${beforeLaunch.ids.join(", ")}. Stop it before starting an owner-scoped device.`);
-                }
-                previousRuntimeIds = beforeLaunch.ids;
-            }
-            const r = startWindowsSandboxDeviceRuntime(discovery.wsb, claimedSandboxId, configPath, config, minimized, helper.minimizeWatchdogCancelPath, helper.minimizeWatchdogResultPath);
-            if (r.status !== 0) {
-                releaseWindowsSingleton(starting, lock.lock.claimId);
-                abortWindowsLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                return fail(r);
-            }
-            const registered = await waitForWindowsSandboxRuntime(discovery.wsb, claimedSandboxId, WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS, {
-                previousIds: previousRuntimeIds,
-                requireNewRuntime: r.launchMode === "wsb-file",
-            });
-            if (!registered.ok) {
-                const watchdogCleanup = cleanupWindowsSandboxMinimizeWatchdogs({
-                    ...device,
-                    minimizeWatchdogLaunch: r.minimizeWatchdogLaunch,
-                });
-                const cleanupIds = r.launchMode === "wsb-file" ? (registered.newIds || []) : [claimedSandboxId];
-                const cleanup = stopWindowsSandboxRuntimeIds(discovery.wsb, cleanupIds);
-                let releaseLockAfterFailure = cleanupIds.length === 0 && registered.result?.status === 0;
-                let cleanupVerify = null;
-                if (cleanupIds.length > 0) {
-                    if (cleanup.ok) {
-                        releaseLockAfterFailure = true;
-                    } else {
-                        cleanupVerify = listWindowsSandboxRuntimeIds(discovery.wsb);
-                        releaseLockAfterFailure = cleanupVerify.ok
-                            && cleanupIds.every((id) => !cleanupVerify.ids.includes(String(id).toLowerCase()));
-                    }
-                }
-                const runtimeGone = releaseLockAfterFailure;
-                if (!watchdogCleanup.ok) {
-                    const current = currentWindowsLifecycleDevice(deviceId, lifecycleClaim.lifecycle);
-                    if (current) transitionWindowsDevice(deviceId, current, {
-                        ...current,
-                        minimizeWatchdogLaunch: r.minimizeWatchdogLaunch,
-                        updatedAt: new Date().toISOString(),
-                    });
-                    releaseLockAfterFailure = false;
-                }
-                if (releaseLockAfterFailure) {
-                    releaseWindowsSingleton(starting, lock.lock.claimId);
-                    abortWindowsLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                }
-                const detail = registered.result
-                    ? ` status=${registered.result.status} stderr=${registered.result.stderr || ""} stdout=${registered.result.stdout || ""} error=${registered.result.error?.message || ""}`
-                    : "";
-                const cleanupDetail = cleanupIds.length > 0
-                    ? ` cleanupStopped=${cleanup.stopped.join(",") || "<none>"} cleanupFailed=${cleanup.failed.map((item) => item.id).join(",") || "<none>"} cleanupVerifiedGone=${cleanupVerify ? runtimeGone : cleanup.ok} lockRetained=${!releaseLockAfterFailure}`
-                    : " cleanupSkipped=no-new-runtime-observed";
-                const watchdogDetail = watchdogCleanup.ok
-                    ? " minimizeWatchdogCleaned=true"
-                    : ` minimizeWatchdogCleaned=false error=${watchdogCleanup.attempts.filter((attempt) => !attempt?.ok).map((attempt) => attempt?.error || `pid ${attempt?.pid}`).join(",")}`;
-                return textResult(false, `${registered.error}.${detail}${cleanupDetail}${watchdogDetail}`);
-            }
-            const sandboxId = registered.sandboxId || claimedSandboxId;
-            if (sandboxId !== claimedSandboxId) {
-                const singletonUpdated = updateWindowsSingletonRuntimeId(starting, claimedSandboxId, sandboxId, lock.lock.claimId);
-                if (!singletonUpdated) {
-                    const watchdogCleanup = cleanupWindowsSandboxMinimizeWatchdogs({ ...starting, sandboxId, minimizeWatchdogLaunch: r.minimizeWatchdogLaunch });
-                    const cleanup = stopWindowsSandboxRuntimeIds(discovery.wsb, [sandboxId]);
-                    if (cleanup.ok && watchdogCleanup.ok) abortWindowsLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                    return textResult(false, JSON.stringify({
-                        ok: false,
-                        error: "windows-sandbox-singleton-generation-conflict",
-                        backend: "windows-sandbox",
-                        deviceId,
-                        runtimeStopped: cleanup.ok,
-                        watchdogCleaned: watchdogCleanup.ok,
-                    }));
-                }
-            }
-            let minimizeConfirmation = null;
-            if (r.minimizeWatchdogLaunch?.ok === false) {
-                minimizeConfirmation = {
-                    ok: false,
-                    error: r.minimizeWatchdogLaunch.error || "Windows Sandbox minimize watchdog failed to start",
-                };
-            } else if (minimized && process.platform === "win32") {
-                minimizeConfirmation = await waitForWindowsSandboxMinimizeConfirmation(helper.minimizeWatchdogResultPath);
-            }
-            const helperSessionLaunch = r.launchMode === "wsb-file"
-                ? { ok: true, skipped: true, reason: "wsb-file launch creates the interactive Sandbox session", launchMode: r.launchMode, minimizeWatchdogLaunch: r.minimizeWatchdogLaunch }
-                : launchWindowsSandboxSession(discovery.wsb, sandboxId, minimized);
-
-            const updated = {
-                ...starting,
-                status: "running",
-                sandboxId,
-                ...(sandboxId !== claimedSandboxId ? { requestedSandboxId: claimedSandboxId } : {}),
-                configPath,
-                launchMode: r.launchMode,
-                minimizeWatchdogLaunch: r.minimizeWatchdogLaunch,
-                minimized,
-                minimizeConfirmed: minimizeConfirmation?.ok === true,
-                minimizeWarning: minimizeConfirmation?.ok === false ? minimizeConfirmation.error : null,
-                helper: windowsHelperMetadata(starting),
-                helperSessionLaunch,
-                updatedAt: new Date().toISOString(),
-            };
-            const transition = transitionWindowsDevice(deviceId, starting, updated);
-            if (!transition.matched) {
-                const watchdogCleanup = cleanupWindowsSandboxMinimizeWatchdogs({ ...starting, sandboxId, minimizeWatchdogLaunch: r.minimizeWatchdogLaunch, helperSessionLaunch });
-                const cleanup = stopWindowsSandboxRuntimeIds(discovery.wsb, [sandboxId]);
-                if (cleanup.ok && watchdogCleanup.ok) releaseWindowsSingleton({ ...starting, sandboxId }, lock.lock.claimId);
-                return windowsLifecycleConflict(deviceId, "start-complete", transition, {
-                    runtimeStopped: cleanup.ok,
-                    watchdogCleaned: watchdogCleanup.ok,
-                    singletonReleased: cleanup.ok && watchdogCleanup.ok,
-                });
-            }
-            return jsonResult({ device: withTargetStatus(updated) });
-        }
-
-        case "device_stop": {
-            const { deviceId } = args;
-            const outcome = createWindowsSandboxStop(windowsSandboxStopPorts()).stop(deviceId);
-            switch (outcome.kind) {
-                case "unhandled": return undefined;
-                case "conflict": return windowsLifecycleConflict(deviceId, outcome.operation, outcome.transition);
-                case "refused": return textResult(false, outcome.error);
-                case "native-failure": return fail(outcome.evidence);
-                case "completed": return jsonResult({ device: withTargetStatus(outcome.device) });
-            }
-        }
+        case "device_stop": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).stop(args);
 
         case "device_exec": {
             const { deviceId, command, helperTimeoutMs } = args;

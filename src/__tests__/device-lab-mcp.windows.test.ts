@@ -108,7 +108,7 @@ if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').trim()===args[0]){
  for(const kind of ['state','lock']){
   const target=path.join(home,'fake-windows-replace-'+kind+'-target');
   const source=path.join(home,'fake-windows-replace-'+kind+'-source');
-  if(fs.existsSync(target)&&fs.existsSync(source))fs.copyFileSync(source,fs.readFileSync(target,'utf8').trim());
+  if(fs.existsSync(target)&&fs.existsSync(source)){const destination=fs.readFileSync(target,'utf8').trim();if(kind==='lock')fs.writeFileSync(destination,JSON.stringify({...JSON.parse(fs.readFileSync(destination,'utf8')),...JSON.parse(fs.readFileSync(source,'utf8'))}));else fs.copyFileSync(source,destination);}
  }
  fs.writeFileSync(path.join(home,'fake-windows-replace-done'),'');
 }
@@ -129,6 +129,8 @@ cp.spawnSync=function(command,args=[],options){
  return command===fixture?sync(process.execPath,[fixture,...args],options):sync(command,args,options);
 };
 const spawn=cp.spawn;cp.spawn=function(command,args=[],options){return command===fixture?spawn(process.execPath,[fixture,...args],options):spawn(command,args,options)};
+const fs=require('node:fs'),remove=fs.rmSync;
+fs.rmSync=function(target,options){const marker=require('node:path').join(process.env.HOME,'fake-windows-fail-scratch-remove');if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').trim()===String(target))throw Object.assign(new Error('owned scratch removal denied'),{code:'EPERM'});return remove(target,options)};
 require('node:module').syncBuiltinESMExports();`);
         chmodSync(wsbPath, 0o755);
 
@@ -1129,6 +1131,49 @@ require('node:module').syncBuiltinESMExports();`);
         expect(existsSync(failCreated.device.helper.scratchDir)).toBe(false);
     });
 
+    it("reports partial delete cleanup after removing its stopped record", { timeout: TIMEOUT }, async () => {
+        const deviceId = "windows-delete-partial";
+        const created = await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Partial cleanup", deviceId } });
+        expect(created.isError).not.toBe(true);
+        const { device } = JSON.parse((created.content as Array<{ text: string }>)[0].text) as { device: { helper: { scratchDir: string } } };
+        writeFileSync(join(homeDir, "fake-windows-fail-scratch-remove"), device.helper.scratchDir);
+        const deleted = await client.callTool({ name: "delete", arguments: { deviceId, confirmDestructive: true } });
+        expect(deleted.isError).toBe(true);
+        expect((deleted.content as Array<{ text: string }>)[0].text).toContain("owned scratch removal denied");
+        expect(existsSync(device.helper.scratchDir)).toBe(true);
+        const state = JSON.parse(readFileSync(windowsStatePath(), "utf8")) as { devices: Array<{ id: string }> };
+        expect(state.devices.some(item => item.id === deviceId)).toBe(false);
+        expect(readFileSync(logPath, { encoding: "utf8", flag: "a+" })).not.toContain("wsb stop");
+    });
+
+    it("refuses runtime teardown while its watchdog cancellation marker cannot be written", { timeout: TIMEOUT }, async () => {
+        const deviceId = "windows-watchdog-refusal";
+        const created = await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Watchdog refusal", deviceId } });
+        expect(created.isError).not.toBe(true);
+        const started = await client.callTool({ name: "start", arguments: { deviceId, waitForBoot: false } });
+        expect(started.isError).not.toBe(true);
+        const statePath = windowsStatePath();
+        const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> };
+        const device = state.devices.find(item => item.id === deviceId)!;
+        device.minimizeWatchdogLaunch = { pid: 17 };
+        writeFileSync(statePath, JSON.stringify(state));
+        const cancelPath = join(dirname(statePath), deviceId, "downloads", "ccc-minimize-watchdog.cancel");
+        mkdirSync(cancelPath, { recursive: true });
+        const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+        const lockBefore = readFileSync(lockPath, "utf8");
+        const logBefore = await waitForStableLog(logPath);
+        const stopped = await client.callTool({ name: "stop", arguments: { deviceId } });
+        expect(stopped.isError).toBe(true);
+        expect((stopped.content as Array<{ text: string }>)[0].text).toContain("Failed to stop Windows Sandbox minimize watchdog");
+        expect(readFileSync(logPath, "utf8").slice(logBefore.length)).not.toContain("wsb stop");
+        expect(readFileSync(lockPath, "utf8")).toBe(lockBefore);
+        const after = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> };
+        expect(after.devices.find(item => item.id === deviceId)).toMatchObject({ status: "running", minimizeWatchdogLaunch: { pid: 17 } });
+        rmSync(cancelPath, { recursive: true, force: true });
+        expect((await client.callTool({ name: "stop", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "delete", arguments: { deviceId, confirmDestructive: true } })).isError).not.toBe(true);
+    });
+
     it("reports an invalid Sandbox identity without exposing the device or helper paths", async () => {
         await client.callTool({ name: "create_windows_sandbox", arguments: { name: "No runtime", deviceId: "no-runtime" } });
         const probe = await client.callTool({ name: "cursor_position", arguments: { deviceId: "no-runtime", timeoutMs: 1000 } });
@@ -1433,17 +1478,23 @@ require('node:module').syncBuiltinESMExports();`);
         const aggregate = JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> };
         const current = aggregate.devices.find((device) => device.id === deviceId);
         expect(current).toBeDefined();
+        if (operation === "start") {
+            current!.sandboxId = "11111111-1111-4111-8111-111111111111";
+            writeFileSync(statePath, JSON.stringify(aggregate));
+        }
         const successorClaimId = `successor-singleton-${operation}-${Date.now()}`;
         const successor = {
             ...current,
-            status: operation === "start" ? "stopped" : "running",
+            status: "running",
             lifecycle: { runtimeId: `successor-lifecycle-${operation}`, operation: "successor", claimedAt: "2026-07-15T00:00:00.000Z" },
-            ...(operation === "start" ? { singletonClaimId: null } : { singletonClaimId: successorClaimId }),
+            singletonClaimId: successorClaimId,
             successorMarker: `${operation}-preserve-exactly`,
             updatedAt: `successor-${operation}`,
         };
         let successorLock: Record<string, unknown> | undefined;
-        if (operation !== "start") {
+        if (operation === "start") {
+            successorLock = { provider: "windows-sandbox", ownerId, deviceId, sandboxId: current?.sandboxId, claimId: successorClaimId };
+        } else {
             const lockPath = join(homeDir, ".ccc", "devices", "host-locks", "windows-sandbox.json");
             const currentLock = JSON.parse(readFileSync(lockPath, "utf-8")) as Record<string, unknown>;
             successorLock = {
@@ -1457,6 +1508,7 @@ require('node:module').syncBuiltinESMExports();`);
             };
         }
         armWindowsReplacement(operation === "start" ? "start" : "stop", statePath, successor, successorLock);
+        const logBeforeOperation = await waitForStableLog(logPath);
 
         const result = await client.callTool({
             name: operation === "start" ? "start" : operation === "stop" ? "stop" : "delete",
@@ -1469,9 +1521,12 @@ require('node:module').syncBuiltinESMExports();`);
         expect(existsSync(join(homeDir, "fake-windows-replace-done"))).toBe(true);
         const after = JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> };
         expect(after.devices.find((device) => device.id === deviceId)).toEqual(successor);
+        if (operation === "start") expect(readFileSync(logPath, "utf8").slice(logBeforeOperation.length)).not.toContain("wsb stop");
         if (successorLock) {
             const lockPath = join(homeDir, ".ccc", "devices", "host-locks", "windows-sandbox.json");
-            expect(JSON.parse(readFileSync(lockPath, "utf-8"))).toEqual(successorLock);
+            const actualLock = JSON.parse(readFileSync(lockPath, "utf-8"));
+            if (operation === "start") expect(actualLock).toMatchObject(successorLock);
+            else expect(actualLock).toEqual(successorLock);
         }
 
         disarmWindowsReplacement();

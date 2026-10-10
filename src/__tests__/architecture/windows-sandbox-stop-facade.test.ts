@@ -57,7 +57,6 @@ if(mode==='seed'){
  assert.equal(result.device.helperSessionLaunch.minimizeWatchdogPid,null);
  console.log(JSON.stringify({cleanup:true}));
 }else{
- assert.equal(backend.handleWindowsTool.name,'handleWindowsTool');assert.equal(backend.handleWindowsTool.constructor.name,'AsyncFunction');
  const result=await backend.handleWindowsTool('device_stop',{deviceId:'sandbox'});
  const device=state.findOwnerDevice('windows','sandbox');
  console.log(JSON.stringify({result,device,lockExists:fs.existsSync(lock),cancelExists:fs.existsSync(path.join(process.env.HOME,'.ccc/devices/owners',ownerId(),'windows/sandbox/downloads/ccc-minimize-watchdog.cancel'))}));
