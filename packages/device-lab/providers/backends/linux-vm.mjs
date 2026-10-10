@@ -196,6 +196,7 @@ function ownerScopedSourceAllowed(ctx, candidate) {
     return !inside(ownersRoot, candidate) || inside(ctx.ownerRoot, candidate);
 }
 
+/** @returns {{ok:true}|{ok:false,error:string,sourcePath?:string,ancestorPath?:string}} */
 function rejectSymlinkAncestors(root, candidate, label, options = {}) {
     const rootAbs = resolve(root);
     const candidateAbs = resolve(candidate);
@@ -657,6 +658,7 @@ function resolveBaseImage(ctx, imageId) {
 
 
 
+/** @returns {{ok:true,diskPath:string}|{ok:false,error:string,diskImage:string,ancestorPath?:string,message?:unknown}} */
 function validateLabDiskPath(lab) {
     const diskPath = resolve(lab.image?.diskImage || "");
     if (!diskPath || !inside(lab.paths.labDir, diskPath)) return { ok: false, error: "disk-image-outside-lab", diskImage: diskPath };
@@ -1138,7 +1140,15 @@ function qemuGuestTransferApplication(options = {}) {
     });
 }
 
-/** Bind native owner state, current process identity and bounded SSH effects. */
+/** Bind native owner state, current process identity and bounded SSH effects.
+ * @param {{
+ *   env?:Record<string,string|undefined>, stateRoot?:string, ownerId?:string, now?:string,
+ *   sshPath?:string|null, scpPath?:string|null, sshTimeoutMs?:number, guestAgentTimeoutMs?:number,
+ *   processExists?:import('../ports/qemu-guest-access.mjs').QemuGuestAccessPorts['processExists'],
+ *   readinessProbeRunner?:import('../ports/qemu-guest-access.mjs').QemuGuestAccessPorts['observeReadiness'],
+ *   sshCommandRunner?:(command:string,args:(string|undefined)[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>ReturnType<import('../ports/qemu-guest-access.mjs').QemuGuestAccessPorts['executeSsh']>
+ * }} [options]
+ */
 function qemuGuestAccessApplication(options = {}) {
     const ctx = context(options);
     return createQemuGuestAccessApplication({
@@ -1166,7 +1176,14 @@ function qemuGuestAccessApplication(options = {}) {
     });
 }
 
-/** Bind canonical file facts and guarded copy, disk and command effects. */
+/** Bind canonical file facts and guarded copy, disk and command effects.
+ * @param {{
+ *   env?:Record<string,string|undefined>, stateRoot?:string, ownerId?:string, now?:string,
+ *   workspaceRoot?:string, allowedWorkspaceRoots?:string[], providerCommandTimeoutMs?:unknown,
+ *   qemuPath?:string, qemuImgPath?:string, kvmPath?:string, kvmAvailable?:boolean,
+ *   commandRunner?:(command:string,args:string[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>ReturnType<import('../ports/qemu-owned-data.mjs').QemuOwnedDataPorts['executeQemuImg']>
+ * }} [options]
+ */
 function qemuOwnedDataApplication(options = {}) {
     const ctx = context(options);
     return createQemuOwnedDataApplication({
@@ -1208,13 +1225,14 @@ function qemuOwnedDataApplication(options = {}) {
         },
         diskPath: lab => {
             const result = validateLabDiskPath(lab);
-            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            if (!result.ok) return { ...result, ok: false, error: result.error };
             return { ...result, ok: true };
         },
         fileExists: path => existsSync(path),
         qemuImgPath: () => labProviderStatus(options).qemuImg,
         commandTimeoutMs: () => options.providerCommandTimeoutMs,
         executeQemuImg: (command, args, lab, timeoutMs) => {
+            /** @type {NonNullable<typeof options.commandRunner>} */
             const runner = options.commandRunner || ((command, args, runOptions) => {
                 const result = spawnSync(command, args, {
                     cwd: runOptions.cwd,
