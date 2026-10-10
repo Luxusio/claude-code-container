@@ -226,8 +226,6 @@ const DEVICE_BROKER_APPIUM_AUTO_PORT_MAX = 39999;
 export const DEVICE_BROKER_COMMAND_OUTPUT_LIMIT = 32 * 1024;
 export const DEVICE_BROKER_AUTO_START_TIMEOUT_MS = 30000;
 const DEVICE_BROKER_STARTUP_ATTEMPT_HISTORY_LIMIT = 8;
-const DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS = 60000;
-const DEVICE_BROKER_WINDOWS_SANDBOX_LIST_TIMEOUT_MS = 10000;
 const DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS = 180000;
 const DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_CONFIRM_TIMEOUT_MS = 30000;
 const DEVICE_BROKER_MACOS_PROVIDER_PATHS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
@@ -8686,12 +8684,6 @@ function numberField(device: unknown, name: string): number | null {
     if (!device || typeof device !== "object") return null;
     const value = (device as Record<string, unknown>)[name];
     return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function booleanField(device: unknown, name: string): boolean | null {
-    if (!device || typeof device !== "object") return null;
-    const value = (device as Record<string, unknown>)[name];
-    return typeof value === "boolean" ? value : null;
 }
 
 function executableFor(provider: string, normalized: NormalizedBrokerOptions) {
