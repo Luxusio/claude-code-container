@@ -109,8 +109,17 @@ function fixture(original:boolean,scenario:Scenario){
         },
     });
     const execute=(command:any,options:any)=>{
-        const observed=nativeData(command),limits=nativeData(options);trace.push(["command",observed,limits]);
-        expect(["tart","vz","utmctl"]).toContain(observed.provider);expect(limits.outputLimit).toBe(32*1024);expect(limits.timeoutMs).toBeGreaterThanOrEqual(0);expect(limits.timeoutMs).toBeLessThanOrEqual(2300);
+        const observed=nativeData(command),limits=nativeData(options);
+        if(observed.mode==="noop"||observed.provider==="host-broker-state"){
+            const expected={mode:"noop",provider:"host-broker-state",reason:"Stopped macOS VM delete without providerInstance deletes only owner broker metadata"};
+            const ownedStoppedInput=isDeepStrictEqual(scenario.params,{backend:"macos-vm",command:"device_delete",deviceId:"unit"})&&scenario.mode===undefined
+                &&scenario.device?.id==="unit"&&scenario.device.backend==="macos-vm"&&scenario.device.status==="stopped"
+                &&Object.hasOwn(scenario.device,"providerInstance")&&scenario.device.providerInstance===undefined
+                &&record?.id==="unit"&&record.status==="stopped"&&record.providerInstance===undefined&&isDeepStrictEqual(record,scenario.device);
+            if(!ownedStoppedInput||!isDeepStrictEqual(observed,expected)||!isDeepStrictEqual(limits,{timeoutMs:2300,outputLimit:32*1024}))return deny("unallocated metadata-only delete noop");
+        }
+        trace.push(["command",observed,limits]);
+        if(observed.mode!=="noop")expect(["tart","vz","utmctl"]).toContain(observed.provider);expect(limits.outputLimit).toBe(32*1024);expect(limits.timeoutMs).toBeGreaterThanOrEqual(0);expect(limits.timeoutMs).toBeLessThanOrEqual(2300);
         if(scenario.mode==="command-throw")throw fault;
         if(scenario.mode==="successor")record={...device(),marker:"successor",status:"running"};
         if(observed.args?.[0]==="clone"&&["claim-conflict","claim-same"].includes(scenario.mode||""))record=scenario.mode==="claim-same"?{...device(),providerInstance:observed.args[2]}:{...device(),providerInstance:"successor-other"};
@@ -189,7 +198,7 @@ function fixture(original:boolean,scenario:Scenario){
     expect(denied).toEqual([]);expect(trace).toEqual([]);expect(outgoingOriginal.has(api.invoke)).toBe(true);
     const normalized={cwd:"/fixture/project",host:"127.0.0.1",port:0,profile:undefined,platform:"darwin",providerPaths:{tart:"/native/tart",vz:"/native/vz",utmctl:"/native/utmctl"},usesDefaultCommandRunner:false,commandTimeoutMs:2300,commandRunner:execute};
     const programs:Record<string,string>={filesystem:'require("fs").openSync("/foreign")',process:'require("child_process").spawn("/foreign",[])',network:'require("node:net")',environment:'process.env.FOREIGN',constructor:'Buffer.constructor',"date-constructor":'Date.constructor',"module-constructor":'require("path").join.constructor',"global-timer":'globalThis.setTimeout(()=>{},1)'};
-    return {api,facade,trace,denied,fault,normalized,read:()=>record,probe(name:string){try{return fromRealm(runInContext(programs[name],context));}catch(error){throw fromRealm(error);}},
+    return {api,facade,trace,denied,fault,normalized,read:()=>record,probeUnknownNoop:()=>execute({mode:"noop",provider:"host-broker-state",reason:"unallocated noop",args:["unallocated"]},{timeoutMs:2300,outputLimit:32*1024}),probe(name:string){try{return fromRealm(runInContext(programs[name],context));}catch(error){throw fromRealm(error);}},
         async invoke(){let result:any,caught:any;try{result=await (0,api.invoke)(owner,scenario.params,normalized);}catch(error){caught=error;}
             expect(denied).toEqual([]);return {result:result===undefined?undefined:nativeData(result),error:caught===fault?"raw-native-identity":caught,trace,record:record?structuredClone(record):undefined};
         }};
@@ -254,7 +263,17 @@ describe("prepared whole broker macOS original/current controls",()=>{
         for(const name of ["withOwnerDeviceOperation","readOwnerDevices","transitionOwnerLifecycleDevice","claimOwnerDevice","cleanupLifecycleAuxiliaryRuntime","signalBrokerOwnedRecording","terminateBrokerOwnedAppium","redactBrokerDeviceSecrets"]){expect(old.has(name)).toBe(true);expect(current.get(name)).toBe(old.get(name));}
     });
     it.each(cases)("%s preserves raw results/native order/whole-record publication",async(_name,scenario)=>{
-        const old=await fixture(true,scenario).invoke(),current=await fixture(false,scenario).invoke();expect(current).toEqual(old);
+        const oldFixture=fixture(true,scenario),currentFixture=fixture(false,scenario);
+        const old=await oldFixture.invoke(),current=await currentFixture.invoke();expect(current).toEqual(old);
+        if(_name==="delete no-instance metadata-only"){
+            for(const [observation,f]of [[old,oldFixture],[current,currentFixture]] as const){
+                expect(observation.trace.filter((row:any)=>Array.isArray(row)&&row[0]==="command")).toEqual([["command",{mode:"noop",provider:"host-broker-state",reason:"Stopped macOS VM delete without providerInstance deletes only owner broker metadata"},{timeoutMs:2300,outputLimit:32*1024}]]);
+                expect(observation.result.payload.result.device).toBe(null);expect(observation.record).toBeUndefined();
+                const effectsBefore=f.trace.length;let caught:unknown;try{f.probeUnknownNoop();}catch(error){caught=error;}
+                expect(caught).toBe(f.fault);expect(f.denied).toEqual(["unallocated metadata-only delete noop"]);
+                expect(f.trace.length).toBe(effectsBefore);expect(f.read()).toBeUndefined();
+            }
+        }
         if(["command-throw","claim-throw"].includes(scenario.mode||""))expect(old.error).toBe("raw-native-identity");else expect(old.error).toBeUndefined();
         if(current.record?.extra){expect(Object.hasOwn(current.record.extra,"absent")).toBe(true);expect(current.record.extra.absent).toBeUndefined();expect(current.record.extra.structured).toBeInstanceOf(Map);expect(current.record.extra.structured.get("kept")).toBeInstanceOf(Set);}
     });
