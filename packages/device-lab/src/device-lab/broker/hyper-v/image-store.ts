@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync } from "fs";
 import { promises as fsPromises } from "fs";
-import { dirname, join, resolve, win32 } from "path";
+import { dirname, join, resolve } from "path";
 import { assertDeviceLabPathWithinRoot, readDeviceLabStateFile } from "../../../device-lab-state-file.js";
 import { withSharedMutationLockAsync, writeJsonFileAtomically } from "../../../device-lab-shared-state.js";
 import { quarantineAndRemoveDirectory } from "../../../device-lab-safe-cleanup.js";
@@ -28,7 +28,6 @@ import {
 } from "../../../host-control/hyper-v/index.js";
 import { createDeviceLabHyperVWindowsClient } from "./lifecycle-adapter.js";
 import { createHyperVImagePreparation } from "../../application/hyper-v-image-preparation.js";
-import { hyperVImageProfile } from "../../domain/hyper-v-image-preparation.js";
 import type { HyperVImageProfile, HyperVImageManifest, HyperVImageResolution, HyperVImageCommandResult, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
 import type { HyperVImagePreparationPorts } from "../../ports/hyper-v-image-preparation.js";
 export { hyperVImageProfile } from "../../domain/hyper-v-image-preparation.js";
