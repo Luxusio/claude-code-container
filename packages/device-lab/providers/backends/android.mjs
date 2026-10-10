@@ -713,6 +713,45 @@ const androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
 /** @typedef {ReturnType<typeof ensureAdbDevice>} AndroidControlTarget */
 /** @typedef {ReturnType<typeof stageLocalInputFile>} AndroidControlInputStage */
 /** @typedef {ReturnType<typeof createLocalOutputStage>} AndroidControlOutputStage */
+/**
+ * Project the native result while retaining the original allocated stage handle.
+ * @template {AndroidControlInputStage | AndroidControlOutputStage} Stage
+ * @param {Stage} stage
+ * @returns {import('../ports/android-control-transfer.mjs').StageObservation<Stage>}
+ */
+function androidControlStageObservation(stage) {
+    if (stage.ok && "cleanup" in stage && typeof stage.cleanup === "function"
+        && "path" in stage && typeof stage.path === "string"
+        && "stagedPath" in stage && typeof stage.stagedPath === "string") {
+        return { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage };
+    }
+    if ("message" in stage && typeof stage.message === "string") {
+        return { ok: false, message: stage.message };
+    }
+    throw new Error("Invalid native Android transfer stage result");
+}
+
+/** @param {ReturnType<typeof validateGuestPath> | ReturnType<typeof commitLocalOutputStage>} result
+ * @returns {import('../ports/android-control-transfer.mjs').PathObservation} */
+function androidControlPathObservation(result) {
+    if (result.ok && "path" in result && typeof result.path === "string") {
+        return { ok: true, path: result.path };
+    }
+    if ("message" in result && typeof result.message === "string") {
+        return { ok: false, message: result.message };
+    }
+    throw new Error("Invalid native Android transfer path result");
+}
+
+/** @param {AndroidControlInputStage | AndroidControlOutputStage} stage @returns {undefined} */
+function disposeAndroidControlStage(stage) {
+    if ("cleanup" in stage && typeof stage.cleanup === "function") {
+        stage.cleanup();
+        return undefined;
+    }
+    throw new Error("Invalid native Android transfer stage handle");
+}
+
 /** @type {import('../ports/android-control-transfer.mjs').AndroidControlTransferPorts<AndroidControlTarget,AndroidControlInputStage,AndroidControlOutputStage>} */
 const androidControlTransferPorts = {
     variant: "emulator",
@@ -726,26 +765,22 @@ const androidControlTransferPorts = {
     transfer: (target, args, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, args), timeoutMs),
     guestPath: (value, label) => {
         const policy = validateGuestPath(value, { label, platform: "posix" });
-        return policy.ok ? { ok: true, path: policy.path } : { ok: false, message: policy.message };
+        return androidControlPathObservation(policy);
     },
     stageInput(value) {
         const stage = stageLocalInputFile(value, { label: "upload-local-path" });
-        return stage.ok
-            ? { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage }
-            : { ok: false, message: stage.message };
+        return androidControlStageObservation(stage);
     },
     stageOutput(value) {
         const stage = createLocalOutputStage(value, { label: "download-local-path" });
-        return stage.ok
-            ? { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage }
-            : { ok: false, message: stage.message };
+        return androidControlStageObservation(stage);
     },
     commitOutput(stage) {
         const result = commitLocalOutputStage(stage, { label: "download-local-path" });
-        return result.ok ? { ok: true, path: result.path } : { ok: false, message: result.message };
+        return androidControlPathObservation(result);
     },
-    disposeInput(stage) { stage.cleanup(); return undefined; },
-    disposeOutput(stage) { stage.cleanup(); return undefined; },
+    disposeInput: disposeAndroidControlStage,
+    disposeOutput: disposeAndroidControlStage,
 };
 const androidControlTransfer = createAndroidControlTransfer(androidControlTransferPorts);
 
