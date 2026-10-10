@@ -19,6 +19,7 @@ import {
     DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
     DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS,
     DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
+    DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS,
     hyperVLifecycleCleanupTimeoutMs,
     hyperVLinuxGuestSignalDeadlineAt,
     hyperVLinuxGuestSignalTimedOut,
@@ -3083,7 +3084,7 @@ describe("device-lab Hyper-V broker", () => {
             const realNow = Date.now;
             let stopClockOffset = 0;
             const stopClock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + stopClockOffset);
-            afterNativeStop = () => { stopClockOffset = 600000; };
+            afterNativeStop = () => { stopClockOffset = DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS + 1; };
             try {
                 const expiredStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
                 expect(expiredStop.status).toBe(504);
