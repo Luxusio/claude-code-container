@@ -2,8 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, workspaceRemovalFailureNote, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, workspaceRemovalAdvice, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness, strandedBranchNotice } from '../index.js'
+import { main, parseArgs, workspaceRemovalFailureNote, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, workspaceRemovalAdvice, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness, strandedBranchNotice } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
+import { labsCli } from '../lab-runner-admin.js'
+
+vi.mock('../lab-runner-admin.js', () => ({ labsCli: vi.fn() }))
 
 vi.mock('fs', async () => {
     const actual = await vi.importActual<typeof import('fs')>('fs')
@@ -1342,5 +1345,42 @@ describe('~/.ccc layout migration and default profile wiring', () => {
     // The reserved default profile cannot be added or removed.
     expect(source).toMatch(/if \(name === DEFAULT_PROFILE_NAME\) \{\s*console\.error\(`Error: "\$\{DEFAULT_PROFILE_NAME\}" is the account used without CCC_PROFILE/)
     expect(source).toMatch(/if \(name === DEFAULT_PROFILE_NAME\) \{\s*console\.error\(`Error: the "\$\{DEFAULT_PROFILE_NAME\}" profile cannot be removed/)
+  })
+})
+
+
+describe('main labs diagnostics dispatch', () => {
+  it.each([
+    { args: [] as string[], status: 0 },
+    { args: ['status'], status: 0 },
+    { args: ['doctor'], status: 0 },
+    { args: ['smoke'], status: 0 },
+    { args: ['invalid'], status: 1 },
+  ])('forwards labs $args and exits with its status', async ({ args, status }) => {
+    const originalArgv = process.argv
+    const exit = new Error('test CLI exit')
+    const cwd = '/fixture/labs-cli-workspace'
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(cwd)
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw exit })
+    const originalContainer = process.env[CONTAINER_ENV_KEY]
+    const originalProfile = process.env.CCC_PROFILE
+    process.env[CONTAINER_ENV_KEY] = CONTAINER_ENV_VALUE
+    delete process.env.CCC_PROFILE
+    vi.mocked(labsCli).mockReset().mockReturnValue(status)
+    process.argv = [process.execPath, 'ccc', 'labs', ...args]
+    try {
+      await expect(main()).rejects.toBe(exit)
+      expect(labsCli).toHaveBeenCalledWith(args, cwd)
+      expect(exitSpy).toHaveBeenCalledWith(status)
+    } finally {
+      process.argv = originalArgv
+      if (originalContainer === undefined) delete process.env[CONTAINER_ENV_KEY]
+      else process.env[CONTAINER_ENV_KEY] = originalContainer
+      if (originalProfile === undefined) delete process.env.CCC_PROFILE
+      else process.env.CCC_PROFILE = originalProfile
+      cwdSpy.mockRestore()
+      exitSpy.mockRestore()
+      vi.mocked(labsCli).mockReset()
+    }
   })
 })

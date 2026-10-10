@@ -1,5 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as net from 'net'
+import nativeNet from 'net'
+import { syncBuiltinESMExports } from 'node:module'
 
 // Helper: create a TCP server that echoes with a prefix
 function echoServer(prefix: string): Promise<{ port: number; server: net.Server }> {
@@ -34,6 +36,32 @@ describe('localhost-proxy', () => {
     })
 
     describe('tryConnect', () => {
+        it('keeps a pending connection open until its 3000ms deadline, then releases it', async () => {
+            const { tryConnect } = await import('../localhost-proxy.js')
+            const socket = new net.Socket()
+            const connect = vi.spyOn(nativeNet, 'createConnection').mockReturnValue(socket)
+            syncBuiltinESMExports()
+            vi.useFakeTimers()
+            let settled = false
+            try {
+                const pending = tryConnect('127.0.0.1', 41)
+                void pending.then(() => { settled = true }, () => { settled = true })
+                const rejected = expect(pending).rejects.toThrow('Connection timeout to 127.0.0.1:41')
+                await vi.advanceTimersByTimeAsync(2999)
+                expect(settled).toBe(false)
+                expect(socket.destroyed).toBe(false)
+                await vi.advanceTimersByTimeAsync(1)
+                await rejected
+                expect(settled).toBe(true)
+                expect(socket.destroyed).toBe(true)
+            } finally {
+                socket.destroy()
+                vi.useRealTimers()
+                connect.mockRestore()
+                syncBuiltinESMExports()
+            }
+        })
+
         it('connects to a listening server and returns socket', async () => {
             const { tryConnect } = await import('../localhost-proxy.js')
             const { port, server } = await echoServer('local')
