@@ -240,7 +240,6 @@ describe("Hyper-V image store module", () => {
     it("retains the bounded cloud image and removes owned work after committing an automatic image manifest", async () => {
         const privateRoot = join(tmpdir(), `ccc-hyper-v-image-success-${process.pid}-${Date.now()}`);
         const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
-        const imagePath = join(profileRoot, "base.vhdx");
         const sourceArchivePath = join(profileRoot, "source.qcow2");
         const image = Buffer.from("automatic-hyper-v-image");
         const sha256 = createHash("sha256").update(image).digest("hex");
@@ -568,7 +567,7 @@ describe("Hyper-V ubuntu-lts image cache inspection", () => {
         let acquisitionStarted = false;
         const created = await resolveHyperVImageForCreate(
             ownerId,
-            { backend: "linux-vm", create: { profile: "ubuntu-lts" } },
+            { backend: "linux-vm", dryRun: false, create: { profile: "ubuntu-lts" } },
             {},
             {
                 cwd: privateRoot,
