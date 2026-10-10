@@ -170,6 +170,11 @@ function boundedPath(ctx, value, label) {
     return { ok: true, path: candidate };
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {{ok:true,path:string|null}|{ok:false,error:string}}
+ */
 function boundedUserPath(value, label) {
     if (value === undefined || value === null || value === "") return { ok: true, path: null };
     if (typeof value !== "string" || /[\u0000-\u001f]/.test(value) || value.includes("..")) {
