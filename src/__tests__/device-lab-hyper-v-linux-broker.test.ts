@@ -2424,6 +2424,7 @@ describe("device-lab Hyper-V broker", () => {
                     }]) };
                 }
                 if (operationRequest.operation === "Remove-VMSnapshot") snapshotExists = false;
+                if (operationRequest.operation === "Restore-VMSnapshot") vmState = "Off";
                 if (operationRequest.operation === "Configure-VMGuestBoot") seedMediaAttached = true;
                 if (operationRequest.operation === "Start-VM") vmState = "Running";
                 if (operationRequest.operation === "Stop-VM") vmState = "Off";
@@ -3069,6 +3070,48 @@ describe("device-lab Hyper-V broker", () => {
             expect(confirmationCall?.[1].timeoutMs).toBeLessThanOrEqual(10000);
             const createdSnapshotId = (await createdSnapshotResponse.json()).result.snapshot.id as string;
             const snapshotJournalPath = join(deviceRoot, "snapshot-operation.json");
+            const devicesFile = join(backendRoot(ownerId, "linux-vm"), "devices.json");
+            const readSnapshotDevice = () => (JSON.parse(readFileSync(devicesFile, "utf8")) as { devices: Array<Record<string, unknown>> })
+                .devices.find(device => device.id === deviceId);
+            const expectedSnapshot = { id: createdSnapshotId, name: "baseline", providerName: `ccc-${ownerId}-baseline` };
+            expect(createdSnapshotId).toBe(snapshotId);
+            expect(existsSync(snapshotJournalPath)).toBe(false);
+
+            const beforeSnapshotList = readSnapshotDevice();
+            const listedSnapshotResponse = await tool("device_snapshot_list");
+            expect(listedSnapshotResponse.status, JSON.stringify(await listedSnapshotResponse.clone().json())).toBe(200);
+            expect(await listedSnapshotResponse.json()).toMatchObject({ ok: true, result: {
+                ownerId, backend: "linux-vm", deviceId, tool: "device_snapshot_list",
+                snapshots: [expectedSnapshot], startsDevices: false,
+            } });
+            expect(readSnapshotDevice()).toEqual(beforeSnapshotList);
+            expect(readSnapshotDevice()).toMatchObject({ vmId, vmName, incarnationId: activeIncarnationId, snapshots: [expectedSnapshot] });
+            expect(existsSync(snapshotJournalPath)).toBe(false);
+
+            const callsBeforeSnapshotRestore = commandRunner.mock.calls.length;
+            const restoredSnapshotResponse = await tool("device_snapshot_restore", { snapshotId: createdSnapshotId, confirmDestructive: true });
+            expect(restoredSnapshotResponse.status, JSON.stringify(await restoredSnapshotResponse.clone().json())).toBe(200);
+            expect(await restoredSnapshotResponse.json()).toMatchObject({ ok: true, result: {
+                ownerId, backend: "linux-vm", deviceId, tool: "device_snapshot_restore", snapshot: expectedSnapshot,
+                device: { vmId, vmName, incarnationId: activeIncarnationId, activeSnapshotId: createdSnapshotId,
+                    status: "running", runtimeState: "Running", bootReady: true, snapshots: [expectedSnapshot] },
+            } });
+            const restoreCommands = commandRunner.mock.calls.slice(callsBeforeSnapshotRestore).map(([command]) => command);
+            const restoredCheckpoint = restoreCommands.map(command => hyperVWindowsOperationRequest(command))
+                .find(request => request?.operation === "Restore-VMSnapshot");
+            expect(restoredCheckpoint).toMatchObject({ operation: "Restore-VMSnapshot", selector: { kind: "id", id: vmId },
+                snapshot: { kind: "id", id: createdSnapshotId } });
+            expect(restoreCommands.map(command => hyperVWindowsOperationRequest(command))).toContainEqual(
+                expect.objectContaining({ operation: "Start-VM", selector: { kind: "id", id: vmId } }));
+            expect(restoreCommands.some(command => command.provider === "hyper-v-ssh"
+                && command.args?.at(-1)?.includes("ccc-hyper-v-linux-ready"))).toBe(true);
+            expect(readSnapshotDevice()).toMatchObject({ vmId, vmName, incarnationId: activeIncarnationId,
+                activeSnapshotId: createdSnapshotId, status: "running", runtimeState: "Running", bootReady: true,
+                snapshots: [expectedSnapshot] });
+            expect(vmState).toBe("Running");
+            expect(existsSync(snapshotJournalPath)).toBe(false);
+            // The following recovery/start scenarios begin with the VM stopped.
+            expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
             const stagedCreateJournal = {
                 version: 1, operationId: vmId, ownerId, deviceId, incarnationId: activeIncarnationId,
                 tool: "device_snapshot_create", snapshotName: "baseline",
