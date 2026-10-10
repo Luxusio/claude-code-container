@@ -37,14 +37,15 @@ function fixture(packaged = false) {
     for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"]) writeFileSync(join(root, "scripts/clipboard-shims", name), "fixture");
     writeFileSync(join(root, "dist/index.js"), 'console.log("fixture CLI");');
     const log = join(root, "calls");
+    const trustedNode = `'${process.execPath.replaceAll("'", "'\\''")}'`;
     for (const name of ["npm", "docker", "podman"]) {
-        const script = `#!/bin/sh\nprintf '%s\\n' '${name} '"$*" >> "$FIXTURE_LOG"\n` + (name === "npm" ? 'exit "${FIXTURE_NPM_STATUS:-0}"\n' : 'case "$1" in\n--version) exit "${FIXTURE_PROBE_STATUS:-0}";;\ninspect) if [ "$FIXTURE_RUNTIME_DISAPPEAR" = 1 ]; then rm -- "$0"; fi; exit 1;;\nbuild) if [ "$FIXTURE_RUNTIME_SIGNAL" = 1 ]; then kill -TERM $$; fi; exit "${FIXTURE_IMAGE_STATUS:-0}";;\nesac\n');
+        const script = `#!/bin/sh\nprintf '%s\\n' '${name} '"$*" >> "$FIXTURE_LOG"\n` + (name === "npm" ? 'exit "${FIXTURE_NPM_STATUS:-0}"\n' : `case "$1" in\n--version) exit "\${FIXTURE_PROBE_STATUS:-0}";;\ninspect) if [ "$FIXTURE_RUNTIME_DISAPPEAR" = 1 ]; then ${trustedNode} -e 'require("node:fs").unlinkSync(process.argv[1])' "$0"; fi; exit 1;;\nbuild) if [ "$FIXTURE_RUNTIME_SIGNAL" = 1 ]; then kill -TERM $$; fi; exit "\${FIXTURE_IMAGE_STATUS:-0}";;\nesac\n`);
         writeFileSync(join(commands, name), script);
         chmodSync(join(commands, name), 0o755);
     }
     const run = (args: string[] = [], env: Record<string, string> = {}) => spawnSync(process.execPath, [join(root, "scripts/install.js"), ...args], {
         encoding: "utf8", timeout: 10000,
-        env: { ...process.env, PATH: `${commands}:${process.env.PATH}`, CCC_RUNTIME: "", FIXTURE_LOG: log, ...env },
+        env: { ...process.env, CCC_RUNTIME: "", FIXTURE_LOG: log, ...env, PATH: commands },
     });
     const calls = () => existsSync(log) ? readFileSync(log, "utf8") : "";
     return { root, installDir, run, calls };
