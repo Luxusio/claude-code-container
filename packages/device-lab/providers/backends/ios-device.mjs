@@ -1,3 +1,4 @@
+import { createIosWirelessApplication } from "../application/ios-wireless.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
@@ -117,6 +118,8 @@ function parseXctraceDevices(text) {
         .filter((device) => device !== null);
 }
 
+/** @param {import("../ports/ios-wireless.mjs").IosWirelessDiscovery} [discovery]
+ * @returns {import("../ports/ios-wireless.mjs").IosWirelessInventory} */
 function hostIosDevices(discovery = iosRealDiscovery()) {
     if (!discovery.xcrun) return { available: false, missing: ["xcrun"], devices: [] };
     const r = run(discovery.xcrun, ["xctrace", "list", "devices"]);
@@ -137,18 +140,6 @@ function unsupported(tool) {
 
 function unsupportedRealControl(tool) {
     return textResult(false, `iOS real devices do not support ${tool} through CCC because the action is unavailable or unsafe for physical devices.`);
-}
-
-function iosWirelessUnsupported(action, details = {}) {
-    return textResult(false, JSON.stringify({
-        ok: false,
-        backend: "ios-device",
-        action,
-        error: "ios-wireless-pairing-requires-xcode-trust",
-        message: "CCC can attach iOS Wi-Fi devices only after Apple trust and Xcode network pairing are already satisfied on the macOS host.",
-        attachFlow: "Run device_inventory for backend ios-device, confirm the UDID is visible as a network device through xctrace, then call device_attach with connection=wifi.",
-        ...details,
-    }, null, 2));
 }
 
 function appiumStatus(device, ios) {
@@ -449,37 +440,9 @@ async function handleIosRealToolUnlocked(name, args) {
 
 
         case "device_wireless": {
-            const { backend = "ios-device", action = "status", udid } = args;
-            if (backend !== "ios-device") return undefined;
-            if (action !== "status") return iosWirelessUnsupported(action, { udid: udid || null });
-            const discovery = iosRealDiscovery();
-            if (!discovery.xcrun) {
-                return iosWirelessUnsupported(action, { error: "ios-wireless-missing-xcrun", missing: ["xcrun"] });
-            }
-            const inventory = hostIosDevices(discovery);
-            if (!inventory.available) return textResult(false, JSON.stringify({
-                ok: false, backend, action, error: "ios-wireless-inventory-failed",
-                detail: inventory.error || inventory.missing.join(", "),
-            }));
-            const devices = inventory.devices || [];
-            const selected = udid ? devices.find((device) => device.udid === udid) || null : null;
-            return jsonResult({
-                ok: true,
-                backend,
-                provider: "xcrun-xctrace",
-                supportedActions: ["status"],
-                unsupportedActions: ["pair", "connect", "usb-tcpip"],
-                inventory,
-                udid: udid || null,
-                selected,
-                networkVisible: selected ? selected.connection === "wifi" : devices.some((device) => device.connection === "wifi"),
-                attachFlow: "If the target UDID is visible as a network device, call device_attach with backend=ios-device, udid, and connection=wifi.",
-                notes: [
-                    "Apple trust, Developer Mode, and Xcode network pairing must be completed on the macOS host",
-                    "CCC does not bypass or automate the Trust This Computer prompt",
-                    "Physical-device ownership is still claimed by device_attach or broker attach",
-                ],
-            });
+            const outcome = iosWireless.request(args);
+            if (!outcome) return undefined;
+            return outcome.kind === "json" ? jsonResult(outcome.payload) : textResult(false, outcome.message);
         }
 
         case "device_attach": {
@@ -864,4 +827,9 @@ const controlTransfer = createIosControlTransfer({
     }),
     jsonResult: value => jsonResult(value),
     textResult: (ok, message) => textResult(ok, message),
+});
+
+const iosWireless = createIosWirelessApplication({
+    discover: () => iosRealDiscovery(),
+    listDevices: discovery => hostIosDevices(discovery),
 });

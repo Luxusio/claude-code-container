@@ -96,6 +96,10 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS real-device fl
             selected: expect.objectContaining({ name: "Network Named USB iPhone", connection: "usb" }),
         }));
 
+        const absentWirelessTarget = await client.callTool({ name: "wireless", arguments: { backend: "ios-device", udid: "00008199-00AA00BB00CC00DD" } });
+        expect(absentWirelessTarget.isError).not.toBe(true);
+        expect(JSON.parse((absentWirelessTarget.content as Array<{ text?: string }>)[0].text ?? "{}")).toEqual(expect.objectContaining({ selected: null, udid: "00008199-00AA00BB00CC00DD", networkVisible: true }));
+
         const logBeforeUnsupportedPair = readFileSync(logPath, "utf-8");
         const unsupportedIosPair = await client.callTool({
             name: "wireless",

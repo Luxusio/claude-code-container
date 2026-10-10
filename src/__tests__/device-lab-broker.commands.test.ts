@@ -6036,6 +6036,76 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         }
     });
 
+    it("observes selected unattached iOS wireless devices through the authenticated real backend child", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
+        const context = await createFakeIosMcpContext({ connect: async () => undefined });
+        const restoreHome = isolateDeviceLabTestEnvironment(context.homeDir);
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "FAKE_IOS_LOG"] as const;
+        const originalEnvironment = environmentKeys.map(key => process.env[key]);
+        let restoreRouting: (() => void) | undefined;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            const project = join(context.homeDir, "wireless-project");
+            mkdirSync(project);
+            const ownerId = deviceLabOwnerId(project);
+            const udid = "00008111-001C195E0E91801F";
+            const statePath = join(backendRoot(ownerId, "ios-device"), "devices.json");
+            const leasePath = join(context.homeDir, ".ccc/devices/physical-leases/ios-device/locks", `${encodeURIComponent(udid)}.json`);
+            expect(existsSync(statePath)).toBe(false);
+            expect(existsSync(leasePath)).toBe(false);
+            process.env.PATH = `${context.binDir}${delimiter}${originalEnvironment[0] || ""}`;
+            process.env.NODE_OPTIONS = `--require=${JSON.stringify(join(context.homeDir, "node-provider-routing.cjs"))}`;
+            process.env.FAKE_IOS_LOG = context.logPath;
+            restoreRouting = installNodeProviderFixtureRouting(context.binDir);
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+            const invoke = (action: string) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                method: "broker.device.tool.invoke", params: { tool: "device_wireless", backend: "ios-device", action, udid },
+            }) });
+            const status = await invoke("status");
+            expect(status.status).toBe(200);
+            const body = await status.json() as { ok: boolean; result: { ownerId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+            expect(body).toMatchObject({ ok: true, result: { ownerId, backend: "ios-device", provider: "device-lab-backend-child" } });
+            expect(body.result.mcpResult.isError).not.toBe(true);
+            const payload = JSON.parse(body.result.mcpResult.content[0].text) as { inventory: { devices: Array<{ name: string }> } };
+            expect(payload).toMatchObject({
+                ok: true, backend: "ios-device", provider: "xcrun-xctrace", udid, networkVisible: false,
+                selected: { name: "Network Named USB iPhone", udid, connection: "usb", version: "17.5" },
+                supportedActions: ["status"], unsupportedActions: ["pair", "connect", "usb-tcpip"],
+                inventory: { available: true, missing: [], devices: expect.arrayContaining([
+                    expect.objectContaining({ udid, connection: "usb" }),
+                    expect.objectContaining({ udid: "00008120-00AA00BB00CC00DD", connection: "wifi" }),
+                ]) },
+            });
+            expect(payload.inventory.devices.some(device => /Simulator|Build Mac/.test(device.name))).toBe(false);
+            const logBeforePair = readFileSync(context.logPath, "utf8");
+            expect(logBeforePair).toContain("xcrun xctrace list devices\n");
+            const refused = await invoke("pair");
+            expect(refused.status).toBe(200);
+            const refusedBody = await refused.json() as { result: { mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+            expect(refusedBody.result.mcpResult.isError).toBe(true);
+            expect(JSON.parse(refusedBody.result.mcpResult.content[0].text)).toMatchObject({
+                ok: false, backend: "ios-device", action: "pair", udid,
+                error: "ios-wireless-pairing-requires-xcode-trust",
+                attachFlow: "Run device_inventory for backend ios-device, confirm the UDID is visible as a network device through xctrace, then call device_attach with connection=wifi.",
+            });
+            expect(readFileSync(context.logPath, "utf8")).toBe(logBeforePair);
+            expect(existsSync(statePath)).toBe(false);
+            expect(existsSync(leasePath)).toBe(false);
+        } finally {
+            try {
+                if (server) await close(server);
+                await cleanupFakeIosMcpContext(context);
+            } finally {
+                restoreRouting?.();
+                environmentKeys.forEach((key, index) => {
+                    if (originalEnvironment[index] === undefined) delete process.env[key];
+                    else process.env[key] = originalEnvironment[index];
+                });
+                restoreHome();
+            }
+        }
+    });
+
     it("routes iOS broker device tools through iOS backend child handlers", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
         const fakeRoot = mkdtempSync(join(tmpdir(), "ccc-ios-device-tool-runner-"));
         const backendDir = join(fakeRoot, "providers", "backends");

@@ -7685,6 +7685,7 @@ function deviceLabBackendToolArgs(parsed: DeviceToolParamSuccess): Record<string
         "backend",
         "action",
         "serial",
+        "udid",
         "host",
         "port",
         "pairHost",
