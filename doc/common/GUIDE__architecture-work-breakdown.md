@@ -5,8 +5,8 @@ Updated: 2026\-10\-10. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **98/218 (45.0%)**.
-Integrated source: **98/218 (45.0%)**; historical baseline: **31**. Candidates: **0**; partial: **19**; TODO: **101**.
+Implemented including unmerged candidates: **102/218 (46.8%)**.
+Integrated source: **102/218 (46.8%)**; historical baseline: **31**. Candidates: **0**; partial: **18**; TODO: **98**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -43,6 +43,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | provider\-workspace\-followup\-integration | 11 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
 | admin\-qemu\-integration | 4 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
 | qemu\-admin\-lifecycle\-integration | 15 | 0 | `d24e5ca1` | Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS\. Relevant unchanged tests carry\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ d24e5ca1 |
+| exec\-broker\-image\-integration | 4 | 0 | `acefb933` | Actual independent source/composed and affected Code/Security/Guide PASS\. Required JS and image\-test strict checks, genuine current production build, 17 affected files with 587 passing cases, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Test\-only fixes carried unchanged successful production checks\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ acefb933 |
 
 ## 0.2 Active next plans
 
@@ -59,9 +60,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | state\-access | OP\-state\-storage | Partial state\-read/native\-adapter binding accepted; broader atomic/CAS/repository storage remains incomplete; no whole credit\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | runtime\-capabilities | OP\-runtime\-capabilities | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | mcp\-forward | OP\-mcp\-forward | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
-| container\-exec | OP\-container\-exec | Source implementation and independent reviews complete; normal accepted\-parent reconciliation and one shared current QA pending\. No completion credit yet\. |
-| broker\-supervision | OP\-broker\-supervision | Source implementation and independent reviews complete; normal accepted\-parent reconciliation and one shared current QA pending\. No completion credit yet\. |
-| hyperv\-image\-preparation | OP\-hyperv\-image\-import, OP\-hyperv\-image\-acquire | Source implementation and independent reviews complete; normal accepted\-parent reconciliation and one shared current QA pending\. No completion credit yet\. |
+| windows\-sandbox\-completion | OP\-windows\-sandbox\-start, OP\-windows\-sandbox\-stop, OP\-windows\-sandbox\-delete | Independent plan GO; production and separate ordinary test authoring underway in isolated worktree\. Both direct and broker bindings required; current QA and accepted\-parent reconciliation pending; zero new completion credit\. |
+| device\-request | OP\-device\-dispatch | Independent plan GO; shared request application and separate ordinary tests underway in isolated worktree\. Current strict contracts, public routing/output QA and accepted\-parent reconciliation pending; one operation only, zero completion credit yet\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -112,21 +112,21 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 7. M06 — Images/network/admin (5/14 implemented)
+## 7. M06 — Images/network/admin (7/14 implemented)
 
 - [x] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-prune` — Prune stale Device Lab records. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [ ] `OP-device-admin-diagnostics` — Diagnose and smoke Device Lab. **TODO**; src/device\-lab\-admin\.ts.
 - [ ] `OP-device-admin-setup` — Set up Hyper\-V host fabric. **TODO**; src/device\-lab\-admin\.ts.
 - [ ] `OP-broker-owner-cleanup` — Broker owner cleanup. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/image\-store\.ts.
+- [x] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [ ] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [x] `OP-qemu-image-import` — Qemu image import. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-inventory` — Read host admin current\-owner and explicit all\-project device inventory. **integrated**; admin\-qemu\-integration @ b855553f.
 - [ ] `OP-hyperv-fabric-ensure` — Ensure and recover shared Hyper\-V host fabric. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-hyperv-fabric-release` — Release exact allocation and recover owned Hyper\-V host fabric cleanup. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-hyperv-allocation-reconcile` — Reconcile orphaned Hyper\-V network allocations. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
-- [ ] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/image\-store\.ts.
+- [x] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 
 ## 8. M07 — Physical/recording/Appium (8/26 implemented)
@@ -237,14 +237,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-qemu-disk-materialize` — Materialize owned QEMU overlay disk. **integrated**; admin\-qemu\-integration @ b855553f.
 - [x] `OP-qemu-target-list` — List exact owner guest targets. **integrated**; admin\-qemu\-integration @ b855553f.
 
-## 10. M09 — Device Lab entrypoints (3/4 implemented)
+## 10. M09 — Device Lab entrypoints (4/4 implemented)
 
-- [ ] `OP-broker-supervision` — Supervise authenticated host broker. **TODO**; device\-lab\-mcp/src/broker\.mjs.
+- [x] `OP-broker-supervision` — Supervise authenticated host broker. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-device-lifecycle-plan` — Preview one owner\-scoped lifecycle command with validation, idempotency/conflict checks, metadata capacity, incarnation/attachment fences and provider command DTO; execute no planned lifecycle mutation. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-broker-status` — Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-broker-service-status` — Observe OS service\-manager installed/running/owner diagnostics for status only, including dry\-run preview. **integrated**; broker\-observations @ 3f020650.
 
-## 11. M10 — Sessions and containers (13/14 implemented)
+## 11. M10 — Sessions and containers (14/14 implemented)
 
 - [x] `OP-container-runtime` — Select container runtime. **integrated**; src/application/container\-runtime\-selection\.ts.
 - [x] `OP-session-acquire` — Acquire and transfer session ownership. **integrated**; src/application/session\-acquisition\.ts.
@@ -253,7 +253,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-create` — Create fresh project container. **integrated**; runtime\-launch @ 02c5a401.
 - [x] `OP-container-stop` — Stop project container. **integrated**; src/application/container\-destructive\-lifecycle\.ts.
 - [x] `OP-container-remove` — Remove project container. **integrated**; src/application/container\-destructive\-lifecycle\.ts.
-- [ ] `OP-container-exec` — Execute tool or command in project container. **partial**; src/docker\.ts.
+- [x] `OP-container-exec` — Execute tool or command in project container. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-clean` — Clean containers/images/volumes. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 - [x] `OP-container-image` — Prepare container image. **integrated**; src/application/container\-image\-preparation\.ts.
 - [x] `OP-container-socket` — Prepare container socket access. **integrated**; src/application/container\-socket\-access\.ts.
