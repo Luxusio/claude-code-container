@@ -1,10 +1,5 @@
-export function desktopPointValid(x, y) {
-    return [x, y].every((v) => Number.isInteger(v) && v >= 0 && v <= 2147483647);
-}
-export function desktopDragValid(args) {
-    return desktopPointValid(args.x1, args.y1) && desktopPointValid(args.x2, args.y2)
-        && Number.isInteger(args.durationMs ?? 700) && (args.durationMs ?? 700) >= 1 && (args.durationMs ?? 700) <= 10000;
-}
+export { desktopPointValid, desktopDragValid } from "../domain/desktop-control-transfer.mjs";
+
 export const X11_DRAG_COMMAND = String.raw`set -eu
 x1=$1; y1=$2; x2=$3; y2=$4; duration=$5
 read -r width height < <(xdotool getdisplaygeometry)

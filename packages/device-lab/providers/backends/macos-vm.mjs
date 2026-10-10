@@ -4,7 +4,7 @@ import { observationMacosHelper, observationMacosStartArgs } from "../domain/dev
 import { createMacosVmLifecycleApplication } from "../application/lifecycle/macos-vm-lifecycle.mjs";
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
-import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
+import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
 import { commandPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath, validateLocalReferencePath } from "../policy/files.mjs";
@@ -481,33 +481,6 @@ function sshCommandOptions(device) {
 
 function shellQuote(value) {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-function macosKeySpec(key) {
-    const value = String(key || "");
-    const keyCodes = {
-        A: 0, B: 11, C: 8, D: 2, E: 14, F: 3, G: 5, H: 4, I: 34, J: 38, K: 40, L: 37, M: 46,
-        N: 45, O: 31, P: 35, Q: 12, R: 15, S: 1, T: 17, U: 32, V: 9, W: 13, X: 7, Y: 16, Z: 6,
-        "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
-        Enter: 36, Return: 36, Tab: 48, Space: 49, Delete: 51, Backspace: 51, Escape: 53, Esc: 53,
-        ArrowLeft: 123, Left: 123, ArrowRight: 124, Right: 124, ArrowDown: 125, Down: 125, ArrowUp: 126, Up: 126,
-        Home: 115, End: 119, PageUp: 116, PageDown: 121,
-        F1: 122, F2: 120, F3: 99, F4: 118, F5: 96, F6: 97, F7: 98, F8: 100, F9: 101, F10: 109, F11: 103, F12: 111,
-    };
-    const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
-    const keyPart = parts.length > 0 ? parts[parts.length - 1] : value;
-    const normalizedKey = keyPart.length === 1 ? keyPart.toUpperCase() : keyPart;
-    const keyCode = keyCodes[normalizedKey];
-    if (keyCode === undefined) return null;
-    const modifiers = [];
-    for (const part of parts.slice(0, -1).map((item) => item.toLowerCase())) {
-        if (part === "cmd" || part === "command" || part === "meta") modifiers.push("command");
-        else if (part === "ctrl" || part === "control") modifiers.push("control");
-        else if (part === "alt" || part === "option") modifiers.push("option");
-        else if (part === "shift") modifiers.push("shift");
-        else return null;
-    }
-    return { key, keyCode, modifiers };
 }
 
 function macosHelperCommand(device, subcommand, args = [], timeoutMs) {
@@ -1030,6 +1003,51 @@ function sshBridge(device, toolName) {
     return { target, discovery };
 }
 
+/** @typedef {{path:string, stagedPath:string, cleanup:()=>void}} MacosTransferStage */
+/** @type {import('../ports/desktop-control-transfer.mjs').MacosPorts<ReturnType<typeof findMacosDevice>, {target:string, discovery:ReturnType<typeof sshDiscovery>}, MacosTransferStage, MacosTransferStage>} */
+const macosDesktopPorts = {
+    variant: "macos",
+    target: deviceId => findMacosDevice(deviceId),
+    helper: (device, subcommand, argv, timeoutMs) => macosHelperCommand(device, subcommand, argv, timeoutMs),
+    parseHelper: stdout => macosHelperJson(stdout),
+    bridge: (device, operation) => {
+        const bridge = sshBridge(device, operation);
+        return "error" in bridge ? { ok: false, result: bridge.error } : { ok: true, bridge };
+    },
+    guestPath: (path, label) => {
+        const policy = validateGuestPath(path, { label: `${label}-remote-path`, platform: "posix", transport: "scp" });
+        return policy.ok ? { ok: true, path: policy.path } : { ok: false, message: policy.message };
+    },
+    stageInput: path => {
+        const stage = stageLocalInputFile(path, { label: "upload-local-path" });
+        return stage.ok ? { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage } : { ok: false, message: stage.message };
+    },
+    stageOutput: path => {
+        const stage = createLocalOutputStage(path, { label: "download-local-path" });
+        return stage.ok ? { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage } : { ok: false, message: stage.message };
+    },
+    upload: (device, bridge, stagedPath, remotePath, timeoutMs) => runHelperCommand(bridge.discovery.scp,
+        [...scpBaseArgs(device), stagedPath, `${bridge.target}:${remotePath}`], timeoutMs, sshCommandOptions(device)),
+    download: (device, bridge, remotePath, stagedPath, timeoutMs) => runHelperCommand(bridge.discovery.scp,
+        [...scpBaseArgs(device), `${bridge.target}:${remotePath}`, stagedPath], timeoutMs, sshCommandOptions(device)),
+    commitOutput: stage => {
+        const committed = commitLocalOutputStage(stage, { label: "download-local-path" });
+        return committed.ok ? { ok: true, path: committed.path } : { ok: false, message: committed.message };
+    },
+    disposeInput: stage => { stage.cleanup(); return undefined; },
+    disposeOutput: stage => { stage.cleanup(); return undefined; },
+};
+const macosDesktop = createDesktopControlTransfer(macosDesktopPorts);
+
+/** @param {import('../domain/desktop-control-transfer.mjs').DesktopOutcome} outcome */
+function macosDesktopResult(outcome) {
+    if (outcome === undefined) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.value);
+    if (outcome.kind === "text") return textResult(outcome.ok, outcome.text);
+    if (outcome.kind === "command-failure") return fail(outcome.receipt);
+    return outcome.value;
+}
+
 export function listMacosDevices({identityOnly=false}={}) { return deviceObservation.owned({identityOnly}); }
 
 async function handleMacosToolUnlocked(name, args) {
@@ -1485,44 +1503,9 @@ async function handleMacosToolUnlocked(name, args) {
             return jsonResult({ stdout: r.stdout, stderr: r.stderr, status: r.status, provider: "ssh" });
         }
 
-        case "device_upload": {
-            const { deviceId, localPath, remotePath, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const bridge = sshBridge(device, name);
-            if (bridge.error) return bridge.error;
-            const remotePolicy = validateGuestPath(remotePath, { label: "upload-remote-path", platform: "posix", transport: "scp" });
-            if (!remotePolicy.ok) return textResult(false, remotePolicy.message);
-            const localStage = stageLocalInputFile(localPath, { label: "upload-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const r = runHelperCommand(bridge.discovery.scp, [...scpBaseArgs(device), localStage.stagedPath, `${bridge.target}:${remotePolicy.path}`], helperTimeoutMs, sshCommandOptions(device));
-                return r.status === 0 ? jsonResult({ uploaded: { localPath: localStage.path, remotePath: remotePolicy.path }, stdout: r.stdout, stderr: r.stderr, provider: "scp" }) : fail(r);
-            } finally {
-                localStage.cleanup();
-            }
-        }
-
-        case "device_download": {
-            const { deviceId, remotePath, localPath, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const bridge = sshBridge(device, name);
-            if (bridge.error) return bridge.error;
-            const remotePolicy = validateGuestPath(remotePath, { label: "download-remote-path", platform: "posix", transport: "scp" });
-            if (!remotePolicy.ok) return textResult(false, remotePolicy.message);
-            const localStage = createLocalOutputStage(localPath, { label: "download-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const r = runHelperCommand(bridge.discovery.scp, [...scpBaseArgs(device), `${bridge.target}:${remotePolicy.path}`, localStage.stagedPath], helperTimeoutMs, sshCommandOptions(device));
-                if (r.status !== 0) return fail(r);
-                const committed = commitLocalOutputStage(localStage, { label: "download-local-path" });
-                if (!committed.ok) return textResult(false, committed.message);
-                return jsonResult({ downloaded: { remotePath: remotePolicy.path, localPath: committed.path }, stdout: r.stdout, stderr: r.stderr, provider: "scp" });
-            } finally {
-                localStage.cleanup();
-            }
-        }
+        case "device_upload":
+        case "device_download":
+            return macosDesktopResult(await macosDesktop.handle(name, args));
 
         case "device_screenshot": {
             const { deviceId, helperTimeoutMs } = args;
@@ -1547,144 +1530,15 @@ async function handleMacosToolUnlocked(name, args) {
         }
 
         case "device_click":
-        case "device_double_click": {
-            const { deviceId, x, y, button = "left", helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return textResult(false, `${name} requires numeric x and y`);
-            const subcommand = name === "device_double_click" ? "double_click" : "click";
-            const helper = macosHelperCommand(device, subcommand, [String(Number(x)), String(Number(y)), button], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            const payload = macosHelperJson(helper.result.stdout);
-            return jsonResult({
-                provider: "ssh-macos-helper",
-                remoteScriptPath: helper.remoteScriptPath,
-                [name === "device_double_click" ? "doubleClicked" : "clicked"]: payload?.doubleClicked || payload?.clicked || { x: Number(x), y: Number(y), button },
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
-
-        case "device_key": {
-            const { deviceId, key, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const spec = macosKeySpec(key);
-            if (!spec) return textResult(false, `Unsupported macOS key expression: ${key}`);
-            const helper = macosHelperCommand(device, "key", [String(spec.keyCode), spec.modifiers.join(",")], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            return jsonResult({
-                provider: "ssh-macos-helper",
-                remoteScriptPath: helper.remoteScriptPath,
-                key: spec,
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
-
-        case "device_type": {
-            const { deviceId, text, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (text === undefined || text === null) return textResult(false, "device_type requires text");
-            const literalText = String(text);
-            const helper = macosHelperCommand(device, "type", [literalText], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            return jsonResult({
-                provider: "ssh-macos-helper",
-                remoteScriptPath: helper.remoteScriptPath,
-                typed: { text: literalText },
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
-
-        case "device_scroll": {
-            const { deviceId, direction = "down", amount = 1, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (!["up", "down", "left", "right"].includes(direction)) return textResult(false, "device_scroll direction must be up, down, left, or right");
-            const helper = macosHelperCommand(device, "scroll", [direction, String(Number(amount) || 1)], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            const payload = macosHelperJson(helper.result.stdout);
-            return jsonResult({
-                provider: "ssh-macos-helper",
-                remoteScriptPath: helper.remoteScriptPath,
-                scrolled: payload?.scrolled || { direction, amount: Number(amount) || 1 },
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
-
-        case "device_focus_window": {
-            const device = findMacosDevice(args.deviceId);
-            if (!device) return undefined;
-            if (typeof args.handle !== "string" || args.handle.length > 2048 || !/^macos:[1-9][0-9]{0,9}:[1-9][0-9]{0,15}:[^\r\n]+$/.test(args.handle)) return textResult(false, "window-handle-invalid");
-            const helper = macosHelperCommand(device, "focus_window", [args.handle], args.helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            const payload = macosHelperJson(helper.result.stdout);
-            return payload?.ok === true ? jsonResult({ ok: true }) : textResult(false, "window-focus-unverified");
-        }
-        case "device_drag": {
-            const device = findMacosDevice(args.deviceId);
-            if (!device) return undefined;
-            if (!desktopDragValid(args)) return textResult(false, "invalid-drag-arguments");
-            const helper = macosHelperCommand(device, "drag", [args.x1, args.y1, args.x2, args.y2, args.durationMs ?? 700].map(String), args.helperTimeoutMs);
-            if (helper.error) return helper.error;
-            return helper.result.status === 0 ? jsonResult({ ok: true }) : fail(helper.result);
-        }
-        case "device_cursor_position": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const moving = args.x !== undefined || args.y !== undefined;
-            if (moving && !desktopPointValid(args.x, args.y)) return textResult(false, "invalid-pointer-coordinates");
-            if (moving) {
-                const moved = macosHelperCommand(device, "move", [String(args.x), String(args.y)], helperTimeoutMs);
-                if (moved.error) return moved.error;
-                return moved.result.status === 0 ? jsonResult({ ok: true }) : fail(moved.result);
-            }
-            const helper = macosHelperCommand(device, "cursor_position", [], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            const payload = macosHelperJson(helper.result.stdout);
-            return jsonResult({
-                provider: "ssh-macos-helper",
-                remoteScriptPath: helper.remoteScriptPath,
-                cursor: payload?.cursor || null,
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
-
-        case "device_window_list": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const helper = macosHelperCommand(device, "window_list", [], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            const payload = macosHelperJson(helper.result.stdout);
-            return jsonResult({
-                provider: payload?.provider || "macos-system-events",
-                remoteScriptPath: helper.remoteScriptPath,
-                windows: Array.isArray(payload?.windows) ? payload.windows : [],
-                response: payload,
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
+        case "device_double_click":
+        case "device_key":
+        case "device_type":
+        case "device_scroll":
+        case "device_focus_window":
+        case "device_drag":
+        case "device_cursor_position":
+        case "device_window_list":
+            return macosDesktopResult(await macosDesktop.handle(name, args));
 
         case "device_accessibility_snapshot": {
             const { deviceId, helperTimeoutMs } = args;

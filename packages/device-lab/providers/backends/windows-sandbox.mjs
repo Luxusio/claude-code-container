@@ -2,7 +2,7 @@ import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
 import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../application/lifecycle/windows-sandbox-stop.mjs";
-import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
+import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -278,49 +278,6 @@ function validateWindowsGuestTransferPath(remotePath, helper, label) {
         return { ok: false, error: `${label}-helper-path-rejected`, path: remotePolicy.path, message: `${label}-helper-path-rejected: ${remotePolicy.path}` };
     }
     return remotePolicy;
-}
-
-function windowsSendKeysExpression(key) {
-    const value = String(key || "");
-    const aliases = {
-        Enter: "{ENTER}",
-        Return: "{ENTER}",
-        Escape: "{ESC}",
-        Esc: "{ESC}",
-        Tab: "{TAB}",
-        Backspace: "{BACKSPACE}",
-        Delete: "{DELETE}",
-        Del: "{DELETE}",
-        Insert: "{INSERT}",
-        Space: " ",
-        ArrowUp: "{UP}",
-        Up: "{UP}",
-        ArrowDown: "{DOWN}",
-        Down: "{DOWN}",
-        ArrowLeft: "{LEFT}",
-        Left: "{LEFT}",
-        ArrowRight: "{RIGHT}",
-        Right: "{RIGHT}",
-        PageUp: "{PGUP}",
-        PageDown: "{PGDN}",
-        Home: "{HOME}",
-        End: "{END}",
-    };
-    for (let index = 1; index <= 24; index += 1) aliases[`F${index}`] = `{F${index}}`;
-    const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
-    if (parts.length <= 1) return aliases[value] || value;
-    const keyPart = parts[parts.length - 1];
-    const base = aliases[keyPart] || (keyPart.length === 1 ? keyPart.toLowerCase() : keyPart);
-    const modifiers = parts.slice(0, -1).map((part) => part.toLowerCase());
-    let prefix = "";
-    if (modifiers.some((part) => part === "control" || part === "ctrl")) prefix += "^";
-    if (modifiers.includes("alt")) prefix += "%";
-    if (modifiers.includes("shift")) prefix += "+";
-    return `${prefix}${base}`;
-}
-
-function windowsSendKeysLiteralText(text) {
-    return String(text ?? "").replace(/[+^%~()[\]{}]/g, (match) => `{${match}}`);
 }
 
 function escapeXml(value) {
@@ -1557,7 +1514,51 @@ function windowsSandboxLifecyclePorts() {
 
 export function listWindowsDevices() { return deviceObservation.owned(); }
 
+/** @type {import('../ports/desktop-control-transfer.mjs').WindowsPorts<NonNullable<ReturnType<typeof findWindowsDevice>>, ReturnType<typeof ensureHelperWorkspace>, string>} */
+const windowsDesktopPorts = {
+    variant: "windows",
+    target: deviceId => findWindowsDevice(deviceId),
+    workspace: device => ensureHelperWorkspace(device, false),
+    guestPath: (path, helper, label) => validateWindowsGuestTransferPath(path, helper, `${label}-remote-path`),
+    inputPath: path => validateLocalInputPath(path, { label: "upload-local-path" }),
+    outputPath: path => validateLocalOutputPath(path, { label: "download-local-path" }),
+    stageUpload: (helper, path) => {
+        const uploadName = `${randomUUID()}-${basename(path).replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+        const hostUploadPath = join(helper.uploadsDir, uploadName);
+        try {
+            assertDeviceLabPathWithinRoot(helper.uploadsDir, hostUploadPath, "windows-helper-upload");
+        } catch (error) {
+            return { ok: false, message: `Windows helper upload staging path is unsafe: ${error?.code || error?.message || String(error)}` };
+        }
+        const staged = copyWindowsSandboxFile(path, hostUploadPath, "windows-helper-upload", WINDOWS_SANDBOX_UPLOAD_LIMIT_BYTES);
+        if (!staged.ok) return { ok: false, message: `Windows helper upload staging failed: ${staged.error}` };
+        return { ok: true, handle: hostUploadPath, guestPath: `${helper.guestUploadsDir}\\${uploadName}` };
+    },
+    disposeUpload: path => { rmSync(path, { force: true }); },
+    request: (device, request, timeoutMs) => {
+        const { type, ...payload } = request;
+        return windowsHelperRequest(device, type, payload, timeoutMs);
+    },
+    readyMarkerPresent: helper => existsSync(helper.readyMarkerPath),
+    downloadOutput: (helper, response, remotePath) => {
+        const path = verifiedHelperOutputPath(helper, response.downloadPath || response.hostDownloadPath, `${response.id}-${windowsPathBasename(remotePath)}`);
+        return path ? { ok: true, path } : { ok: false };
+    },
+    copyDownload: (source, destination) => {
+        const result = copyWindowsSandboxFile(source, destination, "windows-helper-download", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES);
+        return result.ok ? { ok: true } : { ok: false, error: result.error };
+    },
+};
+const windowsDesktop = createDesktopControlTransfer(windowsDesktopPorts);
+
 async function handleWindowsToolUnlocked(name, args) {
+    const desktop = await windowsDesktop.handle(name, args);
+    if (desktop !== undefined) {
+        if (desktop.kind === "json") return jsonResult(desktop.value);
+        if (desktop.kind === "text") return textResult(desktop.ok, desktop.text);
+        if (desktop.kind === "native") return desktop.value;
+        return fail(desktop.receipt);
+    }
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
@@ -1621,101 +1622,6 @@ async function handleWindowsToolUnlocked(name, args) {
             } catch (error) {
                 return textResult(false, `Windows helper screenshot output is invalid: ${error?.code || error?.message || String(error)}`);
             }
-        }
-
-        case "device_click":
-        case "device_double_click": {
-            const { deviceId, x, y, button = "left", helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return textResult(false, `${name} requires numeric x and y`);
-            const type = name === "device_double_click" ? "double_click" : "click";
-            const result = await windowsHelperRequest(device, type, { x: Number(x), y: Number(y), button }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || `Windows helper ${type} failed`);
-            return jsonResult({
-                provider: "windows-helper",
-                [name === "device_double_click" ? "doubleClicked" : "clicked"]: result.response.doubleClicked || result.response.clicked || { x: Number(x), y: Number(y), button },
-                response: result.response,
-            });
-        }
-
-        case "device_key": {
-            const { deviceId, key, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (!key) return textResult(false, "device_key requires key");
-            const keys = windowsSendKeysExpression(key);
-            const result = await windowsHelperRequest(device, "key", { key, keys }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper key failed");
-            return jsonResult({ provider: "windows-helper", key: result.response.key || { key, keys }, response: result.response });
-        }
-
-        case "device_type": {
-            const { deviceId, text, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (text === undefined || text === null) return textResult(false, "device_type requires text");
-            const literalText = String(text);
-            const keys = windowsSendKeysLiteralText(literalText);
-            const result = await windowsHelperRequest(device, "type", { text: literalText, keys }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper type failed");
-            return jsonResult({ provider: "windows-helper", typed: result.response.typed || { text: literalText, keys }, response: result.response });
-        }
-
-        case "device_scroll": {
-            const { deviceId, x, y, direction = "down", amount = 1, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return textResult(false, "device_scroll requires numeric x and y");
-            if (!["up", "down", "left", "right"].includes(direction)) return textResult(false, "device_scroll direction must be up, down, left, or right");
-            const result = await windowsHelperRequest(device, "scroll", { x: Number(x), y: Number(y), direction, amount: Number(amount) || 1 }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper scroll failed");
-            return jsonResult({ provider: "windows-helper", scrolled: result.response.scrolled || { x: Number(x), y: Number(y), direction, amount: Number(amount) || 1 }, response: result.response });
-        }
-
-        case "device_drag":
-        case "device_focus_window": {
-            const device = findWindowsDevice(args.deviceId);
-            if (!device) return undefined;
-            if (name === "device_drag" && !desktopDragValid(args)) return textResult(false, "invalid-drag-arguments");
-            if (name === "device_focus_window" && (typeof args.handle !== "string" || !/^[1-9][0-9]{0,18}$/.test(args.handle))) return textResult(false, "invalid-window-handle");
-            const type = name === "device_drag" ? "drag" : "focus_window";
-            const payload = name === "device_drag" ? { x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2, durationMs: args.durationMs ?? 700 } : { handle: args.handle };
-            const result = await windowsHelperRequest(device, type, payload, args.helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            return result.response.ok ? jsonResult({ ok: true }) : textResult(false, result.response.error || "desktop-control-failed");
-        }
-        case "device_cursor_position": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const moving = args.x !== undefined || args.y !== undefined;
-            if (moving && !desktopPointValid(args.x, args.y)) return textResult(false, "invalid-pointer-coordinates");
-            const result = await windowsHelperRequest(device, "cursor_position", moving ? { x: args.x, y: args.y } : {}, helperTimeoutMs);
-            if (result.error) return result.helperDiagnostic
-                ? jsonResult({ ok: false, error: result.helperDiagnostic.stage === "response-timeout" ? "windows-sandbox-helper-timeout" : "windows-sandbox-helper-failed", helperDiagnostic: result.helperDiagnostic })
-                : textResult(false, result.error);
-            if (!result.response.ok) return jsonResult({ ok: false, error: "windows-sandbox-helper-response-rejected",
-                helperDiagnostic: { stage: "response-rejected", readyMarkerPresent: existsSync(result.helper.readyMarkerPath) } });
-            return jsonResult({ provider: "windows-helper", cursor: result.response.cursor || null, response: result.response });
-        }
-
-        case "device_window_list": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const result = await windowsHelperRequest(device, "window_list", {}, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper window list failed");
-            return jsonResult({
-                provider: result.response.provider || "windows-process-main-window",
-                windows: Array.isArray(result.response.windows) ? result.response.windows : [],
-                response: result.response,
-            });
         }
 
         case "device_accessibility_snapshot": {
@@ -1819,57 +1725,6 @@ async function handleWindowsToolUnlocked(name, args) {
                 device: updated,
                 helper: result.response.recording || null,
             });
-        }
-
-        case "device_upload": {
-            const { deviceId, localPath, remotePath, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const helper = ensureHelperWorkspace(device, false);
-            const remotePolicy = validateWindowsGuestTransferPath(remotePath, helper, "upload-remote-path");
-            if (!remotePolicy.ok) return textResult(false, remotePolicy.message);
-            const localPolicy = validateLocalInputPath(localPath, { label: "upload-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const uploadId = randomUUID();
-            const uploadName = `${uploadId}-${basename(localPath).replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-            const hostUploadPath = join(helper.uploadsDir, uploadName);
-            try {
-                assertDeviceLabPathWithinRoot(helper.uploadsDir, hostUploadPath, "windows-helper-upload");
-            } catch (error) {
-                return textResult(false, `Windows helper upload staging path is unsafe: ${error?.code || error?.message || String(error)}`);
-            }
-            const staged = copyWindowsSandboxFile(localPolicy.path, hostUploadPath, "windows-helper-upload", WINDOWS_SANDBOX_UPLOAD_LIMIT_BYTES);
-            if (!staged.ok) return textResult(false, `Windows helper upload staging failed: ${staged.error}`);
-            try {
-                const result = await windowsHelperRequest(device, "upload", {
-                    uploadPath: `${helper.guestUploadsDir}\\${uploadName}`,
-                    remotePath: remotePolicy.path,
-                }, helperTimeoutMs);
-                if (result.error) return textResult(false, result.error);
-                if (!result.response.ok) return textResult(false, result.response.error || "Windows helper upload failed");
-                return jsonResult({ uploaded: { localPath: localPolicy.path, remotePath: remotePolicy.path }, provider: "windows-helper", response: result.response });
-            } finally {
-                rmSync(hostUploadPath, { force: true });
-            }
-        }
-
-        case "device_download": {
-            const { deviceId, remotePath, localPath, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const helper = ensureHelperWorkspace(device, false);
-            const remotePolicy = validateWindowsGuestTransferPath(remotePath, helper, "download-remote-path");
-            if (!remotePolicy.ok) return textResult(false, remotePolicy.message);
-            const localPolicy = validateLocalOutputPath(localPath, { label: "download-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const result = await windowsHelperRequest(device, "download", { remotePath: remotePolicy.path }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper download failed");
-            const hostDownloadPath = verifiedHelperOutputPath(result.helper, result.response.downloadPath || result.response.hostDownloadPath, `${result.response.id}-${windowsPathBasename(remotePolicy.path)}`);
-            if (!hostDownloadPath) return textResult(false, "Windows helper download output is missing or unsafe");
-            const copied = copyWindowsSandboxFile(hostDownloadPath, localPolicy.path, "windows-helper-download", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES);
-            if (!copied.ok) return textResult(false, `Windows helper download output copy failed: ${copied.error}`);
-            return jsonResult({ downloaded: { remotePath: remotePolicy.path, localPath: localPolicy.path }, provider: "windows-helper", response: result.response });
         }
 
         default:

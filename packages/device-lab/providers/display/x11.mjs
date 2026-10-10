@@ -8,7 +8,8 @@ import { screenshotFileResult } from "../screenshot-file.mjs";
 import { withTargetStatus } from "../status.mjs";
 import { X11_WINDOW_LIST_COMMAND, parseX11WindowList } from "./window-list.mjs";
 
-import { desktopPointValid, desktopDragValid, X11_DRAG_COMMAND } from "./desktop-input.mjs";
+import { X11_DRAG_COMMAND } from "./desktop-input.mjs";
+import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
 
 export function x11Available() {
     if (!existsSync("/usr/bin/xdotool") && !existsSync("/bin/xdotool")) return false;
@@ -49,46 +50,20 @@ export function currentDisplayTarget() {
     });
 }
 
-function cursorPositionPayload(stdout) {
-    const fields = Object.fromEntries(String(stdout || "").trim().split(/\s+/)
-        .map((part) => part.split(":"))
-        .filter(([key, value]) => key && value !== undefined));
-    return {
-        x: Number.isFinite(Number(fields.x)) ? Number(fields.x) : null,
-        y: Number.isFinite(Number(fields.y)) ? Number(fields.y) : null,
-        screen: Number.isFinite(Number(fields.screen)) ? Number(fields.screen) : null,
-        window: fields.window || null,
-        raw: String(stdout || "").trim(),
-        provider: "xdotool",
-    };
-}
+/** @type {import('../ports/desktop-control-transfer.mjs').X11Ports} */
+const x11Ports = {
+    variant: "x11",
+    command: argv => run("xdotool", argv),
+    boundedCommand: (argv, timeoutMs) => runWithTimeout("xdotool", argv, timeoutMs),
+    windowList: timeoutMs => runWithTimeout("bash", ["-c", X11_WINDOW_LIST_COMMAND], timeoutMs, { maxBuffer: 1024 * 1024 }),
+    parseWindowList: parseX11WindowList,
+    drag: (x1, y1, x2, y2, durationMs) => runWithTimeout("bash", ["-c", X11_DRAG_COMMAND, "ccc-drag", ...[x1, y1, x2, y2, durationMs].map(String)], 15000),
+};
+const desktopControls = createDesktopControlTransfer(x11Ports);
 
+/** @param {string} name @param {import('../domain/desktop-control-transfer.mjs').DesktopArguments} args */
 export async function handleDisplayTool(name, args) {
     switch (name) {
-        case "display_window_list": {
-            const result = runWithTimeout("bash", ["-c", X11_WINDOW_LIST_COMMAND], Math.min(args.helperTimeoutMs || 30000, 30000), { maxBuffer: 1024 * 1024 });
-            if (result.status !== 0) return fail(result);
-            try { return jsonResult(parseX11WindowList(result.stdout)); }
-            catch { return textResult(false, "window-list-invalid-result"); }
-        }
-        case "display_drag": {
-            if (!desktopDragValid(args)) return textResult(false, "invalid-drag-arguments");
-            const r = runWithTimeout("bash", ["-c", X11_DRAG_COMMAND, "ccc-drag", ...[args.x1, args.y1, args.x2, args.y2, args.durationMs ?? 700].map(String)], 15000);
-            return r.status === 0 ? jsonResult({ ok: true }) : fail(r);
-        }
-        case "display_focus_window": {
-            if (typeof args.handle !== "string" || !/^[1-9][0-9]{0,19}$/.test(args.handle)) return textResult(false, "invalid-window-handle");
-            const r = runWithTimeout("xdotool", ["windowactivate", "--sync", args.handle], 5000);
-            if (r.status !== 0) return fail(r);
-            const active = runWithTimeout("xdotool", ["getactivewindow"], 5000);
-            if (active.status !== 0) return fail(active);
-            return active.stdout.trim() === args.handle ? jsonResult({ ok: true }) : textResult(false, "window-focus-denied");
-        }
-        case "display_move": {
-            if (!desktopPointValid(args.x, args.y)) return textResult(false, "invalid-pointer-coordinates");
-            const r = run("xdotool", ["mousemove", String(args.x), String(args.y)]);
-            return r.status === 0 ? jsonResult({ ok: true }) : fail(r);
-        }
         case "display_current":
             return jsonResult(currentDisplayTarget());
 
@@ -104,50 +79,13 @@ export async function handleDisplayTool(name, args) {
             }
         }
 
-        case "display_click": {
-            const { x, y, button = "left" } = args;
-            const buttonId = button === "right" ? "3" : "1";
-            const r = run("xdotool", ["mousemove", String(x), String(y), "click", buttonId]);
-            return r.status === 0 ? jsonResult({ clicked: { x, y, button }, provider: "xdotool", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
+        default: {
+            const outcome = await desktopControls.handle(name, args);
+            if (!outcome) return undefined;
+            if (outcome.kind === "json") return jsonResult(outcome.value);
+            if (outcome.kind === "text") return textResult(outcome.ok, outcome.text);
+            if (outcome.kind === "command-failure") return fail(outcome.receipt);
+            return outcome.value;
         }
-
-        case "display_double_click": {
-            const { x, y, button = "left" } = args;
-            const buttonId = button === "right" ? "3" : "1";
-            const r = run("xdotool", ["mousemove", String(x), String(y), "click", "--repeat", "2", buttonId]);
-            return r.status === 0 ? jsonResult({ doubleClicked: { x, y, button }, provider: "xdotool", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
-
-        case "display_key": {
-            const { key } = args;
-            const r = run("xdotool", ["key", "--", key]);
-            return r.status === 0 ? jsonResult({ key, provider: "xdotool", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
-
-        case "display_type": {
-            const { text } = args;
-            const r = run("xdotool", ["type", "--clearmodifiers", "--", text]);
-            return r.status === 0 ? jsonResult({ typed: true, length: String(text || "").length, provider: "xdotool", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
-
-        case "display_scroll": {
-            const { x, y, direction, amount = 3 } = args;
-            const buttonMap = { up: 4, down: 5, left: 6, right: 7 };
-            const button = buttonMap[direction];
-            if (!button) return textResult(false, `Unknown scroll direction: ${direction}`);
-            const r = run("xdotool", [
-                "mousemove", String(x), String(y),
-                "click", "--repeat", String(amount), String(button),
-            ]);
-            return r.status === 0 ? jsonResult({ scrolled: { x, y, direction, amount }, provider: "xdotool", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
-
-        case "display_cursor_position": {
-            const r = run("xdotool", ["getmouselocation"]);
-            return r.status === 0 ? jsonResult(cursorPositionPayload(r.stdout)) : fail(r);
-        }
-
-        default:
-            return undefined;
     }
 }

@@ -1,0 +1,9 @@
+# Desktop control and transfer
+
+`createDesktopControlTransfer` routes the existing desktop actions through one application with three required capability variants. X11 plans xdotool operations, checks focus readback and decodes native window output. Windows plans finite guest-helper requests and interprets helper readiness, rejection and timeout results. macOS plans SSH-helper operations and SCP transfers. Each variant keeps its existing defaults and public result fields; X11 has no transfer route.
+
+The domain owns coordinate, duration, key and window request rules. `display/desktop-input.mjs` reexports the shared coordinate rules for existing callers and retains the native drag script. The application has no host imports or construction effects. Its outcome identifies JSON, refusal, failed command or an existing native bridge error; adapters apply the existing response functions.
+
+Native ports retain selected-device ownership, helper/session generation, SSH prerequisites, OS frame and handle rechecks, pointer release, safe file paths and native staging/publication. Windows allocates a guarded guest-channel upload handle and validates the helper's downloaded file before copying. macOS owns separate input/output stage handles, commits an output only after a successful command and always disposes the allocated handle. These handles stay opaque to policy; ports are concrete effects rather than callbacks to old workflows.
+
+Consumed declarations require synchronous native commands, path checks, stages, commits and disposal. Windows helper requests are asynchronous; the public factory is asynchronous for every variant. Core tests use ordinary finite ports for policy and error cases. Provider tests establish native binding and owned artifact behavior; a fake core stage alone does not establish native file safety or real desktop support.
