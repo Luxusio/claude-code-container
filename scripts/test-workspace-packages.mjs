@@ -41169,7 +41169,7 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
         if(scenario==='success'){assert.deepEqual(commands.map(x=>x[1]),[['stop','captured-ID'],['rm','captured-ID']]);assert(f.logs.includes('Workspace removed.'));}
         if(scenario==='partial'){assert(f.errors.some(x=>x.includes('workspace is partly')));assert(!f.logs.includes('Workspace removed.'));}
         if(scenario==='external-start'){assert.equal(f.liveID,'successor-ID');assert.equal(f.identityReads,1);assert.deepEqual(commands.map(x=>x[1]),[['rm','captured-ID']]);assert(!f.logs.includes('Workspace removed.'));}
-        if(scenario==='stranded'){assert(f.errors.some(x=>x.includes('git worktree unlock --')));assert(f.errors.some(x=>x.includes('git worktree prune')));}
+        if(scenario==='stranded'){const repository=path.join(privateHome,'recorded-repository'),unlock='  git -C '+repository+' worktree unlock -- -kept',prune='  git -C '+repository+' worktree prune';assert(f.errors.some(text=>{const lines=text.split('\n'),unlockAt=lines.indexOf(unlock),pruneAt=lines.indexOf(prune);return unlockAt>=0&&pruneAt>unlockAt;}),'same stranded notice contains exact repository-scoped unlock before prune');}
         if(scenario==='removed-getter'){const at=f.events.indexOf('removed-coercion');assert.equal(f.events[at-1],'select-log');}
       }
       if(fs.existsSync(claim)){assert.equal(fs.readFileSync(claim,'utf8'),claimBytes);fs.unlinkSync(claim);}
