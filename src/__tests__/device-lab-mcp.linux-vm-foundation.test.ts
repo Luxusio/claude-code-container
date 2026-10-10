@@ -151,6 +151,22 @@ describe("device-lab Linux VM foundation", () => {
             device: expect.objectContaining({ deviceId: "mcp-lab", runtimeState: "stopped" }),
             readiness: expect.objectContaining({ state: "stopped" }),
         }));
+        const snapshot = await client.callTool({ name: "snapshot", arguments: {
+            action: "create", deviceId: "mcp-lab", snapshotName: "baseline", detail: true, implicitBroker: false,
+        } });
+        expect(snapshot.isError, JSON.stringify(snapshot.content)).not.toBe(true);
+        expect(JSON.parse(((snapshot.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
+            ok: true, action: "create", snapshotName: "baseline", disk: { diskSnapshot: false },
+        });
+        const snapshots = await client.callTool({ name: "snapshot", arguments: { action: "list", deviceId: "mcp-lab", detail: true, implicitBroker: false } });
+        expect(snapshots.isError).not.toBe(true);
+        expect(JSON.parse(((snapshots.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ ok: true, snapshots: [{ name: "baseline" }] });
+        const restored = await client.callTool({ name: "snapshot", arguments: { action: "restore", deviceId: "mcp-lab", snapshotName: "baseline", confirmDestructive: true, detail: true, implicitBroker: false } });
+        expect(restored.isError).not.toBe(true);
+        expect(JSON.parse(((restored.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ ok: true, device: { activeSnapshot: "baseline" } });
+        const removedSnapshot = await client.callTool({ name: "snapshot", arguments: { action: "delete", deviceId: "mcp-lab", snapshotName: "baseline", confirmDestructive: true, detail: true, implicitBroker: false } });
+        expect(removedSnapshot.isError).not.toBe(true);
+        expect(JSON.parse(((removedSnapshot.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ ok: true, device: { snapshots: [] } });
         const stopped = await client.callTool({ name: "stop", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
         expect(stopped.isError).not.toBe(true);
         expect(JSON.parse(((stopped.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(

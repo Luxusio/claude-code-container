@@ -1,5 +1,6 @@
 import { createQemuGuestTransferApplication } from "../application/qemu-guest-transfer.mjs";
-import { normalizeGuestTransferPolicy, withGuestTransferOperation } from "../domain/qemu-guest-transfer.mjs";
+import { createQemuGuestAccessApplication } from "../application/qemu-guest-access.mjs";
+import { createQemuOwnedDataApplication } from "../application/qemu-owned-data.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
@@ -31,7 +32,6 @@ const SECRET_CONTENT_PATTERNS = [
 ];
 const DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 5;
 const DEFAULT_GUEST_EXEC_TIMEOUT_MS = 30000;
-const DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS = 120000;
 const PROVIDER_COMMAND_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 const MAX_GUEST_EXEC_COMMAND_LENGTH = 4096;
 const MAX_GUEST_AGENT_HEALTH_COMMAND_LENGTH = 512;
@@ -355,10 +355,6 @@ function validateImageSource(ctx, sourcePath, formatArgs = {}, label = "source-i
     return { ok: true, path: source.path, stat: sourceStat, format };
 }
 
-function normalizePolicy(args = {}) {
-    return normalizeGuestTransferPolicy(args);
-}
-
 function emptyCopyPlan(sourceRoot, rootIsFile = false) {
     return { ok: true, sourceRoot, rootIsFile, files: [], totalBytes: 0 };
 }
@@ -451,12 +447,6 @@ function copyPlanTo(plan, destinationRoot, replace = true) {
     };
 }
 
-function recordFileOperation(ctx, lab, operation) {
-    const next = withGuestTransferOperation(lab, operation);
-    writeLab(ctx, next);
-    return next;
-}
-
 function defaultSyncCommandRunner(command, args, runOptions = {}) {
     const result = spawnSync(command, args, { cwd: runOptions.cwd, env: runOptions.env, encoding: "utf8", timeout: runOptions.timeoutMs });
     return {
@@ -502,63 +492,6 @@ function sshSafeGuestPath(path) {
 function sshRunner(options = {}) {
     return options.sshCommandRunner || defaultSyncCommandRunner;
 }
-
-function runSshReadinessProbe(lab, options = {}) {
-    const ssh = lab.guest?.ssh;
-    if (!ssh) return null;
-    const paths = sshCommandPaths(options.env || process.env, options);
-    if (!paths.ssh) {
-        return {
-            ok: false,
-            ready: false,
-            checks: [{ name: "guest-ssh-readiness", status: "fail", reason: "ssh-command-missing" }],
-            diagnostics: { kind: "ssh-guest-readiness", available: false },
-        };
-    }
-    const runner = sshRunner(options);
-    const args = [...sshBaseArgs(ssh), sshDestination(ssh), ssh.readinessCommand || "true"];
-    const result = runner(paths.ssh, args, { cwd: lab.paths.labDir, env: options.env || process.env, timeoutMs: options.sshTimeoutMs || 10000 });
-    return {
-        ok: result?.ok === true,
-        ready: result?.ok === true,
-        checks: [{ name: "guest-ssh-readiness", status: result?.ok === true ? "pass" : "fail", exitStatus: result?.status ?? null }],
-        diagnostics: { kind: "ssh-guest-readiness", available: true, result: publicExecution(result) },
-    };
-}
-
-function runSshGuestAgentProbe(lab, options = {}) {
-    const ssh = lab.guest?.ssh;
-    const agent = lab.guest?.agent;
-    if (!agent) return null;
-    if (!ssh) {
-        return {
-            ok: false,
-            ready: false,
-            checks: [{ name: "guest-agent-readiness", status: "fail", reason: "guest-ssh-not-configured" }],
-            diagnostics: { kind: "guest-agent-readiness", available: false, agent: agent.name },
-        };
-    }
-    const paths = sshCommandPaths(options.env || process.env, options);
-    if (!paths.ssh) {
-        return {
-            ok: false,
-            ready: false,
-            checks: [{ name: "guest-agent-readiness", status: "fail", reason: "ssh-command-missing" }],
-            diagnostics: { kind: "guest-agent-readiness", available: false, agent: agent.name },
-        };
-    }
-    const runner = sshRunner(options);
-    const args = [...sshBaseArgs(ssh), sshDestination(ssh), agent.healthCommand];
-    const result = runner(paths.ssh, args, { cwd: lab.paths.labDir, env: options.env || process.env, timeoutMs: boundedTimeout(options.guestAgentTimeoutMs || options.sshTimeoutMs || 10000, 10000) });
-    return {
-        ok: result?.ok === true,
-        ready: result?.ok === true,
-        checks: [{ name: "guest-agent-readiness", status: result?.ok === true ? "pass" : "fail", agent: agent.name, exitStatus: result?.status ?? null }],
-        diagnostics: { kind: "guest-agent-readiness", available: true, agent: agent.name, result: publicGuestExecResult(result, lab, ssh, [paths.ssh, agent.healthCommand]) },
-    };
-}
-
-
 
 function defaultSshGuestTransportRunner(transport, contextArg = {}, options = {}) {
     const lab = contextArg.lab;
@@ -814,10 +747,6 @@ export function buildQemuArgs(lab, options = {}) {
     return qemuLifecycleApplication().buildQemuArgs(lab, options);
 }
 
-function safeReadinessState(value, fallback = "process-running") {
-    return ["ready", "failed", "process-running", "stopped"].includes(value) ? value : fallback;
-}
-
 function targetForLab(lab) {
     return qemuTargetForLab(lab);
 }
@@ -842,254 +771,12 @@ function publicQemuArgs(args){
     return qemuLifecyclePublicQemuArgs(args);
 }
 
-function publicExecution(result){
+function publicExecution(result) {
     return qemuLifecyclePublicExecution(result);
-}
-
-function sessionIdFor(args, timestamp) {
-    if (args.sessionId !== undefined) return validId(args.sessionId) ? String(args.sessionId) : null;
-    return `session-${timestamp.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`;
-}
-
-function appendLabSession(ctx, lab, session) {
-    const sessions = Array.isArray(lab.sessions) ? lab.sessions : [];
-    const next = {
-        ...lab,
-        updatedAt: session.createdAt,
-        sessions: [...sessions.filter((entry) => entry.id !== session.id), session].slice(-50),
-    };
-    writeLab(ctx, next);
-    return next;
-}
-
-function guestSshSessionAttach(lab, target, ctx, options = {}) {
-    const base = {
-        kind: "bounded-guest-ssh",
-        available: false,
-        requestedTargetReady: target.attachable,
-        rawShellAvailable: false,
-        capabilities: [],
-        commandTool: "device_exec",
-        transferTools: ["device_upload", "device_download"],
-    };
-    if (!target.attachable) {
-        return { ...base, reason: "lab-not-running" };
-    }
-    const ssh = lab.guest?.ssh;
-    if (!ssh) {
-        return { ...base, reason: "guest-ssh-not-configured" };
-    }
-    const paths = sshCommandPaths(ctx.env, options);
-    if (!paths.ssh) {
-        return { ...base, reason: "guest-ssh-command-unavailable", missing: ["ssh"] };
-    }
-    return {
-        ...base,
-        available: true,
-        transport: "ssh",
-        host: ssh.host,
-        port: ssh.port,
-        user: ssh.user,
-        keyConfigured: Boolean(ssh.keyPath),
-        readinessCommandConfigured: Boolean(ssh.readinessCommand),
-        capabilities: ["device_exec", "device_upload", "device_download"],
-        note: "Use bounded device execution and transfer tools; raw interactive shell access is not exposed.",
-    };
-}
-
-function guestAgentSessionAttach(lab, target, ctx, options = {}) {
-    const base = {
-        kind: "bounded-guest-agent",
-        available: false,
-        requestedTargetReady: target.attachable,
-        rawShellAvailable: false,
-        rawSocketAvailable: false,
-        capabilities: [],
-        statusTool: "device_guest_agent_status",
-        provisionTool: "device_guest_agent_provision",
-        commandTool: "device_exec",
-        transferTools: ["device_upload", "device_download"],
-    };
-    if (!target.attachable) {
-        return { ...base, reason: "lab-not-running" };
-    }
-    const agent = lab.guest?.agent;
-    if (!agent) {
-        return { ...base, reason: "guest-agent-not-configured" };
-    }
-    const ssh = lab.guest?.ssh;
-    if (!ssh) {
-        return { ...base, reason: "guest-ssh-not-configured" };
-    }
-    const paths = sshCommandPaths(ctx.env, options);
-    if (!paths.ssh) {
-        return { ...base, reason: "guest-ssh-command-unavailable", missing: ["ssh"] };
-    }
-    return {
-        ...base,
-        available: true,
-        transport: "bounded-ssh-health-command",
-        agent: {
-            name: agent.name,
-            protocol: agent.protocol,
-            healthCommandConfigured: Boolean(agent.healthCommand),
-            provisionCommandConfigured: Boolean(agent.provisionCommand),
-            autoProvision: agent.autoProvision === true,
-            lastStatus: agent.lastStatus || null,
-            lastProvision: agent.lastProvision || null,
-        },
-        capabilities: ["device_guest_agent_status", "device_guest_agent_provision", "device_exec", "device_upload", "device_download"],
-        note: "Use bounded device guest-agent and transfer tools; raw daemon sockets and interactive shells are not exposed.",
-    };
-}
-
-function sessionAttachFor(sessionType, lab, target, ctx, options = {}) {
-    if (sessionType === "monitor") {
-        return {
-            kind: "bounded-monitor-proxy-required",
-            available: false,
-            requestedTargetReady: target.attachable,
-            note: "Raw QEMU monitor sockets are provider-internal; future bounded monitor/session tooling must mediate monitor commands.",
-        };
-    }
-    if (sessionType === "guest-ssh") return guestSshSessionAttach(lab, target, ctx, options);
-    if (sessionType === "guest-agent") return guestAgentSessionAttach(lab, target, ctx, options);
-    return {
-        kind: "metadata",
-        available: true,
-        note: "Metadata-only session; no guest or host command channel is opened.",
-    };
-}
-
-function sessionStateFor(sessionType, target, attach) {
-    if (sessionType === "guest-ssh" || sessionType === "guest-agent") return target.attachable && attach.available === true ? "open" : "unavailable";
-    return target.attachable ? "open" : "unavailable";
-}
-
-function publicSessionLab(lab) {
-    return {
-        id: lab.id,
-        name: lab.name,
-        ownerId: lab.ownerId,
-        provider: lab.provider || PROVIDER_NAME,
-        runtimeState: lab.runtimeState,
-        readiness: lab.runtimeState === "running" ? safeReadinessState(lab.readiness?.latest?.state, "process-running") : null,
-    };
-}
-
-function publicSessionTarget(target) {
-    const { paths, runtime, readinessProbe, ...rest } = target;
-    void paths;
-    void readinessProbe;
-    return {
-        ...rest,
-        runtime: runtime ? { pid: runtime.pid || null, startedAt: runtime.startedAt || null } : null,
-    };
-}
-
-function readinessStateFromProbe(probeResult) {
-    if (!probeResult || typeof probeResult !== "object") return "process-running";
-    if (typeof probeResult.state === "string") return safeReadinessState(probeResult.state, probeResult.ok === false ? "failed" : "process-running");
-    if (probeResult.ok === false) return "failed";
-    if (probeResult.ready === true) return "ready";
-    return "process-running";
-}
-
-function combineReadinessProbes(probes) {
-    const active = probes.filter(Boolean);
-    if (active.length === 0) return null;
-    const checks = active.flatMap((probe) => Array.isArray(probe.checks) ? probe.checks : []);
-    const diagnostics = active.map((probe) => probe.diagnostics).filter(Boolean);
-    const failed = active.some((probe) => probe.ok === false || probe.ready === false || readinessStateFromProbe(probe) === "failed");
-    const ready = !failed && active.every((probe) => probe.ready === true || readinessStateFromProbe(probe) === "ready");
-    return {
-        ok: !failed,
-        ready,
-        state: failed ? "failed" : ready ? "ready" : "process-running",
-        checks,
-        diagnostics: {
-            kind: "combined-guest-readiness",
-            probes: diagnostics,
-        },
-    };
 }
 
 function publicReadinessProbeResult(result){
     return qemuLifecyclePublicReadinessProbeResult(result);
-}
-
-function buildReadinessResult(lab, target, options = {}) {
-    const timestamp = nowIso(options);
-    const pid = lab.runtime?.pid || null;
-    const processExists = options.processExists || defaultProcessExists;
-    let runtimeAlive = false;
-    try {
-        runtimeAlive = processExists(pid, lab) === true;
-    } catch (error) {
-        return {
-            id: `readiness-${timestamp.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`,
-            labId: lab.id,
-            targetId: target.id,
-            provider: lab.provider || PROVIDER_NAME,
-            state: "failed",
-            checkedAt: timestamp,
-            checks: [
-                { name: "runtime-process", status: "error", pid, message: error.message },
-            ],
-            diagnostics: { kind: "process-check-error" },
-        };
-    }
-    if (!runtimeAlive) {
-        return {
-            id: `readiness-${timestamp.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`,
-            labId: lab.id,
-            targetId: target.id,
-            provider: lab.provider || PROVIDER_NAME,
-            state: "failed",
-            checkedAt: timestamp,
-            checks: [
-                { name: "runtime-process", status: "fail", pid, reason: "runtime-process-not-found" },
-            ],
-            diagnostics: { kind: "runtime-process-not-found" },
-        };
-    }
-    const probeRunner = options.readinessProbeRunner;
-    const sshProbe = typeof probeRunner === "function" ? null : runSshReadinessProbe(lab, options);
-    const agentProbe = typeof probeRunner === "function" ? null : runSshGuestAgentProbe(lab, options);
-    const combinedProbe = combineReadinessProbes([sshProbe, agentProbe]);
-    const rawProbe = typeof probeRunner === "function"
-        ? publicReadinessProbeResult(probeRunner(lab, { target, checkedAt: timestamp }))
-        : combinedProbe ? publicReadinessProbeResult(combinedProbe) : null;
-    const state = rawProbe ? readinessStateFromProbe(rawProbe) : "process-running";
-    const probeChecks = Array.isArray(rawProbe?.checks) ? rawProbe.checks : [];
-    return {
-        id: `readiness-${timestamp.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`,
-        labId: lab.id,
-        targetId: target.id,
-        provider: lab.provider || PROVIDER_NAME,
-        state,
-        checkedAt: timestamp,
-        checks: [
-            { name: "runtime-process", status: "pass", pid },
-            ...probeChecks,
-            ...(rawProbe ? [] : [{ name: "guest-readiness", status: "skipped", reason: "no-bounded-guest-probe-configured" }]),
-        ],
-        diagnostics: rawProbe?.diagnostics || { kind: "process-only" },
-    };
-}
-
-function recordReadiness(ctx, lab, readiness) {
-    const history = Array.isArray(lab.readiness?.history) ? lab.readiness.history : [];
-    const next = {
-        ...lab,
-        updatedAt: readiness.checkedAt,
-        readiness: {
-            latest: readiness,
-            history: [...history.filter((entry) => entry.id !== readiness.id), readiness].slice(-50),
-        },
-    };
-    writeLab(ctx, next);
-    return next;
 }
 
 function defaultCommandRunner(command, args, runOptions) {
@@ -1132,76 +819,15 @@ export function listTargets(args = {}, options = {}) {
 }
 
 export function probeReadiness(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const target = targetForLab(loaded.lab);
-    const targetId = args.targetId ? String(args.targetId) : target.id;
-    if (targetId !== target.id) return { ok: false, error: "target-not-found", targetId, labId: loaded.lab.id };
-    if (loaded.lab.runtimeState !== "running") {
-        return {
-            ok: false,
-            error: "lab-not-running",
-            ownerId: ctx.owner,
-            lab: publicLab(loaded.lab),
-            target,
-            readiness: {
-                labId: loaded.lab.id,
-                targetId,
-                state: "stopped",
-                checkedAt: nowIso(options),
-                checks: [{ name: "runtime-process", status: "skipped", reason: "lab-not-running" }],
-            },
-        };
-    }
-    const readiness = buildReadinessResult(loaded.lab, target, options);
-    const lab = recordReadiness(ctx, loaded.lab, readiness);
-    return { ok: readiness.state !== "failed", ownerId: ctx.owner, lab: publicLab(lab), target: targetForLab(lab), readiness };
+    return qemuGuestAccessApplication(options).probeReadiness(args);
 }
 
 export function inspectLab(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    if (loaded.lab.runtimeState !== "running") {
-        return { ok: true, ownerId: ctx.owner, lab: publicLab(loaded.lab), readiness: { state: "stopped" } };
-    }
-    const result = probeReadiness(args, options);
-    return { ...result, ...(!result.ok && !result.error ? { error: "lab-readiness-failed" } : {}) };
+    return qemuGuestAccessApplication(options).inspectLab(args);
 }
 
 export function openSession(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const timestamp = nowIso(options);
-    const sessionId = sessionIdFor(args, timestamp);
-    if (!sessionId) return { ok: false, error: "invalid-session-id" };
-    const target = targetForLab(loaded.lab);
-    const targetId = args.targetId ? String(args.targetId) : target.id;
-    if (targetId !== target.id) return { ok: false, error: "target-not-found", targetId, labId: loaded.lab.id };
-    const sessionType = args.sessionType || "monitor";
-    if (!["monitor", "metadata", "guest-ssh", "guest-agent"].includes(sessionType)) return { ok: false, error: "invalid-session-type" };
-    const attach = sessionAttachFor(sessionType, loaded.lab, target, ctx, options);
-    const session = {
-        id: sessionId,
-        labId: loaded.lab.id,
-        targetId,
-        targetKind: target.targetKind,
-        sessionType,
-        provider: loaded.lab.provider || PROVIDER_NAME,
-        state: sessionStateFor(sessionType, target, attach),
-        createdAt: timestamp,
-        authority: sessionType === "guest-ssh"
-            ? "device-lab-bounded-guest-ssh"
-            : sessionType === "guest-agent" ? "device-lab-bounded-guest-agent" : "device-lab-metadata",
-        attach,
-    };
-    const lab = appendLabSession(ctx, loaded.lab, session);
-    if (sessionType === "guest-ssh" || sessionType === "guest-agent") {
-        return { ok: true, ownerId: ctx.owner, lab: publicSessionLab(lab), target: publicSessionTarget(targetForLab(lab)), session };
-    }
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), target, session };
+    return qemuGuestAccessApplication(options).openSession(args);
 }
 
 export function stopLab(args = {}, options = {}) {
@@ -1212,118 +838,13 @@ export function deleteLab(args = {}, options = {}) {
     return qemuLifecycleApplication(options).delete(args);
 }
 
-function qemuImgSnapshot(action, lab, snapshotName, options) {
-    const disk = validateLabDiskPath(lab);
-    if (!disk.ok) return disk;
-    if (!existsSync(disk.diskPath)) return { ok: true, diskSnapshot: false, reason: "disk-image-not-found" };
-    const status = labProviderStatus(options);
-    if (!status.qemuImg) return { ok: true, diskSnapshot: false, reason: "qemu-img-unavailable" };
-    const runner = options.commandRunner || ((command, args, runOptions) => {
-        const result = spawnSync(command, args, {
-            cwd: runOptions.cwd,
-            env: runOptions.env,
-            encoding: "utf8",
-            timeout: runOptions.timeoutMs,
-            maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
-        });
-        return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args };
-    });
-    const flag = action === "create" ? "-c" : action === "restore" ? "-a" : "-d";
-    return runner(status.qemuImg, ["snapshot", flag, snapshotName, disk.diskPath], {
-        cwd: lab.paths.labDir,
-        env: options.env || process.env,
-        timeoutMs: boundedTimeout(options.providerCommandTimeoutMs, DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS),
-    });
-}
-
 export function snapshotLab(action, args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    if (action === "list") {
-        const snapshots = Array.isArray(loaded.lab.snapshots) ? loaded.lab.snapshots : [];
-        return { ok: true, ownerId: ctx.owner, labId: loaded.lab.id, snapshots, activeSnapshot: loaded.lab.activeSnapshot || null };
-    }
-    if (loaded.lab.runtimeState === "running") return { ok: false, error: "lab-running", labId: loaded.lab.id };
-    const snapshotName = slug(args.snapshotName);
-    if (!validId(snapshotName)) return { ok: false, error: "invalid-snapshot-name" };
-    const snapshots = Array.isArray(loaded.lab.snapshots) ? loaded.lab.snapshots : [];
-    const existingIndex = snapshots.findIndex((snapshot) => snapshot.name === snapshotName);
-    if (action === "create" && existingIndex >= 0) return { ok: false, error: "snapshot-already-exists", snapshotName };
-    if (action !== "create" && existingIndex < 0) return { ok: false, error: "snapshot-not-found", snapshotName };
-    const disk = qemuImgSnapshot(action, loaded.lab, snapshotName, options);
-    if (disk && disk.ok === false) return { ok: false, error: "qemu-img-snapshot-failed", result: disk };
-    const timestamp = nowIso(options);
-    const nextSnapshots = action === "create"
-        ? [...snapshots, { id: snapshotName, name: snapshotName, createdAt: timestamp, diskSnapshot: disk.diskSnapshot !== false }]
-        : snapshots.filter((snapshot) => snapshot.name !== snapshotName || action === "restore");
-    const lab = {
-        ...loaded.lab,
-        updatedAt: timestamp,
-        activeSnapshot: action === "restore" ? snapshotName : loaded.lab.activeSnapshot,
-        snapshots: nextSnapshots,
-    };
-    writeLab(ctx, lab);
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), snapshotName, action, disk };
+    return qemuOwnedDataApplication(options).snapshotLab(action, args);
 }
 
 export function syncWorkspace(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const sourceInput = boundedUserPath(args.sourcePath || options.workspaceRoot || process.cwd(), "source-path");
-    if (!sourceInput.ok) return sourceInput;
-    const sourcePath = resolve(sourceInput.path);
-    const allowedRoots = (options.allowedWorkspaceRoots || [options.workspaceRoot || process.cwd()]).map((root) => resolve(root));
-    if (!pathInsideAny(allowedRoots, sourcePath)) {
-        return { ok: false, error: "workspace-source-outside-allowed-roots", sourcePath, allowedRoots };
-    }
-    const policy = normalizePolicy(args);
-    const plan = collectCopyPlan(sourcePath, policy);
-    if (!plan.ok) return plan;
-    const workspaceDir = loaded.lab.paths?.workspaceDir || join(loaded.lab.paths.labDir, "workspace");
-    if (!inside(loaded.lab.paths.labDir, workspaceDir)) return { ok: false, error: "workspace-destination-outside-lab" };
-    const copied = copyPlanTo(plan, workspaceDir, args.replace !== false);
-    if (!copied.ok) return copied;
-    const completedAt = nowIso(options);
-    const lab = recordFileOperation(ctx, loaded.lab, {
-        type: "sync_workspace",
-        sourcePath,
-        destinationPath: copied.destinationPath,
-        files: copied.files,
-        bytes: copied.bytes,
-        completedAt,
-    });
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), result: copied, policy };
+    return qemuOwnedDataApplication(options).syncWorkspace(args);
 }
-
-function resolveArtifactSource(lab, sourcePath) {
-    const artifactsDir = resolve(lab.paths.artifactsDir);
-    const workspaceDir = resolve(lab.paths.workspaceDir || join(lab.paths.labDir, "workspace"));
-    const raw = sourcePath || artifactsDir;
-    const parsed = boundedUserPath(raw, "source-path");
-    if (!parsed.ok) return parsed;
-    const candidate = resolve(isAbsolute(parsed.path) ? parsed.path : join(artifactsDir, parsed.path));
-    if (!pathInsideAny([artifactsDir, workspaceDir], candidate)) {
-        return { ok: false, error: "artifact-source-outside-lab-roots", sourcePath: candidate, allowedRoots: [artifactsDir, workspaceDir] };
-    }
-    return { ok: true, sourcePath: candidate };
-}
-
-function resolveExportDestination(ctx, lab, destinationPath) {
-    const exportsDir = resolve(lab.paths.exportsDir || join(ctx.ownerRoot, "exports", lab.id));
-    const defaultName = nowIso().replace(/[^0-9A-Za-z._-]+/g, "-");
-    const raw = destinationPath || join(exportsDir, defaultName);
-    const parsed = boundedUserPath(raw, "destination-path");
-    if (!parsed.ok) return parsed;
-    const candidate = resolve(isAbsolute(parsed.path) ? parsed.path : join(exportsDir, parsed.path));
-    const allowedRoots = [exportsDir].map((root) => resolve(root));
-    if (!pathInsideAny(allowedRoots, candidate)) {
-        return { ok: false, error: "artifact-destination-outside-allowed-roots", destinationPath: candidate, allowedRoots };
-    }
-    return { ok: true, destinationPath: candidate };
-}
-
 
 function resolveGuestPullDestination(lab, destinationPath) {
     const artifactsDir = resolve(lab.paths.artifactsDir);
@@ -1349,28 +870,7 @@ function requireRunningLab(lab){
 }
 
 export function exportArtifacts(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const source = resolveArtifactSource(loaded.lab, args.sourcePath);
-    if (!source.ok) return source;
-    const destination = resolveExportDestination(ctx, loaded.lab, args.destinationPath);
-    if (!destination.ok) return destination;
-    const policy = normalizePolicy(args);
-    const plan = collectCopyPlan(source.sourcePath, policy);
-    if (!plan.ok) return plan;
-    const copied = copyPlanTo(plan, destination.destinationPath, args.replace !== false);
-    if (!copied.ok) return copied;
-    const completedAt = nowIso(options);
-    const lab = recordFileOperation(ctx, loaded.lab, {
-        type: "export_artifacts",
-        sourcePath: source.sourcePath,
-        destinationPath: copied.destinationPath,
-        files: copied.files,
-        bytes: copied.bytes,
-        completedAt,
-    });
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), result: copied, policy };
+    return qemuOwnedDataApplication(options).exportArtifacts(args);
 }
 
 export function guestPush(args = {}, options = {}) {
@@ -1409,43 +909,7 @@ export function guestExec(args = {}, options = {}) {
 }
 
 export function guestAgentStatus(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const running = requireRunningLab(loaded.lab);
-    if (!running.ok) return running;
-    const agent = loaded.lab.guest?.agent;
-    if (!agent) return { ok: false, error: "guest-agent-not-configured", ownerId: ctx.owner, labId: loaded.lab.id };
-    const timeoutMs = boundedTimeout(args.timeoutMs, 10000);
-    const probe = runSshGuestAgentProbe(loaded.lab, { ...options, env: ctx.env, guestAgentTimeoutMs: timeoutMs });
-    const checkedAt = nowIso(options);
-    const status = publicReadinessProbeResult({
-        id: `guest-agent-status-${checkedAt.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`,
-        labId: loaded.lab.id,
-        provider: loaded.lab.provider || PROVIDER_NAME,
-        checkedAt,
-        timeoutMs,
-        state: readinessStateFromProbe(probe),
-        ok: probe?.ok === true,
-        ready: probe?.ready === true,
-        checks: Array.isArray(probe?.checks) ? probe.checks : [],
-        diagnostics: probe?.diagnostics || { kind: "guest-agent-readiness", available: false },
-    });
-    const history = Array.isArray(agent.statusHistory) ? agent.statusHistory : [];
-    const next = {
-        ...loaded.lab,
-        updatedAt: checkedAt,
-        guest: {
-            ...(loaded.lab.guest || {}),
-            agent: {
-                ...agent,
-                lastStatus: status,
-                statusHistory: [...history.filter((entry) => entry.id !== status.id), status].slice(-50),
-            },
-        },
-    };
-    writeLab(ctx, next);
-    return { ok: status.state !== "failed", ownerId: ctx.owner, lab: publicLab(next), status };
+    return qemuGuestAccessApplication(options).guestAgentStatus(args);
 }
 
 export function guestAgentProvision(args = {}, options = {}) {
@@ -1671,5 +1135,97 @@ function qemuGuestTransferApplication(options = {}) {
         ensureDirectory: path => { mkdirSync(path, { recursive: true }); },
         writeLab: lab => { writeLab(ctx, lab); },
         clock: () => nowIso(options),
+    });
+}
+
+/** Bind native owner state, current process identity and bounded SSH effects. */
+function qemuGuestAccessApplication(options = {}) {
+    const ctx = context(options);
+    return createQemuGuestAccessApplication({
+        ownerId: () => ctx.owner,
+        readLab: labId => {
+            const loaded = readLab(ctx, labId);
+            if (typeof loaded.error === "string") return { ...loaded, ok: false, error: loaded.error };
+            return { ok: true, lab: loaded.lab };
+        },
+        writeLab: lab => { writeLab(ctx, lab); },
+        clock: () => nowIso(options),
+        processExists: (pid, lab) => (options.processExists || defaultProcessExists)(pid, lab),
+        sshPath: () => sshCommandPaths(ctx.env, options).ssh,
+        executeSsh: (command, args, lab, timeoutMs) => sshRunner(options)(command, args, {
+            cwd: lab.paths.labDir,
+            env: ctx.env,
+            timeoutMs,
+        }),
+        sshReadinessTimeoutMs: () => options.sshTimeoutMs,
+        guestAgentReadinessTimeoutMs: () => options.guestAgentTimeoutMs,
+        hasReadinessObservation: () => typeof options.readinessProbeRunner === "function",
+        observeReadiness: (lab, facts) => typeof options.readinessProbeRunner === "function"
+            ? options.readinessProbeRunner(lab, facts)
+            : undefined,
+    });
+}
+
+/** Bind canonical file facts and guarded copy, disk and command effects. */
+function qemuOwnedDataApplication(options = {}) {
+    const ctx = context(options);
+    return createQemuOwnedDataApplication({
+        ownerId: () => ctx.owner,
+        readLab: labId => {
+            const loaded = readLab(ctx, labId);
+            if (typeof loaded.error === "string") return { ...loaded, ok: false, error: loaded.error };
+            return { ok: true, lab: loaded.lab };
+        },
+        writeLab: lab => { writeLab(ctx, lab); },
+        clock: () => nowIso(options),
+        workspaceRoot: () => options.workspaceRoot || process.cwd(),
+        sourcePathFacts: path => {
+            const sourcePath = resolve(path);
+            const allowedRoots = (options.allowedWorkspaceRoots || [options.workspaceRoot || process.cwd()]).map(root => resolve(root));
+            return { sourcePath, allowedRoots, withinRoots: pathInsideAny(allowedRoots, sourcePath) };
+        },
+        workspacePathFacts: lab => {
+            const destinationPath = lab.paths?.workspaceDir || join(lab.paths.labDir, "workspace");
+            return { destinationPath, withinLab: inside(lab.paths.labDir, destinationPath) };
+        },
+        artifactRoots: lab => ({
+            artifactsDir: resolve(lab.paths.artifactsDir),
+            workspaceDir: resolve(lab.paths.workspaceDir || join(lab.paths.labDir, "workspace")),
+        }),
+        exportRoot: lab => resolve(lab.paths.exportsDir || join(ctx.ownerRoot, "exports", lab.id)),
+        defaultExportName: () => nowIso().replace(/[^0-9A-Za-z._-]+/g, "-"),
+        resolvePath: (base, path) => resolve(isAbsolute(path) ? path : join(base, path)),
+        pathWithinRoots: (roots, path) => pathInsideAny(roots, path),
+        scanCopySource: (path, policy) => {
+            const result = collectCopyPlan(path, policy);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ...result, ok: true };
+        },
+        copyFiles: (plan, destination, replace) => {
+            const result = copyPlanTo(plan, destination, replace);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ...result, ok: true };
+        },
+        diskPath: lab => {
+            const result = validateLabDiskPath(lab);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ...result, ok: true };
+        },
+        fileExists: path => existsSync(path),
+        qemuImgPath: () => labProviderStatus(options).qemuImg,
+        commandTimeoutMs: () => options.providerCommandTimeoutMs,
+        executeQemuImg: (command, args, lab, timeoutMs) => {
+            const runner = options.commandRunner || ((command, args, runOptions) => {
+                const result = spawnSync(command, args, {
+                    cwd: runOptions.cwd,
+                    env: runOptions.env,
+                    encoding: "utf8",
+                    timeout: runOptions.timeoutMs,
+                    maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
+                });
+                return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args };
+            });
+            return runner(command, args, { cwd: lab.paths.labDir, env: options.env || process.env, timeoutMs });
+        },
     });
 }

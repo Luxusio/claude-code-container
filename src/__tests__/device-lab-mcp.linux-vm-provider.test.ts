@@ -2756,6 +2756,34 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         ]);
     });
 
+    it("keeps snapshot metadata unchanged after a failed native snapshot command", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "snapshot-failure" };
+        const created = createLab({ name: "Snapshot Failure" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        writeFileSync(created.lab.image.diskImage, "disk");
+        const metadata = join(created.lab.paths.labDir, "lab.json");
+        const before = readFileSync(metadata, "utf8");
+        const failed = snapshotLab("create", { labId: created.lab.id, snapshotName: "baseline" }, {
+            env, stateRoot: root, qemuImgPath: "/usr/bin/qemu-img", commandRunner: () => ({ ok: false, status: 7 }),
+        });
+        expect(failed).toMatchObject({ ok: false, error: "qemu-img-snapshot-failed", result: { status: 7 } });
+        expect(readFileSync(metadata, "utf8")).toBe(before);
+    });
+
+    it("lists snapshots while running but refuses mutation and permits stopped metadata-only snapshots", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "snapshot-metadata", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Snapshot Metadata" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const options = { env, stateRoot: root, commandRunner: () => { throw new Error("unexpected disk command"); } };
+        expect(snapshotLab("create", { labId: created.lab.id, snapshotName: "baseline" }, options)).toMatchObject({ ok: true, disk: { diskSnapshot: false } });
+        expect(snapshotLab("create", { labId: created.lab.id, snapshotName: "baseline" }, options)).toMatchObject({ ok: false, error: "snapshot-already-exists" });
+        expect(snapshotLab("restore", { labId: created.lab.id, snapshotName: "missing" }, options)).toMatchObject({ ok: false, error: "snapshot-not-found" });
+        expect(snapshotLab("delete", { labId: created.lab.id, snapshotName: "missing" }, options)).toMatchObject({ ok: false, error: "snapshot-not-found" });
+        expect(startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 5152 }) }).ok).toBe(true);
+        expect(snapshotLab("list", { labId: created.lab.id }, options)).toMatchObject({ ok: true, snapshots: [{ name: "baseline" }], activeSnapshot: null });
+        expect(snapshotLab("delete", { labId: created.lab.id, snapshotName: "baseline" }, options)).toMatchObject({ ok: false, error: "lab-running" });
+    });
+
     it("syncs an allowed workspace tree into owner-scoped lab state and records metadata", () => {
         const root = tempRoot();
         const workspace = mkdtempSync(join(tmpdir(), "ccc-lab-workspace-"));
@@ -2789,6 +2817,26 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 bytes: 23,
             }),
         ]);
+    });
+
+    it("retains copied workspace bytes when native metadata publication throws", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "sync-publication" };
+        const source = join(root, "source"); mkdirSync(source); writeFileSync(join(source, "file.txt"), "copied");
+        const created = createLab({ name: "Sync Publication" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const metadata = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(metadata, "utf8");
+        const rename = nativeFs.renameSync, fault = new Error("native publication failed");
+        const hook = vi.spyOn(nativeFs, "renameSync").mockImplementation((from, to) => {
+            if (String(to) === metadata) throw fault;
+            return rename(from, to);
+        });
+        let observed: unknown;
+        try { syncWorkspace({ labId: created.lab.id, sourcePath: source }, { env, stateRoot: root, allowedWorkspaceRoots: [source] }); }
+        catch (error) { observed = error; }
+        finally { hook.mockRestore(); }
+        expect(observed).toBe(fault);
+        expect(readFileSync(join(created.lab.paths.workspaceDir, "file.txt"), "utf8")).toBe("copied");
+        expect(readFileSync(metadata, "utf8")).toBe(before);
     });
 
     it("exports bounded lab artifacts to an owner-scoped export directory and records metadata", () => {
