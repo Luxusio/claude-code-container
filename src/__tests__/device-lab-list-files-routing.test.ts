@@ -60,7 +60,7 @@ describe("public list_files routing", () => {
         const incarnationId = "b".repeat(32);
         const result = await call({ deviceId: "hv", path: "C:\\work", incarnationId, broker: true, implicitBroker: false });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(JSON.parse(result.content[0].text)).toEqual({ entries: [{ name: "hello.txt", type: "file", size: 5 }] });
+        expect(JSON.parse(result.content[0].text)).toEqual({ entries: [{ name: "hello.txt", type: "file", size: 5 }], incarnationId });
         expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId: "hv", backend: "windows-vm", incarnationId } });
     });
     it("refuses a missing or ambiguous owner target before execution", async () => {
