@@ -158,7 +158,7 @@ export type DesktopDirectResult = {
     remotePath: string;
     bytes: number;
 };
-export interface DesktopExecution {
+export type DesktopExecution = {
     mode?: string;
     provider?: string;
     status?: number | null;
@@ -166,7 +166,7 @@ export interface DesktopExecution {
     stderr?: string;
     error?: string;
     timedOut?: boolean;
-}
+};
 export interface DesktopCommand {
     mode: 'exec';
     provider: string;
