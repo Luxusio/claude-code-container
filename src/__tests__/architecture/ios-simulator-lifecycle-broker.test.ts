@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -184,8 +185,33 @@ const FIXTURE_KERNEL = String.raw`
 })();
 `;
 
+type DenialCategory = "process" | "network" | "fs" | "timer" | "clone";
+type DenialCounts = Record<DenialCategory, number>;
+type NegativeProof = { form: string; counts: DenialCounts; cases: { caseIndex: number; category: DenialCategory; before: DenialCounts; after: DenialCounts; delta: number; caughtDenied: boolean; safeErrorCode: string | null; nativeTrace: { before: number; after: number }; recordsUnchanged: boolean }[] };
+const HISTORICAL_NEGATIVE_TAIL = "   for(const [category,action]of controls){const before=denied[category];let caught=false;try{action();}catch(error){caught=String(error).includes('DENIED');}if(!caught||denied[category]!==before+1)throw Error('negative effect count mismatch '+category);}return {...denied};";
+const CURRENT_NEGATIVE_TAIL = "   const cases=[];\n   for(const [caseIndex,[category,action]]of controls.entries()){\n    const before={...denied},traceBefore=traces.length,recordIdentity=records,recordData=adopt(nativeClone(records));let caughtDenied=false,safeErrorCode=null;\n    try{action();}catch(error){\n     if(error!==null&&typeof error==='object'){const message=Object.getOwnPropertyDescriptor(error,'message'),code=Object.getOwnPropertyDescriptor(error,'code');\n      caughtDenied=Boolean(message&&Object.hasOwn(message,'value')&&message.value==='DENIED '+category);\n      if(code&&Object.hasOwn(code,'value')&&typeof code.value==='string'&&/^[A-Z0-9_]{1,64}$/.test(code.value))safeErrorCode=code.value;\n     }\n    }\n    const after={...denied},delta=after[category]-before[category],nativeTrace={before:traceBefore,after:traces.length},recordsUnchanged=records===recordIdentity&&nativeEqual(records,recordData);\n    const proof={caseIndex,category,before,after,delta,caughtDenied,safeErrorCode,nativeTrace,recordsUnchanged};cases.push(proof);\n    if(!caughtDenied||!Number.isSafeInteger(delta)||delta<=0||Object.keys(before).some(key=>key!==category&&after[key]!==before[key])||nativeTrace.after!==nativeTrace.before||!recordsUnchanged){const failure=Error('negative effect count mismatch '+category);Object.defineProperty(failure,'negativeControl',{value:Object.freeze(proof),enumerable:true});throw failure;}\n   }\n   return {form:'constructor-escape-semantic-delta-v1',counts:{...denied},cases};";
+expect(createHash("sha256").update(FIXTURE_KERNEL).digest("hex")).toBe("f913fa14d6970e920567c6cff5122e35aeb4820ad808e137ce8ab7d6322828ab");
+expect(FIXTURE_KERNEL.split(HISTORICAL_NEGATIVE_TAIL)).toHaveLength(2);
+const CURRENT_FIXTURE_KERNEL = FIXTURE_KERNEL.replace(HISTORICAL_NEGATIVE_TAIL, CURRENT_NEGATIVE_TAIL);
+expect(CURRENT_FIXTURE_KERNEL.replace(CURRENT_NEGATIVE_TAIL, HISTORICAL_NEGATIVE_TAIL)).toBe(FIXTURE_KERNEL);
+ const categories: DenialCategory[]=['process','network','fs','timer','clone'],keys=[...categories].sort(),zeroCounts: DenialCounts={process:0,fs:0,network:0,timer:0,clone:0};
+ const validateNegativeProof=(proof: NegativeProof)=>{
+  assert.equal(proof.form,'constructor-escape-semantic-delta-v1');assert.equal(proof.cases.length,categories.length);assert.deepEqual(Object.keys(proof.counts).sort(),keys);
+  let previous=zeroCounts;
+  for(const [index,row]of proof.cases.entries()){
+   assert.equal(row.caseIndex,index);assert.equal(row.category,categories[index]);assert.equal(row.caughtDenied,true);
+   assert.deepEqual(Object.keys(row.before).sort(),keys);assert.deepEqual(Object.keys(row.after).sort(),keys);assert.deepEqual(row.before,previous);
+   for(const category of categories){assert(Number.isSafeInteger(row.before[category])&&row.before[category]>=0);assert(Number.isSafeInteger(row.after[category])&&row.after[category]>=0);if(category!==row.category)assert.equal(row.after[category],row.before[category]);}
+   assert.equal(row.before[row.category],0);assert.equal(row.delta,row.after[row.category]-row.before[row.category]);assert(Number.isSafeInteger(row.delta)&&row.delta>0);
+   assert(Number.isSafeInteger(row.nativeTrace.before)&&row.nativeTrace.before>=0);assert.equal(row.nativeTrace.after,row.nativeTrace.before);assert.equal(row.recordsUnchanged,true);
+   assert(row.safeErrorCode===null||typeof row.safeErrorCode==='string'&&/^[A-Z0-9_]{1,64}$/.test(row.safeErrorCode));previous=row.after;
+  }
+  assert.deepEqual(proof.counts,previous);return proof;
+ };
+
+
 type Observation = { result?: { status: number; payload: Record<string, unknown> }; error?: unknown; errorIsRaw: boolean; records: unknown[]; traces: unknown[]; denied: Record<string, number>; ports: unknown };
-type Fixture = { initialize(current: boolean): void; run(spec: Record<string, unknown>, current: boolean): Promise<Observation>; negative(ports: unknown): Record<string, number> };
+type Fixture = { initialize(current: boolean): void; run(spec: Record<string, unknown>, current: boolean): Promise<Observation>; negative(ports: unknown): NegativeProof };
 function fixture(current: boolean): Fixture {
     const original = gunzipSync(Buffer.from(ORIGINAL_CALLABLE_GZIP, "base64")).toString("utf8");
     expect(createHash("sha256").update(original).digest("hex")).toBe(ORIGINAL_AUTHORITY.callableSha256);
@@ -196,7 +222,7 @@ function fixture(current: boolean): Fixture {
         modules[key!] = compile(source, file!);
     }
     const context = createContext({ __clone: structuredClone, __equal: isDeepStrictEqual, __isBuffer: Buffer.isBuffer, __moduleText: JSON.stringify(modules) });
-    runInContext(FIXTURE_KERNEL, context, { timeout: 1000 });
+    runInContext(CURRENT_FIXTURE_KERNEL, context, { timeout: 1000 });
     const controller = runInContext("__iosFixture", context, { timeout: 1000 }) as Fixture;
     controller.initialize(current);
     return controller;
@@ -213,7 +239,16 @@ async function compare(spec: Record<string, unknown>): Promise<Observation> {
     for (const row of after.traces) if (Array.isArray(row) && row[0] === "execute") expect(row[3]).toBe(true);
     expect(before.denied).toEqual({ process: 0, fs: 0, network: 0, timer: 0, clone: 0 });
     expect(after.denied).toEqual(before.denied);
-    expect(current.negative(after.ports)).toEqual({ process: 1, fs: 1, network: 1, timer: 1, clone: 1 });
+    const proof = validateNegativeProof(structuredClone(current.negative(after.ports)));
+    for (const mutation of ["zero", "category", "other", "native", "records"] as const) {
+        const bad = structuredClone(proof), first = bad.cases[0]!;
+        if (mutation === "zero") { first.after.process = first.before.process; first.delta = 0; }
+        if (mutation === "category") first.category = "network";
+        if (mutation === "other") first.after.fs++;
+        if (mutation === "native") first.nativeTrace.after++;
+        if (mutation === "records") first.recordsUnchanged = false;
+        assert.throws(() => validateNegativeProof(bad), { code: "ERR_ASSERTION" });
+    }
     return after;
 }
 
@@ -326,7 +361,7 @@ describe("iOS actual emitted authenticated broker/native bindings", () => {
             const dry = await c.invoke({ ...create, dryRun: true }); expect(dry).toMatchObject({ status: 200, payload: { result: { invoked: false, dryRun: true } } });
             expect(c.records()).toEqual([]); expect(c.calls).toEqual([]);
             const created = await c.invoke(create); expect(created).toMatchObject({ status: 200, payload: { result: { device: { id: "ios-broker", udid: "created-udid", authority: "host-broker", status: "stopped" } } } });
-            expect(c.calls[0]).toMatchObject({ command: { provider: "simctl", args: ["simctl", "create", `ccc-${c.ownerId}-broker`, "phone-type", "runtime-id"] }, timeoutMs: 10000, outputLimit: 32768 });
+            expect(c.calls[0]).toMatchObject({ command: { provider: "simctl", args: ["simctl", "create", `ccc-${c.ownerId}-broker`, "phone-type", "runtime-id"] }, timeoutMs: 5000, outputLimit: 32768 });
             expect((await c.invoke(create)).status).toBe(409);
             const start = await c.invoke({ command: "device_start", deviceId: "ios-broker", waitForBoot: true });
             expect(start).toMatchObject({ status: 200, payload: { result: { device: { status: "running" }, invoked: true } } });

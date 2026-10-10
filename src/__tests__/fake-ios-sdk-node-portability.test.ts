@@ -128,8 +128,8 @@ process.stdout.write(JSON.stringify({a,b,missing,observed,real,overflow:errorRec
         const log=readFileSync(c.logPath,"utf8");expect(log).toContain("xcrun simctl create "+name+" device type runtime\n");expect(log).toContain("xcodebuild -version\n");expect(log).toContain('appium-xcuitest-driver a b 한글 "quoted" C:\\fixture\n');
     });
     it.each(["bootstatus","shutdown","delete"])("preserves %s replacement and one-shot failure effect order",{timeout:TIMEOUT},async command=>{
-        const c=await allocate(),target=join(c.homeDir,"allocated state.json"),source=join(c.homeDir,"replacement state.json");
-        writeFileSync(target,"original");writeFileSync(source,"successor");writeFileSync(join(c.homeDir,"fake-ios-replace-state-target"),target);writeFileSync(join(c.homeDir,"fake-ios-replace-state-source"),source);
+        const c=await allocate(),target=join(c.homeDir,"allocated state.json");
+        writeFileSync(target,"original");writeFileSync(join(c.homeDir,"fake-ios-replace-state-target"),target);writeFileSync(join(c.homeDir,"fake-ios-replace-state-source"),"successor");
         if(command!=="bootstatus")writeFileSync(join(c.homeDir,"fake-ios-replace-state-command"),command);
         result(c,"xcrun",["simctl","create","Owned","type","runtime"],{...ok,stdout:"CREATED-IOS-UDID\n"});result(c,"xcrun",["simctl","boot","CREATED-IOS-UDID"],ok);
         if(command!=="bootstatus"){writeFileSync(join(c.homeDir,"fake-ios-"+command+"-fail-once"),"1");result(c,"xcrun",["simctl",command,"CREATED-IOS-UDID"],{status:1,stdout:"",stderr:"simulated "+command+" failure\n"});
