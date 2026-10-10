@@ -158,12 +158,20 @@ describe("actual baseline/candidate Sandbox stop replay", () => {
         });
         expect(hashes[1]).toEqual(hashes[0]); saveCapture("generated-native-assets.json", { baselineCommit, helper, baseline: hashes[0], candidate: hashes[1] });
     });
-    it("retains start/delete and public long lock wrapper text plus native scripts/helpers", () => {
+    it("retains native helpers and the original wrapper plus the approved 2b7045 create guard", () => {
         for (const [name, next] of [["device_start", "device_stop"], ["device_delete", "device_status"]]) {
             const body = (source: string) => source.slice(source.indexOf(`        case "${name}": {`), source.indexOf(`        case "${next}": {`)); expect(body(candidate)).toBe(body(baseline));
         }
-        const retained = ["handleWindowsTool", "claimWindowsSingleton", "releaseWindowsSingleton", "updateWindowsSingletonRuntimeId", "windowsSingletonGenerationMatches", "windowsHelperMutexScriptLines", "windowsHelperScript", "windowsHelperBootstrapScript", "windowsHelperBootstrapLauncherScript", "cancelWindowsMinimizeWatchdog", "runWindowsSandboxCommand", "startWindowsSandboxDeviceRuntime", "launchWindowsSandboxSession", "windowsMinimizedStartProcessArgs", "windowsReadyMinimizeWatchdogArgs", "windowsWsbConfigLaunchArgs", "windowsSandboxMinimizeWatchdogArgs", "windowsSandboxWindowMinimizeScriptLines"];
+        const retained = ["claimWindowsSingleton", "releaseWindowsSingleton", "updateWindowsSingletonRuntimeId", "windowsSingletonGenerationMatches", "windowsHelperMutexScriptLines", "windowsHelperScript", "windowsHelperBootstrapScript", "windowsHelperBootstrapLauncherScript", "cancelWindowsMinimizeWatchdog", "runWindowsSandboxCommand", "startWindowsSandboxDeviceRuntime", "launchWindowsSandboxSession", "windowsMinimizedStartProcessArgs", "windowsReadyMinimizeWatchdogArgs", "windowsWsbConfigLaunchArgs", "windowsSandboxMinimizeWatchdogArgs", "windowsSandboxWindowMinimizeScriptLines"];
         for (const name of retained) expect(sourceFunction(candidate, name), name).toBe(sourceFunction(baseline, name));
+        // Independently reviewed 2b7045 adds only this first statement to the c284 wrapper.
+        const originalWrapper = sourceFunction(baseline, "handleWindowsTool");
+        const wrapperHeader = "async function handleWindowsTool(name, args) {\n";
+        expect(originalWrapper.startsWith(wrapperHeader)).toBe(true);
+        const expectedWrapper = wrapperHeader
+            + '    if (name === "device_create" && args?.backend && args.backend !== "windows-sandbox") return undefined;\n'
+            + originalWrapper.slice(wrapperHeader.length);
+        expect(sourceFunction(candidate, "handleWindowsTool")).toBe(expectedWrapper);
         const nativePath = "packages/device-lab/providers/backends/windows-helper.ps1";
         const native = spawnSync("git", ["show", `${baselineCommit}:${nativePath}`], { cwd: root, encoding: "buffer", timeout: 10000 }); expect(native.status).toBe(0);
         expect(createHash("sha256").update(readFileSync(resolve(root, nativePath))).digest("hex")).toBe(createHash("sha256").update(native.stdout).digest("hex"));
