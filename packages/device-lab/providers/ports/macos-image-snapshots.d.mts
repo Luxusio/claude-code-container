@@ -15,7 +15,7 @@ export interface MacosImageSnapshotsPorts<Result extends MacosImageResult> {
     validateSshKey(path: string | null | undefined): { ok: true; path: string | null } | { ok: false; message: string };
     helperMetadata(device: Partial<MacosVmDevice>): MacosVmDevice["helper"];
     providerPlan(device: MacosVmDevice): MacosVmProviderPlan;
-    providerCommand(command: string | null, args: (string | undefined)[], kind: string): MacosVmCommandResult;
+    providerCommand(command: string | null, args: (string | null | undefined)[], kind: string): MacosVmCommandResult;
     publicDevice(device: MacosVmDevice | null | undefined): unknown;
     signalRecording(recording: MacosVmRuntime | null | undefined, signal: string): MacosVmSignal;
     waitRecordingExit(recording: MacosVmRuntime | null | undefined, timeoutMs: number): Promise<boolean>;

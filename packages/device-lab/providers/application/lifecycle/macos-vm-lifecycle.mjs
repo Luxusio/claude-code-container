@@ -195,7 +195,7 @@ export function createMacosVmLifecycleApplication(ports) {
     }
 
     /** @param {MacosVmProviderPlan} plan
-     * @param {string | undefined} source
+     * @param {string | null | undefined} source
      * @param {string} target */
     function runTartClone(plan, source, target) {
         const result = (0, ports.providerCommand)(plan.providerCommand, ["clone", source, target], "clone");
