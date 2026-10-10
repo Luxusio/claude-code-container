@@ -34,7 +34,7 @@ function fixture(original:boolean,scenario:Scenario){
         const cache=intoRealm?incoming:outgoing;if(cache.has(value))return cache.get(value);
         const convert=(item:any)=>translate(item,intoRealm),opposite=(item:any)=>translate(item,!intoRealm);
         const protectedName=(name:PropertyKey)=>["constructor","prototype","__proto__","caller","callee","arguments"].includes(String(name));
-        const confinedReject=(site:string):never=>{try{deny(site);}catch(error){throw convert(error);}};
+        const confinedReject=(site:string):never=>{try{return deny(site);}catch(error){throw convert(error);}};
         const check=(name:PropertyKey)=>{if(intoRealm&&protectedName(name))return confinedReject("host constructor/callee "+String(name));};
         const target:any=typeof value==="function"?(function(){}).bind(null):Array.isArray(value)?[]:Object.create(null);
         const perform=(operation:()=>any)=>{try{return convert(operation());}catch(error){throw convert(error);}};

@@ -1,7 +1,7 @@
 /** Legacy records are mutable; raw native fields cross without serialization. */
 export interface MacosVmLifecycleInput {
     backend?: string; name?: string; deviceId?: string; sourceDeviceId?: string;
-    sourceImage?: string; image?: string | null; provider?: string;
+    sourceImage?: string | null; image?: string | null; provider?: string;
     memoryMb?: number; cpus?: number; headless?: boolean; force?: boolean;
     sshHost?: string; sshPort?: number; sshUser?: string; sshKeyPath?: string; sshPassword?: string;
     waitForBoot?: boolean; bootTimeoutMs?: number;
