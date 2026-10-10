@@ -30,7 +30,7 @@ async function port(): Promise<number> {
 async function appium(value: FakeIosMcpContext, selectedPort?: number) {
     return observeFakeIosFixtureAllocation(value, async () => {
     const requested = selectedPort ?? await port();
-    const child = spawn(join(value.binDir, "appium"), ["server", "--port", String(requested)], {
+    const child = spawn(process.execPath, [join(value.binDir, "appium"), "server", "--port", String(requested)], {
         env: { ...process.env, HOME: value.homeDir, FAKE_IOS_LOG: value.logPath }, stdio: "ignore",
     });
     children.push(child);
@@ -80,7 +80,7 @@ afterEach(async () => {
     vi.restoreAllMocks();
 });
 
-describe.skipIf(process.platform === "win32")("fake iOS fixture owned lifetime (POSIX generated shell)", () => {
+describe("fake iOS fixture owned lifetime (actual portable Node service)", () => {
     it("records listening and joins its actual owned Appium before removal", { timeout: TIMEOUT }, async () => {
         const value = await context(); const running = await appium(value);
         await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"listening"'));
@@ -100,13 +100,14 @@ describe.skipIf(process.platform === "win32")("fake iOS fixture owned lifetime (
             expect(fakeIosFixtureDiagnostics(value)).not.toContain("appium-session-body");
         } finally { await new Promise<void>(resolve => listener.close(() => resolve())); }
     });
-    it.each(["malformed", "symlink", "foreign", "wrong-pid", "stale"])("refuses %s marker without any signal/removal", { timeout: TIMEOUT }, async kind => {
+    it.each(["malformed", "symlink", "foreign", "wrong-pid", "stale", "forged-command-hash"])("refuses %s marker without any signal/removal", { timeout: TIMEOUT }, async kind => {
         const value = await context(), running = await appium(value);
         const original = readFileSync(running.marker, "utf8"); const marker = JSON.parse(original);
         if (kind === "malformed") writeFileSync(running.marker, "not-json");
         else if (kind === "symlink") { unlinkSync(running.marker); symlinkSync(value.logPath, running.marker); }
         else writeFileSync(running.marker, JSON.stringify(kind === "foreign" ? { ...marker, token: "foreign" }
-            : kind === "wrong-pid" ? { ...marker, pid: process.pid } : { ...marker, identity: { ...marker.identity, startToken: marker.identity.startToken + "-stale" } }));
+            : kind === "wrong-pid" ? { ...marker, pid: process.pid } : kind === "forged-command-hash" ? { ...marker, identity: { ...marker.identity, commandHash: "0".repeat(64) } }
+                : { ...marker, identity: { ...marker.identity, startToken: marker.identity.startToken + "-stale" } }));
         const fenced = controls();
         await expect(cleanupFakeIosMcpContext(value, { effects: fenced.effects })).rejects.toThrow();
         expect(fenced.attempts).toEqual({ signal: 0, remove: 0 }); expect(existsSync(value.homeDir)).toBe(true);

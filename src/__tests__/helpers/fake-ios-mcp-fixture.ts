@@ -1,3 +1,4 @@
+import { nodeProviderFixturePreloadSource } from "./node-provider-fixture.js";
 import { deviceLabTestHomeEnvironment } from "./device-lab-test-environment.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -57,6 +58,28 @@ type Owner = {
 const owners = new WeakMap<FakeIosMcpContext, Owner>();
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+// Native Windows identity hashes the unmodified command line produced by libuv.
+// Model only Node's fixed non-verbatim argv; never derive authority from a marker.
+function nodeInvocationHash(args: readonly string[]): string {
+    const quote = (argument: string): string => {
+        if (argument !== "" && !/[ \t"]/.test(argument)) return argument;
+        let quoted = '"', backslashes = 0;
+        for (const character of argument) {
+            if (character === "\\") { backslashes++; continue; }
+            quoted += "\\".repeat(character === '"' ? backslashes * 2 + 1 : backslashes) + character;
+            backslashes = 0;
+        }
+        return quoted + "\\".repeat(backslashes * 2) + '"';
+    };
+    return hash((process.platform === "win32" ? args.map(quote) : args).join(" "));
+}
+function appiumInvocationHashes(owner: Pick<Owner, "binDir">, port: number): readonly string[] {
+    const args = [process.execPath, join(owner.binDir, "appium"), "server", "--port", String(port)];
+    // Existing direct lifetime controls use the first vector; the public provider
+    // adds its fixed base-path flag. Neither admits arbitrary extra arguments.
+    return [nodeInvocationHash(args), nodeInvocationHash([...args, "--base-path", "/"])];
+}
+
 function plainFile(path: string): boolean {
     const stat = lstatSync(path);
     return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1;
@@ -110,7 +133,7 @@ function readAllocationJournal(owner: Owner): { allocations: Allocation[]; pendi
             if (keys !== "allocationId,identity,kind,pid,port,schema,token" || !start || start.pid !== record.pid || start.port !== record.port
                 || !record.identity || Object.keys(record.identity).sort().join(",") !== "commandHash,pid,startToken"
                 || record.identity.pid !== record.pid || typeof record.identity.startToken !== "string" || !record.identity.startToken || record.identity.startToken.length > 512
-                || record.identity.commandHash !== hash([process.execPath, "-", String(record.port), owner.logPath, join(owner.homeDir, "stale-ios-session"), owner.token].join(" "))) throw new Error("allocation journal generation unavailable");
+                || !appiumInvocationHashes(owner, record.port).includes(record.identity.commandHash)) throw new Error("allocation journal generation unavailable");
             const key = `${record.pid}:${record.identity.startToken}`;
             if (generations.has(key)) throw new Error("duplicate allocation generation");
             generations.add(key); pending.delete(record.allocationId); allocations.push(record);
@@ -195,7 +218,7 @@ function captureMcp(owner: Owner): void {
     const pid = owner.transport?.pid;
     if (!pid) return;
     const identity = readProcessIdentity(pid) as Identity | null;
-    const commandHash = hash([process.execPath, join(repoRoot, "device-lab-mcp/server.mjs")].join(" "));
+    const commandHash = nodeInvocationHash([process.execPath, join(repoRoot, "device-lab-mcp/server.mjs")]);
     if (identity?.commandHash === commandHash) owner.mcp = { pid, identity, commandHash };
 }
 async function bounded<T>(promise: Promise<T>, deadline: number): Promise<T> {
@@ -233,139 +256,79 @@ export async function createFakeIosMcpContext(options: {
         const containerRoot = join(homeDir, "ios-app-container");
 
         const xcrunPath = join(binDir, "xcrun");
-        writeFileSync(xcrunPath, `#!/bin/sh
-echo "xcrun $*" >> "$FAKE_IOS_LOG"
-replace_state_if_requested() {
-  REQUESTED_COMMAND=bootstatus
-  if [ -f "$HOME/fake-ios-replace-state-command" ]; then REQUESTED_COMMAND=$(/bin/cat "$HOME/fake-ios-replace-state-command"); fi
-  if [ "$REQUESTED_COMMAND" = "$1" ] && [ -f "$HOME/fake-ios-replace-state-target" ] && [ -f "$HOME/fake-ios-replace-state-source" ]; then
-    TARGET=$(/bin/cat "$HOME/fake-ios-replace-state-target")
-    /bin/cp "$HOME/fake-ios-replace-state-source" "$TARGET"
-    : > "$HOME/fake-ios-replace-state-done"
-  fi
+        writeFileSync(xcrunPath, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path');
+const args = process.argv.slice(2), home = process.env.HOME;
+fs.appendFileSync(process.env.FAKE_IOS_LOG, 'xcrun ' + args.join(' ') + '\\n');
+const file = name => path.join(home, name);
+const present = name => { try { return fs.statSync(file(name)).isFile(); } catch { return false; } };
+// Shell command substitution removes trailing newlines but does not trim spaces.
+const read = name => fs.readFileSync(file(name), 'utf8').replace(/\\n+$/, '');
+const remove = name => { try { fs.unlinkSync(file(name)); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
+function replaceState(command) {
+  const requested = present('fake-ios-replace-state-command') ? read('fake-ios-replace-state-command') : 'bootstatus';
+  if (requested === command && present('fake-ios-replace-state-target') && present('fake-ios-replace-state-source')) {
+    fs.copyFileSync(file('fake-ios-replace-state-source'), read('fake-ios-replace-state-target'));
+    fs.writeFileSync(file('fake-ios-replace-state-done'), '');
+  }
 }
-if [ "$1" = "simctl" ] && [ "$2" = "list" ]; then
-  if [ -f "$HOME/fake-ios-created-name" ]; then
-    CREATED_NAME=$(/bin/cat "$HOME/fake-ios-created-name")
-    CREATED_STATE=Shutdown
-    if [ -f "$HOME/fake-ios-created-booted" ]; then CREATED_STATE=Booted; fi
-    printf '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[{"name":"host iPhone","udid":"HOST-UDID","state":"Shutdown"},{"name":"%s","udid":"CREATED-IOS-UDID","state":"%s"}]},"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-0","name":"iOS 17.0","isAvailable":true}],"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-15","name":"iPhone 15"}]}\\n' "$CREATED_NAME" "$CREATED_STATE"
-  else
-    printf '%s\\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[{"name":"host iPhone","udid":"HOST-UDID","state":"Shutdown"}]},"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-0","name":"iOS 17.0","isAvailable":true}],"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-15","name":"iPhone 15"}]}'
-  fi
-  exit 0
-fi
-if [ "$1" = "xctrace" ] && [ "$2" = "list" ] && [ "$3" = "devices" ]; then
-  echo "Devices:"
-  echo "Build Mac (15.0) (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE)"
-  echo "Real iPhone (17.5) (00008110-001C195E0E91801E)"
-  echo "Network Named USB iPhone (17.5) (00008111-001C195E0E91801F)"
-  echo "Network iPhone (17.5) (00008120-00AA00BB00CC00DD) (Network)"
-  echo "Other iPhone (16.7) (00008101-00DEADBEEFCAFE00)"
-  echo "Simulators:"
-  echo "iPhone 15 Simulator (17.0) (SIM-UDID)"
-  exit 0
-fi
-if [ "$1" = "devicectl" ] && [ "$2" = "device" ] && [ "$3" = "install" ] && [ "$4" = "app" ]; then
-  exit 0
-fi
-if [ "$1" = "devicectl" ] && [ "$2" = "device" ] && [ "$3" = "process" ] && [ "$4" = "launch" ]; then
-  echo "launched $8"
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "create" ]; then
-  printf '%s' "$3" > "$HOME/fake-ios-created-name"
-  echo "CREATED-IOS-UDID"
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "boot" ]; then
-  if [ "$3" = "CREATED-IOS-UDID" ]; then : > "$HOME/fake-ios-created-booted"; fi
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "bootstatus" ]; then
-  replace_state_if_requested bootstatus
-  echo "Booted"
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "shutdown" ]; then
-  if [ -f "$HOME/fake-ios-shutdown-fail-once" ]; then
-    /bin/rm -f "$HOME/fake-ios-shutdown-fail-once"
-    echo "simulated shutdown failure" >&2
-    exit 1
-  fi
-  replace_state_if_requested shutdown
-  if [ "$3" = "CREATED-IOS-UDID" ]; then /bin/rm -f "$HOME/fake-ios-created-booted"; fi
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "delete" ]; then
-  if [ -f "$HOME/fake-ios-delete-fail-once" ]; then
-    /bin/rm -f "$HOME/fake-ios-delete-fail-once"
-    echo "simulated delete failure" >&2
-    exit 1
-  fi
-  replace_state_if_requested delete
-  if [ "$3" = "CREATED-IOS-UDID" ]; then /bin/rm -f "$HOME/fake-ios-created-name" "$HOME/fake-ios-created-booted"; fi
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "erase" ]; then
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "get_app_container" ]; then
-  mkdir -p "$FAKE_IOS_CONTAINER_ROOT"
-  echo "$FAKE_IOS_CONTAINER_ROOT"
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "spawn" ]; then
-  echo "ok"
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "io" ] && [ "$4" = "screenshot" ]; then
-  printf 'fakepng' > "$5"
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "io" ] && [ "$4" = "recordVideo" ]; then
-  if [ -f "$HOME/fake-ios-record-fail-once" ]; then
-    /bin/rm -f "$HOME/fake-ios-record-fail-once"
-    exit 9
-  fi
-  printf 'fakevideo' > "$5"
-  if [ -f "$HOME/fake-ios-record-natural-exit-once" ]; then
-    /bin/rm -f "$HOME/fake-ios-record-natural-exit-once"
-    exec /bin/sleep 0.8
-  fi
-  exec /bin/sleep 20
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "openurl" ]; then
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "install" ]; then
-  exit 0
-fi
-if [ "$1" = "simctl" ] && [ "$2" = "launch" ]; then
-  echo "$4: 123"
-  exit 0
-fi
-exit 0
+const prefix = (...parts) => parts.every((part, index) => args[index] === part);
+const output = text => process.stdout.write(text + '\\n');
+if (prefix('simctl', 'list')) {
+  const created = present('fake-ios-created-name') ? ',{"name":"' + read('fake-ios-created-name') + '","udid":"CREATED-IOS-UDID","state":"' + (present('fake-ios-created-booted') ? 'Booted' : 'Shutdown') + '"}' : '';
+  output('{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[{"name":"host iPhone","udid":"HOST-UDID","state":"Shutdown"}' + created + ']},"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-0","name":"iOS 17.0","isAvailable":true}],"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-15","name":"iPhone 15"}]}');
+} else if (prefix('xctrace', 'list', 'devices')) {
+  output('Devices:\\nBuild Mac (15.0) (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE)\\nReal iPhone (17.5) (00008110-001C195E0E91801E)\\nNetwork Named USB iPhone (17.5) (00008111-001C195E0E91801F)\\nNetwork iPhone (17.5) (00008120-00AA00BB00CC00DD) (Network)\\nOther iPhone (16.7) (00008101-00DEADBEEFCAFE00)\\nSimulators:\\niPhone 15 Simulator (17.0) (SIM-UDID)');
+} else if (prefix('devicectl', 'device', 'install', 'app')) {
+  // Effective original success has no stdout.
+} else if (prefix('devicectl', 'device', 'process', 'launch')) {
+  output('launched ' + (args[7] || ''));
+} else if (prefix('simctl', 'create')) {
+  fs.writeFileSync(file('fake-ios-created-name'), args[2] || ''); output('CREATED-IOS-UDID');
+} else if (prefix('simctl', 'boot')) {
+  if (args[2] === 'CREATED-IOS-UDID') fs.writeFileSync(file('fake-ios-created-booted'), '');
+} else if (prefix('simctl', 'bootstatus')) {
+  replaceState('bootstatus'); output('Booted');
+} else if (prefix('simctl', 'shutdown') || prefix('simctl', 'delete')) {
+  const command = args[1], once = 'fake-ios-' + command + '-fail-once';
+  if (present(once)) { remove(once); process.stderr.write('simulated ' + command + ' failure\\n'); process.exit(1); }
+  replaceState(command);
+  if (args[2] === 'CREATED-IOS-UDID') {
+    if (command === 'delete') remove('fake-ios-created-name');
+    remove('fake-ios-created-booted');
+  }
+} else if (prefix('simctl', 'get_app_container')) {
+  fs.mkdirSync(process.env.FAKE_IOS_CONTAINER_ROOT, {recursive: true}); output(process.env.FAKE_IOS_CONTAINER_ROOT);
+} else if (prefix('simctl', 'spawn')) {
+  output('ok');
+} else if (prefix('simctl', 'io') && args[3] === 'screenshot') {
+  fs.writeFileSync(args[4], 'fakepng');
+} else if (prefix('simctl', 'io') && args[3] === 'recordVideo') {
+  if (present('fake-ios-record-fail-once')) { remove('fake-ios-record-fail-once'); process.exit(9); }
+  fs.writeFileSync(args[4], 'fakevideo');
+  const natural = present('fake-ios-record-natural-exit-once');
+  if (natural) remove('fake-ios-record-natural-exit-once');
+  // The returned Node process owns both the file and the exact original delay.
+  setTimeout(() => {}, natural ? 800 : 20000);
+} else if (prefix('simctl', 'launch')) {
+  output((args[3] || '') + ': 123');
+}
+// erase/openurl/install and all unrecognized original commands succeed silently.
 `);
         chmodSync(xcrunPath, 0o755);
         const appiumPath = join(binDir, "appium");
-        writeFileSync(appiumPath, `#!/bin/sh
-echo "appium $*" >> "$FAKE_IOS_LOG"
-PORT=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--port" ]; then
-    shift
-    PORT="$1"
-  fi
-  shift
-done
-exec "${process.execPath}" - "$PORT" "$FAKE_IOS_LOG" "${join(homeDir, "stale-ios-session")}" "${token}" <<'NODE'
+        writeFileSync(appiumPath, `#!${process.execPath}
+require('node:fs').appendFileSync(process.env.FAKE_IOS_LOG, 'appium ' + process.argv.slice(2).join(' ') + '\\n');
 const http = require('http');
 const fs = require('fs');
-const port = Number(process.argv[2]);
-const log = process.argv[3];
-const stalePath = process.argv[4];
-const token = process.argv[5];
+let requestedPort = '';
+for (let index = 2; index < process.argv.length; index++) {
+  if (process.argv[index] === '--port') requestedPort = process.argv[++index] || '';
+}
+const port = Number(requestedPort);
+const log = ${JSON.stringify(logPath)};
+const stalePath = ${JSON.stringify(join(homeDir, "stale-ios-session"))};
+const token = ${JSON.stringify(token)};
 const events = process.env.HOME + '/fake-ios-lifetime.jsonl';
 let eventCount = 0, eventBytes = 0;
 function diagnostic(phase, code) {
@@ -475,29 +438,19 @@ server.on('error', error => { diagnostic('error', error.code); process.exit(1); 
 diagnostic('bind');
 server.listen(port, '127.0.0.1', () => diagnostic('listening'));
 })().catch(error => { diagnostic('error', error.code || error.name); process.exit(1); });
-NODE
 `);
         chmodSync(appiumPath, 0o755);
 
-        const xcodebuildPath = join(binDir, "xcodebuild");
-        writeFileSync(xcodebuildPath, `#!/bin/sh
-echo "xcodebuild $*" >> "$FAKE_IOS_LOG"
-if [ "$1" = "-version" ]; then
-  echo "Xcode 15.0"
-  exit 0
-fi
-exit 0
-`);
-        chmodSync(xcodebuildPath, 0o755);
-
+        // The original final loop overwrote xcodebuild's version branch.
         for (const name of ["appium-xcuitest-driver", "xcodebuild"]) {
             const toolPath = join(binDir, name);
-            writeFileSync(toolPath, `#!/bin/sh
-echo "${name} $*" >> "$FAKE_IOS_LOG"
-exit 0
+            writeFileSync(toolPath, `#!${process.execPath}
+require('node:fs').appendFileSync(process.env.FAKE_IOS_LOG, ${JSON.stringify(name)} + ' ' + process.argv.slice(2).join(' ') + '\\n');
 `);
             chmodSync(toolPath, 0o755);
         }
+        const preload = join(homeDir, "node-provider-routing.cjs");
+        writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
 
         const transport = new StdioClientTransport({
             command: process.execPath,
@@ -506,6 +459,7 @@ exit 0
                 ...deviceLabTestHomeEnvironment(homeDir),
                 PATH: binDir,
                 NODE_ENV: "test",
+                NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
                 CCC_PROFILE: `test-${homeDir.split(/[\\/]/).pop()}`,
                 FAKE_IOS_LOG: logPath,
                 FAKE_IOS_CONTAINER_ROOT: containerRoot,
@@ -606,14 +560,15 @@ export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | unde
             if (!entry.isFile() || !plainFile(file) || lstatSync(file).size > 8192) throw new Error("marker not ordinary bounded file");
             const bytes = readFileSync(file, "utf8");
             const marker = JSON.parse(bytes);
-            const expected = hash([process.execPath, "-", String(marker.port), owner.logPath, join(owner.homeDir, "stale-ios-session"), owner.token].join(" "));
+            const expected = appiumInvocationHashes(owner, marker.port);
+            const commandHash = expected.find(candidate => candidate === marker.identity?.commandHash);
             if (marker.token !== owner.token || marker.home !== owner.homeDir || marker.log !== owner.logPath
                 || marker.stalePath !== join(owner.homeDir, "stale-ios-session") || !Number.isInteger(marker.port) || marker.port < 1 || marker.port > 65535
                 || !Number.isInteger(marker.pid) || marker.pid <= 0 || marker.pid === process.pid
                 || entry.name !== `fake-ios-appium-${marker.pid}.pid` || marker.identity?.pid !== marker.pid
-                || typeof marker.identity.startToken !== "string" || marker.identity.commandHash !== expected) throw new Error("marker authority mismatch");
+                || typeof marker.identity.startToken !== "string" || !commandHash) throw new Error("marker authority mismatch");
             markerBytes.set(file, bytes);
-            runtimes.push({ pid: marker.pid, identity: marker.identity, commandHash: expected });
+            runtimes.push({ pid: marker.pid, identity: marker.identity, commandHash });
         } catch (error) { verified = false; failures.push("marker: " + String(error).slice(0, 512)); }
     }
     if (!contextMatches(context, owner)) throw new Error("fixture context replaced; retained private fixture: " + owner.homeDir + " " + owner.binDir);
