@@ -5,7 +5,12 @@ import { physicalStopReplacement } from "../../../packages/device-lab/src/device
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
 import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
 
-export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string>, cleanup: BrokerOwnerCleanupPorts<string>) {
+export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string>, cleanup: BrokerOwnerCleanupPorts<string>): {
+    devices: ReturnType<typeof createBrokerPhysicalDevicesApplication<string>>;
+    owner: ReturnType<typeof createBrokerOwnerCleanupApplication<string>>;
+    releaseLease: BrokerPhysicalDevicesPorts<string>["releaseLease"];
+    publish: BrokerOwnerCleanupPorts<string>["publish"];
+} {
     const devices = createBrokerPhysicalDevicesApplication(physical), owner = createBrokerOwnerCleanupApplication(cleanup);
     const { releaseLease, ...missingRelease } = physical;
     // @ts-expect-error exact lease release is a required physical capability
