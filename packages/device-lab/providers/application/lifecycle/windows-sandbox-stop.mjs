@@ -296,7 +296,8 @@ export function createWindowsSandboxLifecycle(ports) {
         const previous = new Set(options.previousIds.map(id => String(id).toLowerCase()));
         const deadline = ports.now() + Math.max(0,timeoutMs);
         /** @type {NativeResult|null} */ let lastResult=null;
-        /** @type {string[]} */ let lastIds=[],lastNewIds=[];
+        /** @type {string[]} */ let lastIds=[];
+        /** @type {string[]} */ let lastNewIds=[];
         while (ports.now() <= deadline) {
             lastResult = ports.listRuntime(binding,Math.min(10000,Math.max(1000,deadline - ports.now())));
             if (lastResult.status === 0) {
@@ -318,7 +319,7 @@ export function createWindowsSandboxLifecycle(ports) {
 
     /** @param {Binding} binding @param {string} id @param {string} configPath @param {string} config @param {boolean} minimized
      * @param {import('../../ports/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxHelperMetadata} helper
-     * @returns {NativeResult & {launchMode:string,minimizeWatchdogLaunch?:{ok?:boolean,pid?:number,skipped?:boolean,error?:string,timeoutMs?:number}}} */
+     * @returns {NativeResult & {launchMode:string,minimizeWatchdogLaunch?:{ok?:boolean,pid?:number|null,skipped?:boolean,error?:string,timeoutMs?:number}}} */
     function launchRuntime(binding,id,configPath,config,minimized,helper) {
         if (ports.platform === "win32") {
             const startedAfter=ports.timestampBefore(2000);
@@ -406,9 +407,10 @@ export function createWindowsSandboxLifecycle(ports) {
                 if (cleanup.ok) {
                     releaseLockAfterFailure = true;
                 } else if (!cleanup.refused) {
-                    cleanupVerify = listRuntimeIds(discovery.binding);
-                    releaseLockAfterFailure = cleanupVerify.ok
-                        && cleanupIds.every((id) => !cleanupVerify.ids.includes(String(id).toLowerCase()));
+                    const verification = listRuntimeIds(discovery.binding);
+                    cleanupVerify = verification;
+                    releaseLockAfterFailure = verification.ok
+                        && cleanupIds.every((id) => !verification.ids.includes(String(id).toLowerCase()));
                 }
             }
             const runtimeGone = releaseLockAfterFailure;
