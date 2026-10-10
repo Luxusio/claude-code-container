@@ -29,10 +29,10 @@ export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
     ownershipNotes(ownerId: string, deviceId: string, incarnationId: string): string;
     createConsole(executable: string): Console;
     withConsoleLock<T>(ownerId: string, backend: string, deviceId: string, operation: () => Promise<T>): Promise<T>;
-    capture(console: Console, identity: DesktopIdentity): Promise<DesktopCapture>;
-    cursor(console: Console, identity: DesktopIdentity): Promise<DesktopCursor>;
-    vms(console: Console, id: string): Promise<readonly DesktopVm[]>;
-    input(console: Console, input: DesktopInput): Promise<void>;
+    capture(client: Console, identity: DesktopIdentity): Promise<DesktopCapture>;
+    cursor(client: Console, identity: DesktopIdentity): Promise<DesktopCursor>;
+    vms(client: Console, id: string): Promise<readonly DesktopVm[]>;
+    input(client: Console, input: DesktopInput): Promise<void>;
     frame(ownerId: string, backend: string, deviceId: string, incarnationId: string): DesktopFrame | null;
     rememberFrame(ownerId: string, backend: string, deviceId: string, frame: DesktopFrame): undefined;
     timestamp(): string;
