@@ -55,7 +55,7 @@ import {
     resolveHyperVImageForCreate as resolveHyperVImageForCreateFromStore,
     type HyperVImageProfile,
 } from "./device-lab/broker/hyper-v/image-store.js";
-import { hyperVLinuxImageBlockers } from "./device-lab/hyper-v-linux-image-readiness.js";
+import { createHostBackendDiscovery } from "./device-lab/application/broker-observation-discovery.js";
 import {
     cachedHyperVOwnerDevicesReader,
     ensureHyperVHostNetworkFabric as ensureHyperVHostNetworkFabricWithRuntime,
@@ -278,7 +278,8 @@ const DEVICE_BROKER_ANDROID_PORT_LOCK_WAIT_MS = 30000;
 const DEVICE_BROKER_ANDROID_PORT_LOCK_STALE_MS = 15 * 60 * 1000;
 const DEVICE_BROKER_BACKEND_STATE_KEYS = ["android", "android-device", "ios", "ios-device", "windows", "windows-vm", "linux-vm", "macos"];
 const DEVICE_BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
-const DEVICE_BROKER_MACOS_PROVIDERS = new Set(["tart", "vz", "utmctl"]);
+const DEVICE_BROKER_MACOS_PROVIDER_NAMES = ["tart", "vz", "utmctl"] as const;
+const DEVICE_BROKER_MACOS_PROVIDERS = new Set<string>(DEVICE_BROKER_MACOS_PROVIDER_NAMES);
 const ANDROID_EMULATOR_CAPABILITIES = [
     "device_list_files",
     "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
@@ -3427,168 +3428,31 @@ const observeOwnerInventory = createOwnerInventory({
 }, { stateKeys: DEVICE_BROKER_BACKEND_STATE_KEYS, maxBytes: DEVICE_BROKER_INVENTORY_FILE_LIMIT, maxDevices: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT });
 
 async function hostBackends(ownerId: string, normalized: NormalizedBrokerOptions) {
-    const adb = providerExecutable("adb", normalized);
-    const emulator = providerExecutable("emulator", normalized);
-    const avdmanager = providerExecutable("avdmanager", normalized);
-    const xcrun = providerExecutable("xcrun", normalized);
-    const xcodebuild = providerExecutable("xcodebuild", normalized);
-    const wsb = providerExecutable("wsb", normalized);
-    const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
-    const ssh = providerExecutable("ssh.exe", normalized) || providerExecutable("ssh", normalized);
-    const scp = providerExecutable("scp.exe", normalized) || providerExecutable("scp", normalized);
-    const macosProviders = [...DEVICE_BROKER_MACOS_PROVIDERS]
-        .map((name) => ({ name, command: providerExecutable(name, normalized) }))
-        .filter((provider): provider is { name: string; command: string } => Boolean(provider.command));
-
-    const androidMissing = [
-        ...(adb ? [] : ["adb"]),
-        ...(emulator ? [] : ["emulator"]),
-    ];
-    const androidProvisioningMissing = avdmanager ? [] : ["avdmanager"];
-    const androidDeviceMissing = adb ? [] : ["adb"];
-    const iosSimulatorMissing = xcrun ? [] : ["xcrun"];
-    const iosDeviceMissing = [
-        ...(xcrun ? [] : ["xcrun"]),
-        ...(xcodebuild ? [] : ["xcodebuild"]),
-    ];
-    const windowsMissing = wsb ? [] : ["wsb"];
-    let hyperVReadiness = null;
-    if (normalized.platform === "win32" && powershell) {
-        const readinessResult = await hyperVProviderCommandRunner(normalized, hyperVReadinessCommand(powershell), {
-            timeoutMs: Math.min(15000, normalized.commandTimeoutMs),
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        });
-        hyperVReadiness = commandSucceeded(readinessResult) ? parseHyperVReadiness(readinessResult.stdout || "") : null;
-    }
-    const hyperVMissing = normalized.platform !== "win32"
-        ? ["windows-host"]
-        : !powershell
-            ? ["powershell"]
-            : hyperVReadiness
-                ? hyperVReadiness.missing
-                : ["hyper-v-readiness"];
-    // qemu-img blocks linux-vm only when create would have to acquire the ubuntu-lts image; the
-    // cache is read from the private root and owner create uses.
-    const hyperVLinuxImage = normalized.platform === "win32"
-        ? hyperVLinuxImageBlockers(hyperVReadiness, inspectHyperVUbuntuImageCache(brokerPrivateRoot(), ownerId))
-        : null;
-    const hyperVLinuxMissing = [
-        ...hyperVMissing,
-        ...(hyperVLinuxImage?.blockers || []),
-        ...(ssh ? [] : ["ssh"]),
-        ...(scp ? [] : ["scp"]),
-    ];
-    const macosMissing = normalized.platform !== "darwin"
-        ? ["macos-host"]
-        : (macosProviders.length > 0 ? [] : ["macos-vm-provider"]);
-
-    return {
-        ownerId,
-        hostId: hostname(),
-        platform: normalized.platform,
-        source: "host-broker-provider-discovery",
-        startsDevices: false,
-        backends: [
-            {
-                name: "android-emulator",
-                host: "host-or-container",
-                creatable: true,
-                available: androidMissing.length === 0,
-                lazy: true,
-                status: androidMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: androidMissing,
-                tools: { adb, emulator, avdmanager },
-                provisioning: { available: androidProvisioningMissing.length === 0, missing: androidProvisioningMissing },
-                capabilities: ANDROID_EMULATOR_CAPABILITIES,
-            },
-            {
-                name: "android-device",
-                host: "host-usb-adb",
-                creatable: false,
-                attachable: true,
-                available: androidDeviceMissing.length === 0,
-                lazy: true,
-                status: androidDeviceMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: androidDeviceMissing,
-                tools: { adb },
-                capabilities: ANDROID_REAL_CAPABILITIES,
-            },
-            {
-                name: "ios-simulator",
-                host: "macos-host",
-                creatable: true,
-                available: iosSimulatorMissing.length === 0,
-                lazy: true,
-                status: iosSimulatorMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: iosSimulatorMissing,
-                tools: { xcrun },
-                capabilities: IOS_SIMULATOR_CAPABILITIES,
-            },
-            {
-                name: "ios-device",
-                host: "macos-host-usb-xcode",
-                creatable: false,
-                attachable: true,
-                available: iosDeviceMissing.length === 0,
-                lazy: true,
-                status: iosDeviceMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: iosDeviceMissing,
-                tools: { xcrun, xcodebuild },
-                capabilities: IOS_REAL_CAPABILITIES,
-            },
-            {
-                name: "windows-sandbox",
-                host: "windows-host",
-                creatable: true,
-                available: windowsMissing.length === 0,
-                lazy: true,
-                status: windowsMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: windowsMissing,
-                tools: { wsb },
-                capabilities: DESKTOP_DEVICE_CAPABILITIES,
-            },
-            {
-                name: "windows-vm",
-                host: "windows-host",
-                creatable: true,
-                available: hyperVMissing.length === 0,
-                lazy: true,
-                status: hyperVMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: hyperVMissing,
-                provider: "hyper-v",
-                tools: { powershell },
-                readiness: hyperVReadiness,
-                capabilities: HYPER_V_VM_CAPABILITIES,
-            },
-            ...(hyperVLinuxImage ? [{
-                name: "linux-vm",
-                host: "windows-host",
-                creatable: true,
-                available: hyperVLinuxMissing.length === 0,
-                lazy: true,
-                status: hyperVLinuxMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: hyperVLinuxMissing,
-                provider: "hyper-v",
-                guestTransport: "ssh",
-                tools: { powershell, ssh, scp },
-                readiness: hyperVReadiness,
-                baseImage: hyperVLinuxImage.baseImage,
-                imageAcquisition: hyperVLinuxImage.imageAcquisition,
-                capabilities: HYPER_V_LINUX_VM_CAPABILITIES,
-            }] : []),
-            {
-                name: "macos-vm",
-                host: "macos-host",
-                creatable: true,
-                available: macosMissing.length === 0,
-                lazy: true,
-                status: macosMissing.length === 0 ? "available" : "missing-prerequisites",
-                missing: macosMissing,
-                providers: macosProviders,
-                capabilities: MACOS_VM_CAPABILITIES,
-            },
-        ],
-    };
+    const discover = createHostBackendDiscovery({
+        executable: name => providerExecutable(name, normalized),
+        hostId: hostname,
+        async hyperVReadiness(powershell, timeoutMs) {
+            const result = await hyperVProviderCommandRunner(normalized, hyperVReadinessCommand(powershell), {
+                timeoutMs,
+                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+            });
+            return commandSucceeded(result) ? parseHyperVReadiness(result.stdout || "") : null;
+        },
+        ubuntuImageCache: owner => inspectHyperVUbuntuImageCache(brokerPrivateRoot(), owner),
+    }, {
+        macosProviders: DEVICE_BROKER_MACOS_PROVIDER_NAMES,
+        capabilities: {
+            androidEmulator: ANDROID_EMULATOR_CAPABILITIES,
+            androidDevice: ANDROID_REAL_CAPABILITIES,
+            iosSimulator: IOS_SIMULATOR_CAPABILITIES,
+            iosDevice: IOS_REAL_CAPABILITIES,
+            windowsSandbox: DESKTOP_DEVICE_CAPABILITIES,
+            windowsVm: HYPER_V_VM_CAPABILITIES,
+            linuxVm: HYPER_V_LINUX_VM_CAPABILITIES,
+            macosVm: MACOS_VM_CAPABILITIES,
+        },
+    });
+    return discover({ ownerId, platform: normalized.platform, commandTimeoutMs: normalized.commandTimeoutMs });
 }
 
 function backendForStateKey(stateKey: string): string | null {

@@ -1,6 +1,6 @@
 import type { DeviceAdminBackendSnapshot } from "./device-admin-inventory.js";
 import type { DeviceAdminBackend } from "../domain/device-admin-inventory.js";
-import type { CommandResult, HyperVReadiness, LinuxImageCache, ProviderCommand } from "../domain/device-admin-diagnostics.js";
+import type { CommandResult, HyperVReadiness, HyperVLinuxImageReadinessInput, LinuxImageCache, ProviderCommand } from "../domain/device-admin-diagnostics.js";
 export type DiagnosticDeviceRecord = Record<string, unknown> & { id?: string; status?: string };
 export type DiagnosticLease = { ownerId?: string; deviceId?: string; expiresAt?: string };
 export type DeviceAdminDiagnosticsPorts<Backend extends DeviceAdminBackend = DeviceAdminBackend> = {
@@ -22,6 +22,7 @@ export type DeviceAdminDiagnosticsPorts<Backend extends DeviceAdminBackend = Dev
     readinessCommand(executable: string): ProviderCommand;
     parseReadiness(stdout: string): HyperVReadiness | null;
     inspectLinuxImageCache(privateRoot: string, ownerId: string): LinuxImageCache;
+    linuxImageSmokeResult(readiness: HyperVLinuxImageReadinessInput, cache: LinuxImageCache): { status: "PASS" | "SKIP"; detail: string };
 };
 
 export type DeviceAdminDiagnosticsInventory<Backend extends DeviceAdminBackend> = {

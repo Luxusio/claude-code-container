@@ -3115,7 +3115,7 @@ describe("device-lab MCP broker routing", () => {
         }
     });
 
-    it("routes read-only device inventory and recording status through a reachable broker", { timeout: TIMEOUT }, async () => {
+    it("routes owned devices, backend discovery, available inventory and recording status through a reachable broker", { timeout: TIMEOUT }, async () => {
         const server = createDeviceBrokerServer({
             cwd: repoRoot,
             host: "127.0.0.1",
@@ -3148,6 +3148,30 @@ describe("device-lab MCP broker routing", () => {
             }],
         }));
         try {
+            const route = { broker: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 };
+            const owned = await client.callTool({
+                name: "devices",
+                arguments: { ...route, view: "owned", backend: "windows-sandbox" },
+            });
+            expect(owned.isError, JSON.stringify(owned.content)).not.toBe(true);
+            expect(JSON.parse(((owned.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
+                ownerId: brokerOwnerId(),
+                routedBy: "device-list-broker-implicit",
+                devices: [expect.objectContaining({ id: "win-readonly-broker", backend: "windows-sandbox" })],
+            });
+
+            const discovery = await client.callTool({
+                name: "devices",
+                arguments: { ...route, view: "backends", backend: "windows-sandbox" },
+            });
+            expect(discovery.isError, JSON.stringify(discovery.content)).not.toBe(true);
+            expect(JSON.parse(((discovery.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
+                source: "host-broker-provider-discovery",
+                routedBy: "device-backends-broker",
+                backends: [expect.objectContaining({ name: "windows-sandbox", lazy: true })],
+                hostBackends: { startsDevices: false },
+            });
+
             const inventory = await client.callTool({
                 name: "devices",
                 arguments: { view: "available",

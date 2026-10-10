@@ -1,5 +1,5 @@
 import { hyperVSetupFailureDetail, type SetupRequest, type HyperVSetupHostResult, type SetupObservation, type HostNetworkResult } from "../domain/device-admin-setup.js";
-import { hyperVLinuxImageBlockers, type CommandResult } from "../domain/device-admin-diagnostics.js";
+import type { CommandResult } from "../domain/device-admin-diagnostics.js";
 import type { DeviceAdminSetupPorts } from "../ports/device-admin-setup.js";
 export function createDeviceAdminSetup(ports: DeviceAdminSetupPorts) {
     async function setup(confirm: boolean, options: SetupRequest = {}): Promise<HyperVSetupHostResult> {
@@ -47,7 +47,7 @@ export function createDeviceAdminSetup(ports: DeviceAdminSetupPorts) {
             }
             // Setup state lives in <private root>/setup, where create also reads the evaluation receipt,
             // so the image cache is read from the same private root create resolves images from.
-            const linuxImage = hyperVLinuxImageBlockers(readiness, ports.inspectLinuxImageCache(ports.parentDirectory(setupRoot), options.ownerId || ""));
+            const linuxImage = ports.linuxImageBlockers(readiness, ports.inspectLinuxImageCache(ports.parentDirectory(setupRoot), options.ownerId || ""));
             const qemuImgMissing = readiness.linuxImageMissing || [];
             const qemuImgRemedy = qemuImgMissing.includes("hyper-v-qemu-img-unavailable")
                 ? "install the Android SDK Emulator package from Google so %LOCALAPPDATA%\\Android\\Sdk\\emulator\\qemu-img.exe is available for Hyper-V Linux images at that exact path, with no junction or symbolic link in any path component"

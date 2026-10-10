@@ -1,5 +1,5 @@
 import { pushDeviceLabWiringDiagnostic, missingPrerequisiteFromCommandFailure, smokeDetail, smokePathCheck,
-    compactSmokeOutput, inventoryContains, hyperVLinuxSmokeImageResult,
+    compactSmokeOutput, inventoryContains,
     type SmokeResult, type SmokeMode, type SmokeOptions, type SmokeFormatOptions, type DeviceLabWiringDiagnostic,
     type BenchDeviceCheck, type DeviceLabBenchHealth } from "../domain/device-admin-diagnostics.js";
 import type { DeviceAdminBackend } from "../domain/device-admin-inventory.js";
@@ -203,7 +203,7 @@ export function createDeviceAdminDiagnostics<Backend extends DeviceAdminBackend>
         if (!readiness.available) return { backend: "linux-vm", status: "SKIP", detail: `missing ${readiness.missing.join(", ") || "Hyper-V prerequisites"}`, commands };
         // The broker's private root and this owner, as create resolves the ubuntu-lts image.
         const cache = ports.inspectLinuxImageCache(ports.joinPath(ports.homeDirectory(), ".ccc/device-broker-private"), ownerId);
-        return { backend: "linux-vm", ...hyperVLinuxSmokeImageResult(readiness, cache), commands };
+        return { backend: "linux-vm", ...ports.linuxImageSmokeResult(readiness, cache), commands };
     }
 
     function deviceLabSmoke(cwd: string, timeoutMs = 5000, profile?: string, options: SmokeOptions = {}): { ownerId: string; mode: SmokeMode; results: SmokeResult[] } {

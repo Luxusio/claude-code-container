@@ -1,4 +1,4 @@
-import type { LeaseDirectoryEntry, LeaseDirectoryInspection, LeaseDirectoryReader, OwnerInventory } from "../domain/broker-observation.js";
+import type { DiscoveryExecutable, DiscoveryImageCache, DiscoveryReadiness, LeaseDirectoryEntry, LeaseDirectoryInspection, LeaseDirectoryReader, OwnerInventory } from "../domain/broker-observation.js";
 import type { LifecyclePreviewRequest } from "../domain/broker-observation-command-plan.js";
 
 export interface OwnerInventoryPorts<File, Device> {
@@ -101,4 +101,11 @@ export interface LifecyclePreviewPorts<Parsed extends LifecyclePreviewRequest, C
     readonly createPlan: (ownerId: string, parsed: Parsed, context: Context) => ProviderPlan;
     readonly existingPlan: (ownerId: string, parsed: Parsed, device: unknown, context: Context) => ProviderPlan;
     readonly attachmentMatches: (ownerId: string, parsed: Parsed, device: Record<string, unknown>) => boolean;
+}
+
+export interface HostBackendDiscoveryPorts {
+    readonly executable: (name: DiscoveryExecutable) => string | null;
+    readonly hostId: () => string;
+    readonly hyperVReadiness: (powershell: string, timeoutMs: number) => Promise<DiscoveryReadiness | null>;
+    readonly ubuntuImageCache: (ownerId: string) => DiscoveryImageCache;
 }

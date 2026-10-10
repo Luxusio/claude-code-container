@@ -1,4 +1,4 @@
-import type { CommandResult, HyperVReadiness, LinuxImageCache, ProviderCommand } from "../domain/device-admin-diagnostics.js";
+import type { CommandResult, HyperVReadiness, HyperVLinuxImageReadinessInput, HyperVLinuxImageReadiness, LinuxImageCache, ProviderCommand } from "../domain/device-admin-diagnostics.js";
 import type { SetupObservation, HostNetworkResult } from "../domain/device-admin-setup.js";
 export type EvaluationReceipt = { sourceTrustId: string };
 export type DeviceAdminSetupPorts = {
@@ -18,6 +18,7 @@ export type DeviceAdminSetupPorts = {
     parseReadiness(stdout: string): HyperVReadiness | null;
     parseSetupObservation(stdout: string): SetupObservation | null;
     inspectLinuxImageCache(privateRoot: string, ownerId: string): LinuxImageCache;
+    linuxImageBlockers(readiness: HyperVLinuxImageReadinessInput, cache: LinuxImageCache): HyperVLinuxImageReadiness;
     withMutationLock<T>(path: string, operation: () => Promise<T>, options: { waitMs: number; staleMs: number }): Promise<T>;
     ensureHostNetwork(deadlineAt: number): Promise<HostNetworkResult>;
     readEvaluationReceipt(setupRoot: string): EvaluationReceipt | null;

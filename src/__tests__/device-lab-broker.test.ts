@@ -41,6 +41,66 @@ import { readDeviceRuntimeProcessStartToken } from "@ccc/device-lab/device-lab-p
 import { DEVICE_LAB_VERSION } from "@ccc/device-lab/version.js";
 import { cleanupOwner, close, listen, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/operation-tools.mjs";
+import { createHostBackendDiscovery } from "@ccc/device-lab/device-lab/application/broker-observation-discovery.js";
+import type { HostBackendDiscoveryConfiguration } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
+import type { HostBackendDiscoveryPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
+
+const discoveryConfiguration: HostBackendDiscoveryConfiguration = {
+    macosProviders: ["tart", "vz", "utmctl"],
+    capabilities: {
+        androidEmulator: [], androidDevice: [], iosSimulator: [], iosDevice: [],
+        windowsSandbox: [], windowsVm: [], linuxVm: [], macosVm: [],
+    },
+};
+function discoveryCapabilityContracts(ports: HostBackendDiscoveryPorts): void {
+    createHostBackendDiscovery(ports, discoveryConfiguration);
+    const { hyperVReadiness: _readiness, ...withoutReadiness } = ports;
+    // @ts-expect-error Windows discovery requires a bounded readiness observation.
+    createHostBackendDiscovery(withoutReadiness, discoveryConfiguration);
+    // @ts-expect-error Readiness settles asynchronously through the native command boundary.
+    createHostBackendDiscovery({ ...ports, hyperVReadiness: () => null }, discoveryConfiguration);
+    // @ts-expect-error Cache metadata inspection must return a settled synchronous observation.
+    createHostBackendDiscovery({ ...ports, ubuntuImageCache: async () => ({ state: "acquisition-required" }) }, discoveryConfiguration);
+    void _readiness;
+}
+void discoveryCapabilityContracts;
+
+describe("host discovery platform and budget admission", () => {
+    it("does not inspect Windows readiness or the image cache on a non-Windows host", async () => {
+        const discover = createHostBackendDiscovery({
+            executable: () => "/controlled/tool", hostId: () => "controlled-host",
+            hyperVReadiness: () => { throw new Error("unexpected Windows command"); },
+            ubuntuImageCache: () => { throw new Error("unexpected Windows cache read"); },
+        }, discoveryConfiguration);
+        const result = await discover({ ownerId: "owner", platform: "linux", commandTimeoutMs: 5000 });
+        expect(result.backends.find((backend) => backend.name === "windows-vm")).toMatchObject({ available: false });
+        expect(result.hostId).toBe("controlled-host");
+    });
+
+    it.each([[5000, 5000], [30000, 15000]])("bounds Hyper-V readiness to the caller and discovery budgets (%i ms)", async (requested, expected) => {
+        let observed = false;
+        let cacheOwner: string | null = null;
+        const discover = createHostBackendDiscovery({
+            executable: (name) => name === "powershell.exe" ? "/controlled/powershell" : null,
+            hostId: () => "controlled-host",
+            hyperVReadiness: async (executable, timeoutMs) => {
+                observed = true;
+                expect(executable).toBe("/controlled/powershell");
+                expect(timeoutMs).toBe(expected);
+                return null;
+            },
+            ubuntuImageCache: (ownerId) => {
+                cacheOwner = ownerId;
+                expect(ownerId).toBe("authenticated-owner");
+                return { state: "acquisition-required" };
+            },
+        }, discoveryConfiguration);
+        const result = await discover({ ownerId: "authenticated-owner", platform: "win32", commandTimeoutMs: requested });
+        expect(observed).toBe(true);
+        expect(cacheOwner).toBe("authenticated-owner");
+        expect(result.backends.find((backend) => backend.name === "windows-vm")).toMatchObject({ available: false });
+    });
+});
 
 // Synthetic broker PIDs must never reach native CIM/taskkill on a Windows test host.
 function terminateSyntheticBroker(pid: number) {

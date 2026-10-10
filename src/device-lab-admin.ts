@@ -65,6 +65,7 @@ import {
     readHyperVWindowsEvaluationReceipt,
 } from "@ccc/device-lab/device-lab/hyper-v-images.js";
 import { inspectHyperVUbuntuImageCache } from "@ccc/device-lab/device-lab/broker/hyper-v/image-store.js";
+import { hyperVLinuxImageBlockers, hyperVLinuxSmokeImageResult } from "@ccc/device-lab/device-lab/hyper-v-linux-image-readiness.js";
 
 import {
     hyperVReadinessCommand,
@@ -778,7 +779,7 @@ const deviceAdminDiagnostics = createDeviceAdminDiagnostics({
     platform: () => process.platform, environment: (name) => process.env[name], now: () => Date.now(),
     homeDirectory: homedir, packageRoot, joinPath: join, exists: existsSync, runCommand,
     readinessCommand: hyperVReadinessCommand, parseReadiness: parseHyperVReadiness,
-    inspectLinuxImageCache: inspectHyperVUbuntuImageCache,
+    inspectLinuxImageCache: inspectHyperVUbuntuImageCache, linuxImageSmokeResult: hyperVLinuxSmokeImageResult,
     runNode(script, server, timeoutMs) {
         const result = spawnSync(process.execPath, [script, server], {
             encoding: "utf-8", env: process.env, timeout: timeoutMs, windowsHide: true,
@@ -812,7 +813,8 @@ export async function setupHyperVHost(confirm: boolean, options: HyperVSetupHost
         runCommand: (command, args, timeoutMs, input) => (options.commandRunner || runCommand)(command, args, timeoutMs, input),
         readinessCommand: hyperVReadinessCommand, setupCommand: hyperVSetupCommand,
         parseReadiness: parseHyperVReadiness, parseSetupObservation: parseHyperVSetupObservation,
-        inspectLinuxImageCache: inspectHyperVUbuntuImageCache, withMutationLock: withSharedMutationLockAsync,
+        inspectLinuxImageCache: inspectHyperVUbuntuImageCache, linuxImageBlockers: hyperVLinuxImageBlockers,
+        withMutationLock: withSharedMutationLockAsync,
         ensureHostNetwork: (deadlineAt) => (options.ensureHostNetwork || ensureHyperVHostNetworkForSetup)({}, deadlineAt),
         readEvaluationReceipt: readHyperVWindowsEvaluationReceipt, acceptEvaluationLicense: acceptHyperVWindowsEvaluationLicense,
         evaluationLicenseUrl: HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
