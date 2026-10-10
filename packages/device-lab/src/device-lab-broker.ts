@@ -7616,10 +7616,6 @@ function randomGuid(): string {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function androidSerial(device: unknown) {
-    return field(device, "serial") || (numberField(device, "port") ? `emulator-${numberField(device, "port")}` : null);
-}
-
 function hyperVImageRoot(): string {
     return hyperVImageStoreRoot(brokerPrivateRoot());
 }
