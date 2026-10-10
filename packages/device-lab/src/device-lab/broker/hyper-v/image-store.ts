@@ -639,6 +639,7 @@ export async function resolveHyperVImageForCreate(
         cwd: runtime.cwd, privateRoot: runtime.privateRoot, limits: runtime.limits,
         catalog: HYPER_V_IMAGE_CATALOG,
         now: () => Date.now(), preparedAt: () => new Date().toISOString(),
+        resolvePath: resolve,
         resolveExecutable: (name) => runtime.resolveExecutable(name),
         assertDeadline: (deadline) => { assertHyperVOperationDeadline(deadline); return undefined; },
         remainingTimeout: hyperVRemainingTimeout, deadlineExpired: hyperVOperationDeadlineExpired,

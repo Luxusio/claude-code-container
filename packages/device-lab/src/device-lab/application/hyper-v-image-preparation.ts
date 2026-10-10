@@ -1,4 +1,4 @@
-import { join, resolve } from "path";
+import { join } from "path";
 import { hyperVImageManifest, hyperVImageProfile, inspectHyperVCreateVhd, inspectHyperVAcquiredVhd } from "../domain/hyper-v-image-preparation.js";
 import type { HyperVBaseImageObservation, HyperVImageCommandResult, HyperVImageCreateRequest, HyperVImageManifest, HyperVImageProfile, HyperVImageResolution, HyperVImageVhd } from "../domain/hyper-v-image-preparation.js";
 import type { HyperVAutomaticArtifactIdentity, HyperVImagePreparationPorts } from "../ports/hyper-v-image-preparation.js";
@@ -31,7 +31,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         const imagePath = join(ownerProfileRoot, "base.vhdx");
         const manifestPath = join(ownerProfileRoot, "manifest.json");
         const manifestWasPresent = ports.manifestPresent(manifestPath);
-        const stagedSource = await ports.stageFile(resolve(ports.cwd), sourceImage, ownerProfileRoot, "hyper-v-base-image-source", deadlineAt);
+        const stagedSource = await ports.stageFile(ports.resolvePath(ports.cwd), sourceImage, ownerProfileRoot, "hyper-v-base-image-source", deadlineAt);
         let removeStagedSource = true;
         let partial: string | null = null;
         let publishedIdentity: { dev: number; ino: number } | null = null;
@@ -206,8 +206,8 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         try {
             const prepared = checkedStage(await ports.prepareAcquisition(options, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs)));
             if (!prepared || prepared.profile !== profile
-                || resolve(prepared.imagePath) !== resolve(imagePath)
-                || resolve(prepared.partialPath) !== resolve(partialPath)) {
+                || ports.resolvePath(prepared.imagePath) !== ports.resolvePath(imagePath)
+                || ports.resolvePath(prepared.partialPath) !== ports.resolvePath(partialPath)) {
                 throw new Error("hyper-v-base-image-acquire-invalid-result");
             }
             for (const path of [partialPath, workPath]) {
@@ -223,7 +223,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
             let expectedVhdType: "Fixed" | "Dynamic";
             if (prepared.profile === "ubuntu-lts") {
                 const sourcePath = join(globalProfileRoot, ".acquire-work", "converted.normalized.fixed.vhd");
-                if (resolve(prepared.sourceVhdPath) !== resolve(sourcePath)) throw new Error("hyper-v-base-image-source-path-invalid");
+                if (ports.resolvePath(prepared.sourceVhdPath) !== ports.resolvePath(sourcePath)) throw new Error("hyper-v-base-image-source-path-invalid");
                 const sourceIdentity = ports.artifactIdentity(sourcePath);
                 if (!sourceIdentity || sourceIdentity.directory) throw new Error("hyper-v-base-image-source-invalid");
                 const sourceHashBefore = await ports.hashFile(globalProfileRoot, sourcePath, "hyper-v-base-image-source", acquireDeadlineAt);
@@ -290,7 +290,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                 })
                 : ({ ...finalizeCommon, profile });
             const observation = checkedStage(await ports.finalizeAcquisition(finalizeRequest, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs)));
-            if (!observation || observation.profile !== profile || resolve(observation.imagePath) !== resolve(imagePath)
+            if (!observation || observation.profile !== profile || ports.resolvePath(observation.imagePath) !== ports.resolvePath(imagePath)
                 || observation.generation !== ports.catalog[profile].generation
                 || observation.virtualSizeBytes !== expectedVirtualSizeBytes
                 || observation.vhdType !== expectedVhdType) {
@@ -333,15 +333,15 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         const ownerProfileRoot = hyperVOwnerImageProfileRoot(ports.privateRoot, ownerId, profile);
         if (typeof create.image === "string" && create.image) {
             try {
-                const requestedImage = resolve(create.image);
-                const ownerImage = resolve(join(ownerProfileRoot, "base.vhdx"));
-                const globalImage = resolve(join(globalProfileRoot, "base.vhdx"));
+                const requestedImage = ports.resolvePath(create.image);
+                const ownerImage = ports.resolvePath(join(ownerProfileRoot, "base.vhdx"));
+                const globalImage = ports.resolvePath(join(globalProfileRoot, "base.vhdx"));
                 const manifest = requestedImage === ownerImage
                     ? await ports.readManifest(ports.privateRoot, profile, ownerProfileRoot, true, deadlineAt)
                     : requestedImage === globalImage
                         ? await ports.readManifest(ports.privateRoot, profile, globalProfileRoot, false, deadlineAt)
                         : (() => { throw new Error("hyper-v-base-image-manifest-path-mismatch"); })();
-                if (resolve(create.image) !== resolve(manifest.imagePath)) throw new Error("hyper-v-base-image-manifest-path-mismatch");
+                if (ports.resolvePath(create.image) !== ports.resolvePath(manifest.imagePath)) throw new Error("hyper-v-base-image-manifest-path-mismatch");
                 return { ok: true, params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
             } catch (error) {
                 if (ports.isDeadlineError(error)) throw error;
@@ -355,7 +355,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
             }
         }
 
-        const sourceImage = typeof create.sourceImage === "string" && create.sourceImage ? resolve(ports.cwd, create.sourceImage) : null;
+        const sourceImage = typeof create.sourceImage === "string" && create.sourceImage ? ports.resolvePath(ports.cwd, create.sourceImage) : null;
         if (request.dryRun) {
             if (sourceImage) {
                 return {
@@ -461,7 +461,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                         if (!observation
                             || observation.profile !== profile
                             || observation.generation !== ports.catalog[automaticProfile].generation
-                            || resolve(observation.imagePath) !== resolve(imagePath)) {
+                            || ports.resolvePath(observation.imagePath) !== ports.resolvePath(imagePath)) {
                             throw new Error("hyper-v-base-image-acquire-invalid-result");
                         }
                         const image = ports.inspectFile(globalProfileRoot, imagePath, "hyper-v-base-image");

@@ -27,6 +27,7 @@ export interface HyperVImagePreparationPorts {
     catalog: HyperVAutomaticImageCatalogs;
     now(): number;
     preparedAt(): string;
+    resolvePath(...parts: string[]): string;
     resolveExecutable(name: string): string | null;
     assertDeadline(deadlineAt: number): undefined;
     remainingTimeout(deadlineAt: number, limitMs: number): number;

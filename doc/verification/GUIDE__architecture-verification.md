@@ -13,6 +13,8 @@ Test the current product contract. Architecture changes may replace implementati
 
 Order matters when it enforces a current requirement, such as validating ownership before signaling a process. Test that requirement directly.
 
+The inward dependency check distinguishes data helpers and type annotations from ambient authority. It permits direct `Date.parse`, pure Math members, unaliased named path imports used only as `join(...)` or `win32.normalize(...)`, direct `Buffer.byteLength(...)`, and `Buffer` type references. These operations do not acquire native resources. Path resolution remains a required native capability because relative inputs can consult the process working directory. Namespace imports, exposed path helper aliases, other path/Buffer runtime operations, clocks and native I/O remain outside inward layers.
+
 ## Migration preservation tests to remove
 
 Do not keep archived implementations as executable reference copies. Do not require whole-file hashes, function-body equality, old-versus-new execution parity or historical getter, receiver and incidental internal-call sequences. These checks lock the implementation to the code being replaced and make legitimate changes require changes to the verifier itself.
@@ -23,7 +25,7 @@ Keep packaging verification as a small standalone smoke command. Do not add veri
 
 ## Run checks in increasing cost order
 
-1. Run changed contract/type checks and focused behavior tests.
+1. Check the complete current inward repository graph, collecting all findings before asserting, then run changed contract/type checks and focused behavior tests.
 2. Run affected architecture and native regressions.
 3. Build once when production code, dependencies or build configuration changed.
 4. Run package smoke against current output.

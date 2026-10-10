@@ -1,8 +1,8 @@
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { createHash } from "crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, relative } from "path";
 import { describe, expect, it, vi } from "vitest";
 import {
     cleanupIncompleteHyperVImageArtifacts,
@@ -32,11 +32,16 @@ function imagePreparationCapabilityContracts(ports: HyperVImagePreparationPorts)
     const { finalizeAcquisition: _finalize, ...withoutFinalizer } = ports;
     // @ts-expect-error Automatic acquisition needs its guarded native finalizer.
     createHyperVImagePreparation(withoutFinalizer);
+    const { resolvePath: _resolvePath, ...withoutPathResolution } = ports;
+    // @ts-expect-error Path resolution requires the native current-directory authority.
+    createHyperVImagePreparation(withoutPathResolution);
+    // @ts-expect-error Native path resolution must settle synchronously.
+    const asynchronousPathResolution: HyperVImagePreparationPorts["resolvePath"] = async () => "image.vhdx";
     // @ts-expect-error Publication must complete before the application reports success.
     const asynchronousPublication: HyperVImagePreparationPorts["publishManifest"] = async () => undefined;
     // @ts-expect-error Root admission must finish before the preparation lock is entered.
     const asynchronousRootAdmission: HyperVImagePreparationPorts["ensurePreparationRoot"] = async () => undefined;
-    void [_dismount, _finalize, asynchronousPublication, asynchronousRootAdmission];
+    void [_dismount, _finalize, _resolvePath, asynchronousPathResolution, asynchronousPublication, asynchronousRootAdmission];
 }
 void imagePreparationCapabilityContracts;
 
@@ -120,6 +125,72 @@ function automaticUbuntuStep(
 }
 
 describe("Hyper-V image store module", () => {
+    it("imports relative project/source paths through native resolution and retains image safety boundaries", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-relative-import-"));
+        const projectRoot = join(root, "project"), privateRoot = join(root, "private");
+        const ownerId = "0123456789abcdef";
+        const profileRoot = hyperVOwnerImageProfileRoot(privateRoot, ownerId, "windows-11");
+        const imagePath = join(profileRoot, "base.vhdx"), manifestPath = join(profileRoot, "manifest.json");
+        const sourcePath = join(projectRoot, "source.vhdx"), bytes = Buffer.from("relative-import-source");
+        mkdirSync(projectRoot);
+        writeFileSync(sourcePath, bytes);
+        const sourceIdentity = lstatSync(sourcePath);
+        let attached = false;
+        const run = vi.fn<HyperVImageStoreRuntime["run"]>(async command => {
+            const script = Buffer.from(command.args.at(-1) || "", "base64").toString("utf16le");
+            if (script.includes("Storage\\Get-DiskImage -ImagePath $VhdPath")) {
+                const path = script.match(/\$VhdPath = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'");
+                return { mode: "exec", provider: "hyper-v", status: 0, stdout: JSON.stringify({ ok: true, path, attached, partitionStyle: script.includes("$ReadPartitionStyle = $true") ? "GPT" : null }) };
+            }
+            if (command.args.at(-1) !== HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP || !command.input) throw new Error("unexpected image provider command");
+            const envelope = JSON.parse(Buffer.from(command.input, "base64").toString("utf8")) as { input: string };
+            const request = JSON.parse(envelope.input) as { operation: string; path: string };
+            let items: unknown[] = [];
+            if (request.operation === "Get-VHD") items = [{ path: request.path, vhdFormat: "VHDX", vhdType: "Dynamic", parentPath: null, virtualSizeBytes: 64 * 1024 * 1024 * 1024, fileSizeBytes: readFileSync(request.path).length }];
+            else if (request.operation === "Mount-VHD") attached = true;
+            else if (request.operation === "Dismount-VHD") attached = false;
+            else throw new Error(`unexpected image operation: ${request.operation}`);
+            return { mode: "exec", provider: "hyper-v", status: 0, stdout: JSON.stringify({ schemaVersion: 1, operation: request.operation, ok: true, items }) };
+        });
+        const runtime: HyperVImageStoreRuntime = {
+            cwd: relative(process.cwd(), projectRoot), privateRoot, run,
+            resolveExecutable: () => "/fake/powershell.exe",
+            limits: { acquireTimeoutMs: 60_000, prepareTimeoutMs: 60_000, lockWaitMs: 60_000, commandOutputBytes: 64 * 1024 },
+        };
+        const importSource = (sourceImage: string) => resolveHyperVImageForCreate(ownerId,
+            { backend: "windows-vm", dryRun: false, create: { profile: "windows-11", sourceImage } }, {}, runtime);
+        try {
+            expect(await importSource("source.vhdx")).toMatchObject({ ok: true, prepared: true, imagePath });
+            expect(attached).toBe(false);
+            expect(readFileSync(imagePath)).toEqual(bytes);
+            expect(readFileSync(sourcePath)).toEqual(bytes);
+            expect(lstatSync(sourcePath)).toMatchObject({ dev: sourceIdentity.dev, ino: sourceIdentity.ino, nlink: 1, size: bytes.length });
+            const manifestText = readFileSync(manifestPath, "utf8");
+            expect(Buffer.byteLength(manifestText)).toBeLessThanOrEqual(16 * 1024);
+            expect(readHyperVImageManifestMetadata(privateRoot, "windows-11", profileRoot, true)).toMatchObject({
+                imagePath, catalogId: "user-provided-vhdx", generation: 2, sizeBytes: bytes.length,
+                sha256: createHash("sha256").update(bytes).digest("hex"),
+            });
+            expect(readdirSync(profileRoot).sort()).toEqual(["base.vhdx", "manifest.json"]);
+
+            run.mockClear();
+            writeFileSync(join(root, "outside.vhdx"), bytes);
+            expect(await importSource("../outside.vhdx")).toMatchObject({ ok: false, status: 422, detail: "hyper-v-base-image-source-must-be-project-root-file" });
+            expect(readFileSync(join(root, "outside.vhdx"))).toEqual(bytes);
+            linkSync(sourcePath, join(projectRoot, "linked.vhdx"));
+            expect(await importSource("linked.vhdx")).toMatchObject({ ok: false, status: 422, detail: "hyper-v-base-image-source-invalid" });
+            expect(readFileSync(sourcePath)).toEqual(bytes);
+            expect(run).not.toHaveBeenCalled();
+            expect(readdirSync(profileRoot).sort()).toEqual(["base.vhdx", "manifest.json"]);
+
+            writeFileSync(manifestPath, manifestText + " ".repeat(16 * 1024));
+            expect(await resolveHyperVImageForCreate(ownerId,
+                { backend: "windows-vm", dryRun: false, create: { profile: "windows-11", image: relative(process.cwd(), imagePath) } }, {}, runtime))
+                .toMatchObject({ ok: false, status: 409, error: "hyper-v-base-image-not-prepared" });
+            expect(readFileSync(imagePath)).toEqual(bytes);
+        } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
     it("uses Canonical's generic bootable QCOW2 source instead of its Azure-only VHD", () => {
         const ubuntu = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
 

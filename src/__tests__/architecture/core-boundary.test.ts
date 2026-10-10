@@ -22,13 +22,16 @@ function filesUnder(directory: string, extension: string): string[] {
 describe("core layer dependency graph", () => {
     it("checks every migrated core file across all three source roots", () => {
         let checked = 0;
+        const findings: Array<{ file: string; violations: string[] }> = [];
         for (const boundary of boundaries) for (const layer of ["domain", "ports", "application"]) {
             for (const file of filesUnder(join(boundary.root, layer), `.${boundary.language}`)) {
-                expect(coreBoundaryViolations(readFileSync(file, "utf8"), file, boundary), file).toEqual([]);
+                const violations = coreBoundaryViolations(readFileSync(file, "utf8"), file, boundary);
+                if (violations.length) findings.push({ file, violations });
                 checked++;
             }
         }
         expect(checked).toBeGreaterThanOrEqual(3);
+        expect(findings).toEqual([]);
     });
 
 });

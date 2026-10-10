@@ -33,6 +33,19 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
     const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true,
         boundary.language === "mjs" ? ts.ScriptKind.JS : ts.ScriptKind.TS);
     const errors: string[] = [];
+    const purePathImports = new Set<ts.ImportDeclaration>();
+    const purePathNames = new Set<string>();
+    for (const statement of tree.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+            || !["path", "node:path"].includes(statement.moduleSpecifier.text)) continue;
+        const clause = statement.importClause;
+        const bindings = clause?.namedBindings;
+        if (!clause || clause.name || clause.isTypeOnly || !bindings || !ts.isNamedImports(bindings)
+            || bindings.elements.length === 0 || !bindings.elements.every(item => !item.propertyName
+                && !item.isTypeOnly && ["join", "win32"].includes(item.name.text))) continue;
+        purePathImports.add(statement);
+        for (const item of bindings.elements) purePathNames.add(item.name.text);
+    }
     const checkImport = (specifier: ts.Node | undefined, typeOnly: boolean) => {
         if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith(".")) {
             errors.push("dependency must use a relative core path");
@@ -51,7 +64,7 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
             const bindings = clause?.namedBindings;
             const typeOnly = clause?.isTypeOnly === true || (!!bindings && ts.isNamedImports(bindings)
                 && !clause?.name && bindings.elements.length > 0 && bindings.elements.every(item => item.isTypeOnly));
-            checkImport(node.moduleSpecifier, typeOnly);
+            if (!purePathImports.has(node)) checkImport(node.moduleSpecifier, typeOnly);
         }
         if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
             const typeOnly = node.isTypeOnly || (!!node.exportClause && ts.isNamedExports(node.exportClause)
@@ -63,6 +76,19 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
         if (ts.isImportEqualsDeclaration(node)) errors.push("import assignment");
         if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) errors.push("dynamic import");
         if (ts.isMetaProperty(node)) errors.push("runtime meta property");
+        if (ts.isIdentifier(node) && purePathNames.has(node.text)) {
+            const parent = node.parent;
+            const declaration = ts.isImportSpecifier(parent) && parent.name === node;
+            const directJoin = node.text === "join" && ts.isCallExpression(parent) && parent.expression === node;
+            const directNormalize = node.text === "win32" && ts.isPropertyAccessExpression(parent)
+                && parent.expression === node && parent.name.text === "normalize"
+                && ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            const propertyName = (ts.isPropertyAccessExpression(parent) && parent.name === node)
+                || (ts.isPropertyAssignment(parent) && parent.name === node)
+                || (ts.isMethodDeclaration(parent) && parent.name === node)
+                || (ts.isPropertySignature(parent) && parent.name === node);
+            if (!declaration && !directJoin && !directNormalize && !propertyName) errors.push(`forbidden path access: ${node.text}`);
+        }
         if (ts.isIdentifier(node) && runtimeNames.has(node.text)) {
             const parent = node.parent;
             const propertyName = (ts.isPropertyAccessExpression(parent) && parent.name === node)
@@ -74,7 +100,11 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
             const pureDateParse = node.text === "Date" && ts.isPropertyAccessExpression(parent)
                 && parent.expression === node && parent.name.text === "parse"
                 && ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
-            if (!propertyName && !pureMathAccess && !pureDateParse) errors.push(`runtime identifier: ${node.text}`);
+            const bufferType = node.text === "Buffer" && ts.isTypeReferenceNode(parent) && parent.typeName === node;
+            const pureByteLength = node.text === "Buffer" && ts.isPropertyAccessExpression(parent)
+                && parent.expression === node && parent.name.text === "byteLength"
+                && ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            if (!propertyName && !pureMathAccess && !pureDateParse && !bufferType && !pureByteLength) errors.push(`runtime identifier: ${node.text}`);
         }
         if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
             && node.expression.text === "Math" && node.name.text === "random") errors.push("implicit randomness");
