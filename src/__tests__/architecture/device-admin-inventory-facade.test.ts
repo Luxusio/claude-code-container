@@ -249,7 +249,7 @@ describe("Admin complete original/current public inventory and native namespace 
             for (const actor of [a, b]) {
                 let error: unknown; try { actor.native.devicesCli(["list"]); } catch (cause) { error = cause; }
                 actor.assertZero(); expect(error).toBe(fault === "carrier-change" ? undefined : actor.raw);
-                expect(actor.trace[0]).toEqual(["select-log"]); if (fault === "log-get") expect(actor.trace).toEqual([["select-log"]]);
+                expect(actor.trace.slice(0, 2)).toEqual([["cwd"], ["select-log"]]); if (fault === "log-get") expect(actor.trace).toEqual([["cwd"], ["select-log"]]);
             }
             expect(b.trace).toEqual(a.trace); expect(b.output).toEqual(a.output);
         }

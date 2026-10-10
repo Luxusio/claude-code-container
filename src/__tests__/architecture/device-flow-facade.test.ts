@@ -78,6 +78,8 @@ vi.mock("@ccc/device-lab/providers/display/x11.mjs", async original => fencedPro
 vi.mock("@ccc/device-lab/providers/state/device-store.mjs", async original => ({
     ...fencedProvider(await original<Record<string, unknown>>()), readOwnerDevices: registerCapability(() => []),
 }));
+// Independently admitted port-allocation extraction; exports remain inert capabilities.
+vi.mock("@ccc/device-lab/providers/state/android-emulator-port-allocation.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
 // Both flow graphs use this same inert namespace; no native state function survives.
 vi.mock("@ccc/device-lab/providers/state/state-file.mjs", async original => fencedProvider(await original<Record<string, unknown>>()));
 vi.mock("child_process", async original => {
@@ -153,6 +155,32 @@ beforeAll(async () => {
     assertNoDenials();
     expect(archivedContext.PACKAGE_ROOT).toBe(join(frozenRoot, "packages/device-lab"));
     const admittedProviders: Record<string, { archived: string; current: string; sourceTip: string }> = {
+        // Frozen10c861 originals and independently reviewed64df source authority.
+        "backends/android-device.mjs": {
+            archived: "b53b89ebcdbdeb8430dc2c739e86e9da196d8cd4a3a844296f06ac00d61de53a",
+            current: "f1b1394b550546e51ecfdfb6752dc63ecc1686a48abfcfd5e29e77a45d739252",
+            sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+        },
+        "backends/android.mjs": {
+            archived: "7fe126498d5107dc15d4f018dc4b3cc21e81f70a9ccb7ec8a4bb424e477372ff",
+            current: "1e4e313ea9e89839389e27676afeddec65d155b569eacaf1eb1eae4d072b12bc",
+            sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+        },
+        "backends/ios-device.mjs": {
+            archived: "9bd17af41b71fc3f13b3a1ce758e74224a3631d431a75a43481f33f56d13eef9",
+            current: "56a75969fd6047e0b83c0b19d26c6c2adf44a2be7ecca44783bfc1e106d30d00",
+            sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+        },
+        "backends/linux-vm.mjs": {
+            archived: "f27fba0d138d2d6390f7076d699a3ec93435a8d9c149a4221cfd3c26bb2a64a9",
+            current: "d7dc7669ac6c1201a567fddafb6478aa2b813c0b09688020b3c5ab054f6e54c8",
+            sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+        },
+        "state/android-emulator-port-allocation.mjs": {
+            archived: "209bc23da1da7caa5370998f040d72a6aaa3c1ff2ed594eff47a9452167267ce",
+            current: "25f8e67597592eb666ff26aec4bb56ef0824f524ebfb34331115e7dcc8d52611",
+            sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+        },
         "backends/windows-sandbox.mjs": {
             archived: "adb87857f40652c7da3906ad3e59ab6677050780b3d8ed81f5b37a733288a178",
             current: "5fcfc1e53d3f0200c2a5568ef6d0196de133e48cd879bd8e1fa0b3741550dc35",
