@@ -17,8 +17,28 @@ import {
     type HyperVImageStoreRuntime,
     type HyperVUbuntuImageCacheInspection,
 } from "@ccc/device-lab/device-lab/broker/hyper-v/image-store.js";
+import { createHyperVImagePreparation } from "@ccc/device-lab/device-lab/application/hyper-v-image-preparation.js";
+import type { HyperVImagePreparationPorts } from "@ccc/device-lab/device-lab/ports/hyper-v-image-preparation.js";
 import { HYPER_V_IMAGE_CATALOG } from "@ccc/device-lab/device-lab/hyper-v-images.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP, type HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
+
+// Compile-only controls: import cleanup and automatic finalization are required capabilities,
+// and synchronous publication/root admission cannot silently accept asynchronous substitutions.
+function imagePreparationCapabilityContracts(ports: HyperVImagePreparationPorts): void {
+    createHyperVImagePreparation(ports);
+    const { dismount: _dismount, ...withoutDismount } = ports;
+    // @ts-expect-error Detaching an owner-staged mounted image is mandatory.
+    createHyperVImagePreparation(withoutDismount);
+    const { finalizeAcquisition: _finalize, ...withoutFinalizer } = ports;
+    // @ts-expect-error Automatic acquisition needs its guarded native finalizer.
+    createHyperVImagePreparation(withoutFinalizer);
+    // @ts-expect-error Publication must complete before the application reports success.
+    const asynchronousPublication: HyperVImagePreparationPorts["publishManifest"] = async () => undefined;
+    // @ts-expect-error Root admission must finish before the preparation lock is entered.
+    const asynchronousRootAdmission: HyperVImagePreparationPorts["ensurePreparationRoot"] = async () => undefined;
+    void [_dismount, _finalize, asynchronousPublication, asynchronousRootAdmission];
+}
+void imagePreparationCapabilityContracts;
 
 // Pass-through record of every hash the image store starts, so the readiness cache inspection
 // can prove it never hashes the multi-gigabyte base image.

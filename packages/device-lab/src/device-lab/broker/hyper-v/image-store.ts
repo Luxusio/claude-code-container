@@ -24,53 +24,21 @@ import {
     parseHyperVAcquireBaseImagePrepareObservation,
     parseHyperVBaseImageObservation,
     parseHyperVImportedImageStorage,
-    type HyperVBaseImageObservation,
     type HyperVProviderCommand,
 } from "../../../host-control/hyper-v/index.js";
 import { createDeviceLabHyperVWindowsClient } from "./lifecycle-adapter.js";
-import { inspectHyperVCreateVhd } from "./vhd-create-inspection.js";
-import type { HyperVVirtualHardDisk } from "@ccc/hyper-v/index.js";
+import { createHyperVImagePreparation } from "../../application/hyper-v-image-preparation.js";
+import { hyperVImageProfile } from "../../domain/hyper-v-image-preparation.js";
+import type { HyperVImageProfile, HyperVImageManifest, HyperVImageResolution, HyperVImageCommandResult, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
+import type { HyperVImagePreparationPorts } from "../../ports/hyper-v-image-preparation.js";
+export { hyperVImageProfile } from "../../domain/hyper-v-image-preparation.js";
+export type { HyperVImageProfile, HyperVImageManifest, HyperVImageResolution, HyperVImageCommandResult, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
 
 const HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
 const HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES = 64 * 1024 * 1024 * 1024;
 const HYPER_V_AUTOMATIC_SOURCE_CACHE_LIMIT_BYTES = 6 * 1024 * 1024 * 1024;
-const HYPER_V_IMAGE_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 const HYPER_V_PRIOR_UBUNTU_CATALOG_ID = "canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-native-vhdx-20260725-v1";
 const HYPER_V_IMAGE_OWNER_ID_PATTERN = /^[a-f0-9]{16}$/;
-
-export type HyperVImageProfile = "windows-11" | "windows-server" | "ubuntu-lts";
-
-export type HyperVImageManifest = {
-    version: 3;
-    profile: HyperVImageProfile;
-    catalogId: string;
-    sourceUrl: string | null;
-    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip" | "qcow2" | "vmdk";
-    sourceSha256: string | null;
-    licenseId: string | null;
-    generation: 1 | 2;
-    secureBootTemplate: "MicrosoftWindows" | "MicrosoftUEFICertificateAuthority";
-    preparationVersion: 1;
-    imagePath: string;
-    sha256: string;
-    sizeBytes: number;
-    virtualSizeBytes: number;
-    vhdType: string;
-    preparedAt: string;
-};
-
-export type HyperVImageResolution =
-    | { ok: true; params: Record<string, unknown>; imagePath: string; prepared: boolean }
-    | { ok: false; status: number; error: string; detail?: string; remedy?: string };
-
-export type HyperVImageCommandResult = {
-    mode: string;
-    provider: string;
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-};
 
 export interface HyperVImageStoreRuntime {
     cwd: string;
@@ -88,12 +56,6 @@ export interface HyperVImageStoreRuntime {
     };
 }
 
-export type HyperVImageCreateRequest = {
-    backend: string;
-    dryRun: boolean;
-    create?: Record<string, unknown>;
-};
-
 export type HyperVUbuntuImageCacheConflictCode =
     | "hyper-v-base-image-profile-conflict"
     | "hyper-v-base-image-unmanaged-existing"
@@ -103,10 +65,6 @@ export type HyperVUbuntuImageCacheInspection =
     | { state: "valid"; source: "owner" | "global"; code?: undefined }
     | { state: "acquisition-required"; source?: undefined; code?: undefined }
     | { state: "conflict"; source?: undefined; code: HyperVUbuntuImageCacheConflictCode };
-
-export function hyperVImageProfile(value: unknown): HyperVImageProfile | null {
-    return value === "windows-11" || value === "windows-server" || value === "ubuntu-lts" ? value : null;
-}
 
 export function hyperVImageRoot(privateRoot: string): string {
     return join(privateRoot, "images", "hyper-v");
@@ -498,33 +456,6 @@ export async function sha256LargeRegularFile(
     }
 }
 
-function hyperVImageManifest(
-    profile: HyperVImageProfile,
-    imagePath: string,
-    observation: NonNullable<ReturnType<typeof parseHyperVBaseImageObservation>>,
-    automatic: boolean,
-): HyperVImageManifest {
-    const catalog = profile === "windows-server" || profile === "ubuntu-lts" ? HYPER_V_IMAGE_CATALOG[profile] : null;
-    return {
-        version: 3,
-        profile,
-        catalogId: automatic && catalog ? catalog.catalogId : "user-provided-vhdx",
-        sourceUrl: automatic && catalog ? catalog.sourceUrl : null,
-        sourceFormat: automatic && catalog ? catalog.sourceFormat : "vhdx",
-        sourceSha256: automatic && catalog && "sourceSha256" in catalog ? catalog.sourceSha256 : null,
-        licenseId: automatic && catalog ? catalog.licenseId : null,
-        generation: observation.generation,
-        secureBootTemplate: profile === "ubuntu-lts" ? "MicrosoftUEFICertificateAuthority" : "MicrosoftWindows",
-        preparationVersion: 1,
-        imagePath,
-        sha256: observation.sha256,
-        sizeBytes: observation.sizeBytes,
-        virtualSizeBytes: observation.virtualSizeBytes,
-        vhdType: observation.vhdType,
-        preparedAt: new Date().toISOString(),
-    };
-}
-
 export function readHyperVImageManifestMetadata(
     privateRoot: string,
     profile: HyperVImageProfile,
@@ -599,366 +530,6 @@ async function readHyperVImageManifest(
         throw new Error("hyper-v-base-image-hash-mismatch");
     }
     return manifest;
-}
-
-function commandSucceeded(result: HyperVImageCommandResult): boolean {
-    return result.status === 0 && !result.error;
-}
-
-function resolvePowerShell(runtime: HyperVImageStoreRuntime): string | null {
-    return runtime.resolveExecutable("powershell.exe")
-        || runtime.resolveExecutable("pwsh")
-        || runtime.resolveExecutable("powershell");
-}
-
-async function prepareImportedHyperVImage(
-    profile: HyperVImageProfile,
-    sourceImage: string,
-    ownerProfileRoot: string,
-    runtime: HyperVImageStoreRuntime,
-    powershell: string,
-    deadlineAt: number,
-): Promise<{ observation: HyperVBaseImageObservation; prepared: boolean }> {
-    const imagePath = join(ownerProfileRoot, "base.vhdx");
-    const manifestPath = join(ownerProfileRoot, "manifest.json");
-    const manifestWasPresent = (() => {
-        try { lstatSync(manifestPath); return true; }
-        catch (error) {
-            if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
-            throw error;
-        }
-    })();
-    const stagedSource = await stageLargeRegularFileFromProject(resolve(runtime.cwd), sourceImage, ownerProfileRoot, "hyper-v-base-image-source", deadlineAt);
-    const client = createDeviceLabHyperVWindowsClient({
-        executable: powershell,
-        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, runtime.limits.prepareTimeoutMs),
-        run: runtime.run,
-    });
-    let removeStagedSource = true;
-    let partial: string | null = null;
-    let publishedIdentity: { dev: number; ino: number } | null = null;
-    let manifestTemporaryPath: string | null = null;
-    let publishedManifestIdentity: { dev: number; ino: number } | null = null;
-    const storage = async (readPartitionStyle: boolean, cleanup = false) => {
-        const execution = await runtime.run(hyperVImportedImageStorageCommand({
-            executable: powershell, imageRoot: ownerProfileRoot, path: stagedSource, readPartitionStyle,
-        }), {
-            timeoutMs: cleanup ? 30_000 : hyperVRemainingTimeout(deadlineAt, runtime.limits.prepareTimeoutMs),
-            outputLimit: runtime.limits.commandOutputBytes,
-        });
-        if (!commandSucceeded(execution)) throw new Error(`hyper-v-base-image-storage-failed:${hyperVProviderDiagnosticCode(execution, "hyper-v-powershell-execution-failed")}`);
-        const observation = parseHyperVImportedImageStorage(execution.stdout || "", stagedSource);
-        if (!observation) throw new Error("hyper-v-base-image-storage-invalid-result");
-        return observation;
-    };
-    try {
-        const source = inspectLargeRegularFile(ownerProfileRoot, stagedSource, "hyper-v-base-image-source");
-        const sourceSha256 = await sha256LargeRegularFile(ownerProfileRoot, stagedSource, "hyper-v-base-image-source", deadlineAt);
-        let reused = false;
-        if (existsSync(imagePath)) {
-            const existing = inspectLargeRegularFile(ownerProfileRoot, imagePath, "hyper-v-base-image");
-            if (existing.size !== source.size || await sha256LargeRegularFile(ownerProfileRoot, imagePath, "hyper-v-base-image", deadlineAt) !== sourceSha256) {
-                throw new Error("hyper-v-base-image-profile-conflict");
-            }
-            reused = true;
-        }
-        const sourceVhd = await client.getVHD(stagedSource);
-        const virtualSizeBytes = inspectHyperVCreateVhd({ kind: "base", path: stagedSource }, sourceVhd);
-        if (sourceVhd.vhdType !== "Dynamic" && sourceVhd.vhdType !== "Fixed") throw new Error("hyper-v-base-image-type-unsupported");
-        if (sourceVhd.fileSizeBytes !== source.size
-            || (sourceVhd.vhdType === "Dynamic" && source.size > virtualSizeBytes)) throw new Error("hyper-v-base-image-size-mismatch");
-        const beforeMount = await storage(false);
-        if (beforeMount.attached) {
-            removeStagedSource = false;
-            throw new Error("hyper-v-base-image-source-already-mounted");
-        }
-        let partitionStyle: string | null = null;
-        let mountError: unknown = null;
-        removeStagedSource = false;
-        try {
-            await client.mountVHD({ path: stagedSource, readOnly: true, noDriveLetter: true });
-            const mounted = await storage(true);
-            if (!mounted.attached) throw new Error("hyper-v-base-image-not-mounted");
-            partitionStyle = mounted.partitionStyle;
-        } catch (error) {
-            mountError = error;
-        } finally {
-            // The staged path belongs only to this transaction, so a lost mount response can
-            // safely be followed by a path-based dismount. Keep it if detached readback fails.
-            const cleanupClient = createDeviceLabHyperVWindowsClient({
-                executable: powershell, timeoutMilliseconds: 30_000, run: runtime.run,
-            });
-            let dismountError: unknown = null;
-            try { await cleanupClient.dismountVHD(stagedSource); } catch (error) { dismountError = error; }
-            try {
-                const detached = await storage(false, true);
-                if (detached.attached) throw new Error("hyper-v-base-image-dismount-failed");
-                removeStagedSource = true;
-                if (dismountError) throw new Error("hyper-v-base-image-dismount-failed");
-            } catch {
-                throw new Error("hyper-v-base-image-dismount-failed");
-            }
-        }
-        if (mountError) throw mountError;
-        assertHyperVOperationDeadline(deadlineAt);
-        const generation = partitionStyle === "GPT" ? 2 : partitionStyle === "MBR" ? 1 : null;
-        if (!generation) throw new Error("hyper-v-base-image-partition-style-unsupported");
-
-        if (reused) {
-            const existingVhd = await client.getVHD(imagePath);
-            if (inspectHyperVCreateVhd({ kind: "base", path: imagePath }, existingVhd) !== virtualSizeBytes
-                || existingVhd.fileSizeBytes !== source.size || existingVhd.vhdType !== sourceVhd.vhdType) throw new Error("hyper-v-base-image-profile-conflict");
-        } else {
-            partial = await stageLargeRegularFileFromProject(ownerProfileRoot, stagedSource, ownerProfileRoot, "hyper-v-base-image-copy", deadlineAt);
-            const copied = inspectLargeRegularFile(ownerProfileRoot, partial, "hyper-v-base-image-copy");
-            if (copied.size !== source.size
-                || await sha256LargeRegularFile(ownerProfileRoot, partial, "hyper-v-base-image-copy", deadlineAt) !== sourceSha256) {
-                throw new Error("hyper-v-base-image-hash-mismatch");
-            }
-            const copiedVhd = await client.getVHD(partial);
-            if (inspectHyperVCreateVhd({ kind: "base", path: partial }, copiedVhd) !== virtualSizeBytes
-                || copiedVhd.fileSizeBytes !== source.size || copiedVhd.vhdType !== sourceVhd.vhdType) throw new Error("hyper-v-base-image-size-mismatch");
-            assertHyperVOperationDeadline(deadlineAt);
-            const partialStat = await fsPromises.lstat(partial);
-            await fsPromises.link(partial, imagePath);
-            publishedIdentity = { dev: partialStat.dev, ino: partialStat.ino };
-            await fsPromises.unlink(partial);
-            partial = null;
-            const final = inspectLargeRegularFile(ownerProfileRoot, imagePath, "hyper-v-base-image");
-            if (final.size !== source.size
-                || await sha256LargeRegularFile(ownerProfileRoot, imagePath, "hyper-v-base-image", deadlineAt) !== sourceSha256) {
-                throw new Error("hyper-v-base-image-hash-mismatch");
-            }
-            const finalVhd = await client.getVHD(imagePath);
-            if (inspectHyperVCreateVhd({ kind: "base", path: imagePath }, finalVhd) !== virtualSizeBytes
-                || finalVhd.fileSizeBytes !== source.size || finalVhd.vhdType !== sourceVhd.vhdType) throw new Error("hyper-v-base-image-size-mismatch");
-        }
-        const observation: HyperVBaseImageObservation = {
-            ok: true, profile, imagePath, sha256: sourceSha256, sizeBytes: source.size,
-            virtualSizeBytes, vhdType: sourceVhd.vhdType, generation, reused,
-        };
-        if (manifestWasPresent) {
-            const existingManifest = readHyperVImageManifestMetadata(runtime.privateRoot, profile, ownerProfileRoot, true);
-            if (existingManifest.sha256 !== sourceSha256
-                || existingManifest.sizeBytes !== source.size
-                || existingManifest.virtualSizeBytes !== virtualSizeBytes
-                || existingManifest.vhdType !== sourceVhd.vhdType
-                || existingManifest.generation !== generation) throw new Error("hyper-v-base-image-profile-conflict");
-            assertHyperVOperationDeadline(deadlineAt);
-            return { observation, prepared: !reused };
-        }
-        assertHyperVOperationDeadline(deadlineAt);
-        const manifest = hyperVImageManifest(profile, imagePath, observation, false);
-        const manifestBytes = JSON.stringify(manifest, null, 2);
-        if (Buffer.byteLength(manifestBytes) > HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES) throw new Error("hyper-v-base-image-manifest-invalid");
-        manifestTemporaryPath = join(ownerProfileRoot, `.manifest-${randomBytes(12).toString("hex")}.tmp`);
-        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-        const manifestDescriptor = await fsPromises.open(manifestTemporaryPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
-        let temporaryIdentity: { dev: number; ino: number };
-        try {
-            await manifestDescriptor.writeFile(manifestBytes);
-            await manifestDescriptor.sync();
-            const temporary = await manifestDescriptor.stat();
-            if (!temporary.isFile() || temporary.nlink !== 1 || temporary.size !== Buffer.byteLength(manifestBytes)) {
-                throw new Error("hyper-v-base-image-manifest-invalid");
-            }
-            temporaryIdentity = { dev: temporary.dev, ino: temporary.ino };
-        } finally {
-            await manifestDescriptor.close();
-        }
-        assertHyperVOperationDeadline(deadlineAt);
-        await fsPromises.link(manifestTemporaryPath, manifestPath);
-        publishedManifestIdentity = temporaryIdentity;
-        await fsPromises.unlink(manifestTemporaryPath);
-        manifestTemporaryPath = null;
-        assertHyperVOperationDeadline(deadlineAt);
-        return { observation, prepared: !reused };
-    } catch (error) {
-        if (publishedManifestIdentity) {
-            try {
-                const current = await fsPromises.lstat(manifestPath);
-                if (current.dev === publishedManifestIdentity.dev && current.ino === publishedManifestIdentity.ino) await fsPromises.unlink(manifestPath);
-            } catch { /* preserve the original failure */ }
-        }
-        if (publishedIdentity) {
-            try {
-                const current = await fsPromises.lstat(imagePath);
-                if (current.dev === publishedIdentity.dev && current.ino === publishedIdentity.ino) await fsPromises.unlink(imagePath);
-            } catch { /* preserve the original failure */ }
-        }
-        throw error;
-    } finally {
-        if (manifestTemporaryPath) { try { await fsPromises.unlink(manifestTemporaryPath); } catch { /* best effort */ } }
-        if (partial) { try { await fsPromises.unlink(partial); } catch { /* best effort */ } }
-        if (removeStagedSource) { try { await fsPromises.unlink(stagedSource); } catch { /* best effort */ } }
-    }
-}
-
-async function acquireAutomaticHyperVImage(
-    profile: "windows-server" | "ubuntu-lts",
-    globalProfileRoot: string,
-    runtime: HyperVImageStoreRuntime,
-    powershell: string,
-    acquireDeadlineAt: number,
-): Promise<HyperVBaseImageObservation> {
-    const imageRoot = hyperVImageRoot(runtime.privateRoot);
-    const imagePath = join(globalProfileRoot, "base.vhdx");
-    const partialPath = join(globalProfileRoot, "base.partial.vhdx");
-    const workPath = join(globalProfileRoot, ".acquire-work");
-    const ownedArtifacts = new Map<string, AutomaticArtifactIdentity>();
-    const options = {
-        executable: powershell, profile, imageRoot,
-        expectedGeneration: 2 as const,
-    } as const;
-    const client = createDeviceLabHyperVWindowsClient({
-        executable: powershell,
-        timeoutMilliseconds: () => hyperVRemainingTimeout(acquireDeadlineAt, runtime.limits.acquireTimeoutMs),
-        run: runtime.run,
-    });
-    const runStage = async (command: HyperVProviderCommand) => {
-        const result = await runtime.run(command, {
-            timeoutMs: hyperVRemainingTimeout(acquireDeadlineAt, runtime.limits.acquireTimeoutMs),
-            outputLimit: runtime.limits.commandOutputBytes,
-        });
-        assertHyperVOperationDeadline(acquireDeadlineAt);
-        if (!commandSucceeded(result)) {
-            throw new Error(`hyper-v-base-image-acquire-failed:${hyperVProviderDiagnosticCode(result, "hyper-v-powershell-execution-failed")}`);
-        }
-        return result.stdout || "";
-    };
-    const inspectVhd = async (
-        path: string, format: "VHD" | "VHDX", expectedType?: "Fixed" | "Dynamic",
-    ): Promise<HyperVVirtualHardDisk> => {
-        const file = inspectLargeRegularFile(globalProfileRoot, path, "hyper-v-base-image-vhd");
-        const vhd = await client.getVHD(path);
-        if (win32.normalize(vhd.path).toLowerCase() !== win32.normalize(path).toLowerCase()
-            || vhd.vhdFormat !== format || vhd.parentPath !== null
-            || (vhd.vhdType !== "Fixed" && vhd.vhdType !== "Dynamic")
-            || (expectedType && vhd.vhdType !== expectedType)
-            || !Number.isSafeInteger(vhd.virtualSizeBytes) || vhd.virtualSizeBytes <= 0
-            || vhd.fileSizeBytes !== file.size) {
-            throw new Error("hyper-v-base-image-vhd-invalid");
-        }
-        return vhd;
-    };
-    try {
-        const prepared = parseHyperVAcquireBaseImagePrepareObservation(
-            await runStage(hyperVAcquireBaseImagePrepareCommand(options)),
-        );
-        if (!prepared || prepared.profile !== profile
-            || resolve(prepared.imagePath) !== resolve(imagePath)
-            || resolve(prepared.partialPath) !== resolve(partialPath)) {
-            throw new Error("hyper-v-base-image-acquire-invalid-result");
-        }
-        for (const path of [partialPath, workPath]) {
-            const identity = automaticArtifactIdentity(path);
-            if (identity) ownedArtifacts.set(path, identity);
-        }
-        let expectedSourceVhdSha256: string | undefined;
-        let expectedSourceFileId: string | undefined;
-        let expectedQemuSha256: string | undefined;
-        let expectedPartialSha256: string;
-        let expectedPartialFileId: string;
-        let expectedVirtualSizeBytes: number;
-        let expectedVhdType: "Fixed" | "Dynamic";
-        if (prepared.profile === "ubuntu-lts") {
-            const sourcePath = join(globalProfileRoot, ".acquire-work", "converted.normalized.fixed.vhd");
-            if (resolve(prepared.sourceVhdPath) !== resolve(sourcePath)) throw new Error("hyper-v-base-image-source-path-invalid");
-            const sourceIdentity = automaticArtifactIdentity(sourcePath);
-            if (!sourceIdentity || sourceIdentity.directory) throw new Error("hyper-v-base-image-source-invalid");
-            const sourceHashBefore = await sha256LargeRegularFile(globalProfileRoot, sourcePath, "hyper-v-base-image-source", acquireDeadlineAt);
-            if (sourceHashBefore !== prepared.sourceVhdSha256) throw new Error("hyper-v-base-image-source-mutated");
-            const sourceVhd = await inspectVhd(sourcePath, "VHD", "Fixed");
-            if (sourceVhd.virtualSizeBytes !== prepared.sourceVirtualSizeBytes
-                || sourceVhd.virtualSizeBytes > HYPER_V_IMAGE_CATALOG["ubuntu-lts"].virtualSizeBytes) {
-                throw new Error("hyper-v-base-image-source-format-invalid");
-            }
-            if (await sha256LargeRegularFile(globalProfileRoot, sourcePath, "hyper-v-base-image-source", acquireDeadlineAt) !== sourceHashBefore) {
-                throw new Error("hyper-v-base-image-source-mutated");
-            }
-            assertAutomaticFileIdentity(sourcePath, sourceIdentity, "hyper-v-base-image-source");
-            await client.convertVHD({ sourcePath, destinationPath: partialPath, vhdType: "Dynamic" }, {
-                timeoutMilliseconds: hyperVRemainingTimeout(acquireDeadlineAt, runtime.limits.acquireTimeoutMs),
-            });
-            const convertedIdentity = automaticArtifactIdentity(partialPath);
-            if (convertedIdentity) ownedArtifacts.set(partialPath, convertedIdentity);
-            if (await sha256LargeRegularFile(globalProfileRoot, sourcePath, "hyper-v-base-image-source", acquireDeadlineAt) !== sourceHashBefore) {
-                throw new Error("hyper-v-base-image-source-mutated");
-            }
-            assertAutomaticFileIdentity(sourcePath, sourceIdentity, "hyper-v-base-image-source");
-            const partialIdentity = automaticArtifactIdentity(partialPath);
-            if (!partialIdentity || partialIdentity.directory) throw new Error("hyper-v-base-image-partial-invalid");
-            let partialVhd = await inspectVhd(partialPath, "VHDX", "Dynamic");
-            assertAutomaticFileIdentity(partialPath, partialIdentity, "hyper-v-base-image-partial");
-            const targetSize = HYPER_V_IMAGE_CATALOG["ubuntu-lts"].virtualSizeBytes;
-            if (partialVhd.virtualSizeBytes > targetSize) throw new Error("hyper-v-base-image-convert-failed");
-            if (partialVhd.virtualSizeBytes < targetSize) {
-                await client.resizeVHD({ path: partialPath, sizeBytes: targetSize }, {
-                    timeoutMilliseconds: hyperVRemainingTimeout(acquireDeadlineAt, runtime.limits.acquireTimeoutMs),
-                });
-                partialVhd = await inspectVhd(partialPath, "VHDX", "Dynamic");
-                assertAutomaticFileIdentity(partialPath, partialIdentity, "hyper-v-base-image-partial");
-            }
-            if (partialVhd.virtualSizeBytes !== targetSize) throw new Error("hyper-v-base-image-convert-failed");
-            expectedSourceVhdSha256 = sourceHashBefore;
-            expectedSourceFileId = sourceIdentity.ino.toString();
-            expectedQemuSha256 = prepared.qemuSha256;
-            expectedPartialSha256 = await sha256LargeRegularFile(globalProfileRoot, partialPath, "hyper-v-base-image-partial", acquireDeadlineAt);
-            expectedPartialFileId = partialIdentity.ino.toString();
-            assertAutomaticFileIdentity(sourcePath, sourceIdentity, "hyper-v-base-image-source");
-            assertAutomaticFileIdentity(partialPath, partialIdentity, "hyper-v-base-image-partial");
-            expectedVirtualSizeBytes = partialVhd.virtualSizeBytes;
-            expectedVhdType = "Dynamic";
-        } else {
-            const partialFile = inspectLargeRegularFile(globalProfileRoot, partialPath, "hyper-v-base-image-partial");
-            const partialIdentity = automaticArtifactIdentity(partialPath);
-            if (!partialIdentity || partialIdentity.directory) throw new Error("hyper-v-base-image-partial-invalid");
-            expectedPartialSha256 = await sha256LargeRegularFile(globalProfileRoot, partialPath, "hyper-v-base-image-partial", acquireDeadlineAt);
-            expectedPartialFileId = partialIdentity.ino.toString();
-            if (partialFile.size !== prepared.partialSizeBytes || expectedPartialSha256 !== prepared.partialSha256) {
-                throw new Error("hyper-v-base-image-partial-mutated");
-            }
-            const partialVhd = await inspectVhd(partialPath, "VHDX");
-            assertAutomaticFileIdentity(partialPath, partialIdentity, "hyper-v-base-image-partial");
-            expectedVirtualSizeBytes = partialVhd.virtualSizeBytes;
-            expectedVhdType = partialVhd.vhdType as "Fixed" | "Dynamic";
-        }
-        const finalizeCommon = {
-            executable: powershell, imageRoot, expectedGeneration: 2 as const,
-            expectedPartialSha256, expectedPartialFileId, expectedVirtualSizeBytes, expectedVhdType,
-        };
-        const finalizeCommand = profile === "ubuntu-lts"
-            ? hyperVAcquireBaseImageFinalizeCommand({
-                ...finalizeCommon, profile,
-                expectedSourceVhdSha256: expectedSourceVhdSha256!, expectedSourceFileId: expectedSourceFileId!, expectedQemuSha256: expectedQemuSha256!,
-            })
-            : hyperVAcquireBaseImageFinalizeCommand({ ...finalizeCommon, profile });
-        const observation = parseHyperVBaseImageObservation(await runStage(finalizeCommand));
-        if (!observation || observation.profile !== profile || resolve(observation.imagePath) !== resolve(imagePath)
-            || observation.generation !== HYPER_V_IMAGE_CATALOG[profile].generation
-            || observation.virtualSizeBytes !== expectedVirtualSizeBytes
-            || observation.vhdType !== expectedVhdType) {
-            throw new Error("hyper-v-base-image-acquire-invalid-result");
-        }
-        const finalVhd = await inspectVhd(imagePath, "VHDX", expectedVhdType);
-        if (finalVhd.virtualSizeBytes !== observation.virtualSizeBytes) throw new Error("hyper-v-base-image-final-inspection-failed");
-        cleanupOwnedAutomaticArtifacts(globalProfileRoot, ownedArtifacts);
-        return observation;
-    } catch (error) {
-        // The finalizer has released its handle before a later typed read or broker check.
-        // A path stat or matching hash cannot prove who created base.vhdx if it was replaced.
-        // Keep any unmanifested base for guarded recovery and clean only known work paths.
-        try { cleanupOwnedAutomaticArtifacts(globalProfileRoot, ownedArtifacts); }
-        catch { /* preserve the original failure and leave uncertain artifacts in place */ }
-        for (const [path, label] of [
-            [partialPath, "partial-uncertain"], [workPath, "work-uncertain"],
-        ] as const) {
-            try { quarantineUncertainAutomaticArtifact(globalProfileRoot, path, label); }
-            catch { /* an unsafe or changed path remains for explicit guarded recovery */ }
-        }
-        if (hyperVOperationDeadlineExpired(acquireDeadlineAt)) throw new HyperVOperationDeadlineError();
-        throw error;
-    }
 }
 
 function hyperVImageEntryPresent(path: string): boolean {
@@ -1054,6 +625,7 @@ export function inspectHyperVUbuntuImageCache(privateRoot: string, ownerId: stri
     }
 }
 
+
 export async function resolveHyperVImageForCreate(
     ownerId: string,
     request: HyperVImageCreateRequest,
@@ -1061,218 +633,78 @@ export async function resolveHyperVImageForCreate(
     runtime: HyperVImageStoreRuntime,
     deadlineAt = Number.POSITIVE_INFINITY,
 ): Promise<HyperVImageResolution> {
-    const input = params && typeof params === "object" && !Array.isArray(params) ? params as Record<string, unknown> : {};
-    const create = request.create || {};
-    const profile = hyperVImageProfile(create.profile || (request.backend === "linux-vm" ? "ubuntu-lts" : "windows-server"));
-    if (!profile) {
-        return { ok: false, status: 400, error: "hyper-v-image-profile-invalid", detail: "profile must be windows-11, windows-server, or ubuntu-lts" };
-    }
-    const globalProfileRoot = hyperVImageProfileRoot(runtime.privateRoot, profile);
-    const ownerProfileRoot = hyperVOwnerImageProfileRoot(runtime.privateRoot, ownerId, profile);
-    if (typeof create.image === "string" && create.image) {
-        try {
-            const requestedImage = resolve(create.image);
-            const ownerImage = resolve(join(ownerProfileRoot, "base.vhdx"));
-            const globalImage = resolve(join(globalProfileRoot, "base.vhdx"));
-            const manifest = requestedImage === ownerImage
-                ? await readHyperVImageManifest(runtime.privateRoot, profile, ownerProfileRoot, true, deadlineAt)
-                : requestedImage === globalImage
-                    ? await readHyperVImageManifest(runtime.privateRoot, profile, globalProfileRoot, false, deadlineAt)
-                    : (() => { throw new Error("hyper-v-base-image-manifest-path-mismatch"); })();
-            if (resolve(create.image) !== resolve(manifest.imagePath)) throw new Error("hyper-v-base-image-manifest-path-mismatch");
-            return { ok: true, params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
-        } catch (error) {
-            if (error instanceof HyperVOperationDeadlineError) throw error;
-            return {
-                ok: false,
-                status: 409,
-                error: "hyper-v-base-image-not-prepared",
-                detail: hyperVBoundedErrorCode(error, "hyper-v-base-image-not-prepared"),
-                remedy: "import the generalized VHDX with --source-image",
-            };
-        }
-    }
-
-    const sourceImage = typeof create.sourceImage === "string" && create.sourceImage ? resolve(runtime.cwd, create.sourceImage) : null;
-    if (request.dryRun) {
-        if (sourceImage) {
-            return {
-                ok: false,
-                status: 409,
-                error: "hyper-v-base-image-not-prepared",
-                remedy: "run device_create without --dry-run once to import and validate the source image",
-            };
-        }
-        try {
-            let manifest: HyperVImageManifest;
+    const client = (executable: string, timeoutMilliseconds: number | (() => number)) => createDeviceLabHyperVWindowsClient({
+        executable, timeoutMilliseconds, run: runtime.run,
+    });
+    const ports: HyperVImagePreparationPorts = {
+        cwd: runtime.cwd, privateRoot: runtime.privateRoot, limits: runtime.limits,
+        catalog: HYPER_V_IMAGE_CATALOG,
+        now: () => Date.now(), preparedAt: () => new Date().toISOString(),
+        resolveExecutable: (name) => runtime.resolveExecutable(name),
+        assertDeadline: (deadline) => { assertHyperVOperationDeadline(deadline); return undefined; },
+        remainingTimeout: hyperVRemainingTimeout, deadlineExpired: hyperVOperationDeadlineExpired,
+        isDeadlineError: (error) => error instanceof HyperVOperationDeadlineError,
+        deadlineError: () => new HyperVOperationDeadlineError(),
+        boundedErrorCode: hyperVBoundedErrorCode, boundedErrorDetail: hyperVBoundedErrorDetail,
+        diagnosticCode: hyperVProviderDiagnosticCode,
+        exists: existsSync,
+        manifestPresent: (path) => {
+            try { lstatSync(path); return true; }
+            catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false; throw error; }
+        },
+        inspectFile: inspectLargeRegularFile, hashFile: sha256LargeRegularFile, stageFile: stageLargeRegularFileFromProject,
+        fileIdentity: async (path) => { const stat = await fsPromises.lstat(path); return { dev: stat.dev, ino: stat.ino }; },
+        linkFile: (source, destination) => fsPromises.link(source, destination),
+        unlinkFile: (path) => fsPromises.unlink(path),
+        manifestTemporaryPath: (root) => join(root, `.manifest-${randomBytes(12).toString("hex")}.tmp`),
+        writeManifestTemporary: async (path, bytes) => {
+            const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+            const descriptor = await fsPromises.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
             try {
-                manifest = await readHyperVImageManifest(runtime.privateRoot, profile, ownerProfileRoot, true, deadlineAt);
-            } catch {
-                manifest = await readHyperVImageManifest(runtime.privateRoot, profile, globalProfileRoot, false, deadlineAt);
-            }
-            return {
-                ok: true,
-                params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes },
-                imagePath: manifest.imagePath,
-                prepared: false,
-            };
-        } catch (error) {
-            return {
-                ok: false,
-                status: 409,
-                error: "hyper-v-base-image-not-prepared",
-                detail: hyperVBoundedErrorCode(error, "hyper-v-base-image-not-prepared"),
-                remedy: "run device_create without --dry-run once to acquire and validate the base image",
-            };
-        }
-    }
-
-    const preparationRoot = sourceImage ? ownerProfileRoot : globalProfileRoot;
-    try {
-        mkdirSync(preparationRoot, { recursive: true, mode: 0o700 });
-        assertNoSymlinkPathComponents(preparationRoot, "hyper-v-base-image-preparation");
-        const preparationMetadata = lstatSync(preparationRoot);
-        if (!preparationMetadata.isDirectory() || preparationMetadata.isSymbolicLink()) throw new Error("hyper-v-base-image-preparation-root-invalid");
-        return await withSharedMutationLockAsync(join(preparationRoot, "prepare.lock"), async () => {
-            assertHyperVOperationDeadline(deadlineAt);
-            if (!sourceImage) {
-                const acquireDeadlineAt = Math.min(deadlineAt, Date.now() + runtime.limits.acquireTimeoutMs);
-                if (profile === "ubuntu-lts") await recoverPriorAutomaticImage(globalProfileRoot, acquireDeadlineAt);
-                let retiredPrior: {
-                    prior: { manifestBytes: Buffer; imageSha256: string; imageSize: number };
-                    identities: { manifest: AutomaticArtifactIdentity; image: AutomaticArtifactIdentity };
-                } | null = null;
-                let pendingPrior: { manifestBytes: Buffer; imageSha256: string; imageSize: number } | null = null;
-                let cachedManifest: HyperVImageManifest | null = null;
-                try {
-                    cachedManifest = await readHyperVImageManifest(runtime.privateRoot, profile, ownerProfileRoot, true, deadlineAt);
-                } catch (cacheError) {
-                    if (cacheError instanceof HyperVOperationDeadlineError) throw cacheError;
-                    try {
-                        cachedManifest = await readHyperVImageManifest(runtime.privateRoot, profile, globalProfileRoot, false, deadlineAt);
-                    } catch (globalCacheError) {
-                        if (globalCacheError instanceof HyperVOperationDeadlineError) throw globalCacheError;
-                        if (profile === "windows-11") {
-                            throw new Error(`hyper-v-base-image-profile-not-automatic:${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
-                        }
-                        assertNoSymlinkPathComponents(globalProfileRoot, "hyper-v-base-image-cleanup");
-                        if (existsSync(join(globalProfileRoot, "manifest.json"))) {
-                            const prior = await isKnownPriorAutomaticImage(profile, globalProfileRoot, acquireDeadlineAt);
-                            if (!prior) {
-                                throw new Error("hyper-v-base-image-profile-conflict");
-                            }
-                            pendingPrior = prior;
-                        } else if (existsSync(join(globalProfileRoot, "base.vhdx"))) {
-                            throw new Error("hyper-v-base-image-unmanaged-existing");
-                        }
-                    }
+                await descriptor.writeFile(bytes);
+                await descriptor.sync();
+                const temporary = await descriptor.stat();
+                if (!temporary.isFile() || temporary.nlink !== 1 || temporary.size !== Buffer.byteLength(bytes)) {
+                    throw new Error("hyper-v-base-image-manifest-invalid");
                 }
-                if (cachedManifest) {
-                    if (cachedManifest.licenseId && !readHyperVWindowsEvaluationReceipt(join(runtime.privateRoot, "setup"))) {
-                        throw new Error("hyper-v-windows-evaluation-license-not-accepted");
-                    }
-                    return {
-                        ok: true as const,
-                        params: { ...input, profile, image: cachedManifest.imagePath, baseImageSha256: cachedManifest.sha256, baseImageGeneration: cachedManifest.generation, diskMaxBytes: cachedManifest.virtualSizeBytes },
-                        imagePath: cachedManifest.imagePath,
-                        prepared: false,
-                    };
-                }
-                if (profile === "windows-server" && !readHyperVWindowsEvaluationReceipt(join(runtime.privateRoot, "setup"))) {
-                    throw new Error("hyper-v-windows-evaluation-license-not-accepted");
-                }
-                const automaticProfile = profile === "windows-server" || profile === "ubuntu-lts" ? profile : null;
-                if (!automaticProfile) throw new Error("hyper-v-base-image-profile-not-automatic");
-                const powershell = resolvePowerShell(runtime);
-                if (!powershell) throw new Error("missing-provider-command:powershell");
-                const imagePath = join(globalProfileRoot, "base.vhdx");
-                if (automaticArtifactIdentity(join(globalProfileRoot, "base.partial.vhdx"))
-                    || automaticArtifactIdentity(join(globalProfileRoot, ".acquire-work"))) {
-                    throw new Error("hyper-v-base-image-artifact-owner-unknown");
-                }
-                try {
-                    if (pendingPrior) {
-                        const identities = await retireKnownPriorAutomaticImage(globalProfileRoot, pendingPrior, acquireDeadlineAt);
-                        retiredPrior = { prior: pendingPrior, identities };
-                    }
-                    const observation = await acquireAutomaticHyperVImage(
-                        automaticProfile, globalProfileRoot, runtime, powershell, acquireDeadlineAt,
-                    );
-                    if (hyperVOperationDeadlineExpired(acquireDeadlineAt)) throw new HyperVOperationDeadlineError();
-                    if (!observation
-                        || observation.profile !== profile
-                        || observation.generation !== HYPER_V_IMAGE_CATALOG[automaticProfile].generation
-                        || resolve(observation.imagePath) !== resolve(imagePath)) {
-                        throw new Error("hyper-v-base-image-acquire-invalid-result");
-                    }
-                    const image = inspectLargeRegularFile(globalProfileRoot, imagePath, "hyper-v-base-image");
-                    if (image.size !== observation.sizeBytes) throw new Error("hyper-v-base-image-size-mismatch");
-                    if (await sha256LargeRegularFile(globalProfileRoot, imagePath, "hyper-v-base-image", acquireDeadlineAt) !== observation.sha256) {
-                        throw new Error("hyper-v-base-image-hash-mismatch");
-                    }
-                    const manifest = hyperVImageManifest(profile, imagePath, observation, true);
-                    assertHyperVOperationDeadline(acquireDeadlineAt);
-                    writeJsonFileAtomically(join(globalProfileRoot, "manifest.json"), manifest);
-                    if (retiredPrior) {
-                        try {
-                            await discardRetiredPriorAutomaticImage(globalProfileRoot, retiredPrior.prior, retiredPrior.identities, acquireDeadlineAt);
-                        } catch { /* the committed current pair remains valid; retain backups for guarded recovery */ }
-                    }
-                    return {
-                        ok: true as const,
-                        params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
-                        imagePath,
-                        prepared: !observation.reused,
-                    };
-                } catch (error) {
-                    if (retiredPrior) {
-                        try { await recoverPriorAutomaticImage(globalProfileRoot, acquireDeadlineAt); }
-                        catch { /* preserve an uncertain new base and the recoverable prior pair */ }
-                    }
-                    throw error;
-                }
-            }
-
-            if (!/\.vhdx$/i.test(sourceImage)) throw new Error("hyper-v-base-image-format-unsupported");
-            const powershell = resolvePowerShell(runtime);
-            if (!powershell) throw new Error("missing-provider-command:powershell");
-            const imagePath = join(ownerProfileRoot, "base.vhdx");
-            const { observation, prepared } = await prepareImportedHyperVImage(profile, sourceImage, ownerProfileRoot, runtime, powershell, deadlineAt);
-            return {
-                ok: true as const,
-                params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
-                imagePath,
-                prepared,
-            };
-        }, {
-            waitMs: hyperVRemainingTimeout(deadlineAt, runtime.limits.lockWaitMs),
-            staleMs: HYPER_V_IMAGE_LOCK_STALE_MS,
-        });
-    } catch (error) {
-        if (error instanceof HyperVOperationDeadlineError) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
-        const publicDetail = hyperVBoundedErrorDetail(error, "hyper-v-base-image-prepare-failed");
-        const licenseMissing = detail.includes("hyper-v-windows-evaluation-license-not-accepted");
-        const automaticUnsupported = detail.includes("hyper-v-base-image-profile-not-automatic");
-        const notPrepared = !sourceImage && (detail.includes("ENOENT") || detail.includes("not found") || detail.includes("manifest-missing") || automaticUnsupported);
-        const profileConflict = detail.includes("hyper-v-base-image-profile-conflict") || detail.includes("hyper-v-base-image-unmanaged-existing")
-            || detail.includes("hyper-v-base-image-artifact-owner-unknown");
-        return {
-            ok: false,
-            status: licenseMissing || notPrepared || profileConflict ? 409 : 422,
-            error: licenseMissing
-                ? "hyper-v-windows-evaluation-license-not-accepted"
-                : notPrepared
-                    ? "hyper-v-base-image-not-prepared"
-                    : profileConflict
-                        ? "hyper-v-base-image-profile-conflict"
-                        : "hyper-v-base-image-prepare-failed",
-            detail: publicDetail,
-            remedy: licenseMissing
-                ? "review the Microsoft Windows Server evaluation terms, then run ccc devices setup hyper-v --confirm --accept-windows-evaluation-license"
-                : notPrepared
-                    ? "provide --source-image with a generalized Windows 11 VHDX, or use the automatic windows-server profile"
-                    : undefined,
-        };
-    }
+                return { dev: temporary.dev, ino: temporary.ino };
+            } finally { await descriptor.close(); }
+        },
+        publishManifest: (path, manifest) => { writeJsonFileAtomically(path, manifest); return undefined; },
+        readManifest: readHyperVImageManifest, readManifestMetadata: readHyperVImageManifestMetadata,
+        ensurePreparationRoot: (root) => {
+            mkdirSync(root, { recursive: true, mode: 0o700 });
+            assertNoSymlinkPathComponents(root, "hyper-v-base-image-preparation");
+            const metadata = lstatSync(root);
+            if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("hyper-v-base-image-preparation-root-invalid");
+            return undefined;
+        },
+        assertSafePath: (path, label) => { assertNoSymlinkPathComponents(path, label); return undefined; },
+        withPreparationLock: withSharedMutationLockAsync,
+        licenseAccepted: (root) => Boolean(readHyperVWindowsEvaluationReceipt(root)),
+        artifactIdentity: automaticArtifactIdentity,
+        assertFileIdentity: (path, expected, label) => { assertAutomaticFileIdentity(path, expected, label); return undefined; },
+        cleanupOwnedArtifacts: (root, owned) => { cleanupOwnedAutomaticArtifacts(root, owned); return undefined; },
+        quarantineUncertainArtifact: quarantineUncertainAutomaticArtifact,
+        knownPriorImage: isKnownPriorAutomaticImage, recoverPriorImage: recoverPriorAutomaticImage,
+        retirePriorImage: retireKnownPriorAutomaticImage, discardPriorImage: discardRetiredPriorAutomaticImage,
+        getVhd: (executable, path, timeout) => client(executable, timeout).getVHD(path),
+        mountReadOnly: (executable, path, timeout) => client(executable, timeout).mountVHD({ path, readOnly: true, noDriveLetter: true }).then(() => undefined),
+        dismount: (executable, path, timeout) => client(executable, timeout).dismountVHD(path).then(() => undefined),
+        convertVhd: (executable, sourcePath, destinationPath, timeout, remainingTimeout) => client(executable, remainingTimeout).convertVHD({ sourcePath, destinationPath, vhdType: "Dynamic" }, { timeoutMilliseconds: timeout }).then(() => undefined),
+        resizeVhd: (executable, path, sizeBytes, timeout, remainingTimeout) => client(executable, remainingTimeout).resizeVHD({ path, sizeBytes }, { timeoutMilliseconds: timeout }).then(() => undefined),
+        storage: async (executable, root, path, readPartitionStyle, timeoutMs) => {
+            const execution = await runtime.run(hyperVImportedImageStorageCommand({ executable, imageRoot: root, path, readPartitionStyle }), { timeoutMs, outputLimit: runtime.limits.commandOutputBytes });
+            return { execution, observation: execution.status === 0 && !execution.error ? parseHyperVImportedImageStorage(execution.stdout || "", path) : null };
+        },
+        prepareAcquisition: async (options, timeoutMs) => {
+            const execution = await runtime.run(hyperVAcquireBaseImagePrepareCommand(options), { timeoutMs, outputLimit: runtime.limits.commandOutputBytes });
+            return { execution, observation: execution.status === 0 && !execution.error ? parseHyperVAcquireBaseImagePrepareObservation(execution.stdout || "") : null };
+        },
+        finalizeAcquisition: async (options, timeoutMs) => {
+            const execution = await runtime.run(hyperVAcquireBaseImageFinalizeCommand(options), { timeoutMs, outputLimit: runtime.limits.commandOutputBytes });
+            return { execution, observation: execution.status === 0 && !execution.error ? parseHyperVBaseImageObservation(execution.stdout || "") : null };
+        },
+    };
+    return createHyperVImagePreparation(ports).resolveForCreate(ownerId, request, params, deadlineAt);
 }

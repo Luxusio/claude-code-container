@@ -1,35 +1,6 @@
-import { win32 } from "path";
-
-import type { HyperVVirtualHardDisk } from "@ccc/hyper-v/low-level/index.js";
 import { HyperVWindowsError } from "@ccc/hyper-v/low-level/index.js";
-
-export type HyperVCreateVhdTarget =
-    | { readonly kind: "base"; readonly path: string }
-    | { readonly kind: "clone"; readonly path: string; readonly expectedVirtualSizeBytes: number };
-
-function sameWindowsPath(left: string, right: string): boolean {
-    return win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase();
-}
-
-/** Applies Device Lab image policy to native Get-VHD metadata. */
-export function inspectHyperVCreateVhd(
-    target: HyperVCreateVhdTarget,
-    vhd: HyperVVirtualHardDisk,
-): number {
-    const mismatch = target.kind === "base"
-        ? "hyper-v-base-image-parent-invalid"
-        : "hyper-v-created-disk-format-mismatch";
-    if (!sameWindowsPath(vhd.path, target.path)
-        || vhd.vhdFormat !== "VHDX"
-        || vhd.vhdType === "Differencing"
-        || vhd.parentPath !== null
-        || !Number.isSafeInteger(vhd.virtualSizeBytes)
-        || vhd.virtualSizeBytes <= 0
-        || (target.kind === "clone" && vhd.virtualSizeBytes !== target.expectedVirtualSizeBytes)) {
-        throw new Error(mismatch);
-    }
-    return vhd.virtualSizeBytes;
-}
+export { inspectHyperVCreateVhd } from "../../domain/hyper-v-image-preparation.js";
+export type { HyperVCreateVhdTarget } from "../../domain/hyper-v-image-preparation.js";
 
 /**
  * Keeps the existing bounded creation-stage diagnostic when a typed read fails. The typed failure
