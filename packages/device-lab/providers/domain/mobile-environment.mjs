@@ -34,6 +34,7 @@ export function androidBatteryCommands(args) {
 
 /** @param {EnvironmentArguments} args @returns {AndroidRadioCommand[]} */
 export function androidRadioCommands(args) {
+    /** @type {AndroidRadioCommand[]} */
     const commands = [];
     if (args.wifi !== undefined) commands.push({ setting: "wifi", args: ["shell", "svc", "wifi", args.wifi ? "enable" : "disable"] });
     if (args.data !== undefined) commands.push({ setting: "data", args: ["shell", "svc", "data", args.data ? "enable" : "disable"] });
