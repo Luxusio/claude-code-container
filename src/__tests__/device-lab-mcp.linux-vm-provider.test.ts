@@ -1,5 +1,5 @@
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -195,6 +195,69 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 }),
             }),
         }));
+    });
+
+    it("keeps strict force/copy decisions and earlier format files on overwrite", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "import-overwrite" };
+        mkdirSync(join(root, "incoming"));
+        writeFileSync(join(root, "incoming", "disk.qcow2"), "old-image");
+        writeFileSync(join(root, "incoming", "disk.raw"), "new-image");
+        const options = { env, stateRoot: root, now: "fixed-time" };
+        const first = importImage({ name: "Base", sourcePath: "incoming/disk.qcow2", copy: 0 }, options);
+        expect(first.image.copied).toBe(true);
+        const trace: string[] = [];
+        const refused = importImage({
+            name: "Base", force: "true",
+            get sourcePath() { trace.push("source"); throw new Error("source must stay lazy"); },
+        }, options);
+        expect(refused).toEqual({ ok: false, error: "base-image-already-exists", imageId: "base" });
+        expect(trace).toEqual([]);
+        const replaced = importImage({ name: "Base", sourcePath: "incoming/disk.raw", force: true }, options);
+        expect(replaced.image).toEqual(expect.objectContaining({ copied: true, format: "raw", sizeBytes: 9, createdAt: "fixed-time", updatedAt: "fixed-time" }));
+        expect(readFileSync(first.image.path, "utf8")).toBe("old-image");
+        expect(readFileSync(replaced.image.path, "utf8")).toBe("new-image");
+        const reference = importImage({ name: "Reference", sourcePath: "incoming/disk.raw", copy: false }, options);
+        expect(reference.image).toEqual(expect.objectContaining({ copied: false, path: join(root, "incoming", "disk.raw"), sourcePath: join(root, "incoming", "disk.raw"), format: "raw" }));
+        expect(readdirSync(dirname(reference.image.path))).toEqual(expect.arrayContaining(["disk.qcow2", "disk.raw"]));
+    });
+
+    it("preserves raw getter faults and copy residue before atomic publication cleanup", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "import-faults" };
+        mkdirSync(join(root, "incoming"));
+        writeFileSync(join(root, "incoming", "disk.raw"), "retained-copy");
+        const fault = new Error("raw name fault"), trace: string[] = [];
+        let nameFault: unknown;
+        try { importImage({ get name() { trace.push("name"); throw fault; } }, { env, stateRoot: root }); }
+        catch (error) { nameFault = error; }
+        expect(nameFault).toBe(fault);
+        expect(trace).toEqual(["name"]);
+        expect(existsSync(join(root, "owners"))).toBe(false);
+
+        const publicationFault = new Error("raw serialization fault");
+        const clock = { toJSON() { throw publicationFault; } };
+        let caught: unknown;
+        try { importImage({ name: "Failed", sourcePath: "incoming/disk.raw" }, { env, stateRoot: root, now: clock }); }
+        catch (error) { caught = error; }
+        expect(caught).toBe(publicationFault);
+        const imageDir = join(root, "owners", ownerId(env), "images", "failed");
+        expect(readFileSync(join(imageDir, "base.raw"), "utf8")).toBe("retained-copy");
+        expect(readdirSync(imageDir)).toEqual(["base.raw"]);
+
+        const blocked = join(root, "owners", ownerId(env), "images", "blocked");
+        mkdirSync(join(blocked, "base.raw"), { recursive: true });
+        let timestamps = 0;
+        expect(() => importImage({ name: "Blocked", sourcePath: "incoming/disk.raw" }, {
+            env, stateRoot: root, get now() { timestamps++; return "never"; },
+        })).toThrow();
+        expect(timestamps).toBe(0);
+        expect(readdirSync(blocked)).toEqual(["base.raw"]);
+
+        const renameBlocked = join(root, "owners", ownerId(env), "images", "rename-blocked");
+        mkdirSync(join(renameBlocked, "image.json"), { recursive: true });
+        expect(() => importImage({ name: "Rename Blocked", sourcePath: "incoming/disk.raw", force: true }, { env, stateRoot: root })).toThrow();
+        // Publication's finally removes its temporary metadata without rolling back the copy.
+        expect(readdirSync(renameBlocked).sort()).toEqual(["base.raw", "image.json"]);
+        expect(readFileSync(join(renameBlocked, "base.raw"), "utf8")).toBe("retained-copy");
     });
 
     it("registers in-state base images without copying and validates image sources", () => {

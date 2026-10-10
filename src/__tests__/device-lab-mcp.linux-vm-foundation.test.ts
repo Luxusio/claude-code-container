@@ -143,6 +143,24 @@ describe("device-lab Linux VM foundation", () => {
             image: expect.objectContaining({ id: "mcp-base", copied: true, format: "qcow2" }),
         }));
 
+        const duplicate = await client.callTool({
+            name: "import_image",
+            arguments: { detail: true, name: "MCP Base", sourcePath: "incoming/missing.raw" },
+        });
+        expect(JSON.parse(((duplicate.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
+            expect.objectContaining({ ok: false, error: "base-image-already-exists", imageId: "mcp-base" }),
+        );
+        const reference = await client.callTool({
+            name: "import_image",
+            arguments: { detail: true, name: "MCP Reference", sourcePath: "incoming/mcp-base.qcow2", copy: false },
+        });
+        expect(JSON.parse(((reference.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
+            expect.objectContaining({ ok: true, image: expect.objectContaining({
+                id: "mcp-reference", copied: false, format: "qcow2", sizeBytes: 8,
+                path: join(stateRoot, "incoming", "mcp-base.qcow2"),
+            }) }),
+        );
+
         const listed = await client.callTool({ name: "list_images", arguments: { detail: true, } });
         const listedPayload = JSON.parse(((listed.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(listedPayload).toEqual(expect.objectContaining({

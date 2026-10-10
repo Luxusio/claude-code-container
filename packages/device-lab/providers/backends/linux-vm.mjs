@@ -1,3 +1,4 @@
+import { createQemuImageImportApplication } from "../application/qemu-image-import.mjs";
 import { createQemuImageDiskTargetApplication } from "../application/qemu-image-disk-target.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
 import { buildListFilesCommand, listFilesFromExecResult } from "../file-listing.mjs";
@@ -914,40 +915,19 @@ export function listImages(options = {}) {
 
 export function importImage(args = {}, options = {}) {
     const ctx = context(options);
-    const unavailable = labStateUnavailable(ctx);
-    if (unavailable) return unavailable;
-    const name = String(args.name || "").trim();
-    const imageId = args.imageId ? String(args.imageId) : slug(name);
-    if (!name) return { ok: false, error: "missing-image-name" };
-    if (!validId(imageId)) return { ok: false, error: "invalid-image-id" };
-    if (existsSync(imageMetadataPath(ctx, imageId)) && args.force !== true) return { ok: false, error: "base-image-already-exists", imageId };
-    const source = validateImageSource(ctx, args.sourcePath, args, "source-image");
-    if (!source.ok) return source;
-    const sourceStat = source.stat;
-    const format = source.format;
-    const copy = args.copy !== false;
-    const imageDir = ownerImageDir(ctx, imageId);
-    const imagePath = copy ? join(imageDir, `base.${format}`) : source.path;
-    if (copy) {
-        mkdirSync(imageDir, { recursive: true });
-        copyFileSync(source.path, imagePath);
-    }
-    const timestamp = nowIso(options);
-    const image = {
-        id: imageId,
-        name,
+    return createQemuImageImportApplication({
         ownerId: ctx.owner,
-        provider: PROVIDER_NAME,
-        format,
-        path: imagePath,
-        sourcePath: source.path,
-        copied: copy,
-        sizeBytes: sourceStat.size,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-    };
-    writeImage(ctx, image);
-    return { ok: true, ownerId: ctx.owner, image };
+        providerName: PROVIDER_NAME,
+        runnerUnavailable: () => labStateUnavailable(ctx),
+        metadataExists: (imageId) => existsSync(imageMetadataPath(ctx, imageId)),
+        validateSource: (sourcePath, input, label) => validateImageSource(ctx, sourcePath, input, label),
+        imageDirectory: (imageId) => ownerImageDir(ctx, imageId),
+        copyDestination: (directory, format) => join(directory, `base.${format}`),
+        ensureImageDirectory: (directory) => { mkdirSync(directory, { recursive: true }); },
+        copyImage: (source, destination) => { copyFileSync(source, destination); },
+        timestamp: () => nowIso(options),
+        publishImage: (image) => writeImage(ctx, image),
+    }).importImage(args);
 }
 
 function resolveBaseImage(ctx, imageId) {

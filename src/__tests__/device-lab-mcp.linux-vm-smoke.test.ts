@@ -38,6 +38,12 @@ describe("device-lab Linux VM provider smoke runner", () => {
         });
 
         expect(report.ok).toBe(false);
+        // Disk materialization fails after the real reference import succeeded.
+        expect(report.steps.slice(0, 3)).toEqual([
+            { name: "provider-status", status: "PASS" },
+            { name: "image-import", status: "PASS" },
+            { name: "lab-create", status: "PASS" },
+        ]);
         expect(report.steps).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 name: "disk-materialize",
