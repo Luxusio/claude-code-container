@@ -3172,6 +3172,41 @@ describe("Hyper-V network module", () => {
         expect(readFileSync(publicKeyPath, "utf8")).toContain(encoded);
     });
 
+    it("retains durable host trust when owner fingerprint publication is refused and recovers on retry", async () => {
+        const root = privateRoot();
+        const network = runtime(root);
+        const allocation = await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+        expect(allocation.ok).toBe(true);
+        if (!allocation.ok) throw new Error("allocation-required");
+        const blob = ed25519PublicKeyBlob(12);
+        const encoded = blob.toString("base64");
+        const fingerprint = `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`;
+        const publicKeyPath = join(root, "host.pub");
+        const knownHostsPath = join(root, "known_hosts");
+        const durableTrust = `${allocation.address} ssh-ed25519 ${encoded} authenticated-guest\n`;
+        writeFileSync(knownHostsPath, durableTrust);
+        writeFileSync(publicKeyPath, "stale-derived-key\n");
+        const refused = vi.fn((_candidate: string) => false);
+
+        expect(reconcileHyperVLinuxSshHostIdentity(
+            network, OWNER_ID, DEVICE_ID, publicKeyPath, knownHostsPath, allocation.address, refused,
+        )).toBeNull();
+        expect(refused).toHaveBeenCalledWith(fingerprint);
+        expect(readFileSync(knownHostsPath, "utf8")).toBe(durableTrust);
+        expect(readFileSync(publicKeyPath, "utf8")).toBe(`ssh-ed25519 ${encoded} ccc-hyper-v-guest\n`);
+
+        let published = "";
+        expect(reconcileHyperVLinuxSshHostIdentity(
+            network, OWNER_ID, DEVICE_ID, publicKeyPath, knownHostsPath, allocation.address,
+            (candidate) => { published = candidate; return true; },
+        )).toEqual({ fingerprint });
+        expect(published).toBe(fingerprint);
+        expect(readFileSync(knownHostsPath, "utf8")).toBe(durableTrust);
+        expect(validateHyperVLinuxSshHostIdentity(
+            network, OWNER_ID, DEVICE_ID, publicKeyPath, knownHostsPath, allocation.address, published,
+        )).toBe(true);
+    });
+
     it("rejects ambiguous, malformed, and unallocated host-key adoption", async () => {
         const root = privateRoot();
         const network = runtime(root);
