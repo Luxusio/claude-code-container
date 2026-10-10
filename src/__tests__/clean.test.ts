@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { SpawnSyncReturns } from "child_process";
+import type { SpawnSyncOptions, SpawnSyncReturns } from "child_process";
 
 // Mock child_process before importing
-const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
+const spawnSyncMock = vi.fn<(command: string, args: string[], options: SpawnSyncOptions) => SpawnSyncReturns<string>>();
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return { ...actual, spawnSync: spawnSyncMock };
