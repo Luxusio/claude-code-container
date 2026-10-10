@@ -1,3 +1,5 @@
+import { createQemuGuestTransferApplication } from "../application/qemu-guest-transfer.mjs";
+import { normalizeGuestTransferPolicy, withGuestTransferOperation } from "../domain/qemu-guest-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
@@ -19,11 +21,6 @@ import { readProcessIdentity, inspectProcessIdentity, signalOwnedRuntimeProcess 
 export const DEFAULT_LAB_STATE_DIR = join(homedir(), ".ccc/labs");
 export const PROVIDER_NAME = "container-qemu";
 export const LINUX_VM_BACKEND = "linux-vm";
-const DEFAULT_FILE_POLICY = {
-    maxFiles: 5000,
-    maxFileBytes: 16 * 1024 * 1024,
-    maxTotalBytes: 256 * 1024 * 1024,
-};
 const SECRET_FILE_RE = /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*\.(?:pem|key|p12|pfx))$/i;
 const SECRET_CONTENT_PATTERNS = [
     { label: "private-key-block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
@@ -32,7 +29,6 @@ const SECRET_CONTENT_PATTERNS = [
     { label: "slack-token", re: /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/ },
     { label: "secret-assignment", re: /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|private[_-]?key)\b\s*[:=]\s*["']?[A-Za-z0-9_./+=:@-]{12,}/i },
 ];
-const DEFAULT_GUEST_ROOTS = ["/workspace", "/artifacts", "/tmp/ccc-lab"];
 const DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 5;
 const DEFAULT_GUEST_EXEC_TIMEOUT_MS = 30000;
 const DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS = 120000;
@@ -355,15 +351,7 @@ function validateImageSource(ctx, sourcePath, formatArgs = {}, label = "source-i
 }
 
 function normalizePolicy(args = {}) {
-    const numberOrDefault = (value, fallback, maximum) => {
-        if (!Number.isInteger(value) || value <= 0) return fallback;
-        return Math.min(value, maximum);
-    };
-    return {
-        maxFiles: numberOrDefault(args.maxFiles, DEFAULT_FILE_POLICY.maxFiles, DEFAULT_FILE_POLICY.maxFiles),
-        maxFileBytes: numberOrDefault(args.maxFileBytes, DEFAULT_FILE_POLICY.maxFileBytes, DEFAULT_FILE_POLICY.maxFileBytes),
-        maxTotalBytes: numberOrDefault(args.maxTotalBytes, DEFAULT_FILE_POLICY.maxTotalBytes, DEFAULT_FILE_POLICY.maxTotalBytes),
-    };
+    return normalizeGuestTransferPolicy(args);
 }
 
 function emptyCopyPlan(sourceRoot, rootIsFile = false) {
@@ -459,34 +447,9 @@ function copyPlanTo(plan, destinationRoot, replace = true) {
 }
 
 function recordFileOperation(ctx, lab, operation) {
-    const fileOperations = Array.isArray(lab.fileOperations) ? lab.fileOperations : [];
-    const next = {
-        ...lab,
-        updatedAt: operation.completedAt,
-        fileOperations: [...fileOperations, operation].slice(-50),
-    };
+    const next = withGuestTransferOperation(lab, operation);
     writeLab(ctx, next);
     return next;
-}
-
-function publicGuestTransportResult(result) {
-    if (!result || typeof result !== "object") return result;
-    const stripKeys = new Set(["args", "argv", "command", "env", "socketPath", "privateKey", "token"]);
-    const sanitize = (value) => {
-        if (Array.isArray(value)) return value.map((entry) => sanitize(entry));
-        if (value && typeof value === "object") {
-            return Object.fromEntries(Object.entries(value)
-                .filter(([key]) => !stripKeys.has(key))
-                .map(([key, entry]) => [key, sanitize(entry)]));
-        }
-        if (typeof value === "string") {
-            if (/\b(?:ssh|scp|rsync)\b/i.test(value) || /\b(?:token|secret|private|socket)\b/i.test(value) || /\/[^\s"'<>]+/.test(value)) {
-                return "<provider-internal>";
-            }
-        }
-        return value;
-    };
-    return sanitize(result);
 }
 
 function defaultSyncCommandRunner(command, args, runOptions = {}) {
@@ -1356,34 +1319,10 @@ function resolveExportDestination(ctx, lab, destinationPath) {
     return { ok: true, destinationPath: candidate };
 }
 
-function normalizeGuestRoots(options = {}) {
-    const roots = Array.isArray(options.allowedGuestRoots) && options.allowedGuestRoots.length > 0
-        ? options.allowedGuestRoots
-        : DEFAULT_GUEST_ROOTS;
-    return roots
-        .filter((root) => typeof root === "string" && root.startsWith("/") && !root.includes("\u0000"))
-        .map((root) => root.replace(/\/+$/g, "") || "/");
-}
-
-function validateGuestPath(value, label, options = {}) {
-    if (typeof value !== "string" || value.length === 0) return { ok: false, error: `missing-${label}` };
-    if (/[\u0000-\u001f]/.test(value)) return { ok: false, error: `invalid-${label}` };
-    if (!value.startsWith("/")) return { ok: false, error: `${label}-must-be-absolute` };
-    const parts = value.split("/").filter(Boolean);
-    if (parts.some((part) => part === "." || part === "..")) return { ok: false, error: `${label}-path-traversal-rejected` };
-    const normalized = `/${parts.join("/")}`;
-    const allowedRoots = normalizeGuestRoots(options);
-    if (!pathInsideAny(allowedRoots, normalized)) {
-        return { ok: false, error: `${label}-outside-allowed-roots`, guestPath: normalized, allowedGuestRoots: allowedRoots };
-    }
-    return { ok: true, guestPath: normalized, allowedGuestRoots: allowedRoots };
-}
 
 function resolveGuestPullDestination(lab, destinationPath) {
     const artifactsDir = resolve(lab.paths.artifactsDir);
-    const defaultName = nowIso().replace(/[^0-9A-Za-z._-]+/g, "-");
-    const raw = destinationPath || join(artifactsDir, `guest-pull-${defaultName}`);
-    const parsed = boundedUserPath(raw, "destination-path");
+    const parsed = boundedUserPath(destinationPath, "destination-path");
     if (!parsed.ok) return parsed;
     const candidate = resolve(isAbsolute(parsed.path) ? parsed.path : join(artifactsDir, parsed.path));
     if (!inside(artifactsDir, candidate)) {
@@ -1430,162 +1369,11 @@ export function exportArtifacts(args = {}, options = {}) {
 }
 
 export function guestPush(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const running = requireRunningLab(loaded.lab);
-    if (!running.ok) return running;
-    const guest = validateGuestPath(args.guestPath || "/workspace", "guest-path", options);
-    if (!guest.ok) return guest;
-    const sourceInput = boundedUserPath(args.sourcePath || options.workspaceRoot || process.cwd(), "source-path");
-    if (!sourceInput.ok) return sourceInput;
-    const sourcePath = resolve(sourceInput.path);
-    const allowedRoots = (options.allowedWorkspaceRoots || [options.workspaceRoot || process.cwd()]).map((root) => resolve(root));
-    if (!pathInsideAny(allowedRoots, sourcePath)) {
-        return { ok: false, error: "workspace-source-outside-allowed-roots", sourcePath, allowedRoots };
-    }
-    const policy = normalizePolicy(args);
-    const plan = collectCopyPlan(sourcePath, policy);
-    if (!plan.ok) return plan;
-    const workspaceDir = resolve(loaded.lab.paths.workspaceDir || join(loaded.lab.paths.labDir, "workspace"));
-    if (!inside(loaded.lab.paths.labDir, workspaceDir)) return { ok: false, error: "workspace-destination-outside-lab" };
-    const transport = {
-        action: "push",
-        labId: loaded.lab.id,
-        sourcePath,
-        stagedPath: workspaceDir,
-        guestPath: guest.guestPath,
-        files: plan.files.length,
-        bytes: plan.totalBytes,
-        replace: args.replace !== false,
-        allowedGuestRoots: guest.allowedGuestRoots,
-    };
-    if (args.dryRun === true) {
-        return { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(loaded.lab), transport, policy };
-    }
-    const runner = guestTransportRunnerForLab(loaded.lab, options);
-    if (typeof runner !== "function") {
-        return { ok: false, error: "guest-transport-unavailable", reason: "no-bounded-guest-transport-runner-configured", transport, policy };
-    }
-    const preflight = preflightGuestTransport(loaded.lab, transport, ctx.env, options);
-    if (!preflight.ok) return { ...preflight, transport, policy };
-    const copied = copyPlanTo(plan, workspaceDir, args.replace !== false);
-    if (!copied.ok) return copied;
-    const result = publicGuestTransportResult(runner({ ...transport, stagedPath: copied.destinationPath }, { lab: loaded.lab, env: ctx.env }));
-    if (result === null) {
-        rmSync(copied.destinationPath, { recursive: true, force: true });
-        return { ok: false, error: "guest-transport-unavailable", reason: "no-bounded-guest-transport-runner-configured", transport: { ...transport, stagedPath: copied.destinationPath }, policy, cleanedStagedPath: true };
-    }
-    if (!result?.ok) {
-        rmSync(copied.destinationPath, { recursive: true, force: true });
-        const failedAt = nowIso(options);
-        const lab = recordFileOperation(ctx, loaded.lab, {
-            type: "guest_push_failed",
-            sourcePath,
-            stagedPath: copied.destinationPath,
-            guestPath: guest.guestPath,
-            files: copied.files,
-            bytes: copied.bytes,
-            completedAt: failedAt,
-            error: "guest-push-failed",
-        });
-        return { ok: false, error: "guest-push-failed", lab: publicLab(lab), result, transport: { ...transport, stagedPath: copied.destinationPath }, policy, cleanedStagedPath: true };
-    }
-    const completedAt = nowIso(options);
-    const lab = recordFileOperation(ctx, loaded.lab, {
-        type: "guest_push",
-        sourcePath,
-        stagedPath: copied.destinationPath,
-        guestPath: guest.guestPath,
-        files: copied.files,
-        bytes: copied.bytes,
-        completedAt,
-    });
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), result, transport: { ...transport, stagedPath: copied.destinationPath }, policy };
+    return qemuGuestTransferApplication(options).push(args);
 }
 
 export function guestPull(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const running = requireRunningLab(loaded.lab);
-    if (!running.ok) return running;
-    const guest = validateGuestPath(args.guestPath || "/artifacts", "guest-path", options);
-    if (!guest.ok) return guest;
-    const destination = resolveGuestPullDestination(loaded.lab, args.destinationPath);
-    if (!destination.ok) return destination;
-    const policy = normalizePolicy(args);
-    const transport = {
-        action: "pull",
-        labId: loaded.lab.id,
-        guestPath: guest.guestPath,
-        destinationPath: destination.destinationPath,
-        replace: args.replace !== false,
-        allowedGuestRoots: guest.allowedGuestRoots,
-    };
-    if (args.dryRun === true) {
-        return { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(loaded.lab), transport, policy };
-    }
-    if (existsSync(destination.destinationPath)) {
-        if (args.replace === false) return { ok: false, error: "guest-pull-destination-exists", destinationPath: destination.destinationPath };
-    }
-    const runner = guestTransportRunnerForLab(loaded.lab, options);
-    if (typeof runner !== "function") {
-        return { ok: false, error: "guest-transport-unavailable", reason: "no-bounded-guest-transport-runner-configured", transport, policy };
-    }
-    const preflight = preflightGuestTransport(loaded.lab, transport, ctx.env, options);
-    if (!preflight.ok) return { ...preflight, transport, policy };
-    if (existsSync(destination.destinationPath)) {
-        rmSync(destination.destinationPath, { recursive: true, force: true });
-    }
-    mkdirSync(destination.destinationPath, { recursive: true });
-    const result = publicGuestTransportResult(runner(transport, { lab: loaded.lab, env: ctx.env }));
-    if (result === null) {
-        rmSync(destination.destinationPath, { recursive: true, force: true });
-        return { ok: false, error: "guest-transport-unavailable", reason: "no-bounded-guest-transport-runner-configured", transport, policy, cleanedDestination: true };
-    }
-    if (!result?.ok) {
-        rmSync(destination.destinationPath, { recursive: true, force: true });
-        const failedAt = nowIso(options);
-        const lab = recordFileOperation(ctx, loaded.lab, {
-            type: "guest_pull_failed",
-            guestPath: guest.guestPath,
-            destinationPath: destination.destinationPath,
-            completedAt: failedAt,
-            error: "guest-pull-failed",
-        });
-        return { ok: false, error: "guest-pull-failed", lab: publicLab(lab), result, transport, policy, cleanedDestination: true };
-    }
-    const plan = collectCopyPlan(destination.destinationPath, policy);
-    if (!plan.ok) {
-        rmSync(destination.destinationPath, { recursive: true, force: true });
-        const failedAt = nowIso(options);
-        const lab = recordFileOperation(ctx, loaded.lab, {
-            type: "guest_pull_failed",
-            guestPath: guest.guestPath,
-            destinationPath: destination.destinationPath,
-            completedAt: failedAt,
-            error: plan.error || "guest-pull-policy-failed",
-        });
-        return { ...plan, lab: publicLab(lab), destinationPath: destination.destinationPath, cleanedDestination: true };
-    }
-    const completedAt = nowIso(options);
-    const lab = recordFileOperation(ctx, loaded.lab, {
-        type: "guest_pull",
-        guestPath: guest.guestPath,
-        destinationPath: destination.destinationPath,
-        files: plan.files.length,
-        bytes: plan.totalBytes,
-        completedAt,
-    });
-    return {
-        ok: true,
-        ownerId: ctx.owner,
-        lab: publicLab(lab),
-        result,
-        transport: { ...transport, files: plan.files.length, bytes: plan.totalBytes },
-        policy,
-    };
+    return qemuGuestTransferApplication(options).pull(args);
 }
 
 export function guestExec(args = {}, options = {}) {
@@ -1818,5 +1606,65 @@ function linuxDeviceObservation(options = {}) {
         labsRootExists: () => existsSync(labsRoot),
         labEntries: () => readdirSync(labsRoot, { withFileTypes: true }),
         readLab: name => readLab(ctx, name),
+    });
+}
+
+/**
+ * Bind trusted owner storage and guarded native copy/transport leaves for one
+ * current invocation. The application receives facts and effects, not context.
+ * @param {{env?:Record<string,string|undefined>,stateRoot?:string,ownerId?:string,now?:unknown,workspaceRoot?:string,allowedWorkspaceRoots?:string[],allowedGuestRoots?:unknown,guestTransportRunner?:(transport:import("../ports/qemu-guest-transfer.mjs").QemuGuestTransport,context:{lab:import("../domain/qemu-lifecycle.mjs").QemuLab,env:Record<string,string|undefined>})=>unknown,sshTimeoutMs?:number,sshPath?:string|null,scpPath?:string|null,sshCommandRunner?:(command:string,args:string[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>import("../ports/qemu-lifecycle.mjs").QemuExecution|null|undefined}} [options]
+ */
+function qemuGuestTransferApplication(options = {}) {
+    const ctx = context(options);
+    return createQemuGuestTransferApplication({
+        ownerId: () => ctx.owner,
+        readLab: labId => {
+            const loaded = readLab(ctx, labId);
+            if (typeof loaded.error === "string") return { ...loaded, ok: false, error: loaded.error };
+            return { ok: true, lab: loaded.lab };
+        },
+        allowedGuestRoots: () => options.allowedGuestRoots,
+        pathWithinRoots: (roots, path) => pathInsideAny(roots, path),
+        workspaceRoot: () => options.workspaceRoot || process.cwd(),
+        sourcePathFacts: path => {
+            const sourcePath = resolve(path);
+            const allowedRoots = (options.allowedWorkspaceRoots || [options.workspaceRoot || process.cwd()]).map(root => resolve(root));
+            return { sourcePath, allowedRoots, withinRoots: pathInsideAny(allowedRoots, sourcePath) };
+        },
+        workspacePathFacts: lab => {
+            const workspaceDir = resolve(lab.paths.workspaceDir || join(lab.paths.labDir, "workspace"));
+            return { workspaceDir, insideLab: inside(lab.paths.labDir, workspaceDir) };
+        },
+        defaultPullDestination: (lab, name) => join(resolve(lab.paths.artifactsDir), name),
+        destinationTimestamp: () => nowIso(),
+        resolvePullDestination: (lab, path) => {
+            const result = resolveGuestPullDestination(lab, path);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ok: true, destinationPath: result.destinationPath };
+        },
+        scanCopySource: (path, policy) => {
+            const result = collectCopyPlan(path, policy);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ...result, ok: true };
+        },
+        copyPlan: (plan, destination, replace) => {
+            const result = copyPlanTo(plan, destination, replace);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ...result, ok: true };
+        },
+        transportRunner: lab => {
+            const runner = guestTransportRunnerForLab(lab, options);
+            return typeof runner === "function" ? transport => runner(transport, { lab, env: ctx.env }) : null;
+        },
+        preflightTransport: (lab, transport) => {
+            const result = preflightGuestTransport(lab, transport, ctx.env, options);
+            if (typeof result.error === "string") return { ...result, ok: false, error: result.error };
+            return { ok: true };
+        },
+        exists: path => existsSync(path),
+        removeDirectory: path => { rmSync(path, { recursive: true, force: true }); },
+        ensureDirectory: path => { mkdirSync(path, { recursive: true }); },
+        writeLab: lab => { writeLab(ctx, lab); },
+        clock: () => nowIso(options),
     });
 }

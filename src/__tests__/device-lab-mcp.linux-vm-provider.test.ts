@@ -2955,6 +2955,37 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         ]));
     });
 
+    it("retains the current pull destination when transport throws before recording completion", () => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "guest-throw", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Guest Throw VM" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const started = startLab({ labId: "guest-throw-vm" }, {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: 5151 }),
+        });
+        assert.ok(started.lab);
+        expect(started.ok).toBe(true);
+        const destination = join(created.lab.paths.artifactsDir, "current");
+        mkdirSync(destination, { recursive: true });
+        writeFileSync(join(destination, "old.txt"), "old");
+        const fault = new Error("transport interrupted");
+        let observed: unknown;
+        try { guestPull({ labId: "guest-throw-vm", guestPath: "/artifacts/run", destinationPath: "current" }, {
+            env, stateRoot: root,
+            guestTransportRunner: (transport: { destinationPath: string }) => {
+                writeFileSync(join(transport.destinationPath, "partial.txt"), "partial");
+                throw fault;
+            },
+        }); } catch (error) { observed = error; }
+        expect(observed).toBe(fault);
+        expect(existsSync(join(destination, "old.txt"))).toBe(false);
+        expect(readFileSync(join(destination, "partial.txt"), "utf8")).toBe("partial");
+        const persisted = JSON.parse(readFileSync(join(created.lab.paths.labDir, "lab.json"), "utf8"));
+        expect(persisted.fileOperations ?? []).toEqual([]);
+        expect(persisted.runtimeState).toBe("running");
+    });
+
     it("rejects unsafe guest transport paths and stopped labs", () => {
         const root = tempRoot();
         const workspace = mkdtempSync(join(tmpdir(), "ccc-lab-guest-policy-workspace-"));
