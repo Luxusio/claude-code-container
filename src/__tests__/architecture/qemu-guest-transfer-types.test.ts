@@ -14,6 +14,8 @@ export function requiredGuestTransferCapabilities(ports: QemuGuestTransferPorts)
     createQemuGuestTransferApplication(missingPublication);
     // @ts-expect-error cleanup must settle synchronously before a result is returned
     createQemuGuestTransferApplication({ ...ports, removeDirectory: async () => undefined });
+    // @ts-expect-error selected transport must finish before synchronous cleanup and publication
+    createQemuGuestTransferApplication({ ...ports, transportRunner: () => async () => ({ ok: true }) });
     return { app, transportRunner, writeLab };
 }
 

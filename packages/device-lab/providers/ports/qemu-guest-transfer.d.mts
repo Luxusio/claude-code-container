@@ -1,4 +1,4 @@
-import type { QemuLab, QemuFailure } from "./qemu-lifecycle.mjs";
+import type { QemuLab, QemuFailure, QemuExecution } from "./qemu-lifecycle.mjs";
 export type { QemuLab, QemuFailure } from "./qemu-lifecycle.mjs";
 export interface QemuGuestTransferArgs {
     labId?: unknown;
@@ -39,6 +39,24 @@ export interface QemuGuestTransport {
     files?: number;
     bytes?: number;
 }
+/** A settled native transport observation; deferred results are not admitted. */
+export interface QemuGuestTransportResult {
+    ok: boolean;
+    then?: never;
+    action?: string;
+    kind?: string;
+    step?: string;
+    error?: string;
+    message?: string;
+    missing?: string[];
+    result?: QemuExecution | null;
+    copied?: boolean;
+    pulled?: boolean;
+    command?: string;
+    args?: string[];
+    socketPath?: string;
+}
+export type QemuGuestTransportOutcome = QemuGuestTransportResult | null | undefined;
 export interface QemuFileOperation {
     type: string;
     guestPath?: string;
@@ -81,7 +99,7 @@ export interface QemuGuestTransferPorts {
         files: number;
         bytes: number;
     } | QemuFailure;
-    transportRunner(lab: QemuLab): ((transport: QemuGuestTransport) => unknown) | null;
+    transportRunner(lab: QemuLab): ((transport: QemuGuestTransport) => QemuGuestTransportOutcome) | null;
     preflightTransport(lab: QemuLab, transport: QemuGuestTransport): {
         ok: true;
     } | QemuFailure;

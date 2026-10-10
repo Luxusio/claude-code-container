@@ -1612,7 +1612,7 @@ function linuxDeviceObservation(options = {}) {
 /**
  * Bind trusted owner storage and guarded native copy/transport leaves for one
  * current invocation. The application receives facts and effects, not context.
- * @param {{env?:Record<string,string|undefined>,stateRoot?:string,ownerId?:string,now?:unknown,workspaceRoot?:string,allowedWorkspaceRoots?:string[],allowedGuestRoots?:unknown,guestTransportRunner?:(transport:import("../ports/qemu-guest-transfer.mjs").QemuGuestTransport,context:{lab:import("../domain/qemu-lifecycle.mjs").QemuLab,env:Record<string,string|undefined>})=>unknown,sshTimeoutMs?:number,sshPath?:string|null,scpPath?:string|null,sshCommandRunner?:(command:string,args:string[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>import("../ports/qemu-lifecycle.mjs").QemuExecution|null|undefined}} [options]
+ * @param {{env?:Record<string,string|undefined>,stateRoot?:string,ownerId?:string,now?:unknown,workspaceRoot?:string,allowedWorkspaceRoots?:string[],allowedGuestRoots?:unknown,guestTransportRunner?:(transport:import("../ports/qemu-guest-transfer.mjs").QemuGuestTransport,context:{lab:import("../domain/qemu-lifecycle.mjs").QemuLab,env:Record<string,string|undefined>})=>import("../ports/qemu-guest-transfer.mjs").QemuGuestTransportOutcome,sshTimeoutMs?:number,sshPath?:string|null,scpPath?:string|null,sshCommandRunner?:(command:string,args:string[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>import("../ports/qemu-lifecycle.mjs").QemuExecution|null|undefined}} [options]
  */
 function qemuGuestTransferApplication(options = {}) {
     const ctx = context(options);
