@@ -3067,6 +3067,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(scpCalls.every((command) => (command.args || []).some((argument) => argument.includes(join(privateRoot, "transfers"))))).toBe(true);
 
             const ownerDevicesPath = join(backendRoot(ownerId, "linux-vm"), "devices.json");
+            const stopJournalPath = join(deviceRoot, "operation.json");
             const beforeForeignStop = readFileSync(ownerDevicesPath, "utf8");
             foreignVmObservation = true;
             const foreignStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
@@ -3075,7 +3076,10 @@ describe("device-lab Hyper-V broker", () => {
             expect(vmState).toBe("Running");
             expect(readFileSync(ownerDevicesPath, "utf8")).toBe(beforeForeignStop);
             expect(existsSync(diskPath)).toBe(true);
+            expect(JSON.parse(readFileSync(stopJournalPath, "utf8"))).toMatchObject({ command: "device_stop", deviceId, incarnationId: activeIncarnationId });
             foreignVmObservation = false;
+            // Each fault below starts an ordinary stop, independently of retained replay state.
+            rmSync(stopJournalPath, { force: true });
             const realNow = Date.now;
             let stopClockOffset = 0;
             const stopClock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + stopClockOffset);
@@ -3087,10 +3091,12 @@ describe("device-lab Hyper-V broker", () => {
                 expect(vmState).toBe("Off");
                 expect(readFileSync(ownerDevicesPath, "utf8")).toBe(beforeForeignStop);
                 expect(existsSync(diskPath)).toBe(true);
+                expect(JSON.parse(readFileSync(stopJournalPath, "utf8"))).toMatchObject({ command: "device_stop", deviceId, incarnationId: activeIncarnationId });
             } finally {
                 afterNativeStop = null;
                 stopClock.mockRestore();
             }
+            rmSync(stopJournalPath, { force: true });
             let successorBytes: string | null = null;
             duringVmObservation = () => {
                 duringVmObservation = null;
@@ -3111,6 +3117,7 @@ describe("device-lab Hyper-V broker", () => {
                 duringVmObservation = null;
                 // Reset this allocated fixture definition for the independent snapshot cases below.
                 writeFileSync(ownerDevicesPath, beforeForeignStop);
+                rmSync(stopJournalPath, { force: true });
             }
             expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
             const callsBeforeSnapshotCreate = commandRunner.mock.calls.length;
