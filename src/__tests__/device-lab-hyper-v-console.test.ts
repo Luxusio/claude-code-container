@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createHyperVDesktopTransferApplication } from "../../packages/device-lab/src/device-lab/application/hyper-v-desktop-transfer.js";
+import type { HyperVDesktopTransferPorts } from "../../packages/device-lab/src/device-lab/ports/hyper-v-desktop-transfer.js";
 import {
     currentHyperVConsoleFrame,
     forgetHyperVConsoleFrame,
@@ -9,6 +11,22 @@ import {
     rememberHyperVConsoleFrame,
     withHyperVConsoleLock,
 } from "@ccc/device-lab/device-lab/broker/hyper-v/console.js";
+
+// Compile-only consumed production contract; native operations are not invoked.
+export function requiredDesktopTransferCapabilities(ports: HyperVDesktopTransferPorts<unknown, unknown, Uint8Array>): void {
+    const application = createHyperVDesktopTransferApplication(ports);
+    const { direct, ...missingDirect } = ports;
+    // @ts-expect-error bounded Windows Direct execution is required
+    createHyperVDesktopTransferApplication(missingDirect);
+    const { allocateStage, ...missingStage } = ports;
+    // @ts-expect-error transfers require owned stage allocation
+    createHyperVDesktopTransferApplication(missingStage);
+    // @ts-expect-error allocated stage disposal must settle synchronously
+    createHyperVDesktopTransferApplication({ ...ports, disposeStage: async () => undefined });
+    // @ts-expect-error destination publication must finish before a success result
+    createHyperVDesktopTransferApplication({ ...ports, writeDestination: async () => undefined });
+    void application; void direct; void allocateStage;
+}
 
 describe("Hyper-V console input contract", () => {
     it("requires a screenshot from the current incarnation for pixel input", () => {

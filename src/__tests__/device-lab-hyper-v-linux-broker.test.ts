@@ -2202,6 +2202,7 @@ describe("device-lab Hyper-V broker", () => {
         let managedReadinessRemainsFailedAfterFinalize = false;
         let bootstrapNetworkFinalizations = 0;
         let scpFailure: "upload" | "download" | null = null;
+        let invalidDownloadEncoding = false;
         let pendingElevatedNetwork: "setup" | "cleanup" | null = null;
         let standardNetworkCommand: { args?: string[]; input?: string } | null = null;
         let elevatedNetworkSetups = 0;
@@ -2268,7 +2269,7 @@ describe("device-lab Hyper-V broker", () => {
                     return { ...command, status: 255, stdout: "", stderr: "ssh failed" };
                 }
                 const windowList = guestCommand.includes("XAUTHORITY=/home/ccc-desktop/.Xauthority bash");
-                return { ...command, status: 0, stdout: guestCommand.includes("xdotool windowactivate --sync") ? '{"ok":true}' : windowList ? "42\t123\tR3Vlc3QgTm90ZXM=\n" : ready ? "ccc-hyper-v-linux-ready\n" : download ? Buffer.from("output").toString("base64") : "linux-exec-ok\n", stderr: "" };
+                return { ...command, status: 0, stdout: guestCommand.includes("xdotool windowactivate --sync") ? '{"ok":true}' : windowList ? "42\t123\tR3Vlc3QgTm90ZXM=\n" : ready ? "ccc-hyper-v-linux-ready\n" : download ? invalidDownloadEncoding ? "not-base64!" : Buffer.from("output").toString("base64") : "linux-exec-ok\n", stderr: "" };
             }
             if (command.provider === "hyper-v-scp") {
                 const destination = command.args?.at(-1) || "";
@@ -3030,6 +3031,14 @@ describe("device-lab Hyper-V broker", () => {
             scpFailure = null;
             expect((await tool("device_download", { remotePath: "/tmp/download.txt", localPath: downloadPath })).status).toBe(200);
             expect(readFileSync(downloadPath, "utf8")).toBe("output");
+            invalidDownloadEncoding = true;
+            writeFileSync(downloadPath, "retain-current-output");
+            const invalidDownload = await tool("device_download", { remotePath: "/tmp/download.txt", localPath: downloadPath });
+            expect(invalidDownload.status).toBe(502);
+            expect(await invalidDownload.json()).toMatchObject({ ok: false, error: "hyper-v-linux-guest-download-invalid-base64" });
+            expect(readFileSync(downloadPath, "utf8")).toBe("retain-current-output");
+            expect(readdirSync(transferRoot)).toEqual([]);
+            invalidDownloadEncoding = false;
             writeFileSync(downloadPath, "preserve-existing-output");
             const oversizedDownload = await tool("device_download", { remotePath: "/tmp/download.txt", localPath: downloadPath, maxFileBytes: 4 });
             expect(oversizedDownload.status).toBe(413);

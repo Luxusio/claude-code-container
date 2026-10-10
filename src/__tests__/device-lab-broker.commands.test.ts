@@ -934,6 +934,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let focusWindowOutput = '{"ok":true}';
         let windowListOutput = '{"windows":[{"handle":"42","title":"Guest Notes","processId":123}]}';
         let guestDownloadReportedBytes = 6;
+        let guestUploadReportedBytes: number | null = null;
         let guestDownloadLostResponse = false;
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
         const commandRunner = vi.fn((command) => {
@@ -994,7 +995,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     const item = action === "exec"
                         ? { action, status: guestExecExitCode, stdout: guestExecExitCode === 0 ? (nativeRequest.command?.includes("CCCWin") ? windowListOutput : nativeRequest.command?.includes("CCCFocus") ? focusWindowOutput : "guest-ok\r\n") : "", stderr: guestExecExitCode === 0 ? "" : "guest-failed" }
                         : action === "mkdir" ? { action }
-                            : { action, localPath: nativeRequest.localPath, remotePath: nativeRequest.remotePath, bytes: action === "upload" ? statSync(nativeRequest.localPath!).size : guestDownloadReportedBytes };
+                            : { action, localPath: nativeRequest.localPath, remotePath: nativeRequest.remotePath, bytes: action === "upload" ? guestUploadReportedBytes ?? statSync(nativeRequest.localPath!).size : guestDownloadReportedBytes };
                     return { ...command, status: 0, stdout: JSON.stringify({ schemaVersion: 1, operation: "Invoke-Guest", ok: true, items: [item] }), stderr: "" };
                 }
                 if (nativeRequest.operation === "Remove-VMDvdDrive") {
@@ -1860,6 +1861,14 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(uploaded.status).toBe(200);
             expect(await uploaded.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ provider: "hyper-v-powershell-direct", bytes: 6 }) }));
             expect(commandRunner.mock.calls.slice(callsBeforeUpload).map(([command]) => nativeLibraryRequest(command)?.action)).toEqual(["mkdir", "upload"]);
+
+            guestUploadReportedBytes = 7;
+            const mismatchedUpload = await invokeTool("device_upload", { localPath: uploadPath, remotePath: "C:\\ccc\\upload.txt" });
+            expect(mismatchedUpload.status).toBe(502);
+            expect(await mismatchedUpload.json()).toMatchObject({ ok: false, error: "hyper-v-guest-upload-invalid-result" });
+            expect(readFileSync(uploadPath, "utf8")).toBe("upload");
+            expect(readdirSync(join(privateRoot, "transfers"))).toEqual([]);
+            guestUploadReportedBytes = null;
 
             const largeUploadPath = join(cwd, "packaged-node.exe");
             writeFileSync(largeUploadPath, Buffer.alloc(16 * 1024 * 1024 + 1));

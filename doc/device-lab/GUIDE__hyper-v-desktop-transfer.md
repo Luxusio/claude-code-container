@@ -1,0 +1,15 @@
+# Hyper-V desktop controls and guest transfer
+
+The authenticated broker tool gateway delegates Windows/Linux Hyper-V desktop and file operations to `createHyperVDesktopTransferApplication`. Snapshot actions remain in their existing application. The desktop application owns incarnation and journal admission, snapshot-repair sequencing, metadata checks, input decisions, guest-exec composition, transport selection and result interpretation. Factory construction performs no effects.
+
+Window list/focus and Linux X11 type/scroll reuse the application's guest-exec flow. Each composed invocation repeats the existing incarnation, repair and transport checks. Windows window operations keep their minimum timeout. Linux text input verifies one running VM with the expected native ID, name and ownership notes before SSH-X11 execution; scrolling moves the console pointer before the X11 wheel action.
+
+Console frame caching, age checks, per-VM serialization, native geometry/session checks and typed Hyper-V calls remain native. The domain validates key tokens, text, pixels and window results. Frame-dependent input still requires a current screenshot and retains its existing refresh remedy. Horizontal wheel input remains unsupported.
+
+Windows guest work uses the existing typed PowerShell Direct peer and exact private credential paths. Linux work uses verified SSH keys, known-host identity and current SSH/SCP command peers. Neither path provisions, starts or connects a device to make an operation succeed. The application preserves executable fallback ordering, command budgets and transfer byte caps.
+
+Native project-path guards and allocated stage handles retain filesystem and descriptor authority. The application decides when to read, execute, verify, publish and dispose those stages. Windows upload/download requires observed byte equality before reporting success or replacing a destination. Linux download validates bounded base64 before its existing destination write. Cleanup and exception distinctions remain those of the current transport; no new atomic protocol or rollback promise is introduced.
+
+The broker retains transport authentication, owner selection, native error classification/redaction, binary encoding and guarded publication. Compatibility exports from the console/window helpers continue to serve existing callers. Generated guest commands retain their session, handle, ACL, scheduled-task and resource-cleanup checks.
+
+Ordinary authenticated Windows/Linux tests cover these bindings; direct adapter tests alone do not prove the broker path. Strict native-constructor checks and independent review are required before acceptance. Real Hyper-V/Windows host certification remains separate from private native fixtures, and this cohort alone does not complete global desktop-operation coverage.

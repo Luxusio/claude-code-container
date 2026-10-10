@@ -1,3 +1,4 @@
+import { validateWindowHandle, parseWindowsGuestWindowList } from "../../domain/hyper-v-desktop-transfer.js";
 import { X11_WINDOW_LIST_COMMAND, parseX11WindowList } from "../../../../providers/display/window-list.mjs";
 
 export function linuxWindowListCommand(): string {
@@ -45,9 +46,6 @@ while($json.Length -gt 8000){$result.truncated=$true;$result.windows=@($result.w
 [IO.File]::Move(($out+'.tmp'),$out)`);
 }
 
-function validateWindowHandle(handle: unknown): asserts handle is string {
-    if (typeof handle !== "string" || !/^[1-9][0-9]{0,15}$/.test(handle) || !Number.isSafeInteger(Number(handle))) throw new Error("window-handle-invalid");
-}
 
 export function linuxFocusWindowCommand(handle: string): string {
     validateWindowHandle(handle);
@@ -85,14 +83,6 @@ $out=Join-Path $PSScriptRoot 'result.json'
 [IO.File]::Move(($out+'.tmp'),$out)`);
 }
 
-export function parseGuestFocusWindow(stdout: string): { ok: true } {
-    if (stdout.length > 2048) throw new Error("window-focus-invalid-result");
-    let result;
-    try { result = JSON.parse(stdout.replace(/^\uFEFF/, "")); } catch { throw new Error("window-focus-invalid-result"); }
-    if (result && typeof result.error === "string") throw new Error(result.error.slice(0, 512));
-    if (!result || result.ok !== true) throw new Error("window-focus-invalid-result");
-    return { ok: true };
-}
 
 function windowsInteractiveCommand(worker: string): string {
     return String.raw`$ErrorActionPreference='Stop'
@@ -139,19 +129,6 @@ ${worker}
 }
 
 export function parseGuestWindowList(backend: string, stdout: string): Record<string, unknown> {
-    if (backend === "linux-vm") return parseX11WindowList(stdout);
-    if (Buffer.byteLength(stdout) > 1024 * 1024) throw new Error("window-list-invalid-result");
-    let result;
-    try { result = JSON.parse(stdout.replace(/^\uFEFF/, "")); } catch { throw new Error("window-list-invalid-result"); }
-    if (result && typeof result.error === "string") throw new Error(result.error.slice(0, 512));
-    if (!result || !Array.isArray(result.windows) || result.windows.length > 128
-        || (result.truncated !== undefined && typeof result.truncated !== "boolean")) throw new Error("window-list-invalid-result");
-    const windows = result.windows.map((row: unknown) => {
-        if (!row || typeof row !== "object") throw new Error("window-list-invalid-result");
-        const { title, handle, processId } = row as Record<string, unknown>;
-        if (typeof title !== "string" || title.length > 512 || typeof handle !== "string" || !/^\d+$/.test(handle)
-            || !Number.isSafeInteger(processId) || Number(processId) <= 0) throw new Error("window-list-invalid-result");
-        return { title, handle, processId };
-    });
-    return { windows, ...(result.truncated ? { truncated: true } : {}) };
+    return backend === "linux-vm" ? parseX11WindowList(stdout) : parseWindowsGuestWindowList(stdout, Buffer.byteLength(stdout));
 }
+export { parseGuestFocusWindow } from "../../domain/hyper-v-desktop-transfer.js";

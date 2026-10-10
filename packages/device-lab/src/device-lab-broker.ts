@@ -4,6 +4,8 @@ import { validateAttachParams as validatePhysicalAttachParams, physicalOwnerConf
 import { cleanupRecord, type CleanupLeaseGuard } from './device-lab/domain/broker-owner-cleanup.js';
 import type { BrokerPhysicalDevicesPorts } from './device-lab/ports/broker-physical-devices.js';
 import type { BrokerOwnerCleanupPorts } from './device-lab/ports/broker-owner-cleanup.js';
+import { createHyperVDesktopTransferApplication } from "./device-lab/application/hyper-v-desktop-transfer.js";
+import type { HyperVDesktopTransferPorts } from "./device-lab/ports/hyper-v-desktop-transfer.js";
 import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyper-v-snapshots.js";
 import type { SnapshotExecution } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
@@ -38,7 +40,7 @@ import { createAppiumObservations } from "./device-lab/application/broker-observ
 import { createBrokerService, createBrokerStatus } from "./device-lab/application/broker-observation-status.js";
 import { createAndroidPreviewPortAllocation, createLifecyclePreview } from "./device-lab/application/broker-observation-command-plan.js";
 import { hyperVPreviewConflicts } from "./device-lab/domain/broker-observation-command-plan.js";
-import { linuxWindowListCommand, windowsWindowListCommand, parseGuestWindowList, linuxFocusWindowCommand, windowsFocusWindowCommand, parseGuestFocusWindow } from "./device-lab/broker/hyper-v/window-list.js";
+import { linuxWindowListCommand, windowsWindowListCommand, parseGuestWindowList, linuxFocusWindowCommand, windowsFocusWindowCommand } from "./device-lab/broker/hyper-v/window-list.js";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
@@ -109,7 +111,7 @@ import { attachDeviceLabHyperVLinuxSeedMedia, inspectDeviceLabHyperVLinuxSeedTar
 import { readDeviceLabHyperVGuestBootDiagnostic } from "./device-lab/broker/hyper-v/guest-boot-diagnostic-adapter.js";
 import { observeDeviceLabHyperVStatus } from "./device-lab/broker/hyper-v/status.js";
 import { executeDeviceLabHyperVPower, type DeviceLabHyperVPowerOptions, type HyperVMemoryCapacity } from "./device-lab/broker/hyper-v/power.js";
-import { currentHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey, hyperVConsoleKeyTokens, hyperVConsolePixel, hyperVConsoleText, rememberHyperVConsoleFrame, withHyperVConsoleLock } from "./device-lab/broker/hyper-v/console.js";
+import { currentHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey, rememberHyperVConsoleFrame, withHyperVConsoleLock } from "./device-lab/broker/hyper-v/console.js";
 import { deleteDeviceLabHyperVVm } from "./device-lab/broker/hyper-v/delete.js";
 import { assertHyperVHostCapacity, cloneHyperVBaseImage } from "./device-lab/broker/hyper-v/vm-create-preflight.js";
 import { runHyperVCreateCompensation } from "./device-lab/broker/hyper-v/vm-create-compensation.js";
@@ -123,7 +125,7 @@ import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, hyperVTypedErrorC
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
-import { createHyperVWindowsNetworkClient, HyperVWindowsError, type HyperVGuestDirectAction, type HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
+import { createHyperVWindowsNetworkClient, HyperVWindowsError, type HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
 import {
     createDeviceLabHyperVSnapshot,
     hyperVSnapshotObservationMismatch,
@@ -271,7 +273,6 @@ const DEVICE_BROKER_OWNER_REGISTRATION_FILE_LIMIT_BYTES = 16 * 1024;
 const DEVICE_BROKER_RUNTIME_FILE_LIMIT_BYTES = 64 * 1024;
 const DEVICE_BROKER_SERVICE_OWNER_FILE_LIMIT_BYTES = 16 * 1024;
 const DEVICE_BROKER_APPIUM_RUNTIME_MARKER_LIMIT_BYTES = 16 * 1024;
-const DEVICE_BROKER_HYPER_V_GUEST_UPLOAD_LIMIT_BYTES = 128 * 1024 * 1024;
 const DEVICE_BROKER_HYPER_V_OPERATION_JOURNAL_LIMIT_BYTES = 16 * 1024;
 export const DEVICE_BROKER_APPIUM_PACKAGE_MANIFEST_LIMIT_BYTES = 64 * 1024;
 export const DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES = 8 * 1024 * 1024;
@@ -591,15 +592,6 @@ const DEVICE_BROKER_READ_ONLY_TOOL_METHODS = new Set([
     "mobile_wait_for_app",
     "mobile_screenshot",
 ]);
-// Linux type/scroll reuse device_exec for the guest X11 step; report its failure as the
-// caller's tool so the response correlates like a console-side failure does.
-function hyperVX11InputFailure(result: BrokerRpcResult, tool: string): BrokerRpcResult {
-    const payload = result.payload && typeof result.payload === "object" && !Array.isArray(result.payload)
-        ? result.payload as Record<string, unknown>
-        : { ok: false };
-    return { ...result, payload: { ...payload, tool } };
-}
-const HYPER_V_CONSOLE_TOOL_METHODS = new Set(["device_screenshot", "device_click", "device_double_click", "device_drag", "device_key", "device_type", "device_scroll", "device_cursor_position"]);
 const DEVICE_BROKER_MUTATING_RPC_METHODS = new Set([
     "broker.cleanup.owner",
     "broker.lease.claim",
@@ -3868,435 +3860,84 @@ function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceI
 
 
 
-async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
-    if (isSnapshotTool(parsed.tool)) return brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match);
-    const deviceId = String(parsed.deviceId);
-    let device = match.device;
-    const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
-    if (!powershell) return { status: 400, payload: { ok: false, error: "missing-provider-command", missing: ["powershell"], backend: match.backend, deviceId } };
-
-    const initialIncarnationId = hyperVDeviceIncarnationId(device);
-    const pendingSnapshotJournal = existsSync(hyperVSnapshotJournalPath(ownerId, match.stateKey, deviceId));
-    const cursorMove = parsed.tool === "device_cursor_position" && (parsed.params.x !== undefined || parsed.params.y !== undefined);
-    if (!DEVICE_BROKER_READ_ONLY_TOOL_METHODS.has(parsed.tool) || cursorMove || pendingSnapshotJournal) {
-        const expectedIncarnationId = parsed.params.incarnationId;
-        if (!validHyperVIncarnationId(expectedIncarnationId)) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-required", ownerId, backend: match.backend, deviceId, tool: parsed.tool } };
-        }
-        if (!initialIncarnationId || expectedIncarnationId !== initialIncarnationId) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: match.backend, deviceId, tool: parsed.tool } };
-        }
-    }
-    const reconciliation = await reconcileHyperVSnapshotJournal(
-        ownerId,
-        match.stateKey,
-        deviceId,
-        device,
-        powershell,
-        normalized,
-        parsed.tool === "device_snapshot_restore" && typeof parsed.params.snapshotId === "string"
-            ? parsed.params.snapshotId
-            : undefined,
-    );
-    if (!reconciliation.ok) return { status: reconciliation.status, payload: { ok: false, error: reconciliation.error, ownerId, backend: match.backend, deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {}) } };
-    device = reconciliation.device;
-    const vmId = typeof device.vmId === "string" ? device.vmId : null;
-    const vmName = typeof device.vmName === "string" ? device.vmName : null;
-    const diskPath = typeof device.diskPath === "string" ? device.diskPath : null;
-    const incarnationId = hyperVDeviceIncarnationId(device);
-    if (!vmId || !vmName || !diskPath || !incarnationId) {
-        return { status: 409, payload: { ok: false, error: "missing-provider-metadata", missing: ["vmId", "vmName", "diskPath", "incarnationId"], backend: match.backend, deviceId } };
-    }
-
-    if (parsed.tool === "device_window_list" || parsed.tool === "device_focus_window") {
-        if (match.backend === "windows-vm" && typeof parsed.params.helperTimeoutMs === "number" && parsed.params.helperTimeoutMs < 30000) {
-            return { status: 400, payload: { ok: false, error: parsed.tool === "device_focus_window" ? "window-focus-timeout-too-short" : "window-list-timeout-too-short", minimumTimeoutMs: 30000, deviceId } };
-        }
-        const result = await invokeHyperVDeviceTool(ownerId, {
-            ...parsed, tool: "device_exec",
-            params: { ...parsed.params, incarnationId,
-                command: parsed.tool === "device_focus_window"
-                    ? (match.backend === "linux-vm" ? linuxFocusWindowCommand(String(parsed.params.handle)) : windowsFocusWindowCommand(String(parsed.params.handle)))
-                    : (match.backend === "linux-vm" ? linuxWindowListCommand() : windowsWindowListCommand()) },
-        }, { ...match, device }, normalized);
-        if (result.status !== 200) return hyperVX11InputFailure(result, parsed.tool);
-        const payload = result.payload as { result?: { stdout?: unknown } };
-        try {
-            const stdout = payload.result?.stdout;
-            if (typeof stdout !== "string") throw new Error("window-list-invalid-result");
-            return { status: 200, payload: { ok: true, result: {
-                deviceId, tool: parsed.tool, ...(parsed.tool === "device_focus_window" ? parseGuestFocusWindow(stdout) : parseGuestWindowList(match.backend || "", stdout)),
-            } } };
-        } catch (error) {
-            return { status: 502, payload: { ok: false, error: error instanceof Error ? error.message : "window-list-invalid-result", deviceId, tool: parsed.tool } };
-        }
-    }
-    if (HYPER_V_CONSOLE_TOOL_METHODS.has(parsed.tool)) {
-        const identity = {
-            selector: { kind: "id" as const, id: vmId },
-            expectedName: vmName,
-            expectedNotes: ownershipMarker(ownerId, deviceId, incarnationId),
-        };
-        const frameKey = hyperVConsoleFrameKey(ownerId, match.backend || "", deviceId);
-        const client = createDeviceLabHyperVWindowsClient({
-            executable: powershell,
+type HyperVDesktopStage = { path: string };
+function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOptions) {
+    const ports: HyperVDesktopTransferPorts<ReturnType<typeof createDeviceLabHyperVWindowsClient>, HyperVDesktopStage, Buffer> = {
+        executable: name => providerExecutable(name, normalized),
+        incarnation: hyperVDeviceIncarnationId,
+        validIncarnation: validHyperVIncarnationId,
+        pendingJournal: (ownerId, stateKey, deviceId) => existsSync(hyperVSnapshotJournalPath(ownerId, stateKey, deviceId)),
+        repair: (ownerId, stateKey, deviceId, device, powershell) => reconcileHyperVSnapshotJournal(ownerId, stateKey, deviceId, device, powershell, normalized),
+        ownershipNotes: ownershipMarker,
+        createConsole: executable => createDeviceLabHyperVWindowsClient({
+            executable,
             timeoutMilliseconds: 30000,
             run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-            ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
-        });
-        const errorResult = (status: number, error: string): BrokerRpcResult => ({
-            status, payload: { ok: false, error, ownerId, backend: match.backend, deviceId, tool: parsed.tool,
-                ...(["hyper-v-console-screenshot-required", "hyper-v-console-geometry-changed"].includes(error)
-                    ? { remedy: "Call device_screenshot again, then use its current incarnationId and image coordinates." }
-                    : error === "hyper-v-display-unavailable"
-                        ? { remedy: "Start the VM and wait for its desktop, then call device_screenshot." }
-                        : error === "hyper-v-console-identity-mismatch"
-                            ? { remedy: "Call device_inventory for the current owner VM, then take a new screenshot." }
-                            : {}),
-            },
-        });
-        return await withHyperVConsoleLock(frameKey, async () => {
-        try {
-            let inputProvider = "hyper-v-console";
-            if (parsed.tool === "device_screenshot") {
-                const capture = await client.captureVMConsole(identity);
-                const capturedAt = new Date().toISOString();
-                rememberHyperVConsoleFrame(frameKey, {
-                    incarnationId, width: capture.width, height: capture.height,
-                    nativeWidth: capture.nativeWidth, nativeHeight: capture.nativeHeight, capturedAt,
-                });
-                return { status: 200, payload: { ok: true, result: {
-                    ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console",
-                    width: capture.width, height: capture.height, incarnationId, capturedAt,
-                    mcpResult: { content: [
-                        { type: "image", data: capture.pngBase64, mimeType: "image/png" },
-                        { type: "text", text: JSON.stringify({ backend: match.backend, deviceId, width: capture.width, height: capture.height, incarnationId, capturedAt }) },
-                    ] },
-                } } };
-            }
-            if (parsed.tool === "device_cursor_position" && !cursorMove) {
-                const cursor = await client.getVMConsoleCursor(identity);
-                return { status: 200, payload: { ok: true, result: { ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console", ...cursor, incarnationId } } };
-            }
-            if (parsed.tool === "device_key") {
-                const keys = hyperVConsoleKeyTokens(parsed.params.key);
-                if (!keys) return errorResult(400, "hyper-v-console-key-invalid");
-                await client.sendVMConsoleInput({ ...identity, action: "key", keys });
-            } else if (parsed.tool === "device_type") {
-                const text = hyperVConsoleText(parsed.params.text);
-                if (text === null) return errorResult(400, "hyper-v-console-text-invalid");
-                if (match.backend === "linux-vm") {
-                    // Hyper-V's WMI TypeText reports success even when Linux does not
-                    // receive the characters. Type through the verified guest X11
-                    // session while retaining the owner/incarnation and per-VM lock.
-                    const currentVms = await client.getVM(identity.selector);
-                    if (currentVms.length !== 1 || currentVms[0].id.toLowerCase() !== vmId.toLowerCase()
-                        || currentVms[0].name !== vmName || currentVms[0].notes !== identity.expectedNotes) {
-                        return errorResult(409, "hyper-v-console-identity-mismatch");
-                    }
-                    if (currentVms[0].state !== "Running") return errorResult(409, "hyper-v-display-unavailable");
-                    const typed = await invokeHyperVDeviceTool(ownerId, {
-                        ...parsed,
-                        tool: "device_exec",
-                        params: { ...parsed.params, command: hyperVLinuxGuiTypeGuestCommand(text) },
-                    }, match, normalized);
-                    if (typed.status !== 200) return hyperVX11InputFailure(typed, parsed.tool);
-                    inputProvider = "hyper-v-ssh-x11";
-                } else {
-                    await client.sendVMConsoleInput({ ...identity, action: "type", text });
-                }
-            } else {
-                const frame = currentHyperVConsoleFrame(frameKey, incarnationId);
-                if (!frame) return errorResult(409, "hyper-v-console-screenshot-required");
-                const x = hyperVConsolePixel(parsed.tool === "device_drag" ? parsed.params.x1 : parsed.params.x, frame.width);
-                const y = hyperVConsolePixel(parsed.tool === "device_drag" ? parsed.params.y1 : parsed.params.y, frame.height);
-                if (x === null || y === null) return errorResult(400, "hyper-v-console-pixel-invalid");
-                const pointer = { ...identity, x, y, width: frame.width, height: frame.height, nativeWidth: frame.nativeWidth, nativeHeight: frame.nativeHeight };
-                if (parsed.tool === "device_drag") {
-                    const x2 = hyperVConsolePixel(parsed.params.x2, frame.width);
-                    const y2 = hyperVConsolePixel(parsed.params.y2, frame.height);
-                    if (x2 === null || y2 === null) return errorResult(400, "hyper-v-console-pixel-invalid");
-                    await client.sendVMConsoleInput({ ...pointer, action: "drag", x2, y2, durationMs: Number(parsed.params.durationMs ?? 700) });
-                } else if (parsed.tool === "device_click" || parsed.tool === "device_double_click") {
-                    const button = parsed.params.button === undefined ? "left" : parsed.params.button;
-                    if (button !== "left" && button !== "right") return errorResult(400, "hyper-v-console-button-invalid");
-                    await client.sendVMConsoleInput({ ...pointer, action: parsed.tool === "device_click" ? "click" : "doubleClick", button });
-                } else if (parsed.tool === "device_scroll") {
-                    const direction = parsed.params.direction;
-                    if (direction === "left" || direction === "right") return errorResult(400, "hyper-v-console-scroll-unsupported");
-                    if (direction !== "up" && direction !== "down") return errorResult(400, "hyper-v-console-scroll-direction-invalid");
-                    const amount = parsed.params.amount === undefined ? 1 : parsed.params.amount;
-                    if (typeof amount !== "number" || !Number.isInteger(amount) || amount < 1 || amount > 10) return errorResult(400, "hyper-v-console-scroll-amount-invalid");
-                    if (match.backend === "linux-vm") {
-                        // The synthetic mouse wheel does not reach the Linux X11 session. Keep the
-                        // console pointer move (proven by clicks), then press the X11 wheel buttons.
-                        await client.sendVMConsoleInput({ ...pointer, action: "cursor" });
-                        const scrolled = await invokeHyperVDeviceTool(ownerId, {
-                            ...parsed,
-                            tool: "device_exec",
-                            params: { ...parsed.params, command: hyperVLinuxGuiScrollGuestCommand(direction, amount) },
-                        }, match, normalized);
-                        if (scrolled.status !== 200) return hyperVX11InputFailure(scrolled, parsed.tool);
-                        inputProvider = "hyper-v-ssh-x11";
-                    } else {
-                        await client.sendVMConsoleInput({ ...pointer, action: "scroll", direction, amount });
-                    }
-                } else if (parsed.tool === "device_cursor_position") {
-                    await client.sendVMConsoleInput({ ...pointer, action: "cursor" });
-                } else return errorResult(501, "broker-device-tool-not-supported");
-            }
-            return { status: 200, payload: { ok: true, result: { ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: inputProvider, incarnationId, applied: true } } };
-        } catch (error) {
-            const code = error instanceof HyperVWindowsError ? error.code : hyperVBoundedErrorCode(error, "hyper-v-console-operation-failed");
-            const status = error instanceof HyperVWindowsError && error.category === "validation" ? 400
-                : ["hyper-v-console-identity-mismatch", "hyper-v-console-geometry-changed", "hyper-v-display-unavailable"].includes(code) ? 409
-                    : code === "hyper-v-console-wmi-access-denied" ? 403 : 502;
-            return errorResult(status, code);
-        }
-        });
-    }
+            ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
+        }),
+        withConsoleLock: (ownerId, backend, deviceId, operation) => withHyperVConsoleLock(hyperVConsoleFrameKey(ownerId, backend, deviceId), operation),
+        capture: (client, identity) => client.captureVMConsole(identity),
+        cursor: (client, identity) => client.getVMConsoleCursor(identity),
+        vms: (client, id) => client.getVM({ kind: "id", id }),
+        input: (client, input) => client.sendVMConsoleInput(input),
+        frame: (ownerId, backend, deviceId, incarnationId) => currentHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId), incarnationId),
+        rememberFrame: (ownerId, backend, deviceId, frame) => { rememberHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId), frame); },
+        timestamp: () => new Date().toISOString(),
+        windowCommand: (backend, handle) => handle === null
+            ? backend === "linux-vm" ? linuxWindowListCommand() : windowsWindowListCommand()
+            : backend === "linux-vm" ? linuxFocusWindowCommand(handle) : windowsFocusWindowCommand(handle),
+        linuxWindows: stdout => parseGuestWindowList("linux-vm", stdout),
+        utf8Length: text => Buffer.byteLength(text),
+        linuxTypeCommand: hyperVLinuxGuiTypeGuestCommand,
+        linuxScrollCommand: hyperVLinuxGuiScrollGuestCommand,
+        roots: (ownerId, backend, deviceId) => {
+            const deviceRoot = hyperVDeviceRoot(ownerId, backend, deviceId);
+            const privateRoot = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
+            return {
+                deviceRoot, privateRoot,
+                credentialPath: join(privateRoot, "secrets", "guest.credential.xml"),
+                sshPrivateKeyPath: join(privateRoot, "secrets", "id_ed25519"),
+                sshHostPublicKeyPath: join(privateRoot, "secrets", "ssh_host_ed25519_key.pub"),
+                knownHostsPath: join(privateRoot, "secrets", "known_hosts"),
+            };
+        },
+        assertPrivateRoot: (ownerId, backend, deviceId, privateRoot) => { assertHyperVPrivateDeviceRoot(ownerId, backend, deviceId, privateRoot); },
+        readableSecret: (path, label) => Boolean(withDeviceLabReadableFile(path, label, 64 * 1024, () => true)),
+        sshIdentity: validateHyperVLinuxSshHostIdentity,
+        localPath: (raw, label) => {
+            const path = isAbsolute(raw) ? resolve(raw) : resolve(normalized.cwd, raw);
+            assertDeviceLabPathWithinRoot(normalized.cwd, path, label);
+            return path;
+        },
+        readSource: (path, label, maxBytes) => readDeviceLabBinaryFileWithinRoot(normalized.cwd, path, label, maxBytes),
+        allocateStage: (privateRoot, direction, label) => {
+            const stagingRoot = join(privateRoot, direction === "upload" ? "transfers" : "downloads");
+            mkdirSync(stagingRoot, { recursive: true });
+            assertNoSymlinkPathComponents(stagingRoot, label);
+            const path = join(stagingRoot, `${direction}-${randomBytes(16).toString("hex")}.tmp`);
+            return { handle: { path }, path };
+        },
+        writeStage: (privateRoot, stage, bytes, label) => { writeDeviceLabBinaryFile(privateRoot, stage.path, bytes, label, { allowNestedCreate: true }); },
+        readStage: (stage, maxBytes) => readDeviceLabBinaryFile(stage.path, "hyper-v-guest-download-staging", maxBytes),
+        disposeStage: stage => { rmSync(stage.path, { force: true }); },
+        writeDestination: (path, bytes, label) => { writeDeviceLabBinaryFile(normalized.cwd, path, bytes, label); },
+        base64Text: text => Buffer.from(text, "utf8").toString("base64"),
+        decodeBase64: encoded => Buffer.from(encoded, "base64"),
+        sshCommand: (facts, executable, command) => hyperVLinuxSshExecCommand({ ...facts, executable, guestCommand: command }),
+        uploadCommand: (facts, executable, path, remotePath) => hyperVLinuxScpUploadCommand({ ...facts, executable, localPath: path, remotePath }),
+        execute: async (command, timeoutMs, outputLimit) => hyperVProviderCommandRunner(normalized, command, { timeoutMs, outputLimit }),
+        direct: (executable, timeoutMs, identity, action) => invokeDeviceLabHyperVGuestDirect({ executable, timeoutMilliseconds: timeoutMs, run: (command, options) => hyperVProviderCommandRunner(normalized, command, options), identity, action }),
+        stateErrorCode: error => deviceLabStateFileErrorCode(error) || null,
+        providerError: error => error instanceof HyperVWindowsError ? { code: error.code, validation: error.category === "validation" } : null,
+        boundedErrorCode: hyperVBoundedErrorCode,
+        redactExecution: (execution, fallback) => redactProviderCommandInput(execution, true, fallback),
+    };
+    return createHyperVDesktopTransferApplication(ports);
+}
 
-    if (match.backend === "linux-vm" && (parsed.tool === "device_exec" || parsed.tool === "device_upload" || parsed.tool === "device_download")) {
-        const deviceRoot = field(device, "deviceRoot");
-        const privateRoot = field(device, "privateRoot");
-        const sshPrivateKeyPath = field(device, "sshPrivateKeyPath");
-        const sshHostPublicKeyPath = field(device, "sshHostPublicKeyPath");
-        const sshHostKeyFingerprint = field(device, "sshHostKeyFingerprint");
-        const knownHostsPath = field(device, "sshKnownHostsPath");
-        const guestUsername = field(device, "guestUsername");
-        const networkAddress = field(device, "networkAddress");
-        const expectedRoot = hyperVDeviceRoot(ownerId, "linux-vm", deviceId);
-        const expectedPrivateRoot = hyperVPrivateDeviceRoot(ownerId, "linux-vm", deviceId);
-        if (deviceRoot !== expectedRoot
-            || privateRoot !== expectedPrivateRoot
-            || sshPrivateKeyPath !== join(expectedPrivateRoot, "secrets", "id_ed25519")
-            || sshHostPublicKeyPath !== join(expectedPrivateRoot, "secrets", "ssh_host_ed25519_key.pub")
-            || knownHostsPath !== join(expectedPrivateRoot, "secrets", "known_hosts")
-            || !sshHostKeyFingerprint || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(sshHostKeyFingerprint)
-            || !guestUsername || !networkAddress) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-linux-guest-metadata-invalid", backend: match.backend, deviceId } };
-        }
-        try {
-            assertHyperVPrivateDeviceRoot(ownerId, "linux-vm", deviceId, privateRoot);
-            if (!withDeviceLabReadableFile(sshPrivateKeyPath, "hyper-v-linux-ssh-private-key", 64 * 1024, () => true)) throw new Error("hyper-v-linux-ssh-private-key-unavailable");
-            if (!validateHyperVLinuxSshHostIdentity(ownerId, deviceId, sshHostPublicKeyPath, knownHostsPath, networkAddress, sshHostKeyFingerprint)) throw new Error("hyper-v-linux-ssh-host-identity-invalid");
-        } catch (error) {
-            return { status: 409, payload: { ok: false, error: deviceLabStateFileErrorCode(error) || (error instanceof Error ? error.message : "hyper-v-linux-ssh-private-key-invalid"), backend: match.backend, deviceId } };
-        }
-        const timeoutMs = Math.min(DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS, Math.max(1000, typeof parsed.params.helperTimeoutMs === "number" ? parsed.params.helperTimeoutMs : 30000));
-        const common = { deviceRoot, privateRoot, sshPrivateKeyPath, knownHostsPath, guestUsername, networkAddress, timeoutMs };
-        let providerCommand: ProviderCommand;
-        let localPath: string | null = null;
-        let stagingPath: string | null = null;
-        let sourceBytes: number | null = null;
-        let downloadMaxBytes: number | null = null;
-        try {
-            if (parsed.tool === "device_exec") {
-                const ssh = providerExecutable("ssh.exe", normalized) || providerExecutable("ssh", normalized);
-                if (!ssh) return { status: 503, payload: { ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId } };
-                providerCommand = hyperVLinuxSshExecCommand({ ...common, executable: ssh, guestCommand: typeof parsed.params.command === "string" ? parsed.params.command : "" });
-            } else {
-                const rawLocalPath = parsed.localPath || "";
-                localPath = isAbsolute(rawLocalPath) ? resolve(rawLocalPath) : resolve(normalized.cwd, rawLocalPath);
-                assertDeviceLabPathWithinRoot(normalized.cwd, localPath, "hyper-v-linux-guest-transfer");
-                if (parsed.tool === "device_upload") {
-                    const scp = providerExecutable("scp.exe", normalized) || providerExecutable("scp", normalized);
-                    if (!scp) return { status: 503, payload: { ok: false, error: "missing-provider-command", missing: ["scp"], backend: match.backend, deviceId } };
-                    const stagingRoot = join(privateRoot, "transfers");
-                    mkdirSync(stagingRoot, { recursive: true });
-                    assertNoSymlinkPathComponents(stagingRoot, "hyper-v-linux-guest-transfer-staging");
-                    stagingPath = join(stagingRoot, `upload-${randomBytes(16).toString("hex")}.tmp`);
-                    const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                    const source = readDeviceLabBinaryFileWithinRoot(normalized.cwd, localPath, "hyper-v-linux-guest-upload", maxBytes);
-                    if (source === null) return { status: 404, payload: { ok: false, error: "hyper-v-linux-guest-upload-source-missing", backend: match.backend, deviceId } };
-                    sourceBytes = source.length;
-                    writeDeviceLabBinaryFile(privateRoot, stagingPath, source, "hyper-v-linux-guest-upload-staging", { allowNestedCreate: true });
-                    providerCommand = hyperVLinuxScpUploadCommand({ ...common, executable: scp, localPath: stagingPath, remotePath: parsed.remotePath || "" });
-                } else {
-                    downloadMaxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                    const ssh = providerExecutable("ssh.exe", normalized) || providerExecutable("ssh", normalized);
-                    if (!ssh) return { status: 503, payload: { ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId } };
-                    const remotePath = parsed.remotePath || "";
-                    const encodedPath = Buffer.from(remotePath, "utf8").toString("base64");
-                    providerCommand = hyperVLinuxSshExecCommand({ ...common, executable: ssh, guestCommand: `set -o pipefail; p=$(printf %s ${encodedPath} | base64 -d); head -c ${downloadMaxBytes + 1} -- "$p" | base64 -w0` });
-                }
-            }
-        } catch (error) {
-            return { status: 400, payload: { ok: false, error: deviceLabStateFileErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-linux-guest-options"), backend: match.backend, deviceId } };
-        }
-        const outputLimit = parsed.tool === "device_download" && downloadMaxBytes !== null
-            ? Math.ceil((downloadMaxBytes + 1) / 3) * 4 + 4096
-            : DEVICE_BROKER_COMMAND_OUTPUT_LIMIT;
-        const execution = await hyperVProviderCommandRunner(normalized, providerCommand, { timeoutMs, outputLimit });
-        if (!commandSucceeded(execution)) {
-            if (stagingPath) rmSync(stagingPath, { force: true });
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: "hyper-v-linux-guest-provider-failed",
-                    ownerId,
-                    backend: match.backend,
-                    deviceId,
-                    execution: redactProviderCommandInput(
-                        execution,
-                        true,
-                        "hyper-v-linux-guest-provider-failed",
-                    ),
-                },
-            };
-        }
-        let bytes = sourceBytes;
-        if (parsed.tool === "device_download" && localPath) {
-            try {
-                const maxBytes = downloadMaxBytes || 16 * 1024 * 1024;
-                const encoded = String(execution.stdout || "").trim();
-                if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error("hyper-v-linux-guest-download-invalid-base64");
-                const downloaded = Buffer.from(encoded, "base64");
-                if (downloaded.length > maxBytes) {
-                    return { status: 413, payload: { ok: false, error: "hyper-v-linux-guest-download-source-too-large", ownerId, backend: match.backend, deviceId, bytes: downloaded.length, maxFileBytes: maxBytes } };
-                }
-                bytes = downloaded.length;
-                writeDeviceLabBinaryFile(normalized.cwd, localPath, downloaded, "hyper-v-linux-guest-download");
-            } catch (error) {
-                return { status: 502, payload: { ok: false, error: deviceLabStateFileErrorCode(error) || "hyper-v-linux-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId } };
-            }
-        } else if (stagingPath) {
-            rmSync(stagingPath, { force: true });
-        }
-        return { status: 200, payload: { ok: true, result: { ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: parsed.tool === "device_upload" ? "hyper-v-scp" : "hyper-v-ssh", status: 0, stdout: parsed.tool === "device_download" ? "" : execution.stdout || "", stderr: execution.stderr || "", ...(localPath ? { localPath } : {}), ...(parsed.remotePath ? { remotePath: parsed.remotePath } : {}), ...(bytes !== null ? { bytes } : {}), startsDevices: false } } };
-    }
-    if (parsed.tool === "device_exec" || parsed.tool === "device_upload" || parsed.tool === "device_download") {
-        const deviceRoot = typeof device.deviceRoot === "string" ? device.deviceRoot : null;
-        const privateRoot = typeof device.privateRoot === "string" ? device.privateRoot : null;
-        const credentialPath = typeof device.guestCredentialPath === "string" ? device.guestCredentialPath : null;
-        const expectedRoot = hyperVDeviceRoot(ownerId, "windows-vm", deviceId);
-        const expectedPrivateRoot = hyperVPrivateDeviceRoot(ownerId, "windows-vm", deviceId);
-        const expectedCredential = join(expectedPrivateRoot, "secrets", "guest.credential.xml");
-        if (deviceRoot !== expectedRoot || privateRoot !== expectedPrivateRoot || credentialPath !== expectedCredential) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-guest-metadata-invalid", backend: match.backend, deviceId } };
-        }
-        try {
-            assertHyperVPrivateDeviceRoot(ownerId, "windows-vm", deviceId, privateRoot);
-            const credentialAvailable = withDeviceLabReadableFile(credentialPath, "hyper-v-guest-credential", 64 * 1024, () => true);
-            if (!credentialAvailable) return { status: 409, payload: { ok: false, error: "hyper-v-guest-credential-unavailable", backend: match.backend, deviceId } };
-        } catch (error) {
-            return { status: 409, payload: { ok: false, error: deviceLabStateFileErrorCode(error) || "hyper-v-guest-credential-invalid", backend: match.backend, deviceId } };
-        }
-        let guestAction: HyperVGuestDirectAction;
-        let transferLocalPath: string | null = null;
-        let transferStagingPath: string | null = null;
-        let uploadSourceBytes: number | null = null;
-        try {
-            if (parsed.tool === "device_exec") {
-                guestAction = { action: "exec", command: typeof parsed.params.command === "string" ? parsed.params.command : "" };
-            } else {
-                const rawLocalPath = parsed.localPath || "";
-                const localPath = isAbsolute(rawLocalPath) ? resolve(rawLocalPath) : resolve(normalized.cwd, rawLocalPath);
-                assertDeviceLabPathWithinRoot(normalized.cwd, localPath, "hyper-v-guest-transfer");
-                transferLocalPath = localPath;
-                if (parsed.tool === "device_upload") {
-                    const maxBytes = typeof parsed.params.maxFileBytes === "number"
-                        ? Math.min(parsed.params.maxFileBytes, DEVICE_BROKER_HYPER_V_GUEST_UPLOAD_LIMIT_BYTES)
-                        : 16 * 1024 * 1024;
-                    const source = readDeviceLabBinaryFileWithinRoot(normalized.cwd, localPath, "hyper-v-guest-upload", maxBytes);
-                    if (source === null) return { status: 404, payload: { ok: false, error: "hyper-v-guest-upload-source-missing", backend: match.backend, deviceId } };
-                    uploadSourceBytes = source.length;
-                    const stagingRoot = join(privateRoot, "transfers");
-                    mkdirSync(stagingRoot, { recursive: true });
-                    assertNoSymlinkPathComponents(stagingRoot, "hyper-v-guest-upload-staging");
-                    transferStagingPath = join(stagingRoot, `upload-${randomBytes(16).toString("hex")}.tmp`);
-                    writeDeviceLabBinaryFile(privateRoot, transferStagingPath, source, "hyper-v-guest-upload-staging", { allowNestedCreate: true });
-                }
-                if (parsed.tool === "device_download") {
-                    const stagingRoot = join(privateRoot, "downloads");
-                    mkdirSync(stagingRoot, { recursive: true });
-                    assertNoSymlinkPathComponents(stagingRoot, "hyper-v-guest-download-staging");
-                    transferStagingPath = join(stagingRoot, `download-${randomBytes(16).toString("hex")}.tmp`);
-                }
-                const downloadMaxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                guestAction = parsed.tool === "device_upload"
-                    ? { action: "upload", localPath: transferStagingPath!, remotePath: parsed.remotePath || "" }
-                    : { action: "download", localPath: transferStagingPath!, remotePath: parsed.remotePath || "", maxBytes: downloadMaxBytes };
-            }
-        } catch (error) {
-            if (transferStagingPath) rmSync(transferStagingPath, { force: true });
-            return { status: 400, payload: { ok: false, error: deviceLabStateFileErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-guest-options"), backend: match.backend, deviceId } };
-        }
-        const timeoutMs = Math.min(DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS, Math.max(1000, typeof parsed.params.helperTimeoutMs === "number" ? parsed.params.helperTimeoutMs : 30000));
-        let typedResult;
-        try {
-            typedResult = await invokeDeviceLabHyperVGuestDirect({
-                executable: powershell,
-                timeoutMilliseconds: timeoutMs,
-                run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-                identity: {
-                    selector: { kind: "id", id: vmId },
-                    expectedName: vmName,
-                    expectedNotes: ownershipMarker(ownerId, deviceId, incarnationId),
-                    credentialPath,
-                },
-                action: guestAction,
-            });
-        } catch (error) {
-            if (transferStagingPath) rmSync(transferStagingPath, { force: true });
-            const code = error instanceof HyperVWindowsError ? error.code : "guest-executor-failed";
-            return {
-                status: error instanceof HyperVWindowsError && error.category === "validation" ? 400 : 502,
-                payload: {
-                    ok: false,
-                    error: "hyper-v-guest-provider-failed",
-                    ownerId,
-                    backend: match.backend,
-                    deviceId,
-                    execution: redactProviderCommandInput(
-                        { mode: "exec", provider: "hyper-v", status: null, error: code },
-                        true,
-                        "hyper-v-guest-provider-failed",
-                    ),
-                },
-            };
-        }
-        const observation = typedResult.action === "exec"
-            ? { ok: true as const, status: typedResult.status, stdout: typedResult.stdout, stderr: typedResult.stderr }
-            : typedResult.action === "mkdir" || typedResult.action === "job"
-                ? null
-                : { ok: true as const, localPath: typedResult.localPath, remotePath: typedResult.remotePath, bytes: typedResult.bytes };
-        if (!observation) return { status: 502, payload: { ok: false, error: "hyper-v-guest-invalid-result", ownerId, backend: match.backend, deviceId } };
-        if (parsed.tool === "device_download" && transferLocalPath && transferStagingPath) {
-            try {
-                const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                const downloaded = readDeviceLabBinaryFile(transferStagingPath, "hyper-v-guest-download-staging", maxBytes);
-                const downloadedBytes = downloaded?.length ?? null;
-                if (downloadedBytes === null || !("bytes" in observation) || observation.bytes !== downloadedBytes) {
-                    return { status: 502, payload: { ok: false, error: "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId } };
-                }
-                writeDeviceLabBinaryFile(normalized.cwd, transferLocalPath, downloaded!, "hyper-v-guest-download");
-                observation.localPath = transferLocalPath;
-            } catch (error) {
-                return { status: 502, payload: { ok: false, error: deviceLabStateFileErrorCode(error) || "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId } };
-            } finally {
-                rmSync(transferStagingPath, { force: true });
-            }
-        } else if (parsed.tool === "device_upload" && transferLocalPath && transferStagingPath) {
-            if (!("bytes" in observation) || observation.bytes !== uploadSourceBytes) {
-                rmSync(transferStagingPath, { force: true });
-                return { status: 502, payload: { ok: false, error: "hyper-v-guest-upload-invalid-result", ownerId, backend: match.backend, deviceId } };
-            }
-            observation.localPath = transferLocalPath;
-            rmSync(transferStagingPath, { force: true });
-        }
-        const guestFailed = parsed.tool === "device_exec" && "status" in observation && observation.status !== 0;
-        return {
-            status: guestFailed ? 422 : 200,
-            payload: {
-                ok: !guestFailed,
-                ...(guestFailed ? { error: "hyper-v-guest-command-failed" } : {}),
-                result: { ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: "hyper-v-powershell-direct", ...observation, startsDevices: false },
-            },
-        };
-    }
-    return { status: 501, payload: { ok: false, error: "broker-hyper-v-tool-not-supported" } };
+async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
+    if (isSnapshotTool(parsed.tool)) return brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match);
+    return brokerHyperVDesktopTransferApplication(normalized).invoke(ownerId, parsed, match);
 }
 
 async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
