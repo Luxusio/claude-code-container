@@ -304,6 +304,49 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "ed8dda6c943ad36cf8ba4a712655723b87e511a6"
+    },
+    {
+      "id": "provider-workspace-followup-integration",
+      "branch": "refactor/architecture-provider-workspace-followup-integration-20261010",
+      "commit": "b855553fb7122234176c33f774e766af5824a4c4",
+      "taskId": "TASK__architecture-provider-workspace-followup-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-android-emulator-create",
+        "OP-android-emulator-start",
+        "OP-android-emulator-stop",
+        "OP-android-emulator-delete",
+        "OP-android-wireless-status",
+        "OP-android-wireless-usb-tcpip",
+        "OP-android-wireless-pair",
+        "OP-android-wireless-connect",
+        "OP-physical-stop",
+        "OP-workspace-content-repair-admission",
+        "OP-workspace-cli-remove"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS. Local75byte delivery b855 verified; empty hook receipts parked, no formal close.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "b855553fb7122234176c33f774e766af5824a4c4"
+    },
+    {
+      "id": "admin-qemu-integration",
+      "branch": "refactor/architecture-provider-workspace-followup-integration-20261010",
+      "commit": "b855553fb7122234176c33f774e766af5824a4c4",
+      "taskId": "TASK__architecture-admin-qemu-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-device-admin-inventory",
+        "OP-qemu-image-list",
+        "OP-qemu-disk-materialize",
+        "OP-qemu-target-list"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS. Local75byte delivery b855 verified; empty hook receipts parked, no formal close.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "b855553fb7122234176c33f774e766af5824a4c4"
     }
   ],
   "planningLanes": [

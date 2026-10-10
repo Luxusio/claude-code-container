@@ -5,8 +5,8 @@ Updated: 2026\-10\-10. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **68/218 (31.2%)**.
-Integrated source: **68/218 (31.2%)**; historical baseline: **31**. Candidates: **0**; partial: **20**; TODO: **130**.
+Implemented including unmerged candidates: **83/218 (38.1%)**.
+Integrated source: **83/218 (38.1%)**; historical baseline: **31**. Candidates: **0**; partial: **20**; TODO: **115**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -40,6 +40,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | runtime\-capabilities | 1 | 0 | `8f97651b` | independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending | accepted @ da5d7d36 |
 | mcp\-forward | 1 | 0 | `0cd28374` | independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending | accepted @ da5d7d36 |
 | services\-clean\-harness\-integration | 10 | 0 | `ed8dda6c` | independent code/security/docs actual PASS; genuine build/BOTH42 each/full portable QA actual PASS; hook records absent, no formal close | accepted @ ed8dda6c |
+| provider\-workspace\-followup\-integration | 11 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
+| admin\-qemu\-integration | 4 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
 
 ## 0.2 Active next plans
 
@@ -106,7 +108,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 7. M06 — Images/network/admin (0/14 implemented)
+## 7. M06 — Images/network/admin (2/14 implemented)
 
 - [ ] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **TODO**; src/device\-lab\-admin\.ts.
 - [ ] `OP-device-admin-prune` — Prune stale Device Lab records. **TODO**; src/device\-lab\-admin\.ts.
@@ -116,14 +118,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/image\-store\.ts.
 - [ ] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-qemu-image-import` — Qemu image import. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-device-admin-inventory` — Read host admin current\-owner and explicit all\-project device inventory. **TODO**; src/device\-lab\-admin\.ts.
+- [x] `OP-device-admin-inventory` — Read host admin current\-owner and explicit all\-project device inventory. **integrated**; admin\-qemu\-integration @ b855553f.
 - [ ] `OP-hyperv-fabric-ensure` — Ensure and recover shared Hyper\-V host fabric. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-hyperv-fabric-release` — Release exact allocation and recover owned Hyper\-V host fabric cleanup. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-hyperv-allocation-reconcile` — Reconcile orphaned Hyper\-V network allocations. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/image\-store\.ts.
-- [ ] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
+- [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 
-## 8. M07 — Physical/recording/Appium (3/26 implemented)
+## 8. M07 — Physical/recording/Appium (8/26 implemented)
 
 - [ ] `OP-lease-claim` — Lease claim. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-lease-heartbeat` — Lease heartbeat. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
@@ -142,22 +144,22 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-appium-request` — Appium request. **partial**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-appium-record` — Appium record. **partial**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-appium-clear` — Appium clear. **partial**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-physical-stop` — Stop volatile physical\-device auxiliary runtime. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
+- [x] `OP-physical-stop` — Stop volatile physical\-device auxiliary runtime. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [ ] `OP-broker-physical-stop` — Stop broker physical runtime and release exact lease. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-android-wireless-status` — Android wireless status. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
-- [ ] `OP-android-wireless-usb-tcpip` — Android wireless usb\-tcpip. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
-- [ ] `OP-android-wireless-pair` — Android wireless pair. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
-- [ ] `OP-android-wireless-connect` — Android wireless connect. **TODO**; packages/device\-lab/providers/backends/android\-device\.mjs.
+- [x] `OP-android-wireless-status` — Android wireless status. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-android-wireless-usb-tcpip` — Android wireless usb\-tcpip. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-android-wireless-pair` — Android wireless pair. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-android-wireless-connect` — Android wireless connect. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-appium-list` — List selected owner/backend device Appium projections, including idle device entries with appium:null. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **integrated**; broker\-observations @ 3f020650.
 
-## 9. M08 — Provider capabilities (0/76 implemented)
+## 9. M08 — Provider capabilities (6/76 implemented)
 
-- [ ] `OP-android-emulator-create` — android\-emulator create. **TODO**; packages/device\-lab/providers/backends/android\.mjs.
-- [ ] `OP-android-emulator-start` — android\-emulator start. **TODO**; packages/device\-lab/providers/backends/android\.mjs.
-- [ ] `OP-android-emulator-stop` — android\-emulator stop. **TODO**; packages/device\-lab/providers/backends/android\.mjs.
-- [ ] `OP-android-emulator-delete` — android\-emulator delete. **TODO**; packages/device\-lab/providers/backends/android\.mjs.
+- [x] `OP-android-emulator-create` — android\-emulator create. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-android-emulator-start` — android\-emulator start. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-android-emulator-stop` — android\-emulator stop. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-android-emulator-delete` — android\-emulator delete. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [ ] `OP-ios-simulator-create` — ios\-simulator create. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
 - [ ] `OP-ios-simulator-start` — ios\-simulator start. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
 - [ ] `OP-ios-simulator-stop` — ios\-simulator stop. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
@@ -228,8 +230,8 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-mobile-wait-app` — Wait boundedly for application. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-mobile-wait-text` — Wait boundedly for mobile text. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-window-list` — List device windows. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-qemu-disk-materialize` — Materialize owned QEMU overlay disk. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-target-list` — List exact owner guest targets. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
+- [x] `OP-qemu-disk-materialize` — Materialize owned QEMU overlay disk. **integrated**; admin\-qemu\-integration @ b855553f.
+- [x] `OP-qemu-target-list` — List exact owner guest targets. **integrated**; admin\-qemu\-integration @ b855553f.
 
 ## 10. M09 — Device Lab entrypoints (3/4 implemented)
 
@@ -255,7 +257,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-identity-image` — Prepare validated derived container identity image. **integrated**; container\-identity\-image @ 4be2ab3a.
 - [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **integrated**; lab\-state\-ownership @ 75bd30de.
 
-## 12. M11 — Workspace/profiles/credentials/tools (29/33 implemented)
+## 12. M11 — Workspace/profiles/credentials/tools (31/33 implemented)
 
 - [x] `OP-home-migrate` — Migrate legacy home layout. **integrated**; src/application/home\-layout\-migration\.ts.
 - [x] `OP-workspace-unified-create` — Create unified workspace. **integrated**; src/application/workspace/unified\-creation\.ts.
@@ -277,8 +279,8 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-workspace-create-admission` — Admit and dispatch workspace create. **integrated**; workspace\-repair @ d7f578d8.
 - [x] `OP-workspace-remove-admission` — Admit and dispatch workspace remove. **integrated**; workspace\-repair @ d7f578d8.
 - [ ] `OP-workspace-open` — workspace open. **TODO**; src/index\.ts.
-- [ ] `OP-workspace-content-repair-admission` — workspace content repair admission. **TODO**; src/index\.ts.
-- [ ] `OP-workspace-cli-remove` — workspace cli remove. **TODO**; src/index\.ts.
+- [x] `OP-workspace-content-repair-admission` — workspace content repair admission. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
+- [x] `OP-workspace-cli-remove` — workspace cli remove. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-workspace-nested-repair` — Repair missing or empty nested repository worktrees. **integrated**; workspace\-repair @ d7f578d8.
 - [x] `OP-workspace-root-recovery` — Recover owned workspace root Git metadata. **integrated**; workspace\-repair @ d7f578d8.
 - [x] `OP-workspace-broken-content-repair` — Replace explicitly confirmed broken nested checkout while preserving content. **integrated**; workspace\-repair @ d7f578d8.
