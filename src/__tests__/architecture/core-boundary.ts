@@ -71,7 +71,10 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
                 || (ts.isPropertySignature(parent) && parent.name === node);
             const pureMathAccess = node.text === "Math" && ts.isPropertyAccessExpression(parent)
                 && parent.expression === node && pureMathMembers.has(parent.name.text);
-            if (!propertyName && !pureMathAccess) errors.push(`runtime identifier: ${node.text}`);
+            const pureDateParse = node.text === "Date" && ts.isPropertyAccessExpression(parent)
+                && parent.expression === node && parent.name.text === "parse"
+                && ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            if (!propertyName && !pureMathAccess && !pureDateParse) errors.push(`runtime identifier: ${node.text}`);
         }
         if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
             && node.expression.text === "Math" && node.name.text === "random") errors.push("implicit randomness");
