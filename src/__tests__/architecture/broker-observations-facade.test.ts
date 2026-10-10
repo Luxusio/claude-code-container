@@ -13,7 +13,7 @@ type FunctionMap = Record<string, (...args: unknown[]) => unknown>;
 
 function selectedSource(source: string) {
     const tree = ts.createSourceFile(broker, source, ts.ScriptTarget.Latest, true);
-    return tree.statements.filter(node => ts.isFunctionDeclaration(node) && node.name && node.name.text in LEGACY
+    return tree.statements.filter(node => ts.isFunctionDeclaration(node) && node.name && (node.name.text in LEGACY || node.name.text === "observeLifecyclePreview")
         || ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text.startsWith("observe"))).map(node => node.getText(tree)).join("\n");
 }
 function loadCore(file: string, cache: Map<string, Record<string, unknown>>): Record<string, unknown> {
