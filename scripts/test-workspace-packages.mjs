@@ -40353,7 +40353,33 @@ function requireFollowupEmissionReady() {
     return authority;
 }
 
-function authenticateCurrentFollowup(payload) {
+// Frozen Unix manifest transform: reviewed scripts/install.js252-269, 15220 bytes,
+// SHA256 d4bd94da398162662e3f016b207f71cefef48604a3650916a564b5360d26c781.
+// Derive from authenticated source bytes, never from the candidate distribution.
+function distributionManifestAuthority(sourceBytes,distributionForm) {
+    assert(['npm','unix'].includes(distributionForm),'explicit known distribution form required');
+    const sourcePackage=JSON.parse(sourceBytes.toString('utf8'));
+    const bytes=distributionForm==='npm'?sourceBytes:Buffer.from(JSON.stringify({type:'module',version:sourcePackage.version,imports:sourcePackage.imports},null,2));
+    return {bytes,pin:{bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}};
+}
+function assertDistributionManifestBytes(bytes,pin) {
+    assert.equal(bytes.length,pin.bytes,'exact distribution manifest bytes');
+    assert.equal(createHash('sha256').update(bytes).digest('hex'),pin.sha256,'exact distribution manifest authority');
+}
+function verifyDistributionManifestControls(sourceBytes) {
+    assert.throws(()=>distributionManifestAuthority(sourceBytes,undefined));
+    assert.throws(()=>distributionManifestAuthority(sourceBytes,'unknown'));
+    const npm=distributionManifestAuthority(sourceBytes,'npm'),unix=distributionManifestAuthority(sourceBytes,'unix');
+    assertDistributionManifestBytes(npm.bytes,npm.pin);assertDistributionManifestBytes(unix.bytes,unix.pin);
+    assert.throws(()=>assertDistributionManifestBytes(Buffer.concat([unix.bytes,Buffer.from(' ')]),unix.pin));
+    const value=JSON.parse(unix.bytes.toString('utf8'));
+    assert.throws(()=>assertDistributionManifestBytes(Buffer.from(JSON.stringify({...value,extra:true},null,2)),unix.pin));
+    assert.throws(()=>assertDistributionManifestBytes(Buffer.from(JSON.stringify({imports:value.imports,version:value.version,type:value.type},null,2)),unix.pin));
+    assert.throws(()=>assertDistributionManifestBytes(npm.bytes,unix.pin));
+    assert.throws(()=>assertDistributionManifestBytes(unix.bytes,npm.pin));
+    return 7;
+}
+function authenticateCurrentFollowup(payload,distributionForm='npm') {
     const emission=requireFollowupEmissionReady();
     const readPinned=(base,name,pin)=>{
         base=resolve(base);const baseBirth=lstatSync(base);assert(baseBirth.isDirectory()&&!baseBirth.isSymbolicLink());assert.equal(realpathSync(base),base);
@@ -40361,14 +40387,16 @@ function authenticateCurrentFollowup(payload) {
         for(let parent=dirname(file);parent!==base;parent=dirname(parent)){const stat=lstatSync(parent);assert(stat.isDirectory()&&!stat.isSymbolicLink());assert.equal(realpathSync(parent),parent);}
         const bytes=readFileSync(file);const after=lstatSync(file);assert.deepEqual([after.dev,after.ino,after.uid,after.size,after.mtimeMs],[birth.dev,birth.ino,birth.uid,birth.size,birth.mtimeMs]);assert.equal(bytes.length,pin.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),pin.sha256,'current authenticated input '+name);return bytes;
     };
+    const sourceManifest=readPinned(root,'package.json',emission.files['package.json']),manifestAuthority=distributionManifestAuthority(sourceManifest,distributionForm);assert.equal(verifyDistributionManifestControls(sourceManifest),7);
+    const emissionPins={...emission.files,'package.json':manifestAuthority.pin};
     const sourceBytes=new Map();
     for(const [name,pin] of Object.entries(FOLLOWUP_SOURCE_AUTHORITY.sourcePins))sourceBytes.set(name,readPinned(root,name,pin));
-    for(const [name,pin] of Object.entries(emission.files))readPinned(payload,name,pin);
+    for(const [name,pin] of Object.entries(emissionPins)){const bytes=readPinned(payload,name,pin);if(name==='package.json')assertDistributionManifestBytes(bytes,manifestAuthority.pin);}
     const sourceIndex=sourceBytes.get('src/index.ts').toString('utf8'),tree=ts.createSourceFile('current-index.ts',sourceIndex,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
     assert.equal(tree.parseDiagnostics.length,0);const staticImports=tree.statements.filter(node=>ts.isImportDeclaration(node)&&!node.importClause?.isTypeOnly).map(node=>node.moduleSpecifier.text).sort();assert.deepEqual(staticImports,FOLLOWUP_CURRENT_INDEX_IMPORTS,'current source imports require the exact admitted topology');
     const index=emission.files['dist/index.js'],broker=emission.files['dist/packages/device-lab/dist/device-lab-broker.js'];
     assert.equal(emission.files['dist/packages/device-lab/dist/device-lab-shared-state.js'].sha256,INDEX_SHARED_STATE_AUTHORITY.sharedStateSha256,'unchanged native shared-state authority');
-    return {sourceCommit:FOLLOWUP_SOURCE_AUTHORITY.sourceCommit,sourcePins:FOLLOWUP_SOURCE_AUTHORITY.sourcePins,emissionPins:emission.files,dependencyPins:emission.dependencies,controllerDependencySource:{sourceRoot:resolve(root),pins:emission.controllerDependencies.pins},
+    return {sourceCommit:FOLLOWUP_SOURCE_AUTHORITY.sourceCommit,sourcePins:FOLLOWUP_SOURCE_AUTHORITY.sourcePins,distributionForm,manifestNegativeControls:7,emissionPins,dependencyPins:emission.dependencies,controllerDependencySource:{sourceRoot:resolve(root),pins:emission.controllerDependencies.pins},
         index:{sourceSha256:FOLLOWUP_SOURCE_AUTHORITY.sourcePins['src/index.ts'].sha256,emittedSha256:index.sha256,emittedBytes:index.bytes,staticImports},
         broker:{sourceSha256:FOLLOWUP_SOURCE_AUTHORITY.sourcePins['packages/device-lab/src/device-lab-broker.ts'].sha256,emittedSha256:broker.sha256,emittedBytes:broker.bytes}};
 }
@@ -42154,8 +42182,8 @@ export function verifyCurrentDeclarationContracts(packageRoot, compiler = spawnS
 function verifyFollowupDeclarationContracts(packageRoot) {
  return verifyOwnedDeclarationContracts(packageRoot,spawnSync,true);
 }
-function verifyAllCurrentDeclarationContracts(packageRoot) {
- authenticateCurrentFollowup(packageRoot);
+function verifyAllCurrentDeclarationContracts(packageRoot,distributionForm='npm') {
+ authenticateCurrentFollowup(packageRoot,distributionForm);
  const inherited=verifyCurrentDeclarationContracts(packageRoot),followup=verifyFollowupDeclarationContracts(packageRoot);
  return {...inherited,followup};
 }
@@ -42269,9 +42297,9 @@ function verifyImagePreparationGate(packageRoot) {
     return {wholeConsumer:true,nativePortsRequired:true,synchronous:true};
 }
 
-async function smoke(packageRoot) {
-    const currentAuthority=authenticateCurrentFollowup(packageRoot);
-    const currentDeclarations=verifyAllCurrentDeclarationContracts(packageRoot);verifyImagePreparationGate(packageRoot);
+async function smoke(packageRoot,distributionForm) {
+    const currentAuthority=authenticateCurrentFollowup(packageRoot,distributionForm);
+    const currentDeclarations=verifyAllCurrentDeclarationContracts(packageRoot,distributionForm);verifyImagePreparationGate(packageRoot);
  const pairHome=mkdtempSync(join(temporary,'diagnostics-pairs-')),mainHome=mkdtempSync(join(temporary,'diagnostics-main-'));
  mkdirSync(join(mainHome,'project'));
  const pairs=diagnosticShippingConsumer(verifyDiagnosticPayloadPairs,packageRoot,pairHome,currentAuthority);
@@ -43482,12 +43510,12 @@ async function runFullDistributionVerification() {
         "npm package contains standalone X11 artifacts");
     run(process.platform === "win32" ? "tar.exe" : "tar", ["-xzf", join(temporary, filename), "-C", temporary]);
     const packed = join(temporary, "package");
-    await smoke(packed);
+    await smoke(packed,'npm');
     const installed = join(temporary, "unix-install");
     const installer = pathToFileURL(join(packed, "scripts/install.js")).href;
     run(process.execPath, ["--input-type=module", "-e",
         `const {materializeUnixInstallPayload}=await import(${JSON.stringify(installer)});materializeUnixInstallPayload(${JSON.stringify(packed)},${JSON.stringify(installed)});`]);
-    await smoke(installed);
+    await smoke(installed,'unix');
     distributionComplete=true;
     console.log("PASS workspace distribution: obsolete X11 output removed; extracted npm package and materialized install CLI, broker, Hyper-V assets, Device Lab MCP, session liveness, claims, cleanup, existing, explicit destructive and fresh creation container lifecycle, image preparation, container session handoff and runtime readiness core/facade and declarations; exec readiness core and compiled public guarded startProjectContainer retry success/exhaustion preservation");
 }
