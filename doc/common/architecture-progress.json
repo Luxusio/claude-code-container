@@ -527,6 +527,37 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "5122a56a3e804f033dcfbc3c6f61422dca09ec85"
+    },
+    {
+      "id": "device-transfers-physical-integration",
+      "branch": "refactor/architecture-device-transfers-physical-integration-20261011",
+      "commit": "624c26f3685874e98367252be75d5fb9522d61e6",
+      "taskId": "TASK__architecture-device-transfers-physical-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-physical-attach",
+        "OP-physical-detach",
+        "OP-broker-physical-stop",
+        "OP-broker-owner-cleanup"
+      ],
+      "partialOperationIds": [
+        "OP-apple-trust-diagnostic",
+        "OP-device-click",
+        "OP-device-drag",
+        "OP-device-key",
+        "OP-device-type",
+        "OP-device-scroll",
+        "OP-device-cursor-move",
+        "OP-device-cursor-query",
+        "OP-device-focus-window",
+        "OP-device-window-list",
+        "OP-device-upload",
+        "OP-device-download"
+      ],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "624c26f3685874e98367252be75d5fb9522d61e6"
     }
   ],
   "planningLanes": [
@@ -732,7 +763,7 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "Independent current-source planning GO ataccepted6cac; eight-path source/test cohort authored in isolated worktree, reviewed/runtime acceptance pending. Normalize to actual accepted5122 parent before joint QA. Current destination materialization/exception behavior retained. Zero whole operation credit until remaining global bindings close."
+      "status": "QEMU source contribution reviewed, jointly verified and locally delivered at624c. Current destination materialization and thrown-exception partial effects retained. Upload/download counted only as partial in device-transfers-physical-integration until remaining supported Hyper-V/global bindings close; no duplicate whole credit. Native/formal certification unverified."
     },
     {
       "id": "desktop-control-transfer",
@@ -750,7 +781,25 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "Independent current-source planning GO; seventeen user-disjoint paths admitted. Shared finite core and X11/Windows/macOS adapters plus core/type cases authored, actual reviews/runtime pending. Pure point/drag rule move has compatibility reexports. Authentic default broker child witnesses held until accepted parent reconciliation. Zero whole operation credit until remaining Hyper-V and global bindings close."
+      "status": "X11/Windows Sandbox/macOS inward source contributions and authentic default Windows/macOS broker child witnesses reviewed, jointly verified and locally delivered at624c. Eleven global operations counted once as partial in device-transfers-physical-integration; required supported Hyper-V bindings remain outside this cutover. Native/formal certification unverified."
+    },
+    {
+      "id": "apple-wireless-completion",
+      "taskId": "TASK__architecture-ios-wireless",
+      "coveredOperationIds": ["OP-apple-trust-diagnostic"],
+      "status": "Broker Apple trust policy delivered at624c, but required BIND-broker-ios-device-device_wireless still reaches native public provider policy. GAP-authority-apple-trust-diagnostic remains open with this explicit partial disposition. A disjoint iOS provider wireless completion task is admitted from624c; zero whole credit until its actual reviews, QA and delivery."
+    },
+    {
+      "id": "android-orientation",
+      "taskId": "TASK__architecture-android-orientation",
+      "coveredOperationIds": ["OP-device-orientation"],
+      "status": "Eleven-path candidate a7fc independently reviewed; actual strict consumed/native-body checks and thirteen ordinary core/graph cases PASS. Current production build, public binding QA, all-binding accounting and accepted-parent delivery remain pending; no operation credit."
+    },
+    {
+      "id": "hyper-v-desktop-transfer",
+      "taskId": "TASK__architecture-hyper-v-desktop-transfer",
+      "coveredOperationIds": ["OP-device-click", "OP-device-drag", "OP-device-key", "OP-device-type", "OP-device-scroll", "OP-device-cursor-move", "OP-device-cursor-query", "OP-device-focus-window", "OP-device-window-list", "OP-device-upload", "OP-device-download"],
+      "status": "Independent source-backed planning GO; isolated task admitted from0dc with native broker/domain/ports/application and pure-policy compatibility relocation. Source author running, ordinary test author STOP; current reviews, accepted-parent reconciliation and actual QA/delivery pending. No additional credit."
     }
   ]
 }

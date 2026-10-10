@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **141/218 (64.7%)**.
-Integrated source: **141/218 (64.7%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **73**.
+Implemented including unmerged candidates: **145/218 (66.5%)**.
+Integrated source: **145/218 (66.5%)**; historical baseline: **31**. Candidates: **0**; partial: **16**; TODO: **57**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -51,6 +51,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | broker\-recording | 3 | 0 | `b669bf6c` | Actual independent source/composed/affected Code, Security and Docs PASS\. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed\. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording\-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS\. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS strict diagnostics are not accepted; formal hook attestation and native\-host certification remain unverified\. | accepted @ b669bf6c |
 | mobile\-control\-transfer | 9 | 0 | `5122a56a` | Actual independent composed and affected Code, Security and Guide PASS; independent current binding\-accounting confirms complete mobile9 and Windows/Linux snapshots5\. Original genuine build stages complete with unchanged early\-stage carries and two narrowly corrected fixture type aliases\. Fresh authenticated Android2/iOS1/Linuxsnapshot1 witnesses, 16 affected files416 cases0skip, 22 qualified core cases/strict native constructor\-body scopes, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Source locally FF\-delivered at5122 preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS diagnostics are not accepted; native host certification and formal hook attestation remain unverified\. | accepted @ 5122a56a |
 | hyper\-v\-snapshot\-workflows | 5 | 0 | `5122a56a` | Actual independent composed and affected Code, Security and Guide PASS; independent current binding\-accounting confirms complete mobile9 and Windows/Linux snapshots5\. Original genuine build stages complete with unchanged early\-stage carries and two narrowly corrected fixture type aliases\. Fresh authenticated Android2/iOS1/Linuxsnapshot1 witnesses, 16 affected files416 cases0skip, 22 qualified core cases/strict native constructor\-body scopes, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Source locally FF\-delivered at5122 preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS diagnostics are not accepted; native host certification and formal hook attestation remain unverified\. | accepted @ 5122a56a |
+| device\-transfers\-physical\-integration | 4 | 12 | `624c26f3` | Actual independent source/composed/affected Code, Security and Guide PASS; current literal all\-binding accounting confirms four whole and twelve partial operations\. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS\. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed\. Actual normal local FF delivery624c preserves all97 user paths and diff bytes\. Original failure logs retained\. Unrelated legacy native\-JS diagnostics, native\-host certification and formal hook closure are unverified\. | accepted @ 624c26f3 |
 
 ## 0.2 Active next plans
 
@@ -75,8 +76,11 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | android\-control\-transfer | OP\-device\-click, OP\-device\-long\-press, OP\-device\-swipe, OP\-device\-drag, OP\-device\-type, OP\-device\-key, OP\-device\-back, OP\-device\-home, OP\-device\-forward, OP\-device\-recents, OP\-device\-power\-key, OP\-device\-lock, OP\-device\-unlock, OP\-device\-upload, OP\-device\-download | Android emulator/physical source accepted in5122 after actual independent review and joint QA\. Nine mobile whole operations count once in mobile\-control\-transfer; shared desktop/transfer IDs remain incomplete and Android orientation remains native\. Formal close/native host certification unverified\. |
 | ios\-control\-transfer | OP\-device\-click, OP\-device\-long\-press, OP\-device\-swipe, OP\-device\-drag, OP\-device\-type, OP\-device\-key, OP\-device\-home, OP\-device\-lock, OP\-device\-unlock, OP\-device\-orientation, OP\-device\-upload, OP\-device\-download | Simulator/physical control and simulator transfer source accepted in5122 after actual independent review and joint QA\. Nine shared mobile whole operations count once; physical iOS transfer stays unsupported\. Orientation and desktop/transfer require remaining other bindings; formal/native acceptance unverified\. |
 | hyper\-v\-snapshot\-workflows | OP\-hyperv\-snapshot\-list, OP\-hyperv\-snapshot\-create, OP\-hyperv\-snapshot\-restore, OP\-hyperv\-snapshot\-delete, OP\-hyperv\-snapshot\-repair | All five Windows/Linux snapshot workflows accepted and locally delivered at5122 with four repair contexts and genuine authenticated native\-transport witnesses\. No other lifecycle/reboot/native\-host credit; formal hook close unverified\. |
-| qemu\-guest\-transfer | OP\-device\-upload, OP\-device\-download | Independent current\-source planning GO ataccepted6cac; eight\-path source/test cohort authored in isolated worktree, reviewed/runtime acceptance pending\. Normalize to actual accepted5122 parent before joint QA\. Current destination materialization/exception behavior retained\. Zero whole operation credit until remaining global bindings close\. |
-| desktop\-control\-transfer | OP\-device\-click, OP\-device\-drag, OP\-device\-key, OP\-device\-type, OP\-device\-scroll, OP\-device\-cursor\-move, OP\-device\-cursor\-query, OP\-device\-focus\-window, OP\-device\-window\-list, OP\-device\-upload, OP\-device\-download | Independent current\-source planning GO; seventeen user\-disjoint paths admitted\. Shared finite core and X11/Windows/macOS adapters plus core/type cases authored, actual reviews/runtime pending\. Pure point/drag rule move has compatibility reexports\. Authentic default broker child witnesses held until accepted parent reconciliation\. Zero whole operation credit until remaining Hyper\-V and global bindings close\. |
+| qemu\-guest\-transfer | OP\-device\-upload, OP\-device\-download | QEMU source contribution reviewed, jointly verified and locally delivered at624c\. Current destination materialization and thrown\-exception partial effects retained\. Upload/download counted only as partial in device\-transfers\-physical\-integration until remaining supported Hyper\-V/global bindings close; no duplicate whole credit\. Native/formal certification unverified\. |
+| desktop\-control\-transfer | OP\-device\-click, OP\-device\-drag, OP\-device\-key, OP\-device\-type, OP\-device\-scroll, OP\-device\-cursor\-move, OP\-device\-cursor\-query, OP\-device\-focus\-window, OP\-device\-window\-list, OP\-device\-upload, OP\-device\-download | X11/Windows Sandbox/macOS inward source contributions and authentic default Windows/macOS broker child witnesses reviewed, jointly verified and locally delivered at624c\. Eleven global operations counted once as partial in device\-transfers\-physical\-integration; required supported Hyper\-V bindings remain outside this cutover\. Native/formal certification unverified\. |
+| apple\-wireless\-completion | OP\-apple\-trust\-diagnostic | Broker Apple trust policy delivered at624c, but required BIND\-broker\-ios\-device\-device\_wireless still reaches native public provider policy\. GAP\-authority\-apple\-trust\-diagnostic remains open with this explicit partial disposition\. A disjoint iOS provider wireless completion task is admitted from624c; zero whole credit until its actual reviews, QA and delivery\. |
+| android\-orientation | OP\-device\-orientation | Eleven\-path candidate a7fc independently reviewed; actual strict consumed/native\-body checks and thirteen ordinary core/graph cases PASS\. Current production build, public binding QA, all\-binding accounting and accepted\-parent delivery remain pending; no operation credit\. |
+| hyper\-v\-desktop\-transfer | OP\-device\-click, OP\-device\-drag, OP\-device\-key, OP\-device\-type, OP\-device\-scroll, OP\-device\-cursor\-move, OP\-device\-cursor\-query, OP\-device\-focus\-window, OP\-device\-window\-list, OP\-device\-upload, OP\-device\-download | Independent source\-backed planning GO; isolated task admitted from0dc with native broker/domain/ports/application and pure\-policy compatibility relocation\. Source author running, ordinary test author STOP; current reviews, accepted\-parent reconciliation and actual QA/delivery pending\. No additional credit\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -127,13 +131,13 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 7. M06 — Images/network/admin (9/14 implemented)
+## 7. M06 — Images/network/admin (10/14 implemented)
 
 - [x] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-prune` — Prune stale Device Lab records. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-diagnostics` — Diagnose and smoke Device Lab. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 - [x] `OP-device-admin-setup` — Set up Hyper\-V host fabric. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
-- [ ] `OP-broker-owner-cleanup` — Broker owner cleanup. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-broker-owner-cleanup` — Broker owner cleanup. **integrated**; device\-transfers\-physical\-integration @ 624c26f3.
 - [x] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [ ] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [x] `OP-qemu-image-import` — Qemu image import. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
@@ -144,15 +148,15 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 
-## 8. M07 — Physical/recording/Appium (22/26 implemented)
+## 8. M07 — Physical/recording/Appium (25/26 implemented)
 
 - [x] `OP-lease-claim` — Lease claim. **integrated**; broker\-owner\-leases @ cbea3003.
 - [x] `OP-lease-heartbeat` — Lease heartbeat. **integrated**; broker\-owner\-leases @ cbea3003.
 - [x] `OP-lease-prune` — Lease prune. **integrated**; broker\-owner\-leases @ cbea3003.
 - [x] `OP-lease-release` — Lease release. **integrated**; broker\-owner\-leases @ cbea3003.
-- [ ] `OP-physical-attach` — Physical attach. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-physical-detach` — Physical detach. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-apple-trust-diagnostic` — Apple trust diagnostic. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-physical-attach` — Physical attach. **integrated**; device\-transfers\-physical\-integration @ 624c26f3.
+- [x] `OP-physical-detach` — Physical detach. **integrated**; device\-transfers\-physical\-integration @ 624c26f3.
+- [ ] `OP-apple-trust-diagnostic` — Apple trust diagnostic. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [x] `OP-recording-start` — Recording start. **integrated**; broker\-recording @ b669bf6c.
 - [x] `OP-recording-finalize` — Recording finalize. **integrated**; broker\-recording @ b669bf6c.
 - [x] `OP-recording-status` — Recording status. **integrated**; broker\-recording @ b669bf6c.
@@ -164,7 +168,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-appium-record` — Appium record. **integrated**; broker\-appium\-workflows @ 58b7d1e9.
 - [x] `OP-appium-clear` — Appium clear. **integrated**; broker\-appium\-workflows @ 58b7d1e9.
 - [x] `OP-physical-stop` — Stop volatile physical\-device auxiliary runtime. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
-- [ ] `OP-broker-physical-stop` — Stop broker physical runtime and release exact lease. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-broker-physical-stop` — Stop broker physical runtime and release exact lease. **integrated**; device\-transfers\-physical\-integration @ 624c26f3.
 - [x] `OP-android-wireless-status` — Android wireless status. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-wireless-usb-tcpip` — Android wireless usb\-tcpip. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-wireless-pair` — Android wireless pair. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
@@ -213,18 +217,18 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-device-app-uninstall` — Uninstall application on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [x] `OP-device-back` — Press mobile Back. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [ ] `OP-device-battery` — Set Android emulator battery. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-click` — Click or tap device point. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-click` — Click or tap device point. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [ ] `OP-device-clipboard-read` — Read mobile clipboard. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-clipboard-write` — Write mobile clipboard. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-cursor-move` — Move device cursor. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-cursor-query` — Observe device cursor. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-download` — Download bounded guest artifact. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-drag` — Drag on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-cursor-move` — Move device cursor. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
+- [ ] `OP-device-cursor-query` — Observe device cursor. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
+- [ ] `OP-device-download` — Download bounded guest artifact. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
+- [ ] `OP-device-drag` — Drag on device. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [ ] `OP-device-exec` — Execute guest command. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-focus-window` — Focus exact device window. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-focus-window` — Focus exact device window. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [x] `OP-device-forward` — Press Android Forward. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [x] `OP-device-home` — Press mobile Home. **integrated**; mobile\-control\-transfer @ 5122a56a.
-- [ ] `OP-device-key` — Send device key. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-key` — Send device key. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [ ] `OP-device-list-files` — List immediate guest directory. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-location` — Set supported virtual device location. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [x] `OP-device-lock` — Lock mobile screen. **integrated**; mobile\-control\-transfer @ 5122a56a.
@@ -238,17 +242,17 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-device-recents` — Show Android recent applications. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [ ] `OP-device-reset` — Reset existing device/app data. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-screenshot` — Capture device screenshot. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-scroll` — Scroll device viewport. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-scroll` — Scroll device viewport. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [ ] `OP-device-session-status` — Observe mobile automation session. **partial**; broker\-observations @ 3f020650.
 - [ ] `OP-device-status` — Observe device runtime status. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [x] `OP-device-swipe` — Swipe on mobile device. **integrated**; mobile\-control\-transfer @ 5122a56a.
-- [ ] `OP-device-type` — Type text on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-type` — Type text on device. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [ ] `OP-device-ui` — Observe device UI/accessibility. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [x] `OP-device-unlock` — Unlock mobile screen. **integrated**; mobile\-control\-transfer @ 5122a56a.
-- [ ] `OP-device-upload` — Upload bounded project file. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-upload` — Upload bounded project file. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [ ] `OP-mobile-wait-app` — Wait boundedly for application. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-mobile-wait-text` — Wait boundedly for mobile text. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-window-list` — List device windows. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [ ] `OP-device-window-list` — List device windows. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
 - [x] `OP-qemu-disk-materialize` — Materialize owned QEMU overlay disk. **integrated**; admin\-qemu\-integration @ b855553f.
 - [x] `OP-qemu-target-list` — List exact owner guest targets. **integrated**; admin\-qemu\-integration @ b855553f.
 
