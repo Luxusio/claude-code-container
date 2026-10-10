@@ -42116,7 +42116,11 @@ const IOS_FOLLOWUP_ASSETS={"preload": "const fs=require('node:fs'),cp=require('n
 async function verifyIosOriginalControls(payload,currentAuthority){
  assert.equal(createHash('sha256').update(IOS_ORIGINAL_CONTROL_ASSETS.brokerOriginal).digest('hex'),'9a1d82f9473b60c43005c032e320cb33bb08ac043f277ced4dde21bdd1ffa204');assert.equal(createHash('sha256').update(IOS_ORIGINAL_CONTROL_ASSETS.directOriginal).digest('hex'),'62ce4f03e6ba4b0c7e08aba82be11c34e79ec39cd9a864e0757e2ef9bffacbb2');
  const {createContext,runInContext}=await import('node:vm');const {isDeepStrictEqual}=await import('node:util');
- const lower=(text,name)=>ts.transpileModule(text,{fileName:name,compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+ const lower=(text,name)=>{
+  const output=ts.transpileModule(text,{fileName:name,compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const tree=ts.createSourceFile(name+'.lowered.cjs',output,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);assert.equal(tree.parseDiagnostics.length,0,'isolated CommonJS lowering syntax');
+  const inspect=node=>{assert(!ts.isImportDeclaration(node)&&!ts.isExportDeclaration(node)&&!ts.isExportAssignment(node),'isolated CommonJS lowering retains no ESM declarations');assert(!(ts.isMetaProperty(node)&&node.keywordToken===ts.SyntaxKind.ImportKeyword),'isolated CommonJS lowering retains no import.meta');assert(!node.modifiers?.some(modifier=>modifier.kind===ts.SyntaxKind.ExportKeyword||modifier.kind===ts.SyntaxKind.DefaultKeyword),'isolated CommonJS lowering retains no export modifiers');ts.forEachChild(node,inspect);};inspect(tree);return output;
+ };
  const read=relative=>{const pin=currentAuthority.emissionPins?.[relative];assert(pin,'genuine current emission pin required '+relative);const bytes=fs.readFileSync(path.join(payload,relative));assert.equal(bytes.length,pin.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),pin.sha256);return bytes.toString('utf8');};
  const brokerModules={original:lower(IOS_ORIGINAL_CONTROL_ASSETS.brokerOriginal,'frozen-original-broker.ts')};
  for(const layer of ['application','domain','ports'])brokerModules[layer==='application'?'app':layer]=lower(read('dist/packages/device-lab/dist/device-lab/'+layer+'/lifecycle/ios-simulator-lifecycle.js'),layer+'.js');
@@ -42149,7 +42153,7 @@ async function verifyIosOriginalControls(payload,currentAuthority){
    const bad=structuredClone(proof);if(kind==='zero-delta'){bad.cases[0].after.process=bad.cases[0].before.process;bad.cases[0].delta=0;}else if(kind==='wrong-category')bad.cases[0].category='network';else if(kind==='other-category')bad.cases[0].after.fs++;else if(kind==='native-trace')bad.cases[0].nativeTrace.after++;else bad.cases[0].recordsUnchanged=false;
    assert.throws(()=>validateNegativeProof(bad),{code:'ERR_ASSERTION'},'reject bad negative proof '+kind);
   }}
- const directModules={};for(const layer of ['application','domain','ports'])directModules[layer]=lower(read('dist/packages/device-lab/providers/'+layer+'/lifecycle/ios-simulator-lifecycle.mjs'),layer+'.mjs');
+ const directModules={};for(const layer of ['application','domain','ports'])directModules[layer]=lower(read('dist/packages/device-lab/providers/'+layer+'/lifecycle/ios-simulator-lifecycle.mjs'),layer+'.cts');
  const directBootstrap=`(()=>{const moduleText=JSON.parse(globalThis.__moduleText);delete globalThis.__moduleText;let counts={process:0,fs:0,network:0,timer:0};const deny=kind=>{counts[kind]++;throw Error('DENIED '+kind);};globalThis.process={kill:()=>deny('process')};globalThis.fetch=()=>deny('network');globalThis.setTimeout=()=>deny('timer');globalThis.requireNative=()=>deny('fs');
 ${IOS_ORIGINAL_CONTROL_ASSETS.directOriginal}
 ${lower(IOS_ORIGINAL_CONTROL_ASSETS.directFixture,'fixture.ts')}
