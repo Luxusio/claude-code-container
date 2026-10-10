@@ -154,13 +154,34 @@ function fixture(original:boolean,scenario:Scenario){
         if(name.startsWith(".")||name.startsWith("@ccc/"))return guard("unrelated "+file);
         return deny("unadmitted import "+name);
     };}
+    // Bind only compiler module metadata; preserve the entire immutable source.
+    function bindBrokerModuleUrl(source:string,file:string){
+        const parsed=ts.createSourceFile(file,source,ts.ScriptTarget.ES2022,true,ts.ScriptKind.TS);
+        let replacements=0;
+        const transformer:ts.TransformerFactory<ts.SourceFile>=context=>{
+            const visit:ts.Visitor=node=>{
+                if(ts.isPropertyAccessExpression(node)&&ts.isMetaProperty(node.expression)
+                    &&node.expression.keywordToken===ts.SyntaxKind.ImportKeyword
+                    &&node.expression.name.text==="meta"&&node.name.text==="url"&&!node.questionDotToken){
+                    replacements++;
+                    return context.factory.createStringLiteral(url.pathToFileURL(sourceFile(file)).href);
+                }
+                if(ts.isMetaProperty(node)&&node.keywordToken===ts.SyntaxKind.ImportKeyword)throw Error("unadmitted broker import.meta metadata");
+                return ts.visitEachChild(node,visit,context);
+            };
+            return node=>ts.visitNode(node,visit) as ts.SourceFile;
+        };
+        const transformed=ts.transform(parsed,[transformer]);
+        try{expect(replacements).toBe(file===entry?5:0);return ts.createPrinter().printFile(transformed.transformed[0]);}
+        finally{transformed.dispose();}
+    }
     function load(file:string):Data{
         if(cache.has(file))return cache.get(file)!;
         const exports:Data={};cache.set(file,exports);
         const source=original?(file===entry?ORIGINAL:ORIGINAL_DEPENDENCIES[file]):readFileSync(sourceFile(file),"utf8");
         if(source===undefined)return deny("unfrozen original dependency "+file);
         const hook=file===entry?"\nexports.__macosFixture={invoke:lifecycleCommandInvoke,unlocked:lifecycleCommandInvokeUnlocked,parse:validateCommandParams,record:createOwnerDeviceRecord,planCreate:providerCommandForCreate,planExisting:providerCommandFor};":"";
-        const lowered=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+        const lowered=ts.transpileModule(bindBrokerModuleUrl(source,file),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
         const wrapper=fromRealm(runInContext("(function(exports,require){"+lowered+hook+"\n})",context));wrapper(exports,requireFor(file));return exports;
     }
     (context as Data).require=intoRealm(requireFor(entry));
