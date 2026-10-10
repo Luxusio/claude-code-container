@@ -1,0 +1,13 @@
+# Hyper-V owned stop and delete
+
+The owned Windows VM and Hyper-V Linux VM `device_stop` and `device_delete` commands share `createHyperVStopDeleteApplication`. Public CLI/MCP requests reach authenticated `broker.command.invoke`, `lifecycleCommandInvoke`, the existing owner/device locking boundary and `lifecycleHyperVCommandInvokeLocked`. Both backends dispatch to the application before the generic lifecycle executor. Its request admission, snapshot repair, journal staging, auxiliary cleanup, typed result classification, cleanup sequencing and final conditional publication are substantive policies.
+
+The same application's `reconcile` method serves every existing `reconcileHyperVOperation` caller, including create and non-delete lifecycle preflight. Replaying a pending delete before another command preserves managed network fabric; explicit deletion alone applies its requested `preserveNetwork`. This shared replay does not migrate create/start/reboot or grant them operation credit.
+
+Native leaves retain registered-owner authentication, current incarnation and VM/disk identity guards, real locks, guarded operation-journal storage, typed power/delete execution, bounded deadlines, process cleanup, artifact roots and managed network authority. Replay observes intent, performs individual guarded start/stop/remove or host-file effects, then re-observes. It does not receive a callback to the old reconciliation workflow or a native client namespace.
+
+Ordinary execution captures the complete expected record and re-reads after journal staging. Only committed auxiliary cleanup advances that expected record. Successful stop/delete uses the existing complete-record CAS; a successor conflict preserves the current record. Failed, malformed, mismatched or post-effect deadline results do not become success. Network/artifact cleanup failure preserves owner metadata and the existing retryable evidence where native cleanup has not completed.
+
+Journal replay retains its existing selected-ID mutation authority, distinct from ordinary full-record CAS. It makes no stronger generation or transaction promise. A pending-delete replay can have partial native effects before returning failure; cleanup remains bounded and identity guarded, without invented rollback or absence proof.
+
+Current ordinary authenticated broker, Linux HTTP and lifecycle-race tests provide public/native-leaf evidence. Actual strict compilation, independent Code/Security/Guide review, genuine build, QA and local delivery remain acceptance gates. Native Windows Hyper-V certification and unavailable live hosts remain unrun; this source packet alone does not certify them or award its four prospective operation credits.

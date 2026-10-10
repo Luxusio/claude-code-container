@@ -2203,6 +2203,9 @@ describe("device-lab Hyper-V broker", () => {
         let bootstrapNetworkFinalizations = 0;
         let scpFailure: "upload" | "download" | null = null;
         let invalidDownloadEncoding = false;
+        let foreignVmObservation = false;
+        let afterNativeStop: (() => void) | null = null;
+        let duringVmObservation: (() => void) | null = null;
         let pendingElevatedNetwork: "setup" | "cleanup" | null = null;
         let standardNetworkCommand: { args?: string[]; input?: string } | null = null;
         let elevatedNetworkSetups = 0;
@@ -2289,7 +2292,7 @@ describe("device-lab Hyper-V broker", () => {
                     name: vmName,
                     state: vmState,
                     status: "Operating normally",
-                    notes: `ccc-device-lab:${ownerId}:${deviceId}:${activeIncarnationId || "missing-incarnation"}`,
+                    notes: foreignVmObservation ? "foreign-owner" : `ccc-device-lab:${ownerId}:${deviceId}:${activeIncarnationId || "missing-incarnation"}`,
                     uptimeMilliseconds: vmState === "Running" ? 1000 : 0,
                     generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation,
                     checkpointType: "Production",
@@ -2325,6 +2328,7 @@ describe("device-lab Hyper-V broker", () => {
                     return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation) };
                 }
                 if (operationRequest.operation === "Get-VM") {
+                    duringVmObservation?.();
                     const selectorMatches = operationRequest.selector.kind === "id"
                         ? operationRequest.selector.id.toLowerCase() === vmId
                         : operationRequest.selector.name === vmName;
@@ -2428,7 +2432,7 @@ describe("device-lab Hyper-V broker", () => {
                 if (operationRequest.operation === "Restore-VMSnapshot") vmState = "Off";
                 if (operationRequest.operation === "Configure-VMGuestBoot") seedMediaAttached = true;
                 if (operationRequest.operation === "Start-VM") vmState = "Running";
-                if (operationRequest.operation === "Stop-VM") vmState = "Off";
+                if (operationRequest.operation === "Stop-VM") { vmState = "Off"; afterNativeStop?.(); }
                 if (operationRequest.operation === "Remove-VM") { vmExists = false; vmState = "Off"; seedMediaAttached = false; }
                 return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation) };
             }
@@ -3062,6 +3066,52 @@ describe("device-lab Hyper-V broker", () => {
             expect(scpCalls.every((command) => !(command.args || []).includes(uploadPath) && !(command.args || []).includes(downloadPath))).toBe(true);
             expect(scpCalls.every((command) => (command.args || []).some((argument) => argument.includes(join(privateRoot, "transfers"))))).toBe(true);
 
+            const ownerDevicesPath = join(backendRoot(ownerId, "linux-vm"), "devices.json");
+            const beforeForeignStop = readFileSync(ownerDevicesPath, "utf8");
+            foreignVmObservation = true;
+            const foreignStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
+            expect(foreignStop.status).toBe(502);
+            expect(await foreignStop.json()).toMatchObject({ ok: false, error: "provider-command-failed", detail: "hyper-v-vm-ownership-mismatch" });
+            expect(vmState).toBe("Running");
+            expect(readFileSync(ownerDevicesPath, "utf8")).toBe(beforeForeignStop);
+            expect(existsSync(diskPath)).toBe(true);
+            foreignVmObservation = false;
+            const realNow = Date.now;
+            let stopClockOffset = 0;
+            const stopClock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + stopClockOffset);
+            afterNativeStop = () => { stopClockOffset = 600000; };
+            try {
+                const expiredStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
+                expect(expiredStop.status).toBe(504);
+                expect(await expiredStop.json()).toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
+                expect(vmState).toBe("Off");
+                expect(readFileSync(ownerDevicesPath, "utf8")).toBe(beforeForeignStop);
+                expect(existsSync(diskPath)).toBe(true);
+            } finally {
+                afterNativeStop = null;
+                stopClock.mockRestore();
+            }
+            let successorBytes: string | null = null;
+            duringVmObservation = () => {
+                duringVmObservation = null;
+                const state = JSON.parse(readFileSync(ownerDevicesPath, "utf8")) as { devices: Array<Record<string, unknown>> };
+                state.devices = state.devices.map(device => device.id === deviceId ? { ...device, incarnationId: "f".repeat(32), name: "successor" } : device);
+                successorBytes = JSON.stringify(state);
+                writeFileSync(ownerDevicesPath, successorBytes);
+            };
+            try {
+                const supersededStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
+                expect(supersededStop.status).toBe(409);
+                expect(await supersededStop.json()).toMatchObject({ ok: false, error: "owner-device-state-conflict" });
+                expect(successorBytes).not.toBeNull();
+                expect(readFileSync(ownerDevicesPath, "utf8")).toBe(successorBytes);
+                expect(vmState).toBe("Off");
+                expect(existsSync(diskPath)).toBe(true);
+            } finally {
+                duringVmObservation = null;
+                // Reset this allocated fixture definition for the independent snapshot cases below.
+                writeFileSync(ownerDevicesPath, beforeForeignStop);
+            }
             expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
             const callsBeforeSnapshotCreate = commandRunner.mock.calls.length;
             const createdSnapshotResponse = await tool("device_snapshot_create", { snapshotName: "baseline" });

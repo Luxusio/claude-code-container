@@ -1,3 +1,6 @@
+import { createHyperVStopDeleteApplication } from "./device-lab/application/lifecycle/hyper-v-stop-delete.js";
+import type { HyperVStopDeletePorts } from "./device-lab/ports/lifecycle/hyper-v-stop-delete.js";
+import type { HyperVOperationEvidence } from "./device-lab/domain/lifecycle/hyper-v-stop-delete.js";
 import { createBrokerPhysicalDevicesApplication } from './device-lab/application/broker-physical-devices.js';
 import { createBrokerOwnerCleanupApplication } from './device-lab/application/broker-owner-cleanup.js';
 import { validateAttachParams as validatePhysicalAttachParams, physicalOwnerConflict } from './device-lab/domain/broker-physical-devices.js';
@@ -6609,174 +6612,74 @@ function clearHyperVOperationJournal(ownerId: string, backend: string, deviceId:
     );
 }
 
-async function reconcileHyperVOperation(
-    ownerId: string,
-    backend: string,
-    deviceId: string,
-    normalized: NormalizedBrokerOptions,
-    deadlineAt = Number.POSITIVE_INFINITY,
-    preserveNetwork = false,
-): Promise<
-    | {
-        ok: true;
-        reconciled: boolean;
-        hyperVNetworkAllocationCleanup?: ReturnType<typeof publicHyperVNetworkCleanup>;
-    }
-    | { ok: false; status: number; error: string; detail?: string }> {
-    let journal: HyperVOperationJournal | null;
-    try {
-        journal = readHyperVOperationJournal(ownerId, backend, deviceId);
-    } catch (error) {
-        return {
-            ok: false,
-            status: 409,
-            error: "hyper-v-operation-journal-invalid",
-            detail: hyperVBoundedErrorCode(error, "hyper-v-operation-journal-invalid"),
-        };
-    }
-    if (!journal) return { ok: true, reconciled: false };
-    const currentDevice = readOwnerDevices(ownerId, backend).find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string, unknown>).id === deviceId) as Record<string, unknown> | undefined;
-    if (currentDevice && hyperVDeviceIncarnationId(currentDevice) !== journal.incarnationId) {
-        return { ok: false, status: 409, error: "hyper-v-operation-incarnation-conflict" };
-    }
-    const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
-    if (!powershell) return { ok: false, status: 503, error: "missing-provider-command", detail: "powershell" };
-    const deviceRoot = hyperVDeviceRoot(ownerId, backend, deviceId);
-    const auxiliaryMediaPaths = [join(deviceRoot, "disks", backend === "linux-vm" ? "cidata.iso" : "autounattend.iso")];
-    const nativeCommandTimeoutCap = journal.command === "device_delete" ? 120000 : 30000;
-    const client = createDeviceLabHyperVWindowsClient({
-        executable: powershell,
-        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, nativeCommandTimeoutCap),
+async function reconcileHyperVOperation(ownerId: string, backend: string, deviceId: string, normalized: NormalizedBrokerOptions,
+    deadlineAt = Number.POSITIVE_INFINITY, preserveNetwork = false) {
+    return brokerHyperVStopDeleteApplication(normalized).reconcile(ownerId, backend, deviceId, deadlineAt, preserveNetwork);
+}
+
+function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) {
+    const client = (executable: string, deadlineAt: number, timeoutCap: number) => createDeviceLabHyperVWindowsClient({
+        executable, timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap),
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-        // Only when this broker owns process execution. An injected command runner means the caller
-        // owns it, and spawning a long-lived child behind that seam would execute work it never
-        // saw — which is exactly what a test harness injects a runner to prevent.
-        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
+        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
     });
-    const reconciliationOptions = {
-        ownerId,
-        journal,
-        auxiliaryMediaPaths,
+    const identity = (owner: string, journal: HyperVOperationEvidence) => {
+        const selector: {kind: "id"; id: string} = {kind: "id", id: journal.vmId};
+        return {selector,expectedName:journal.vmName,expectedNotes:ownershipMarker(owner,journal.deviceId,journal.incarnationId)};
     };
-    const powerIdentity = {
-        selector: { kind: "id", id: journal.vmId } as const,
-        expectedName: journal.vmName,
-        expectedNotes: ownershipMarker(ownerId, deviceId, journal.incarnationId),
+    const ports: HyperVStopDeletePorts = {
+        read: (owner,state) => readOwnerDevices(owner,state), incarnation: device => hyperVDeviceIncarnationId(device),
+        validIncarnation: validHyperVIncarnationId, executable: name => providerExecutable(name,normalized),
+        descriptor: (owner,request,device) => providerCommandFor(owner,request,device,normalized),
+        readJournal: readHyperVOperationJournal, writeJournal: (owner,request) => writeHyperVOperationJournal(owner,request),
+        clearJournal: (owner,backend,id) => {clearHyperVOperationJournal(owner,backend,id); return undefined;},
+        readSnapshotJournal: readHyperVSnapshotJournal,
+        repairSnapshots: (owner,backend,id,device,executable) => reconcileHyperVSnapshotJournal(owner,backend,id,device,executable,normalized),
+        clearSnapshotJournal: (owner,backend,id) => {clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(),owner,backend,id);return undefined;},
+        replayObservation: (executable,owner,journal,media,deadline) => reconcileDeviceLabHyperVOperation(client(executable,deadline,journal.command==="device_delete"?120000:30000),{ownerId:owner,journal,auxiliaryMediaPaths:media}),
+        replayPower: async (executable,owner,journal,action,turnOff,deadline) => {
+            const native=client(executable,deadline,journal.command==="device_delete"?120000:30000);
+            if(action==="start")await native.startVM(identity(owner,journal));
+            else await native.stopVM({...identity(owner,journal),mode:turnOff?"turn-off":"shutdown",force:true});
+        },
+        replayRemoveVm: async (executable,owner,journal,media,deadline) => {
+            await client(executable,deadline,120000).removeVM({selector:identity(owner,journal).selector,force:true,guard:{
+                expectedName:journal.vmName,expectedNotes:ownershipMarker(owner,journal.deviceId,journal.incarnationId),
+                expectedDiskPaths:[journal.diskPath],ownedDiskDirectory:win32.dirname(journal.diskPath),expectedDvdPaths:media,
+            }});
+        },
+        removeHostFiles: async (executable,root,paths,checkpointDirectory,deadline) => {
+            await client(executable,deadline,120000).removeHostFiles({rootDirectory:root,paths,...(checkpointDirectory?{checkpointDiskDirectory:checkpointDirectory}:{})});
+        },
+        deviceRoot: hyperVDeviceRoot, windowsDirectory: path => win32.dirname(path),
+        replayPublish: (owner,backend,id,replacement) => {
+            mutateOwnerDevices(owner,backend,devices=>replacement===null
+                ?devices.filter(candidate=>!cleanupRecord(candidate)||candidate.id!==id)
+                :devices.map(candidate=>!cleanupRecord(candidate)||candidate.id!==id?candidate:{...candidate,...replacement}));
+            return undefined;
+        },
+        cleanupAuxiliary: (owner,request,expected) => cleanupLifecycleAuxiliaryRuntime(owner,request,normalized,expected),
+        clone: value => structuredClone(value),
+        executeStop: (owner,request,device,executable,deadline) => hyperVTypedPowerExecution(normalized,{
+            executable,ownerId:owner,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
+            vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",
+        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2}),
+        executeDelete: (owner,request,device,executable,deadline) => hyperVTypedDeleteExecution(normalized,{
+            executable,ownerId:owner,backend:request.backend,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
+            vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",diskPath:field(device,"diskPath")||"",
+        },deadline),
+        parseObservation: (stdout,deleting) => deleting?parseHyperVDeleteObservation(stdout):parseHyperVVmObservation(stdout),
+        samePath: (left,right) => resolve(left)===resolve(right),
+        releaseNetwork: (owner,id,incarnation,deadline,preserve) => releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
+        cleanupArtifacts: cleanupHyperVDeviceArtifacts, publicNetwork: publicHyperVNetworkCleanup, publicArtifacts: publicHyperVArtifactCleanup,
+        publish: transitionOwnerLifecycleDevice, redactDevice: redactHyperVDeviceSecrets, redactResult: redactHyperVResultSecrets,
+        redactExecution: (execution,fallback) => redactProviderCommandInput(execution,true,fallback),
+        stateErrorCode: ownerDeviceStateErrorCode, stateFailure: (error,request)=>ownerDeviceStateFailure(error,{backend:request.backend,stateKey:request.stateKey}),
+        errorCode: hyperVBoundedErrorCode, diagnosticCode: hyperVProviderDiagnosticCode,
+        assertDeadline: deadline=>{assertHyperVOperationDeadline(deadline);return undefined;}, deadlineExpired:hyperVOperationDeadlineExpired,
+        timestamp:()=>new Date().toISOString(),
     };
-    if (journal.command === "device_delete") {
-        try {
-            let outcome = await reconcileDeviceLabHyperVOperation(client, reconciliationOptions);
-            assertHyperVOperationDeadline(deadlineAt);
-            if (outcome.kind === "pending" && outcome.action === "remove") {
-                const selector = { kind: "id", id: journal.vmId } as const;
-                if (outcome.virtualMachine.state.toLowerCase() !== "off") {
-                    await client.stopVM({ ...powerIdentity, mode: "turn-off", force: true });
-                    assertHyperVOperationDeadline(deadlineAt);
-                    outcome = await reconcileDeviceLabHyperVOperation(client, reconciliationOptions);
-                }
-                if (outcome.kind !== "pending" || outcome.action !== "remove") {
-                    return { ok: false, status: 502, error: "hyper-v-delete-reconciliation-invalid-result" };
-                }
-                try {
-                    await client.removeVM({ selector, force: true, guard: {
-                        expectedName: journal.vmName,
-                        expectedNotes: powerIdentity.expectedNotes,
-                        expectedDiskPaths: [journal.diskPath],
-                        ownedDiskDirectory: win32.dirname(journal.diskPath),
-                        expectedDvdPaths: auxiliaryMediaPaths,
-                    } });
-                } catch (error) {
-                    const confirmation = await reconcileDeviceLabHyperVOperation(client, reconciliationOptions);
-                    if (confirmation.kind !== "absent" || !confirmation.satisfiesIntent) {
-                        return {
-                            ok: false,
-                            status: 502,
-                            error: "hyper-v-delete-reconciliation-failed",
-                            detail: hyperVBoundedErrorCode(error, "hyper-v-delete-reconciliation-failed"),
-                        };
-                    }
-                }
-                assertHyperVOperationDeadline(deadlineAt);
-                outcome = await reconcileDeviceLabHyperVOperation(client, reconciliationOptions);
-            }
-            if (outcome.kind !== "absent" || !outcome.satisfiesIntent) {
-                return { ok: false, status: 502, error: "hyper-v-delete-reconciliation-invalid-result" };
-            }
-            await client.removeHostFiles({ rootDirectory: deviceRoot, paths: [journal.diskPath] });
-            await client.removeHostFiles({
-                rootDirectory: deviceRoot, paths: auxiliaryMediaPaths,
-                checkpointDiskDirectory: win32.dirname(journal.diskPath),
-            });
-        } catch (error) {
-            return {
-                ok: false,
-                status: 502,
-                error: "hyper-v-delete-reconciliation-failed",
-                detail: hyperVBoundedErrorCode(error, "hyper-v-delete-reconciliation-failed"),
-            };
-        }
-        const allocation = await releaseHyperVNetworkAllocationAndCleanup(
-            ownerId,
-            deviceId,
-            journal.incarnationId,
-            normalized,
-            deadlineAt,
-            { preserveManagedFabric: preserveNetwork },
-        );
-        const artifacts = allocation.ok
-            ? cleanupHyperVDeviceArtifacts(ownerId, backend, deviceId)
-            : { ok: false, removed: false, error: "network-allocation-cleanup-failed" };
-        if (!artifacts.ok || !allocation.ok) {
-            return {
-                ok: false,
-                status: 502,
-                error: "hyper-v-delete-reconciliation-cleanup-failed",
-                detail: [artifacts.ok ? null : `artifacts:${artifacts.error}`, allocation.ok ? null : `allocation:${allocation.error}`].filter(Boolean).join("; "),
-            };
-        }
-        mutateOwnerDevices(ownerId, backend, (devices) => devices.filter((candidate) => !candidate || typeof candidate !== "object" || (candidate as Record<string, unknown>).id !== deviceId));
-        return {
-            ok: true,
-            reconciled: true,
-            hyperVNetworkAllocationCleanup: publicHyperVNetworkCleanup(allocation),
-        };
-    }
-    let outcome;
-    try {
-        outcome = await reconcileDeviceLabHyperVOperation(client, reconciliationOptions);
-        assertHyperVOperationDeadline(deadlineAt);
-        if (outcome.kind === "pending" && outcome.reason === "terminal-state-mismatch") {
-            if (outcome.action === "start") {
-                await client.startVM(powerIdentity);
-            } else if (outcome.action === "stop") {
-                await client.stopVM({ ...powerIdentity, mode: "shutdown", force: true });
-            }
-            assertHyperVOperationDeadline(deadlineAt);
-            outcome = await reconcileDeviceLabHyperVOperation(client, reconciliationOptions);
-        }
-    } catch (error) {
-        return {
-            ok: false,
-            status: 502,
-            error: "hyper-v-state-reconciliation-failed",
-            detail: hyperVBoundedErrorCode(error, "hyper-v-state-reconciliation-failed"),
-        };
-    }
-    assertHyperVOperationDeadline(deadlineAt);
-    if (outcome.kind === "pending" && outcome.reason === "transitioning-or-unknown") {
-        return { ok: false, status: 409, error: "hyper-v-operation-still-transitioning", detail: outcome.virtualMachine.state };
-    }
-    if (outcome.kind !== "settled") {
-        return { ok: false, status: 502, error: "hyper-v-state-reconciliation-invalid-result" };
-    }
-    const observation = outcome.virtualMachine;
-    const state = observation.state.toLowerCase();
-    mutateOwnerDevices(ownerId, backend, (devices) => devices.map((candidate) => {
-        if (!candidate || typeof candidate !== "object" || (candidate as Record<string, unknown>).id !== deviceId) return candidate;
-        return { ...(candidate as Record<string, unknown>), status: state === "running" ? "running" : "stopped", runtimeState: observation.state, hyperVStatus: observation.status, updatedAt: new Date().toISOString() };
-    }));
-    clearHyperVOperationJournal(ownerId, backend, deviceId);
-    return { ok: true, reconciled: true };
+    return createHyperVStopDeleteApplication(ports);
 }
 
 /** Runs the real Hyper-V create transaction. The legacy descriptor remains a validation and
@@ -9157,6 +9060,9 @@ async function lifecycleCommandInvokeUnlocked(
 ): Promise<BrokerRpcResult> {
     const parsed = validateCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
+    if (isHyperVBackend(parsed.backend) && (parsed.command === "device_stop" || parsed.command === "device_delete")) {
+        return brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},hyperVDeadlineAt,hyperVCleanupDeadlineAt);
+    }
     const androidCreateAvdRoot = parsed.backend === "android-emulator"
         && parsed.command === "device_create"
         && parsed.create?.createAvd === true
@@ -9844,11 +9750,7 @@ async function lifecycleCommandInvokeUnlocked(
         ? payload.result.device as Record<string, unknown>
         : null;
     const hyperVPowerDevice = isHyperVBackend(parsed.backend)
-        && (parsed.command === "device_start" || parsed.command === "device_stop" || parsed.command === "device_reboot")
-        && payload.result?.device && typeof payload.result.device === "object" && !Array.isArray(payload.result.device)
-        ? payload.result.device as Record<string, unknown>
-        : null;
-    const hyperVDeleteDevice = isHyperVBackend(parsed.backend) && parsed.command === "device_delete"
+        && (parsed.command === "device_start" || parsed.command === "device_reboot")
         && payload.result?.device && typeof payload.result.device === "object" && !Array.isArray(payload.result.device)
         ? payload.result.device as Record<string, unknown>
         : null;
@@ -9874,15 +9776,6 @@ async function lifecycleCommandInvokeUnlocked(
             memoryMb: numberField(hyperVPowerDevice, "memoryMb") || 4096,
             cpus: numberField(hyperVPowerDevice, "cpus") || 2,
         })
-        : hyperVDeleteDevice
-        ? await hyperVTypedDeleteExecution(normalized, {
-            executable: providerCommand.executable || "powershell.exe",
-            ownerId, backend: parsed.backend, deviceId: parsed.deviceId,
-            incarnationId: hyperVDeviceIncarnationId(hyperVDeleteDevice) || "",
-            vmId: field(hyperVDeleteDevice, "vmId") || "",
-            vmName: field(hyperVDeleteDevice, "vmName") || "",
-            diskPath: field(hyperVDeleteDevice, "diskPath") || "",
-        }, hyperVDeadlineAt)
         : isHyperVBackend(parsed.backend)
         ? await hyperVProviderCommandRunner(normalized, effectiveProviderCommand, {
             timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000),
@@ -10595,56 +10488,7 @@ async function lifecycleCommandInvokeUnlocked(
             };
         }
     }
-    const hyperVNetworkAllocationCleanup = success
-        && isHyperVBackend(parsed.backend)
-        && parsed.command === "device_delete"
-        ? await releaseHyperVNetworkAllocationAndCleanup(
-            ownerId,
-            parsed.deviceId,
-            hyperVDeviceIncarnationId((payload.result?.device || {}) as Record<string, unknown>),
-            normalized,
-            hyperVCleanupDeadlineAt,
-            { preserveManagedFabric: parsed.preserveNetwork === true },
-        )
-        : null;
-    const hyperVDeviceArtifactCleanup = success
-        && isHyperVBackend(parsed.backend)
-        && parsed.command === "device_delete"
-        && hyperVNetworkAllocationCleanup?.ok === true
-        ? cleanupHyperVDeviceArtifacts(ownerId, parsed.backend, parsed.deviceId)
-        : null;
-    if (hyperVDeviceArtifactCleanup?.ok === false || hyperVNetworkAllocationCleanup?.ok === false) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "hyper-v-device-cleanup-failed",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                result: {
-                    ...redactHyperVResultSecrets(payload.result),
-                    device: redactHyperVDeviceSecrets(
-                        payload.result?.device,
-                    ),
-                    hyperVDeviceArtifactCleanup: publicHyperVArtifactCleanup(hyperVDeviceArtifactCleanup),
-                    hyperVNetworkAllocationCleanup: publicHyperVNetworkCleanup(hyperVNetworkAllocationCleanup),
-                    invoked: true,
-                    dryRun: false,
-                    execution: {
-                        mode: execution.mode,
-                        providerExecution: "executed",
-                        mutatesHost: true,
-                        command: redactProviderCommandInput(
-                            execution,
-                            true,
-                            "hyper-v-device-cleanup-failed",
-                        ),
-                    },
-                },
-            },
-        };
-    }
+    // Hyper-V stop/delete are handled before the generic lifecycle execution above.
     let updatedDevice: unknown;
     let publication: ReturnType<typeof transitionOwnerLifecycleDevice> | undefined;
     try {
@@ -10779,16 +10623,6 @@ async function lifecycleCommandInvokeUnlocked(
                 } : {}),
                 ...(auxiliaryCleanup ? { auxiliaryCleanup: auxiliaryCleanup.result } : {}),
                 ...(physicalLeaseCleanup ? { physicalLeaseCleanup } : {}),
-                ...(hyperVDeviceArtifactCleanup ? {
-                    hyperVDeviceArtifactCleanup: publicHyperVArtifactCleanup(
-                        hyperVDeviceArtifactCleanup,
-                    ),
-                } : {}),
-                ...(hyperVNetworkAllocationCleanup ? {
-                    hyperVNetworkAllocationCleanup: publicHyperVNetworkCleanup(
-                        hyperVNetworkAllocationCleanup,
-                    ),
-                } : {}),
                 invoked: true,
                 dryRun: false,
                 execution: {
@@ -10995,6 +10829,9 @@ async function lifecycleHyperVCommandInvokeLocked(
     assertHyperVOperationDeadline(deadlineAt);
     if (!parsed.dryRun && ["device_start", "device_stop", "device_reboot", "device_delete"].includes(parsed.command)) {
         forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, parsed.backend, parsed.deviceId));
+    }
+    if (parsed.command === "device_stop" || parsed.command === "device_delete") {
+        return brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt);
     }
     if (parsed.command !== "device_create") {
         if (!parsed.dryRun && (parsed.command !== "device_status"
