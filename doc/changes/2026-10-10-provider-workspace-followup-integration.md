@@ -16,6 +16,10 @@ Immutable original implementation controls and independently frozen expectations
 
 Shipping consumers use the owned stdin runner and retain the submitted program, input, raw output and result receipt before asserting success. Primary failures survive evidence and cleanup errors. Source, output, dependency, link and actor identity checks remain required. Temporary author drafts are embedded into the tracked checker; a fresh checkout does not depend on task or temporary files.
 
+Before executing a shipping consumer, syntax-check its exact submitted program and executable assets in their actual module formats, and audit the reached static import closure against the allocated fixtures. Resolve concrete unused imports together before review; every unused native binding still denies an attempted effect. Run the affected consumer first, then the complete shipping checks. Unchanged successful consumers and the genuine production build retain their authenticated evidence.
+
+Workspace failure evidence records the current module and rejection site before rethrowing the original error. Primitive own-data fields from native errors are captured before membrane conversion, so diagnosing a wrapped error does not require reflecting through an unknown proxy. Failure evidence stays a failure; additional negative controls are counted separately from successful operation observations.
+
 The new Admin proof executes the complete compiled CLI caller. QEMU proofs execute the existing package handlers and direct MCP image listing, preserve omission of disk/target public tools, and retain unsupported broker behavior. No new successful broker QEMU route is inferred.
 
 ## Current limits
