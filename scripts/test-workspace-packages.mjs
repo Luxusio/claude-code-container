@@ -41925,7 +41925,7 @@ async function verifyQemuFollowup(payload, privateHome, currentAuthority) {
                 const context=vm.createContext(Object.fromEntries(Object.entries(globals).map(([name,value])=>[name,intoRealm(value)])),{codeGeneration:{strings:false,wasm:false}});
                 const modules=new Map(),native=new Map();
                 const nativeModule=async name=>{
-                    if(native.has(name))return native.get(name);
+                    if(native.has(name))return undefined;
                     let value;
                     if(name==='node:fs')value=gated('fs',f);
                     else if(name==='node:child_process')value=gated('process',{spawnSync,spawn:()=>reject('spawn'),exec:()=>reject('exec'),execSync:()=>reject('execSync'),fork:()=>reject('fork')});
@@ -41936,10 +41936,10 @@ async function verifyQemuFollowup(payload, privateHome, currentAuthority) {
                     else if(name==='node:util'){const native=await import(name);value={isDeepStrictEqual:native.isDeepStrictEqual};}
                     else if(name==='node:async_hooks'){const native=await import(name);value={AsyncLocalStorage:native.AsyncLocalStorage};}
                     else return reject('builtin '+name);
-                    native.set(name,value);return value;
+                    native.set(name,value);return undefined;
                 };
                 // Complete native imports are prefetched before synchronous CTS require calls.
-                for(const name of ['node:fs','node:child_process','node:os','node:crypto','node:path','node:url','node:util','node:async_hooks'])await nativeModule(name);
+                for(const name of ['node:fs','node:child_process','node:os','node:crypto','node:path','node:url','node:util','node:async_hooks']){assert.equal(await nativeModule(name),undefined);assert(native.has(name));}const prefetchedFs=native.get('node:fs');assert.equal(await nativeModule('node:fs'),undefined);assert.equal(native.get('node:fs'),prefetchedFs);
                 const load=file=>{
                     if(file.startsWith('node:'))return native.get(file);
                     if(modules.has(file))return modules.get(file).exports;
