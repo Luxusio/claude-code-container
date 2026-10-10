@@ -20,6 +20,7 @@
     "scripts/durability/",
     "scripts/real-tests/",
     "scripts/install.js",
+    "scripts/install/",
     "scripts/build-distribution-image.mjs",
     "scripts/localhost-proxy/",
     "scripts/ccc-entrypoint.sh",

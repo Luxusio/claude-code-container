@@ -10,17 +10,22 @@ afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive:
 
 // Execute the actual installer in an owned copy. Only its Unix destination is
 // redirected; no fixture can touch the machine's global CLI or User PATH.
-function fixture() {
-    const root = mkdtempSync(join(tmpdir(), "ccc-install-"));
-    fixtures.push(root);
+function fixture(packaged = false) {
+    const sandbox = mkdtempSync(join(tmpdir(), "ccc-install-"));
+    fixtures.push(sandbox);
+    const root = packaged ? join(sandbox, "node_modules", "ccc") : sandbox;
+    mkdirSync(root, { recursive: true });
     const installDir = join(root, "owned-bin");
     const commands = join(root, "commands");
     mkdirSync(installDir);
     mkdirSync(commands);
-    for (const dir of ["scripts", "scripts/localhost-proxy", "dist", "src", "packages/device-lab/providers/state", "device-lab-mcp"]) mkdirSync(join(root, dir), { recursive: true });
+    for (const dir of ["scripts", "scripts/install", "scripts/localhost-proxy", "dist", "src", "packages/device-lab/providers/state", "device-lab-mcp"]) mkdirSync(join(root, dir), { recursive: true });
     const source = readFileSync(resolve("scripts/install.js"), "utf8");
     expect(source).toContain('return "/usr/local/bin";');
     writeFileSync(join(root, "scripts/install.js"), source.replace('return "/usr/local/bin";', `return ${JSON.stringify(installDir)};`));
+    for (const name of ["application.mjs", "domain.mjs", "ports.d.mts"]) {
+        writeFileSync(join(root, "scripts/install", name), readFileSync(resolve("scripts/install", name)));
+    }
     writeFileSync(join(root, "packages/device-lab/providers/state/windows-system-powershell.mjs"), 'export const canonicalWindowsPowerShellPath = () => null; export const hiddenWindowsPowerShellArgs = args => args;');
     for (const file of ["Dockerfile", "Containerfile", "package-lock.json", "tsconfig.json"]) writeFileSync(join(root, file), "{}");
     writeFileSync(join(root, "Dockerfile.distribution"), readFileSync(resolve("Dockerfile.distribution"), "utf8"));
@@ -124,6 +129,20 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         expect(result.status).toBe(0);
         expect(f.calls()).toBe("");
         expect(existsSync(join(f.installDir, "ccc"))).toBe(false);
+    });
+
+    it("skips packaged postinstall and reports source build failure without installing", () => {
+        const packaged = fixture(true);
+        const artifactResult = packaged.run(["--postinstall"], { FIXTURE_NPM_STATUS: "3" });
+        expect(artifactResult.status).toBe(0);
+        expect(packaged.calls()).toBe("");
+        expect(existsSync(join(packaged.installDir, "ccc"))).toBe(false);
+        const source = fixture();
+        const sourceResult = source.run(["--postinstall"], { FIXTURE_NPM_STATUS: "3" });
+        expect(sourceResult.status).toBe(0);
+        expect(sourceResult.stderr).toContain("Build skipped:");
+        expect(sourceResult.stderr).toContain("Command failed: npm run build");
+        expect(existsSync(join(source.installDir, "ccc"))).toBe(false);
     });
 });
 

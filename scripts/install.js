@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createInstallerApplication } from "./install/application.mjs";
 import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
@@ -31,29 +32,19 @@ function getInstallDir() {
     }
 }
 
-function getContentHash() {
-    const files = [
-        "Dockerfile",
-        "Containerfile",
-        "package.json",
-        "package-lock.json",
-        "tsconfig.json",
-        "scripts/clipboard-shims/xclip",
-        "scripts/clipboard-shims/xsel",
-        "scripts/clipboard-shims/wl-paste",
-        "scripts/clipboard-shims/wl-copy",
-        "scripts/clipboard-shims/pbpaste",
-    ];
+/** @param {readonly string[]} files @param {readonly string[]} directories */
+function getContentHash(files, directories) {
     const hash = createHash("sha256");
     for (const f of files) {
         hash.update(readFileSync(join(projectRoot, f)));
     }
-    for (const dir of ["src", "scripts", "packages", "device-lab-mcp"]) {
+    for (const dir of directories) {
         hashDirectory(hash, join(projectRoot, dir));
     }
     return hash.digest("hex").substring(0, 12);
 }
 
+/** @param {import("crypto").Hash} hash @param {string} dir */
 function hashDirectory(hash, dir) {
     const entries = readdirSync(dir, { withFileTypes: true })
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -68,93 +59,6 @@ function hashDirectory(hash, dir) {
         }
     }
 }
-
-// Detect available container runtime. Mirrors src/container-runtime.ts:
-// prefer Podman, fall back to Docker. Honours CCC_RUNTIME override.
-function detectRuntime() {
-    const env = process.env.CCC_RUNTIME;
-    if (env === "docker" || env === "podman") return env;
-    for (const name of ["podman", "docker"]) {
-        const r = spawnSync(name, ["--version"], { encoding: "utf-8", timeout: runtimeProbeTimeout });
-        if (r.status === 0) return name;
-    }
-    return null;
-}
-
-function getImageHash(runtime) {
-    if (!runtime) return null;
-    try {
-        for (const label of ["content.hash", "dockerfile.hash"]) {
-            const result = spawnSync(runtime, [
-                "inspect", "ccc",
-                "--format", `{{index .Config.Labels "${label}"}}`
-            ], { encoding: "utf-8", timeout: runtimeProbeTimeout });
-            if (result.status === 0 && result.stdout.trim()) {
-                return result.stdout.trim();
-            }
-        }
-        return null;
-    } catch (e) {
-        return null;
-    }
-}
-
-function build() {
-    console.log("Building...");
-    execSync("npm run build", { cwd: projectRoot, stdio: "inherit" });
-}
-
-function buildImage() {
-    const runtime = detectRuntime();
-    if (!runtime) {
-        console.log("No container runtime (podman or docker) detected. Skipping image build.");
-        console.log("Install podman or docker, then run 'ccc' to auto-pull/build.");
-        return { status: "skipped", reason: "no runtime detected" };
-    }
-    console.log(`Using container runtime: ${runtime}`);
-
-    const currentHash = getContentHash();
-    const imageHash = getImageHash(runtime);
-    if (currentHash === imageHash) {
-        console.log(`Container image up to date (hash: ${currentHash})`);
-        return { status: "ready" };
-    }
-    console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
-    console.log(`Rebuilding container image with ${runtime}...`);
-    try {
-        const buildArgs = ["build", "-t", "ccc", "--label", `content.hash=${currentHash}`];
-        if (process.env.GITHUB_TOKEN) {
-            buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
-        }
-        buildArgs.push(".");
-        const buildResult = spawnSync(runtime, buildArgs, { cwd: projectRoot, stdio: "inherit", timeout: imageBuildTimeout });
-        if (buildResult.error) throw buildResult.error;
-        if (buildResult.signal) throw new Error(`${runtime} build terminated by ${buildResult.signal}`);
-        if (buildResult.status !== 0) {
-            throw new Error(`${runtime} build ${buildResult.status === null ? "ended without an exit code" : `exited with code ${buildResult.status}`}`);
-        }
-        console.log("Container image built.");
-        return { status: "ready" };
-    } catch (e) {
-        console.error(`Failed to build image with ${runtime}:`, e.message);
-        return { status: "failed" };
-    }
-}
-
-// Windows User-scope PATH I/O.
-//
-// We deliberately do NOT use `process.env.PATH` — that's the merged
-// (User + System) view of the current process and writing to it can't
-// persist. Instead we shell out to PowerShell purely for the two
-// primitives `.NET` already exposes for the User scope:
-//   - read:  [Environment]::GetEnvironmentVariable("Path", "User")
-//   - write: [Environment]::SetEnvironmentVariable("Path", $v, "User")
-//
-// The new value is passed via an env var ($env:__CCC_NEW_PATH) so there's
-// no PowerShell-side quoting at all — backslashes and quotes round-trip
-// untouched. All parsing, dedupe, length-checks live in Node below.
-
-const PATH_LIMIT = 32767;
 
 function trustedWindowsPowerShell() {
     const powershell = canonicalWindowsPowerShellPath();
@@ -171,6 +75,7 @@ function readUserPath() {
     return out.replace(/\r?\n$/, "");
 }
 
+/** @param {string} value */
 function writeUserPath(value) {
     execFileSync(trustedWindowsPowerShell(), hiddenWindowsPowerShellArgs([
         "-NoProfile",
@@ -183,205 +88,72 @@ function writeUserPath(value) {
     });
 }
 
-function normalizePathEntry(p) {
-    return p.trim().replace(/[\\/]+$/, "").toLowerCase();
+/** Bind actual synchronous native effects; constructing the application performs none. */
+function installerApplication() {
+    return createInstallerApplication({
+        platform: () => isWindows ? "windows" : "unix",
+        sourceRoot: () => projectRoot,
+        sourceEntry: () => distFile,
+        installDirectory: getInstallDir,
+        runtimeOverride: () => process.env.CCC_RUNTIME,
+        githubTokenConfigured: () => Boolean(process.env.GITHUB_TOKEN),
+        sourceBuild: () => { execSync("npm run build", { cwd: projectRoot, stdio: "inherit" }); },
+        contentHash: getContentHash,
+        runtimeAvailable: runtime => spawnSync(runtime, ["--version"], {
+            encoding: "utf-8",
+            timeout: runtimeProbeTimeout,
+        }).status === 0,
+        imageLabel: (runtime, label) => {
+            const result = spawnSync(runtime, [
+                "inspect", "ccc", "--format", `{{index .Config.Labels "${label}"}}`,
+            ], { encoding: "utf-8", timeout: runtimeProbeTimeout });
+            return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+        },
+        buildContainer: (runtime, hash, includeGithubSecret) => {
+            const args = ["build", "-t", "ccc", "--label", `content.hash=${hash}`];
+            if (includeGithubSecret) args.push("--secret", "id=github_token,env=GITHUB_TOKEN");
+            args.push(".");
+            return spawnSync(runtime, args, { cwd: projectRoot, stdio: "inherit", timeout: imageBuildTimeout });
+        },
+        resolvePath: path => resolve(path),
+        joinPath: (...parts) => join(...parts),
+        parentPath: path => dirname(path),
+        fileUrl: path => pathToFileURL(path).href,
+        exists: path => existsSync(path),
+        isSymlink: path => lstatSync(path).isSymbolicLink(),
+        removeFile: path => { unlinkSync(path); },
+        removeDirectory: (path, force) => {
+            if (force) rmSync(path, { recursive: true, force: true });
+            else rmSync(path, { recursive: true });
+        },
+        ensureDirectory: path => { mkdirSync(path, { recursive: true }); },
+        copy: (source, target, recursive) => {
+            if (recursive) cpSync(source, target, { recursive: true });
+            else cpSync(source, target);
+        },
+        readPackage: path => JSON.parse(readFileSync(path, "utf-8")),
+        writeText: (path, content) => { writeFileSync(path, content); },
+        setMode: (path, mode) => { chmodSync(path, mode); },
+        readUserPath,
+        writeUserPath: value => { writeUserPath(value); },
+        log: message => { console.log(message); },
+        warn: (message, detail) => { console.warn(message, detail); },
+        error: (message, detail) => {
+            if (detail === undefined) console.error(message);
+            else console.error(message, detail);
+        },
+        terminate: code => process.exit(code),
+    });
 }
 
-function splitUserPath(p) {
-    return (p || "").split(";").filter(s => s.trim() !== "");
-}
-
-function manualPathHint(installDir) {
-    console.log("Add it manually in PowerShell:");
-    console.log(`  [Environment]::SetEnvironmentVariable("Path", ([Environment]::GetEnvironmentVariable("Path","User") + ";${installDir}"), "User")`);
-}
-
-function tryAddInstallDirToUserPath(installDir) {
-    if (!existsSync(installDir)) {
-        console.log(`PATH update skipped (DIR_NOT_FOUND): ${installDir}`);
-        return;
-    }
-    let current;
-    try {
-        current = readUserPath();
-    } catch (e) {
-        console.log(`PATH update skipped (READ_ERROR): ${e.message}`);
-        manualPathHint(installDir);
-        return;
-    }
-    const parts = splitUserPath(current);
-    const target = normalizePathEntry(installDir);
-    if (parts.some(p => normalizePathEntry(p) === target)) {
-        console.log("Already on User PATH.");
-        return;
-    }
-    const next = [...parts, installDir].join(";");
-    if (next.length >= PATH_LIMIT) {
-        console.log(`PATH update skipped (PATH_TOO_LONG): ${next.length} >= ${PATH_LIMIT}`);
-        manualPathHint(installDir);
-        return;
-    }
-    try {
-        writeUserPath(next);
-        console.log("Added to User PATH. Open a new terminal to pick it up.");
-    } catch (e) {
-        console.log(`PATH update skipped (WRITE_ERROR): ${e.message}`);
-        manualPathHint(installDir);
-    }
-}
-
-function tryRemoveInstallDirFromUserPath(installDir) {
-    let current;
-    try {
-        current = readUserPath();
-    } catch {
-        return; // best-effort during uninstall
-    }
-    const parts = splitUserPath(current);
-    const target = normalizePathEntry(installDir);
-    const kept = parts.filter(p => normalizePathEntry(p) !== target);
-    if (kept.length === parts.length) return;
-    try {
-        writeUserPath(kept.join(";"));
-        console.log("Removed from User PATH.");
-    } catch {
-        // best-effort
-    }
-}
-
+/** @param {string} sourceRoot @param {string} targetDir */
 export function materializeUnixInstallPayload(sourceRoot, targetDir) {
-    const resolvedSourceRoot = resolve(sourceRoot);
-    const resolvedTargetDir = resolve(targetDir);
-    if (resolvedTargetDir === dirname(resolvedTargetDir) || resolvedTargetDir === resolvedSourceRoot) {
-        throw new Error(`Refusing unsafe global install payload target: ${resolvedTargetDir}`);
-    }
-
-    rmSync(resolvedTargetDir, { recursive: true, force: true });
-    mkdirSync(resolvedTargetDir, { recursive: true });
-    cpSync(join(resolvedSourceRoot, "dist"), join(resolvedTargetDir, "dist"), { recursive: true });
-    cpSync(join(resolvedSourceRoot, "Dockerfile"), join(resolvedTargetDir, "Dockerfile"));
-    cpSync(join(resolvedSourceRoot, "Containerfile"), join(resolvedTargetDir, "Containerfile"));
-    cpSync(join(resolvedSourceRoot, "Dockerfile.distribution"), join(resolvedTargetDir, "Dockerfile.distribution"));
-    cpSync(join(resolvedSourceRoot, "scripts"), join(resolvedTargetDir, "scripts"), { recursive: true });
-
-    const sourcePackage = JSON.parse(readFileSync(join(resolvedSourceRoot, "package.json"), "utf-8"));
-    const packageContent = JSON.stringify({ type: "module", version: sourcePackage.version, imports: sourcePackage.imports }, null, 2);
-    writeFileSync(join(resolvedTargetDir, "package.json"), packageContent);
+    return installerApplication().materializeUnixInstallPayload(sourceRoot, targetDir);
 }
 
+/** @param {string} targetDir */
 export function unixWrapperContent(targetDir) {
-    const entryPoint = join(resolve(targetDir), "dist", "index.js");
-    return `#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(entryPoint).href)});\n`;
-}
-
-function linkBinary() {
-    const installDir = getInstallDir();
-
-    if (isWindows) {
-        mkdirSync(installDir, { recursive: true });
-        const cmdPath = join(installDir, "ccc.cmd");
-        const cmdContent = `@echo off\r\nnode "${distFile}" %*\r\n`;
-        writeFileSync(cmdPath, cmdContent);
-        console.log(`Installed: ${cmdPath}`);
-
-        tryAddInstallDirToUserPath(installDir);
-        return;
-    }
-
-    const targetDir = join(installDir, "ccc-dist");
-    const targetBin = join(installDir, "ccc");
-    try {
-        try {
-            const stat = lstatSync(targetBin);
-            if (stat.isSymbolicLink()) unlinkSync(targetBin);
-        } catch (e) {
-            if (e.code !== "ENOENT") throw e;
-        }
-
-        materializeUnixInstallPayload(projectRoot, targetDir);
-        writeFileSync(targetBin, unixWrapperContent(targetDir));
-        chmodSync(targetBin, 0o755);
-        console.log(`Installed: ${targetBin}`);
-    } catch (e) {
-        if (e.code === "EACCES") {
-            console.error("Permission denied. Run with sudo:");
-            console.error("  sudo npm run install:global");
-            process.exit(1);
-        }
-        throw e;
-    }
-}
-
-function install({ skipImage = false } = {}) {
-    build();
-    const image = skipImage ? { status: "skipped", reason: "--skip-image" } : buildImage();
-    linkBinary();
-    console.log("\nCLI installed. Run 'ccc --help' to verify.");
-    if (image.status === "ready") {
-        console.log("Container image ready.");
-    } else if (image.status === "failed") {
-        console.log("Container image build failed; CLI installation succeeded. Retry the image build when the container runtime is available.");
-    } else {
-        console.log(`Container image build skipped (${image.reason}).`);
-    }
-}
-
-function postinstall() {
-    // npm runs this after `npm install`. Do NOT recurse into `npm install` here.
-    // In the source repo, dev will run `npm run install:global` for /usr/local/bin.
-    // When installed as a global package, npm already wires the `bin` field.
-    // We only build dist/ so the package is usable out of the box.
-    const inNodeModules = projectRoot.includes(`${"node_modules"}${isWindows ? "\\" : "/"}`);
-    if (inNodeModules) {
-        // Global/local npm install: dist/ is shipped in the tarball, skip build.
-        return;
-    }
-    // Source repo after plain `npm install`: ensure dist/ is fresh.
-    try {
-        build();
-    } catch (e) {
-        console.warn("Build skipped:", e.message);
-    }
-}
-
-function uninstall() {
-    const installDir = getInstallDir();
-
-    if (isWindows) {
-        const cmdPath = join(installDir, "ccc.cmd");
-        if (existsSync(cmdPath)) {
-            unlinkSync(cmdPath);
-            console.log(`Removed: ${cmdPath}`);
-        } else {
-            console.log("Not installed.");
-        }
-        tryRemoveInstallDirFromUserPath(installDir);
-        return;
-    }
-
-    const targetDir = join(installDir, "ccc-dist");
-    const targetBin = join(installDir, "ccc");
-    try {
-        let removed = false;
-        if (existsSync(targetBin)) {
-            unlinkSync(targetBin);
-            console.log(`Removed: ${targetBin}`);
-            removed = true;
-        }
-        if (existsSync(targetDir)) {
-            rmSync(targetDir, { recursive: true });
-            console.log(`Removed: ${targetDir}`);
-            removed = true;
-        }
-        if (!removed) console.log("Not installed.");
-    } catch (e) {
-        if (e.code === "EACCES") {
-            console.error("Permission denied. Run with sudo:");
-            console.error("  sudo npm run uninstall:global");
-            process.exit(1);
-        }
-        throw e;
-    }
+    return installerApplication().unixWrapperContent(targetDir);
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
@@ -389,10 +161,10 @@ const modulePath = fileURLToPath(import.meta.url);
 if (invokedPath && (isWindows ? invokedPath.toLowerCase() === modulePath.toLowerCase() : invokedPath === modulePath)) {
     const args = process.argv.slice(2);
     if (args.includes("--uninstall") || args.includes("-u")) {
-        uninstall();
+        installerApplication().uninstall();
     } else if (args.includes("--postinstall")) {
-        postinstall();
+        installerApplication().postinstall();
     } else {
-        install({ skipImage: args.includes("--skip-image") });
+        installerApplication().install({ skipImage: args.includes("--skip-image") });
     }
 }
