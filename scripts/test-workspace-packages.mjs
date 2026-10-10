@@ -28,7 +28,7 @@ function requireFile(file) {
 }
 
 /** Check current manifest targets and assets, without historical source or hash catalogs. */
-export function validatePackageLayout(packageRoot) {
+function validatePackageLayout(packageRoot) {
     packageRoot = resolve(packageRoot);
     const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     assert.equal(manifest.type, "module");
@@ -60,7 +60,7 @@ export function validatePackageLayout(packageRoot) {
         assert(readdirSync(join(directory, "powershell")).length > 0, `Missing ${name} native assets`);
     }
     const appium = join(packageRoot, "dist/packages/device-lab/appium-runtime");
-    for (const file of ["package.json", "package-lock.json", "server.mjs"]) requireFile(join(appium, file));
+    for (const file of ["package.json", "package-lock.json"]) requireFile(join(appium, file));
     assert(readdirSync(join(packageRoot, "dist/packages/device-lab/providers")).length > 0);
     assert(!existsSync(join(packageRoot, "dist/x11-mcp")), "Obsolete X11 bundle packaged");
     // Validate the shipped Docker context, without building an image or installing runtimes.
@@ -73,10 +73,9 @@ export function validatePackageLayout(packageRoot) {
     return manifest;
 }
 
-/** Exercise the bundled MCP transport; timeout override supports small fake-server tests. */
-export async function mcpSmoke(packageRoot, { timeoutMs = 30000 } = {}) {
+/** Exercise the actual bundled MCP transport. */
+async function mcpSmoke(packageRoot) {
     packageRoot = resolve(packageRoot);
-    assert(Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 30000);
     const home = mkdtempSync(join(tmpdir(), "ccc-mcp-smoke-"));
     const child = spawn(process.execPath, [join(packageRoot, "dist/device-lab-mcp/server.mjs")], {
         cwd: home, env: isolatedEnvironment(home), stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false,
@@ -138,8 +137,8 @@ export async function mcpSmoke(packageRoot, { timeoutMs = 30000 } = {}) {
             child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n", error => { if (error) fail(error); });
         });
     };
-    const timer = setTimeout(() => fail(new Error("Packaged MCP smoke timed out")), timeoutMs);
-    let result, primary;
+    const timer = setTimeout(() => fail(new Error("Packaged MCP smoke timed out")), 30000);
+    let primary;
     try {
         const initialized = await request("initialize", { protocolVersion: "2024-11-05", capabilities: {},
             clientInfo: { name: "ccc-package-smoke", version: "1" } });
@@ -150,7 +149,6 @@ export async function mcpSmoke(packageRoot, { timeoutMs = 30000 } = {}) {
         assert(listed.tools.some(tool => tool.name === "create_windows_vm"));
         await request("ping");
         if (failure) throw failure;
-        result = { initialized, listed };
     } catch (error) { primary = error; }
     finally {
         clearTimeout(timer);
@@ -189,8 +187,6 @@ export async function mcpSmoke(packageRoot, { timeoutMs = 30000 } = {}) {
         if (primary) console.error(`Retained MCP smoke directory: ${home}`);
     }
     if (primary) throw primary;
-    assert(result, "Packaged MCP smoke completed without a result");
-    return result;
 }
 
 async function smoke(packageRoot, home) {

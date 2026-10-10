@@ -19,6 +19,8 @@ Do not keep archived implementations as executable reference copies. Do not requ
 
 Do not embed source snapshots, build-input hash catalogs or per-operation acceptance ledgers in package smoke. Do not build a separate VM, permission membrane or process framework for every extraction. Existing product safety tests exercise the actual native boundaries.
 
+Keep packaging verification as a small standalone smoke command. Do not add verifier-specific unit suites, fake package/server frameworks, or tests of the verifier's own rejection and evidence machinery. Exercise the actual generated payloads instead.
+
 ## Run checks in increasing cost order
 
 1. Run changed contract/type checks and focused behavior tests.
