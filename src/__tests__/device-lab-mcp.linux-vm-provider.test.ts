@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import * as nativeFs from "fs";
@@ -73,9 +74,10 @@ vi.mock("../../packages/device-lab/providers/state/process-identity.mjs", async 
 function runtimeExitFixture(pid: number) {
     let exited = false;
     const inspect = runtimeIdentity.inspectProcessIdentity;
-    vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation((expected, observedPid, options) => {
+    vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation((expected, observedPid, options = undefined) => {
         if (observedPid !== pid) return inspect(expected, observedPid, options);
-        return { status: exited ? "exited" : "match", current: null, liveness: exited ? "exited" : "alive" };
+        if (exited) return { status: "exited", current: null, liveness: "exited" };
+        return { status: "match", current: { pid, startToken: "fixture-birth", commandHash: "fixture-command" }, liveness: "alive" };
     });
     return { exit: () => { exited = true; } };
 }
@@ -115,15 +117,17 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         const root = tempRoot();
         const env = { CCC_PROFILE: "unverified-runtime-delete" };
         const created = createLab({ name: "Unverified Runtime Delete" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
-        const metadata = join(root, "owners", ownerId(env), "labs", created.lab.id, "lab.json");
+        const metadata = join(root, "owners", ownerId(env), "labs", createdLab.id, "lab.json");
         writeFileSync(metadata, `${JSON.stringify({
             ...JSON.parse(readFileSync(metadata, "utf-8")),
             runtimeState: "running",
             runtime: { pid: process.pid, processIdentity: null },
         }, null, 2)}\n`);
 
-        const deleted = deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root });
+        const deleted = deleteLab({ labId: createdLab.id, force: true }, { env, stateRoot: root });
         expect(deleted).toEqual(expect.objectContaining({
             ok: false,
             error: "lab-delete-stop-failed",
@@ -140,33 +144,37 @@ describe("device-lab Linux VM container-QEMU provider", () => {
     it("keeps legacy stop ESRCH handling and failed forced-delete residue", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "stop-fault", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Stop Fault" }, { env, stateRoot: root });
-        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
-        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
+        const createdLab = created.lab;
+        assert.ok(createdLab);
+        startLab({ labId: createdLab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
+        const file = join(createdLab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
         const trace: unknown[] = [], fault = Object.assign(new Error("raw legacy stop"), { code: "EPERM" });
         const runtime = runtimeExitFixture(4242);
         const killProcess = (pid: number) => { trace.push(pid); throw fault; };
         const options = { env, stateRoot: root, killProcess };
-        expect(deleteLab({ labId: created.lab.id, force: "true" }, options)).toEqual({ ok: false, error: "lab-running", labId: created.lab.id });
+        expect(deleteLab({ labId: createdLab.id, force: "true" }, options)).toEqual({ ok: false, error: "lab-running", labId: createdLab.id });
         expect(trace).toEqual([]);
-        expect(deleteLab({ labId: created.lab.id, force: true }, options)).toEqual({
-            ok: false, error: "lab-delete-stop-failed", labId: created.lab.id,
+        expect(deleteLab({ labId: createdLab.id, force: true }, options)).toEqual({
+            ok: false, error: "lab-delete-stop-failed", labId: createdLab.id,
             stop: { ok: false, error: "lab-stop-failed", message: "raw legacy stop" },
         });
         expect(trace).toEqual([4242]);
         expect(readFileSync(file, "utf8")).toBe(before);
         const exited = Object.assign(new Error("already exited"), { code: "ESRCH" });
-        expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { runtime.exit(); throw exited; } })).toEqual(
+        expect(stopLab({ labId: createdLab.id }, { env, stateRoot: root, killProcess: () => { runtime.exit(); throw exited; } })).toEqual(
             expect.objectContaining({ ok: true, stopped: true, lab: expect.objectContaining({ runtimeState: "stopped", runtime: null }) }),
         );
-        expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { throw new Error("must not signal twice"); } }).stopped).toBe(false);
-        expect(deleteLab({ labId: created.lab.id }, { env, stateRoot: root }).deleted).toBe(true);
-        expect(existsSync(created.lab.paths.labDir)).toBe(false);
+        expect(stopLab({ labId: createdLab.id }, { env, stateRoot: root, killProcess: () => { throw new Error("must not signal twice"); } }).stopped).toBe(false);
+        expect(deleteLab({ labId: createdLab.id }, { env, stateRoot: root }).deleted).toBe(true);
+        expect(existsSync(createdLab.paths.labDir)).toBe(false);
     });
 
     it("publishes stopped state before a raw application removal fault", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "remove-fault" };
         const created = createLab({ name: "Remove Fault" }, { env, stateRoot: root });
-        const lab = { ...created.lab, runtimeState: "running", runtime: { pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } } };
+        const createdLab = created.lab;
+        assert.ok(createdLab);
+        const lab = { ...createdLab, runtimeState: "running", runtime: { pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } } };
         const scope = { env, stateRoot: root, owner: ownerId(env), ownerRoot: join(root, "owners", ownerId(env)) };
         const trace: unknown[] = [], fault = new Error("raw removal fault");
         const unexpected = (): never => { throw new Error("unreached leaf"); };
@@ -195,14 +203,16 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(trace.filter(row => Array.isArray(row) ? row[0] === "kill" : ["exit-confirmed", "publish", "remove"].includes(String(row))))
             .toEqual([["kill", 4242], "exit-confirmed", "publish", "remove"]);
         expect(retained).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null, updatedAt: "stopped-time" }));
-        expect(existsSync(created.lab.paths.labDir)).toBe(true);
+        expect(existsSync(createdLab.paths.labDir)).toBe(true);
     });
 
     it("rejects strict force create when running metadata has no verified exit", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "create-force", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Original", labId: "same" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         startLab({ labId: "same" }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
-        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), trace: unknown[] = [];
+        const file = join(createdLab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), trace: unknown[] = [];
         const options = { env, stateRoot: root, killProcess: (pid: number) => { trace.push(pid); } };
         for (const force of [undefined, "true", 1]) {
             expect(createLab({ name: "Replacement", labId: "same", force }, options)).toEqual({ ok: false, error: "lab-already-exists", labId: "same" });
@@ -218,12 +228,14 @@ describe("device-lab Linux VM container-QEMU provider", () => {
     it("retains native stopped metadata when forced delete removal throws the identical fault", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "native-remove", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Native Remove" }, { env, stateRoot: root });
-        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
-        const file = join(created.lab.paths.labDir, "lab.json"), fault = new Error("native removal fault"), trace: unknown[] = [];
+        const createdLab = created.lab;
+        assert.ok(createdLab);
+        startLab({ labId: createdLab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
+        const file = join(createdLab.paths.labDir, "lab.json"), fault = new Error("native removal fault"), trace: unknown[] = [];
         const runtime = runtimeExitFixture(4242);
         const originalRemove = nativeFs.rmSync;
         const removal = vi.spyOn(nativeFs, "rmSync").mockImplementation((path, options) => {
-            if (path === created.lab.paths.labDir) {
+            if (path === createdLab.paths.labDir) {
                 trace.push(["remove", JSON.parse(readFileSync(file, "utf8")).runtimeState]);
                 throw fault;
             }
@@ -231,29 +243,31 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         });
         let caught: unknown;
         try {
-            deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root, killProcess: (pid: number) => { trace.push(["kill", pid]); runtime.exit(); } });
+            deleteLab({ labId: createdLab.id, force: true }, { env, stateRoot: root, killProcess: (pid: number) => { trace.push(["kill", pid]); runtime.exit(); } });
         } catch (error) { caught = error; } finally { removal.mockRestore(); }
         expect(caught).toBe(fault);
         expect(trace).toEqual([["kill", 4242], ["remove", "stopped"]]);
         expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
-        expect(existsSync(created.lab.paths.labDir)).toBe(true);
+        expect(existsSync(createdLab.paths.labDir)).toBe(true);
     });
 
     it.skipIf(process.platform !== "linux")("stops its same-parent native child synchronously before deleting owned storage", async () => {
         const root = tempRoot(), env = { CCC_PROFILE: "native-child-stop", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Native Child Stop" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
         const closed = new Promise<void>((resolve, reject) => { child.once("close", () => resolve());child.once("error", reject); });
         let joinTimer: ReturnType<typeof setTimeout> | undefined;
         try {
             const identity = await runtimeIdentity.waitForProcessIdentity(child.pid, 2000);
             expect(identity).toBeTruthy();
-            expect(startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            expect(startLab({ labId: createdLab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
                 commandRunner: () => ({ ok: true, pid: child.pid, processIdentity: identity }) }).ok).toBe(true);
-            expect(stopLab({ labId: created.lab.id, timeoutMs: 2000 }, { env, stateRoot: root })).toEqual(expect.objectContaining({ ok: true, stopped: true, lab: expect.objectContaining({ runtimeState: "stopped", runtime: null }) }));
-            expect(JSON.parse(readFileSync(join(created.lab.paths.labDir, "lab.json"), "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
-            expect(deleteLab({ labId: created.lab.id }, { env, stateRoot: root }).deleted).toBe(true);
-            expect(existsSync(created.lab.paths.labDir)).toBe(false);
+            expect(stopLab({ labId: createdLab.id, timeoutMs: 2000 }, { env, stateRoot: root })).toEqual(expect.objectContaining({ ok: true, stopped: true, lab: expect.objectContaining({ runtimeState: "stopped", runtime: null }) }));
+            expect(JSON.parse(readFileSync(join(createdLab.paths.labDir, "lab.json"), "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
+            expect(deleteLab({ labId: createdLab.id }, { env, stateRoot: root }).deleted).toBe(true);
+            expect(existsSync(createdLab.paths.labDir)).toBe(false);
         } finally {
             if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
             try { await Promise.race([closed, new Promise<never>((_resolve, reject) => { joinTimer = setTimeout(() => reject(new Error("owned QEMU test child join timed out")), 2000); })]); }
@@ -264,32 +278,36 @@ describe("device-lab Linux VM container-QEMU provider", () => {
     it("preserves a live owned runtime after a signal timeout and refuses forced storage removal", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "live-runtime", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Live Runtime" }, { env, stateRoot: root });
-        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+        const createdLab = created.lab;
+        assert.ok(createdLab);
+        startLab({ labId: createdLab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
             commandRunner: () => ({ ok: true, pid: process.pid, processIdentity: runtimeIdentity.readProcessIdentity(process.pid) }) });
-        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), signals: number[] = [];
+        const file = join(createdLab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), signals: number[] = [];
         const options = { env, stateRoot: root, killProcess: (pid: number) => { signals.push(pid); } };
-        expect(stopLab({ labId: created.lab.id, timeoutMs: 1 }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-runtime-not-exited" }));
+        expect(stopLab({ labId: createdLab.id, timeoutMs: 1 }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-runtime-not-exited" }));
         expect(readFileSync(file, "utf8")).toBe(before);
-        expect(deleteLab({ labId: created.lab.id, force: true, timeoutMs: 1 }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-delete-stop-failed" }));
-        expect(readFileSync(file, "utf8")).toBe(before);expect(existsSync(created.lab.paths.labDir)).toBe(true);
-        expect(createLab({ name: "Replacement", labId: created.lab.id, force: true }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-runtime-active-or-unverified" }));
+        expect(deleteLab({ labId: createdLab.id, force: true, timeoutMs: 1 }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-delete-stop-failed" }));
+        expect(readFileSync(file, "utf8")).toBe(before);expect(existsSync(createdLab.paths.labDir)).toBe(true);
+        expect(createLab({ name: "Replacement", labId: createdLab.id, force: true }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-runtime-active-or-unverified" }));
         expect(readFileSync(file, "utf8")).toBe(before);expect(signals).toEqual([process.pid, process.pid]);
         const falseExit = Object.assign(new Error("false exit assertion"), { code: "ESRCH" });
-        expect(stopLab({ labId: created.lab.id, timeoutMs: 1 }, { env, stateRoot: root, killProcess: () => { throw falseExit; } })).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-runtime-not-exited" }));
+        expect(stopLab({ labId: createdLab.id, timeoutMs: 1 }, { env, stateRoot: root, killProcess: () => { throw falseExit; } })).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-runtime-not-exited" }));
         expect(readFileSync(file, "utf8")).toBe(before);
     });
 
     it("refuses reused and unverified native process generations before a kill override or overwrite", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "reused-runtime" };
         const created = createLab({ name: "Reused Runtime" }, { env, stateRoot: root });
-        const file = join(created.lab.paths.labDir, "lab.json"), stopped = JSON.parse(readFileSync(file, "utf8"));
+        const createdLab = created.lab;
+        assert.ok(createdLab);
+        const file = join(createdLab.paths.labDir, "lab.json"), stopped = JSON.parse(readFileSync(file, "utf8"));
         for (const processIdentity of [null, { ...runtimeIdentity.readProcessIdentity(process.pid), startToken: "wrong-birth" }]) {
             writeFileSync(file, JSON.stringify({ ...stopped, runtimeState: "running", runtime: { runtimeId: "owned", pid: process.pid, processIdentity } }));
             const before = readFileSync(file, "utf8"), kill = vi.fn();
             const options = { env, stateRoot: root, killProcess: kill };
-            expect(stopLab({ labId: created.lab.id }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-process-identity-unverified" }));
-            expect(deleteLab({ labId: created.lab.id, force: true }, options).ok).toBe(false);
-            expect(createLab({ name: "Replacement", labId: created.lab.id, force: true }, options).ok).toBe(false);
+            expect(stopLab({ labId: createdLab.id }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-process-identity-unverified" }));
+            expect(deleteLab({ labId: createdLab.id, force: true }, options).ok).toBe(false);
+            expect(createLab({ name: "Replacement", labId: createdLab.id, force: true }, options).ok).toBe(false);
             expect(kill).not.toHaveBeenCalled();expect(readFileSync(file, "utf8")).toBe(before);
         }
     });
@@ -297,14 +315,17 @@ describe("device-lab Linux VM container-QEMU provider", () => {
     it("waits for a delayed native exit before publishing stopped metadata", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "delayed-runtime", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Delayed Runtime" }, { env, stateRoot: root });
-        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
-        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
+        const createdLab = created.lab;
+        assert.ok(createdLab);
+        startLab({ labId: createdLab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
+        const file = join(createdLab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
         let signaled = false, polls = 0;
         vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation(() => {
             if (signaled) { polls++;expect(readFileSync(file, "utf8")).toBe(before); }
-            return { status: signaled && polls >= 3 ? "exited" : "match", current: null, liveness: signaled && polls >= 3 ? "exited" : "alive" };
+            if (signaled && polls >= 3) return { status: "exited", current: null, liveness: "exited" };
+            return { status: "match", current: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" }, liveness: "alive" };
         });
-        expect(stopLab({ labId: created.lab.id, timeoutMs: 1000 }, { env, stateRoot: root, killProcess: () => { signaled = true; } })).toEqual(expect.objectContaining({ ok: true, stopped: true }));
+        expect(stopLab({ labId: createdLab.id, timeoutMs: 1000 }, { env, stateRoot: root, killProcess: () => { signaled = true; } })).toEqual(expect.objectContaining({ ok: true, stopped: true }));
         expect(polls).toBe(3);expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
     });
 
@@ -361,15 +382,17 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             memoryMb: 4096,
             cpus: 4,
         }, { env, stateRoot: root, now: "2026-06-16T00:00:00.000Z" });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
 
         expect(created.ok).toBe(true);
-        expect(created.lab).toEqual(expect.objectContaining({
+        expect(createdLab).toEqual(expect.objectContaining({
             id: "ubuntu-test",
             ownerId: ownerId(env),
             runtimeState: "stopped",
             resources: { memoryMb: 4096, cpus: 4 },
         }));
-        expect(created.lab.image.sourceImage).toBe(join(root, "images/base.qcow2"));
+        expect(createdLab.image.sourceImage).toBe(join(root, "images/base.qcow2"));
         expect(existsSync(join(root, "owners", ownerId(env), "labs", "ubuntu-test", "lab.json"))).toBe(true);
 
         const listed = listLabs({ env, stateRoot: root });
@@ -390,6 +413,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             stateRoot: root,
             now: "2026-06-16T04:00:00.000Z",
         });
+        const importedImage = imported.image;
+        assert.ok(importedImage && typeof importedImage === "object");
+        assert.ok("path" in importedImage && typeof importedImage.path === "string");
+        const importedImagePath = importedImage.path;
 
         expect(imported).toEqual(expect.objectContaining({
             ok: true,
@@ -400,10 +427,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 sizeBytes: 10,
             }),
         }));
-        expect(imported.image.path).toBe(join(root, "owners", ownerId(env), "images", "ubuntu-base", "base.qcow2"));
-        expect(readFileSync(imported.image.path, "utf8")).toBe("base-image");
+        expect(importedImagePath).toBe(join(root, "owners", ownerId(env), "images", "ubuntu-base", "base.qcow2"));
+        expect(readFileSync(importedImagePath, "utf8")).toBe("base-image");
         expect(listImages({ env, stateRoot: root }).images).toEqual([
-            expect.objectContaining({ id: "ubuntu-base", path: imported.image.path }),
+            expect.objectContaining({ id: "ubuntu-base", path: importedImagePath }),
         ]);
 
         const lab = createLab({ name: "From Base", baseImageId: "ubuntu-base" }, { env, stateRoot: root });
@@ -413,7 +440,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 id: "from-base",
                 image: expect.objectContaining({
                     baseImageId: "ubuntu-base",
-                    sourceImage: imported.image.path,
+                    sourceImage: importedImagePath,
                     format: "qcow2",
                 }),
             }),
@@ -427,16 +454,29 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         writeFileSync(join(root, "incoming", "disk.raw"), "new-image");
         const options = { env, stateRoot: root, now: "fixed-time" };
         const first = importImage({ name: "Base", sourcePath: "incoming/disk.qcow2", copy: 0 }, options);
-        expect(first.image.copied).toBe(true);
+        const firstImage = first.image;
+        assert.ok(firstImage && typeof firstImage === "object");
+        assert.ok("path" in firstImage && typeof firstImage.path === "string");
+        const firstImagePath = firstImage.path;
+        assert.ok("copied" in firstImage);
+        expect(firstImage.copied).toBe(true);
         const refused = importImage({ name: "Base", force: "true", sourcePath: "incoming/disk.raw" }, options);
         expect(refused).toEqual({ ok: false, error: "base-image-already-exists", imageId: "base" });
         const replaced = importImage({ name: "Base", sourcePath: "incoming/disk.raw", force: true }, options);
+        const replacedImage = replaced.image;
+        assert.ok(replacedImage && typeof replacedImage === "object");
+        assert.ok("path" in replacedImage && typeof replacedImage.path === "string");
+        const replacedImagePath = replacedImage.path;
         expect(replaced.image).toEqual(expect.objectContaining({ copied: true, format: "raw", sizeBytes: 9, createdAt: "fixed-time", updatedAt: "fixed-time" }));
-        expect(readFileSync(first.image.path, "utf8")).toBe("old-image");
-        expect(readFileSync(replaced.image.path, "utf8")).toBe("new-image");
+        expect(readFileSync(firstImagePath, "utf8")).toBe("old-image");
+        expect(readFileSync(replacedImagePath, "utf8")).toBe("new-image");
         const reference = importImage({ name: "Reference", sourcePath: "incoming/disk.raw", copy: false }, options);
+        const referenceImage = reference.image;
+        assert.ok(referenceImage && typeof referenceImage === "object");
+        assert.ok("path" in referenceImage && typeof referenceImage.path === "string");
+        const referenceImagePath = referenceImage.path;
         expect(reference.image).toEqual(expect.objectContaining({ copied: false, path: join(root, "incoming", "disk.raw"), sourcePath: join(root, "incoming", "disk.raw"), format: "raw" }));
-        expect(readdirSync(dirname(reference.image.path))).toEqual(expect.arrayContaining(["disk.qcow2", "disk.raw"]));
+        expect(readdirSync(dirname(referenceImagePath))).toEqual(expect.arrayContaining(["disk.qcow2", "disk.raw"]));
     });
 
     it("preserves copy residue before atomic publication cleanup", () => {
@@ -634,6 +674,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         mkdirSync(join(root, "images"), { recursive: true });
         writeFileSync(join(root, "images", "ready.qcow2"), "base");
         const created = createLab({ name: "Ready VM", sourceImage: "images/ready.qcow2" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
 
         const dryRun = startLab({ labId: "ready-vm", dryRun: true }, {
@@ -648,7 +690,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             dryRun: true,
             command: "/usr/bin/qemu-system-x86_64",
             materialized: expect.objectContaining({ ok: true, dryRun: true }),
-            args: expect.arrayContaining(["-machine", "q35,accel=kvm:tcg", `file=${created.lab.image.diskImage},if=virtio,format=qcow2`]),
+            args: expect.arrayContaining(["-machine", "q35,accel=kvm:tcg", `file=${createdLab.image.diskImage},if=virtio,format=qcow2`]),
         }));
         expect(JSON.stringify(dryRun)).not.toContain("qemu-monitor.sock");
 
@@ -668,9 +710,12 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" }, command, args };
             },
         });
+        const startedLab = started.lab;
+        assert.ok(startedLab);
+        assert.ok(startedLab.runtime);
         expect(started.ok).toBe(true);
-        expect(started.lab.runtimeState).toBe("running");
-        expect(started.lab.runtime.pid).toBe(4242);
+        expect(startedLab.runtimeState).toBe("running");
+        expect(startedLab.runtime.pid).toBe(4242);
         const reused = startLab({ labId: "ready-vm" }, {
             env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
             commandRunner: () => { throw new Error("running reuse must not launch"); },
@@ -695,9 +740,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             stateRoot: root,
             killProcess: (pid: number) => { killed.push(pid); runtime.exit(); },
         });
+        const stoppedLab = stopped.lab;
+        assert.ok(stoppedLab);
         expect(stopped.ok).toBe(true);
         expect(killed).toEqual([4242]);
-        expect(stopped.lab.runtimeState).toBe("stopped");
+        expect(stoppedLab.runtimeState).toBe("stopped");
 
         const deleted = deleteLab({ labId: "ready-vm" }, { env, stateRoot: root });
         expect(deleted).toEqual(expect.objectContaining({ ok: true, labId: "ready-vm", deleted: true }));
@@ -714,6 +761,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         mkdirSync(join(root, "images"), { recursive: true });
         writeFileSync(join(root, "images", "base.qcow2"), "base");
         const created = createLab({ name: "Materialize VM", sourceImage: "images/base.qcow2" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
 
         const commands: Array<{ command: string; args: string[] }> = [];
@@ -729,7 +778,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             dryRun: true,
             plan: expect.objectContaining({
                 command: "/usr/bin/qemu-img",
-                args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), created.lab.image.diskImage],
+                args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), createdLab.image.diskImage],
             }),
         }));
         const startDryRun = startLab({ labId: "materialize-vm", dryRun: true }, {
@@ -745,9 +794,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             materialized: expect.objectContaining({
                 ok: true,
                 dryRun: true,
-                diskImage: created.lab.image.diskImage,
+                diskImage: createdLab.image.diskImage,
             }),
-            args: expect.arrayContaining([`file=${created.lab.image.diskImage},if=virtio,format=qcow2`]),
+            args: expect.arrayContaining([`file=${createdLab.image.diskImage},if=virtio,format=qcow2`]),
         }));
 
         const materialized = materializeDisk({ labId: "materialize-vm" }, {
@@ -773,9 +822,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
         expect(commands).toEqual([
-            { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), created.lab.image.diskImage] },
+            { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), createdLab.image.diskImage] },
         ]);
-        expect(readFileSync(created.lab.image.diskImage, "utf8")).toBe("overlay");
+        expect(readFileSync(createdLab.image.diskImage, "utf8")).toBe("overlay");
 
         const reused = materializeDisk({ labId: "materialize-vm" }, { env, stateRoot: root });
         expect(reused).toEqual(expect.objectContaining({ ok: true, materialized: false, reused: true }));
@@ -791,8 +840,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         mkdirSync(join(root, "images"), { recursive: true });
         writeFileSync(join(root, "images", "base.qcow2"), "base");
         const created = createLab({ name: "Recovery VM", sourceImage: "images/base.qcow2" }, { env: readyEnv, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
-        rmSync(dirname(created.lab.image.diskImage), { recursive: true, force: true });
+        rmSync(dirname(createdLab.image.diskImage), { recursive: true, force: true });
         const recovered = materializeDisk({ labId: "recovery-vm" }, {
             env: readyEnv,
             stateRoot: root,
@@ -804,11 +855,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, args };
             },
         });
-        expect(recovered).toEqual(expect.objectContaining({ ok: true, materialized: true, diskImage: created.lab.image.diskImage }));
-        expect(readFileSync(created.lab.image.diskImage, "utf8")).toBe("overlay");
+        expect(recovered).toEqual(expect.objectContaining({ ok: true, materialized: true, diskImage: createdLab.image.diskImage }));
+        expect(readFileSync(createdLab.image.diskImage, "utf8")).toBe("overlay");
 
         const unsupportedEnv = { CCC_PROFILE: "materialize-recovery" };
-        rmSync(created.lab.image.diskImage, { force: true });
+        rmSync(createdLab.image.diskImage, { force: true });
         const dryRun = startLab({ labId: "recovery-vm", dryRun: true }, { env: unsupportedEnv, stateRoot: root });
         expect(dryRun).toEqual(expect.objectContaining({
             ok: true,
@@ -819,10 +870,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 dryRun: true,
                 plan: expect.objectContaining({
                     command: expect.any(String),
-                    args: expect.arrayContaining([created.lab.image.diskImage]),
+                    args: expect.arrayContaining([createdLab.image.diskImage]),
                 }),
             }),
-            args: expect.arrayContaining([`file=${created.lab.image.diskImage},if=virtio,format=qcow2`]),
+            args: expect.arrayContaining([`file=${createdLab.image.diskImage},if=virtio,format=qcow2`]),
         }));
     });
 
@@ -834,10 +885,12 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             CCC_LAB_RUNNER_STATUS: "ready",
         };
         const created = createLab({ name: "Stale Disk VM" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         const labPath = join(root, "owners", ownerId(env), "labs", "stale-disk-vm", "lab.json");
         const metadata = JSON.parse(readFileSync(labPath, "utf8"));
-        writeFileSync(labPath, `${JSON.stringify({ ...metadata, image: { ...metadata.image, disk: { kind: "qcow2-overlay", path: created.lab.image.diskImage } } }, null, 2)}\n`);
+        writeFileSync(labPath, `${JSON.stringify({ ...metadata, image: { ...metadata.image, disk: { kind: "qcow2-overlay", path: createdLab.image.diskImage } } }, null, 2)}\n`);
         const commands: Array<{ command: string; args: string[] }> = [];
         const started = startLab({ labId: "stale-disk-vm" }, {
             env,
@@ -853,7 +906,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(started).toEqual(expect.objectContaining({ ok: true }));
         expect(commands).toHaveLength(1);
         expect(commands[0].args.join("\n")).not.toContain("-drive");
-        expect(commands[0].args.join("\n")).not.toContain(created.lab.image.diskImage);
+        expect(commands[0].args.join("\n")).not.toContain(createdLab.image.diskImage);
     });
 
     it("canonicalizes tampered disk metadata paths and refuses running labs", () => {
@@ -866,6 +919,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         mkdirSync(join(root, "images"), { recursive: true });
         writeFileSync(join(root, "images", "base.qcow2"), "base");
         const created = createLab({ name: "Materialize Policy VM", sourceImage: "images/base.qcow2" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
 
         const labPath = join(root, "owners", ownerId(env), "labs", "materialize-policy-vm", "lab.json");
@@ -893,9 +948,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, command, args };
             },
         });
-        expect(materialized).toEqual(expect.objectContaining({ ok: true, diskImage: created.lab.image.diskImage }));
+        expect(materialized).toEqual(expect.objectContaining({ ok: true, diskImage: createdLab.image.diskImage }));
         expect(materializeCommands).toEqual([
-            { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), created.lab.image.diskImage], timeoutMs: 600000 },
+            { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), createdLab.image.diskImage], timeoutMs: 600000 },
         ]);
         expect(readFileSync(outsideDisk, "utf8")).toBe("outside");
         expect(JSON.stringify(materialized)).not.toContain(outsideLabDir);
@@ -912,7 +967,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             },
         })).toEqual(expect.objectContaining({ ok: true }));
         expect(snapshotCommands).toEqual([
-            { command: "/usr/bin/qemu-img", args: ["snapshot", "-c", "unsafe", created.lab.image.diskImage], timeoutMs: 1 },
+            { command: "/usr/bin/qemu-img", args: ["snapshot", "-c", "unsafe", createdLab.image.diskImage], timeoutMs: 1 },
         ]);
 
         writeFileSync(labPath, `${JSON.stringify({ ...metadata, runtimeState: "running", runtime: { pid: 1 } }, null, 2)}\n`);
@@ -933,16 +988,18 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         mkdirSync(join(root, "images"), { recursive: true });
         writeFileSync(join(root, "images", "base.qcow2"), "base");
         const created = createLab({ name: "Materialize Symlink VM", sourceImage: "images/base.qcow2" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         const outsideDir = mkdtempSync(join(tmpdir(), "ccc-lab-outside-disks-"));
         roots.push(outsideDir);
-        rmSync(dirname(created.lab.image.diskImage), { recursive: true, force: true });
-        mkdirSync(dirname(created.lab.image.diskImage), { recursive: true });
-        fileSymlinkOrSkip(context, join(outsideDir, "root.qcow2"), created.lab.image.diskImage);
+        rmSync(dirname(createdLab.image.diskImage), { recursive: true, force: true });
+        mkdirSync(dirname(createdLab.image.diskImage), { recursive: true });
+        fileSymlinkOrSkip(context, join(outsideDir, "root.qcow2"), createdLab.image.diskImage);
         const expectedFinal = {
             ok: false,
             error: "disk-image-symlink-rejected",
-            diskImage: created.lab.image.diskImage,
+            diskImage: createdLab.image.diskImage,
         };
         expect(startLab({ labId: "materialize-symlink-vm" }, {
             env,
@@ -973,17 +1030,19 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         mkdirSync(join(root, "images"), { recursive: true });
         writeFileSync(join(root, "images", "base.qcow2"), "base");
         const created = createLab({ name: "Materialize Symlink VM", sourceImage: "images/base.qcow2" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         const outsideDir = mkdtempSync(join(tmpdir(), "ccc-lab-outside-disks-"));
         roots.push(outsideDir);
-        rmSync(dirname(created.lab.image.diskImage), { recursive: true, force: true });
-        symlinkSync(outsideDir, dirname(created.lab.image.diskImage), process.platform === "win32" ? "junction" : "dir");
+        rmSync(dirname(createdLab.image.diskImage), { recursive: true, force: true });
+        symlinkSync(outsideDir, dirname(createdLab.image.diskImage), process.platform === "win32" ? "junction" : "dir");
 
         const expectedAncestor = {
             ok: false,
             error: "disk-image-symlink-ancestor-rejected",
-            diskImage: created.lab.image.diskImage,
-            ancestorPath: dirname(created.lab.image.diskImage),
+            diskImage: createdLab.image.diskImage,
+            ancestorPath: dirname(createdLab.image.diskImage),
         };
         expect(materializeDisk({ labId: "materialize-symlink-vm" }, {
             env,
@@ -1074,7 +1133,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 attach: expect.objectContaining({ kind: "metadata", available: true }),
             }),
         }));
-        expect(listLabs({ env, stateRoot: root }).labs[0].sessions).toEqual([
+        const recordedLab = listLabs({ env, stateRoot: root }).labs[0];
+        assert.ok(recordedLab && "sessions" in recordedLab);
+        expect(recordedLab.sessions).toEqual([
             expect.objectContaining({ id: "session-one", state: "unavailable" }),
         ]);
     });
@@ -1141,6 +1202,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestSshUser: "ccc",
             guestSshKeyPath: keyPath,
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         expect(startLab({ labId: "session-ssh-vm" }, {
             env,
@@ -1161,15 +1224,15 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                     providerArgs: ["-monitor", "unix:/tmp/qemu-monitor.sock,server,nowait"],
                     sshPath: "/usr/bin/ssh",
                     keyPath,
-                    labPath: created.lab.paths.labDir,
+                    labPath: createdLab.paths.labDir,
                     args: ["secret"],
                 },
             }),
         });
         expect(readiness.ok).toBe(true);
-        const readinessFile = join(created.lab.paths.labDir, "lab.json");
+        const readinessFile = join(createdLab.paths.labDir, "lab.json");
         const rawReadiness = JSON.parse(readFileSync(readinessFile, "utf8"));
-        rawReadiness.readiness.latest.state = `/usr/bin/ssh ${keyPath} ${created.lab.paths.labDir} qemu-monitor.sock secret-state`;
+        rawReadiness.readiness.latest.state = `/usr/bin/ssh ${keyPath} ${createdLab.paths.labDir} qemu-monitor.sock secret-state`;
         writeFileSync(readinessFile, JSON.stringify(rawReadiness, null, 2));
 
         const session = openSession({ labId: "session-ssh-vm", sessionId: "guest-ssh-session", sessionType: "guest-ssh" }, {
@@ -1181,6 +1244,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, status: 0 };
             },
         });
+        assert.ok("target" in session && session.target);
 
         expect(session).toEqual(expect.objectContaining({
             ok: true,
@@ -1213,7 +1277,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             expect.objectContaining({ id: "guest-ssh-session", sessionType: "guest-ssh", state: "open" }),
         ]);
         expect(JSON.stringify(session)).not.toContain(keyPath);
-        expect(JSON.stringify(session)).not.toContain(created.lab.paths.labDir);
+        expect(JSON.stringify(session)).not.toContain(createdLab.paths.labDir);
         expect(JSON.stringify(session)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(session)).not.toContain("qemu-monitor.sock");
         expect(JSON.stringify(session)).not.toContain("secret");
@@ -1251,6 +1315,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, status: 0 };
             },
         });
+        assert.ok("session" in stopped && stopped.session);
         expect(stopped.session).toEqual(expect.objectContaining({
             state: "unavailable",
             attach: expect.objectContaining({ available: false, reason: "lab-not-running" }),
@@ -1268,6 +1333,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             env,
             stateRoot: root,
         });
+        assert.ok("session" in noSsh && noSsh.session);
         expect(noSsh.session).toEqual(expect.objectContaining({
             state: "unavailable",
             attach: expect.objectContaining({ available: false, reason: "guest-ssh-not-configured" }),
@@ -1290,12 +1356,15 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, status: 0 };
             },
         });
+        assert.ok("session" in missingTool && missingTool.session);
         expect(missingTool.session).toEqual(expect.objectContaining({
             state: "unavailable",
             attach: expect.objectContaining({ available: false, reason: "guest-ssh-command-unavailable", missing: ["ssh"] }),
         }));
 
         const tampered = createLab({ name: "Tampered SSH Session VM", guestSshHost: "127.0.0.1", guestSshUser: "ccc", guestSshKeyPath: keyPath }, { env, stateRoot: root });
+        const tamperedLab = tampered.lab;
+        assert.ok(tamperedLab);
         expect(tampered.ok).toBe(true);
         expect(startLab({ labId: "tampered-ssh-session-vm" }, {
             env,
@@ -1304,7 +1373,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             kvmAvailable: true,
             commandRunner: () => ({ ok: true, pid: 8181 }),
         }).ok).toBe(true);
-        const tamperedFile = join(tampered.lab.paths.labDir, "lab.json");
+        const tamperedFile = join(tamperedLab.paths.labDir, "lab.json");
         const rawTampered = JSON.parse(readFileSync(tamperedFile, "utf8"));
         rawTampered.guest.ssh.keyPath = otherKeyPath;
         writeFileSync(tamperedFile, JSON.stringify(rawTampered, null, 2));
@@ -1317,6 +1386,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 return { ok: true, status: 0 };
             },
         });
+        assert.ok("session" in tamperedSession && tamperedSession.session);
         expect(tamperedSession.session).toEqual(expect.objectContaining({
             state: "unavailable",
             attach: expect.objectContaining({ available: false, reason: "guest-ssh-not-configured" }),
@@ -1351,6 +1421,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestAgentName: "ccc-agent",
             guestAgentHealthCommand: healthCommand,
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created).toEqual(expect.objectContaining({
             ok: true,
             lab: expect.objectContaining({
@@ -1380,7 +1452,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             processExists: () => true,
             sshCommandRunner: (command: string, args: string[]) => {
                 calls.push({ command, args });
-                return { ok: true, status: 0, stdout: `ready ${keyPath} ${healthCommand}`, stderr: created.lab.paths.labDir };
+                return { ok: true, status: 0, stdout: `ready ${keyPath} ${healthCommand}`, stderr: createdLab.paths.labDir };
             },
         };
 
@@ -1453,7 +1525,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
         expect(JSON.stringify(session)).not.toContain(keyPath);
-        expect(JSON.stringify(session)).not.toContain(created.lab.paths.labDir);
+        expect(JSON.stringify(session)).not.toContain(createdLab.paths.labDir);
         expect(JSON.stringify(session)).not.toContain(healthCommand);
         expect(JSON.stringify(session)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(session)).not.toContain("args");
@@ -1482,6 +1554,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestAgentHealthCommand: healthCommand,
             guestAgentProvisionCommand: provisionCommand,
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created).toEqual(expect.objectContaining({
             ok: true,
             lab: expect.objectContaining({
@@ -1507,7 +1581,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             commandRunner: () => ({ ok: true, pid: 7980 }),
         }).guestAgentProvision).toBeUndefined();
 
-        const metadataFile = join(created.lab.paths.labDir, "lab.json");
+        const metadataFile = join(createdLab.paths.labDir, "lab.json");
         const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
         metadata.guest.agent.provisionHistory = Array.from({ length: 50 }, (_, index) => ({ id: `prior-${index}`, state: "failed" }));
         writeFileSync(metadataFile, JSON.stringify(metadata));
@@ -1530,7 +1604,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             processExists: () => true,
             sshCommandRunner: (command: string, args: string[]) => {
                 calls.push({ command, args });
-                return { ok: true, status: 0, stdout: `installed ${keyPath} ${provisionCommand}`, stderr: created.lab.paths.labDir };
+                return { ok: true, status: 0, stdout: `installed ${keyPath} ${provisionCommand}`, stderr: createdLab.paths.labDir };
             },
         });
         expect(provisioned).toEqual(expect.objectContaining({
@@ -1574,6 +1648,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestAgentProvisionCommand: provisionCommand,
             guestAgentAutoProvision: true,
         }, { env, stateRoot: root });
+        const autoLab = auto.lab;
+        assert.ok(autoLab);
         expect(auto.ok).toBe(true);
         const autoCalls: Array<{ command: string; args: string[] }> = [];
         const started = startLab({ labId: "guest-agent-auto-provision-vm" }, {
@@ -1605,19 +1681,19 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }));
         expect(autoCalls).toHaveLength(1);
         expect(autoCalls[0].args).toEqual(expect.arrayContaining([provisionCommand]));
-        const autoFile = join(auto.lab.paths.labDir, "lab.json"), reuseTrace: string[] = [];
+        const autoFile = join(autoLab.paths.labDir, "lab.json"), reuseTrace: string[] = [];
         const reuseOptions = {
             env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, sshPath: "/usr/bin/ssh",
             commandRunner: () => { throw new Error("reuse cannot invoke launcher"); },
             sshCommandRunner: () => { reuseTrace.push("provision"); return { ok: true, status: 0 }; },
         };
-        expect(startLab({ labId: auto.lab.id }, reuseOptions).reused).toBe(true);
+        expect(startLab({ labId: autoLab.id }, reuseOptions).reused).toBe(true);
         expect(reuseTrace).toEqual([]);
         for (const lastProvision of [undefined, { ok: false }]) {
             const stored = JSON.parse(readFileSync(autoFile, "utf8"));
             stored.guest.agent.lastProvision = lastProvision;
             writeFileSync(autoFile, JSON.stringify(stored));
-            expect(startLab({ labId: auto.lab.id }, reuseOptions)).toEqual(expect.objectContaining({ ok: true, reused: true }));
+            expect(startLab({ labId: autoLab.id }, reuseOptions)).toEqual(expect.objectContaining({ ok: true, reused: true }));
         }
         expect(reuseTrace).toEqual(["provision", "provision"]);
 
@@ -1625,11 +1701,13 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             name: "Post Launch Provision Fault", guestSshHost: "127.0.0.1", guestSshUser: "ccc", guestSshKeyPath: keyPath,
             guestAgentHealthCommand: healthCommand, guestAgentProvisionCommand: provisionCommand, guestAgentAutoProvision: true,
         }, { env, stateRoot: root });
+        const failedStartLab = failedStart.lab;
+        assert.ok(failedStartLab);
         expect(failedStart.ok).toBe(true);
         const startTrace: string[] = [], postLaunchFault = new Error("post-launch SSH fault");
         let rawPostLaunch: unknown;
         try {
-            startLab({ labId: failedStart.lab.id }, {
+            startLab({ labId: failedStartLab.id }, {
                 env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, sshPath: "/usr/bin/ssh",
                 commandRunner: () => { startTrace.push("launch"); return { ok: true, pid: 7982 }; },
                 sshCommandRunner: () => { startTrace.push("provision"); throw postLaunchFault; },
@@ -1637,7 +1715,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         } catch (error) { rawPostLaunch = error; }
         expect(rawPostLaunch).toBe(postLaunchFault);
         expect(startTrace).toEqual(["launch", "provision"]);
-        expect(JSON.parse(readFileSync(join(failedStart.lab.paths.labDir, "lab.json"), "utf8"))).toEqual(
+        expect(JSON.parse(readFileSync(join(failedStartLab.paths.labDir, "lab.json"), "utf8"))).toEqual(
             expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 7982 }) }),
         );
         expect(JSON.stringify(started)).not.toContain(keyPath);
@@ -1707,6 +1785,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestAgentHealthCommand: healthCommand,
             guestAgentProvisionCommand: provisionCommand,
         }, { env, stateRoot: root });
+        const missingSshLab = missingSsh.lab;
+        assert.ok(missingSshLab);
         expect(missingSsh.ok).toBe(true);
         expect(startLab({ labId: "guest-agent-provision-missing-ssh-vm" }, {
             env,
@@ -1715,7 +1795,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             kvmAvailable: true,
             commandRunner: () => ({ ok: true, pid: 7983 }),
         }).ok).toBe(true);
-        const labFile = join(missingSsh.lab.paths.labDir, "lab.json");
+        const labFile = join(missingSshLab.paths.labDir, "lab.json");
         const raw = JSON.parse(readFileSync(labFile, "utf8"));
         delete raw.guest.ssh;
         writeFileSync(labFile, JSON.stringify(raw, null, 2));
@@ -1774,6 +1854,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestAgentName: "ccc-agent",
             guestAgentHealthCommand: healthCommand,
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         expect(startLab({ labId: "guest-agent-tamper-vm" }, {
             env,
@@ -1783,7 +1865,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             commandRunner: () => ({ ok: true, pid: 7978 }),
         }).ok).toBe(true);
 
-        const labFile = join(created.lab.paths.labDir, "lab.json");
+        const labFile = join(createdLab.paths.labDir, "lab.json");
         const raw = JSON.parse(readFileSync(labFile, "utf8"));
         raw.guest.agent.provisionCommand = provisionCommand;
         raw.guest.agent.lastStatus = {
@@ -1792,15 +1874,15 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ok: true,
             diagnostics: {
                 args: ["ssh", keyPath, healthCommand],
-                stdout: `ready ${keyPath} ${healthCommand} ${created.lab.paths.labDir}`,
-                stderr: `/tmp/noise ${created.lab.paths.artifactsDir}`,
+                stdout: `ready ${keyPath} ${healthCommand} ${createdLab.paths.labDir}`,
+                stderr: `/tmp/noise ${createdLab.paths.artifactsDir}`,
             },
         };
         raw.guest.agent.statusHistory = [
             {
                 id: "tampered-history",
                 state: "ready",
-                diagnostics: { stdout: `${keyPath} ${healthCommand} ${created.lab.paths.workspaceDir}` },
+                diagnostics: { stdout: `${keyPath} ${healthCommand} ${createdLab.paths.workspaceDir}` },
             },
         ];
         raw.guest.agent.lastProvision = {
@@ -1809,14 +1891,14 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ok: true,
             diagnostics: {
                 args: ["ssh", keyPath, provisionCommand],
-                stdout: `installed ${keyPath} ${provisionCommand} ${created.lab.paths.labDir}`,
+                stdout: `installed ${keyPath} ${provisionCommand} ${createdLab.paths.labDir}`,
             },
         };
         raw.guest.agent.provisionHistory = [
             {
                 id: "tampered-provision-history",
                 state: "ready",
-                diagnostics: { stdout: `${keyPath} ${provisionCommand} ${created.lab.paths.workspaceDir}` },
+                diagnostics: { stdout: `${keyPath} ${provisionCommand} ${createdLab.paths.workspaceDir}` },
             },
         ];
         writeFileSync(labFile, JSON.stringify(raw, null, 2));
@@ -1828,28 +1910,30 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             sshPath: "/usr/bin/ssh",
             processExists: () => true,
         });
+        assert.ok("session" in session && session.session);
 
+        assert.ok(listed.labs[0].guest?.agent);
         const listedStatusJson = JSON.stringify(listed.labs[0].guest.agent.lastStatus);
         expect(listedStatusJson).not.toContain(keyPath);
         expect(listedStatusJson).not.toContain(healthCommand);
-        expect(listedStatusJson).not.toContain(created.lab.paths.labDir);
-        expect(listedStatusJson).not.toContain(created.lab.paths.artifactsDir);
-        expect(listedStatusJson).not.toContain(created.lab.paths.workspaceDir);
+        expect(listedStatusJson).not.toContain(createdLab.paths.labDir);
+        expect(listedStatusJson).not.toContain(createdLab.paths.artifactsDir);
+        expect(listedStatusJson).not.toContain(createdLab.paths.workspaceDir);
         expect(listedStatusJson).not.toContain("args");
         const listedProvisionJson = JSON.stringify(listed.labs[0].guest.agent.lastProvision);
         expect(listedProvisionJson).not.toContain(keyPath);
         expect(listedProvisionJson).not.toContain(provisionCommand);
-        expect(listedProvisionJson).not.toContain(created.lab.paths.labDir);
-        expect(listedProvisionJson).not.toContain(created.lab.paths.workspaceDir);
+        expect(listedProvisionJson).not.toContain(createdLab.paths.labDir);
+        expect(listedProvisionJson).not.toContain(createdLab.paths.workspaceDir);
         expect(listedProvisionJson).not.toContain("args");
 
         const sessionJson = JSON.stringify(session);
         expect(sessionJson).not.toContain(keyPath);
         expect(sessionJson).not.toContain(healthCommand);
         expect(sessionJson).not.toContain(provisionCommand);
-        expect(sessionJson).not.toContain(created.lab.paths.labDir);
-        expect(sessionJson).not.toContain(created.lab.paths.artifactsDir);
-        expect(sessionJson).not.toContain(created.lab.paths.workspaceDir);
+        expect(sessionJson).not.toContain(createdLab.paths.labDir);
+        expect(sessionJson).not.toContain(createdLab.paths.artifactsDir);
+        expect(sessionJson).not.toContain(createdLab.paths.workspaceDir);
         expect(sessionJson).not.toContain("args");
         expect(session.session.attach.agent.lastStatus).toEqual(expect.objectContaining({
             id: "tampered",
@@ -1984,6 +2068,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestSshKeyPath: keyPath,
             guestReadinessCommand: "test -f /tmp/ready",
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created).toEqual(expect.objectContaining({
             ok: true,
             lab: expect.objectContaining({
@@ -2032,8 +2118,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.stringify(readiness)).not.toContain("private-key");
         expect(JSON.stringify(readiness)).not.toContain("test -f /tmp/ready");
 
-        mkdirSync(created.lab.paths.workspaceDir, { recursive: true });
-        writeFileSync(join(created.lab.paths.workspaceDir, "preserve-before-ssh.txt"), "keep");
+        mkdirSync(createdLab.paths.workspaceDir, { recursive: true });
+        writeFileSync(join(createdLab.paths.workspaceDir, "preserve-before-ssh.txt"), "keep");
         const missingSshPush = guestPush({ labId: "ssh-guest-vm", sourcePath: workspace, guestPath: "/workspace/app" }, {
             env,
             stateRoot: root,
@@ -2046,8 +2132,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             error: "guest-ssh-transport-unavailable",
             missing: ["ssh", "scp"],
         }));
-        expect(readFileSync(join(created.lab.paths.workspaceDir, "preserve-before-ssh.txt"), "utf8")).toBe("keep");
-        expect(existsSync(join(created.lab.paths.workspaceDir, "README.md"))).toBe(false);
+        expect(readFileSync(join(createdLab.paths.workspaceDir, "preserve-before-ssh.txt"), "utf8")).toBe("keep");
+        expect(existsSync(join(createdLab.paths.workspaceDir, "README.md"))).toBe(false);
 
         const pushed = guestPush({ labId: "ssh-guest-vm", sourcePath: workspace, guestPath: "/workspace/app" }, {
             env,
@@ -2069,7 +2155,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.stringify(pushed)).not.toContain(keyPath);
         expect(JSON.stringify(pushed)).not.toContain("/usr/bin/scp");
 
-        const preflightPullDir = join(created.lab.paths.artifactsDir, "preflight-pull");
+        const preflightPullDir = join(createdLab.paths.artifactsDir, "preflight-pull");
         mkdirSync(preflightPullDir, { recursive: true });
         writeFileSync(join(preflightPullDir, "preserve.txt"), "keep");
         const missingSshPull = guestPull({ labId: "ssh-guest-vm", guestPath: "/artifacts/run", destinationPath: "preflight-pull" }, {
@@ -2136,9 +2222,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestSshUser: "ccc",
             guestSshKeyPath: keyPath,
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
-        createdLabDir = created.lab.paths.labDir;
-        createdArtifactsDir = created.lab.paths.artifactsDir;
+        createdLabDir = createdLab.paths.labDir;
+        createdArtifactsDir = createdLab.paths.artifactsDir;
         const started = startLab({ labId: "ssh-exec-vm" }, {
             env,
             stateRoot: root,
@@ -2263,6 +2351,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestSshUser: "ccc",
             guestSshKeyPath: keyPath,
         }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         expect(startLab({ labId: "ssh-exec-validation-vm" }, {
             env,
@@ -2285,7 +2375,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             error: "invalid-guest-command",
         });
 
-        const tamperedFile = join(created.lab.paths.labDir, "lab.json");
+        const tamperedFile = join(createdLab.paths.labDir, "lab.json");
         const rawTampered = JSON.parse(readFileSync(tamperedFile, "utf8"));
         rawTampered.guest.ssh.keyPath = otherKeyPath;
         writeFileSync(tamperedFile, JSON.stringify(rawTampered, null, 2));
@@ -2376,9 +2466,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             guestSshUser: "ccc",
             guestSshKeyPath: keyPath,
         }, { env, stateRoot: root });
+        const tamperedLab = tampered.lab;
+        assert.ok(tamperedLab);
         expect(tampered.ok).toBe(true);
         const tamperedEnv = { ...env, CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
-        const tamperedFile = join(tampered.lab.paths.labDir, "lab.json");
+        const tamperedFile = join(tamperedLab.paths.labDir, "lab.json");
         const rawTampered = JSON.parse(readFileSync(tamperedFile, "utf8"));
         rawTampered.guest.ssh.keyPath = otherKeyPath;
         writeFileSync(tamperedFile, JSON.stringify(rawTampered, null, 2));
@@ -2470,6 +2562,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             processExists: () => true,
             readinessProbeRunner: () => ({ ready: true }),
         });
+        assert.ok("target" in ready && ready.target);
         expect(ready.target).toEqual(expect.objectContaining({ readiness: "ready" }));
 
         const runtime = runtimeExitFixture(6666);
@@ -2478,8 +2571,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             stateRoot: root,
             killProcess: () => { runtime.exit(); },
         });
+        const stoppedLab = stopped.lab;
+        assert.ok(stoppedLab);
+        assert.ok(stoppedLab.readiness);
         expect(stopped.ok).toBe(true);
-        expect(stopped.lab.readiness.latest).toBeNull();
+        expect(stoppedLab.readiness.latest).toBeNull();
         const targets = listTargets({ labId: "readiness-stop-vm" }, { env, stateRoot: root });
         expect(targets).toEqual(expect.objectContaining({
             targets: [expect.objectContaining({
@@ -2493,6 +2589,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             env,
             stateRoot: root,
         });
+        assert.ok("target" in session && session.target);
         expect(session.target).toEqual(expect.objectContaining({
             runtimeState: "stopped",
             readiness: "stopped",
@@ -2618,8 +2715,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             CCC_LAB_RUNNER_STATUS: "ready",
         };
         const created = createLab({ name: "Snapshot VM" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
-        writeFileSync(created.lab.image.diskImage, "");
+        writeFileSync(createdLab.image.diskImage, "");
 
         const commands: Array<{ command: string; args: string[] }> = [];
         const options = {
@@ -2634,7 +2733,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
 
         const snap = snapshotLab("create", { labId: "snapshot-vm", snapshotName: "Clean Base" }, options);
         expect(snap.ok).toBe(true);
-        expect(snap.lab.snapshots.map((snapshot) => snapshot.name)).toEqual(["clean-base"]);
+        expect(snap.lab.snapshots.map((snapshot: unknown) => { assert.ok(snapshot && typeof snapshot === "object" && "name" in snapshot);return snapshot.name; })).toEqual(["clean-base"]);
 
         const restore = snapshotLab("restore", { labId: "snapshot-vm", snapshotName: "clean-base" }, options);
         expect(restore.ok).toBe(true);
@@ -2659,6 +2758,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         writeFileSync(join(workspace, "src", "app.js"), "console.log('ok');");
         const env = { CCC_PROFILE: "sync" };
         const created = createLab({ name: "Sync VM" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
 
         const synced = syncWorkspace({ labId: "sync-vm", sourcePath: workspace }, {
@@ -2669,14 +2770,14 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         });
 
         expect(synced.ok).toBe(true);
-        expect(readFileSync(join(created.lab.paths.workspaceDir, "README.md"), "utf8")).toBe("hello");
-        expect(readFileSync(join(created.lab.paths.workspaceDir, "src", "app.js"), "utf8")).toBe("console.log('ok');");
+        expect(readFileSync(join(createdLab.paths.workspaceDir, "README.md"), "utf8")).toBe("hello");
+        expect(readFileSync(join(createdLab.paths.workspaceDir, "src", "app.js"), "utf8")).toBe("console.log('ok');");
         expect(synced.result).toEqual(expect.objectContaining({ files: 2, bytes: 23 }));
         expect(synced.lab.fileOperations).toEqual([
             expect.objectContaining({
                 type: "sync_workspace",
                 sourcePath: workspace,
-                destinationPath: created.lab.paths.workspaceDir,
+                destinationPath: createdLab.paths.workspaceDir,
                 files: 2,
                 bytes: 23,
             }),
@@ -2687,9 +2788,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         const root = tempRoot();
         const env = { CCC_PROFILE: "export" };
         const created = createLab({ name: "Export VM" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
-        mkdirSync(join(created.lab.paths.artifactsDir, "screens"), { recursive: true });
-        writeFileSync(join(created.lab.paths.artifactsDir, "screens", "shot.txt"), "pixels");
+        mkdirSync(join(createdLab.paths.artifactsDir, "screens"), { recursive: true });
+        writeFileSync(join(createdLab.paths.artifactsDir, "screens", "shot.txt"), "pixels");
 
         const exported = exportArtifacts({
             labId: "export-vm",
@@ -2698,12 +2801,12 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }, { env, stateRoot: root, now: "2026-06-16T02:00:00.000Z" });
 
         expect(exported.ok).toBe(true);
-        expect(readFileSync(join(created.lab.paths.exportsDir, "run-1", "shot.txt"), "utf8")).toBe("pixels");
+        expect(readFileSync(join(createdLab.paths.exportsDir, "run-1", "shot.txt"), "utf8")).toBe("pixels");
         expect(exported.lab.fileOperations).toEqual([
             expect.objectContaining({
                 type: "export_artifacts",
-                sourcePath: join(created.lab.paths.artifactsDir, "screens"),
-                destinationPath: join(created.lab.paths.exportsDir, "run-1"),
+                sourcePath: join(createdLab.paths.artifactsDir, "screens"),
+                destinationPath: join(createdLab.paths.exportsDir, "run-1"),
                 files: 1,
                 bytes: 6,
             }),
@@ -2723,6 +2826,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             CCC_LAB_RUNNER_STATUS: "ready",
         };
         const created = createLab({ name: "Guest Transport VM" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         expect(created.ok).toBe(true);
         const started = startLab({ labId: "guest-transport-vm" }, {
             env,
@@ -2749,8 +2854,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
 
-        mkdirSync(created.lab.paths.workspaceDir, { recursive: true });
-        writeFileSync(join(created.lab.paths.workspaceDir, "preserve.txt"), "keep");
+        mkdirSync(createdLab.paths.workspaceDir, { recursive: true });
+        writeFileSync(join(createdLab.paths.workspaceDir, "preserve.txt"), "keep");
         const unavailable = guestPush({ labId: "guest-transport-vm", sourcePath: workspace, guestPath: "/workspace/app" }, {
             env,
             stateRoot: root,
@@ -2760,10 +2865,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ok: false,
             error: "guest-transport-unavailable",
         }));
-        expect(readFileSync(join(created.lab.paths.workspaceDir, "preserve.txt"), "utf8")).toBe("keep");
-        expect(existsSync(join(created.lab.paths.workspaceDir, "README.md"))).toBe(false);
+        expect(readFileSync(join(createdLab.paths.workspaceDir, "preserve.txt"), "utf8")).toBe("keep");
+        expect(existsSync(join(createdLab.paths.workspaceDir, "README.md"))).toBe(false);
 
-        const existingPullDir = join(created.lab.paths.artifactsDir, "existing-pull");
+        const existingPullDir = join(createdLab.paths.artifactsDir, "existing-pull");
         mkdirSync(existingPullDir, { recursive: true });
         writeFileSync(join(existingPullDir, "preserve.txt"), "keep");
         const unavailablePull = guestPull({ labId: "guest-transport-vm", guestPath: "/artifacts/run-1", destinationPath: "existing-pull" }, {
@@ -2792,7 +2897,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             result: expect.objectContaining({ ok: true, copied: true, message: "<provider-internal>" }),
             transport: expect.objectContaining({ guestPath: "/workspace/app", files: 2, bytes: 26 }),
         }));
-        expect(readFileSync(join(created.lab.paths.workspaceDir, "README.md"), "utf8")).toBe("hello");
+        expect(readFileSync(join(createdLab.paths.workspaceDir, "README.md"), "utf8")).toBe("hello");
         expect(JSON.stringify(pushed)).not.toContain("secret");
         expect(JSON.stringify(pushed)).not.toContain("token");
         expect(JSON.stringify(pushed)).not.toContain("ssh");
@@ -2800,7 +2905,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(calls).toEqual([
             expect.objectContaining({
                 action: "push",
-                stagedPath: created.lab.paths.workspaceDir,
+                stagedPath: createdLab.paths.workspaceDir,
                 guestPath: "/workspace/app",
                 files: 2,
                 bytes: 26,
@@ -2830,13 +2935,13 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             result: { ok: true, pulled: true },
             transport: expect.objectContaining({ guestPath: "/artifacts/run-1", files: 1, bytes: 2 }),
         }));
-        expect(readFileSync(join(created.lab.paths.artifactsDir, "guest-run", "logs", "out.txt"), "utf8")).toBe("ok");
+        expect(readFileSync(join(createdLab.paths.artifactsDir, "guest-run", "logs", "out.txt"), "utf8")).toBe("ok");
         expect(JSON.stringify(pulled)).not.toContain("hidden");
         expect(pulled.lab.fileOperations).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 type: "guest_pull",
                 guestPath: "/artifacts/run-1",
-                destinationPath: join(created.lab.paths.artifactsDir, "guest-run"),
+                destinationPath: join(createdLab.paths.artifactsDir, "guest-run"),
                 files: 1,
                 bytes: 2,
             }),
@@ -2867,6 +2972,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             kvmAvailable: true,
             commandRunner: () => ({ ok: true, pid: 6161 }),
         });
+        const startedLab = started.lab;
+        assert.ok(startedLab);
         expect(started.ok).toBe(true);
         expect(guestPush({ labId: "guest-policy-vm", sourcePath: workspace, guestPath: "/etc/passwd" }, {
             env,
@@ -2907,7 +3014,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             cleanedStagedPath: true,
             result: { ok: false, message: "<provider-internal>" },
         }));
-        expect(existsSync(started.lab.paths.workspaceDir)).toBe(false);
+        expect(existsSync(startedLab.paths.workspaceDir)).toBe(false);
         expect(failedPush.lab.fileOperations).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 type: "guest_push_failed",
@@ -2916,7 +3023,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         ]));
 
-        const partialDestination = join(started.lab.paths.artifactsDir, "partial");
+        const partialDestination = join(startedLab.paths.artifactsDir, "partial");
         const failedPull = guestPull({ labId: "guest-policy-vm", guestPath: "/artifacts/run", destinationPath: "partial" }, {
             env,
             stateRoot: root,
@@ -2944,8 +3051,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
 
         const outside = mkdtempSync(join(tmpdir(), "ccc-lab-guest-pull-outside-"));
         roots.push(outside);
-        mkdirSync(join(started.lab.paths.artifactsDir), { recursive: true });
-        symlinkSync(outside, join(started.lab.paths.artifactsDir, "link"), process.platform === "win32" ? "junction" : "dir");
+        mkdirSync(join(startedLab.paths.artifactsDir), { recursive: true });
+        symlinkSync(outside, join(startedLab.paths.artifactsDir, "link"), process.platform === "win32" ? "junction" : "dir");
         expect(guestPull({ labId: "guest-policy-vm", guestPath: "/artifacts/run", destinationPath: "link/out" }, {
             env,
             stateRoot: root,
@@ -2957,11 +3064,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         })).toEqual(expect.objectContaining({
             ok: false,
             error: "guest-pull-destination-symlink-ancestor-rejected",
-            ancestorPath: join(started.lab.paths.artifactsDir, "link"),
+            ancestorPath: join(startedLab.paths.artifactsDir, "link"),
         }));
         expect(existsSync(join(outside, "out", "out.txt"))).toBe(false);
 
-        const secretDestination = join(started.lab.paths.artifactsDir, "secret-pull");
+        const secretDestination = join(startedLab.paths.artifactsDir, "secret-pull");
         const secret = guestPull({ labId: "guest-policy-vm", guestPath: "/artifacts/run", destinationPath: "secret-pull" }, {
             env,
             stateRoot: root,
@@ -2989,7 +3096,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }));
         expect(existsSync(secretDestination)).toBe(false);
 
-        const secretContentDestination = join(started.lab.paths.artifactsDir, "secret-content-pull");
+        const secretContentDestination = join(startedLab.paths.artifactsDir, "secret-content-pull");
         const secretContent = guestPull({ labId: "guest-policy-vm", guestPath: "/artifacts/run", destinationPath: "secret-content-pull" }, {
             env,
             stateRoot: root,
@@ -3222,9 +3329,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         const root = tempRoot();
         const env = { CCC_PROFILE: "artifact-secret-content" };
         const created = createLab({ name: "Artifact Secret Content VM" }, { env, stateRoot: root });
+        const createdLab = created.lab;
+        assert.ok(createdLab);
         const secretValue = "AKIA1234567890ABCDEF";
-        mkdirSync(created.lab.paths.artifactsDir, { recursive: true });
-        writeFileSync(join(created.lab.paths.artifactsDir, "result.txt"), `aws=${secretValue}\n`);
+        mkdirSync(createdLab.paths.artifactsDir, { recursive: true });
+        writeFileSync(join(createdLab.paths.artifactsDir, "result.txt"), `aws=${secretValue}\n`);
 
         const exported = exportArtifacts({ labId: "artifact-secret-content-vm" }, { env, stateRoot: root });
 
