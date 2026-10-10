@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **121/218 (55.5%)**.
-Integrated source: **121/218 (55.5%)**; historical baseline: **31**. Candidates: **0**; partial: **9**; TODO: **88**.
+Implemented including unmerged candidates: **127/218 (58.3%)**.
+Integrated source: **127/218 (58.3%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **87**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -27,7 +27,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | codex\-launch | 1 | 0 | `ea96263f` | code/security/qa actual PASS; hook receipts absent | accepted @ 10c86183 |
 | codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | accepted @ 10c86183 |
 | codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
-| broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
+| broker\-observations | 6 | 1 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
 | sandbox\-stop | 0 | 0 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked Historical direct\-stop contribution; whole operation now counted once in sandbox\-request\-admin\-integration\. | accepted @ 10c86183 |
 | codex\-state\-ownership | 1 | 0 | `912ec696` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
 | lab\-state\-ownership | 1 | 0 | `75bd30de` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
@@ -47,6 +47,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | sandbox\-request\-admin\-integration | 6 | 0 | `d0bb62a9` | Actual independent source/composed and affected Code/Security/Docs PASS; strict consumed JS/TS contracts including five negative controls, current genuine build, 21 required files with 867 passing current cases using qualified unchanged results, lint, seven actual package cases, npm/Unix startup smoke and compiled CLI PASS\. Verified local source delivery and all97preserved user changes\. Empty automatic receipt stream parked after one verification; no formal close or native\-host certification\. | accepted @ d0bb62a9 |
 | broker\-owner\-leases | 6 | 0 | `cbea3003` | Actual independent Code/Security/Docs and affected correction reviews PASS\. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real\-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded\. Actual local source delivery at cbea preserves all97 user changes\. Formal hook records and native\-host certification remain unverified\. | accepted @ cbea3003 |
 | broker\-appium\-workflows | 7 | 0 | `58b7d1e9` | Actual independent source/composed/affected Code, Security and Docs PASS\. Current consumed strict contracts and seven negative controls, genuine complete build, 402 fresh regression cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS\. Qualified unchanged graph/architecture evidence carries; removed verifier metatests excluded\. Source locally delivered at58b7d1e9 with all97 tracked user paths and diff bytes preserved\. Formal hook attestation and native Appium/device certification remain unverified\. | accepted @ 58b7d1e9 |
+| device\-observation | 3 | 0 | `b669bf6c` | Actual independent source/composed/affected Code, Security and Docs PASS\. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed\. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording\-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS\. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS strict diagnostics are not accepted; formal hook attestation and native\-host certification remain unverified\. | accepted @ b669bf6c |
+| broker\-recording | 3 | 0 | `b669bf6c` | Actual independent source/composed/affected Code, Security and Docs PASS\. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed\. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording\-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS\. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS strict diagnostics are not accepted; formal hook attestation and native\-host certification remain unverified\. | accepted @ b669bf6c |
 
 ## 0.2 Active next plans
 
@@ -66,7 +68,11 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | verifier\-trim |  | Seven obsolete custom VM loaders and synthetic graph metatests removed; meaningful ordinary CLI/connection\-deadline checks and actual entire graph retained\. Current combined QA and actual local delivery at cbea3003 PASS\. No operation credit; formal hook attestation remains unverified\. |
 | broker\-appium\-workflows | OP\-appium\-server\-start, OP\-appium\-server\-stop, OP\-appium\-session\-ensure, OP\-appium\-session\-delete, OP\-appium\-request, OP\-appium\-record, OP\-appium\-clear | Seven whole operations accepted and locally delivered at58b7d1e9 after actual independent review and current joint QA PASS\. Both native broker and public MCP callers verified portably; formal hook attestation and real Appium/device certification remain unverified\. |
 | verifier\-trim\-final |  | Eight obsolete custom loader tests removed; nine ordinary behavior cases added in three existing test files\. Independent source/composed/affected Code PASS, current strict/ordinary joint QA and local delivery at58b7d1e9 PASS\. Test\-only, zero operation credit; formal hook attestation remains unverified\. |
-| device\-observation | OP\-backend\-discovery, OP\-device\-inventory, OP\-device\-owned\-list | Full independent planning GO and canonical exact26\-path source admission at accepted0ac1d765\. Two disjoint source writers and independent ordinary\-test author active; later accepted Appium parent reconciles before joint review/QA\. Three whole operations remain incomplete; zero new credit\. |
+| device\-observation | OP\-backend\-discovery, OP\-device\-inventory, OP\-device\-owned\-list | Three whole operations accepted and locally delivered at b669bf6c after actual independent review and current joint QA PASS\. All eight native discovery bindings and public/broker callers checked portably; formal hook attestation and native\-host certification remain unverified\. |
+| broker\-recording | OP\-recording\-start, OP\-recording\-finalize, OP\-recording\-status | Three whole operations accepted in current joint b669bf6c delivery after actual independent review and shared QA PASS\. Original recording worktree retained until source task disposition; no native\-host or formal close claim\. |
+| android\-control\-transfer | OP\-device\-click, OP\-device\-long\-press, OP\-device\-swipe, OP\-device\-drag, OP\-device\-type, OP\-device\-key, OP\-device\-back, OP\-device\-home, OP\-device\-forward, OP\-device\-recents, OP\-device\-power\-key, OP\-device\-lock, OP\-device\-unlock, OP\-device\-upload, OP\-device\-download | Full independent planning GO and exact ten\-path canonical admission\. Android emulator/physical cohort planned; source release requires normal reconciliation to this actually accepted parent\. Zero whole operation credit until all required other\-provider/public/broker bindings close\. |
+| ios\-control\-transfer | OP\-device\-click, OP\-device\-long\-press, OP\-device\-swipe, OP\-device\-drag, OP\-device\-type, OP\-device\-key, OP\-device\-home, OP\-device\-lock, OP\-device\-unlock, OP\-device\-orientation, OP\-device\-upload, OP\-device\-download | Full independent planning GO and exact ten\-path canonical admission\. Simulator/physical control and simulator transfer planned; physical iOS transfer remains unsupported\. Source release requires accepted\-parent reconciliation\. Zero whole operation credit until required global bindings close\. |
+| hyper\-v\-snapshot\-workflows | OP\-hyperv\-snapshot\-list, OP\-hyperv\-snapshot\-create, OP\-hyperv\-snapshot\-restore, OP\-hyperv\-snapshot\-delete, OP\-hyperv\-snapshot\-repair | Full independent planning GO and exact eight\-path canonical admission\. Both Windows/Linux snapshot flows and all repair callers planned; exclusive broker author begins after accepted\-parent reconciliation\. Five whole operations remain pending; no lifecycle/reboot/native\-host credit\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -83,14 +89,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-broker-owner-register` — Register canonical host project/profile broker owner mapping. **integrated**; broker\-owner\-leases @ cbea3003.
 - [x] `OP-broker-owner-resolve` — Resolve registered canonical owner and ensure broker auth material. **integrated**; broker\-owner\-leases @ cbea3003.
 
-## 4. M03 — Routes and transport (3/6 implemented)
+## 4. M03 — Routes and transport (6/6 implemented)
 
 - [x] `OP-device-dispatch` — Select and dispatch supported device operation. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
-- [ ] `OP-device-inventory` — Device inventory. **partial**; broker\-observations @ 3f020650.
-- [ ] `OP-backend-discovery` — Backend discovery. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-device-inventory` — Device inventory. **integrated**; device\-observation @ b669bf6c.
+- [x] `OP-backend-discovery` — Backend discovery. **integrated**; device\-observation @ b669bf6c.
 - [x] `OP-device-destructive-admission` — Authorize existing destructive Device Lab action. **integrated**; destructive\-admission @ b94cb28d.
 - [x] `OP-device-flow` — Run bounded ordered Device Lab action flow. **integrated**; device\-flow @ d5b9bfe2.
-- [ ] `OP-device-owned-list` — List current owner device definitions. **partial**; broker\-observations @ 3f020650.
+- [x] `OP-device-owned-list` — List current owner device definitions. **integrated**; device\-observation @ b669bf6c.
 
 ## 5. M04 — Sandbox lifecycle (4/4 implemented)
 
@@ -134,7 +140,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 
-## 8. M07 — Physical/recording/Appium (19/26 implemented)
+## 8. M07 — Physical/recording/Appium (22/26 implemented)
 
 - [x] `OP-lease-claim` — Lease claim. **integrated**; broker\-owner\-leases @ cbea3003.
 - [x] `OP-lease-heartbeat` — Lease heartbeat. **integrated**; broker\-owner\-leases @ cbea3003.
@@ -143,9 +149,9 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-physical-attach` — Physical attach. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-physical-detach` — Physical detach. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-apple-trust-diagnostic` — Apple trust diagnostic. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-recording-start` — Recording start. **partial**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-recording-finalize` — Recording finalize. **partial**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-recording-status` — Recording status. **partial**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-recording-start` — Recording start. **integrated**; broker\-recording @ b669bf6c.
+- [x] `OP-recording-finalize` — Recording finalize. **integrated**; broker\-recording @ b669bf6c.
+- [x] `OP-recording-status` — Recording status. **integrated**; broker\-recording @ b669bf6c.
 - [x] `OP-appium-server-start` — Appium server start. **integrated**; broker\-appium\-workflows @ 58b7d1e9.
 - [x] `OP-appium-server-stop` — Appium server stop. **integrated**; broker\-appium\-workflows @ 58b7d1e9.
 - [x] `OP-appium-session-ensure` — Appium session ensure. **integrated**; broker\-appium\-workflows @ 58b7d1e9.

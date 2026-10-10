@@ -104,9 +104,7 @@
         "OP-broker-service-status"
       ],
       "partialOperationIds": [
-        "OP-device-inventory",
-        "OP-device-session-status",
-        "OP-device-owned-list"
+        "OP-device-session-status"
       ],
       "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
       "integration": "accepted",
@@ -453,6 +451,40 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "58b7d1e9e782170353842cb3ed728232f0978252"
+    },
+    {
+      "id": "device-observation",
+      "branch": "refactor/architecture-device-observation-20261011",
+      "commit": "b669bf6ce416f0cdff04589a663adfcc09728a2c",
+      "taskId": "TASK__architecture-device-observation",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-backend-discovery",
+        "OP-device-inventory",
+        "OP-device-owned-list"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Docs PASS. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes. Unrelated legacy native-JS strict diagnostics are not accepted; formal hook attestation and native-host certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "b669bf6ce416f0cdff04589a663adfcc09728a2c"
+    },
+    {
+      "id": "broker-recording",
+      "branch": "refactor/architecture-broker-recording-20261011",
+      "commit": "b669bf6ce416f0cdff04589a663adfcc09728a2c",
+      "taskId": "TASK__architecture-broker-recording",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-recording-start",
+        "OP-recording-finalize",
+        "OP-recording-status"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Docs PASS. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes. Unrelated legacy native-JS strict diagnostics are not accepted; formal hook attestation and native-host certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "b669bf6ce416f0cdff04589a663adfcc09728a2c"
     }
   ],
   "planningLanes": [
@@ -586,7 +618,70 @@
         "OP-device-inventory",
         "OP-device-owned-list"
       ],
-      "status": "Full independent planning GO and canonical exact26-path source admission at accepted0ac1d765. Two disjoint source writers and independent ordinary-test author active; later accepted Appium parent reconciles before joint review/QA. Three whole operations remain incomplete; zero new credit."
+      "status": "Three whole operations accepted and locally delivered at b669bf6c after actual independent review and current joint QA PASS. All eight native discovery bindings and public/broker callers checked portably; formal hook attestation and native-host certification remain unverified."
+    },
+    {
+      "id": "broker-recording",
+      "taskId": "TASK__architecture-broker-recording",
+      "coveredOperationIds": [
+        "OP-recording-start",
+        "OP-recording-finalize",
+        "OP-recording-status"
+      ],
+      "status": "Three whole operations accepted in current joint b669bf6c delivery after actual independent review and shared QA PASS. Original recording worktree retained until source task disposition; no native-host or formal close claim."
+    },
+    {
+      "id": "android-control-transfer",
+      "taskId": "TASK__architecture-android-control-transfer",
+      "coveredOperationIds": [
+        "OP-device-click",
+        "OP-device-long-press",
+        "OP-device-swipe",
+        "OP-device-drag",
+        "OP-device-type",
+        "OP-device-key",
+        "OP-device-back",
+        "OP-device-home",
+        "OP-device-forward",
+        "OP-device-recents",
+        "OP-device-power-key",
+        "OP-device-lock",
+        "OP-device-unlock",
+        "OP-device-upload",
+        "OP-device-download"
+      ],
+      "status": "Full independent planning GO and exact ten-path canonical admission. Android emulator/physical cohort planned; source release requires normal reconciliation to this actually accepted parent. Zero whole operation credit until all required other-provider/public/broker bindings close."
+    },
+    {
+      "id": "ios-control-transfer",
+      "taskId": "TASK__architecture-ios-control-transfer",
+      "coveredOperationIds": [
+        "OP-device-click",
+        "OP-device-long-press",
+        "OP-device-swipe",
+        "OP-device-drag",
+        "OP-device-type",
+        "OP-device-key",
+        "OP-device-home",
+        "OP-device-lock",
+        "OP-device-unlock",
+        "OP-device-orientation",
+        "OP-device-upload",
+        "OP-device-download"
+      ],
+      "status": "Full independent planning GO and exact ten-path canonical admission. Simulator/physical control and simulator transfer planned; physical iOS transfer remains unsupported. Source release requires accepted-parent reconciliation. Zero whole operation credit until required global bindings close."
+    },
+    {
+      "id": "hyper-v-snapshot-workflows",
+      "taskId": "TASK__architecture-hyper-v-snapshot-workflows",
+      "coveredOperationIds": [
+        "OP-hyperv-snapshot-list",
+        "OP-hyperv-snapshot-create",
+        "OP-hyperv-snapshot-restore",
+        "OP-hyperv-snapshot-delete",
+        "OP-hyperv-snapshot-repair"
+      ],
+      "status": "Full independent planning GO and exact eight-path canonical admission. Both Windows/Linux snapshot flows and all repair callers planned; exclusive broker author begins after accepted-parent reconciliation. Five whole operations remain pending; no lifecycle/reboot/native-host credit."
     }
   ]
 }
