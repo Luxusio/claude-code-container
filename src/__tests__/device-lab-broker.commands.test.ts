@@ -10,6 +10,7 @@ import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { isolatedDeviceLabPackage } from "./helpers/isolated-device-lab-package.js";
 import { fakeAndroidProviderScript } from "./helpers/fake-android-provider-script.js";
+import { createFakeIosMcpContext, cleanupFakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
 import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { spawn } from "child_process";
 import { createHash } from "crypto";
@@ -5748,6 +5749,102 @@ describe("device-lab host broker lifecycle commands", () => {
             await close(server);
             cleanupOwner(ownerId);
             rmSync(fakeRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("uploads and downloads simulator files through the authenticated real iOS backend child", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
+        // Allocate the existing SDK assets without starting MCP or an Appium server.
+        const context = await createFakeIosMcpContext({ connect: async () => undefined });
+        const restoreHome = isolateDeviceLabTestEnvironment(context.homeDir);
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "FAKE_IOS_LOG", "FAKE_IOS_CONTAINER_ROOT", "TMPDIR", "TMP", "TEMP"] as const;
+        const originalEnvironment = environmentKeys.map(key => process.env[key]);
+        let restoreRouting: (() => void) | undefined;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            const project = join(context.homeDir, "project");
+            const containerRoot = join(context.homeDir, "ios-app-container");
+            const stageParent = join(context.homeDir, "transfer-stages");
+            const stageLog = join(context.homeDir, "transfer-stages.jsonl");
+            mkdirSync(project);
+            mkdirSync(stageParent);
+            writeFileSync(stageLog, "");
+            const preload = join(context.homeDir, "broker-ios-node-routing.cjs");
+            // The SDK leaf observes already allocated stages; native file operations stay intact.
+            writeFileSync(preload, nodeProviderFixturePreloadSource(context.binDir) + `
+if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
+    && process.argv.length === 7 && process.argv[2] === 'simctl' && process.argv[3] === 'get_app_container'
+    && process.argv[4] === 'CREATED-IOS-UDID' && process.argv[5] === 'com.example.Test' && process.argv[6] === 'data') {
+    const stages = fs.readdirSync(${JSON.stringify(stageParent)})
+        .filter(name => /^ccc-device-(?:upload|download)-/.test(name))
+        .map(name => path.join(${JSON.stringify(stageParent)}, name));
+    fs.appendFileSync(${JSON.stringify(stageLog)}, JSON.stringify(stages) + '\\n');
+}
+`);
+            process.env.PATH = `${context.binDir}${delimiter}${originalEnvironment[0] || ""}`;
+            process.env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+            process.env.FAKE_IOS_LOG = context.logPath;
+            process.env.FAKE_IOS_CONTAINER_ROOT = containerRoot;
+            process.env.TMPDIR = process.env.TMP = process.env.TEMP = stageParent;
+            restoreRouting = installNodeProviderFixtureRouting(context.binDir);
+            const ownerId = deviceLabOwnerId(project);
+            const deviceId = "ios-broker-transfer";
+            const simulatorName = `ccc-${ownerId}-broker`;
+            writeBrokerDevices(ownerId, "ios", [{ id: deviceId, backend: "ios-simulator", status: "running", udid: "CREATED-IOS-UDID", simulatorName }]);
+            writeFileSync(join(context.homeDir, "fake-ios-created-name"), simulatorName);
+            writeFileSync(join(context.homeDir, "fake-ios-created-booted"), "");
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId);
+            const headers = ownerRpcHeaders(ownerId);
+            const uploadPath = join(project, "upload.txt");
+            const downloadPath = join(project, "download.txt");
+            writeFileSync(uploadPath, "broker simulator transfer bytes\n");
+            writeFileSync(downloadPath, "previous destination");
+            for (const [tool, localPath, resultKey] of [
+                ["device_upload", uploadPath, "uploaded"],
+                ["device_download", downloadPath, "downloaded"],
+            ] as const) {
+                const response = await fetch(endpoint, {
+                    method: "POST", headers,
+                    body: JSON.stringify({ method: "broker.device.tool.invoke", params: {
+                        tool, backend: "ios-simulator", deviceId, localPath,
+                        remotePath: "Documents/broker.txt", bundleId: "com.example.Test",
+                    } }),
+                });
+                expect(response.status).toBe(200);
+                const body = await response.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "ios-simulator", provider: "device-lab-backend-child" } });
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject({
+                    [resultKey]: { localPath, remotePath: join("Documents", "broker.txt"), bundleId: "com.example.Test", containerType: "data" },
+                    containerRoot, provider: "simctl-app-container",
+                });
+                expect(readFileSync(join(containerRoot, "Documents", "broker.txt"), "utf8")).toBe("broker simulator transfer bytes\n");
+                if (resultKey === "downloaded") expect(readFileSync(downloadPath, "utf8")).toBe("broker simulator transfer bytes\n");
+                const stages = [...new Set(readFileSync(stageLog, "utf8").trim().split("\n")
+                    .flatMap(line => JSON.parse(line) as string[]))];
+                expect(stages.some(stage => stage.startsWith(join(stageParent, resultKey === "uploaded" ? "ccc-device-upload-" : "ccc-device-download-")))).toBe(true);
+                for (const stage of stages) {
+                    expect(dirname(stage)).toBe(stageParent);
+                    expect(existsSync(stage)).toBe(false);
+                }
+                expect(readdirSync(stageParent)).toEqual([]);
+            }
+            const sdkLog = readFileSync(context.logPath, "utf8");
+            expect(sdkLog).toContain("xcrun simctl list devices -j\n");
+            expect(sdkLog).toContain("xcrun simctl get_app_container CREATED-IOS-UDID com.example.Test data\n");
+        } finally {
+            try {
+                // Completed RPCs settle their backend children before the server and fixture close.
+                if (server) await close(server);
+                await cleanupFakeIosMcpContext(context);
+            } finally {
+                restoreRouting?.();
+                environmentKeys.forEach((key, index) => {
+                    if (originalEnvironment[index] === undefined) delete process.env[key];
+                    else process.env[key] = originalEnvironment[index];
+                });
+                restoreHome();
+            }
         }
     });
 
