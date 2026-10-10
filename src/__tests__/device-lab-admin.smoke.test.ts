@@ -7,6 +7,22 @@ import {
     formatDevicesSmoke,
 } from "../device-lab-admin.js";
 import { createDeviceLabAdminTestFixture } from "./helpers/device-lab-admin-fixture.js";
+import { createDeviceAdminDiagnostics } from "../application/device-admin-diagnostics.js";
+import type { DeviceAdminDiagnosticsInventory, DeviceAdminDiagnosticsPorts } from "../ports/device-admin-diagnostics.js";
+
+function diagnosticsCapabilityContracts(
+    ports: DeviceAdminDiagnosticsPorts,
+    inventory: DeviceAdminDiagnosticsInventory<DeviceAdminDiagnosticsPorts["backends"][number]>,
+): void {
+    createDeviceAdminDiagnostics(ports, inventory);
+    const { readPhysicalLease: _lease, ...withoutLeaseRead } = ports;
+    // @ts-expect-error Physical bench ownership cannot be diagnosed without lease evidence.
+    createDeviceAdminDiagnostics(withoutLeaseRead, inventory);
+    // @ts-expect-error Synchronous diagnostics must receive a settled command result.
+    const asynchronousCommand: DeviceAdminDiagnosticsPorts["runCommand"] = async () => null;
+    void [_lease, asynchronousCommand];
+}
+void diagnosticsCapabilityContracts;
 
 vi.mock("child_process", async (importOriginal) => ({ ...await importOriginal<typeof import("child_process")>() }));
 
@@ -269,15 +285,26 @@ describe("device-lab admin smoke diagnostics", () => {
         expect(log).toHaveBeenCalledWith(expect.stringContaining("android-emulator: PASS - real provider adb/emulator readiness responded; no emulator started"));
     });
 
-    it("rejects invalid smoke flags without running host tools", () => {
+    it.each([
+        ["--timeout-ms", "0"],
+        ["--timeout-ms", "600001"],
+        ["--timeout-ms", "1.5"],
+        ["--timeout-ms", "Infinity"],
+        ["--timeout-ms"],
+        ["--timeout-ms=NaN"],
+        ["--unknown"],
+    ])("rejects invalid smoke flags without running host tools: %j", (...args) => {
         const cwd = "/project/admin-smoke-invalid-flag-test";
         fixture.setupFixture(cwd);
         const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        const spawn = vi.spyOn(childProcess, "spawnSync");
+        spawn.mockClear();
 
-        const exitCode = devicesCli(["smoke", "--timeout-ms", "0"], cwd);
+        const exitCode = devicesCli(["smoke", ...args], cwd);
 
         expect(exitCode).toBe(1);
         expect(error).toHaveBeenCalledWith("Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]");
+        expect(spawn).not.toHaveBeenCalled();
     });
 
     it("reports smoke PASS and FAIL from fake non-destructive host commands", () => {
@@ -320,6 +347,32 @@ describe("device-lab admin smoke diagnostics", () => {
         expect(smoke).toContain("android-emulator: FAIL -");
         expect(smoke).toContain(`${join(binDir, "adb.mjs")} version -> unknown`);
         expect(smoke).toMatch(/ETIMEDOUT|timed out|Timeout/i);
+    });
+
+    it.each([
+        ["android-device", "CCC_REAL_ANDROID_DEVICE_SERIAL", "R5CREAL123"],
+        ["ios-device", "CCC_REAL_IOS_DEVICE_UDID", "REAL-IOS-UDID"],
+    ])("fails unavailable inventory for an explicit %s target without changing its definition", (backend, targetVariable, target) => {
+        const cwd = "/project/admin-smoke-explicit-inventory-failure";
+        const files = fixture.setupFixture(cwd);
+        const definition = backend === "android-device" ? files.androidDeviceFile : files.iosDeviceFile;
+        const before = readFileSync(definition, "utf8");
+        const binDir = join(fixture.homeDir, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        fixture.writeNodeTool(binDir, "adb", "if (args[0] === 'devices') { console.error('inventory unavailable'); process.exit(70); } console.log('ok');");
+        fixture.writeNodeTool(binDir, "xcrun", "if (args[0] === 'xctrace') { console.error('inventory unavailable'); process.exit(71); } console.log('ok');");
+        const previous = process.env[targetVariable];
+        try {
+            process.env[targetVariable] = target;
+            const smoke = formatDevicesSmoke(cwd, 5000, undefined, { mode: "real-provider" });
+            expect(smoke).toContain(`${backend}: FAIL -`);
+            expect(smoke).not.toContain(`${backend}: SKIP - physical-device inventory unavailable`);
+            expect(readFileSync(definition, "utf8")).toBe(before);
+        } finally {
+            if (previous === undefined) delete process.env[targetVariable];
+            else process.env[targetVariable] = previous;
+        }
     });
 
     it("treats unavailable optional physical-device inventory as skipped without explicit device targets", () => {

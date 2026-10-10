@@ -1,0 +1,26 @@
+import type { CommandResult, HyperVReadiness, LinuxImageCache, ProviderCommand } from "../domain/device-admin-diagnostics.js";
+import type { SetupObservation, HostNetworkResult } from "../domain/device-admin-setup.js";
+export type EvaluationReceipt = { sourceTrustId: string };
+export type DeviceAdminSetupPorts = {
+    platform(): string;
+    homeDirectory(): string;
+    now(): number;
+    joinPath(...parts: string[]): string;
+    resolvePath(path: string): string;
+    parentDirectory(path: string): string;
+    commandPath(tool: string): string | null;
+    canonicalPowerShell(systemRoot?: string): string | null;
+    assertPlainDirectory(path: string, label: string): undefined;
+    createDirectory(path: string): undefined;
+    runCommand(command: string, args: string[], timeoutMs: number, input?: string): CommandResult | null;
+    readinessCommand(executable: string): ProviderCommand;
+    setupCommand(executable: string): ProviderCommand;
+    parseReadiness(stdout: string): HyperVReadiness | null;
+    parseSetupObservation(stdout: string): SetupObservation | null;
+    inspectLinuxImageCache(privateRoot: string, ownerId: string): LinuxImageCache;
+    withMutationLock<T>(path: string, operation: () => Promise<T>, options: { waitMs: number; staleMs: number }): Promise<T>;
+    ensureHostNetwork(deadlineAt: number): Promise<HostNetworkResult>;
+    readEvaluationReceipt(setupRoot: string): EvaluationReceipt | null;
+    acceptEvaluationLicense(setupRoot: string): EvaluationReceipt;
+    evaluationLicenseUrl: string;
+};

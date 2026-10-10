@@ -13,6 +13,21 @@ import {
     readHyperVWindowsEvaluationReceipt,
 } from "@ccc/device-lab/device-lab/hyper-v-images.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
+import { createDeviceAdminSetup } from "../application/device-admin-setup.js";
+import type { DeviceAdminSetupPorts } from "../ports/device-admin-setup.js";
+
+function setupCapabilityContracts(ports: DeviceAdminSetupPorts): void {
+    createDeviceAdminSetup(ports);
+    const { withMutationLock: _lock, ...withoutLock } = ports;
+    // @ts-expect-error Confirmed setup must hold the native host mutation lock.
+    createDeviceAdminSetup(withoutLock);
+    // @ts-expect-error Acceptance must be published before the success response is formatted.
+    const asynchronousAcceptance: DeviceAdminSetupPorts["acceptEvaluationLicense"] = async () => ({ sourceTrustId: "not-published" });
+    // @ts-expect-error Directory admission must finish before entering the native lock.
+    const asynchronousDirectory: DeviceAdminSetupPorts["createDirectory"] = async () => undefined;
+    void [_lock, asynchronousAcceptance, asynchronousDirectory];
+}
+void setupCapabilityContracts;
 
 describe("Hyper-V host setup CLI", () => {
     const roots: string[] = [];
@@ -42,6 +57,34 @@ describe("Hyper-V host setup CLI", () => {
         expect(spawnableWindowsExecutablePath("\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"))
             .toBeNull();
         expect(spawnableWindowsExecutablePath("\\\\?\\UNC\\server\\share\\powershell.exe")).toBeNull();
+    });
+
+    it("advises a manual reboot in diagnostic mode without enabling features or recording acceptance", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-reboot-diagnostic-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const runner = vi.fn((_command: string, _args: string[], _timeoutMs: number, _input?: string) => ({
+            command: "powershell.exe", status: 0, stderr: "",
+            stdout: JSON.stringify({
+                ok: true, available: false, moduleAvailable: true, hypervisorPresent: true,
+                vmmsRunning: true, rebootPending: true, totalMemoryMb: 32768,
+                freeMemoryMb: 16384, logicalProcessors: 16, missing: ["reboot-pending"],
+            }),
+        }));
+        const ensure = vi.fn(ensureHostNetwork);
+
+        const result = await setupHyperVHost(false, {
+            platform: "win32", powershell: "powershell.exe", stateRoot: root,
+            commandRunner: runner, ensureHostNetwork: ensure, acceptWindowsEvaluationLicense: true,
+        });
+
+        expect(result.ok).toBe(true);
+        expect(result.text).toContain("rebootPending: true");
+        expect(result.text).toContain("action: reboot Windows manually, then rerun this diagnostic");
+        expect(result.text).not.toContain("mode: confirmed");
+        expect(ensure).not.toHaveBeenCalled();
+        expect(existsSync(join(root, "hyper-v-windows-evaluation-license.json"))).toBe(false);
+        const script = Buffer.from(runner.mock.calls[0][1].at(-1) || "", "base64").toString("utf16le");
+        expect(script).not.toMatch(/Enable-WindowsOptionalFeature|Restart-Computer|Start-Process/);
     });
 
     it("runs diagnostics without enabling Windows features when confirmation is absent", async () => {
@@ -460,6 +503,47 @@ describe("Hyper-V host setup CLI", () => {
 
         expect(result.ok).toBe(false);
         expect(ensure).not.toHaveBeenCalled();
+    });
+
+    it("does not record license acceptance when the confirmed fabric step fails", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-license-network-fail-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32", powershell: "powershell.exe", stateRoot: root,
+            commandRunner: confirmedSetupRunner(), acceptWindowsEvaluationLicense: true,
+            ensureHostNetwork: async () => ({
+                ok: false as const, status: 502, error: "hyper-v-network-setup-failed",
+                detail: "hyper-v-network-switch-identity-conflict",
+            }),
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.text).toContain("hyper-v-network-switch-identity-conflict");
+        expect(existsSync(join(root, "hyper-v-windows-evaluation-license.json"))).toBe(false);
+        expect(existsSync(join(root, "host-locks", "hyper-v.mutation.lock"))).toBe(false);
+    });
+
+    it("rejects a receipt publication failure after fabric preparation and releases the host lock", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-license-write-fail-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const receiptPath = join(root, "hyper-v-windows-evaluation-license.json");
+        const sentinel = join(receiptPath, "preserved");
+        const ensure = vi.fn(async () => {
+            mkdirSync(receiptPath);
+            writeFileSync(sentinel, "foreign-directory-content");
+            return setupNetwork;
+        });
+
+        await expect(setupHyperVHost(true, {
+            platform: "win32", powershell: "powershell.exe", stateRoot: root,
+            commandRunner: confirmedSetupRunner(), ensureHostNetwork: ensure,
+            acceptWindowsEvaluationLicense: true,
+        })).rejects.toThrow();
+
+        expect(ensure).toHaveBeenCalled();
+        expect(readFileSync(sentinel, "utf8")).toBe("foreign-directory-content");
+        expect(existsSync(join(root, "host-locks", "hyper-v.mutation.lock"))).toBe(false);
     });
 
     // Everything above injects the fabric call, so none of it would notice the default
