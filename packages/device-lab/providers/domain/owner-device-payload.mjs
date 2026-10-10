@@ -1,5 +1,6 @@
 /**
- * @typedef {{kind: 'valid', devices: unknown[]} | {kind: 'invalid'}} OwnerDevicePayloadValidation
+ * @typedef {{id: string} & Record<string, unknown>} ValidatedOwnerDeviceRecord
+ * @typedef {{kind: 'valid', devices: ValidatedOwnerDeviceRecord[]} | {kind: 'invalid'}} OwnerDevicePayloadValidation
  */
 
 /**
@@ -30,5 +31,6 @@ export function validateOwnerDevicePayload(parsed, idPattern) {
             avdNames.add(avdName);
         }
     }
-    return { kind: "valid", devices };
+    // Every element passed the object and string-ID guards above.
+    return { kind: "valid", devices: /** @type {ValidatedOwnerDeviceRecord[]} */ (devices) };
 }

@@ -7,8 +7,17 @@ import { androidWindowsHiddenLauncherScript } from "@ccc/device-lab/providers/ba
 import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 import { cleanupFakeAndroidMcpContext, createFakeAndroidMcpContext, TIMEOUT, type FakeAndroidMcpContext } from "./helpers/fake-android-mcp-fixture.js";
 
-function parseToolJson(result: { content?: unknown }) {
-    return JSON.parse((((result.content as Array<{ text?: string }> | undefined) ?? [])[0]?.text ?? "{}")) as Record<string, unknown>;
+function parseToolJson(result: unknown): Record<string, unknown> {
+    if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) {
+        throw new Error("Expected tool result content");
+    }
+    const first = result.content[0];
+    if (!first || typeof first !== "object" || !("text" in first) || typeof first.text !== "string") {
+        throw new Error("Expected tool result text");
+    }
+    const value: unknown = JSON.parse(first.text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected tool result JSON object");
+    return value as Record<string, unknown>;
 }
 
 describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
@@ -295,7 +304,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
         expect(deviceFlow.isError).not.toBe(true);
         const deviceFlowPayload = JSON.parse(((deviceFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             ok: boolean;
-            results: Array<{ label: string; isError: boolean; contentIndex?: number; contentCount?: number; content: Array<{ type: string; value?: { device?: { id?: string }; found?: boolean }; bytes?: number }> }>;
+            results: Array<{ label: string; isError: boolean; contentIndex?: number; contentCount?: number; content: Array<{ type: string; value?: { device?: { deviceId?: string }; found?: boolean }; bytes?: number }> }>;
         };
         expect(deviceFlowPayload.ok).toBe(true);
         expect(deviceFlowPayload.results.map((result) => result.label)).toEqual(["status", "wait title", "capture"]);
@@ -1424,8 +1433,9 @@ if (args[0] === '-s' && args[1] === 'emulator-5674' && args[2] === 'emu') {
         expect(start.isError).not.toBe(true);
 
         const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> };
-        const original = structuredClone(state.devices.find((device) => device.id === deviceId));
         const corrupted = state.devices.find((device) => device.id === deviceId);
+        if (!corrupted) throw new Error("Expected owned emulator state before corrupting process identity");
+        const original = structuredClone(corrupted);
         corrupted.runtime.processIdentity.startToken = "linux:identity-mismatch";
         writeFileSync(statePath, JSON.stringify(state));
         const beforeLog = readFileSync(logPath, "utf8");
@@ -1654,10 +1664,7 @@ require(${JSON.stringify(realAvdmanagerPath)});
             const { expected, ...unsafeArguments } = unsafe;
             const rejected = await client.callTool({
                 name: "create_android_emulator",
-                arguments: { systemImage: "system-images;android-35;google_apis;x86_64",
-
-                    ...unsafeArguments,
-                },
+                arguments: unsafeArguments,
             });
             expect(rejected.isError).toBe(true);
             expect((rejected.content as Array<{ text?: string }>)[0].text).toContain(expected);

@@ -197,7 +197,7 @@ export interface IosObservationPorts extends Common {
         error?: string;
         simulator?: Simulator;
     };
-    publishObserved(device: ObservationRecord, status: string, simulatorName: string | undefined): ObservationRecord | undefined;
+    publishObserved(device: ObservationRecord, status: string, simulatorName: string | undefined): ObservationRecord | null | undefined;
 }
 export interface IosPhysicalObservationPorts extends Common {
     readonly kind: "ios-device";

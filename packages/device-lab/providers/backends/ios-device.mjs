@@ -113,7 +113,7 @@ function parseXctraceDevices(text) {
             const connection = markers.some((value) => /^(network|wifi|wi-fi)$/i.test(value.trim())) ? "wifi" : "usb";
             return { name, udid, version, connection, raw: line };
         })
-        .filter(Boolean);
+        .filter((device) => device !== null);
 }
 
 function hostIosDevices(discovery = iosRealDiscovery()) {

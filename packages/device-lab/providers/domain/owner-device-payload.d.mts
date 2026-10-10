@@ -1,2 +1,3 @@
 export function validateOwnerDevicePayload(parsed: unknown, idPattern: RegExp): OwnerDevicePayloadValidation;
-export type OwnerDevicePayloadValidation = { kind: 'valid'; devices: unknown[] } | { kind: 'invalid' };
+export type ValidatedOwnerDeviceRecord = { id: string } & Record<string, unknown>;
+export type OwnerDevicePayloadValidation = { kind: 'valid'; devices: ValidatedOwnerDeviceRecord[] } | { kind: 'invalid' };

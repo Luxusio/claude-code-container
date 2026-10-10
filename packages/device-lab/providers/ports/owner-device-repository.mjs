@@ -1,4 +1,4 @@
-/** @typedef {Record<string, unknown>} OwnerDeviceRecord */
+/** @typedef {import('../domain/owner-device-payload.mjs').ValidatedOwnerDeviceRecord} OwnerDeviceRecord */
 
 /**
  * Synchronous storage boundary for one trusted owner/backend binding.

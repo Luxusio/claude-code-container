@@ -1789,4 +1789,34 @@ export async function handleLinuxVmManagementTool(name, args = {}, options = {})
     return withOwnerDeviceOperation("linux", "__images__", () => linuxVmMcpResult(importImage(args, options)));
 }
 
-function linuxDeviceObservation(options = {}) { const ctx = context(options); const labsRoot = join(ctx.ownerRoot, "labs"); return createDeviceObservation({ kind: "linux-vm", capabilities: LINUX_VM_CAPABILITIES, ownerId: () => ctx.owner, now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), runnerFacts: () => { const qemu = options.qemuPath ?? commandPath("qemu-system-x86_64", ctx.env), qemuImg = options.qemuImgPath ?? commandPath("qemu-img", ctx.env); const kvmPath = options.kvmPath || "/dev/kvm"; return { ownerId: ctx.owner, stateRoot: ctx.stateRoot, runner: ctx.env.CCC_LAB_RUNNER, runnerStatus: ctx.env.CCC_LAB_RUNNER_STATUS, unsupportedReason: ctx.env.CCC_LAB_RUNNER_UNSUPPORTED_REASON, kvmPath, kvmAvailable: options.kvmAvailable ?? existsSync(kvmPath), qemu, qemuImg }; }, labsRootExists: () => existsSync(labsRoot), labEntries: () => readdirSync(labsRoot, { withFileTypes: true }), readLab: name => readLab(ctx, name) }); }
+/** @param {{env?: Record<string, string | undefined>, stateRoot?: string, ownerId?: string, qemuPath?: string, qemuImgPath?: string, kvmPath?: string, kvmAvailable?: boolean}} [options] */
+function linuxDeviceObservation(options = {}) {
+    const ctx = context(options);
+    const labsRoot = join(ctx.ownerRoot, "labs");
+    return createDeviceObservation({
+        kind: "linux-vm",
+        capabilities: LINUX_VM_CAPABILITIES,
+        ownerId: () => ctx.owner,
+        now: () => Date.now(),
+        readPhysicalLeases: backend => observationPhysicalLeases(backend),
+        runnerFacts: () => {
+            const qemu = options.qemuPath ?? commandPath("qemu-system-x86_64", ctx.env);
+            const qemuImg = options.qemuImgPath ?? commandPath("qemu-img", ctx.env);
+            const kvmPath = options.kvmPath || "/dev/kvm";
+            return {
+                ownerId: ctx.owner,
+                stateRoot: ctx.stateRoot,
+                runner: ctx.env.CCC_LAB_RUNNER,
+                runnerStatus: ctx.env.CCC_LAB_RUNNER_STATUS,
+                unsupportedReason: ctx.env.CCC_LAB_RUNNER_UNSUPPORTED_REASON,
+                kvmPath,
+                kvmAvailable: options.kvmAvailable ?? existsSync(kvmPath),
+                qemu,
+                qemuImg,
+            };
+        },
+        labsRootExists: () => existsSync(labsRoot),
+        labEntries: () => readdirSync(labsRoot, { withFileTypes: true }),
+        readLab: name => readLab(ctx, name),
+    });
+}
