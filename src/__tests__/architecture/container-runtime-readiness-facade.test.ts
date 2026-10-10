@@ -102,10 +102,6 @@ describe("container runtime readiness public facade", () => {
 
 });
 
-describe("container runtime readiness reporter selection before interpolation", () => {
-
-});
-
 describe("container runtime readiness facade failure behavior", () => {
     const steps = ["cli", "probe", "info", "runtime:1", "report:1", "runtime:2", "flavor:1", "flavor:2", "report:2", "exit"];
 
