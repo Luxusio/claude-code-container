@@ -1,3 +1,6 @@
+import type { BrokerAppiumVerification } from "./device-lab/ports/broker-appium.js";
+import { createBrokerAppiumApplication } from "./device-lab/application/broker-appium.js";
+import { validateAppiumParams, appiumParamError, appiumRuntimeMatches, appiumRecordReplacement, brokerOwnedAppiumPid, brokerOwnedAppiumEndpoint, brokerOwnedAppiumPort, brokerOwnedAppiumRuntime } from "./device-lab/domain/broker-appium.js";
 import { createBrokerOwnerApplication } from "./device-lab/application/broker-owner.js";
 import type { BrokerOwnerRegistration as DeviceBrokerOwnerRegistration } from "./device-lab/domain/broker-owner.js";
 import type { BrokerAuthQuarantine } from "./device-lab/ports/broker-owner.js";
@@ -211,18 +214,12 @@ function hyperVLifecycleOperationTimeoutMs(parsed: CommandParamSuccess): number 
         + (parsed.backend === "linux-vm" ? DEVICE_BROKER_HYPER_V_LINUX_GUI_TIMEOUT_MS : 0);
 }
 const DEVICE_BROKER_BOUNDED_WAIT_TOOLS = new Set(["mobile_wait_for_text", "mobile_wait_for_app"]);
-const DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS = 60000;
-const DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS = 240000;
+
+
 const DEVICE_BROKER_APPIUM_FETCH_MAX_TIMEOUT_MS = 300000;
-const DEVICE_BROKER_APPIUM_REQUEST_TIMEOUT_MS = 30000;
+
 export const DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES = 16 * 1024 * 1024;
-const DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS = 300000;
-const DEVICE_BROKER_APPIUM_INSTALL_LOCK_WAIT_MS = DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS + 15000;
-const DEVICE_BROKER_APPIUM_INSTALL_LOCK_STALE_MS = 15 * 60 * 1000;
-const DEVICE_BROKER_APPIUM_LAUNCH_POLICY = "node-direct-hidden-v1";
-const DEVICE_BROKER_APPIUM_PORT_SCAN_LIMIT = 128;
-const DEVICE_BROKER_APPIUM_AUTO_PORT_MIN = 20000;
-const DEVICE_BROKER_APPIUM_AUTO_PORT_MAX = 39999;
+
 export const DEVICE_BROKER_COMMAND_OUTPUT_LIMIT = 32 * 1024;
 export const DEVICE_BROKER_AUTO_START_TIMEOUT_MS = 30000;
 const DEVICE_BROKER_STARTUP_ATTEMPT_HISTORY_LIMIT = 8;
@@ -623,27 +620,6 @@ const DEVICE_BROKER_RECORDING_PROVIDERS = new Map([
     ["windows", "windows-helper-frame-archive"],
     ["macos", "ssh-screencapture-video"],
 ]);
-type DeviceBrokerAppiumRequestMethod = "GET" | "POST";
-
-const DEVICE_BROKER_APPIUM_REQUEST_ALLOWLIST = new Map<string, ReadonlySet<DeviceBrokerAppiumRequestMethod>>([
-    ["/source", new Set(["GET"])],
-    ["/screenshot", new Set(["GET"])],
-    ["/actions", new Set(["POST"])],
-    ["/keys", new Set(["POST"])],
-    ["/back", new Set(["POST"])],
-    ["/orientation", new Set(["POST"])],
-    ["/url", new Set(["POST"])],
-    ["/location", new Set(["POST"])],
-    ["/execute/sync", new Set(["POST"])],
-    ["/appium/device/press_keycode", new Set(["POST"])],
-    ["/appium/device/install_app", new Set(["POST"])],
-    ["/appium/device/activate_app", new Set(["POST"])],
-    ["/appium/device/remove_app", new Set(["POST"])],
-    ["/appium/device/terminate_app", new Set(["POST"])],
-    ["/appium/device/set_clipboard", new Set(["POST"])],
-    ["/appium/device/get_clipboard", new Set(["POST"])],
-    ["/appium/device/app_state", new Set(["POST"])],
-]);
 
 export interface DeviceBrokerOptions {
     cwd?: string;
@@ -705,25 +681,13 @@ type CommandParamSuccess = {
     create?: Record<string, unknown>;
 };
 type AppiumParamError = { ok: false; status: number; error: string; allowed?: string[] };
-type AppiumParamSuccess = {
-    ok: true;
-    backend: string;
-    stateKey: string;
-    deviceId: string;
-};
+
 type AppiumListParamSuccess = {
     ok: true;
     backend: string;
     stateKey: string;
 };
-type AppiumMetadataResult = { ok: true; appium: Record<string, unknown> } | { ok: false; status: number; error: string };
-type AppiumRequestParamError = { ok: false; status: number; error: string; allowed?: string[] };
-type AppiumRequestParamSuccess = AppiumParamSuccess & {
-    method: DeviceBrokerAppiumRequestMethod;
-    path: string;
-    body: unknown;
-};
-type AppiumRequestBodyValidation = { ok: true } | { ok: false; status: number; error: string; allowed?: string[] };
+
 type DeviceToolParamError = { ok: false; status: number; error: string; allowed?: string[]; supported?: string[] };
 type DeviceToolParamSuccess = {
     ok: true;
@@ -6979,215 +6943,8 @@ function commandParamError(parsed: CommandParamError) {
     };
 }
 
-function validateAppiumParams(params: unknown, action: "status" | "record" | "clear" | "start" | "stop" | "session" | "delete-session" | "request"): AppiumParamError | AppiumParamSuccess {
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-        return { ok: false, status: 400, error: "invalid-appium-params" };
-    }
-    const input = params as Record<string, unknown>;
-    const backend = typeof input.backend === "string" ? input.backend : "";
-    const stateKey = DEVICE_BROKER_APPIUM_BACKENDS.get(backend);
-    if (!stateKey) {
-        return { ok: false, status: 400, error: "invalid-appium-backend", allowed: [...DEVICE_BROKER_APPIUM_BACKENDS.keys()] };
-    }
-    const deviceId = typeof input.deviceId === "string" ? input.deviceId.trim() : "";
-    if (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) {
-        return { ok: false, status: 400, error: action === "record" ? "invalid-device-id" : "invalid-appium-device-id" };
-    }
-    return { ok: true, backend, stateKey, deviceId };
-}
-
-function allowedAppiumRequests() {
-    return [...DEVICE_BROKER_APPIUM_REQUEST_ALLOWLIST.entries()]
-        .flatMap(([path, methods]) => [...methods].map((method) => `${method} ${path}`));
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function jsonBodySize(value: unknown) {
-    try {
-        return Buffer.byteLength(JSON.stringify(value), "utf8");
-    } catch {
-        return Infinity;
-    }
-}
-
-function safeText(value: unknown, maxLength = 512): value is string {
-    return typeof value === "string" && value.length > 0 && value.length <= maxLength && !/[\u0000-\u001f]/.test(value);
-}
-
-function safeAbsolutePath(value: unknown) {
-    return safeText(value, 1024) && value.startsWith("/") && !value.includes("..") && !value.includes("://");
-}
-
-function safeAppId(value: unknown) {
-    return safeText(value, 256) && /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/.test(value);
-}
-
-function safeAndroidComponent(value: unknown) {
-    return safeText(value, 256) && /^[A-Za-z][A-Za-z0-9_.$]*(?:\.[A-Za-z][A-Za-z0-9_.$]*)*\/\.?[A-Za-z][A-Za-z0-9_.$]*$/.test(value);
-}
-
-function emptyOrPlainBody(body: unknown) {
-    return body === null || isPlainRecord(body);
-}
-
-function validateAndroidShellRequest(command: unknown, args: unknown): AppiumRequestBodyValidation {
-    if (command === "svc" && Array.isArray(args) && args.every((arg) => typeof arg === "string")) {
-        const [service, action] = args;
-        if (args.length === 2 && ["wifi", "data"].includes(service) && ["enable", "disable"].includes(action)) {
-            return { ok: true };
-        }
-    }
-    if (command === "settings" && Array.isArray(args) && args.every((arg) => typeof arg === "string")) {
-        const [verb, namespace, key, value] = args;
-        if (args.length === 4 && verb === "put" && namespace === "system" && key === "accelerometer_rotation" && ["0", "1"].includes(value)) {
-            return { ok: true };
-        }
-        if (args.length === 4 && verb === "put" && namespace === "system" && key === "user_rotation" && ["0", "1", "2", "3"].includes(value)) {
-            return { ok: true };
-        }
-        if (args.length === 4 && verb === "put" && namespace === "global" && key === "airplane_mode_on" && ["0", "1"].includes(value)) {
-            return { ok: true };
-        }
-    }
-    if (command === "am" && Array.isArray(args) && args.length === 3 && args[0] === "start" && args[1] === "-n" && safeAndroidComponent(args[2])) {
-        return { ok: true };
-    }
-    if (command === "am" && Array.isArray(args) && args.every((arg) => typeof arg === "string")) {
-        if (args.length === 6 && args[0] === "broadcast" && args[1] === "-a" && args[2] === "android.intent.action.AIRPLANE_MODE" && args[3] === "--ez" && args[4] === "state" && ["true", "false"].includes(args[5])) {
-            return { ok: true };
-        }
-    }
-    if (command === "pm" && Array.isArray(args) && args.length === 2 && args[0] === "clear" && safeAppId(args[1])) {
-        return { ok: true };
-    }
-    return { ok: false, status: 403, error: "disallowed-appium-mobile-shell-command", allowed: ["settings put system accelerometer_rotation", "settings put system user_rotation", "settings put global airplane_mode_on", "svc wifi|data enable|disable", "am broadcast airplane mode", "am start -n <component>", "pm clear <package>"] };
-}
-
-function validateAppiumExecuteSyncBody(backend: string, body: unknown): AppiumRequestBodyValidation {
-    if (!isPlainRecord(body) || typeof body.script !== "string") {
-        return { ok: false, status: 400, error: "invalid-appium-execute-sync-body" };
-    }
-    const args = body.args;
-    if (body.script === "mobile: shell") {
-        if (!backend.startsWith("android") || !Array.isArray(args) || args.length !== 1 || !isPlainRecord(args[0])) {
-            return { ok: false, status: 403, error: "disallowed-appium-mobile-shell-command" };
-        }
-        return validateAndroidShellRequest(args[0].command, args[0].args);
-    }
-    if (body.script === "mobile: activeAppInfo" && backend.startsWith("ios") && Array.isArray(args) && args.length === 0) {
-        return { ok: true };
-    }
-    if (body.script === "mobile: pressButton" && backend.startsWith("ios") && Array.isArray(args) && args.length === 1 && isPlainRecord(args[0]) && args[0].name === "home") {
-        return { ok: true };
-    }
-    if ((body.script === "mobile: lock" || body.script === "mobile: unlock") && backend.startsWith("ios") && Array.isArray(args) && args.length === 0) {
-        return { ok: true };
-    }
-    return { ok: false, status: 403, error: "disallowed-appium-mobile-script", allowed: ["mobile: activeAppInfo", "mobile: pressButton home", "mobile: lock", "mobile: unlock", "mobile: shell allowlist"] };
-}
-
-function validateAppiumRequestBody(backend: string, method: DeviceBrokerAppiumRequestMethod, path: string, body: unknown): AppiumRequestBodyValidation {
-    const allowedMethods = DEVICE_BROKER_APPIUM_REQUEST_ALLOWLIST.get(path);
-    if (!allowedMethods?.has(method)) {
-        return { ok: false, status: 403, error: "disallowed-appium-request", allowed: allowedAppiumRequests() };
-    }
-    if (method === "GET") {
-        return body === null ? { ok: true } : { ok: false, status: 400, error: "invalid-appium-request-body" };
-    }
-    if (!emptyOrPlainBody(body)) {
-        return { ok: false, status: 400, error: "invalid-appium-request-body" };
-    }
-    if (path === "/execute/sync") return validateAppiumExecuteSyncBody(backend, body);
-    if (path === "/actions") return isPlainRecord(body) && Array.isArray(body.actions) && body.actions.length > 0 && body.actions.length <= 8
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-actions-body" };
-    if (path === "/keys") return isPlainRecord(body) && safeText(body.text, 4096) && Array.isArray(body.value) && body.value.every((entry) => typeof entry === "string")
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-keys-body" };
-    if (path === "/back") return isPlainRecord(body) && Object.keys(body).length === 0
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-back-body" };
-    if (path === "/orientation") return isPlainRecord(body) && typeof body.orientation === "string" && ["PORTRAIT", "LANDSCAPE"].includes(body.orientation)
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-orientation-body" };
-    if (path === "/url") return isPlainRecord(body) && safeText(body.url, 2048) && /^[a-z][a-z0-9+.-]*:/i.test(body.url)
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-url-body" };
-    if (path === "/location") {
-        const location = isPlainRecord(body) ? body.location : null;
-        return isPlainRecord(location)
-            && typeof location.latitude === "number" && Number.isFinite(location.latitude) && location.latitude >= -90 && location.latitude <= 90
-            && typeof location.longitude === "number" && Number.isFinite(location.longitude) && location.longitude >= -180 && location.longitude <= 180
-            && (location.altitude === undefined || (typeof location.altitude === "number" && Number.isFinite(location.altitude)))
-            ? { ok: true }
-            : { ok: false, status: 400, error: "invalid-appium-location-body" };
-    }
-    if (path === "/appium/device/press_keycode") return backend.startsWith("android") && isPlainRecord(body) && Number.isInteger(body.keycode) && Number(body.keycode) >= 0 && Number(body.keycode) <= 300
-        ? { ok: true }
-        : { ok: false, status: 403, error: "disallowed-appium-press-keycode" };
-    if (path === "/appium/device/install_app") return isPlainRecord(body) && safeAbsolutePath(body.appPath)
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-install-app-body" };
-    if (["/appium/device/activate_app", "/appium/device/remove_app", "/appium/device/terminate_app", "/appium/device/app_state"].includes(path)) {
-        return isPlainRecord(body) && safeAppId(body.appId)
-            ? { ok: true }
-            : { ok: false, status: 400, error: "invalid-appium-app-id-body" };
-    }
-    if (path === "/appium/device/set_clipboard") return isPlainRecord(body) && safeText(body.content, 16384) && body.contentType === "plaintext" && (body.label === undefined || safeText(body.label, 128))
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-clipboard-body" };
-    if (path === "/appium/device/get_clipboard") return isPlainRecord(body) && body.contentType === "plaintext"
-        ? { ok: true }
-        : { ok: false, status: 400, error: "invalid-appium-clipboard-body" };
-    return { ok: false, status: 403, error: "disallowed-appium-request", allowed: allowedAppiumRequests() };
-}
-
-function validateAppiumRequestParams(params: unknown): AppiumRequestParamError | AppiumRequestParamSuccess {
-    const parsed = validateAppiumParams(params, "request");
-    if (!parsed.ok) return parsed;
-    const input = params as Record<string, unknown>;
-    if (input.requestTimeoutMs !== undefined && (typeof input.requestTimeoutMs !== "number"
-        || !Number.isFinite(input.requestTimeoutMs) || input.requestTimeoutMs <= 0 || input.requestTimeoutMs > 600000)) {
-        return { ok: false, status: 400, error: "invalid-appium-request-timeout" };
-    }
-    const method = typeof input.method === "string" ? input.method.toUpperCase() : "GET";
-    if (!["GET", "POST"].includes(method)) {
-        return { ok: false, status: 400, error: "invalid-appium-request-method", allowed: ["GET", "POST"] };
-    }
-    const path = typeof input.path === "string" ? input.path.trim() : "";
-    if (!path || path.length > 512 || !path.startsWith("/") || path.includes("://") || path.includes("..") || /[\u0000-\u001f]/.test(path)) {
-        return { ok: false, status: 400, error: "invalid-appium-request-path" };
-    }
-    const body = input.body ?? null;
-    if (body !== null && (!isPlainRecord(body) || jsonBodySize(body) > DEVICE_BROKER_RPC_BODY_LIMIT)) {
-        return { ok: false, status: 400, error: "invalid-appium-request-body" };
-    }
-    const bodyValidation = validateAppiumRequestBody(parsed.backend, method as DeviceBrokerAppiumRequestMethod, path, body);
-    if (!bodyValidation.ok) return bodyValidation;
-    return { ...parsed, method: method as DeviceBrokerAppiumRequestMethod, path, body };
-}
-
-function requestedAppiumPort(params: unknown) {
-    if (!params || typeof params !== "object" || Array.isArray(params)) return null;
-    const input = params as Record<string, unknown>;
-    const value = input.port ?? input.appiumPort ?? input.serverPort;
-    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535 ? value : null;
-}
-
-function defaultAppiumPort(ownerId: string, backend: string, deviceId: string) {
-    const digest = createHash("sha256").update(`${ownerId}:${backend}:${deviceId}:appium`).digest();
-    return 20000 + digest.readUInt16BE(0) % 20000;
-}
-
-function appiumAutomationName(backend: string) {
-    return backend.startsWith("android") ? "UiAutomator2" : "XCUITest";
-}
-
-function appiumProviderName(backend: string) {
-    return backend.startsWith("android") ? "appium-uiautomator2" : "appium-xcuitest";
 }
 
 function javaHomeForAppium(normalized: NormalizedBrokerOptions) {
@@ -7376,185 +7133,6 @@ function appiumCommandEnv(backend: string, normalized: NormalizedBrokerOptions) 
     return Object.keys(env).length > 0 ? env : undefined;
 }
 
-function readBrokerAppiumRuntimeManifests(packageRoot: string) {
-    const sourcePackage = join(packageRoot, "appium-runtime", "package.json");
-    const sourceLock = join(packageRoot, "appium-runtime", "package-lock.json");
-    try {
-        assertDeviceLabPathWithinRoot(packageRoot, sourcePackage, "appium-runtime-package");
-        assertDeviceLabPathWithinRoot(packageRoot, sourceLock, "appium-runtime-lock");
-        const packageText = readDeviceLabTextFile(
-            sourcePackage,
-            "appium-runtime-package",
-            DEVICE_BROKER_APPIUM_PACKAGE_MANIFEST_LIMIT_BYTES,
-        );
-        const lockText = readDeviceLabTextFile(
-            sourceLock,
-            "appium-runtime-lock",
-            DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES,
-        );
-        if (packageText === null || lockText === null) {
-            return { ok: false as const, error: "appium-runtime-manifest-missing", sourcePackage, sourceLock };
-        }
-        for (const text of [packageText, lockText]) {
-            const parsed = JSON.parse(text) as unknown;
-            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-                throw new Error("invalid-appium-runtime-manifest");
-            }
-        }
-        return { ok: true as const, packageText, lockText, sourcePackage, sourceLock };
-    } catch (error) {
-        return {
-            ok: false as const,
-            error: "appium-runtime-manifest-invalid",
-            detail: deviceLabStateFileErrorCode(error) || "appium-runtime-manifest-invalid",
-            sourcePackage,
-            sourceLock,
-        };
-    }
-}
-
-function appiumRuntimeOperationError(error: unknown, fallback: string): string {
-    const message = error instanceof Error ? error.message : "";
-    return /^appium-runtime-[a-z0-9-]+$/.test(message) ? message : fallback;
-}
-
-function ensureBrokerAppiumRuntime(normalized: NormalizedBrokerOptions) {
-    const injected = normalized.providerPaths.appium;
-    if (injected) return { ok: true as const, executable: injected, argsPrefix: [] as string[], provisioned: false, source: "provider-path" };
-
-    const packageRoot = packageRootForBroker();
-    const manifests = readBrokerAppiumRuntimeManifests(packageRoot);
-    if (!manifests.ok) return manifests;
-
-    const runtimeRoot = brokerAppiumRuntimeRoot();
-    const executable = brokerAppiumRuntimeExecutable(normalized);
-    const entry = brokerAppiumRuntimeEntry();
-    const markerFile = join(runtimeRoot, ".ccc-runtime.json");
-    const manifestHash = createHash("sha256").update(manifests.packageText).update(manifests.lockText).digest("hex");
-    try {
-        ensureBrokerAppiumRuntimeDirectory();
-        return withSharedMutationLock(brokerAppiumRuntimeInstallLockFile(), () => {
-            ensureBrokerAppiumRuntimeDirectory();
-            if (!inspectBrokerAppiumRuntimeDirectory()) throw new Error("appium-runtime-directory-invalid");
-            try {
-                const marker = readDeviceLabStateFile(markerFile, (value) => {
-                    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid-appium-runtime-marker");
-                    return value as { manifestHash?: unknown };
-                }, "appium-runtime-marker", DEVICE_BROKER_APPIUM_RUNTIME_MARKER_LIMIT_BYTES);
-                if (marker?.manifestHash === manifestHash && brokerAppiumRuntimeEntryIsValid(entry)) {
-                    return { ok: true as const, executable: process.execPath, argsPrefix: [entry], provisioned: false, source: "broker-runtime" };
-                }
-            } catch {
-                // A linked, malformed, or incomplete runtime is never reused.
-            }
-
-            const npm = resolveExecutablePath(normalized.platform === "win32" ? "npm.cmd" : "npm") || resolveExecutablePath("npm");
-            if (!npm) return { ok: false as const, error: "appium-runtime-npm-missing", runtimeRoot };
-            inspectBrokerAppiumNodeModulesDirectory();
-            writeFileAtomically(join(runtimeRoot, "package.json"), manifests.packageText);
-            writeFileAtomically(join(runtimeRoot, "package-lock.json"), manifests.lockText);
-            try {
-                unlinkSync(markerFile);
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("appium-runtime-marker-remove-failed");
-            }
-            const command: ProviderCommand = {
-                mode: "exec",
-                provider: "npm-appium-runtime",
-                executable: npm,
-                args: ["ci", "--prefix", runtimeRoot, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-            };
-            const execution = normalized.commandRunner(command, {
-                timeoutMs: DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS,
-                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-            });
-            if (!commandSucceeded(execution) || !inspectBrokerAppiumRuntimeDirectory()
-                || !inspectBrokerAppiumNodeModulesDirectory() || !brokerAppiumRuntimeEntryIsValid(entry)) {
-                return {
-                    ok: false as const,
-                    error: "appium-runtime-install-failed",
-                    runtimeRoot,
-                    executable,
-                    entry,
-                    execution,
-                };
-            }
-            writeJsonFileAtomically(markerFile, {
-                manifestHash,
-                installedAt: new Date().toISOString(),
-                packageRoot,
-            });
-            return { ok: true as const, executable: process.execPath, argsPrefix: [entry], provisioned: true, source: "broker-runtime", execution };
-        }, {
-            waitMs: DEVICE_BROKER_APPIUM_INSTALL_LOCK_WAIT_MS,
-            staleMs: DEVICE_BROKER_APPIUM_INSTALL_LOCK_STALE_MS,
-        });
-    } catch (error) {
-        const lockTimeout = (error as Error & { code?: string }).code === "shared-mutation-lock-timeout";
-        return {
-            ok: false as const,
-            error: lockTimeout
-                ? "appium-runtime-install-lock-timeout"
-                : appiumRuntimeOperationError(error, "appium-runtime-install-failed"),
-            runtimeRoot,
-        };
-    }
-}
-
-function appiumCapabilities(backend: string, device: unknown) {
-    if (!device || typeof device !== "object") return {};
-    const record = device as Record<string, unknown>;
-    if (backend.startsWith("android")) {
-        const serial = androidSerial(device);
-        return {
-            platformName: "Android",
-            "appium:automationName": "UiAutomator2",
-            "appium:deviceName": field(device, "name") || field(device, "id") || backend,
-            "appium:adbExecTimeout": 120000,
-            "appium:uiautomator2ServerInstallTimeout": 120000,
-            "appium:uiautomator2ServerLaunchTimeout": 120000,
-            ...(serial ? { "appium:udid": serial } : {}),
-            ...(typeof record.avdName === "string" && record.avdName ? { "appium:avd": record.avdName } : {}),
-        };
-    }
-    return {
-        platformName: "iOS",
-        "appium:automationName": "XCUITest",
-        "appium:deviceName": field(device, "simulatorName") || field(device, "name") || field(device, "id") || backend,
-        ...(typeof record.udid === "string" && record.udid ? { "appium:udid": record.udid } : {}),
-        ...(backend === "ios-device" ? { "appium:realDevice": true } : {}),
-    };
-}
-
-function appiumInstrumentationInitializationFailed(response: Awaited<ReturnType<typeof fetchAppiumJson>>) {
-    const text = JSON.stringify(response.body || {}).toLowerCase();
-    return text.includes("instrumentation process cannot be initialized")
-        || text.includes("uiautomator2 server cannot be started");
-}
-
-function resetAndroidAppiumInstrumentation(device: unknown, normalized: NormalizedBrokerOptions) {
-    const adb = providerExecutable("adb", normalized);
-    const serial = androidSerial(device);
-    if (!adb || !serial) return { attempted: false, ok: false, error: "missing-adb-or-serial", results: [] };
-    const commands = [
-        ["shell", "am", "force-stop", "io.appium.uiautomator2.server"],
-        ["shell", "am", "force-stop", "io.appium.uiautomator2.server.test"],
-        ["uninstall", "io.appium.uiautomator2.server"],
-        ["uninstall", "io.appium.uiautomator2.server.test"],
-        ["uninstall", "io.appium.settings"],
-    ];
-    const results = commands.map((args) => normalized.commandRunner({
-        mode: "exec",
-        provider: "adb-appium-recovery",
-        executable: adb,
-        args: ["-s", serial, ...args],
-    }, {
-        timeoutMs: 30000,
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-    }));
-    return { attempted: true, ok: true, adb, serial, results };
-}
-
 async function readBoundedAppiumResponse(response: Response) {
     const declaredLength = response.headers.get("content-length");
     if (declaredLength !== null && /^\d+$/.test(declaredLength) && Number(declaredLength) > DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES) {
@@ -7641,123 +7219,10 @@ async function fetchAppiumJson(url: string, options: { method?: string; body?: u
     }
 }
 
-export function appiumWebDriverRequestTimeoutMs(commandTimeoutMs: number) {
-    return Math.min(
-        DEVICE_BROKER_APPIUM_FETCH_MAX_TIMEOUT_MS,
-        Math.max(DEVICE_BROKER_APPIUM_REQUEST_TIMEOUT_MS, Number.isFinite(commandTimeoutMs) ? commandTimeoutMs : 0),
-    );
-}
+export { appiumWebDriverRequestTimeoutMs } from "./device-lab/domain/broker-appium.js";
 
-async function waitForAppiumServerReady(serverUrl: string, timeoutMs = DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS) {
-    const deadline = Date.now() + Math.max(1, timeoutMs);
-    let response: Awaited<ReturnType<typeof fetchAppiumJson>> | null = null;
-    while (Date.now() <= deadline) {
-        const remainingMs = Math.max(1, deadline - Date.now());
-        response = await fetchAppiumJson(`${serverUrl}/status`, {
-            method: "GET",
-            timeoutMs: Math.min(2000, remainingMs),
-        });
-        const body = response.body as { value?: { ready?: unknown } } | null;
-        if (response.ok && body?.value?.ready !== false) return { ok: true, response };
-        if (Date.now() < deadline) await sleep(Math.min(200, Math.max(1, deadline - Date.now())));
-    }
-    return { ok: false, response };
-}
 
-function brokerOwnedAppiumPid(appium: unknown) {
-    if (!appium || typeof appium !== "object") return null;
-    const metadata = appium as { authority?: unknown; serverPid?: unknown; processOwner?: unknown; startedBy?: unknown };
-    if (metadata.authority !== "host-broker"
-        || metadata.processOwner !== "host-broker"
-        || metadata.startedBy !== "broker.appium.start") return null;
-    return typeof metadata.serverPid === "number" && Number.isInteger(metadata.serverPid) && metadata.serverPid > 0
-        ? metadata.serverPid
-        : null;
-}
-
-function claimsBrokerOwnedAppiumRuntime(appium: unknown) {
-    if (!appium || typeof appium !== "object" || Array.isArray(appium)) return false;
-    const metadata = appium as { authority?: unknown; processOwner?: unknown; startedBy?: unknown };
-    return metadata.authority === "host-broker"
-        && metadata.processOwner === "host-broker"
-        && metadata.startedBy === "broker.appium.start";
-}
-
-function brokerOwnedAppiumEndpoint(appium: unknown) {
-    if (!appium || typeof appium !== "object" || Array.isArray(appium)) {
-        return { ok: false as const, error: "appium-runtime-metadata-incomplete" };
-    }
-    const metadata = appium as { authority?: unknown; serverUrl?: unknown; port?: unknown; processOwner?: unknown; startedBy?: unknown };
-    if (metadata.authority !== "host-broker"
-        || metadata.processOwner !== "host-broker"
-        || metadata.startedBy !== "broker.appium.start"
-        || typeof metadata.serverUrl !== "string") {
-        return { ok: false as const, error: "appium-runtime-metadata-incomplete" };
-    }
-
-    // Broker-launched Appium always listens at the loopback origin root. Keeping this
-    // grammar deliberately narrow rejects URL parser aliases, credentials, path
-    // prefixes, query strings, and fragments before any host request is attempted.
-    const match = /^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(metadata.serverUrl);
-    if (!match) {
-        return { ok: false as const, error: "appium-server-url-unsafe", serverUrl: metadata.serverUrl };
-    }
-    const urlPort = Number(match[1]);
-    if (!Number.isInteger(urlPort) || urlPort <= 0 || urlPort > 65535) {
-        return { ok: false as const, error: "appium-server-url-unsafe", serverUrl: metadata.serverUrl };
-    }
-    if (metadata.port !== undefined
-        && (typeof metadata.port !== "number"
-            || !Number.isInteger(metadata.port)
-            || metadata.port !== urlPort)) {
-        return {
-            ok: false as const,
-            error: "appium-server-url-port-mismatch",
-            port: metadata.port,
-            urlPort,
-            serverUrl: metadata.serverUrl,
-        };
-    }
-    return { ok: true as const, port: urlPort, serverUrl: `http://127.0.0.1:${urlPort}` };
-}
-
-function brokerLaunchedAppiumServerUrl(appium: unknown) {
-    const endpoint = brokerOwnedAppiumEndpoint(appium);
-    return endpoint.ok ? endpoint.serverUrl : null;
-}
-
-function brokerOwnedAppiumPort(appium: unknown) {
-    const endpoint = brokerOwnedAppiumEndpoint(appium);
-    return endpoint.ok ? endpoint.port : null;
-}
-
-function brokerOwnedAppiumRuntime(appium: unknown) {
-    if (!appium || typeof appium !== "object" || Array.isArray(appium)) return null;
-    const metadata = appium as Record<string, unknown>;
-    const pid = brokerOwnedAppiumPid(metadata);
-    if (!pid) return null;
-    return {
-        runtimeId: metadata.runtimeId,
-        pid,
-        processIdentity: metadata.processIdentity,
-    };
-}
-
-function reusableBrokerOwnedAppium(appium: unknown, normalized: NormalizedBrokerOptions) {
-    if (!appium || typeof appium !== "object") return false;
-    const metadata = appium as { launchPolicy?: unknown };
-    if (metadata.launchPolicy !== DEVICE_BROKER_APPIUM_LAUNCH_POLICY) return false;
-    return liveBrokerOwnedAppiumRuntime(appium, normalized);
-}
-
-function liveBrokerOwnedAppiumRuntime(appium: unknown, normalized: NormalizedBrokerOptions) {
-    const runtime = brokerOwnedAppiumRuntime(appium);
-    if (!runtime) return false;
-    if (!normalized.usesDefaultCommandRunner) return true;
-    return inspectDeviceRuntimeProcessIdentity(runtime.processIdentity, runtime.pid).status === "match";
-}
-
-function verifyBrokerOwnedAppiumListener(appium: unknown, normalized: NormalizedBrokerOptions) {
+function verifyBrokerOwnedAppiumListener(appium: unknown, normalized: NormalizedBrokerOptions): BrokerAppiumVerification {
     const runtime = brokerOwnedAppiumRuntime(appium);
     const endpoint = brokerOwnedAppiumEndpoint(appium);
     if (!endpoint.ok) return { ...endpoint, runtime };
@@ -7802,64 +7267,6 @@ function verifyBrokerOwnedAppiumListener(appium: unknown, normalized: Normalized
         };
     }
     return { ok: true, runtime, port, serverUrl, observation, listener };
-}
-
-async function waitForBrokerOwnedAppiumListener(
-    appium: unknown,
-    normalized: NormalizedBrokerOptions,
-    timeoutMs = DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS,
-) {
-    const deadline = Date.now() + Math.max(1, timeoutMs);
-    let verification = verifyBrokerOwnedAppiumListener(appium, normalized);
-    while (!verification.ok
-        && verification.error === "appium-port-listener-unavailable"
-        && Date.now() < deadline) {
-        await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
-        verification = verifyBrokerOwnedAppiumListener(appium, normalized);
-    }
-    return verification;
-}
-
-function selectAvailableAppiumPort(
-    ownerId: string,
-    backend: string,
-    deviceId: string,
-    params: unknown,
-    record: Record<string, unknown>,
-    normalized: NormalizedBrokerOptions,
-) {
-    const explicitPort = requestedAppiumPort(params);
-    const preferredPort = explicitPort
-        || (typeof record.appiumPort === "number" && Number.isInteger(record.appiumPort) && record.appiumPort > 0 && record.appiumPort <= 65535
-            ? record.appiumPort
-            : defaultAppiumPort(ownerId, backend, deviceId));
-    if (!normalized.strictAppiumPortOwnership) {
-        return { ok: true, port: preferredPort, attempts: [{ port: preferredPort, occupied: false, simulated: true }] };
-    }
-    const occupied = normalized.portProcessResolver(preferredPort, normalized.platform);
-    if (!occupied) return { ok: true, port: preferredPort, attempts: [{ port: preferredPort, occupied: false }] };
-    if (explicitPort) {
-        return {
-            ok: false,
-            error: "appium-port-occupied",
-            port: preferredPort,
-            listener: occupied,
-            attempts: [{ port: preferredPort, occupied: true }],
-        };
-    }
-    const attempts = [{ port: preferredPort, occupied: true }];
-    const start = preferredPort >= DEVICE_BROKER_APPIUM_AUTO_PORT_MIN && preferredPort <= DEVICE_BROKER_APPIUM_AUTO_PORT_MAX
-        ? preferredPort
-        : defaultAppiumPort(ownerId, backend, deviceId);
-    const range = DEVICE_BROKER_APPIUM_AUTO_PORT_MAX - DEVICE_BROKER_APPIUM_AUTO_PORT_MIN + 1;
-    for (let offset = 1; offset < DEVICE_BROKER_APPIUM_PORT_SCAN_LIMIT; offset += 1) {
-        const port = DEVICE_BROKER_APPIUM_AUTO_PORT_MIN
-            + ((start - DEVICE_BROKER_APPIUM_AUTO_PORT_MIN + offset) % range);
-        const listener = normalized.portProcessResolver(port, normalized.platform);
-        attempts.push({ port, occupied: Boolean(listener) });
-        if (!listener) return { ok: true, port, attempts };
-    }
-    return { ok: false, error: "appium-port-range-exhausted", port: preferredPort, listener: occupied, attempts };
 }
 
 export function windowsProcessTreeOutcome(status: number | null, output: string, aliveAfter: boolean) {
@@ -8458,84 +7865,6 @@ function validateAppiumListParams(params: unknown): AppiumParamError | AppiumLis
         return { ok: false, status: 400, error: "invalid-appium-backend", allowed: [...DEVICE_BROKER_APPIUM_BACKENDS.keys()] };
     }
     return { ok: true, backend, stateKey };
-}
-
-function appiumParamError(parsed: AppiumParamError) {
-    return {
-        status: parsed.status,
-        payload: {
-            ok: false,
-            error: parsed.error,
-            ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
-        },
-    };
-}
-
-function stringMetadataField(input: Record<string, unknown>, name: string, maxLength: number) {
-    const value = input[name];
-    if (value === undefined || value === null) return undefined;
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > maxLength || /[\u0000-\u001f]/.test(trimmed)) return null;
-    return trimmed;
-}
-
-function numberMetadataField(input: Record<string, unknown>, name: string, min: number, max: number) {
-    const value = input[name];
-    if (value === undefined || value === null) return undefined;
-    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) return null;
-    return value;
-}
-
-function appiumMetadata(params: unknown): AppiumMetadataResult {
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-        return { ok: false, status: 400, error: "invalid-appium-params" };
-    }
-    const root = params as Record<string, unknown>;
-    const nested = root.appium && typeof root.appium === "object" && !Array.isArray(root.appium)
-        ? root.appium as Record<string, unknown>
-        : null;
-    const input = nested ? { ...root, ...nested } : root;
-    const serverUrl = stringMetadataField(input, "serverUrl", 2048);
-    if (serverUrl === null) return { ok: false, status: 400, error: "invalid-appium-server-url" };
-    if (serverUrl !== undefined) {
-        try {
-            const parsed = new URL(serverUrl);
-            if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, status: 400, error: "invalid-appium-server-url" };
-        } catch {
-            return { ok: false, status: 400, error: "invalid-appium-server-url" };
-        }
-    }
-    const sessionId = stringMetadataField(input, "sessionId", 512);
-    if (sessionId === null) return { ok: false, status: 400, error: "invalid-appium-session-id" };
-    const automationName = stringMetadataField(input, "automationName", 128);
-    if (automationName === null) return { ok: false, status: 400, error: "invalid-appium-automation-name" };
-    const provider = stringMetadataField(input, "provider", 128);
-    if (provider === null) return { ok: false, status: 400, error: "invalid-appium-provider" };
-    const serverPid = numberMetadataField(input, "serverPid", 1, Number.MAX_SAFE_INTEGER);
-    if (serverPid === null) return { ok: false, status: 400, error: "invalid-appium-server-pid" };
-    const port = numberMetadataField(input, "port", 1, 65535);
-    if (port === null) return { ok: false, status: 400, error: "invalid-appium-port" };
-    const physical = input.physical;
-    if (physical !== undefined && typeof physical !== "boolean") {
-        return { ok: false, status: 400, error: "invalid-appium-physical" };
-    }
-    const metadata: Record<string, unknown> = {
-        authority: "host-broker",
-        runtimeId: randomBytes(16).toString("hex"),
-        updatedAt: new Date().toISOString(),
-    };
-    if (serverUrl !== undefined) metadata.serverUrl = serverUrl;
-    if (sessionId !== undefined) metadata.sessionId = sessionId;
-    if (automationName !== undefined) metadata.automationName = automationName;
-    if (provider !== undefined) metadata.provider = provider;
-    if (serverPid !== undefined) metadata.serverPid = serverPid;
-    if (port !== undefined) metadata.port = port;
-    if (physical !== undefined) metadata.physical = physical;
-    if (!metadata.serverUrl && !metadata.sessionId && !metadata.serverPid && !metadata.port) {
-        return { ok: false, status: 400, error: "missing-appium-metadata" };
-    }
-    return { ok: true, appium: metadata };
 }
 
 function field(device: unknown, name: string): string | null {
@@ -13879,101 +13208,6 @@ function appiumSessionList(ownerId: string, params: unknown) {
 
 const observeAppium = createAppiumObservations({ read: (ownerId, stateKey) => readOwnerDevices(ownerId, stateKey) });
 
-function appiumLiveRuntimeMetadataConflict(ownerId: string, parsed: AppiumParamSuccess, appium: unknown, normalized: NormalizedBrokerOptions): BrokerRpcResult | null {
-    if (!liveBrokerOwnedAppiumRuntime(appium, normalized)) return null;
-    return {
-        status: 409,
-        payload: {
-            ok: false,
-            error: "appium-runtime-active",
-            ownerId,
-            backend: parsed.backend,
-            stateKey: parsed.stateKey,
-            deviceId: parsed.deviceId,
-            remedy: "stop the broker-owned Appium server before replacing or clearing its metadata",
-        },
-    };
-}
-
-function recordAppiumSession(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppiumParams(params, "record");
-    if (!parsed.ok) return appiumParamError(parsed);
-    const metadata = appiumMetadata(params);
-    if (!metadata.ok) return { status: metadata.status, payload: { ok: false, error: metadata.error } };
-    let device: unknown;
-    try {
-        ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    if (!device || typeof device !== "object" || Array.isArray(device)) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const currentAppium = (device as Record<string, unknown>).appium ?? null;
-    const liveConflict = appiumLiveRuntimeMetadataConflict(ownerId, parsed, currentAppium, normalized);
-    if (liveConflict) return liveConflict;
-    const transition = transitionOwnerAppiumRuntime(ownerId, parsed.stateKey, parsed.deviceId, currentAppium, metadata.appium);
-    if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition);
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                device: transition.device,
-                appium: metadata.appium,
-                authority: "host-broker",
-            },
-        },
-    };
-}
-
-function clearAppiumSession(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppiumParams(params, "clear");
-    if (!parsed.ok) return appiumParamError(parsed);
-    let device: unknown;
-    try {
-        ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    if (!device || typeof device !== "object" || Array.isArray(device)) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const currentAppium = (device as Record<string, unknown>).appium ?? null;
-    const liveConflict = appiumLiveRuntimeMetadataConflict(ownerId, parsed, currentAppium, normalized);
-    if (liveConflict) return liveConflict;
-    const transition = transitionOwnerAppiumRuntime(ownerId, parsed.stateKey, parsed.deviceId, currentAppium, null);
-    if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition);
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                device: transition.device,
-                cleared: true,
-                authority: "host-broker",
-            },
-        },
-    };
-}
-
-function appiumRuntimeMatches(expected: unknown, current: unknown): boolean {
-    if (expected === null || expected === undefined) return current === null || current === undefined;
-    if (!expected || typeof expected !== "object" || Array.isArray(expected)
-        || !current || typeof current !== "object" || Array.isArray(current)) return false;
-    const expectedRecord = expected as Record<string, unknown>;
-    const currentRecord = current as Record<string, unknown>;
-    const expectedRuntimeId = typeof expectedRecord.runtimeId === "string" ? expectedRecord.runtimeId : null;
-    const currentRuntimeId = typeof currentRecord.runtimeId === "string" ? currentRecord.runtimeId : null;
-    if (expectedRuntimeId || currentRuntimeId) return expectedRuntimeId !== null && expectedRuntimeId === currentRuntimeId;
-    const identityFields = ["authority", "processOwner", "startedBy", "serverPid", "serverUrl", "updatedAt"];
-    return identityFields.every((field) => expectedRecord[field] === currentRecord[field]);
-}
-
 function transitionOwnerAppiumRuntime(
     ownerId: string,
     stateKey: string,
@@ -13993,708 +13227,73 @@ function transitionOwnerAppiumRuntime(
         if (!appiumRuntimeMatches(expected, currentAppium)) return candidate;
         matched = true;
         const updatedAt = typeof replacement?.updatedAt === "string" ? replacement.updatedAt : new Date().toISOString();
-        updatedDevice = {
-            ...record,
-            appium: replacement,
-            ...(typeof replacement?.port === "number" ? { appiumPort: replacement.port } : {}),
-            updatedAt,
-        };
+        updatedDevice = appiumRecordReplacement(record, replacement, updatedAt);
         return updatedDevice;
     }));
     return { found, matched, currentAppium, device: updatedDevice };
 }
 
-async function startAppiumServerUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppiumParams(params, "start");
-    if (!parsed.ok) return appiumParamError(parsed);
-    let devices: unknown[];
-    try {
-        devices = readOwnerDevices(ownerId, parsed.stateKey);
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
-    if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const existingAppium = device && typeof device === "object" ? (device as { appium?: unknown }).appium : null;
-    const force = (params as { force?: unknown })?.force === true;
-    const reusableRuntime = reusableBrokerOwnedAppium(existingAppium, normalized);
-    const reusableListener = reusableRuntime ? verifyBrokerOwnedAppiumListener(existingAppium, normalized) : null;
-    const reusable = reusableRuntime && reusableListener?.ok === true;
-    if (existingAppium && typeof existingAppium === "object" && !force && reusable) {
-        return {
-            status: 200,
-            payload: {
-                ok: true,
-                result: {
-                    ownerId,
-                    backend: parsed.backend,
-                    stateKey: parsed.stateKey,
-                    deviceId: parsed.deviceId,
-                    device,
-                    appium: existingAppium,
-                    started: false,
-                    reused: true,
-                    authority: "host-broker",
-                },
-            },
-        };
-    }
-    const replaced = force || (existingAppium && typeof existingAppium === "object" && !reusable)
-        ? await terminateBrokerOwnedAppiumAndWait(existingAppium, normalized)
-        : { attempted: false, ok: true };
-    if (!replaced.ok) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "appium-existing-process-stop-failed",
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                appium: existingAppium,
-                replaced,
-            },
-        };
-    }
-    const record = device as Record<string, unknown>;
-    const portSelection = selectAvailableAppiumPort(ownerId, parsed.backend, parsed.deviceId, params, record, normalized);
-    if (!portSelection.ok) {
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: portSelection.error,
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                portSelection,
-            },
-        };
-    }
-    const port = portSelection.port;
-    const serverUrl = `http://127.0.0.1:${port}`;
-    const appiumArgs = ["server", "--port", String(port), "--base-path", "/"];
-    if (parsed.backend.startsWith("android")) appiumArgs.push("--allow-insecure", "uiautomator2:adb_shell");
-    const runtime = ensureBrokerAppiumRuntime(normalized);
-    if (!runtime.ok) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: runtime.error,
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                runtime,
-            },
-        };
-    }
-    if (runtime.source === "provider-path") {
-        try {
-            ensureBrokerAppiumRuntimeDirectory();
-        } catch (error) {
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: appiumRuntimeOperationError(error, "appium-runtime-directory-invalid"),
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                },
-            };
-        }
-    }
-    if (runtime.source === "broker-runtime") {
-        try {
-            if (!inspectBrokerAppiumRuntimeDirectory() || !brokerAppiumRuntimeEntryIsValid(runtime.argsPrefix[0] || "")) {
-                throw new Error("appium-runtime-entry-invalid");
-            }
-        } catch (error) {
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: appiumRuntimeOperationError(error, "appium-runtime-entry-invalid"),
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                },
-            };
-        }
-    }
-    const portCleanup = terminateManagedAppiumPortListener(port, normalized);
-    if (!portCleanup.ok) {
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: portCleanup.error || "appium-port-cleanup-failed",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                portCleanup,
-            },
-        };
-    }
-    const command: ProviderCommand = {
-        mode: "detached",
-        provider: "appium",
-        executable: runtime.executable,
-        args: [...runtime.argsPrefix, ...appiumArgs],
-        env: appiumCommandEnv(parsed.backend, normalized),
-        cwd: brokerAppiumRuntimeRoot(),
-    };
-    const execution = normalized.usesDefaultCommandRunner
-        ? await startDetachedProviderCommand(command, normalized, "Appium server")
-        : normalized.commandRunner(command, {
-            timeoutMs: normalized.commandTimeoutMs,
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        });
-    if (!commandSucceeded(execution)) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "appium-server-start-failed",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                execution,
-            },
-        };
-    }
-    const appium = {
-        authority: "host-broker",
-        processOwner: "host-broker",
-        startedBy: "broker.appium.start",
-        runtimeId: randomBytes(16).toString("hex"),
-        launchPolicy: DEVICE_BROKER_APPIUM_LAUNCH_POLICY,
-        serverUrl,
-        serverPid: execution.pid ?? null,
-        ...(execution.processIdentity ? { processIdentity: execution.processIdentity } : {}),
-        port,
-        automationName: appiumAutomationName(parsed.backend),
-        provider: appiumProviderName(parsed.backend),
-        physical: parsed.backend.endsWith("-device"),
-        updatedAt: new Date().toISOString(),
-    };
-    const transition = transitionOwnerAppiumRuntime(ownerId, parsed.stateKey, parsed.deviceId, existingAppium, appium);
-    if (!transition.matched) {
-        const rollback = await terminateBrokerOwnedAppiumAndWait(appium, normalized);
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "appium-runtime-state-conflict",
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                found: transition.found,
-                currentAppium: transition.currentAppium,
-                rollback,
-            },
-        };
-    }
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                appium,
-                started: true,
-                reused: false,
-                replaced,
-                authority: "host-broker",
-                execution,
-                portCleanup,
-                portSelection,
-                runtime: {
-                    provisioned: runtime.provisioned,
-                    source: runtime.source,
-                },
-                session: null,
-            },
-        },
-    };
-}
-
-async function stopAppiumServerUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppiumParams(params, "stop");
-    if (!parsed.ok) return appiumParamError(parsed);
-    let devices: unknown[];
-    try {
-        devices = readOwnerDevices(ownerId, parsed.stateKey);
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
-    if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const appium = device && typeof device === "object" ? (device as { appium?: unknown }).appium : null;
-    const signal = await terminateBrokerOwnedAppiumAndWait(appium, normalized);
-    if (!signal.ok) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "appium-stop-failed",
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                appium,
-                signal,
-                authority: "host-broker",
-            },
-        };
-    }
-    const transition = transitionOwnerAppiumRuntime(ownerId, parsed.stateKey, parsed.deviceId, appium, null);
-    if (!transition.matched && transition.currentAppium !== null) {
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "appium-runtime-state-conflict",
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                currentAppium: transition.currentAppium,
-                signal,
-                authority: "host-broker",
-            },
-        };
-    }
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                stopped: true,
-                stalePid: "stale" in signal && signal.stale === true,
-                signal,
-                authority: "host-broker",
-            },
-        },
-    };
-}
-
-function findOwnerAppiumDevice(ownerId: string, parsed: AppiumParamSuccess) {
-    const devices = readOwnerDevices(ownerId, parsed.stateKey);
-    const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
-    return { devices, device };
-}
-
-function writeUpdatedAppiumDevice(
-    ownerId: string,
-    parsed: AppiumParamSuccess,
-    expected: unknown,
-    appium: Record<string, unknown> | null,
-) {
-    return transitionOwnerAppiumRuntime(ownerId, parsed.stateKey, parsed.deviceId, expected, appium);
-}
-
-function appiumRuntimeStateConflict(ownerId: string, parsed: AppiumParamSuccess, transition: ReturnType<typeof transitionOwnerAppiumRuntime>, detail: Record<string, unknown> = {}) {
-    return {
-        status: 409,
-        payload: {
-            ok: false,
-            error: "appium-runtime-state-conflict",
-            ownerId,
-            backend: parsed.backend,
-            stateKey: parsed.stateKey,
-            deviceId: parsed.deviceId,
-            found: transition.found,
-            currentAppium: transition.currentAppium,
-            ...detail,
-        },
-    };
-}
-
-function appiumListenerOwnershipFailure(ownerId: string, parsed: AppiumParamSuccess, verification: ReturnType<typeof verifyBrokerOwnedAppiumListener>) {
-    return {
-        status: 409,
-        payload: {
-            ok: false,
-            error: "appium-listener-ownership-unverified",
-            ownerId,
-            backend: parsed.backend,
-            stateKey: parsed.stateKey,
-            deviceId: parsed.deviceId,
-            verification,
-        },
-    };
-}
-
-async function ensureAppiumWebDriverSessionUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppiumParams(params, "session");
-    if (!parsed.ok) return appiumParamError(parsed);
-    let device: unknown;
-    try {
-        ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    if (parsed.backend === "ios-simulator") {
-        const ownedTarget = resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized);
-        if (!ownedTarget.ok) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: ownedTarget.error,
-                    missing: ownedTarget.missing,
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                },
-            };
-        }
-        device = { ...(device as Record<string, unknown>), udid: ownedTarget.target };
-    }
-
-    let appium = device && typeof device === "object" && (device as { appium?: unknown }).appium && typeof (device as { appium?: unknown }).appium === "object"
-        ? { ...((device as { appium: Record<string, unknown> }).appium) }
-        : {};
-    const force = params && typeof params === "object" && !Array.isArray(params) && (params as { force?: unknown }).force === true;
-    const existingEndpoint = brokerOwnedAppiumEndpoint(appium);
-    const existingVerification = (claimsBrokerOwnedAppiumRuntime(appium) || existingEndpoint.ok)
-        ? verifyBrokerOwnedAppiumListener(appium, normalized)
-        : null;
-    if (existingVerification && !existingVerification.ok) {
-        return appiumListenerOwnershipFailure(ownerId, parsed, existingVerification);
-    }
-    const existingServerUrl = existingVerification?.ok ? existingVerification.serverUrl : null;
-    if (existingServerUrl && typeof appium.sessionId === "string" && force) {
-        const deleteResponse = await fetchAppiumJson(`${existingServerUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "DELETE", timeoutMs: normalized.commandTimeoutMs });
-        if (!deleteResponse.ok) {
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: "appium-session-delete-failed",
-                    result: {
-                        ownerId,
-                        backend: parsed.backend,
-                        stateKey: parsed.stateKey,
-                        deviceId: parsed.deviceId,
-                        appium,
-                        created: false,
-                        reused: false,
-                        authority: "host-broker",
-                        response: deleteResponse,
-                    },
-                },
-            };
-        }
-        const previousAppium = appium;
-        appium = { ...appium, sessionId: null, sessionCapabilities: null, updatedAt: new Date().toISOString() };
-        const transition = writeUpdatedAppiumDevice(ownerId, parsed, previousAppium, appium);
-        if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { response: deleteResponse });
-    }
-    if (existingServerUrl && typeof appium.sessionId === "string" && !force) {
-        const status = await fetchAppiumJson(`${existingServerUrl}/status`, { method: "GET", timeoutMs: normalized.commandTimeoutMs });
-        const session = status.ok ? await fetchAppiumJson(`${existingServerUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "GET", timeoutMs: normalized.commandTimeoutMs }) : null;
-        if (status.ok && session?.ok) {
-            return {
-                status: 200,
-                payload: {
-                    ok: true,
-                    result: {
-                        ownerId,
-                        backend: parsed.backend,
-                        stateKey: parsed.stateKey,
-                        deviceId: parsed.deviceId,
-                        appium,
-                        reused: true,
-                        created: false,
-                        authority: "host-broker",
-                    },
-                },
-            };
-        }
-        const previousAppium = appium;
-        appium = { ...appium, sessionId: null, sessionCapabilities: null, updatedAt: new Date().toISOString() };
-        const transition = writeUpdatedAppiumDevice(ownerId, parsed, previousAppium, appium);
-        if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { status, session });
-    }
-
-    let startedServer = false;
-    if (!brokerLaunchedAppiumServerUrl(appium)) {
-        const started = await startAppiumServerUnlocked(ownerId, params, normalized);
-        if (started.status !== 200) return started;
-        startedServer = true;
-        try {
-            ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-        } catch (error) {
-            return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-        }
-        appium = device && typeof device === "object" && (device as { appium?: unknown }).appium && typeof (device as { appium?: unknown }).appium === "object"
-            ? { ...((device as { appium: Record<string, unknown> }).appium) }
-            : {};
-    }
-
-    const listenerVerification = startedServer
-        ? await waitForBrokerOwnedAppiumListener(appium, normalized)
-        : verifyBrokerOwnedAppiumListener(appium, normalized);
-    if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
-    const serverUrl = listenerVerification.serverUrl;
-    const readiness = await waitForAppiumServerReady(serverUrl);
-    if (!readiness.ok) {
-        const signal = await terminateBrokerOwnedAppiumAndWait(appium, normalized);
-        const transition = signal.ok ? writeUpdatedAppiumDevice(ownerId, parsed, appium, null) : null;
-        if (transition && !transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { readiness, signal });
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "appium-server-not-ready",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                readiness,
-                signal,
-            },
-        };
-    }
-    const capabilities = appiumCapabilities(parsed.backend, device);
-    let response = await fetchAppiumJson(`${serverUrl}/session`, {
-        method: "POST",
-        body: { capabilities: { alwaysMatch: capabilities } },
-        timeoutMs: DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS,
-    });
-    let instrumentationRecovery = null;
-    if (!response.ok && parsed.backend.startsWith("android") && appiumInstrumentationInitializationFailed(response)) {
-        instrumentationRecovery = resetAndroidAppiumInstrumentation(device, normalized);
-        if (instrumentationRecovery.attempted) {
-            response = await fetchAppiumJson(`${serverUrl}/session`, {
-                method: "POST",
-                body: { capabilities: { alwaysMatch: capabilities } },
-                timeoutMs: DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS,
-            });
-        }
-    }
-    if (!response.ok) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "appium-session-create-failed",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                response,
-                ...(instrumentationRecovery ? { instrumentationRecovery } : {}),
-            },
-        };
-    }
-    const responseBody = response.body as { value?: { sessionId?: unknown }; sessionId?: unknown } | null;
-    const sessionId = typeof responseBody?.value?.sessionId === "string"
-        ? responseBody.value.sessionId
-        : typeof responseBody?.sessionId === "string"
-            ? responseBody.sessionId
-            : null;
-    if (!sessionId) {
-        return { status: 502, payload: { ok: false, error: "appium-session-id-missing", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, response } };
-    }
-    const updatedAppium = {
-        ...appium,
-        authority: "host-broker",
-        sessionId,
-        sessionCapabilities: capabilities,
-        ...(instrumentationRecovery ? { instrumentationRecovery: { attempted: true, recovered: true, updatedAt: new Date().toISOString() } } : {}),
-        updatedAt: new Date().toISOString(),
-    };
-    const transition = writeUpdatedAppiumDevice(ownerId, parsed, appium, updatedAppium);
-    if (!transition.matched) {
-        const rollback = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(sessionId)}`, { method: "DELETE", timeoutMs: normalized.commandTimeoutMs });
-        return appiumRuntimeStateConflict(ownerId, parsed, transition, { response, rollback });
-    }
-    const updatedDevice = transition.device;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                device: updatedDevice,
-                appium: updatedAppium,
-                created: true,
-                reused: false,
-                authority: "host-broker",
-                response,
-            },
-        },
-    };
-}
-
-async function deleteAppiumWebDriverSessionUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppiumParams(params, "delete-session");
-    if (!parsed.ok) return appiumParamError(parsed);
-    let device: unknown;
-    try {
-        ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const appium = device && typeof device === "object" && (device as { appium?: unknown }).appium && typeof (device as { appium?: unknown }).appium === "object"
-        ? { ...((device as { appium: Record<string, unknown> }).appium) }
-        : null;
-    if (!appium || typeof appium.sessionId !== "string") {
-        return { status: 200, payload: { ok: true, result: { ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, deleted: false, authority: "host-broker" } } };
-    }
-    const listenerVerification = verifyBrokerOwnedAppiumListener(appium, normalized);
-    if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
-    const serverUrl = listenerVerification.serverUrl;
-    const response = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "DELETE", timeoutMs: normalized.commandTimeoutMs });
-    if (!response.ok) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: "appium-session-delete-failed",
-                result: {
-                    ownerId,
-                    backend: parsed.backend,
-                    stateKey: parsed.stateKey,
-                    deviceId: parsed.deviceId,
-                    appium,
-                    deleted: false,
-                    authority: "host-broker",
-                    response,
-                },
-            },
-        };
-    }
-    const { sessionId: _sessionId, sessionCapabilities: _sessionCapabilities, ...remainingAppium } = appium;
-    const updatedAppium = { ...remainingAppium, updatedAt: new Date().toISOString() };
-    const transition = writeUpdatedAppiumDevice(ownerId, parsed, appium, updatedAppium);
-    if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { response });
-    const updatedDevice = transition.device;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                device: updatedDevice,
-                appium: updatedAppium,
-                deleted: response.ok,
-                authority: "host-broker",
-                response,
-            },
-        },
-    };
-}
-
 type AppiumRequestBudget = { remaining(): number };
 
-function appiumRequestBudgetFailure(): BrokerRpcResult {
-    return { status: 504, payload: { ok: false, error: "appium-request-timeout" } };
-}
-
-async function proxyAppiumWebDriverRequest(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions, waitBudget?: AppiumRequestBudget) {
-    const parsed = validateAppiumRequestParams(params);
-    if (!parsed.ok) return appiumParamError(parsed);
-    let device: unknown;
-    try {
-        ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-    } catch (error) {
-        return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-    }
-    if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-    const appium = device && typeof device === "object" && (device as { appium?: unknown }).appium && typeof (device as { appium?: unknown }).appium === "object"
-        ? (device as { appium: Record<string, unknown> }).appium
-        : null;
-    if (!appium || typeof appium.sessionId !== "string") {
-        return { status: 400, payload: { ok: false, error: "missing-appium-session", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
-    }
-    const listenerVerification = verifyBrokerOwnedAppiumListener(appium, normalized);
-    if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
-    const serverUrl = listenerVerification.serverUrl;
-    const timeoutMs = waitBudget ? Math.ceil(waitBudget.remaining()) : appiumWebDriverRequestTimeoutMs(normalized.commandTimeoutMs);
-    if (timeoutMs <= 0) return appiumRequestBudgetFailure();
-    const response = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(appium.sessionId)}${parsed.path}`, {
-        method: parsed.method,
-        body: parsed.method === "GET" ? undefined : parsed.body,
-        timeoutMs,
-    });
-    if (waitBudget && waitBudget.remaining() <= 0) return appiumRequestBudgetFailure();
-    return {
-        status: response.ok ? 200 : 502,
-        payload: {
-            ok: response.ok,
-            ...(response.ok ? {} : { error: "appium-request-failed" }),
-            result: {
-                ownerId,
-                backend: parsed.backend,
-                stateKey: parsed.stateKey,
-                deviceId: parsed.deviceId,
-                method: parsed.method,
-                path: parsed.path,
-                authority: "host-broker",
-                response,
-            },
+function brokerAppiumApplication(normalized: NormalizedBrokerOptions) {
+    return createBrokerAppiumApplication({
+        commandTimeoutMs: normalized.commandTimeoutMs,
+        commandOutputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        platform: normalized.platform,
+        usesDefaultCommandRunner: normalized.usesDefaultCommandRunner,
+        strictAppiumPortOwnership: normalized.strictAppiumPortOwnership,
+        injectedExecutable: normalized.providerPaths.appium,
+        nodeExecutable: process.execPath,
+        readDevices: readOwnerDevices,
+        stateFailure: ownerDeviceStateFailure,
+        notFound: ownerDeviceNotFound,
+        publish: transitionOwnerAppiumRuntime,
+        withDeviceOperation: withOwnerDeviceOperation,
+        heartbeat: refreshPhysicalDeviceLeaseForOperation,
+        isLockTimeout: isDeviceOperationLockTimeout,
+        lockFailure: deviceOperationLockFailure,
+        isProcessIdentityCurrent: (identity, pid) => inspectDeviceRuntimeProcessIdentity(identity, pid).status === "match",
+        verifyListener: (appium) => verifyBrokerOwnedAppiumListener(appium, normalized),
+        terminateRuntime: (appium) => terminateBrokerOwnedAppiumAndWait(appium, normalized),
+        terminatePortListener: (port) => terminateManagedAppiumPortListener(port, normalized),
+        portListener: (port) => normalized.portProcessResolver(port, normalized.platform),
+        portSeed: (ownerId, backend, deviceId) => createHash("sha256").update(`${ownerId}:${backend}:${deviceId}:appium`).digest().readUInt16BE(0),
+        resolveIosTarget: (ownerId, device) => resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized),
+        http: fetchAppiumJson,
+        execute: normalized.commandRunner,
+        launch: (command) => startDetachedProviderCommand(command, normalized, "Appium server"),
+        commandEnvironment: (backend) => appiumCommandEnv(backend, normalized),
+        providerExecutable: (name) => providerExecutable(name, normalized),
+        resolveExecutable: resolveExecutablePath,
+        runtimePaths: () => {
+            const packageRoot = packageRootForBroker();
+            const runtimeRoot = brokerAppiumRuntimeRoot();
+            return { packageRoot, runtimeRoot,
+                sourcePackage: join(packageRoot, "appium-runtime", "package.json"),
+                sourceLock: join(packageRoot, "appium-runtime", "package-lock.json"),
+                executable: brokerAppiumRuntimeExecutable(normalized),
+                entry: brokerAppiumRuntimeEntry(), markerFile: join(runtimeRoot, ".ccc-runtime.json") };
         },
-    };
-}
-
-async function withAppiumDeviceOperation(
-    ownerId: string,
-    params: unknown,
-    action: "record" | "clear" | "start" | "stop" | "session" | "delete-session" | "request",
-    operation: (waitBudget?: AppiumRequestBudget) => Promise<BrokerRpcResult> | BrokerRpcResult,
-): Promise<BrokerRpcResult> {
-    const parsed = action === "request" ? validateAppiumRequestParams(params) : validateAppiumParams(params, action);
-    if (!parsed.ok) return appiumParamError(parsed);
-    const requestTimeoutMs = action === "request" ? (params as Record<string, unknown>).requestTimeoutMs : undefined;
-    const deadline = typeof requestTimeoutMs === "number" ? performance.now() + requestTimeoutMs : null;
-    const waitBudget = deadline === null ? undefined : { remaining: () => Math.max(0, deadline - performance.now()) };
-    try {
-        return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, () => {
-            if (waitBudget && waitBudget.remaining() <= 0) return appiumRequestBudgetFailure();
-            if (DEVICE_BROKER_PHYSICAL_BACKENDS.has(parsed.stateKey)
-                && (action === "session" || action === "delete-session" || action === "request")) {
-                let device: unknown;
-                try {
-                    ({ device } = findOwnerAppiumDevice(ownerId, parsed));
-                } catch (error) {
-                    return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-                }
-                if (!device || typeof device !== "object" || Array.isArray(device)) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
-                const leaseFailure = refreshPhysicalDeviceLeaseForOperation(ownerId, {
-                    stateKey: parsed.stateKey,
-                    backend: parsed.backend,
-                    device: device as Record<string, unknown>,
-                }, parsed.deviceId, waitBudget);
-                if (leaseFailure) return leaseFailure;
-            }
-            if (waitBudget && waitBudget.remaining() <= 0) return appiumRequestBudgetFailure();
-            return operation(waitBudget);
-        }, waitBudget);
-    } catch (error) {
-        if (!isDeviceOperationLockTimeout(error)) throw error;
-        return deviceOperationLockFailure(ownerId, parsed.backend, parsed.deviceId, error);
-    }
+        readManifest: (path, kind) => {
+            const packageRoot = packageRootForBroker();
+            assertDeviceLabPathWithinRoot(packageRoot, path, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock");
+            return readDeviceLabTextFile(path, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock",
+                kind === "package" ? DEVICE_BROKER_APPIUM_PACKAGE_MANIFEST_LIMIT_BYTES : DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES);
+        },
+        stateErrorCode: (error) => deviceLabStateFileErrorCode(error) || null,
+        ensureRuntimeDirectory: () => { ensureBrokerAppiumRuntimeDirectory(); return undefined; },
+        inspectRuntimeDirectory: inspectBrokerAppiumRuntimeDirectory,
+        inspectNodeModules: inspectBrokerAppiumNodeModulesDirectory,
+        entryIsValid: brokerAppiumRuntimeEntryIsValid,
+        readMarker: (path) => readDeviceLabStateFile(path, (value) => value, "appium-runtime-marker", DEVICE_BROKER_APPIUM_RUNTIME_MARKER_LIMIT_BYTES),
+        writeManifest: (kind, text) => { writeFileAtomically(join(brokerAppiumRuntimeRoot(), kind === "package" ? "package.json" : "package-lock.json"), text); return undefined; },
+        removeMarker: (path) => { unlinkSync(path); return undefined; },
+        writeMarker: (path, marker) => { writeJsonFileAtomically(path, marker); return undefined; },
+        manifestDigest: (packageText, lockText) => createHash("sha256").update(packageText).update(lockText).digest("hex"),
+        withInstallLock: (operation, options) => withSharedMutationLock(brokerAppiumRuntimeInstallLockFile(), operation, options),
+        timestamp: () => new Date().toISOString(), now: Date.now, monotonicNow: () => performance.now(),
+        runtimeId: () => randomBytes(16).toString("hex"), sleep,
+    });
 }
 
 async function handleBrokerRpcUnsafe(ownerId: string, body: unknown, normalized: NormalizedBrokerOptions, startedAt: string): Promise<BrokerRpcResult> {
@@ -14763,13 +13362,13 @@ async function handleBrokerRpcUnsafe(ownerId: string, body: unknown, normalized:
     if (method === "broker.device.tool.invoke") return invokeDeviceTool(ownerId, rpc.params, normalized);
     if (method === "broker.appium.status") return appiumSessionStatus(ownerId, rpc.params);
     if (method === "broker.appium.list") return appiumSessionList(ownerId, rpc.params);
-    if (method === "broker.appium.record") return withAppiumDeviceOperation(ownerId, rpc.params, "record", () => recordAppiumSession(ownerId, rpc.params, normalized));
-    if (method === "broker.appium.clear") return withAppiumDeviceOperation(ownerId, rpc.params, "clear", () => clearAppiumSession(ownerId, rpc.params, normalized));
-    if (method === "broker.appium.start") return withAppiumDeviceOperation(ownerId, rpc.params, "start", () => startAppiumServerUnlocked(ownerId, rpc.params, normalized));
-    if (method === "broker.appium.stop") return withAppiumDeviceOperation(ownerId, rpc.params, "stop", () => stopAppiumServerUnlocked(ownerId, rpc.params, normalized));
-    if (method === "broker.appium.session.ensure") return withAppiumDeviceOperation(ownerId, rpc.params, "session", () => ensureAppiumWebDriverSessionUnlocked(ownerId, rpc.params, normalized));
-    if (method === "broker.appium.session.delete") return withAppiumDeviceOperation(ownerId, rpc.params, "delete-session", () => deleteAppiumWebDriverSessionUnlocked(ownerId, rpc.params, normalized));
-    if (method === "broker.appium.request") return withAppiumDeviceOperation(ownerId, rpc.params, "request", (waitBudget) => proxyAppiumWebDriverRequest(ownerId, rpc.params, normalized, waitBudget));
+    if (method === "broker.appium.record") return brokerAppiumApplication(normalized).record(ownerId, rpc.params);
+    if (method === "broker.appium.clear") return brokerAppiumApplication(normalized).clear(ownerId, rpc.params);
+    if (method === "broker.appium.start") return brokerAppiumApplication(normalized).start(ownerId, rpc.params);
+    if (method === "broker.appium.stop") return brokerAppiumApplication(normalized).stop(ownerId, rpc.params);
+    if (method === "broker.appium.session.ensure") return brokerAppiumApplication(normalized).ensureSession(ownerId, rpc.params);
+    if (method === "broker.appium.session.delete") return brokerAppiumApplication(normalized).deleteSession(ownerId, rpc.params);
+    if (method === "broker.appium.request") return brokerAppiumApplication(normalized).request(ownerId, rpc.params);
     return { status: 404, payload: { ok: false, error: "unknown-method", method } };
 }
 

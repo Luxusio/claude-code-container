@@ -1159,6 +1159,15 @@ describe("device-lab host broker Appium session authority", () => {
         }]);
 
         try {
+            const replacement = await fetch(endpoint, {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.start", params: { backend: "android-emulator", deviceId: "pixel-mismatch", force: true } }),
+            });
+            expect(replacement.status).toBe(502);
+            expect(await replacement.json()).toMatchObject({ ok: false, error: "appium-existing-process-stop-failed" });
+            expect(existsSync(brokerAppiumTestPaths().runtimeRoot)).toBe(false);
+
             const stop = await fetch(endpoint, {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
@@ -1767,6 +1776,37 @@ describe("device-lab host broker Appium session authority", () => {
         }
     });
 
+    it("leaves server metadata untouched when deleting an absent WebDriver session", async () => {
+        const cwd = "/project/broker-appium-session-delete-noop";
+        const ownerId = deviceLabOwnerId(cwd);
+        const fakeAppium = await createFakeAppiumServer();
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const appium = { serverUrl: fakeAppium.url, port: fakeAppium.port, updatedAt: "2026-10-10T00:00:00.000Z" };
+        const root = writeBrokerDevices(ownerId, "android", [{
+            id: "pixel-no-session", backend: "android-emulator", status: "running", appium,
+        }]);
+        const statePath = join(root, "devices.json");
+        const before = readFileSync(statePath, "utf8");
+
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.delete", params: {
+                    backend: "android-emulator", deviceId: "pixel-no-session",
+                } }),
+            });
+            expect(response.status).toBe(200);
+            expect(await response.json()).toMatchObject({ ok: true, result: { deleted: false, authority: "host-broker" } });
+            expect(readFileSync(statePath, "utf8")).toBe(before);
+            expect(fakeAppium.requests).toEqual([]);
+        } finally {
+            await close(server);
+            await fakeAppium.close();
+            cleanupOwner(ownerId);
+        }
+    });
+
     it("creates, reuses, proxies, and deletes broker-owned WebDriver sessions", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-appium-webdriver-test");
         const fakeAppium = await createFakeAppiumServer("ANDROID-BROKER-SESSION-1", { readyAfterStatusRequests: 3, sessionCreateFailures: 1 });
@@ -1933,6 +1973,10 @@ describe("device-lab host broker Appium session authority", () => {
             }));
             const devicesFile = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")) as { devices: Array<{ id: string; appium: { sessionId?: unknown } }> };
             expect(devicesFile.devices.find((device) => device.id === "pixel-owned")?.appium.sessionId).toBeUndefined();
+            expect(devicesFile.devices.find((device) => device.id === "pixel-owned")?.appium).toMatchObject({
+                authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start",
+                serverUrl: fakeAppium.url, serverPid: 88888,
+            });
             expect(fakeAppium.requests.map((request) => `${request.method} ${request.url}`)).toEqual(expect.arrayContaining([
                 "POST /session",
                 "GET /status",
