@@ -20,6 +20,8 @@ Before executing a shipping consumer, syntax-check its exact submitted program a
 
 Workspace failure evidence records the current module and rejection site before rethrowing the original error. Primitive own-data fields from native errors are captured before membrane conversion, so diagnosing a wrapped error does not require reflecting through an unknown proxy. Failure evidence stays a failure; additional negative controls are counted separately from successful operation observations.
 
+Manifest authentication distinguishes the npm package and Unix installation explicitly. The expected Unix manifest is derived from a fixed-pin authenticated source manifest using the reviewed installer transformation; candidate bytes never select their own authority. Both valid forms and seven rejecting controls check unknown modes, cross-form manifests and changed bytes. Other source and output pins remain unchanged.
+
 The new Admin proof executes the complete compiled CLI caller. QEMU proofs execute the existing package handlers and direct MCP image listing, preserve omission of disk/target public tools, and retain unsupported broker behavior. No new successful broker QEMU route is inferred.
 
 ## Current limits
