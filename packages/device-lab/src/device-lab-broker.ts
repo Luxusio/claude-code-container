@@ -1,3 +1,9 @@
+import { createBrokerPhysicalDevicesApplication } from './device-lab/application/broker-physical-devices.js';
+import { createBrokerOwnerCleanupApplication } from './device-lab/application/broker-owner-cleanup.js';
+import { validateAttachParams as validatePhysicalAttachParams, physicalOwnerConflict } from './device-lab/domain/broker-physical-devices.js';
+import { cleanupRecord, type CleanupLeaseGuard } from './device-lab/domain/broker-owner-cleanup.js';
+import type { BrokerPhysicalDevicesPorts } from './device-lab/ports/broker-physical-devices.js';
+import type { BrokerOwnerCleanupPorts } from './device-lab/ports/broker-owner-cleanup.js';
 import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyper-v-snapshots.js";
 import type { SnapshotExecution } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
@@ -615,7 +621,6 @@ const DEVICE_BROKER_MUTATING_RPC_METHODS = new Set([
 const brokerOwnerMutationTails = new Map<string, Promise<void>>();
 const brokerAuthNonces = new Map<string, number>();
 const DEVICE_BROKER_SERVICE_ACTIONS = new Set(["status"]);
-const DEVICE_BROKER_APPLE_TRUST_ACTIONS = new Set(["status", "pair", "connect"]);
 
 
 export interface DeviceBrokerOptions {
@@ -710,13 +715,6 @@ type AttachParamSuccess = {
     connectionProvided: boolean;
     host: string | null;
     port: number | null;
-};
-type AppleTrustParamError = { ok: false; status: number; error: string; allowed?: string[] };
-type AppleTrustParamSuccess = {
-    ok: true;
-    action: string;
-    backend: "ios-device";
-    udid: string | null;
 };
 export type ProviderCommand = {
     mode: "exec" | "detached" | "noop";
@@ -5399,33 +5397,8 @@ function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
     };
 }
 
-function validateAttachParams(params: unknown): AttachParamError | AttachParamSuccess {
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-        return { ok: false, status: 400, error: "invalid-attach-params" };
-    }
-    const input = params as Record<string, unknown>;
-    const backend = typeof input.backend === "string" ? input.backend : "";
-    if (!DEVICE_BROKER_PHYSICAL_BACKENDS.has(backend)) {
-        return { ok: false, status: 400, error: "invalid-attach-backend", allowed: [...DEVICE_BROKER_PHYSICAL_BACKENDS] };
-    }
-    const stateKey = backend;
-    const name = typeof input.name === "string" && input.name.trim() ? input.name.trim() : null;
-    const serial = typeof input.serial === "string" && input.serial.trim() ? input.serial.trim() : null;
-    const udid = typeof input.udid === "string" && input.udid.trim() ? input.udid.trim() : null;
-    const identity = backend === "android-device" ? serial || (typeof input.host === "string" ? input.host : null) : udid;
-    const deviceId = typeof input.deviceId === "string" && input.deviceId.trim()
-        ? input.deviceId.trim()
-        : `${backend}-${createHash("sha256").update(String(identity || name || "real-device")).digest("hex").slice(0, 10)}`;
-    if (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) {
-        return { ok: false, status: 400, error: "invalid-device-id" };
-    }
-    const connectionProvided = typeof input.connection === "string";
-    const connection = connectionProvided ? String(input.connection) : "usb";
-    if (!["usb", "wifi"].includes(connection)) return { ok: false, status: 400, error: "invalid-connection" };
-    const host = typeof input.host === "string" && input.host.trim() ? input.host.trim() : null;
-    const port = Number.isFinite(input.port) ? Number(input.port) : null;
-    return { ok: true, backend, stateKey, deviceId, name, serial, udid, connection, connectionProvided, host, port };
-}
+function physicalDeviceId(backend: string, identity: string) { return `${backend}-${createHash("sha256").update(identity).digest("hex").slice(0, 10)}`; }
+function validateAttachParams(params: unknown): AttachParamError | AttachParamSuccess { return validatePhysicalAttachParams(params, physicalDeviceId); }
 
 function attachParamError(parsed: AttachParamError) {
     return {
@@ -5488,27 +5461,7 @@ function androidHostDeviceInventory(normalized: NormalizedBrokerOptions) {
     };
 }
 
-function resolveSingleUsbAndroidTarget(parsed: AttachParamSuccess, normalized: NormalizedBrokerOptions): { ok: true; target: string; inventory: ReturnType<typeof androidHostDeviceInventory> } | { ok: false; status: number; payload: Record<string, unknown> } {
-    const inventory = androidHostDeviceInventory(normalized);
-    if (!inventory.ok) return { ok: false, status: 502, payload: { ok: false, error: "adb-inventory-failed", inventory } };
-    const candidates = inventory.devices.filter((device) => device.connection === "usb" && device.attachable);
-    if (candidates.length === 1) return { ok: true, target: candidates[0].serial, inventory };
-    return {
-        ok: false,
-        status: candidates.length === 0 ? 404 : 409,
-        payload: {
-            ok: false,
-            error: candidates.length === 0 ? "android-device-not-visible" : "android-device-selection-required",
-            backend: parsed.backend,
-            connection: parsed.connection,
-            hostDevices: inventory.devices,
-            candidates,
-            message: candidates.length === 0
-                ? "No attachable USB Android device is visible to host adb."
-                : "Multiple attachable USB Android devices are visible; pass serial.",
-        },
-    };
-}
+
 
 function parseXctraceDevices(text: string) {
     return String(text || "")
@@ -5530,97 +5483,17 @@ function parseXctraceDevices(text: string) {
         .filter(Boolean) as Array<{ name: string; udid: string; version: string | null; connection: string; availability: string; raw: string }>;
 }
 
-function validateAppleTrustParams(params: unknown): AppleTrustParamError | AppleTrustParamSuccess {
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-        return { ok: false, status: 400, error: "invalid-apple-trust-params" };
-    }
-    const input = params as Record<string, unknown>;
-    const backend = typeof input.backend === "string" ? input.backend : "ios-device";
-    if (backend !== "ios-device") {
-        return { ok: false, status: 400, error: "invalid-apple-trust-backend", allowed: ["ios-device"] };
-    }
-    const action = typeof input.action === "string" && input.action.trim() ? input.action.trim() : "status";
-    if (!DEVICE_BROKER_APPLE_TRUST_ACTIONS.has(action)) {
-        return { ok: false, status: 400, error: "invalid-apple-trust-action", allowed: [...DEVICE_BROKER_APPLE_TRUST_ACTIONS] };
-    }
-    const udid = typeof input.udid === "string" && input.udid.trim() ? input.udid.trim() : null;
-    return { ok: true, action, backend, udid };
-}
 
-function appleTrustManualSteps() {
-    return [
-        "Connect the iPhone or iPad to the macOS host over USB, unlock it, and accept the Trust This Computer prompt.",
-        "Enable Developer Mode on the device when iOS requires it.",
-        "Open Xcode Devices and Simulators on the macOS host and enable network pairing if Wi-Fi attach is needed.",
-        "Re-run device_wireless with backend=ios-device and action=status, then call device_attach when xctrace reports the UDID as USB or Network.",
-    ];
-}
 
-function appleTrustDiagnostic(action: string, udid: string | null, hostDevice: ReturnType<typeof parseXctraceDevices>[number] | null, inventory: ProviderCommandResult | null) {
-    const visible = Boolean(hostDevice);
-    const networkVisible = hostDevice?.connection === "wifi";
-    const unavailable = hostDevice?.availability === "unavailable";
-    const readyToAttach = visible && !unavailable;
-    const manualRequired = action !== "status" || !readyToAttach;
-    return {
-        backend: "ios-device",
-        action,
-        udid,
-        provider: "xcrun-xctrace",
-        selected: hostDevice,
-        visible,
-        networkVisible,
-        readyToAttach,
-        manualRequired,
-        trustState: visible ? unavailable ? "visible-unavailable" : "visible-to-xctrace" : "not-visible",
-        supportedActions: ["status"],
-        unsupportedActions: ["pair", "connect"],
-        attachFlow: networkVisible
-            ? "Call device_attach with backend=ios-device, connection=wifi, and this UDID."
-            : readyToAttach
-                ? "Call device_attach with backend=ios-device and this UDID for USB attach, or complete Xcode network pairing first for Wi-Fi attach."
-                : "Complete Apple trust, Developer Mode, and Xcode pairing on the macOS host, then re-run this status check.",
-        manualSteps: appleTrustManualSteps(),
-        safety: {
-            bypassesTrustPrompt: false,
-            powersOffDevice: false,
-            erasesDevice: false,
-            disconnectsDevice: false,
-        },
-        inventoryCommand: inventory ? {
-            provider: inventory.provider,
-            executable: inventory.executable,
-            args: inventory.args,
-            status: inventory.status,
-            stderr: inventory.stderr,
-        } : null,
-    };
-}
 
-function appleTrustParamError(parsed: AppleTrustParamError) {
-    return {
-        status: parsed.status,
-        payload: {
-            ok: false,
-            error: parsed.error,
-            ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
-        },
-    };
-}
 
-function existingPhysicalDevice(ownerId: string, stateKey: string, deviceId: string, hardwareId: string, hardwareField: "serial" | "udid") {
-    return readOwnerDevices(ownerId, stateKey).find((device) => {
-        if (!device || typeof device !== "object") return false;
-        const candidate = device as Record<string, unknown>;
-        return candidate.id === deviceId || candidate[hardwareField] === hardwareId;
-    });
-}
 
-function detachedPhysicalDeviceCanReattach(existing: Record<string, unknown>, deviceId: string, hardwareId: string, hardwareField: "serial" | "udid") {
-    return existing.id === deviceId
-        && existing[hardwareField] === hardwareId
-        && existing.status === "detached";
-}
+
+
+
+
+
+
 
 function claimOrReattachPhysicalOwnerDevice(
     ownerId: string,
@@ -5630,17 +5503,14 @@ function claimOrReattachPhysicalOwnerDevice(
 ) {
     return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
         const devices = readOwnerDevices(ownerId, stateKey);
-        const conflicts = devices.filter((candidate) => candidate && typeof candidate === "object" && (
-            (candidate as Record<string, unknown>).id === device.id
-            || (candidate as Record<string, unknown>)[hardwareField] === device[hardwareField]
-        )) as Array<Record<string, unknown>>;
+        const { conflicts, allowed } = physicalOwnerConflict(devices, device, hardwareField);
         if (conflicts.length === 0) {
             const next = [...devices, device];
             assertOwnerDeviceStateWritable(next, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
             writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices: next });
             return { ok: true as const, device, reattached: false };
         }
-        if (conflicts.length !== 1 || !detachedPhysicalDeviceCanReattach(conflicts[0], String(device.id), String(device[hardwareField]), hardwareField)) {
+        if (!allowed) {
             return { ok: false as const, error: "owner-device-already-attached", existing: conflicts[0] || null };
         }
         const next = devices.map((candidate) => candidate === conflicts[0] ? device : candidate);
@@ -5650,364 +5520,15 @@ function claimOrReattachPhysicalOwnerDevice(
     });
 }
 
-function brokerAttachAndroid(ownerId: string, parsed: AttachParamSuccess, normalized: NormalizedBrokerOptions) {
-    const adb = executableFor("adb", normalized);
-    if (parsed.connection === "wifi" && !parsed.host && !parsed.serial) {
-        return { status: 400, payload: { ok: false, error: "missing-android-wifi-target" } };
-    }
-    let initialInventory: ReturnType<typeof androidHostDeviceInventory> | null = null;
-    const resolvedUsbTarget = parsed.connection === "usb" && !parsed.serial
-        ? resolveSingleUsbAndroidTarget(parsed, normalized)
-        : null;
-    if (resolvedUsbTarget && !resolvedUsbTarget.ok) return { status: resolvedUsbTarget.status, payload: resolvedUsbTarget.payload };
-    if (resolvedUsbTarget?.ok) initialInventory = resolvedUsbTarget.inventory;
-    const target = parsed.connection === "wifi"
-        ? (parsed.serial?.includes(":") ? parsed.serial : `${parsed.host || parsed.serial}:${parsed.port || 5555}`)
-        : (parsed.serial || (resolvedUsbTarget?.ok ? resolvedUsbTarget.target : null));
-    if (!target || target.startsWith("emulator-")) {
-        return { status: 400, payload: { ok: false, error: target?.startsWith("emulator-") ? "android-emulator-not-physical-device" : "missing-android-serial" } };
-    }
-    const existing = existingPhysicalDevice(ownerId, parsed.stateKey, parsed.deviceId, target, "serial") as Record<string, unknown> | undefined;
-    if (existing && !detachedPhysicalDeviceCanReattach(existing, parsed.deviceId, target, "serial")) {
-        return { status: 409, payload: { ok: false, error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: target } };
-    }
-    const leaseClaimNonce = randomBytes(16).toString("hex");
-    const lease = claimPhysicalLease(ownerId, {
-        backend: parsed.backend,
-        hardwareId: target,
-        deviceId: parsed.deviceId,
-        connection: parsed.connection,
-        claimNonce: leaseClaimNonce,
-        transport: parsed.connection === "wifi" ? { type: "wifi", host: parsed.host || target.split(":")[0], port: Number(target.split(":")[1] || parsed.port || 5555) } : { type: "usb" },
-    });
-    if (lease.status !== 200) return lease;
-    const leasePayload = lease.payload as { result?: { lease?: Record<string, unknown> } };
-    const leaseRecord = leasePayload.result?.lease;
-    const releaseLease = () => releasePhysicalBrokerLease(ownerId, {
-        backend: parsed.backend,
-        hardwareId: target,
-        deviceId: parsed.deviceId,
-        claimId: leaseRecord?.claimId,
-        claimNonce: leaseClaimNonce,
-    });
-    if (parsed.connection === "wifi") {
-        const connect = normalized.commandRunner({ mode: "exec", provider: "adb", executable: adb, args: ["connect", target] }, {
-            timeoutMs: normalized.commandTimeoutMs,
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        });
-        if (!commandSucceeded(connect)) {
-            releaseLease();
-            return { status: 502, payload: { ok: false, error: "adb-connect-failed", command: connect } };
-        }
-    }
-    const inventory = initialInventory || androidHostDeviceInventory(normalized);
-    if (!inventory.ok) {
-        releaseLease();
-        return { status: 502, payload: { ok: false, error: "adb-inventory-failed", inventory } };
-    }
-    const hostDevice = inventory.devices.find((device) => device.serial === target);
-    if (!hostDevice) {
-        releaseLease();
-        return { status: 404, payload: { ok: false, error: "android-device-not-visible", hardwareId: target, inventory } };
-    }
-    if (hostDevice.state !== "device") {
-        releaseLease();
-        return { status: 409, payload: { ok: false, error: "android-device-not-attachable", hardwareId: target, state: hostDevice.state } };
-    }
-    const now = new Date().toISOString();
-    const device = {
-        id: parsed.deviceId,
-        name: parsed.name || target,
-        backend: "android-device",
-        kind: "mobile",
-        platform: "android",
-        physical: true,
-        ownerId,
-        serial: target,
-        connection: parsed.connection,
-        transport: parsed.connection === "wifi" ? { type: "wifi", host: parsed.host || target.split(":")[0], port: Number(target.split(":")[1] || parsed.port || 5555) } : { type: "usb", host: null, port: null },
-        hostDetails: hostDevice.details,
-        leaseClaimId: leaseRecord?.claimId,
-        leaseClaimNonce,
-        status: "attached",
-        creatable: false,
-        attachable: true,
-        attachedAt: now,
-        updatedAt: now,
-    };
-    try {
-        const claim = claimOrReattachPhysicalOwnerDevice(ownerId, parsed.stateKey, device, "serial");
-        if (!claim.ok) {
-            releaseLease();
-            return { status: 409, payload: { ok: false, error: claim.error, existing: claim.existing } };
-        }
-    } catch (error) {
-        releaseLease();
-        return { status: 500, payload: { ok: false, error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error) } };
-    }
-    const heartbeat = startBrokerPhysicalLeaseHeartbeat(ownerId, parsed.backend, target, parsed.deviceId, {
-        ttlMs: leaseTtlMs(leaseRecord),
-        claimId: typeof leaseRecord?.claimId === "string" ? leaseRecord.claimId : undefined,
-        claimNonce: leaseClaimNonce,
-    });
-    return { status: 200, payload: { ok: true, result: { device, lease: leasePayload.result?.lease, heartbeat, provider: "adb", inventory } } };
-}
 
-function brokerAttachIos(ownerId: string, parsed: AttachParamSuccess, normalized: NormalizedBrokerOptions) {
-    if (!parsed.udid) return { status: 400, payload: { ok: false, error: "missing-ios-udid" } };
-    const existing = existingPhysicalDevice(ownerId, parsed.stateKey, parsed.deviceId, parsed.udid, "udid") as Record<string, unknown> | undefined;
-    if (existing && !detachedPhysicalDeviceCanReattach(existing, parsed.deviceId, parsed.udid, "udid")) {
-        return { status: 409, payload: { ok: false, error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: parsed.udid } };
-    }
-    const xcrun = executableFor("xcrun", normalized);
-    const inventory = normalized.commandRunner({ mode: "exec", provider: "xcrun", executable: xcrun, args: ["xctrace", "list", "devices"] }, {
-        timeoutMs: normalized.commandTimeoutMs,
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-    });
-    if (!commandSucceeded(inventory)) return { status: 502, payload: { ok: false, error: "xctrace-inventory-failed", command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null, inventory) } };
-    const hostDevice = parseXctraceDevices(inventory.stdout || "").find((device) => device.udid === parsed.udid);
-    if (!hostDevice) return { status: 404, payload: { ok: false, error: "ios-device-not-visible", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null, inventory) } };
-    if (hostDevice.availability === "unavailable") {
-        return { status: 409, payload: { ok: false, error: "ios-device-not-attachable", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, hostDevice, inventory) } };
-    }
-    if (parsed.connection === "wifi" && hostDevice.connection !== "wifi") {
-        return { status: 409, payload: { ok: false, error: "ios-wifi-device-not-network-visible", hardwareId: parsed.udid, diagnostic: appleTrustDiagnostic("connect", parsed.udid, hostDevice, inventory) } };
-    }
-    const connection = parsed.connectionProvided ? parsed.connection : hostDevice.connection;
-    const leaseClaimNonce = randomBytes(16).toString("hex");
-    const lease = claimPhysicalLease(ownerId, {
-        backend: parsed.backend,
-        hardwareId: parsed.udid,
-        deviceId: parsed.deviceId,
-        connection,
-        claimNonce: leaseClaimNonce,
-        transport: { type: connection, host: connection === "wifi" ? parsed.host : null, port: connection === "wifi" ? parsed.port : null, visibleVia: "xctrace" },
-    });
-    if (lease.status !== 200) return lease;
-    const leasePayload = lease.payload as { result?: { lease?: Record<string, unknown> } };
-    const leaseRecord = leasePayload.result?.lease;
-    const releaseLease = () => releasePhysicalBrokerLease(ownerId, {
-        backend: parsed.backend,
-        hardwareId: parsed.udid,
-        deviceId: parsed.deviceId,
-        claimId: leaseRecord?.claimId,
-        claimNonce: leaseClaimNonce,
-    });
-    const now = new Date().toISOString();
-    const device = {
-        id: parsed.deviceId,
-        name: parsed.name || hostDevice.name || parsed.udid,
-        backend: "ios-device",
-        kind: "mobile",
-        platform: "ios",
-        physical: true,
-        ownerId,
-        udid: parsed.udid,
-        connection,
-        transport: { type: connection, host: connection === "wifi" ? parsed.host : null, port: connection === "wifi" ? parsed.port : null, visibleVia: "xctrace" },
-        hostDetails: hostDevice,
-        leaseClaimId: leaseRecord?.claimId,
-        leaseClaimNonce,
-        status: "attached",
-        creatable: false,
-        attachable: true,
-        attachedAt: now,
-        updatedAt: now,
-    };
-    try {
-        const claim = claimOrReattachPhysicalOwnerDevice(ownerId, parsed.stateKey, device, "udid");
-        if (!claim.ok) {
-            releaseLease();
-            return { status: 409, payload: { ok: false, error: claim.error, existing: claim.existing } };
-        }
-    } catch (error) {
-        releaseLease();
-        return { status: 500, payload: { ok: false, error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error) } };
-    }
-    const heartbeat = startBrokerPhysicalLeaseHeartbeat(ownerId, parsed.backend, parsed.udid, parsed.deviceId, {
-        ttlMs: leaseTtlMs(leaseRecord),
-        claimId: typeof leaseRecord?.claimId === "string" ? leaseRecord.claimId : undefined,
-        claimNonce: leaseClaimNonce,
-    });
-    return { status: 200, payload: { ok: true, result: { device, lease: leasePayload.result?.lease, heartbeat, provider: "xcrun", inventory } } };
-}
 
-function appleTrustStatus(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAppleTrustParams(params);
-    if (!parsed.ok) return appleTrustParamError(parsed);
-    const xcrun = executableFor("xcrun", normalized);
-    const inventory = normalized.commandRunner({ mode: "exec", provider: "xcrun", executable: xcrun, args: ["xctrace", "list", "devices"] }, {
-        timeoutMs: normalized.commandTimeoutMs,
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-    });
-    if (!commandSucceeded(inventory)) {
-        return {
-            status: 502,
-            payload: {
-                ok: false,
-                error: inventory.error === "executable-not-found" ? "ios-wireless-missing-xcrun" : "xctrace-inventory-failed",
-                result: {
-                    ownerId,
-                    ...appleTrustDiagnostic(parsed.action, parsed.udid, null, inventory),
-                },
-            },
-        };
-    }
-    const devices = parseXctraceDevices(inventory.stdout || "");
-    const selected = parsed.udid ? devices.find((device) => device.udid === parsed.udid) || null : null;
-    const diagnostic = {
-        ownerId,
-        ...appleTrustDiagnostic(parsed.action, parsed.udid, selected, inventory),
-        inventory: {
-            devices,
-            count: devices.length,
-        },
-    };
-    if (parsed.action === "status") {
-        return { status: 200, payload: { ok: true, result: diagnostic } };
-    }
-    if (selected?.connection === "wifi" && selected.availability !== "unavailable" && parsed.action === "connect") {
-        return { status: 200, payload: { ok: true, result: { ...diagnostic, alreadyNetworkVisible: true, manualRequired: false } } };
-    }
-    return {
-        status: 409,
-        payload: {
-            ok: false,
-            error: "ios-apple-pairing-manual-required",
-            result: diagnostic,
-        },
-    };
-}
 
-function attachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAttachParams(params);
-    if (!parsed.ok) return attachParamError(parsed);
-    return parsed.backend === "android-device"
-        ? brokerAttachAndroid(ownerId, parsed, normalized)
-        : brokerAttachIos(ownerId, parsed, normalized);
-}
 
-function detachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateAttachParams(params);
-    if (!parsed.ok) return attachParamError(parsed);
-    const input = params as Record<string, unknown>;
-    if (typeof input.deviceId !== "string" || !input.deviceId.trim()) {
-        return { status: 400, payload: { ok: false, error: "invalid-device-id" } };
-    }
-    const devices = readOwnerDevices(ownerId, parsed.stateKey);
-    const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId) as Record<string, unknown> | undefined;
-    if (!device) return { status: 404, payload: { ok: false, error: "owner-device-not-found", deviceId: parsed.deviceId } };
-    const lifecycleParams: CommandParamSuccess = {
-        ok: true,
-        backend: parsed.backend,
-        stateKey: parsed.stateKey,
-        command: "device_stop",
-        deviceId: parsed.deviceId,
-        force: false,
-        dryRun: false,
-    };
-    const hardwareId = parsed.backend === "android-device" ? String(device.serial || "") : String(device.udid || "");
-    const releaseParams = hardwareId ? validateLeaseParams({
-        backend: parsed.backend,
-        hardwareId,
-        deviceId: parsed.deviceId,
-        claimId: device.leaseClaimId,
-        claimNonce: device.leaseClaimNonce,
-    }, "release") : null;
-    if (releaseParams && !releaseParams.ok) return leaseParamError(releaseParams);
+function appleTrustStatus(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerPhysicalDevicesApplication(normalized).trust(ownerId, params); }
 
-    const cleanupAndDetach = (
-        release: BrokerRpcResult | null,
-        releaseAction?: () => BrokerRpcResult,
-        rollbackAction?: () => ReturnType<typeof restorePhysicalBrokerLeaseRelease>,
-    ): BrokerRpcResult => {
-        if (release && release.status !== 200 && release.status !== 404) {
-            return {
-                status: release.status === 409 ? 409 : 502,
-                payload: {
-                    ok: false,
-                    error: "physical-lease-release-failed",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                    release: release.payload,
-                },
-            };
-        }
-        const auxiliaryCleanup = cleanupLifecycleAuxiliaryRuntime(ownerId, lifecycleParams, normalized, device);
-        if (auxiliaryCleanup?.result.ok === false) {
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: "auxiliary-runtime-cleanup-failed",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                    result: {
-                        device: redactBrokerDeviceSecrets(auxiliaryCleanup.device || device),
-                        auxiliaryCleanup: auxiliaryCleanup.result,
-                        detached: false,
-                    },
-                },
-            };
-        }
-        const cleanedDevice = (auxiliaryCleanup?.device || device) as Record<string, unknown>;
-        const completedRelease = releaseAction ? releaseAction() : release;
-        try {
-            mutateOwnerDevices(ownerId, parsed.stateKey, (current) => current.filter((candidate) => !(candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId)));
-        } catch (error) {
-            const leaseRollback = rollbackAction ? rollbackAction() : { attempted: false, ok: true };
-            return {
-                status: leaseRollback.ok ? 500 : 502,
-                payload: {
-                    ok: false,
-                    error: leaseRollback.ok ? "owner-state-write-failed" : "physical-lease-rollback-failed",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                    detail: error instanceof Error ? error.message : String(error),
-                    result: {
-                        device: redactBrokerDeviceSecrets(cleanedDevice),
-                        detached: false,
-                        release: completedRelease?.payload || null,
-                        leaseRollback,
-                        ...(auxiliaryCleanup ? { auxiliaryCleanup: auxiliaryCleanup.result } : {}),
-                    },
-                },
-            };
-        }
-        return {
-            status: 200,
-            payload: {
-                ok: true,
-                result: {
-                    detached: parsed.deviceId,
-                    device: redactBrokerDeviceSecrets(cleanedDevice),
-                    release: completedRelease?.payload || null,
-                    ...(auxiliaryCleanup ? { auxiliaryCleanup: auxiliaryCleanup.result } : {}),
-                    physicalDevicePoweredOff: false,
-                    disconnected: false,
-                },
-            },
-        };
-    };
+function attachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerPhysicalDevicesApplication(normalized).attach(ownerId, params); }
 
-    if (!releaseParams || !hardwareId) return cleanupAndDetach(null);
-    const directory = inspectPhysicalLeaseDirectory(releaseParams.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
-    if (!directory.exists) return cleanupAndDetach({ status: 404, payload: { ok: false, error: "physical-lease-not-found" } });
-    const file = physicalLeaseLockFile(releaseParams.backend, releaseParams.hardwareId);
-    return withSharedMutationLock(physicalLeaseMutationLockFile(releaseParams.backend, releaseParams.hardwareId), () => {
-        const existing = readLeaseFile(file, releaseParams.backend, releaseParams.hardwareId);
-        const conflict = physicalLeaseReleaseConflict(ownerId, releaseParams, existing);
-        return cleanupAndDetach(
-            conflict,
-            conflict ? undefined : () => completePhysicalBrokerLeaseRelease(ownerId, releaseParams, file, existing!),
-            conflict ? undefined : () => restorePhysicalBrokerLeaseRelease(ownerId, releaseParams, file, existing!),
-        );
-    });
-}
+function detachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerPhysicalDevicesApplication(normalized).detach(ownerId, params); }
 
 async function withPhysicalDeviceOperation(
     ownerId: string,
@@ -6837,10 +6358,7 @@ function signalBrokerOwnedRecording(recording: Record<string, unknown>, normaliz
     return signalDeviceRuntimeProcess(recording, signal);
 }
 
-function deviceHasRuntimeMetadata(record: Record<string, unknown>) {
-    return (record.appium !== undefined && record.appium !== null)
-        || (record.recording !== undefined && record.recording !== null);
-}
+
 
 type PhysicalLeaseReleaseGuard = {
     attempted: boolean;
@@ -6898,234 +6416,84 @@ function cleanupOwnerPhysicalLease(ownerId: string, guard: PhysicalLeaseReleaseG
     return { attempted: true, ok: true, status: released.status, payload: released.payload };
 }
 
-function shouldStopOwnerDevice(stateKey: string, status: unknown) {
-    if (stateKey === "android-device" || stateKey === "ios-device") return false;
-    return ["running", "booted", "started", "starting"].includes(String(status || "").toLowerCase());
+
+
+
+
+function cleanupLeaseGuard(guard: PhysicalLeaseReleaseGuard): CleanupLeaseGuard<PhysicalLeaseReleaseGuard> {
+    return { handle: guard, attempted: guard.attempted, preflight: guard.preflight, canRestore: Boolean(guard.parsed && guard.file && guard.existing) };
 }
-
-function cleanupOwnerDeviceRuntime(
-    ownerId: string,
-    stateKey: string,
-    device: unknown,
-    normalized: NormalizedBrokerOptions,
-    options: { stopDevices: boolean; detachPhysical: boolean },
-    physicalLeaseGuard?: PhysicalLeaseReleaseGuard,
-): { device: unknown; changed: boolean; result: Record<string, unknown> } {
-    if (!device || typeof device !== "object" || Array.isArray(device)) {
-        return { device, changed: false, result: { skipped: true, reason: "invalid-device-record" } };
-    }
-    const record = device as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id : null;
-    const backend = DEVICE_BROKER_STATE_BACKENDS.get(stateKey) || stateKey;
-    const result: Record<string, unknown> = { stateKey, backend, deviceId: id, changed: false };
-    const physical = stateKey === "android-device" || stateKey === "ios-device";
-    if (physical && options.detachPhysical && !physicalLeaseGuard) {
-        return withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, (guard) => cleanupOwnerDeviceRuntime(ownerId, stateKey, record, normalized, options, guard));
-    }
-    if (physicalLeaseGuard?.preflight && physicalLeaseGuard.preflight.status !== 404) {
-        result.physical = {
-            detached: false,
-            poweredOff: false,
-            disconnected: false,
-            lease: cleanupOwnerPhysicalLease(ownerId, physicalLeaseGuard),
-        };
-        return { device, changed: false, result };
-    }
-    let updated = { ...record };
-    let changed = false;
-
-    if (record.appium !== undefined && record.appium !== null) {
-        const signal = terminateBrokerOwnedAppium(record.appium, normalized);
-        const cleared = signal.ok;
-        if (cleared) {
-            updated.appium = null;
-            changed = true;
-        }
-        result.appium = { cleared, signal };
-    }
-
-    if (record.recording !== undefined && record.recording !== null) {
-        const recording = record.recording && typeof record.recording === "object" ? record.recording as Record<string, unknown> : {};
-        const signal = signalBrokerOwnedRecording(recording, normalized, "SIGINT");
-        const cleared = signal.ok;
-        if (cleared) {
-            updated.recording = null;
-            changed = true;
-        }
-        result.recording = { cleared, signal };
-    }
-
-    if ((stateKey === "android-device" || stateKey === "ios-device") && options.detachPhysical) {
-        const lease = cleanupOwnerPhysicalLease(ownerId, physicalLeaseGuard!);
-        if (lease.ok && updated.status !== "detached") {
-            updated.status = "detached";
-            changed = true;
-        }
-        result.physical = { detached: lease.ok, poweredOff: false, disconnected: false, lease };
-    } else if (options.stopDevices && id && shouldStopOwnerDevice(stateKey, record.status)) {
-        const parsed = { ok: true as const, backend, stateKey, command: "device_stop", deviceId: id, force: true, dryRun: false };
-        const providerCommand = providerCommandFor(ownerId, parsed, record, normalized);
-        if ("error" in providerCommand) {
-            result.stop = { attempted: false, ok: false, error: providerCommand.error, missing: providerCommand.missing };
-        } else {
-            const execution = normalized.commandRunner(providerCommand, {
-                timeoutMs: normalized.commandTimeoutMs,
-                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-            });
-            const ok = commandSucceeded(execution);
-            result.stop = { attempted: true, ok, execution };
-            if (ok) {
-                updated.status = "stopped";
-                if (stateKey === "windows") releaseBrokerWindowsSandboxLock(ownerId, record, providerCommand.sandboxId);
-                changed = true;
-            }
-        }
-    }
-
-    if (changed) updated.updatedAt = new Date().toISOString();
-    result.changed = changed;
-    if (!changed && !deviceHasRuntimeMetadata(record)) result.skipped = true;
-    return { device: changed ? updated : device, changed, result };
+function restoreCleanupLease(ownerId: string, envelope: CleanupLeaseGuard<PhysicalLeaseReleaseGuard>) {
+    const guard = envelope.handle;
+    if (!guard.parsed || !guard.file || !guard.existing) return { attempted: false, ok: true };
+    return restorePhysicalBrokerLeaseRelease(ownerId, guard.parsed, guard.file, guard.existing);
 }
-
-async function cleanupOwnerRuntime(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const input = params && typeof params === "object" && !Array.isArray(params) ? params as Record<string, unknown> : {};
-    const stopDevices = input.stopDevices !== false;
-    const detachPhysical = input.detachPhysical !== false;
-    const backendFilter = typeof input.backend === "string"
-        ? DEVICE_BROKER_BACKEND_STATE_KEYS.includes(input.backend) ? input.backend : DEVICE_BROKER_COMMAND_BACKENDS.get(input.backend)
-        : null;
-    if (input.backend !== undefined && !backendFilter) {
-        return { status: 400, payload: { ok: false, error: "invalid-cleanup-backend", allowed: [...DEVICE_BROKER_BACKEND_STATE_KEYS, ...DEVICE_BROKER_COMMAND_BACKENDS.keys()] } };
-    }
-    const stateKeys = backendFilter ? [backendFilter] : DEVICE_BROKER_BACKEND_STATE_KEYS;
-    const results = [];
-    let changedDevices = 0;
-    let failed = 0;
-    for (const stateKey of stateKeys) {
-        let backendChanged = false;
-        const deviceResults: unknown[] = [];
-        let observedDevices: unknown[];
-        try {
-            observedDevices = readOwnerDevices(ownerId, stateKey);
-        } catch (error) {
-            failed += 1;
-            results.push({
-                stateKey,
-                ok: false,
-                error: ownerDeviceStateErrorCode(error) || "owner-devices-state-mutation-failed",
-            });
-            continue;
-        }
-        for (const observedDevice of observedDevices) {
-            const deviceId = observedDevice && typeof observedDevice === "object" && !Array.isArray(observedDevice)
-                ? (observedDevice as { id?: unknown }).id
-                : null;
-            if (typeof deviceId !== "string" || !deviceId) {
-                const cleanup = cleanupOwnerDeviceRuntime(ownerId, stateKey, observedDevice, normalized, { stopDevices, detachPhysical });
-                deviceResults.push(cleanup.result);
-                continue;
-            }
-            try {
-                const cleanup = await withOwnerDeviceOperation(ownerId, stateKey, deviceId, () => {
-                    const latest = readOwnerDevices(ownerId, stateKey).find((candidate) => {
-                        return candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as { id?: unknown }).id === deviceId;
-                    });
-                    if (!latest) {
-                        return { changed: false, result: { stateKey, backend: DEVICE_BROKER_STATE_BACKENDS.get(stateKey) || stateKey, deviceId, skipped: true, reason: "device-no-longer-present" } };
-                    }
-                    const cleanupAndPersist = (guard?: PhysicalLeaseReleaseGuard) => {
-                        const runtimeCleanup = cleanupOwnerDeviceRuntime(ownerId, stateKey, latest, normalized, { stopDevices, detachPhysical }, guard);
-                        let persisted = !runtimeCleanup.changed;
-                        let stateConflict = false;
-                        if (runtimeCleanup.changed) {
-                            try {
-                                mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
-                                    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || (candidate as { id?: unknown }).id !== deviceId) return candidate;
-                                    if (!isDeepStrictEqual(candidate, latest)) {
-                                        stateConflict = true;
-                                        return candidate;
-                                    }
-                                    persisted = true;
-                                    return runtimeCleanup.device;
-                                }));
-                            } catch (error) {
-                                const physicalLease = (runtimeCleanup.result.physical as { lease?: { status?: number } } | undefined)?.lease;
-                                const releasedLease = guard?.parsed && guard.file && guard.existing && physicalLease?.status === 200;
-                                const leaseRollback = releasedLease
-                                    ? restorePhysicalBrokerLeaseRelease(ownerId, guard.parsed!, guard.file!, guard.existing!)
-                                    : { attempted: false, ok: true };
-                                return {
-                                    changed: false,
-                                    result: {
-                                        ...(runtimeCleanup.result as Record<string, unknown>),
-                                        stateWrite: {
-                                            ok: false,
-                                            error: leaseRollback.ok ? "owner-state-write-failed" : "physical-lease-rollback-failed",
-                                            detail: error instanceof Error ? error.message : String(error),
-                                            leaseRollback,
-                                        },
-                                    },
-                                };
-                            }
-                        }
-                        return {
-                            changed: runtimeCleanup.changed && persisted,
-                            result: {
-                                ...(runtimeCleanup.result as Record<string, unknown>),
-                                ...(stateConflict || !persisted ? { stateConflict: true } : {}),
-                            },
-                        };
-                    };
-                    const physical = stateKey === "android-device" || stateKey === "ios-device";
-                    return physical && detachPhysical
-                        ? withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, latest as Record<string, unknown>, cleanupAndPersist)
-                        : cleanupAndPersist();
-                });
-                if (cleanup.changed) {
-                    backendChanged = true;
-                    changedDevices += 1;
-                }
-                deviceResults.push(cleanup.result);
-                const outcome = cleanup.result as { stateConflict?: boolean; stateWrite?: { ok?: boolean }; stop?: { ok?: boolean; attempted?: boolean }; appium?: { signal?: { ok?: boolean; attempted?: boolean } }; recording?: { signal?: { ok?: boolean; attempted?: boolean } }; physical?: { lease?: { ok?: boolean; attempted?: boolean } } };
-                if (outcome.stateConflict) failed += 1;
-                if (outcome.stateWrite && !outcome.stateWrite.ok) failed += 1;
-                if (outcome.stop?.attempted && !outcome.stop.ok) failed += 1;
-                if (outcome.appium?.signal?.attempted && !outcome.appium.signal.ok) failed += 1;
-                if (outcome.recording?.signal && !outcome.recording.signal.ok) failed += 1;
-                if (outcome.physical?.lease?.attempted && !outcome.physical.lease.ok) failed += 1;
-            } catch (error) {
-                if (!isDeviceOperationLockTimeout(error)) throw error;
-                failed += 1;
-                deviceResults.push({
-                    stateKey,
-                    backend: DEVICE_BROKER_STATE_BACKENDS.get(stateKey) || stateKey,
-                    deviceId,
-                    changed: false,
-                    error: "device-operation-lock-failed",
-                    detail: error instanceof Error ? error.message : String(error),
-                });
-            }
-        }
-        results.push({ stateKey, ok: true, changed: backendChanged, devices: deviceResults });
-    }
-    return {
-        status: 200,
-        payload: {
-            ok: failed === 0,
-            result: {
-                ownerId,
-                cleaned: true,
-                stopDevices,
-                detachPhysical,
-                changedDevices,
-                failed,
-                results,
-                authority: "host-broker",
-            },
-        },
+function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
+    const ports: BrokerOwnerCleanupPorts<PhysicalLeaseReleaseGuard> = {
+        stateKeys: DEVICE_BROKER_BACKEND_STATE_KEYS,
+        backendAliases: DEVICE_BROKER_COMMAND_BACKENDS,
+        stateBackends: DEVICE_BROKER_STATE_BACKENDS,
+        read: readOwnerDevices,
+        equal: isDeepStrictEqual,
+        publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
+        withDeviceOperation: withOwnerDeviceOperation,
+        withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => operation(cleanupLeaseGuard(guard))),
+        releaseLease: (ownerId, guard) => cleanupOwnerPhysicalLease(ownerId, guard.handle),
+        restoreLease: restoreCleanupLease,
+        terminateAppium: runtime => terminateBrokerOwnedAppium(runtime, normalized),
+        signalRecording: runtime => signalBrokerOwnedRecording(runtime, normalized, "SIGINT"),
+        cancelWatchdog: cancelBrokerWindowsMinimizeWatchdog,
+        planStop: (ownerId, target, record) => providerCommandFor(ownerId, { ok: true, ...target, command: "device_stop", force: true, dryRun: false }, record, normalized),
+        execute: command => normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        releaseWindows: (ownerId, record, sandboxId) => { releaseBrokerWindowsSandboxLock(ownerId, record, sandboxId); },
+        timestamp: () => new Date().toISOString(),
+        stateErrorCode: error => ownerDeviceStateErrorCode(error) || null,
+        isDeviceLockTimeout: isDeviceOperationLockTimeout,
     };
+    return createBrokerOwnerCleanupApplication(ports);
 }
+function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
+    const ports: BrokerPhysicalDevicesPorts<PhysicalLeaseReleaseGuard> = {
+        deriveDeviceId: physicalDeviceId,
+        read: readOwnerDevices,
+        androidInventory: () => androidHostDeviceInventory(normalized),
+        connectAndroid: target => normalized.commandRunner({ mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["connect", target] }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        appleInventory: () => normalized.commandRunner({ mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["xctrace", "list", "devices"] }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        appleDevices: parseXctraceDevices,
+        nonce: () => randomBytes(16).toString("hex"),
+        timestamp: () => new Date().toISOString(),
+        claimLease: claimPhysicalLease,
+        releaseClaim: releasePhysicalBrokerLease,
+        claimDevice: claimOrReattachPhysicalOwnerDevice,
+        heartbeat: (ownerId, backend, hardwareId, deviceId, lease, nonce) => startBrokerPhysicalLeaseHeartbeat(ownerId, backend, hardwareId, deviceId, { ttlMs: leaseTtlMs(lease), claimId: typeof lease?.claimId === "string" ? lease.claimId : undefined, claimNonce: nonce }),
+        withDetachLease: (ownerId, parsed, device, operation) => {
+            const hardwareId = parsed.backend === "android-device" ? String(device.serial || "") : String(device.udid || "");
+            const releaseParams = hardwareId ? validateLeaseParams({ backend: parsed.backend, hardwareId, deviceId: parsed.deviceId, claimId: device.leaseClaimId, claimNonce: device.leaseClaimNonce }, "release") : null;
+            if (releaseParams && !releaseParams.ok) return leaseParamError(releaseParams);
+            if (!releaseParams || !hardwareId) return operation(cleanupLeaseGuard({ attempted: false, parsed: null, file: null, existing: null, preflight: null }));
+            const directory = inspectPhysicalLeaseDirectory(releaseParams.backend);
+            if (!directory.ok) return { status: directory.status, payload: directory.payload };
+            if (!directory.exists) return operation(cleanupLeaseGuard({ attempted: true, parsed: null, file: null, existing: null, preflight: { status: 404, payload: { ok: false, error: "physical-lease-not-found" } } }));
+            const file = physicalLeaseLockFile(releaseParams.backend, releaseParams.hardwareId);
+            return withSharedMutationLock(physicalLeaseMutationLockFile(releaseParams.backend, releaseParams.hardwareId), () => {
+                const existing = readLeaseFile(file, releaseParams.backend, releaseParams.hardwareId);
+                return operation(cleanupLeaseGuard({ attempted: true, parsed: releaseParams, file, existing, preflight: physicalLeaseReleaseConflict(ownerId, releaseParams, existing) }));
+            });
+        },
+        withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => operation(cleanupLeaseGuard(guard))),
+        releaseLease: (ownerId, guard) => cleanupOwnerPhysicalLease(ownerId, guard.handle),
+        restoreLease: restoreCleanupLease,
+        removeDevice: (ownerId, stateKey, deviceId) => { mutateOwnerDevices(ownerId, stateKey, devices => devices.filter(candidate => !(candidate && typeof candidate === "object" && "id" in candidate && candidate.id === deviceId))); },
+        auxiliary: (ownerId, request, expected) => brokerOwnerCleanupApplication(normalized).auxiliary(ownerId, request, expected),
+        publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
+        execute: command => normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        clone: structuredClone,
+        redact: redactBrokerDeviceSecrets,
+    };
+    return createBrokerPhysicalDevicesApplication(ports);
+}
+
+function cleanupOwnerRuntime(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerOwnerCleanupApplication(normalized).cleanup(ownerId, params); }
 
 function validateAppiumListParams(params: unknown): AppiumParamError | AppiumListParamSuccess {
     if (!params || typeof params !== "object" || Array.isArray(params)) {
@@ -9893,14 +9261,6 @@ function observedDeviceAfterStatus(ownerId: string, parsed: CommandParamSuccess,
     };
 }
 
-type LifecycleAuxiliaryCleanup = {
-    ok: boolean;
-    changed: boolean;
-    stateConflict?: boolean;
-    appium: Record<string, unknown>;
-    recording: Record<string, unknown>;
-    minimizeWatchdog: Record<string, unknown>;
-};
 
 function cancelBrokerWindowsMinimizeWatchdog(ownerId: string, deviceId: string) {
     const cancelPath = brokerWindowsHelperPaths(ownerId, deviceId).minimizeWatchdogCancelPath;
@@ -9918,50 +9278,7 @@ function cancelBrokerWindowsMinimizeWatchdog(ownerId: string, deviceId: string) 
     }
 }
 
-function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, expected: unknown): { result: LifecycleAuxiliaryCleanup; device: unknown; committed: boolean } {
-    const observed = readOwnerDevices(ownerId, parsed.stateKey).find((candidate) => {
-        return candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as { id?: unknown }).id === parsed.deviceId;
-    });
-    if (!observed || !isDeepStrictEqual(observed, expected)) return {
-        result: { ok: false, changed: false, stateConflict: true, appium: { cleared: false }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } },
-        device: observed || null,
-        committed: false,
-    };
-    const record = observed as Record<string, unknown>;
-    const hasAppium = record.appium !== undefined && record.appium !== null;
-    const appiumSignal = hasAppium ? terminateBrokerOwnedAppium(record.appium, normalized) : null;
-    const recording = record.recording && typeof record.recording === "object" ? record.recording as Record<string, unknown> : null;
-    const recordingSignal = recording ? signalBrokerOwnedRecording(recording, normalized, "SIGINT") : null;
-    const minimizeWatchdog = record.minimizeWatchdog && typeof record.minimizeWatchdog === "object" ? record.minimizeWatchdog as Record<string, unknown> : null;
-    const minimizeWatchdogOwned = minimizeWatchdog?.processOwner === "host-broker"
-        && minimizeWatchdog?.startedBy === "broker.windows-sandbox.minimize-watchdog";
-    const minimizeWatchdogCancellation = minimizeWatchdogOwned ? cancelBrokerWindowsMinimizeWatchdog(ownerId, parsed.deviceId) : null;
-    const appiumCleared = Boolean(appiumSignal?.ok);
-    const recordingCleared = Boolean(recordingSignal?.ok);
-    const minimizeWatchdogCleared = Boolean(minimizeWatchdogCancellation?.ok);
-    const changed = appiumCleared || recordingCleared || minimizeWatchdogCleared;
-    const transition = changed
-        ? transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, expected, () => ({
-            ...record,
-            ...(appiumCleared ? { appium: null } : {}),
-            ...(recordingCleared ? { recording: null } : {}),
-            ...(minimizeWatchdogCleared ? { minimizeWatchdog: null } : {}),
-            updatedAt: new Date().toISOString(),
-        }))
-        : { found: true, matched: true, device: observed };
-    const stateConflict = !transition.matched;
-    const cleanup: LifecycleAuxiliaryCleanup = {
-        ok: (!appiumSignal || appiumCleared) && (!recordingSignal || recordingCleared) && (!minimizeWatchdogCancellation || minimizeWatchdogCleared) && !stateConflict,
-        changed: changed && !stateConflict,
-        ...(stateConflict ? { stateConflict: true } : {}),
-        appium: appiumSignal ? { cleared: appiumCleared, signal: appiumSignal } : { cleared: false },
-        recording: recordingSignal ? { cleared: recordingCleared, signal: recordingSignal } : { cleared: false },
-        minimizeWatchdog: minimizeWatchdogCancellation
-            ? { cleared: minimizeWatchdogCleared, cancellation: minimizeWatchdogCancellation }
-            : { cleared: false, ...(minimizeWatchdog ? { skipped: true, reason: "not-broker-owned" } : {}) },
-    };
-    return { result: cleanup, device: transition.device, committed: changed && transition.matched };
-}
+function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, expected: unknown) { return brokerOwnerCleanupApplication(normalized).auxiliary(ownerId, parsed, expected); }
 
 function redactBrokerDeviceSecrets(device: unknown) {
     if (!device || typeof device !== "object") return device;
@@ -10207,6 +9524,11 @@ async function lifecycleCommandInvokeUnlocked(
     const plan = lifecycleCommandPlan(ownerId, params, normalized, false, expectedObservation);
     let expectedDevice = expectedObservation.device;
     if (plan.status !== 200) return plan;
+    if ((parsed.stateKey === "android-device" || parsed.stateKey === "ios-device") && parsed.command === "device_stop") {
+        const planPayload = cleanupRecord(plan.payload) ? plan.payload : {};
+        const result = cleanupRecord(planPayload.result) ? planPayload.result : {};
+        return brokerPhysicalDevicesApplication(normalized).stop(ownerId, parsed, result, expectedDevice);
+    }
     const payload = plan.payload as { result?: { create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: ProviderCommand | { error: string; missing: string[] } } };
     if (parsed.dryRun) {
         return {

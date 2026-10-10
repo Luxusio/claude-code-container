@@ -1,0 +1,15 @@
+# Broker physical devices and owner cleanup
+
+`createBrokerPhysicalDevicesApplication` owns Android/iOS attach, detach, physical command stop and Apple trust diagnostics. `createBrokerOwnerCleanupApplication` owns owner-wide cleanup and the auxiliary-runtime cleanup used by other lifecycle applications. The broker binds required native capabilities and keeps authenticated RPC transport, owner/device/hardware locks, guarded state files, lease generations and trusted process termination outside these applications.
+
+Attach claims the exact hardware lease and nonce, observes current visibility, and publishes an owner definition before starting its heartbeat. Android Wi-Fi connection or subsequent inventory/publication failures release the newly claimed lease. iOS attachment observes xctrace and does not pair or connect secretly. Only an exact detached ID/hardware match can be reattached; guarded publication repeats conflict selection under the native inventory lock.
+
+Detach preflights the lease under its hardware lock, cleans owned auxiliary runtime, releases the lease and removes the definition by ID. A publication exception restores the exact released lease when restoration is available. Missing leases and partial failures retain their current diagnostics.
+
+Broker physical `device_stop` is a hardware no-op. It cleans owned auxiliary runtime, releases its lease and publishes `status: "detached"` with cleared claim fields while retaining the definition. Direct Android/iOS provider stop remains a separate peer with its existing attachment/lease behavior. Auxiliary cleanup advances the expected record only when its publication commits. An ordinary successor conflict is reported without overwriting or restoring against the successor; a genuine write exception after release attempts exact lease restoration.
+
+Owner cleanup retains default stop/detach options and backend aliases. It rereads each device under its operation lock, runs native effects outside the short inventory mutation lock, and conditionally publishes against the observed record. Partial clears and backend failures are accumulated rather than hidden. Recording cleanup signals owned broker runtime; it does not pull, copy or delete recording artifacts. Appium process identity and Windows watchdog authorities remain native.
+
+Public bindings remain `broker.physical.attach`, `broker.physical.detach`, physical command plan/invoke, `broker.apple.trust` and `broker.cleanup.owner`, including exported physical/Apple callers and broker-supervision shutdown cleanup. MCP attach/detach and command routing keep their existing paths; no Apple MCP tool is introduced. Administrative cleanup remains a distinct peer.
+
+Ordinary fake-port tests prove application decisions; existing authenticated public/native fixtures prove the broker bindings. Real Apple/Android hardware certification requires an actual host run and is not implied by these tests. Review and strict native-constructor checks are required before accepting this extraction.
