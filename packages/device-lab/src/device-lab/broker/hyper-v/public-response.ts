@@ -458,6 +458,14 @@ export function hyperVBoundedErrorDetail(
 
 export function hyperVProviderDiagnosticCode(
     result: Pick<ProviderExecution, "error" | "stdout" | "stderr">,
+    fallbackDiagnosticCode: string,
+): string;
+export function hyperVProviderDiagnosticCode(
+    result: Pick<ProviderExecution, "error" | "stdout" | "stderr">,
+    fallbackDiagnosticCode?: string,
+): string | undefined;
+export function hyperVProviderDiagnosticCode(
+    result: Pick<ProviderExecution, "error" | "stdout" | "stderr">,
     fallbackDiagnosticCode?: string,
 ): string | undefined {
     const reportedDiagnosticCodes = String(
