@@ -11,6 +11,7 @@ import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-envir
 import { isolatedDeviceLabPackage } from "./helpers/isolated-device-lab-package.js";
 import { fakeAndroidProviderScript } from "./helpers/fake-android-provider-script.js";
 import { createFakeIosMcpContext, cleanupFakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
+import { createFakeMacosMcpContext, cleanupFakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { spawn } from "child_process";
 import { createHash } from "crypto";
@@ -9138,6 +9139,78 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         } finally {
             await close(server);
             cleanupOwner(ownerId);
+        }
+    });
+    it("preserves authenticated macOS image and snapshot broker refusals without native effects", async () => {
+        const native = createFakeMacosMcpContext();
+        const originalNodeOptions = process.env.NODE_OPTIONS;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            const project = join(native.homeDir, "macos-refusal-project");
+            const resources = join(native.homeDir, "owned-tart-resources");
+            mkdirSync(project);
+            mkdirSync(resources);
+            writeFileSync(native.logPath, "");
+            const ownerId = deviceLabOwnerId(project), deviceId = "macos-broker-image-source";
+            const primary = `ccc-${ownerId}-${deviceId}`, snapshotInstance = `${primary}-snapshot-before`;
+            const primaryBytes = Buffer.from("owned macOS primary bytes\n"), snapshotBytes = Buffer.from("owned macOS snapshot bytes\n");
+            writeFileSync(join(resources, primary), primaryBytes);
+            writeFileSync(join(resources, snapshotInstance), snapshotBytes);
+            const root = writeBrokerDevices(ownerId, "macos", [{
+                id: deviceId, ownerId, backend: "macos-vm", status: "stopped", provider: "tart",
+                providerInstance: primary, providerResourceManaged: true,
+                snapshots: [{ id: "snapshot-before", name: "Before", provider: "tart", providerInstance: snapshotInstance }],
+            }]);
+            const statePath = join(root, "devices.json"), originalState = readFileSync(statePath, "utf8");
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+            const childStarted = join(native.homeDir, "backend-child-started");
+            const preload = join(native.homeDir, "macos-refusal-routing.cjs");
+            writeFileSync(preload, nodeProviderFixturePreloadSource(native.binDir)
+                + `fs.appendFileSync(${JSON.stringify(childStarted)}, 'backend child started\\n');\n`);
+            process.env.NODE_OPTIONS = `${originalNodeOptions || ""} --require=${JSON.stringify(preload)}`.trim();
+
+            const imageRequests = [
+                { tool: "device_base_image_create", params: { name: "Refused Image", deviceId: "refused-image", sourceImage: "ghcr.io/example/macos-base:latest" } },
+                { tool: "device_base_image_clone", params: { name: "Refused Copy", deviceId: "refused-copy", sourceDeviceId: deviceId } },
+            ];
+            for (const { tool, params } of imageRequests) {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                    method: "broker.device.tool.invoke", params: { tool, backend: "macos-vm", ...params },
+                }) });
+                expect(response.status).toBe(501);
+                const body = await response.json() as { supported: string[] };
+                expect(body).toMatchObject({ ok: false, error: "broker-device-tool-not-supported", supported: expect.any(Array) });
+                expect(body.supported).not.toContain(tool);
+                expect(readFileSync(statePath, "utf8")).toBe(originalState);
+                expect(existsSync(childStarted)).toBe(false);
+                expect(readFileSync(native.logPath, "utf8")).toBe("");
+            }
+            for (const tool of ["device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete"]) {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                    method: "broker.device.tool.invoke", params: { tool, backend: "macos-vm", deviceId, snapshotName: "Before",
+                        ...(tool === "device_snapshot_create" ? {} : { confirmDestructive: true }) },
+                }) });
+                expect(response.status).toBe(501);
+                const body = await response.json() as { supportedTools: string[] };
+                expect(body).toMatchObject({ ok: false, error: "broker-device-tool-backend-not-supported",
+                    backend: "macos-vm", tool, deviceId, supportedTools: expect.any(Array),
+                    supportedBackends: expect.arrayContaining(["macos-vm"]) });
+                expect(body.supportedTools).not.toContain(tool);
+                expect(readFileSync(statePath, "utf8")).toBe(originalState);
+                expect(existsSync(childStarted)).toBe(false);
+                expect(readFileSync(native.logPath, "utf8")).toBe("");
+            }
+            expect(readdirSync(resources).sort()).toEqual([primary, snapshotInstance].sort());
+            expect(readFileSync(join(resources, primary))).toEqual(primaryBytes);
+            expect(readFileSync(join(resources, snapshotInstance))).toEqual(snapshotBytes);
+        } finally {
+            try { if (server) await close(server); }
+            finally {
+                if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+                else process.env.NODE_OPTIONS = originalNodeOptions;
+                cleanupFakeMacosMcpContext(native);
+            }
         }
     });
 });
