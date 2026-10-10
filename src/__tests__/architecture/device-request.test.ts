@@ -1,25 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
-import type { DeviceRequestPorts } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
-import { flowStepArguments, normalizePublicToolArgs, normalizeToolArgs, toolInputError } from "../../../device-lab-mcp/src/tool-arguments.mjs";
-import { DEVICE_FLOW_TOOL_NAMES, flowOperationAllowed, toolOperation } from "../../../device-lab-mcp/src/tools.mjs";
-import { TOOLS as OPERATION_TOOLS } from "../../../device-lab-mcp/src/operation-tools.mjs";
-import { evaluateDestructivePolicy } from "../../../device-lab-mcp/src/policy/destructive.mjs";
-import { actionResult } from "../../../device-lab-mcp/src/action-output.mjs";
-import { compactToolValue } from "../../../device-lab-mcp/src/public-output.mjs";
-import { flowJsonResult, jsonResult, textResult } from "@ccc/device-lab/providers/responses.mjs";
+import type { DeviceArguments, DeviceRequestPorts, DeviceResult } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
 
-function requestPorts(): DeviceRequestPorts {
+function jsonReply(value: unknown): DeviceResult {
+    return {
+        content: [{ type: "text", text: JSON.stringify(value) }],
+        isError: typeof value === "object" && value !== null && "ok" in value && value.ok === false,
+    };
+}
+
+function requestPorts(operation: string, normalized: DeviceArguments = {}): DeviceRequestPorts {
     const unexpected = (): never => { throw new Error("Request reached work before admission"); };
     const brokerCommand = vi.fn(unexpected);
     const handleAndroidTool = vi.fn(unexpected);
     const ports = {
         OWNER_DEVICE_ID_PATTERN: /^owned-/,
-        OPERATION_TOOLS,
-        DEVICE_FLOW_TOOL_NAMES,
+        OPERATION_TOOLS: [
+            { name: "device_status", inputSchema: { required: ["deviceId"] } },
+            { name: "device_start", inputSchema: { required: ["deviceId"] } },
+            { name: "device_click", inputSchema: { required: ["deviceId"] } },
+        ],
+        DEVICE_FLOW_TOOL_NAMES: ["screenshot"],
         now: () => 0,
-        encodeBase64: text => Buffer.from(text, "utf8").toString("base64"),
-        decodeBase64: text => Buffer.from(text, "base64").toString("utf8"),
+        encodeBase64: unexpected,
+        decodeBase64: unexpected,
         ownerId: unexpected,
         readOwnerDevices: unexpected,
         currentDisplayTarget: unexpected,
@@ -60,18 +64,18 @@ function requestPorts(): DeviceRequestPorts {
         implicitBrokerProbeOptions: unexpected,
         isLocalObservationBudgetExhaustion: unexpected,
         withBrokerOperation: operation => operation(),
-        normalizeToolArgs,
-        normalizePublicToolArgs,
-        toolInputError,
-        toolOperation,
-        flowOperationAllowed,
-        flowStepArguments,
-        evaluateDestructivePolicy,
-        jsonResult,
-        textResult,
-        flowJsonResult,
-        compactToolValue,
-        actionResult,
+        normalizeToolArgs: () => normalized,
+        normalizePublicToolArgs: () => normalized,
+        toolInputError: () => null,
+        toolOperation: () => operation,
+        flowOperationAllowed: () => true,
+        flowStepArguments: (_tool, _flow, step) => step,
+        evaluateDestructivePolicy: () => ({ ok: true }),
+        jsonResult: jsonReply,
+        textResult: (ok, text) => ({ content: [{ type: "text", text }], isError: !ok }),
+        flowJsonResult: jsonReply,
+        compactToolValue: (_name, value) => value,
+        actionResult: (_name, _operation, result) => result,
         buildListFilesCommand: unexpected,
         listFilesFromExecResult: unexpected,
         availableDevices: unexpected,
@@ -85,17 +89,21 @@ function requestPorts(): DeviceRequestPorts {
 }
 
 describe("shared device request admission", () => {
-    it("rejects invalid target selectors and unconfirmed deletion before broker or provider work", async () => {
-        const ports = requestPorts();
+    it("returns argument and destructive peer refusals before broker or provider work", async () => {
+        const ports = requestPorts("device_status");
+        ports.toolInputError = () => "deviceId determines the backend; omit backend";
         const application = createDeviceRequest(ports);
 
         const invalid = await application.request("status", { deviceId: "owned-phone", backend: "windows-sandbox", broker: true });
         expect(invalid.isError).toBe(true);
-        expect(JSON.parse(invalid.content[0].text!)).toEqual({ ok: false, error: "deviceId determines the backend; omit backend" });
+        expect(JSON.parse(invalid.content[0].text ?? "")).toEqual({ ok: false, error: "deviceId determines the backend; omit backend" });
 
+        ports.toolInputError = () => "delete requires confirmDestructive:true";
+        ports.toolOperation = () => "device_delete";
+        ports.evaluateDestructivePolicy = () => ({ ok: false, error: "destructive-action-confirmation-required", actions: ["device-delete"] });
         const refused = await application.request("delete", { deviceId: "owned-phone", confirmDestructive: false, broker: true });
         expect(refused.isError).toBe(true);
-        expect(JSON.parse(refused.content[0].text!)).toMatchObject({
+        expect(JSON.parse(refused.content[0].text ?? "")).toMatchObject({
             ok: false,
             policy: { error: "destructive-action-confirmation-required", actions: ["device-delete"] },
         });
@@ -104,7 +112,7 @@ describe("shared device request admission", () => {
     });
 
     it("returns a public MCP error when an asynchronous provider rejects", async () => {
-        const ports = requestPorts();
+        const ports = requestPorts("device_click", { deviceId: "x11-current-display", x: 1, y: 2 });
         ports.OWNER_DEVICE_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
         ports.handleLinuxVmManagementTool = () => null;
         ports.handleLinuxVmTool = () => null;
@@ -115,7 +123,7 @@ describe("shared device request admission", () => {
     });
 
     it("returns a public MCP error when start readiness rejects", async () => {
-        const ports = requestPorts();
+        const ports = requestPorts("device_start", { deviceId: "owned-phone", implicitBroker: false, waitForBoot: true });
         ports.listAndroidDevices = () => [{ id: "owned-phone", backend: "android-emulator" }];
         ports.listAndroidRealDevices = () => [];
         ports.listIosDevices = () => [];
@@ -126,7 +134,7 @@ describe("shared device request admission", () => {
         ports.listWindowsVmDevices = () => [];
         ports.handleLinuxVmManagementTool = () => null;
         ports.handleLinuxVmTool = () => null;
-        ports.handleAndroidTool = async () => jsonResult({ device: { id: "owned-phone", backend: "android-emulator", status: "running" } });
+        ports.handleAndroidTool = async () => jsonReply({ device: { id: "owned-phone", backend: "android-emulator", status: "running" } });
         ports.finishStartReadiness = async () => { throw new Error("readiness probe rejected"); };
         const result = await createDeviceRequest(ports).request("start", { deviceId: "owned-phone", implicitBroker: false, waitForBoot: true });
         expect(result.isError).toBe(true);
@@ -134,7 +142,7 @@ describe("shared device request admission", () => {
     });
 
     it("returns a public MCP error when flow execution rejects", async () => {
-        const ports = requestPorts();
+        const ports = requestPorts("device_run_flow", { deviceId: "owned-phone", steps: [{ tool: "screenshot" }] });
         ports.runDeviceFlow = async () => { throw new Error("flow execution rejected"); };
         const result = await createDeviceRequest(ports).request("run_flow", { deviceId: "owned-phone", steps: [{ tool: "screenshot" }] });
         expect(result.isError).toBe(true);
