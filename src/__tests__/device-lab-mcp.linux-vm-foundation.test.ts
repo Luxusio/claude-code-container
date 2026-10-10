@@ -112,7 +112,7 @@ describe("device-lab Linux VM foundation", () => {
     });
 
     it("reports unsupported by default and still stores named lab metadata", { timeout: TIMEOUT }, async () => {
-        const status = await client.callTool({ name: "devices", arguments: { view: "available", backend: "linux-vm", detail: true } });
+        const status = await client.callTool({ name: "devices", arguments: { view: "available", backend: "linux-vm", detail: true, implicitBroker: false } });
         const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(statusPayload).toEqual(expect.objectContaining({
             ok: true,
@@ -120,14 +120,14 @@ describe("device-lab Linux VM foundation", () => {
             discovery: expect.objectContaining({ provider: "container-qemu", available: false, status: "unsupported", stateRoot }),
         }));
 
-        const created = await client.callTool({ name: "create_linux_vm", arguments: { detail: true,  name: "MCP Lab" } });
+        const created = await client.callTool({ name: "create_linux_vm", arguments: { detail: true, name: "MCP Lab", implicitBroker: false } });
         const createPayload = JSON.parse(((created.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(createPayload).toEqual(expect.objectContaining({
             ok: true,
             device: expect.objectContaining({ deviceId: "mcp-lab", backend: "linux-vm", runtimeState: "stopped" }),
         }));
 
-        const start = await client.callTool({ name: "start", arguments: { detail: true, deviceId: "mcp-lab" } });
+        const start = await client.callTool({ name: "start", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
         expect(start.isError).toBe(true);
         const startPayload = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(startPayload).toEqual(expect.objectContaining({
@@ -135,7 +135,7 @@ describe("device-lab Linux VM foundation", () => {
             error: "lab-provider-unsupported",
         }));
 
-        const guestPush = await client.callTool({ name: "upload", arguments: { detail: true, deviceId: "mcp-lab", localPath: stateRoot, remotePath: "/workspace" } });
+        const guestPush = await client.callTool({ name: "upload", arguments: { detail: true, deviceId: "mcp-lab", localPath: stateRoot, remotePath: "/workspace", implicitBroker: false } });
         expect(guestPush.isError).toBe(true);
         const guestPushPayload = JSON.parse(((guestPush.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(guestPushPayload).toEqual(expect.objectContaining({
@@ -143,7 +143,7 @@ describe("device-lab Linux VM foundation", () => {
             error: "lab-not-running",
         }));
 
-        const observed = await client.callTool({ name: "status", arguments: { detail: true, deviceId: "mcp-lab" } });
+        const observed = await client.callTool({ name: "status", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
         expect(observed.isError).not.toBe(true);
         const observedPayload = JSON.parse(((observed.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(observedPayload).toEqual(expect.objectContaining({
@@ -151,12 +151,12 @@ describe("device-lab Linux VM foundation", () => {
             device: expect.objectContaining({ deviceId: "mcp-lab", runtimeState: "stopped" }),
             readiness: expect.objectContaining({ state: "stopped" }),
         }));
-        const stopped = await client.callTool({ name: "stop", arguments: { detail: true, deviceId: "mcp-lab" } });
+        const stopped = await client.callTool({ name: "stop", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
         expect(stopped.isError).not.toBe(true);
         expect(JSON.parse(((stopped.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
             expect.objectContaining({ ok: true, stopped: false, device: expect.objectContaining({ runtimeState: "stopped" }) }),
         );
-        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId: "mcp-lab", confirmDestructive: true } });
+        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId: "mcp-lab", confirmDestructive: true, implicitBroker: false } });
         expect(deleted.isError, JSON.stringify(deleted.content)).not.toBe(true);
         expect(JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
             expect.objectContaining({ ok: true, deleted: true, labId: "mcp-lab" }),

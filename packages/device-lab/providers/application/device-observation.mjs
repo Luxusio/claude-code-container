@@ -420,7 +420,7 @@ export function createDeviceObservation(ports) {
         }
         case "macos-vm": {
             const discovery = () => {
-                const hostSupported = ports.platform === "darwin";
+                const hostSupported = ports.platform() === "darwin";
                 const providers = hostSupported ? ports.providerNames.map(name => ({
                     name,
                     command: ports.executable(name)
@@ -436,10 +436,10 @@ export function createDeviceObservation(ports) {
                     missing
                 };
             };
-            /** @param {import('../domain/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device @param {import('../ports/device-observation.mjs').MacosFacts} facts */
-            const plan = (device, facts) => observationMacosPlan(device, facts, ports.ownerId(), ports.helperPaths(device));
-            /** @param {import('../domain/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device @param {import('../ports/device-observation.mjs').MacosFacts} facts */
-            const project = (device, facts) => {
+            /** @param {import('../domain/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device @param {import('../ports/device-observation.mjs').MacosFacts} [facts] */
+            const plan = (device, facts = discovery()) => observationMacosPlan(device, facts, ports.ownerId(), ports.helperPaths(device));
+            /** @param {import('../domain/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device @param {import('../ports/device-observation.mjs').MacosFacts} [facts] */
+            const project = (device, facts = discovery()) => {
                 const presented = publicObservationMacosDevice(device);
                 return target({
                     ...presented,

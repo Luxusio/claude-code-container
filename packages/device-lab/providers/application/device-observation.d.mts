@@ -144,8 +144,8 @@ export function createDeviceObservation(ports: WindowsVmObservationPorts): Devic
     available: boolean;
 }, ObservationRecord, never>;
 export function createDeviceObservation(ports: MacosObservationPorts): DeviceObservation<MacosFacts, MacosVmDevice | PresentedTarget<MacosVmDevice>, MacosInventory> & {
-    plan(device: MacosVmDevice, facts: MacosFacts): ReturnType<typeof observationMacosPlan>;
-    project(device: MacosVmDevice, facts: MacosFacts): PresentedTarget<MacosVmDevice>;
+    plan(device: MacosVmDevice, facts?: MacosFacts): ReturnType<typeof observationMacosPlan>;
+    project(device: MacosVmDevice, facts?: MacosFacts): PresentedTarget<MacosVmDevice>;
 };
 export function createDeviceObservation(ports: LinuxObservationPorts): DeviceObservation<LinuxProviderStatus, LinuxDevice, LinuxInventory> & {
     labs(options?: ObservationOptions): LinuxLabs;

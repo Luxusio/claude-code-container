@@ -229,7 +229,7 @@ export interface WindowsVmObservationPorts extends Common {
 }
 export interface MacosObservationPorts extends Common {
     readonly kind: "macos-vm";
-    readonly platform: string;
+    platform(): string;
     readonly providerNames: readonly string[];
     executable(name: string): string | null;
     records(): MacosVmDevice[];

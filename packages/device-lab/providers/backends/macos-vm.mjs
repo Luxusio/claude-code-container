@@ -1904,4 +1904,4 @@ const deviceObservation = createDeviceObservation({ kind: "macos-vm", ownerId: (
         "device_record_video_status",
         "device_upload",
         "device_download",
-    ], platform: process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device) });
+    ], platform: () => process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device) });

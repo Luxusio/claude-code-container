@@ -1559,7 +1559,7 @@ require(${JSON.stringify(realAvdmanagerPath)});
 
         const losingAvd = `ccc-${ownerId}-direct-state-limit-loser`;
         try {
-            await expect(client.callTool({
+            const created = await client.callTool({
                 name: "create_android_emulator",
                 arguments: {
 
@@ -1568,8 +1568,11 @@ require(${JSON.stringify(realAvdmanagerPath)});
                     avdName: losingAvd,
                     systemImage: "system-images;android-35;google_apis;x86_64",
                 },
-            })).rejects.toThrow("owner-devices-file-too-large");
+            });
+            expect(created.isError).toBe(true);
+            expect((created.content as Array<{ text?: string }>)[0].text).toContain("owner-devices-file-too-large");
             expect(readFileSync(statePath, "utf8")).toBe(nearLimitState);
+            expect(readFileSync(logPath, "utf8")).toContain(`avdmanager create avd --name ${losingAvd}`);
             expect(readFileSync(logPath, "utf8")).not.toContain(`avdmanager delete avd --name ${losingAvd}`);
             expect(existsSync(join(homeDir, ".android", "avd", `${losingAvd}.avd`))).toBe(false);
             expect(existsSync(join(homeDir, ".android", "avd", `${losingAvd}.ini`))).toBe(false);

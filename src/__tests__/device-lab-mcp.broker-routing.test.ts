@@ -3157,7 +3157,7 @@ describe("device-lab MCP broker routing", () => {
             expect(JSON.parse(((owned.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
                 ownerId: brokerOwnerId(),
                 routedBy: "device-list-broker-implicit",
-                devices: [expect.objectContaining({ id: "win-readonly-broker", backend: "windows-sandbox" })],
+                devices: [expect.objectContaining({ deviceId: "win-readonly-broker", backend: "windows-sandbox", status: "running" })],
             });
 
             const discovery = await client.callTool({
