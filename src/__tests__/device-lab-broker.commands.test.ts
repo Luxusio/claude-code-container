@@ -5339,6 +5339,171 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    it("executes Windows click and file transfers through the authenticated real backend child", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
+        const project = join(fixtureHome!, "windows-project");
+        mkdirSync(project);
+        const ownerId = deviceLabOwnerId(project);
+        const deviceId = "windows-broker-desktop";
+        writeBrokerDevices(ownerId, "windows", [{ id: deviceId, backend: "windows-sandbox", status: "running", sandboxId: "22222222-2222-4222-8222-222222222222" }]);
+        const scratch = join(backendRoot(ownerId, "windows"), deviceId);
+        const inbox = join(scratch, "inbox"), outbox = join(scratch, "outbox");
+        const uploads = join(scratch, "uploads"), downloads = join(scratch, "downloads");
+        for (const directory of [inbox, outbox, uploads, downloads]) mkdirSync(directory, { recursive: true });
+        writeFileSync(join(downloads, "ccc-guest-helper.ready.txt"), "ready");
+        const guestFile = join(fixtureHome!, "windows-guest-report.txt");
+        const remotePath = "C:\\Users\\WDAGUtilityAccount\\broker-report.txt";
+        const observed: Array<Record<string, unknown>> = [];
+        let uploadStage: string | undefined, downloadOutput: string | undefined;
+        let responderFailure: unknown;
+        const responder = setInterval(() => {
+            try {
+                for (const name of readdirSync(inbox).filter(name => name.endsWith(".json"))) {
+                    const requestPath = join(inbox, name);
+                    const payload = JSON.parse(readFileSync(requestPath, "utf8")) as { id: string; type: string; x?: number; y?: number; button?: string; uploadPath?: string; remotePath?: string };
+                    expect(name).toBe(`${payload.id}.json`);
+                    const response: Record<string, unknown> = { id: payload.id, type: payload.type, ok: true };
+                    if (payload.type === "click") {
+                        expect({ x: payload.x, y: payload.y, button: payload.button }).toEqual({ x: 25, y: 40, button: "right" });
+                        response.clicked = { x: 25, y: 40, button: "right" };
+                    } else if (payload.type === "upload") {
+                        expect(payload.remotePath).toBe(remotePath);
+                        expect(payload.uploadPath).toMatch(/^C:\\ccc\\scratch\\uploads\\[0-9a-f-]+-upload\.txt$/);
+                        uploadStage = join(uploads, payload.uploadPath!.split("\\").at(-1)!);
+                        fixtureFs.copyFileSync(uploadStage, guestFile);
+                    } else if (payload.type === "download") {
+                        expect(payload.remotePath).toBe(remotePath);
+                        const outputName = `${payload.id}-broker-report.txt`;
+                        downloadOutput = join(downloads, outputName);
+                        fixtureFs.copyFileSync(guestFile, downloadOutput);
+                        response.downloadPath = `C:\\ccc\\scratch\\downloads\\${outputName}`;
+                    } else throw new Error(`Unexpected Windows helper request: ${payload.type}`);
+                    observed.push({ ...payload });
+                    writeFileSync(join(outbox, name), JSON.stringify(response));
+                    rmSync(requestPath);
+                }
+            } catch (error) { responderFailure = error; clearInterval(responder); }
+        }, 10);
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId);
+            const headers = ownerRpcHeaders(ownerId);
+            const invoke = async (tool: string, args: Record<string, unknown>) => {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "windows-sandbox", deviceId, helperTimeoutMs: 5000, ...args } }) });
+                expect(responderFailure).toBeUndefined();
+                expect(response.status).toBe(200);
+                const body = await response.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "windows-sandbox", provider: "device-lab-backend-child" } });
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                return JSON.parse(body.result.mcpResult.content[0].text);
+            };
+            expect(await invoke("device_click", { x: 25, y: 40, button: "right" })).toMatchObject({ provider: "windows-helper", clicked: { x: 25, y: 40, button: "right" } });
+            const uploadPath = join(project, "upload.txt"), downloadPath = join(project, "download.txt");
+            writeFileSync(uploadPath, "Windows broker transfer bytes\n");
+            writeFileSync(downloadPath, "previous destination");
+            expect(await invoke("device_upload", { localPath: uploadPath, remotePath })).toMatchObject({ provider: "windows-helper", uploaded: { localPath: uploadPath, remotePath } });
+            expect(readFileSync(guestFile, "utf8")).toBe("Windows broker transfer bytes\n");
+            if (!uploadStage) throw new Error("Windows helper did not observe its allocated upload stage");
+            expect(existsSync(uploadStage)).toBe(false);
+            expect(readdirSync(uploads)).toEqual([]);
+            expect(await invoke("device_download", { localPath: downloadPath, remotePath })).toMatchObject({ provider: "windows-helper", downloaded: { localPath: downloadPath, remotePath } });
+            expect(readFileSync(downloadPath, "utf8")).toBe("Windows broker transfer bytes\n");
+            if (!downloadOutput) throw new Error("Windows helper did not publish its selected download output");
+            // The helper output remains in its owned file channel under the current download policy.
+            expect(readFileSync(downloadOutput, "utf8")).toBe("Windows broker transfer bytes\n");
+            expect(observed).toEqual(expect.arrayContaining([
+                expect.objectContaining({ type: "click", x: 25, y: 40, button: "right" }),
+                expect.objectContaining({ type: "upload", remotePath }),
+                expect.objectContaining({ type: "download", remotePath }),
+            ]));
+        } finally {
+            try { if (server) await close(server); }
+            finally { clearInterval(responder); }
+        }
+    });
+
+    it("executes macOS click and SCP transfers through the authenticated real backend child", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
+        const project = join(fixtureHome!, "macos-project"), binDir = join(fixtureHome!, "macos-bin");
+        const stageParent = join(fixtureHome!, "macos-transfer-stages");
+        const guestFile = join(fixtureHome!, "macos-guest-report.txt"), logPath = join(fixtureHome!, "macos-sdk.jsonl");
+        for (const directory of [project, binDir, stageParent]) mkdirSync(directory);
+        writeFileSync(logPath, "");
+        const ownerId = deviceLabOwnerId(project), deviceId = "macos-broker-desktop";
+        const sshTarget = "fixture@192.0.2.44", remotePath = "/tmp/broker-report.txt";
+        const remoteScriptPath = "/tmp/ccc-macos-broker-desktop-guest-helper.sh";
+        writeBrokerDevices(ownerId, "macos", [{ id: deviceId, backend: "macos-vm", status: "running", provider: "tart", providerInstance: `ccc-${ownerId}-broker`, ssh: { host: "192.0.2.44", user: "fixture" }, helper: { remoteScriptPath } }]);
+        const sshArgv = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", sshTarget, `'${remoteScriptPath}' click '22' '33' 'right'`];
+        const ssh = join(binDir, "ssh"), scp = join(binDir, "scp");
+        writeFileSync(ssh, `#!${process.execPath}
+const fs = require('node:fs'), args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({tool:'ssh',args}) + '\\n');
+if (JSON.stringify(args) !== ${JSON.stringify(JSON.stringify(sshArgv))}) throw new Error('Unexpected SSH target or click request');
+console.log(JSON.stringify({ok:true,clicked:{x:22,y:33,button:'right'}}));
+`);
+        writeFileSync(scp, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), args = process.argv.slice(2);
+if (args.length !== 6 || JSON.stringify(args.slice(0,4)) !== '["-o","BatchMode=yes","-o","StrictHostKeyChecking=no"]') throw new Error('Unexpected SCP options');
+const remote = ${JSON.stringify(`${sshTarget}:${remotePath}`)}, source = args[4], destination = args[5];
+const upload = destination === remote, stage = upload ? source : destination;
+if ((!upload && source !== remote) || path.dirname(path.dirname(stage)) !== ${JSON.stringify(stageParent)} || path.basename(stage) !== 'payload') throw new Error('Unexpected SCP target or stage');
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({tool:'scp',args,stage}) + '\\n');
+fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.stringify(guestFile)} : stage);
+`);
+        chmodSync(ssh, 0o755);
+        chmodSync(scp, 0o755);
+        const preload = join(fixtureHome!, "macos-node-routing.cjs");
+        writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "TMPDIR", "TMP", "TEMP"] as const;
+        const originalEnvironment = environmentKeys.map(key => process.env[key]);
+        let restoreRouting: (() => void) | undefined;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            process.env.PATH = `${binDir}${delimiter}${originalEnvironment[0] || ""}`;
+            process.env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+            process.env.TMPDIR = process.env.TMP = process.env.TEMP = stageParent;
+            restoreRouting = installNodeProviderFixtureRouting(binDir);
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+            const invoke = async (tool: string, args: Record<string, unknown>) => {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "macos-vm", deviceId, ...args } }) });
+                expect(response.status).toBe(200);
+                const body = await response.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "macos-vm", provider: "device-lab-backend-child" } });
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                return JSON.parse(body.result.mcpResult.content[0].text);
+            };
+            expect(await invoke("device_click", { x: 22, y: 33, button: "right" })).toMatchObject({ provider: "ssh-macos-helper", remoteScriptPath, clicked: { x: 22, y: 33, button: "right" }, status: 0 });
+            const uploadPath = join(project, "upload.txt"), downloadPath = join(project, "download.txt");
+            writeFileSync(uploadPath, "macOS broker transfer bytes\n");
+            writeFileSync(downloadPath, "previous destination");
+            expect(await invoke("device_upload", { localPath: uploadPath, remotePath })).toMatchObject({ provider: "scp", uploaded: { localPath: uploadPath, remotePath } });
+            expect(readFileSync(guestFile, "utf8")).toBe("macOS broker transfer bytes\n");
+            expect(await invoke("device_download", { localPath: downloadPath, remotePath })).toMatchObject({ provider: "scp", downloaded: { localPath: downloadPath, remotePath } });
+            expect(readFileSync(downloadPath, "utf8")).toBe("macOS broker transfer bytes\n");
+            const calls = readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line) as { tool: string; args: string[]; stage?: string });
+            expect(calls).toContainEqual({ tool: "ssh", args: sshArgv });
+            const upload = calls.find(call => call.tool === "scp" && call.args.at(-1) === `${sshTarget}:${remotePath}`);
+            const download = calls.find(call => call.tool === "scp" && call.args.at(-2) === `${sshTarget}:${remotePath}`);
+            if (!upload?.stage || !download?.stage) throw new Error("SCP did not observe both allocated transfer stages");
+            expect(upload.args).toEqual(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", upload.stage, `${sshTarget}:${remotePath}`]);
+            expect(download.args).toEqual(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", `${sshTarget}:${remotePath}`, download.stage]);
+            for (const stage of [upload.stage, download.stage]) {
+                expect(dirname(dirname(stage))).toBe(stageParent);
+                expect(existsSync(dirname(stage))).toBe(false);
+            }
+            expect(readdirSync(stageParent)).toEqual([]);
+        } finally {
+            try { if (server) await close(server); }
+            finally {
+                restoreRouting?.();
+                environmentKeys.forEach((key, index) => {
+                    if (originalEnvironment[index] === undefined) delete process.env[key];
+                    else process.env[key] = originalEnvironment[index];
+                });
+            }
+        }
+    });
+
     it("routes Windows broker desktop device tools through the Windows backend child handler", async () => {
         const fakeRoot = mkdtempSync(join(tmpdir(), "ccc-windows-device-tool-runner-"));
         const backendDir = join(fakeRoot, "providers", "backends");

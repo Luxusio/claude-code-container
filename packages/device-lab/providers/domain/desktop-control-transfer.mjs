@@ -2,7 +2,7 @@
 /** @typedef {{kind:'json',value:object}|{kind:'text',ok:boolean,text:string}|{kind:'command-failure',receipt:{status:number|null,stdout:string,stderr:string}}|{kind:'native',value:object}|undefined} DesktopOutcome */
 /** @param {unknown} x @param {unknown} y */
 export function desktopPointValid(x, y) {
-    return [x, y].every((v) => Number.isInteger(v) && v >= 0 && v <= 2147483647);
+    return [x, y].every((v) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 2147483647);
 }
 /** @param {DesktopArguments} args */
 export function desktopDragValid(args) {
