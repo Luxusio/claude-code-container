@@ -765,8 +765,8 @@ export function createDeviceRequest(ports) {
         return "";
     }
 
-    /** @param {string} name @param {Args} [args] */
-    function brokerPhysicalProbeArgs(name, args = {}) {
+    /** @param {Args} [args] */
+    function brokerPhysicalProbeArgs(args = {}) {
         return {
             ...(args || {}),
             // device_attach already uses `port` for the Android Wi-Fi device port.
@@ -847,7 +847,7 @@ export function createDeviceRequest(ports) {
     /** @param {string} name @param {Args} args @returns {Promise<Result>} */
     async function handleBrokerPhysicalTool(name, args) {
         const routedBy = "device-physical-broker";
-        const probe = ports.implicitBrokerProbeOptions(brokerPhysicalProbeArgs(name, args || {}), { allowDefault: true });
+        const probe = ports.implicitBrokerProbeOptions(brokerPhysicalProbeArgs(args || {}), { allowDefault: true });
         const inference = await inferBrokerPhysicalBackend(name, args, probe, routedBy);
         if (!inference.ok) return inference.response || ports.jsonResult({ ok: false, error: "broker-rpc-unavailable", routedBy });
         const result = await ports.brokerPhysical({
@@ -861,7 +861,7 @@ export function createDeviceRequest(ports) {
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
     async function maybeHandleImplicitBrokerPhysicalTool(name, args) {
         if (!BROKER_PHYSICAL_TOOLS.has(name) || optsOutOfImplicitBroker(args)) return null;
-        const probe = ports.implicitBrokerProbeOptions(brokerPhysicalProbeArgs(name, args || {}));
+        const probe = ports.implicitBrokerProbeOptions(brokerPhysicalProbeArgs(args || {}));
         const routedBy = "device-physical-broker-implicit";
         if (!probe) return implicitBrokerUnavailableResult(routedBy);
         const inference = await inferBrokerPhysicalBackend(name, args, probe, routedBy);
@@ -1039,7 +1039,7 @@ export function createDeviceRequest(ports) {
             backend = inferBrokerInventoryLifecycleBackend(inventory, deviceId);
             args = { ...args, ...selectedBrokerProbeOptions(probe, inventory) };
         }
-        if (backend?.ok === false) {
+        if (typeof backend !== "string" && backend?.ok === false) {
             return ports.jsonResult({
                 ok: false,
                 error: backend.error,
@@ -1049,7 +1049,8 @@ export function createDeviceRequest(ports) {
             });
         }
         const resolvedBackend = typeof backend === "string" ? backend : backend.backend;
-        if (!["android-emulator", "android-device", "ios-simulator", "ios-device"].includes(resolvedBackend)) {
+        if (typeof resolvedBackend !== "string"
+            || !["android-emulator", "android-device", "ios-simulator", "ios-device"].includes(resolvedBackend)) {
             return ports.jsonResult({ ok: false, error: "unsupported-mobile-backend", deviceId });
         }
         const routeArgs = brokerRouteOptions(args);
@@ -1305,11 +1306,12 @@ export function createDeviceRequest(ports) {
         if (!args.backend || result.isError) return result;
         return { ...result, content: result.content.map(item => {
             if (item.type !== "text") return item;
+            if (typeof item.text !== "string") throw new Error("device-result-text-invalid");
             const value = JSON.parse(item.text);
             for (const key of ["backends", "localBackends"]) {
                 if (Array.isArray(value[key])) value[key] = value[key].filter(backend => backend.name === args.backend);
             }
-            if (Array.isArray(value.hostBackends?.backends)) value.hostBackends.backends = value.hostBackends.backends.filter(backend => backend.name === args.backend);
+            if (Array.isArray(value.hostBackends?.backends)) value.hostBackends.backends = value.hostBackends.backends.filter(/** @param {{name?: unknown}} backend */ backend => backend.name === args.backend);
             return { ...item, text: JSON.stringify(value) };
         }) };
     }
