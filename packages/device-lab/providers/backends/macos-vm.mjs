@@ -103,6 +103,18 @@ const macosVmLifecycle = createMacosVmLifecycleApplication({
     get fail() { return fail; },
     timestamp: () => new Date().toISOString(),
     now: () => Date.now(),
+    get parseLifecycleClaimedAt() {
+        const clock = Date;
+        const parse = clock.parse;
+        /** @param {string} value */
+        return (value) => {
+            // Property lookup precedes argument evaluation; only the native call
+            // happens here, retaining its receiver and noncallability error.
+            const Date = { parse };
+            if (typeof parse !== "function") return Date.parse(value);
+            return Reflect.apply(parse, clock, [value]);
+        };
+    },
     get tartStartArgs() { return providerByName("tart").startArgs; },
     get spawn() {
         const launch = spawn;

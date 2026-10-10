@@ -15,7 +15,7 @@ function nativeLeaves(initial?:MacosVmDevice){
         read(){trace.push("read");return current?[current]:[];},find(){trace.push("find");return current||null;},
         claim(device){trace.push("claim");current=device;return {ok:true};},
         transition(_id,expected,replacement){trace.push("transition");if(current!==expected)return {matched:false,found:Boolean(current),device:current!};current=replacement||undefined;return {matched:true,found:true,device:current!};},
-        owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"2026-10-10T12:00:00.000Z",now:()=>1791633600000,runtimeId:()=>"claim",claimTtlMs:()=>1000,
+        owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"2026-10-10T12:00:00.000Z",now:()=>1791633600000,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
         validateSshKey:()=>({ok:true,path:null}),helperMetadata:()=>({}),
         providerPlan:()=>plan,tartPlan:()=>({plan}),publicDevice:device=>device,
         providerCommand(_command,args){trace.push(args.join(" "));return {status:0,stdout:"raw out",stderr:"raw err"};},

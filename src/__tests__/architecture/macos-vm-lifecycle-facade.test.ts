@@ -17,10 +17,12 @@ const ORIGINAL_SHA="0dc325978de01e8681c9f297f14eda217ea890f1b46eafd25a5b5f59dcdb
 const NATIVE_CLOSURE=[{"path":"packages/device-lab/providers/application/start-readiness.mjs","bytes":2116,"sha256":"e2334a5ea4e647340741a427130581691c8c4f0fce8f609d0308d82c967caba3"},{"path":"packages/device-lab/providers/commands.mjs","bytes":6887,"sha256":"b3fcd2c51233b5e142991b314312be34b1366c4cd2fcad8b1a2b3edd04dcdcea"},{"path":"packages/device-lab/providers/context.mjs","bytes":1678,"sha256":"20aae0fdbbc8a9cb5120eb243977b19fe38b015a00ab24726c34e10abc7c118a"},{"path":"packages/device-lab/providers/policy/files.mjs","bytes":9257,"sha256":"cfefe3a844568559878ee6752baa3e1f8eae48fb26261e445503bd6aaf45b2d6"},{"path":"packages/device-lab/providers/responses.mjs","bytes":10118,"sha256":"6905cc0d414dec94521bb3bc96a594f93984c46a2ffe23b40a1f0b58af622e8b"},{"path":"packages/device-lab/providers/state/device-operation-policy.mjs","bytes":4667,"sha256":"f4c85ddf173ed2aace17cc24b0b3471d48482f86805211b238ce7e08a5ff745b"},{"path":"packages/device-lab/providers/state/device-store.mjs","bytes":4463,"sha256":"9e506abc94ecbec5de6e1abf621aaef922743efd56d64ff223a851b490608705"},{"path":"packages/device-lab/providers/state/macos-state.mjs","bytes":816,"sha256":"c54cdd65a184d7a904259484d6f0cdf64946ca222b05ec959545707cd603c6c4"},{"path":"packages/device-lab/providers/state/process-identity.mjs","bytes":12765,"sha256":"60982e23b9371428e3d000ea8f236bb1f4afcf122a7f0dca10386687b063f348"},{"path":"packages/device-lab/providers/state/runtime-generation.mjs","bytes":1370,"sha256":"6b45f30fa706089d3319dee70b62de34e515739187498b60712d2605069a5092"},{"path":"packages/device-lab/providers/transfer-file.mjs","bytes":6696,"sha256":"e427680dbf9ee1c038d4bb3ceda5f72a852939fcb8cbc76696b7115382ad7cb5"}];
 const NAMESPACE=["handleMacosTool","listMacosDevices","macosBackend","macosGuestHelperScript","macosScreenshotCommand","materializeMacosSshAskpass","waitForMacosGuestHelper","writeMacosGuestHelper"];
 type RecordData=Record<string,any>;
-type Scenario={tool:string;args:RecordData;device?:RecordData;mode?:string;provider?:string;casFailure?:number;successor?:number};
+type DateProbe="order"|"parse-getter-throw"|"claimed-getter-throw"|"parse-call-throw"|"replace-parse"|"replace-clock"|"callable-proxy"|"coercion"|"coercion-throw"|"coercion-invalid"|"noncallable";
+type Scenario={tool:string;args:RecordData;device?:RecordData;mode?:string;provider?:string;casFailure?:number;successor?:number;dateProbe?:DateProbe};
 const base=()=>({id:"unit",name:"Unit",backend:"macos-vm",provider:"tart",providerInstance:"ccc-owner-unit",status:"stopped",ssh:null,headless:false,snapshots:[],recording:null,extra:{raw:true}});
 function fixture(original:boolean,scenario:Scenario){
     const trace:unknown[]=[],denied:string[]=[],fault={raw:"native-fault"};
+    const parseEvents:string[]=[];let parseClock:RecordData,alternateClock:RecordData,activeClock:RecordData,nativeParseError:unknown;
     let record=scenario.device?structuredClone(scenario.device):undefined,cas=0,uuid=0,clock=1791633600000;
     const timers=new Set<{active:boolean}>();
     const ownedSetTimeout=(callback:()=>void,ms:number)=>{const timer={active:true};timers.add(timer);queueMicrotask(()=>queueMicrotask(()=>{if(timer.active){clock+=ms;callback();}timers.delete(timer);}));return timer;};
@@ -45,7 +47,7 @@ function fixture(original:boolean,scenario:Scenario){
             has(_target,key){check(key);return perform(()=>Reflect.has(value,key));},
             ownKeys(){try{return Reflect.ownKeys(value).filter(key=>!intoRealm||!protectedName(key));}catch(error){throw convert(error);}},
             getOwnPropertyDescriptor(_target,key){check(key);try{const descriptor=Reflect.getOwnPropertyDescriptor(value,key);if(!descriptor)return undefined;const actual=Reflect.getOwnPropertyDescriptor(target,key);const base={enumerable:descriptor.enumerable,configurable:actual?.configurable===false?false:true};return "value"in descriptor?{...base,writable:descriptor.writable,value:convert(descriptor.value)}:{...base,get:convert(descriptor.get),set:convert(descriptor.set)};}catch(error){throw convert(error);}},
-            defineProperty(_target,key,descriptor){check(key);try{const copied={...descriptor};if("value"in copied)copied.value=opposite(copied.value);if("get"in copied)copied.get=opposite(copied.get);if("set"in copied)copied.set=opposite(copied.set);return Reflect.defineProperty(value,key,copied);}catch(error){throw convert(error);}},
+            defineProperty(_target,key,descriptor){check(key);try{const copied={...descriptor};if("value"in copied)copied.value=opposite(copied.value);if("get"in copied)copied.get=opposite(copied.get);if("set"in copied)copied.set=opposite(copied.set);if(!Reflect.defineProperty(value,key,copied))return false;return descriptor.configurable===false||descriptor.configurable===undefined?Reflect.defineProperty(target,key,descriptor):true;}catch(error){throw convert(error);}},
             deleteProperty(_target,key){check(key);return perform(()=>Reflect.deleteProperty(value,key));},
             getPrototypeOf(){if(intoRealm)return confinedReject("host prototype traversal");return perform(()=>Reflect.getPrototypeOf(value));},
             setPrototypeOf(){return confinedReject("realm prototype mutation");},preventExtensions(){return confinedReject("realm capability sealing");},
@@ -102,7 +104,20 @@ function fixture(original:boolean,scenario:Scenario){
     };
     const state={
         readMacosDevices:()=>{trace.push("inventory");return record?[structuredClone(record)]:[];},
-        findMacosDevice:(id:string)=>{trace.push(["find",id]);return record?.id===id?structuredClone(record):undefined;},
+        findMacosDevice:(id:string)=>{
+            trace.push(["find",id]);const observed=record?.id===id?structuredClone(record):undefined;
+            // Install an observation getter AFTER the native snapshot clone so
+            // no fixture copying evaluates the argument before the real parser.
+            if(scenario.dateProbe&&observed?.lifecycle)Object.defineProperty(observed.lifecycle,"claimedAt",{enumerable:true,configurable:true,get(){
+                parseEvents.push("claimed:get");
+                if(scenario.dateProbe==="claimed-getter-throw")throw fault;
+                if(scenario.dateProbe==="replace-parse")Object.defineProperty(parseClock,"parse",{configurable:true,value:()=>{parseEvents.push("late-parse");return NaN;}});
+                if(scenario.dateProbe==="replace-clock")activeClock=alternateClock;
+                if(["coercion","coercion-throw","coercion-invalid"].includes(scenario.dateProbe!))return {[Symbol.toPrimitive](hint:string){parseEvents.push("coerce:"+hint);if(scenario.dateProbe==="coercion-throw")throw fault;return scenario.dateProbe==="coercion-invalid"?{}:"2026-10-10T12:00:00.000Z";}};
+                return "2026-10-10T12:00:00.000Z";
+            }});
+            return observed;
+        },
         claimMacosDevice:(value:RecordData)=>{
             trace.push(["claim",value]);if(scenario.mode==="claim-throw")throw fault;
             if(scenario.mode==="claim-conflict"||scenario.mode==="claim-same"||scenario.mode==="claim-rollback-fail")return {ok:false,field:"id",value:value.id,existing:scenario.mode==="claim-same"?value:{id:"successor",provider:"other",providerInstance:"different"}};
@@ -149,7 +164,7 @@ function fixture(original:boolean,scenario:Scenario){
         const source=original&&file===entry?ORIGINAL:readFileSync(path.join(root,file),"utf8");
         const lowered=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
         class FixedDate extends Date {constructor(value?:any){super(value===undefined?clock:value);}static now(){return clock;}}
-        const context=createContext({exports:intoRealm(exports),require:intoRealm((name:string)=>{
+        const globals:RecordData={exports:intoRealm(exports),require:intoRealm((name:string)=>{
             if(Object.hasOwn(modules,name))return modules[name];
             if(name.startsWith("."))return load(path.posix.normalize(path.posix.join(path.posix.dirname(file),name)));
             return deny("module:"+name);
@@ -158,7 +173,23 @@ function fixture(original:boolean,scenario:Scenario){
         // the same tracked crossings before using the real native clone;
         // preserve metadata/undefined values rather than normalizing them.
         structuredClone:intoRealm(nativeClone),
-        setTimeout:intoRealm(ownedSetTimeout),clearTimeout:intoRealm(ownedClearTimeout),queueMicrotask:intoRealm(queueMicrotask),console:intoRealm(guard("console",{}))},{codeGeneration:{strings:false,wasm:false}});
+        setTimeout:intoRealm(ownedSetTimeout),clearTimeout:intoRealm(ownedClearTimeout),queueMicrotask:intoRealm(queueMicrotask),console:intoRealm(guard("console",{}))};
+        if(scenario.dateProbe&&file===entry){
+            parseClock=FixedDate;activeClock=parseClock;
+            class AlternateDate extends Date{static now(){return clock;}}
+            alternateClock=AlternateDate;
+            Object.defineProperty(parseClock,"parse",{configurable:true,get(){
+                parseEvents.push("parse:get");if(scenario.dateProbe==="parse-getter-throw")throw fault;
+                if(scenario.dateProbe==="noncallable")return 7;
+                const selected=function(this:unknown,value:unknown){parseEvents.push("parse:call");expect(this).toBe(parseClock);
+                    if(scenario.dateProbe==="parse-call-throw")throw fault;
+                    try{return Reflect.apply(Date.parse,this,[value]);}catch(error){nativeParseError=error;throw error;}
+                };
+                return scenario.dateProbe==="callable-proxy"?new Proxy(selected,{apply(target,receiver,args){parseEvents.push("parse:proxy");return Reflect.apply(target,receiver,args);}}):selected;
+            }});
+            Object.defineProperty(globals,"Date",{configurable:true,get(){parseEvents.push("Date:get");return intoRealm(activeClock);}});
+        }
+        const context=createContext(globals,{codeGeneration:{strings:false,wasm:false}});
         contexts.set(file,context);runInContext(lowered,context);
         return exports;
     }
@@ -166,7 +197,7 @@ function fixture(original:boolean,scenario:Scenario){
     expect(denied).toEqual([]);expect(trace).toEqual([]);
     for(const name of NAMESPACE)expect(outgoingOriginal.has(api[name])).toBe(true);
     const probes:Record<string,string>={filesystem:'require("fs").openSync("/foreign")',process:'require("child_process").execSync("foreign")',network:'require("node:net")',environment:'process.env.FOREIGN',constructor:'Buffer.constructor',"date-constructor":'Date.constructor',"module-constructor":'require("path").join.constructor'};
-    return {api,trace,denied,fault,read:()=>record,readBack:()=>state.findMacosDevice("unit"),probe(name:string){try{return fromRealm(runInContext(probes[name],contexts.get(entry)!));}catch(error){throw fromRealm(error);}},load,async invoke(){
+    return {api,trace,denied,fault,parseEvents,nativeParseError:()=>nativeParseError,moduleMarker:()=>fromRealm(runInContext('Object.getOwnPropertyDescriptor(exports,"__esModule")',contexts.get(entry)!)),read:()=>record,readBack:()=>state.findMacosDevice("unit"),probe(name:string){try{return fromRealm(runInContext(probes[name],contexts.get(entry)!));}catch(error){throw fromRealm(error);}},load,async invoke(){
         let result:unknown,caught:unknown;
         try{result=await api.handleMacosTool(scenario.tool,scenario.args);}catch(error){caught=error;}
         expect(denied).toEqual([]);expect(timers.size).toBe(0);
@@ -222,6 +253,28 @@ const cases:Array<[string,Scenario]>=[
     ["delete final conflict",{tool:"device_delete",args:{deviceId:"unit"},device:base(),casFailure:2}],
 ];
 describe("macOS whole original/current direct lifecycle controls",()=>{
+    it.each(["order","parse-getter-throw","claimed-getter-throw","parse-call-throw","replace-parse","replace-clock","callable-proxy","coercion","coercion-throw","coercion-invalid","noncallable"] satisfies DateProbe[])("actual original/current Date parsing preserves %s",async dateProbe=>{
+        const observations:unknown[]=[];
+        for(const original of [true,false]){
+            const scenario:Scenario={tool:"device_stop",args:{deviceId:"unit"},device:{...base(),lifecycle:{runtimeId:"young",operation:"stop",claimedAt:"2026-10-10T12:00:00.000Z"}},dateProbe};
+            const f=fixture(original,scenario),outcome=await f.invoke();
+            expect(f.parseEvents.slice(0,2)).toEqual(["Date:get","parse:get"]);
+            if(dateProbe==="parse-getter-throw")expect(f.parseEvents).toEqual(["Date:get","parse:get"]);
+            else expect(f.parseEvents[2]).toBe("claimed:get");
+            if(["parse-getter-throw","claimed-getter-throw","parse-call-throw","coercion-throw"].includes(dateProbe))expect(outcome.error).toBe("raw-native-identity");
+            else if(dateProbe==="noncallable"){
+                let intrinsic:Error|undefined;const Date:RecordData={parse:7};try{Date.parse("2026-10-10T12:00:00.000Z");}catch(error){expect(error).toBeInstanceOf(TypeError);intrinsic=error as Error;}
+                expect(outcome.error).toMatchObject({name:intrinsic!.name,message:intrinsic!.message});expect(f.parseEvents).not.toContain("parse:call");expect(f.parseEvents.some(event=>event.startsWith("coerce:"))).toBe(false);
+            }else if(dateProbe==="coercion-invalid"){expect(outcome.error).toBe(f.nativeParseError());expect(outcome.error).toBeInstanceOf(TypeError);}
+            else expect(outcome.error).toBeUndefined();
+            if(dateProbe==="callable-proxy")expect(f.parseEvents.slice(3,5)).toEqual(["parse:proxy","parse:call"]);
+            if(["coercion","coercion-throw","coercion-invalid"].includes(dateProbe))expect(f.parseEvents.slice(3,5)).toEqual(["parse:call","coerce:string"]);
+            expect(f.parseEvents).not.toContain("late-parse");
+            const error=outcome.error&&typeof outcome.error==="object"?{name:(outcome.error as RecordData).name,message:(outcome.error as RecordData).message}:outcome.error;
+            observations.push({result:outcome.result,error,events:f.parseEvents});expect(f.denied).toEqual([]);
+        }
+        expect(observations[1]).toEqual(observations[0]);
+    });
     it("native claim/readback preserves an own undefined field",async()=>{
         for(const original of [true,false]){
             const f=fixture(original,{tool:"device_create",args:{backend:"macos-vm",deviceId:"unit"}});
@@ -267,6 +320,7 @@ describe("macOS whole original/current direct lifecycle controls",()=>{
         expect(Buffer.byteLength(ORIGINAL)).toBe(125324);expect(createHash("sha256").update(ORIGINAL).digest("hex")).toBe(ORIGINAL_SHA);
         for(const original of [true,false]){
             const f=fixture(original,{tool:"unused",args:{}});
+            expect(f.moduleMarker()).toEqual({value:true,writable:false,enumerable:false,configurable:false});expect(f.denied).toEqual([]);
             expect(Object.keys(f.api).sort()).toEqual(NAMESPACE);
             const arities:Record<string,number>={macosBackend:0,materializeMacosSshAskpass:1,macosScreenshotCommand:1,macosGuestHelperScript:1,writeMacosGuestHelper:1,waitForMacosGuestHelper:2,listMacosDevices:0,handleMacosTool:2};
             for(const [name,arity]of Object.entries(arities))expect(f.api[name].length).toBe(arity);

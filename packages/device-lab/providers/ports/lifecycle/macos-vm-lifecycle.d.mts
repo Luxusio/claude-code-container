@@ -70,6 +70,7 @@ export interface MacosVmLifecyclePorts<Result, Child extends MacosVmProcessHandl
     transition(deviceId: string | undefined, expected: MacosVmDevice | null, replacement: MacosVmDevice | null): MacosVmTransition;
     owner(): string; deviceId(name: string | undefined): string;
     timestamp(): string; now(): number; runtimeId(): string; claimTtlMs(): number;
+    parseLifecycleClaimedAt(value: string): number;
     validateSshKey(path: string | null | undefined): {ok: true; path: string | null} | {ok: false; message: string};
     helperMetadata(device: Partial<MacosVmDevice>): {provisioning?: unknown; [key: string]: unknown};
     providerPlan(device: MacosVmDevice): MacosVmProviderPlan;

@@ -10,7 +10,7 @@ const child={pid:71,unref(){return undefined;}};
 const plan={available:true,missing:[],selectedProvider:"tart",providerCommand:"tart",providerInstance:"instance",startCommand:{command:"tart",args:["run","instance"]},stopCommand:{command:"tart",args:["stop","instance"]}};
 const ports:MacosVmLifecyclePorts<Result,typeof child>={
     read:()=>[device],find:()=>device,claim:()=>({ok:true}),transition:()=>({matched:false,found:true}),
-    owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"now",now:()=>1,runtimeId:()=>"claim",claimTtlMs:()=>1000,
+    owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"now",now:()=>1,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
     validateSshKey:()=>({ok:true,path:null}),helperMetadata:()=>({}),
     providerPlan:()=>plan,tartPlan:()=>({plan}),publicDevice:value=>value,
     providerCommand:()=>({status:0,stdout:"raw out",stderr:"raw err"}),commandTimedOut:()=>false,tartStartArgs:()=>[],supportsFeature:()=>false,
@@ -27,6 +27,14 @@ const synchronousImage:Result|undefined=app.createImage({backend:"other"});
 function positiveAsyncContract(){const asynchronousStart:Promise<Result|undefined>=app.start({deviceId:"missing"});void asynchronousStart;}
 void synchronousCreate;void synchronousImage;void positiveAsyncContract;
 function negativeContracts(){
+    const {parseLifecycleClaimedAt,...missingParse}=ports;void parseLifecycleClaimedAt;
+    // @ts-expect-error original claimed-at parsing requires its explicit native leaf
+    createMacosVmLifecycleApplication(missingParse);
+    // @ts-expect-error claimed-at parsing returns its native number synchronously
+    const asyncParse:typeof ports={...ports,parseLifecycleClaimedAt:async()=>1};
+    // @ts-expect-error claimed-at parsing cannot replace the native number with text
+    const textParse:typeof ports={...ports,parseLifecycleClaimedAt:()=>"1"};
+    void asyncParse;void textParse;
     const {spawn,...missingSpawn}=ports;void spawn;
     // @ts-expect-error spawn is required even for applications used only to create
     createMacosVmLifecycleApplication(missingSpawn);

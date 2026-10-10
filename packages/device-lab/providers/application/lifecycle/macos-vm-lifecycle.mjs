@@ -72,7 +72,7 @@ export function createMacosVmLifecycleApplication(ports) {
     /** @param {MacosVmLifecycleClaim | null | undefined} lifecycle */
     function staleMacosLifecycle(lifecycle) {
         if (!lifecycle) return false;
-        const claimedAt = Date.parse(lifecycle.claimedAt || "");
+        const claimedAt = (0, ports.parseLifecycleClaimedAt)(lifecycle.claimedAt || "");
         return !Number.isFinite(claimedAt) || (0, ports.now)() - claimedAt >= (0, ports.claimTtlMs)();
     }
 

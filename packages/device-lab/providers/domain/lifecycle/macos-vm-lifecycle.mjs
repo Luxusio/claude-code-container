@@ -1,4 +1,21 @@
-/** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice} MacosVmDevice */
+/** Mutable domain facts retain the native record's open structural shape.
+ * @typedef {{host?: string | null, port?: number, user?: string | null, keyPath?: string | null, password?: string | null} & Record<string, unknown>} MacosVmSsh
+ * @typedef {{runtimeId: string, operation: string, claimedAt: string, previousStatus?: string}} MacosVmLifecycleClaim
+ * @typedef {{runtimeId?: string, providerPid?: number | null, pid?: number, active?: boolean, remotePath?: string} & Record<string, unknown>} MacosVmRuntime
+ * @typedef {{id: string, name?: string, provider?: string, providerInstance?: string} & Record<string, unknown>} MacosVmSnapshot
+ * @typedef {{candidateProviderInstance?: string | null, supersededCandidateProviderInstances?: string[]} & Record<string, unknown>} MacosVmRecovery
+ * @typedef {{ready: boolean, skipped?: boolean, ip?: string} & Record<string, unknown>} MacosVmBoot
+ * @typedef {{
+ * id: string, name?: string, backend?: string, ownerId?: string, provider?: string | null,
+ * providerInstance?: string, providerResourceManaged?: boolean, image?: string | null,
+ * memoryMb?: number, cpus?: number, headless?: boolean, softnet?: boolean,
+ * ssh?: MacosVmSsh | null, helper?: {provisioning?: unknown} & Record<string, unknown>,
+ * status?: string, lifecycle?: MacosVmLifecycleClaim | null, runtime?: MacosVmRuntime | null,
+ * recording?: MacosVmRuntime | null, snapshots?: MacosVmSnapshot[], restoreRecovery?: MacosVmRecovery | null,
+ * provisioning?: string, imageSource?: string, clonedFrom?: unknown, imageCreatedAt?: string, clonedAt?: string,
+ * bootReady?: boolean, lastBootCheck?: MacosVmBoot | null
+ * } & Record<string, unknown>} MacosVmDevice
+ */
 
 /** @param {MacosVmDevice | null} device
  * @param {string} instance */
