@@ -854,7 +854,7 @@ const controlTransfer = createIosControlTransfer({
         try {
             return await withOwnerDeviceOperation("ios-device", id, () => ensureIosRealAppiumSession(id));
         } catch (error) {
-            if (error?.code !== "shared-mutation-lock-timeout") throw error;
+            if (!error || typeof error !== "object" || !("code" in error) || error.code !== "shared-mutation-lock-timeout") throw error;
             return { error: `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
         }
     },

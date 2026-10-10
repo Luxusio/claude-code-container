@@ -1301,6 +1301,40 @@ const deviceObservation = createDeviceObservation({ kind: "ios-simulator", owner
         "mobile_wait_for_app",
     ], executable: name => commandPath(name), records: () => readIosDevices(), simulators: (xcrun, args) => simctlJson(xcrun, args), ownedTarget: (xcrun, device, inventory) => resolveOwnedSimulatorTarget(xcrun, device, inventory), publishObserved: (device, status, simulatorName) => updateIosDevice(device.id, item => item.updatedAt === device.updatedAt && item.status === device.status && item.udid === device.udid && item.simulatorName === device.simulatorName ? { ...item, simulatorName: simulatorName || item.simulatorName, status, updatedAt: now() } : item) });
 
+/**
+ * Project the shared native stage observation without changing its allocated
+ * paths or cleanup handle. Only successful shared stages have a cleanup handle.
+ * @param {ReturnType<typeof stageLocalInputFile> | ReturnType<typeof createLocalOutputStage>} stage
+ * @returns {import("../ports/ios-control-transfer.mjs").IosStageResult}
+ */
+function controlTransferStage(stage) {
+    if (stage.ok && "cleanup" in stage && typeof stage.cleanup === "function"
+        && "path" in stage && typeof stage.path === "string"
+        && "stagedPath" in stage && typeof stage.stagedPath === "string") {
+        return { ...stage, ok: true, path: stage.path, stagedPath: stage.stagedPath, cleanup: stage.cleanup };
+    }
+    if ("message" in stage && typeof stage.message === "string") {
+        return { ...stage, ok: false, message: stage.message };
+    }
+    throw new Error("Invalid native iOS transfer stage result");
+}
+
+/**
+ * Preserve native transfer details while making the successful/failed carrier
+ * explicit for the inward application.
+ * @param {ReturnType<typeof copyStagedInputFile> | ReturnType<typeof populateLocalOutputStage> | ReturnType<typeof commitLocalOutputStage>} result
+ * @returns {import("../ports/ios-control-transfer.mjs").IosTransferResult}
+ */
+function controlTransferResult(result) {
+    if (result.ok && "path" in result && typeof result.path === "string") {
+        return { ...result, ok: true, path: result.path };
+    }
+    if ("message" in result && typeof result.message === "string") {
+        return { ...result, ok: false, message: result.message };
+    }
+    throw new Error("Invalid native iOS transfer result");
+}
+
 const controlTransfer = createIosControlTransfer({
     kind: "simulator",
     findDevice: id => findIosDevice(id),
@@ -1308,7 +1342,7 @@ const controlTransfer = createIosControlTransfer({
         try {
             return await withOwnerDeviceOperation("ios", id, () => ensureIosAppiumSession(id));
         } catch (error) {
-            if (error?.code !== "shared-mutation-lock-timeout") throw error;
+            if (!error || typeof error !== "object" || !("code" in error) || error.code !== "shared-mutation-lock-timeout") throw error;
             return { error: `iOS Simulator Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
         }
     },
@@ -1333,17 +1367,15 @@ const controlTransfer = createIosControlTransfer({
     exists: path => existsSync(path),
     stageInput: path => {
         const stage = stageLocalInputFile(path, { label: "upload-local-path" });
-        if (!stage.ok) return { ok: false, message: stage.message };
-        return { ok: true, path: stage.path, stagedPath: stage.stagedPath, cleanup: stage.cleanup };
+        return controlTransferStage(stage);
     },
     stageOutput: path => {
         const stage = createLocalOutputStage(path, { label: "download-local-path" });
-        if (!stage.ok) return { ok: false, message: stage.message };
-        return { ok: true, path: stage.path, stagedPath: stage.stagedPath, cleanup: stage.cleanup };
+        return controlTransferStage(stage);
     },
-    copyInput: (stage, path) => copyStagedInputFile(stage, path, { label: "upload-local-path" }),
-    populateOutput: (path, stage) => populateLocalOutputStage(path, stage, { label: "download-remote-path" }),
-    commitOutput: stage => commitLocalOutputStage(stage, { label: "download-local-path" }),
+    copyInput: (stage, path) => controlTransferResult(copyStagedInputFile(stage, path, { label: "upload-local-path" })),
+    populateOutput: (path, stage) => controlTransferResult(populateLocalOutputStage(path, stage, { label: "download-remote-path" })),
+    commitOutput: stage => controlTransferResult(commitLocalOutputStage(stage, { label: "download-local-path" })),
     disposeStage: stage => { stage.cleanup(); },
     fail: result => fail(result),
 });
