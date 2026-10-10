@@ -155,7 +155,7 @@ beforeAll(async () => {
     assertNoDenials();
     expect(archivedContext.PACKAGE_ROOT).toBe(join(frozenRoot, "packages/device-lab"));
     const admittedProviders: Record<string, { archived: string; current: string; sourceTip: string }> = {
-        // Frozen10c861 originals and independently reviewed64df source authority.
+        // Frozen10c861 originals; independent64df and genuine2b7045 current authorities.
         "backends/android-device.mjs": {
             archived: "b53b89ebcdbdeb8430dc2c739e86e9da196d8cd4a3a844296f06ac00d61de53a",
             current: "f1b1394b550546e51ecfdfb6752dc63ecc1686a48abfcfd5e29e77a45d739252",
@@ -163,13 +163,18 @@ beforeAll(async () => {
         },
         "backends/android.mjs": {
             archived: "7fe126498d5107dc15d4f018dc4b3cc21e81f70a9ccb7ec8a4bb424e477372ff",
-            current: "1e4e313ea9e89839389e27676afeddec65d155b569eacaf1eb1eae4d072b12bc",
-            sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+            current: "5d8fa7a8521131016bcaea0ba1f155e7c91d03a904bbaf31923bcc3ca338e96c",
+            sourceTip: "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
         },
         "backends/ios-device.mjs": {
             archived: "9bd17af41b71fc3f13b3a1ce758e74224a3631d431a75a43481f33f56d13eef9",
             current: "56a75969fd6047e0b83c0b19d26c6c2adf44a2be7ecca44783bfc1e106d30d00",
             sourceTip: "64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63",
+        },
+        "backends/ios-simulator.mjs": {
+            archived: "fb09f500e3daccd66e80416656aad162e36f84d191eb5a19c2b8c35ed343dbfd",
+            current: "f364cd9c4ae523ade742222e7d629075d21dc1b48ff68d60a7f8b386d87e22a0",
+            sourceTip: "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
         },
         "backends/linux-vm.mjs": {
             archived: "f27fba0d138d2d6390f7076d699a3ec93435a8d9c149a4221cfd3c26bb2a64a9",
@@ -183,8 +188,8 @@ beforeAll(async () => {
         },
         "backends/windows-sandbox.mjs": {
             archived: "adb87857f40652c7da3906ad3e59ab6677050780b3d8ed81f5b37a733288a178",
-            current: "5fcfc1e53d3f0200c2a5568ef6d0196de133e48cd879bd8e1fa0b3741550dc35",
-            sourceTip: "c9261aedb25dccaee620a7a37823396eb9a2586f",
+            current: "deb025c9c4ac9b019dead292acd54450b3ec3b2ecc15e62f3315f38f6cf5e5d7",
+            sourceTip: "2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
         },
         "state/state-file.mjs": {
             archived: "d3a5d5e21ec8d54137b9a7ffce0b9fc83394210cd9668bc91e15b478b7f13883",
