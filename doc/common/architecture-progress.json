@@ -614,6 +614,42 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "592701d03da86a0cfb1bfdb4aa1ffbf05a08b6bf"
+    },
+    {
+      "id": "hyper-v-stop-delete",
+      "branch": "refactor/architecture-hyper-v-stop-delete-20261011",
+      "commit": "2c8bcbe63ceb92b45e9c911eb7852c2b1eb40cd4",
+      "taskId": "TASK__architecture-hyper-v-stop-delete",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-windows-vm-stop",
+        "OP-windows-vm-delete",
+        "OP-hyper-v-linux-stop",
+        "OP-hyper-v-linux-delete"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS. Current native package strict compilation and genuine production build64.981s PASS; ten required whole files473 effective cases, lint, package7, real npm/Unix exports/assets/module-chain startup and compiled CLI0/0/1 PASS. The test-only deadline correction imports the actual720000ms lifecycle budget instead of a stale600000ms offset, retaining504/Off/owner/journal/disk assertions. Ordinary full-record CAS stays distinct from replay selected-ID authority; mutation-free dry-run and native resource guards remain. Normal local4ced delivery preserves all97 user paths and binary diff;17source/1228artifacts/fixed dependencies/18links authenticated, only generated cache changed. Native hosts, formal hook closure and inventory certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "4cedc1fa86aa7e9626e445a66f0d21d0485e17e7"
+    },
+    {
+      "id": "installer-workflows",
+      "branch": "refactor/architecture-installer-workflows-20261011",
+      "commit": "ab5b55180a87f7e22b380aea17b19e4ad62d23e4",
+      "taskId": "TASK__architecture-installer-workflows",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-global-install",
+        "OP-global-uninstall",
+        "OP-source-postinstall",
+        "OP-install-image-build"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent full/affected/composed Code, Security and Guide PASS. Strict architecture compilation consumes actual native installer and synchronous application; installer three whole files35cases0skip PASS. Same genuine joint build and ten whole files473cases/package7/lint/npm+materializedUnix module-chain/startup/CLI proof as Hyper-V qualify normal4ced local delivery. Source build precedes installation mutation; User PATH is scoped and best effort, image/cache/partial-copy outcomes remain truthful. Private executable PATH prevents disappearing fake Podman from falling through to a host runtime. No live global installation, Windows User PATH/native runtime certification, formal hook closure or inventory certification is claimed.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "4cedc1fa86aa7e9626e445a66f0d21d0485e17e7"
     }
   ],
   "planningLanes": [

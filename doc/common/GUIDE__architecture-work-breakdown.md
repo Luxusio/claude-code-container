@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **172/218 (78.9%)**.
-Integrated source: **172/218 (78.9%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **42**.
+Implemented including unmerged candidates: **180/218 (82.6%)**.
+Integrated source: **180/218 (82.6%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **34**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -55,6 +55,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | device\-interaction\-integration | 13 | 0 | `b4b8e748` | Actual independent composed DEEP Code/Security/Docs PASS after both hunters; genuine complete current production build68\.656s, eighteen affected WHOLE files403cases0skip85\.296s, lint, seven semantic package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS\. Current strict/native body and consumed graph checks qualified unchanged inputs\. All\-binding audit includes actual Appium pointer/reverse\-orientation recipes, default authenticated Android emulator/physical orientation and Apple USB/WiFi/unknown UDID, Windows/Linux Hyper\-V controls/transfers\. Source29/emitted1207/fixeddeps7551/18links/2locks authenticated; generated Vitest cache only delta\. Actual normal local FF delivery b4b8 preserves all97 user paths and diff bytes\. No whole legacy\-native\-JS acceptance, native\-host certification or formal hook close claimed\. | accepted @ b4b8e748 |
 | qemu\-guest\-workflows | 9 | 0 | `1ffe8d8c` | Actual independent source/composed/affected Code, Security and Guide PASS\. Current strict implementation, consumed negative contracts, core and scoped native constructors PASS; unrelated legacy native\-JS diagnostics remain unaccepted\. Joint genuine production build73\.851s plus sixteen required whole files360 effective cases, lint, seven semantic package cases, genuine npm/Unix exports/assets/MCP startup and compiled CLI PASS\. Actual public QEMU stdio snapshot journey covers all four actions; session/readiness/agent/sync/export retain their native guards\. Host\-broker QEMU snapshots remain explicitly unsupported\. Normal local FF delivery592701d0 preserves all97 user paths and diff bytes, with28 source pins/1216 artifacts/fixed dependencies/18 links authenticated; only generated Vitest cache changed\. Formal hook closure, native hosts and inventory certification remain unverified\. | accepted @ 592701d0 |
 | macos\-image\-snapshots | 5 | 0 | `79fc8bf2` | Actual independent source/composed/affected Code, Security and Guide PASS\. Joint current QA and normal592701d0 local delivery qualify the same authenticated production build and sixteen whole files360 effective cases, lint/package7/npm/Unix/CLI checks as QEMU\. Genuine Mac stdio imagecreate/ownedclone/snapshotcreate/confirmedrestore/delete PASS\. All five advertised\-but\-blocked broker image/snapshot bindings return their exact authenticated501 refusals with unchanged owner/resources and no native child effects; this preserves the current contract discrepancy and does not implement positive broker support\. The public state\-write fixture now asserts its precise MCP error while retaining clone/delete compensation and empty state checks\. Existing VM\-create credit is not counted again\. Scoped native constructors and current contracts PASS; native Tart/macOS, unrelated legacy diagnostics, formal hook closure and inventory certification remain unverified\. | accepted @ 592701d0 |
+| hyper\-v\-stop\-delete | 4 | 0 | `2c8bcbe6` | Actual independent source/composed/affected Code, Security and Guide PASS\. Current native package strict compilation and genuine production build64\.981s PASS; ten required whole files473 effective cases, lint, package7, real npm/Unix exports/assets/module\-chain startup and compiled CLI0/0/1 PASS\. The test\-only deadline correction imports the actual720000ms lifecycle budget instead of a stale600000ms offset, retaining504/Off/owner/journal/disk assertions\. Ordinary full\-record CAS stays distinct from replay selected\-ID authority; mutation\-free dry\-run and native resource guards remain\. Normal local4ced delivery preserves all97 user paths and binary diff;17source/1228artifacts/fixed dependencies/18links authenticated, only generated cache changed\. Native hosts, formal hook closure and inventory certification remain unverified\. | accepted @ 4cedc1fa |
+| installer\-workflows | 4 | 0 | `ab5b5518` | Actual independent full/affected/composed Code, Security and Guide PASS\. Strict architecture compilation consumes actual native installer and synchronous application; installer three whole files35cases0skip PASS\. Same genuine joint build and ten whole files473cases/package7/lint/npm\+materializedUnix module\-chain/startup/CLI proof as Hyper\-V qualify normal4ced local delivery\. Source build precedes installation mutation; User PATH is scoped and best effort, image/cache/partial\-copy outcomes remain truthful\. Private executable PATH prevents disappearing fake Podman from falling through to a host runtime\. No live global installation, Windows User PATH/native runtime certification, formal hook closure or inventory certification is claimed\. | accepted @ 4cedc1fa |
 
 ## 0.2 Active next plans
 
@@ -116,16 +118,16 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-windows-sandbox-stop` — windows\-sandbox stop. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 - [x] `OP-windows-sandbox-delete` — windows\-sandbox delete. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 
-## 6. M05 — Hyper-V lifecycle (5/15 implemented)
+## 6. M05 — Hyper-V lifecycle (9/15 implemented)
 
 - [ ] `OP-windows-vm-create` — windows\-vm create. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-windows-vm-start` — windows\-vm start. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-windows-vm-stop` — windows\-vm stop. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-windows-vm-delete` — windows\-vm delete. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-windows-vm-stop` — windows\-vm stop. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
+- [x] `OP-windows-vm-delete` — windows\-vm delete. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
 - [ ] `OP-hyper-v-linux-create` — hyper\-v\-linux create. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-hyper-v-linux-start` — hyper\-v\-linux start. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-hyper-v-linux-stop` — hyper\-v\-linux stop. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-hyper-v-linux-delete` — hyper\-v\-linux delete. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-hyper-v-linux-stop` — hyper\-v\-linux stop. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
+- [x] `OP-hyper-v-linux-delete` — hyper\-v\-linux delete. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
 - [x] `OP-hyperv-snapshot-list` — List exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
 - [x] `OP-hyperv-snapshot-create` — Create exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
 - [x] `OP-hyperv-snapshot-restore` — Restore exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
@@ -338,14 +340,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-codex-clipboard-attachment` — Attach clipboard image to eligible Codex invocation. **integrated**; codex\-clipboard @ fb6c26f7.
 - [x] `OP-codex-harness-bootstrap` — Ensure existing Codex Harness integration. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 
-## 14. M13 — Composition and distribution (2/6 implemented)
+## 14. M13 — Composition and distribution (6/6 implemented)
 
 - [x] `OP-doctor` — Diagnose CCC runtime. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
 - [x] `OP-labs-diagnostics` — Report lab\-runner status/doctor/smoke. **integrated**; services\-clean\-harness\-integration @ ed8dda6c.
-- [ ] `OP-global-install` — Install CCC global entrypoint. **TODO**; scripts/install\.js.
-- [ ] `OP-global-uninstall` — Uninstall CCC global entrypoint. **TODO**; scripts/install\.js.
-- [ ] `OP-source-postinstall` — Handle npm postinstall source/artifact mode. **TODO**; scripts/install\.js.
-- [ ] `OP-install-image-build` — Prepare content\-hashed installer container image. **TODO**; scripts/install\.js.
+- [x] `OP-global-install` — Install CCC global entrypoint. **integrated**; installer\-workflows @ ab5b5518.
+- [x] `OP-global-uninstall` — Uninstall CCC global entrypoint. **integrated**; installer\-workflows @ ab5b5518.
+- [x] `OP-source-postinstall` — Handle npm postinstall source/artifact mode. **integrated**; installer\-workflows @ ab5b5518.
+- [x] `OP-install-image-build` — Prepare content\-hashed installer container image. **integrated**; installer\-workflows @ ab5b5518.
 
 ## 15. M14 — Enforcement and reliability (0/0 implemented)
 
