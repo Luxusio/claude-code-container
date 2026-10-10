@@ -104,7 +104,10 @@ describe("public managed macOS creation", () => {
 
     it("rolls back a clone if its owner state cannot be persisted", async () => {
         fixture.stateFailure = true;
-        await expect(create()).rejects.toThrow("simulated state write failure");
+        expect(await create()).toEqual({
+            isError: true,
+            content: [{ type: "text", text: JSON.stringify({ error: "Unexpected error: simulated state write failure" }) }],
+        });
         expect(mutations().map(call => call.args[0])).toEqual(["clone", "delete"]);
         expect(readMacosDevices()).toEqual([]);
     });
