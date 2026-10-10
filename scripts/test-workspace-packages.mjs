@@ -189,6 +189,7 @@ export async function mcpSmoke(packageRoot, { timeoutMs = 30000 } = {}) {
         if (primary) console.error(`Retained MCP smoke directory: ${home}`);
     }
     if (primary) throw primary;
+    assert(result, "Packaged MCP smoke completed without a result");
     return result;
 }
 
