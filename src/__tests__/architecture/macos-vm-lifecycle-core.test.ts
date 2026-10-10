@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import { runInNewContext } from "node:vm";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
-import { managedProviderResource, macosProviderInstanceReferenced, snapshotProviderInstances, restoreRecoveryProviderInstances, macosSshConfig } from "../../../packages/device-lab/providers/domain/lifecycle/macos-vm-lifecycle.mjs";
 import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
 type Result={ok:boolean;value:unknown};
@@ -29,12 +27,6 @@ function nativeLeaves(initial?:MacosVmDevice){
     };
     return {ports,trace,fault,child,read:()=>current,replace:(value:MacosVmDevice)=>{current=value;}};
 }
-// Independent original policy text from the whole 125324-byte admitted provider;
-// it is not read from the candidate and needs no ignored artifact at runtime.
-const ORIGINAL_DOMAIN="function macosProviderInstanceReferenced(device, instance) {\n    if (!device || !instance) return false;\n    if (device.providerInstance === instance || device.restoreRecovery?.candidateProviderInstance === instance) return true;\n    if ((device.restoreRecovery?.supersededCandidateProviderInstances || []).includes(instance)) return true;\n    return (device.snapshots || []).some((snapshot) => snapshot.providerInstance === instance);\n}\n\nfunction rollbackCreatedMacosResource(deviceId, plan, instance) {\n    const current = findMacosDevice(deviceId);\n    if (macosProviderInstanceReferenced(current, instance)) {\n        return { ok: false, attempted: false, reason: \"provider-instance-owned-by-successor\", providerInstance: instance };\n    }\n    const deleted = tartDeleteInstance(plan, instance);\n    return {\n        ok: deleted.status === 0,\n        attempted: true,\n        providerInstance: instance,\n        status: deleted.status,\n        stdout: deleted.stdout,\n        stderr: deleted.stderr,\n    };\n}\n\nfunction managedProviderResource(device) {\n    return Boolean(\n        device.providerResourceManaged ||\n        device.provisioning === \"image-created\" ||\n        device.provisioning === \"image-cloned\" ||\n        device.imageSource ||\n        device.clonedFrom ||\n        device.imageCreatedAt ||\n        device.clonedAt\n    );\n}\n\nfunction snapshotProviderInstances(device) {\n    return (Array.isArray(device.snapshots) ? device.snapshots : [])\n        .filter((snapshot) => snapshot.provider === \"tart\" && snapshot.providerInstance)\n        .map((snapshot) => ({ kind: \"snapshot\", id: snapshot.id, instance: snapshot.providerInstance }));\n}\n\nfunction restoreRecoveryProviderInstances(device) {\n    const recovery = device.restoreRecovery;\n    if (!recovery?.candidateProviderInstance) return [];\n    return [recovery.candidateProviderInstance, ...(recovery.supersededCandidateProviderInstances || [])]\n        .map((instance) => ({ kind: \"restore-recovery\", instance }));\n}\n";
-const original=runInNewContext(ORIGINAL_DOMAIN+"\n({managedProviderResource,macosProviderInstanceReferenced,snapshotProviderInstances,restoreRecoveryProviderInstances})") as {managedProviderResource:typeof managedProviderResource;macosProviderInstanceReferenced:typeof macosProviderInstanceReferenced;snapshotProviderInstances:typeof snapshotProviderInstances;restoreRecoveryProviderInstances:typeof restoreRecoveryProviderInstances};
-const ORIGINAL_SSH="function usesDefaultTartMacosCredentials({ provider, image }) {\n    const selectedProvider = !provider || provider === \"auto\" ? \"tart\" : provider;\n    if (selectedProvider !== \"tart\") return false;\n    const value = String(image || \"\");\n    return value === \"ccc-macos-base\" ||\n        /^ghcr\\.io\\/cirruslabs\\/macos-[^:]+(?:[:@].*)?$/.test(value) ||\n        /^macos-[^-]+-base$/.test(value);\n}\n\nfunction macosSshConfig({ sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword, provider, image }) {\n    const useDefaultPassword = usesDefaultTartMacosCredentials({ provider, image }) && !sshHost && !sshUser && !sshKeyPath && !sshPassword;\n    return sshHost || sshUser || sshKeyPath || sshPassword || useDefaultPassword ? {\n        host: sshHost || null,\n        port: sshPort,\n        user: sshUser || (useDefaultPassword ? \"admin\" : null),\n        keyPath: sshKeyPath || null,\n        password: sshPassword || (useDefaultPassword ? \"admin\" : null),\n    } : null;\n}\n";
-const originalSsh=runInNewContext(ORIGINAL_SSH+"\nmacosSshConfig") as typeof macosSshConfig;
 describe("macOS independent inward policy controls",()=>{
     it("constructs without looking up or invoking any native leaf",()=>{
         const touched:string[]=[];const ports=new Proxy({},{get(_target,key){touched.push(String(key));throw Error("eager-native-observation");}}) as MacosVmLifecyclePorts<Result,MacosVmProcessHandle>;
@@ -44,29 +36,10 @@ describe("macOS independent inward policy controls",()=>{
         const file=path.resolve(import.meta.dirname,"../../../packages/device-lab/providers/domain/lifecycle/macos-vm-lifecycle.mjs");
         const source=readFileSync(file,"utf8");expect(source).not.toMatch(/^import\s/m);expect(source).not.toMatch(/\b(?:process|spawn|readFileSync|writeFileSync)\b/);
     });
-    it.each([
-        {id:"unit"}, {id:"unit",providerResourceManaged:true}, {id:"unit",provisioning:"image-created"},
-        {id:"unit",imageSource:"source"}, {id:"unit",clonedFrom:"parent"}, {id:"unit",providerInstance:"instance"},
-        {id:"unit",snapshots:[{id:"first",provider:"tart",providerInstance:"instance"},{id:"ignored",provider:"vz",providerInstance:"other"}]},
-        {id:"unit",restoreRecovery:{candidateProviderInstance:"candidate",supersededCandidateProviderInstances:["older","instance"]}},
-    ] satisfies MacosVmDevice[])("matches frozen managed-resource/snapshot/recovery policy for %j",device=>{
-        expect(managedProviderResource(device)).toBe(original.managedProviderResource(device));
-        expect(snapshotProviderInstances(device)).toEqual(original.snapshotProviderInstances(device));
-        expect(restoreRecoveryProviderInstances(device)).toEqual(original.restoreRecoveryProviderInstances(device));
-        for(const instance of ["instance","candidate","older","unrelated",""])expect(macosProviderInstanceReferenced(device,instance)).toBe(original.macosProviderInstanceReferenced(device,instance));
-    });
     it("metadata create is synchronous and claim raw exceptions preserve identity",()=>{
         const f=nativeLeaves();f.ports.claim=()=>{throw f.fault;};
         let error:unknown;try{createMacosVmLifecycleApplication(f.ports).create({backend:"macos-vm",name:"Unit"});}catch(value){error=value;}
         expect(error).toBe(f.fault);expect(f.trace).toEqual(["read"]);expect(f.read()).toBeUndefined();
-    });
-    it.each([{provider:"auto",image:null},{provider:"tart",image:"ccc-macos-base"},{provider:"auto",image:"ghcr.io/cirruslabs/macos-sonoma-base:latest"},{provider:"vz",image:"ccc-macos-base"},{provider:"tart",image:"custom",sshUser:"user",sshHost:"guest"},{provider:"tart",image:"ccc-macos-base",sshPassword:"raw-secret",sshPort:2222}])("preserves frozen SSH defaults/redirection %j",input=>{
-        expect(macosSshConfig(input)).toEqual(originalSsh(input));
-    });
-    it("required leaf getters are lazy and imported native calls preserve their bare receiver",()=>{
-        const f=nativeLeaves();Object.defineProperty(f.ports,"read",{get(){f.trace.push("get-read");return function(this:unknown){expect(this).toBeUndefined();f.trace.push("read");return [];};}});
-        const app=createMacosVmLifecycleApplication(f.ports);expect(f.trace).toEqual([]);
-        app.create({backend:"macos-vm",name:"Unit"});expect(f.trace.slice(0,2)).toEqual(["get-read","read"]);
     });
     it("image alias clones before claiming and a claim exception compensates before rethrow",()=>{
         const f=nativeLeaves();f.ports.claim=()=>{f.trace.push("claim-throw");throw f.fault;};

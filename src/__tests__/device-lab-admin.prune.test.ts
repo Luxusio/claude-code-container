@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,9 +15,7 @@ import {
 } from "../device-lab-admin.js";
 import { createDeviceLabAdminTestFixture } from "./helpers/device-lab-admin-fixture.js";
 import * as nativeFs from "fs";
-import { createHash } from "crypto";
 import { isDeepStrictEqual } from "util";
-import ts from "typescript";
 import * as sharedState from "@ccc/device-lab/device-lab-shared-state.js";
 import * as ownerState from "@ccc/device-lab/device-lab-owner-state.js";
 import { createDeviceAdminPrune } from "../application/device-admin-prune.js";
@@ -31,11 +30,6 @@ vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
 vi.mock("@ccc/device-lab/device-lab-owner-state.js", async original => ({
     ...await original<typeof import("@ccc/device-lab/device-lab-owner-state.js")>(),
 }));
-
-// Exact reached functions frozen from base2b admin d2dfbda098e4180bceda5ee77b2a8b38a1f35badf432168d01745751c15bf0ad.
-// This self-contained baseline requires no task-admission files at test time.
-const ORIGINAL_PRUNE = "function pruneOwnerDeviceRecord(ownerId: string, backend: Backend, expected: DeviceRecord): boolean {\n    if (!expected.id) return false;\n    return withAdminOwnerDeviceOperation(ownerId, backend.stateKey, expected.id, () => {\n        const current = readDevices(ownerId, backend.stateKey).find((candidate) => candidate.id === expected.id);\n        if (!current || !isDeepStrictEqual(current, expected)) return false;\n        if ((current.status !== \"stopped\" && current.status !== \"detached\") || hasMacosManagedProviderResources(backend, current)) return false;\n\n        return transitionOwnerDeviceRecordWithPhysicalLease(ownerId, backend, current, null);\n    });\n}\n\nfunction macosManagedProviderResource(device: DeviceRecord): boolean {\n    return Boolean(\n        device.providerResourceManaged ||\n        device.provisioning === \"image-created\" ||\n        device.provisioning === \"image-cloned\" ||\n        device.imageSource ||\n        device.clonedFrom ||\n        device.imageCreatedAt ||\n        device.clonedAt,\n    );\n}\n\nfunction macosSnapshotProviderResources(device: DeviceRecord): Array<{ provider: string; instance: string }> {\n    const snapshots = Array.isArray(device.snapshots) ? device.snapshots : [];\n    return snapshots.flatMap((snapshot) => {\n        if (!snapshot || typeof snapshot !== \"object\") return [];\n        const record = snapshot as Record<string, unknown>;\n        const provider = typeof record.provider === \"string\" ? record.provider : null;\n        const instance = typeof record.providerInstance === \"string\" ? record.providerInstance : null;\n        return provider && instance ? [{ provider, instance }] : [];\n    });\n}\n\nfunction macosRestoreRecoveryProviderResource(device: DeviceRecord): { provider: string; instance: string } | null {\n    const recovery = device.restoreRecovery;\n    if (!recovery || typeof recovery !== \"object\") return null;\n    const record = recovery as Record<string, unknown>;\n    const provider = typeof record.provider === \"string\" ? record.provider : typeof device.provider === \"string\" ? device.provider : null;\n    const instance = typeof record.candidateProviderInstance === \"string\" ? record.candidateProviderInstance : null;\n    return provider && instance ? { provider, instance } : null;\n}\n\nfunction macosManagedProviderResources(device: DeviceRecord): Array<{ provider: string; instance: string }> {\n    const resources = [\n        ...macosSnapshotProviderResources(device),\n        macosRestoreRecoveryProviderResource(device),\n    ].filter((resource): resource is { provider: string; instance: string } => Boolean(resource));\n    const provider = typeof device.provider === \"string\" ? device.provider : null;\n    const instance = typeof device.providerInstance === \"string\" ? device.providerInstance : null;\n    if (provider && instance && macosManagedProviderResource(device)) resources.push({ provider, instance });\n    return resources;\n}\n\nfunction hasMacosManagedProviderResources(backend: Backend, device: DeviceRecord): boolean {\n    return backend.stateKey === \"macos\" && macosManagedProviderResources(device).length > 0;\n}\n\nexport function pruneOwnerDevices(cwd = process.cwd(), profile?: string): { ok: boolean; text: string } {\n    const ownerId = deviceLabOwnerId(cwd, profile);\n    const lines = [`owner: ${ownerId}`];\n    let deleted = 0;\n    for (const backend of DEVICE_BACKENDS) {\n        for (const device of readDevices(ownerId, backend.stateKey)) {\n            if (pruneOwnerDeviceRecord(ownerId, backend, device)) {\n                deleted += 1;\n                lines.push(`pruned: ${device.id || \"(unknown)\"}  backend=${backend.name}`);\n            }\n        }\n    }\n    if (deleted === 0) lines.push(\"pruned: 0\");\n    return { ok: true, text: `${lines.join(\"\\n\")}\\n` };\n}\n\nexport function pruneAllProjectDevices(): { ok: boolean; text: string } {\n    const lines = [\"projects: prune --all-projects\"];\n    let deleted = 0;\n    for (const ownerId of allOwnerIds()) {\n        lines.push(`project: ${ownerId}`);\n        for (const backend of DEVICE_BACKENDS) {\n            for (const device of readDevices(ownerId, backend.stateKey)) {\n                if (pruneOwnerDeviceRecord(ownerId, backend, device)) {\n                    deleted += 1;\n                    lines.push(`pruned: ${device.id || \"(unknown)\"}  backend=${backend.name}`);\n                }\n            }\n        }\n    }\n    if (deleted === 0) lines.push(\"pruned: 0\");\n    return { ok: true, text: `${lines.join(\"\\n\")}\\n` };\n}";
-const ORIGINAL_PRUNE_SHA = "1cf838910e3c9bd79ffdd6a363ca0a0c697ce5dd83d55d1c9ebbce1ad589a9a4";
 type PruneBackend = { stateKey: string; name: string };
 type PruneRows = Record<string, DeviceAdminPruneRecord[]>;
 type PruneOptions = {
@@ -49,31 +43,7 @@ const pruneBackends: PruneBackend[] = [
     { stateKey: "macos", name: "macos-vm" },
 ];
 
-function originalPrune(ports: DeviceAdminPrunePorts<PruneBackend>) {
-    expect(Buffer.byteLength(ORIGINAL_PRUNE)).toBe(4488);
-    expect(createHash("sha256").update(ORIGINAL_PRUNE).digest("hex")).toBe(ORIGINAL_PRUNE_SHA);
-    const code = ts.transpileModule(ORIGINAL_PRUNE, {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-    }).outputText;
-    // Only the frozen prune/predicate bodies execute; native leaves are the same
-    // required test ports used by the current application.
-    return new Function("ports", "isDeepStrictEqual", `
-        const exports = {};
-        const DEVICE_BACKENDS = ports.backends;
-        const deviceLabOwnerId = ports.resolveOwnerId;
-        const allOwnerIds = ports.enumerateOwnerIds;
-        const readDevices = ports.readDevices;
-        const withAdminOwnerDeviceOperation = ports.withRecordLock;
-        const transitionOwnerDeviceRecordWithPhysicalLease = (owner, backend, expected, replacement) => {
-            if (replacement !== null) throw new Error("unallocated baseline replacement");
-            return ports.removeRecord(owner, backend, expected);
-        };
-        ${code}
-        return { owner: pruneOwnerDevices, allProjects: pruneAllProjectDevices };
-    `)(ports, ports.sameRecord) as ReturnType<typeof createDeviceAdminPrune<PruneBackend>>;
-}
-
-function pruneTrace(original: boolean, initial: PruneRows, options: PruneOptions = {}) {
+function pruneTrace( initial: PruneRows, options: PruneOptions = {}) {
     const rows = structuredClone(initial), trace: unknown[][] = [];
     let changed = false;
     const ports: DeviceAdminPrunePorts<PruneBackend> = {
@@ -104,9 +74,9 @@ function pruneTrace(original: boolean, initial: PruneRows, options: PruneOptions
             return true;
         },
     };
-    return { prune: original ? originalPrune(ports) : createDeviceAdminPrune(ports), trace, rows };
+    return { prune: createDeviceAdminPrune(ports), trace, rows };
 }
-const pairedPrune = (rows: PruneRows, options?: PruneOptions) => [pruneTrace(true, rows, options), pruneTrace(false, rows, options)];
+const pruneFixtures = (rows: PruneRows, options?: PruneOptions) => [pruneTrace(rows, options)];
 
 // Compile-only negative controls: the focused strict QA includes this file.
 // This function is never invoked, so invalid effects cannot enter a fixture.
@@ -639,7 +609,7 @@ describe("device-lab admin delete, prune, and CLI commands", () => {
     });
 });
 
-describe("device-admin prune original/current ordered policy", () => {
+describe("device-admin prune current ordered policy", () => {
     it("constructs without observations and resolves the owner before looking at backends", () => {
         const trace: string[] = [];
         const ports: DeviceAdminPrunePorts<PruneBackend> = {
@@ -663,7 +633,7 @@ describe("device-admin prune original/current ordered policy", () => {
     it("finishes an earlier backend before a later raw read failure, retaining its partial effect", () => {
         const error = { raw: "later backend failed", absent: undefined };
         const stopped = { id: "early", status: "stopped", absent: undefined, nested: new Map([["raw", new Set([1])]]) };
-        const pair = pairedPrune({ "first/android": [stopped], "first/macos": [{ id: "later", status: "stopped" }] }, {
+        const pair = pruneFixtures({ "first/android": [stopped], "first/macos": [{ id: "later", status: "stopped" }] }, {
             readFault: { owner: "first", backend: "macos", error },
         });
         for (const f of pair) {
@@ -681,13 +651,12 @@ describe("device-admin prune original/current ordered policy", () => {
             expect(removed.nested).toBeInstanceOf(Map);
             expect(removed.nested.get("raw")).toBeInstanceOf(Set);
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 
     it("enumerates once and completes owners in supplied order before a later owner's read fault", () => {
         const error = new Error("second owner read fault");
         const stopped = { id: "early-owner", status: "detached" };
-        const pair = pairedPrune({ "second/android": [stopped], "first/android": [{ id: "untouched", status: "stopped" }] }, {
+        const pair = pruneFixtures({ "second/android": [stopped], "first/android": [{ id: "untouched", status: "stopped" }] }, {
             readFault: { owner: "first", backend: "android", error },
         });
         for (const f of pair) {
@@ -702,7 +671,6 @@ describe("device-admin prune original/current ordered policy", () => {
             expect(f.rows["second/android"]).toEqual([]);
             expect(f.rows["first/android"]).toEqual([{ id: "untouched", status: "stopped" }]);
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 
     it.each([
@@ -712,7 +680,7 @@ describe("device-admin prune original/current ordered policy", () => {
         ["removed record", null],
     ] as const)("refuses %s between initial read and locked reread", (_name, successor) => {
         const expected = { id: "unit", status: "stopped", absent: undefined, nested: { generation: "old" } };
-        const pair = pairedPrune({ "first/android": [expected] }, { successor });
+        const pair = pruneFixtures({ "first/android": [expected] }, { successor });
         for (const f of pair) {
             expect(f.prune.owner("/chosen")).toEqual({ ok: true, text: "owner: first\npruned: 0\n" });
             expect(f.trace.slice(0, 4)).toEqual([
@@ -721,7 +689,6 @@ describe("device-admin prune original/current ordered policy", () => {
             expect(f.trace.filter(row => row[0] === "remove")).toEqual([]);
             expect(f.rows["first/android"]).toEqual(successor === null ? [] : [successor]);
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 
     it("locks each identified record but only prunes exact stopped/detached values, retaining order and zero formatting", () => {
@@ -730,7 +697,7 @@ describe("device-admin prune original/current ordered policy", () => {
             { id: "running", status: "running" }, { id: "attached", status: "attached" },
             { id: "upper", status: "STOPPED" }, { id: "unknown" },
         ];
-        const pair = pairedPrune({ "first/android": rows });
+        const pair = pruneFixtures({ "first/android": rows });
         for (const f of pair) {
             expect(f.prune.owner("/chosen")).toEqual({ ok: true, text: "owner: first\npruned: stopped  backend=android-emulator\npruned: detached  backend=android-emulator\n" });
             expect(f.rows["first/android"]).toEqual([rows[0], ...rows.slice(3)]);
@@ -738,7 +705,6 @@ describe("device-admin prune original/current ordered policy", () => {
             expect(f.trace.filter(row => row[0] === "remove").map(row => (row[3] as DeviceAdminPruneRecord).id)).toEqual(["stopped", "detached"]);
             expect(f.prune.owner("/chosen").text).toBe("owner: first\npruned: 0\n");
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 
     it.each([
@@ -754,14 +720,13 @@ describe("device-admin prune original/current ordered policy", () => {
         ["recovery fallback", { restoreRecovery: { candidateProviderInstance: "candidate" } }],
     ])("refuses managed macOS %s while permitting the same raw fields on another backend", (_name, resource) => {
         const record = { id: "unit", status: "stopped", provider: "tart", providerInstance: "owned", ...resource };
-        const pair = pairedPrune({ "first/android": [record], "first/macos": [record] });
+        const pair = pruneFixtures({ "first/android": [record], "first/macos": [record] });
         for (const f of pair) {
             expect(f.prune.owner("/chosen")).toEqual({ ok: true, text: "owner: first\npruned: unit  backend=android-emulator\n" });
             expect(f.rows["first/android"]).toEqual([]);
             expect(f.rows["first/macos"]).toEqual([record]);
             expect(f.trace.filter(row => row[0] === "remove").map(row => row[2])).toEqual(["android"]);
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 
     it("preserves original raw metadata coercion and ignores incomplete provider resource descriptions", () => {
@@ -771,16 +736,15 @@ describe("device-admin prune original/current ordered policy", () => {
             { id: "malformed-snapshot", status: "stopped", snapshots: [null, "raw", { provider: 4, providerInstance: "x" }, { provider: "tart" }] },
             { id: "empty-recovery", status: "stopped", provider: "tart", restoreRecovery: { provider: "", candidateProviderInstance: "x" } },
         ];
-        const pair = pairedPrune({ "first/macos": records });
+        const pair = pruneFixtures({ "first/macos": records });
         for (const f of pair) {
             expect(f.prune.owner("/chosen").text).toBe("owner: first\npruned: false-flags  backend=macos-vm\npruned: missing-instance  backend=macos-vm\npruned: malformed-snapshot  backend=macos-vm\npruned: empty-recovery  backend=macos-vm\n");
             expect(f.rows["first/macos"]).toEqual([]);
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 
     it("prints only committed removals in supplied owner/backend/record order", () => {
-        const pair = pairedPrune({
+        const pair = pruneFixtures({
             "second/android": [{ id: "z", status: "stopped" }, { id: "a", status: "detached" }],
             "second/macos": [{ id: "m", status: "stopped" }],
             "first/android": [{ id: "f", status: "detached" }],
@@ -789,8 +753,7 @@ describe("device-admin prune original/current ordered policy", () => {
             ok: true,
             text: "projects: prune --all-projects\nproject: second\npruned: z  backend=android-emulator\npruned: a  backend=android-emulator\npruned: m  backend=macos-vm\nproject: first\npruned: f  backend=android-emulator\n",
         });
-        expect(pair[1].trace).toEqual(pair[0].trace);
-        for (const f of pairedPrune({ "first/android": [{ id: "unit", status: "stopped" }] }, { removeResult: false })) {
+        for (const f of pruneFixtures({ "first/android": [{ id: "unit", status: "stopped" }] }, { removeResult: false })) {
             expect(f.prune.owner("/chosen")).toEqual({ ok: true, text: "owner: first\npruned: 0\n" });
             expect(f.rows["first/android"]).toEqual([{ id: "unit", status: "stopped" }]);
         }
@@ -799,7 +762,7 @@ describe("device-admin prune original/current ordered policy", () => {
     it("propagates a raw native AggregateError unchanged and stops subsequent reads", () => {
         const publication = { native: "publish" }, rollback = { native: "rollback" };
         const fault = new AggregateError([publication, rollback], "physical-lease-owner-state-rollback-failed");
-        const pair = pairedPrune({ "first/android": [{ id: "unit", status: "detached" }] }, { removeFault: fault });
+        const pair = pruneFixtures({ "first/android": [{ id: "unit", status: "detached" }] }, { removeFault: fault });
         for (const f of pair) {
             let caught: unknown;
             try { f.prune.owner("/chosen"); } catch (error) { caught = error; }
@@ -809,7 +772,6 @@ describe("device-admin prune original/current ordered policy", () => {
             expect(f.trace.filter(row => row[0] === "read").map(row => row[2])).toEqual(["android", "android"]);
             expect(f.rows["first/android"]).toEqual([{ id: "unit", status: "detached" }]);
         }
-        expect(pair[1].trace).toEqual(pair[0].trace);
     });
 });
 

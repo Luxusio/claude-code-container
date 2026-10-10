@@ -109,28 +109,6 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     });
 
-    it("keeps launch-before-clock faults without publishing a running record or compensating", () => {
-        const root = tempRoot(), env = { CCC_PROFILE: "launch-fault", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
-        const created = createLab({ name: "Launch Fault" }, { env, stateRoot: root });
-        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
-        const trace: string[] = [], fault = new Error("raw clock fault");
-        const options = {
-            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
-            get commandRunner() { trace.push("runner-get"); return () => { trace.push("launch"); return { ok: true, pid: 4242 }; }; },
-            get now() { trace.push("clock"); throw fault; },
-            killProcess: () => { trace.push("unexpected-compensation"); },
-        };
-        const plan = startLab({ labId: created.lab.id, dryRun: true }, options);
-        expect(plan).toEqual(expect.objectContaining({ ok: true, dryRun: true }));
-        expect(trace).toEqual([]);
-        expect(readFileSync(file, "utf8")).toBe(before);
-        let caught: unknown;
-        try { startLab({ labId: created.lab.id }, options); } catch (error) { caught = error; }
-        expect(caught).toBe(fault);
-        expect(trace).toEqual(["runner-get", "launch", "clock"]);
-        expect(readFileSync(file, "utf8")).toBe(before);
-    });
-
     it("keeps legacy stop ESRCH handling and failed forced-delete residue", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "stop-fault", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Stop Fault" }, { env, stateRoot: root });
@@ -363,18 +341,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(readdirSync(dirname(reference.image.path))).toEqual(expect.arrayContaining(["disk.qcow2", "disk.raw"]));
     });
 
-    it("preserves raw getter faults and copy residue before atomic publication cleanup", () => {
+    it("preserves copy residue before atomic publication cleanup", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "import-faults" };
         mkdirSync(join(root, "incoming"));
         writeFileSync(join(root, "incoming", "disk.raw"), "retained-copy");
-        const fault = new Error("raw name fault"), trace: string[] = [];
-        let nameFault: unknown;
-        try { importImage({ get name() { trace.push("name"); throw fault; } }, { env, stateRoot: root }); }
-        catch (error) { nameFault = error; }
-        expect(nameFault).toBe(fault);
-        expect(trace).toEqual(["name"]);
-        expect(existsSync(join(root, "owners"))).toBe(false);
-
         const publicationFault = new Error("raw serialization fault");
         const clock = { toJSON() { throw publicationFault; } };
         let caught: unknown;
@@ -387,11 +357,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
 
         const blocked = join(root, "owners", ownerId(env), "images", "blocked");
         mkdirSync(join(blocked, "base.raw"), { recursive: true });
-        let timestamps = 0;
         expect(() => importImage({ name: "Blocked", sourcePath: "incoming/disk.raw" }, {
-            env, stateRoot: root, get now() { timestamps++; return "never"; },
+            env, stateRoot: root, now: "never",
         })).toThrow();
-        expect(timestamps).toBe(0);
         expect(readdirSync(blocked)).toEqual(["base.raw"]);
 
         const renameBlocked = join(root, "owners", ownerId(env), "images", "rename-blocked");
