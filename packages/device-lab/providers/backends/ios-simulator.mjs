@@ -1580,6 +1580,7 @@ async function handleIosToolUnlocked(name, args) {
 }
 
 export async function handleIosTool(name, args) {
+    if (name === "device_create" && args?.backend && args.backend !== "ios-simulator") return undefined;
     if (!requiresOwnerDeviceOperation("ios", name)) return handleIosToolUnlocked(name, args);
     const createsDevice = name === "device_create";
     const deviceId = typeof args?.deviceId === "string"

@@ -2235,6 +2235,7 @@ async function handleWindowsToolUnlocked(name, args) {
 }
 
 export async function handleWindowsTool(name, args) {
+    if (name === "device_create" && args?.backend && args.backend !== "windows-sandbox") return undefined;
     if (!requiresOwnerDeviceOperation("windows", name)) return handleWindowsToolUnlocked(name, args);
     const createsDevice = name === "device_create";
     const deviceId = typeof args?.deviceId === "string"

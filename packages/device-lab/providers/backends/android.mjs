@@ -1392,6 +1392,7 @@ async function handleAndroidToolUnlocked(name, args) {
 }
 
 export async function handleAndroidTool(name, args) {
+    if (name === "device_create" && !backendHintAllows(args, "android-emulator")) return undefined;
     if (name === "device_record_video_start" && backendHintAllows(args, "android-emulator")
         && (args?.backend === "android-emulator" || findAndroidDevice(args?.deviceId))
         && args?.timeLimitSec !== undefined
