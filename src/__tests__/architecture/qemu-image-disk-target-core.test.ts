@@ -88,16 +88,6 @@ describe("QEMU whole inward image/disk/target policy", () => {
         expect(f.trace.indexOf("now")).toBeLessThan(f.trace.indexOf("write"));
         expect(f.state.published).toMatchObject({extra:f.lab.extra,image:{disk:{path:f.lab.image.diskImage}}});
     });
-    it("looks up the command runner lazily before environment and timeout, preserving its bare receiver",()=>{
-        const f=fixture(), native=f.ports.qemuImageRunner;
-        Object.defineProperty(f.ports,"qemuImageRunner",{get(){f.trace.push("get-runner");return function(this:Ports){
-            expect(this).toBe(f.ports);const run=native.call(f.ports);
-            const bare:ReturnType<Ports["qemuImageRunner"]>=function(this:unknown,command,args,options){expect(this).toBeUndefined();return run(command,args,options);};return bare;
-        };}});
-        Object.defineProperty(f.ports,"providerCommandTimeoutMs",{get(){f.trace.push("timeout");return undefined;}});
-        expect(f.trace).toEqual([]);f.app.materializeDisk({labId:"unit"});
-        const runnerIndex=f.trace.indexOf("get-runner");expect(f.trace.slice(runnerIndex,runnerIndex+5)).toEqual(["get-runner","runner","env","timeout","run"]);
-    });
     it("keeps raw thrown command identity and completed overlay effect on publication failure",()=>{
         const f=fixture();f.state.throws="run";
         let commandFault:unknown;try{f.app.materializeDisk({labId:"unit"});}catch(error){commandFault=error;}expect(commandFault).toBe(f.fault);

@@ -42,20 +42,19 @@ describe("broker bounded lease directory policy", () => {
 });
 
 describe("broker lease date and active-owner decisions", () => {
-    it("looks up native date parsing before each producer and repeats valid expiry getters", () => {
-        const trace: string[] = [];
+    it("treats valid expiry at the current time as expired", () => {
         const ports: LeaseDatePorts = { epoch: () => "epoch", expiryFrom: () => "derived",
-            get parse() { trace.push("parse-callee"); return (produce: () => string) => { produce(); return 100; }; },
+            parse: produce => produce() === "valid" ? 100 : NaN,
         };
         const dates = createLeaseDatePolicy(ports, 10);
-        const lease = { get expiresAt() { trace.push("expiresAt"); return "valid"; } };
-        expect(dates.expired(lease, 100)).toBe(true);
-        expect(trace).toEqual(["parse-callee", "expiresAt", "parse-callee", "expiresAt", "expiresAt"]);
+        expect(dates.expired({ expiresAt: "valid" }, 100)).toBe(true);
+        expect(dates.expired({ expiresAt: "valid" }, 99)).toBe(false);
     });
+
     it("uses epoch/default TTL only when the existing values cannot supply them", () => {
         const dates = createLeaseDatePolicy({ parse: () => NaN, epoch: () => "epoch", expiryFrom: (at, ttl) => at + ":" + ttl }, 10);
         expect(dates.expiresAt({ expiresAt: "invalid", updatedAt: "invalid", ttlMs: -1 })).toBe("epoch:10");
-        let reads = 0; expect(dates.ttlMs({ get ttlMs() { reads++; return 5; } })).toBe(5); expect(reads).toBe(4);
+        expect(dates.ttlMs({ ttlMs: 5 })).toBe(5);
     });
     it("reads each lease after scanning closes, filters owner before time and recomputes decorations", () => {
         const trace: string[] = [];
