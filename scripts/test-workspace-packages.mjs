@@ -41960,6 +41960,7 @@ async function verifyQemuFollowup(payload, privateHome, currentAuthority) {
                 };
                 let facade;
                 try{facade=load(path.join(providers,'backends/linux-vm.mjs'));}catch(error){ownedFile(path.join(consumerRoot,'qemu-'+label+'-'+(original?'original':'current')+'-import-failure.json'),JSON.stringify({case:label,original,error:String(error),trace,denied}));throw error;}
+                for(const name of ['listImages','listTargets','materializeDisk','handleLinuxVmManagementTool','handleLinuxVmTool'])assert(outgoingOriginal.has(facade[name]),'exported caller crosses exactly one outgoing boundary '+name);
                 const initialization=trace.splice(0);
                 ownedFile(path.join(consumerRoot,'qemu-'+label+'-'+(original?'original':'current')+'-initialization.json'),JSON.stringify({case:label,original,initialization,denied}));
                 assert.deepEqual(denied,[],'QEMU initialization denials');
@@ -41968,9 +41969,9 @@ async function verifyQemuFollowup(payload, privateHome, currentAuthority) {
                 const args={labId:label==='lab-missing'?'missing':'unit',force:label==='force'?true:label==='reuse'?'true':undefined,dryRun:label==='dry-run'||label==='reuse'};
                 let result,error;
                 try{
-                    if(label.startsWith('images-'))result=facade.listImages(intoRealm(options));
-                    else if(label.startsWith('target-'))result=facade.listTargets(intoRealm(label==='target-all'?{}:{labId:'unit'}),intoRealm(options));
-                    else result=facade.materializeDisk(intoRealm(args),intoRealm(options));
+                    if(label.startsWith('images-'))result=facade.listImages(options);
+                    else if(label.startsWith('target-'))result=facade.listTargets(label==='target-all'?{}:{labId:'unit'},options);
+                    else result=facade.materializeDisk(args,options);
                 }catch(caught){error=caught===fault?'raw-qemu-native-fault':String(caught);}
                 const plain=value=>JSON.parse(JSON.stringify(fromRealm(value)));
                 const row={result:result===undefined?null:plain(result),error:error||null,trace:[...trace],commands:[...commands],disk:files.get(diskPath)||null,published:files.has(labDir+'/lab.json')?JSON.parse(files.get(labDir+'/lab.json')):null};
@@ -41986,18 +41987,18 @@ async function verifyQemuFollowup(payload, privateHome, currentAuthority) {
                     if(label.startsWith('target-'))assert.equal(commands.length,0);
                     // Both existing dispatchers execute whole unchanged exported routes.
                     if(label==='images-missing'){
-                        const routed=await facade.handleLinuxVmManagementTool('device_image_list',intoRealm({backend:'linux-vm'}),intoRealm(options));
+                        const routed=await facade.handleLinuxVmManagementTool('device_image_list',{backend:'linux-vm'},options);
                         ownedFile(path.join(consumerRoot,'qemu-images-dispatcher-raw.json'),JSON.stringify({routed:plain(routed),denied}));
                         assert.deepEqual(JSON.parse(fromRealm(routed).content[0].text),{...row.result,backend:'linux-vm'});
                     }
                     if(label==='target-explicit'){
-                        const routed=await facade.handleLinuxVmTool('device_target_list',intoRealm({backend:'linux-vm',labId:'unit'}),intoRealm(options));
+                        const routed=await facade.handleLinuxVmTool('device_target_list',{backend:'linux-vm',labId:'unit'},options);
                         ownedFile(path.join(consumerRoot,'qemu-target-dispatcher-raw.json'),JSON.stringify({routed:plain(routed),denied}));
                         assert.deepEqual(JSON.parse(fromRealm(routed).content[0].text).targets,row.result.targets);
                     }
                     if(label==='force'){
                         files.delete(diskPath);files.set(labDir+'/lab.json',JSON.stringify(lab));
-                        const routed=await facade.handleLinuxVmTool('device_disk_materialize',intoRealm({backend:'linux-vm',labId:'unit',force:true}),intoRealm(options));
+                        const routed=await facade.handleLinuxVmTool('device_disk_materialize',{backend:'linux-vm',labId:'unit',force:true},options);
                         ownedFile(path.join(consumerRoot,'qemu-disk-dispatcher-raw.json'),JSON.stringify({routed:plain(routed),denied}));
                         assert.equal(JSON.parse(fromRealm(routed).content[0].text).materialized,true);
                     }
