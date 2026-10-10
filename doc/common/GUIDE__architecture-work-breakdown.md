@@ -1,12 +1,12 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-10. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **108/218 (49.5%)**.
-Integrated source: **108/218 (49.5%)**; historical baseline: **31**. Candidates: **0**; partial: **16**; TODO: **94**.
+Implemented including unmerged candidates: **114/218 (52.3%)**.
+Integrated source: **114/218 (52.3%)**; historical baseline: **31**. Candidates: **0**; partial: **16**; TODO: **88**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -45,6 +45,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | qemu\-admin\-lifecycle\-integration | 15 | 0 | `d24e5ca1` | Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS\. Relevant unchanged tests carry\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ d24e5ca1 |
 | exec\-broker\-image\-integration | 4 | 0 | `acefb933` | Actual independent source/composed and affected Code/Security/Guide PASS\. Required JS and image\-test strict checks, genuine current production build, 17 affected files with 587 passing cases, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Test\-only fixes carried unchanged successful production checks\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ acefb933 |
 | sandbox\-request\-admin\-integration | 6 | 0 | `d0bb62a9` | Actual independent source/composed and affected Code/Security/Docs PASS; strict consumed JS/TS contracts including five negative controls, current genuine build, 21 required files with 867 passing current cases using qualified unchanged results, lint, seven actual package cases, npm/Unix startup smoke and compiled CLI PASS\. Verified local source delivery and all97preserved user changes\. Empty automatic receipt stream parked after one verification; no formal close or native\-host certification\. | accepted @ d0bb62a9 |
+| broker\-owner\-leases | 6 | 0 | `cbea3003` | Actual independent Code/Security/Docs and affected correction reviews PASS\. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real\-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded\. Actual local source delivery at cbea preserves all97 user changes\. Formal hook records and native\-host certification remain unverified\. | accepted @ cbea3003 |
 
 ## 0.2 Active next plans
 
@@ -60,8 +61,10 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | state\-access | OP\-state\-storage | Partial state\-read/native\-adapter binding accepted; broader atomic/CAS/repository storage remains incomplete; no whole credit\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | runtime\-capabilities | OP\-runtime\-capabilities | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | mcp\-forward | OP\-mcp\-forward | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
-| broker\-owner\-leases | OP\-broker\-owner\-register, OP\-broker\-owner\-resolve, OP\-lease\-claim, OP\-lease\-heartbeat, OP\-lease\-prune, OP\-lease\-release | Source and ordinary tests committed61aba969; actual independent Code/Security/Docs and composed merge review PASS\. Current accepted parent reconciliation and one combined QA with test\-only verifier cleanup pending; zero new completion credit\. |
-| verifier\-trim |  | Seven obsolete custom VM loaders deleted; required CLI forwarding and connection deadline cases retained in two ordinary suites\. Committedff245b02 with affected independent Code PASS; combined current QA and accepted\-parent reconciliation pending\. No product\-operation credit\. |
+| broker\-owner\-leases | OP\-broker\-owner\-register, OP\-broker\-owner\-resolve, OP\-lease\-claim, OP\-lease\-heartbeat, OP\-lease\-prune, OP\-lease\-release | Six whole operations accepted and locally delivered at cbea3003 after actual independent Code/Security/Docs and current combined QA PASS; all97 user changes preserved\. Formal hook attestation and native\-host certification remain unverified\. |
+| verifier\-trim |  | Seven obsolete custom VM loaders and synthetic graph metatests removed; meaningful ordinary CLI/connection\-deadline checks and actual entire graph retained\. Current combined QA and actual local delivery at cbea3003 PASS\. No operation credit; formal hook attestation remains unverified\. |
+| broker\-appium\-workflows | OP\-appium\-server\-start, OP\-appium\-server\-stop, OP\-appium\-session\-ensure, OP\-appium\-session\-delete, OP\-appium\-request, OP\-appium\-record, OP\-appium\-clear | Seven\-operation source and ordinary tests committed933cf4a; actual independent Code DEEP/Security/Docs PASS\. Normal accepted\-parent reconciliation, strict/runtime QA and local delivery remain pending\. Zero new operation credit\. |
+| verifier\-trim\-final |  | Independent full planning PASS; exact eight loader deletions and three ordinary test edits admitted in isolation\. Two disjoint authors; review, accepted\-parent reconciliation and sole QA pending\. Test\-only, zero operation credit\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -71,12 +74,12 @@ No separately counted product operations. This packet's foundation/structural ac
 
 No separately counted product operations. This packet's foundation/structural acceptance obligations remain in the delivery gates below; zero operation rows does not mean completion.
 
-## 3. M02 — State and identity (0/4 implemented)
+## 3. M02 — State and identity (2/4 implemented)
 
 - [ ] `OP-owner-repository` — Owner repository. **partial**; packages/device\-lab/providers/application/owner\-device\-repository\.mjs.
 - [ ] `OP-state-storage` — State storage. **partial**; state\-access @ 8b74ef39.
-- [ ] `OP-broker-owner-register` — Register canonical host project/profile broker owner mapping. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-broker-owner-resolve` — Resolve registered canonical owner and ensure broker auth material. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-broker-owner-register` — Register canonical host project/profile broker owner mapping. **integrated**; broker\-owner\-leases @ cbea3003.
+- [x] `OP-broker-owner-resolve` — Resolve registered canonical owner and ensure broker auth material. **integrated**; broker\-owner\-leases @ cbea3003.
 
 ## 4. M03 — Routes and transport (3/6 implemented)
 
@@ -129,12 +132,12 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 
-## 8. M07 — Physical/recording/Appium (8/26 implemented)
+## 8. M07 — Physical/recording/Appium (12/26 implemented)
 
-- [ ] `OP-lease-claim` — Lease claim. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-lease-heartbeat` — Lease heartbeat. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-lease-prune` — Lease prune. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-lease-release` — Lease release. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-lease-claim` — Lease claim. **integrated**; broker\-owner\-leases @ cbea3003.
+- [x] `OP-lease-heartbeat` — Lease heartbeat. **integrated**; broker\-owner\-leases @ cbea3003.
+- [x] `OP-lease-prune` — Lease prune. **integrated**; broker\-owner\-leases @ cbea3003.
+- [x] `OP-lease-release` — Lease release. **integrated**; broker\-owner\-leases @ cbea3003.
 - [ ] `OP-physical-attach` — Physical attach. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-physical-detach` — Physical detach. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-apple-trust-diagnostic` — Apple trust diagnostic. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.

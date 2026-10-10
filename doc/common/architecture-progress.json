@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-10",
+  "updatedAt": "2026-10-11",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -412,6 +412,26 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "d0bb62a9791974bee0b790616a25872ab1fc01f1"
+    },
+    {
+      "id": "broker-owner-leases",
+      "branch": "refactor/architecture-broker-owner-leases-20261010",
+      "commit": "cbea3003ef0340912d348245c18f17428d5c9eef",
+      "taskId": "TASK__architecture-broker-owner-leases",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-broker-owner-register",
+        "OP-broker-owner-resolve",
+        "OP-lease-claim",
+        "OP-lease-heartbeat",
+        "OP-lease-prune",
+        "OP-lease-release"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent Code/Security/Docs and affected correction reviews PASS. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded. Actual local source delivery at cbea preserves all97 user changes. Formal hook records and native-host certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "cbea3003ef0340912d348245c18f17428d5c9eef"
     }
   ],
   "planningLanes": [
@@ -509,13 +529,33 @@
         "OP-lease-prune",
         "OP-lease-release"
       ],
-      "status": "Source and ordinary tests committed61aba969; actual independent Code/Security/Docs and composed merge review PASS. Current accepted parent reconciliation and one combined QA with test-only verifier cleanup pending; zero new completion credit."
+      "status": "Six whole operations accepted and locally delivered at cbea3003 after actual independent Code/Security/Docs and current combined QA PASS; all97 user changes preserved. Formal hook attestation and native-host certification remain unverified."
     },
     {
       "id": "verifier-trim",
       "taskId": "TASK__architecture-verifier-trim",
       "coveredOperationIds": [],
-      "status": "Seven obsolete custom VM loaders deleted; required CLI forwarding and connection deadline cases retained in two ordinary suites. Committedff245b02 with affected independent Code PASS; combined current QA and accepted-parent reconciliation pending. No product-operation credit."
+      "status": "Seven obsolete custom VM loaders and synthetic graph metatests removed; meaningful ordinary CLI/connection-deadline checks and actual entire graph retained. Current combined QA and actual local delivery at cbea3003 PASS. No operation credit; formal hook attestation remains unverified."
+    },
+    {
+      "id": "broker-appium-workflows",
+      "taskId": "TASK__architecture-broker-appium-workflows",
+      "coveredOperationIds": [
+        "OP-appium-server-start",
+        "OP-appium-server-stop",
+        "OP-appium-session-ensure",
+        "OP-appium-session-delete",
+        "OP-appium-request",
+        "OP-appium-record",
+        "OP-appium-clear"
+      ],
+      "status": "Seven-operation source and ordinary tests committed933cf4a; actual independent Code DEEP/Security/Docs PASS. Normal accepted-parent reconciliation, strict/runtime QA and local delivery remain pending. Zero new operation credit."
+    },
+    {
+      "id": "verifier-trim-final",
+      "taskId": "TASK__architecture-verifier-trim-final",
+      "coveredOperationIds": [],
+      "status": "Independent full planning PASS; exact eight loader deletions and three ordinary test edits admitted in isolation. Two disjoint authors; review, accepted-parent reconciliation and sole QA pending. Test-only, zero operation credit."
     }
   ]
 }
