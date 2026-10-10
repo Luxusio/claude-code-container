@@ -5741,6 +5741,20 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
                 ? "adb -s R5CREAL123 shell input keyevent 3\n"
                 : "adb -s emulator-5580 shell input swipe 17 27 17 27 700\n");
 
+            const logBeforeOrientation = readFileSync(logPath, "utf8");
+            const orientation = await invoke(physical ? "mobile_rotate_right" : "mobile_rotate_left");
+            expect(orientation.status).toBe(200);
+            const orientationBody = await orientation.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+            expect(orientationBody).toMatchObject({ ok: true, result: { deviceId, backend, provider: "device-lab-backend-child" } });
+            expect(orientationBody.result.mcpResult.isError).not.toBe(true);
+            expect(JSON.parse(orientationBody.result.mcpResult.content[0].text)).toMatchObject({
+                orientation: physical ? "reverse-landscape" : "landscape", rotation: physical ? "3" : "1",
+                provider: "adb", stdout: "ok\n", stderr: "", status: 0,
+            });
+            const orientationLog = readFileSync(logPath, "utf8").slice(logBeforeOrientation.length);
+            expect(orientationLog).toContain(`adb -s ${serial} shell settings put system accelerometer_rotation 0\n`);
+            expect(orientationLog).toContain(`adb -s ${serial} shell settings put system user_rotation ${physical ? "3" : "1"}\n`);
+
             const localPath = join(project, physical ? "download.txt" : "upload.txt");
             writeFileSync(localPath, physical ? "previous destination" : "broker upload bytes\n");
             const remotePath = physical ? "/sdcard/broker-download.txt" : "/sdcard/broker-upload.txt";
@@ -5765,7 +5779,7 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             if (physical) {
                 // A successor claim no longer belongs to this record, even while its expiry is live.
                 writeFileSync(leasePath, JSON.stringify({ ...lease, claimNonce: "successor-physical-nonce" }));
-                for (const [tool, args] of [["mobile_home", {}], ["device_download", { localPath, remotePath }]] as const) {
+                for (const [tool, args] of [["mobile_home", {}], ["mobile_set_orientation", { orientation: "portrait" }], ["device_download", { localPath, remotePath }]] as const) {
                     const denied = await invoke(tool, args);
                     expect(denied.status).toBe(409);
                     expect(await denied.json()).toMatchObject({ ok: false, error: "physical-device-not-attached", deviceId, backend });

@@ -322,6 +322,7 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
             ["exec", { deviceId: "android-device-real-pixel", command: "echo ok" }, { stdout: "ok\n", stderr: "", status: 0 }],
             ["click", { deviceId: "android-device-real-pixel", x: 10, y: 20 }, { provider: "adb", tapped: { x: 10, y: 20 } }],
             ["back", { deviceId: "android-device-real-pixel" }, { provider: "adb", key: 4 }],
+            ["set_orientation", { deviceId: "android-device-real-pixel", orientation: "reverse-portrait" }, { provider: "adb", orientation: "reverse-portrait", rotation: "2", stdout: "ok\n", stderr: "", status: 0 }],
             ["ui", { deviceId: "android-device-real-pixel" }, { provider: "adb-uiautomator", source: expect.stringContaining("<hierarchy>"), remotePath: "/sdcard/window-android-device-real-pixel.xml" }],
             ["wait_for_text", { deviceId: "android-device-real-pixel", text: "Hello", timeoutMs: 5000, intervalMs: 50 }, { provider: "adb-uiautomator", text: "Hello", found: true }],
             ["install_app", { deviceId: "android-device-real-pixel", path: "/tmp/Real.apk" }, { provider: "adb", installed: "/tmp/Real.apk" }],
@@ -338,6 +339,8 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
         }
 
         const flakyScreencapMarker = join(homeDir, "fake-screencap-exit-1");
+        expect(readFileSync(logPath, "utf8")).toContain("adb -s R5CREAL123 shell settings put system accelerometer_rotation 0\n");
+        expect(readFileSync(logPath, "utf8")).toContain("adb -s R5CREAL123 shell settings put system user_rotation 2\n");
         writeFileSync(flakyScreencapMarker, "1");
         try {
             const flakyScreenshot = await client.callTool({
@@ -527,6 +530,7 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
                 { name: "status", arguments: { deviceId } },
                 { name: "exec", arguments: { deviceId, command: "echo fenced" } },
                 { name: "click", arguments: { deviceId, x: 1, y: 2 } },
+                { name: "set_orientation", arguments: { deviceId, orientation: "portrait" } },
                 { name: "upload", arguments: { deviceId, localPath: uploadPath, remotePath: "/sdcard/fenced.txt" } },
                 { name: "download", arguments: { deviceId, remotePath: "/sdcard/fenced.txt", localPath: join(homeDir, "lease-fenced-download.txt") } },
                 { name: "start", arguments: { deviceId } },

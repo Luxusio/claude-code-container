@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAndroidControlTransfer } from "../../../packages/device-lab/providers/application/android-control-transfer.mjs";
+import { androidOrientationPlan } from "../../../packages/device-lab/providers/domain/android-control-transfer.mjs";
 import type { AndroidControlTransferPorts, AndroidControlVariant, CommandReceipt, PathObservation, StageObservation, TargetObservation } from "../../../packages/device-lab/providers/ports/android-control-transfer.d.mts";
 
 type Target = { serial: string };
@@ -26,6 +27,63 @@ function fixture(variant: AndroidControlVariant = "emulator") {
 }
 
 describe("Android control and transfer application", () => {
+    it("plans all four orientation mappings and the effective left/right orientations", () => {
+        for (const [orientation, rotation] of [["portrait", "0"], ["landscape", "1"], ["reverse-portrait", "2"], ["reverse-landscape", "3"]] as const) {
+            expect(androidOrientationPlan("mobile_set_orientation", { orientation })).toEqual({
+                ok: true,
+                firstArgs: ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+                args: ["shell", "settings", "put", "system", "user_rotation", rotation],
+                payload: { orientation, rotation, provider: "adb" },
+            });
+        }
+        expect(androidOrientationPlan("mobile_rotate_left", {})).toMatchObject({ ok: true, payload: { orientation: "landscape", rotation: "1" } });
+        expect(androidOrientationPlan("mobile_rotate_right", {})).toMatchObject({ ok: true, payload: { orientation: "reverse-landscape", rotation: "3" } });
+    });
+
+    it("resolves the target before orientation admission and refuses unsupported values without settings effects", () => {
+        const { ports, application } = fixture();
+        ports.target.mockReturnValueOnce({ kind: "unknown" }).mockReturnValueOnce({ kind: "refused", message: "attachment lease lost" });
+        ports.execute.mockImplementation(() => { throw new Error("Refused orientation must not change settings"); });
+        expect(application.request("mobile_set_orientation", { deviceId: "absent", orientation: "diagonal" })).toBeUndefined();
+        expect(application.request("mobile_set_orientation", { deviceId: "lost-lease", orientation: "diagonal" })).toEqual({ kind: "text", message: "attachment lease lost" });
+        expect(application.request("mobile_set_orientation", { deviceId: "owned", orientation: "diagonal" })).toEqual({ kind: "text", message: "Unsupported Android orientation: diagonal" });
+    });
+
+    it("does not change user rotation when disabling the accelerometer fails", () => {
+        const { ports, application } = fixture();
+        const failure = { status: 9, stdout: "", stderr: "accelerometer setting denied" };
+        let rotation: string | undefined = "2";
+        ports.execute.mockImplementation((_target, args) => {
+            if (args[4] === "user_rotation") rotation = args[5];
+            return failure;
+        });
+        expect(application.request("mobile_set_orientation", { deviceId: "owned", orientation: "portrait" })).toEqual({ kind: "command-failure", command: failure });
+        expect(rotation).toBe("2");
+    });
+
+    it("keeps the first settings effect when the second orientation command fails", () => {
+        const { ports, application } = fixture();
+        const failure = { status: 8, stdout: "partial rotation", stderr: "user rotation denied" };
+        let accelerometer: string | undefined = "1";
+        ports.execute.mockImplementation((_target, args) => {
+            if (args[4] === "accelerometer_rotation") { accelerometer = args[5]; return { status: 0, stdout: "accelerometer disabled" }; }
+            expect(args).toEqual(["shell", "settings", "put", "system", "user_rotation", "3"]);
+            return failure;
+        });
+        expect(application.request("mobile_rotate_right", { deviceId: "owned" })).toEqual({ kind: "command-failure", command: failure });
+        expect(accelerometer).toBe("0");
+    });
+
+    it("returns orientation success using only the final command streams", () => {
+        const { ports, target, application } = fixture();
+        ports.execute.mockReturnValueOnce({ status: 0, stdout: "first command stdout", stderr: "first warning" })
+            .mockReturnValueOnce({ status: 0, stdout: "rotation applied", stderr: "final warning" });
+        expect(application.request("mobile_set_orientation", { deviceId: "owned", orientation: "reverse-portrait" })).toEqual({ kind: "json", payload: {
+            orientation: "reverse-portrait", rotation: "2", provider: "adb", stdout: "rotation applied", stderr: "final warning", status: 0,
+        } });
+        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "settings", "put", "system", "user_rotation", "2"]);
+    });
+
     it("uses the current long-press, swipe and drag duration defaults", () => {
         const { ports, target, application } = fixture();
         expect(application.request("mobile_long_press", { deviceId: "owned", x: 1, y: 2 })).toMatchObject({ kind: "json", payload: { longPressed: { x: 1, y: 2, durationMs: 700 }, stdout: "native stdout", stderr: "native warning" } });

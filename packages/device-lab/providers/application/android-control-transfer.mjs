@@ -1,4 +1,4 @@
-import { androidActionPlan } from "../domain/android-control-transfer.mjs";
+import { androidActionPlan, androidOrientationPlan } from "../domain/android-control-transfer.mjs";
 /** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlOperation} Operation */
 /** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlArguments} Arguments */
 /** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlOutcome} Outcome */
@@ -43,6 +43,17 @@ export function createAndroidControlTransfer(ports) {
             } finally {
                 ports.disposeOutput(stage.handle);
             }
+        }
+
+        if (operation === "mobile_set_orientation" || operation === "mobile_rotate_left" || operation === "mobile_rotate_right") {
+            const plan = androidOrientationPlan(operation, input);
+            if (!plan.ok) return { kind: "text", message: plan.message };
+            const first = ports.execute(target, plan.firstArgs);
+            if (first.status !== 0) return { kind: "command-failure", command: first };
+            const second = ports.execute(target, plan.args);
+            return second.status === 0
+                ? { kind: "json", payload: { ...plan.payload, stdout: second.stdout, stderr: second.stderr, status: second.status } }
+                : { kind: "command-failure", command: second };
         }
 
         const plan = androidActionPlan(operation, input, ports.variant);

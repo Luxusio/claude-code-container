@@ -12,9 +12,15 @@ type Application = ReturnType<typeof createAndroidControlTransfer<Target, InputS
 function requiredCapabilities(ports: Ports): void {
     const application = createAndroidControlTransfer(ports);
     const result: AndroidControlOutcome | undefined = application.request("device_download", { deviceId: "owned", remotePath: "/sdcard/file", localPath: "/local/file" });
+    const orientation: AndroidControlArguments = { deviceId: "owned", orientation: "reverse-portrait" };
+    const oriented: AndroidControlOutcome | undefined = application.request("mobile_set_orientation", orientation);
+    const left: AndroidControlOutcome | undefined = application.request("mobile_rotate_left", { deviceId: "owned" });
+    const right: AndroidControlOutcome | undefined = application.request("mobile_rotate_right", { deviceId: "owned" });
     const { execute: execute, ...withoutExecution } = ports;
     // @ts-expect-error Target-bound native command execution is required.
     createAndroidControlTransfer(withoutExecution);
+    // @ts-expect-error Orientation settings execution returns a synchronous command receipt.
+    createAndroidControlTransfer({ ...ports, execute: async () => ({ status: 0 }) });
     const { commitOutput: commit, ...withoutCommit } = ports;
     // @ts-expect-error Successful downloads require owned atomic publication authority.
     createAndroidControlTransfer(withoutCommit);
@@ -26,7 +32,7 @@ function requiredCapabilities(ports: Ports): void {
     createAndroidControlTransfer({ ...ports, commitOutput: async () => ({ ok: true, path: "/local/file" }) });
     // @ts-expect-error Disposal cannot leave an asynchronous stage lifetime behind.
     createAndroidControlTransfer({ ...ports, disposeOutput: async () => undefined });
-    void [result, execute, commit];
+    void [result, oriented, left, right, execute, commit];
 }
 void requiredCapabilities;
 

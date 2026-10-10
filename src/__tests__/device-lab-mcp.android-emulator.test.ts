@@ -227,6 +227,11 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             expect(action.isError, name).not.toBe(true);
             expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
         }
+        const logBeforeUnsupportedOrientation = readFileSync(logPath, "utf8");
+        const unsupportedOrientation = await client.callTool({ name: "set_orientation", arguments: { deviceId: "android-pixel-owned", orientation: "diagonal" } });
+        expect(unsupportedOrientation.isError).toBe(true);
+        expect((unsupportedOrientation.content as Array<{ text?: string }>)[0]?.text).toContain("orientation");
+        expect(readFileSync(logPath, "utf8")).toBe(logBeforeUnsupportedOrientation);
         const waitText = await client.callTool({
             name: "wait_for_text",
             arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50 },

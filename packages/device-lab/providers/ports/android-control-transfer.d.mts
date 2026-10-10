@@ -42,3 +42,5 @@ export type AndroidControlOutcome =
     | { kind: "text"; message: string }
     | { kind: "command-failure"; command: CommandReceipt };
 export type AndroidActionPlan = import("../domain/android-control-transfer.mjs").Plan;
+
+export type OrientationPayload = import("../domain/android-control-transfer.mjs").OrientationPayload;

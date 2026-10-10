@@ -384,15 +384,7 @@ function adbArgsForDevice(device, args) {
     return serial ? ["-s", serial, ...args] : args;
 }
 
-function orientationRotation(orientation) {
-    const rotations = {
-        portrait: "0",
-        landscape: "1",
-        "reverse-portrait": "2",
-        "reverse-landscape": "3",
-    };
-    return rotations[orientation] || null;
-}
+
 
 function ensureAdbDevice(deviceId) {
     const device = findAndroidDevice(deviceId);
@@ -1062,27 +1054,10 @@ async function handleAndroidToolUnlocked(name, args) {
         case "mobile_unlock":
             return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
 
-        case "mobile_set_orientation": {
-            const { deviceId, orientation } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const rotation = orientationRotation(orientation);
-            if (rotation === null) return textResult(false, `Unsupported Android orientation: ${orientation}`);
-            const accelerometer = runAdbDeviceCommand(target.device, target.adb, ["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
-            if (!accelerometer.ok) return fail(accelerometer.result);
-            return adbJsonResult(target.device, target.adb, ["shell", "settings", "put", "system", "user_rotation", rotation], { orientation, rotation, provider: "adb" });
-        }
-
-        case "mobile_rotate_left": {
-            const { deviceId } = args;
-            return handleAndroidTool("mobile_set_orientation", { deviceId, orientation: "landscape" });
-        }
-
-        case "mobile_rotate_right": {
-            const { deviceId } = args;
-            return handleAndroidTool("mobile_set_orientation", { deviceId, orientation: "reverse-landscape" });
-        }
+        case "mobile_set_orientation":
+        case "mobile_rotate_left":
+        case "mobile_rotate_right":
+            return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
 
         case "mobile_open_url": {
             const { deviceId, url } = args;
