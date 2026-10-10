@@ -21,6 +21,14 @@ Run the smallest meaningful failing consumer first after a failure. Once it
 passes, continue the remaining required gates. Do not restart every successful
 phase merely because a later assertion or observer failed.
 
+Batch concrete related findings before another expensive run. Disjoint
+implementation, tests and read-only reviews may overlap one heavy QA lane;
+shared source, output and checker writers remain exclusive. Carry successful
+stages only when their actual transitive source, compiler, dependency and
+emitted input closures are authenticated unchanged. Final full acceptance
+requires one complete configured full run and its required terminal file
+ledger, never a union of incomplete runs.
+
 ## Reuse a genuine build
 
 Build once for the production source, compiler options, dependency versions and
