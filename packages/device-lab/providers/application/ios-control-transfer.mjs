@@ -69,7 +69,7 @@ export function createIosControlTransfer(ports) {
                         return ports.missingPrerequisites(discovery);
                     }
                     const ownedTarget = ports.verifyTarget(discovery.xcrun, device);
-                    if ("error" in ownedTarget) {
+                    if (ownedTarget.error !== undefined) {
                         return ports.textResult(false, ownedTarget.error);
                     }
                     const type = (containerType || "data");
@@ -78,7 +78,7 @@ export function createIosControlTransfer(ports) {
                         return ports.fail(container.error);
                     }
                     const target = containedPath(container.containerRoot, remotePath);
-                    if (target.error) {
+                    if ("error" in target) {
                         return ports.textResult(false, target.error);
                     }
                     const containment = ports.guardWrite(container.containerRoot, target.path);
@@ -129,7 +129,7 @@ export function createIosControlTransfer(ports) {
                         return ports.missingPrerequisites(discovery);
                     }
                     const ownedTarget = ports.verifyTarget(discovery.xcrun, device);
-                    if ("error" in ownedTarget) {
+                    if (ownedTarget.error !== undefined) {
                         return ports.textResult(false, ownedTarget.error);
                     }
                     const type = (containerType || "data");
@@ -138,7 +138,7 @@ export function createIosControlTransfer(ports) {
                         return ports.fail(container.error);
                     }
                     const source = containedPath(container.containerRoot, remotePath);
-                    if (source.error) {
+                    if ("error" in source) {
                         return ports.textResult(false, source.error);
                     }
                     if (!ports.exists(source.path)) {
@@ -183,10 +183,10 @@ export function createIosControlTransfer(ports) {
                     return ports.textResult(false, `${physical ? "iOS real-device" : "iOS Simulator"} mobile_set_orientation requires portrait, landscape, reverse-portrait, or reverse-landscape`);
                 }
                 const resolved = await ports.resolveSession(args.deviceId);
-                if ("unknown" in resolved) {
+                if (resolved.unknown === true) {
                     return undefined;
                 }
-                if ("error" in resolved) {
+                if (resolved.error !== undefined) {
                     return ports.textResult(false, resolved.error);
                 }
                 try {
