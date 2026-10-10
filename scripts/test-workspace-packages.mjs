@@ -40956,6 +40956,9 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
   const fs=await import('node:fs');const path=await import('node:path');
   const {createRequire,isBuiltin}=await import('node:module');const {pathToFileURL,fileURLToPath}=await import('node:url');
   const {createContext,runInContext}=await import('node:vm');
+  const {types:diagnosticTypes}=await import('node:util');const diagnosticWrite=process.stderr.write.bind(process.stderr),diagnosticRoles=new WeakMap();
+  let diagnosticPhase='initialize',diagnosticReject='',diagnosticRole='',diagnosticPhaseAtReject='';
+  const diagnosticFailure=error=>{try{const report={phase:diagnosticPhase.slice(0,512),rejectSite:diagnosticReject.slice(0,512),phaseAtReject:diagnosticPhaseAtReject.slice(0,512),role:diagnosticRole.slice(0,512),errorType:typeof error};if(error!==null&&(typeof error==='object'||typeof error==='function')){report.proxy=diagnosticTypes.isProxy(error);if(!report.proxy&&diagnosticTypes.isNativeError(error))for(const key of ['name','message','code','stack']){const descriptor=Object.getOwnPropertyDescriptor(error,key);if(descriptor&&'value'in descriptor&&['string','number','boolean'].includes(typeof descriptor.value))report[key]=typeof descriptor.value==='string'?descriptor.value.slice(0,2048):descriptor.value;}}else if(['string','number','boolean'].includes(typeof error))report.value=typeof error==='string'?error.slice(0,2048):error;diagnosticWrite('WORKSPACE_FAILURE '+JSON.stringify(report).slice(0,8192)+'\n');}catch{}};
   const emittedRoot=path.resolve(payload,'dist'), cache=new Map(), observed=new Set(),actualRequires=new Map();
   const nativeRequire=createRequire(path.join(payload,'dist/index.js'));
   const f={events:[],positions:[],logs:[],errors:[],kind:'repair',scenario:'',repairs:0,guardObservations:0,contenders:0,pidObservations:0};
@@ -40983,7 +40986,7 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
     return {status:(f.scenario==='stop-failure'&&args[0]==='stop')||(f.scenario==='external-start'&&args[0]==='rm')?1:0};
     }catch(error){recordDenied('unallocated workspace subprocess arguments');throw error;}
   };
-  const reject=site=>{recordDenied(site);throw Error('unallocated payload capability '+site);};
+  const reject=site=>{diagnosticReject=site;diagnosticPhaseAtReject=diagnosticPhase;recordDenied(site);throw Error('unallocated payload capability '+site);};
   // Purpose-local realm boundary: every host capability/value crossing in either direction
   // is translated, including callback arguments, native return values and thrown objects.
   const incoming=new WeakMap(),outgoing=new WeakMap(),incomingOriginal=new WeakMap(),outgoingOriginal=new WeakMap();
@@ -40994,7 +40997,7 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
     const cache=intoRealm?incoming:outgoing;if(cache.has(value))return cache.get(value);
     const convert=item=>translate(item,intoRealm),opposite=item=>translate(item,!intoRealm);
     const protectedName=name=>name==='constructor'||name==='prototype'||name==='__proto__'||name==='caller'||name==='callee'||name==='arguments';
-    const confinedReject=site=>{try{reject(site);}catch(error){throw convert(error);}};const check=name=>{if(intoRealm&&protectedName(name))return confinedReject('host prototype/callee authority '+String(name));};
+    const confinedReject=site=>{diagnosticRole=diagnosticRoles.get(value)||('unregistered '+typeof value);try{reject(site);}catch(error){throw convert(error);}};const check=name=>{if(intoRealm&&protectedName(name))return confinedReject('host prototype/callee authority '+String(name));};
     const target=typeof value==='function'?(function(){}).bind(null):Array.isArray(value)?[]:Object.create(null);
     const perform=operation=>{try{return convert(operation());}catch(error){throw convert(error);}};
     const view=new Proxy(target,{
@@ -41068,10 +41071,10 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
     file=path.resolve(file);assert(file.startsWith(path.resolve(payload)+path.sep),'CLI checkout fallback');
     const key=file+(unmocked?'#actual':'');if(cache.has(key))return cache.get(key).exports;
     const initialExports=Object.create(null),moduleRecord={exports:initialExports};const module=new Proxy(moduleRecord,{get:(target,name)=>Object.hasOwn(target,name)?target[name]:reject('module '+String(name)),set:(target,name,value)=>{if(name==='exports'&&namespaceExports.has(initialExports)&&value!==initialExports)return reject('genuine namespace replacement');return Object.hasOwn(target,name)?Reflect.set(target,name,value):reject('module write '+String(name));}});cache.set(key,module);
-    const base=path.relative(emittedRoot,file);
+    const base=path.relative(emittedRoot,file);diagnosticPhase='load '+base;
     if(!unmocked&&nativeFixtures[base]){const actualExports=partial.has(base)?load(file,true):undefined,allocated=nativeFixtures[base](actualExports);for(const name of Reflect.ownKeys(allocated)){const descriptor=Object.getOwnPropertyDescriptor(allocated,name);if(descriptor&&'value'in descriptor&&typeof descriptor.value==='function'&&actualExports?.[name]!==descriptor.value){const selected=descriptor.value;Object.defineProperty(allocated,name,{...descriptor,value:function(...args){try{return Reflect.apply(selected,this,args);}catch(error){if(error!==f.raw&&error!==f.conflict&&error!==f.lookalike&&error!==f.ownershipError)recordDenied('native fixture '+base+':'+String(name));throw error;}}});}}module.exports=allocated;return module.exports;}
     assert(fs.existsSync(file),'missing emitted CLI dependency '+file);observed.add(file);
-    const original=fs.readFileSync(file,'utf8');namespaceExports.set(initialExports,{record:moduleRecord,file});
+    const original=fs.readFileSync(file,'utf8');namespaceExports.set(initialExports,{record:moduleRecord,file});diagnosticRoles.set(initialExports,'namespace '+base);diagnosticRoles.set(module,'module '+base);
     const metadata=context=>{
       const visit=node=>{
         const meta=node=>ts.isMetaProperty(node)&&node.keywordToken===ts.SyntaxKind.ImportKeyword;
@@ -41108,10 +41111,10 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
       if(specifier==='module'||specifier==='node:module')return allocatedModule(file);if(isBuiltin(specifier)){const name=specifier.replace(/^node:/,'');if(!['fs','path','os','crypto','url','module','util','events','stream','readline','buffer','assert','assert/strict'].includes(name)){recordDenied('unallocated builtin '+specifier);throw Error('unallocated builtin '+specifier);}return allocatedBuiltin(specifier);}
       const resolved=createRequire(file).resolve(specifier);if(!resolved.startsWith(path.resolve(payload)+path.sep)){recordDenied('dependency outside payload '+specifier);throw Error('dependency outside payload '+specifier);}return load(resolved);
     };
-    actualRequires.set(file,requireMapped);
+    actualRequires.set(file,requireMapped);diagnosticRoles.set(requireMapped,'require '+base);
     // Node ignores only an initial hashbang. Pad it so line/column offsets survive the VM wrapper.
     const wrappedSource=compiled.replace(/^#![^\r\n\u2028\u2029]*/,line=>' '.repeat(line.length));
-    runInContext('(function(require,module,exports){'+wrappedSource+'\n})',context,{filename:file})(intoRealm(requireMapped),intoRealm(module),intoRealm(module.exports));
+    diagnosticPhase='execute '+base;runInContext('(function(require,module,exports){'+wrappedSource+'\n})',context,{filename:file})(intoRealm(requireMapped),intoRealm(module),intoRealm(module.exports));
     return module.exports;
   };
   let lifecyclePrimary;
@@ -41134,7 +41137,7 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
       if(scenario==='removed-getter')f.removal.removed=[{toString(){f.events.push('removed-coercion');return 'kept-item';}}];
       if(scenario==='claim'||scenario==='forced-claim')fs.writeFileSync(claim,claimBytes,{flag:'wx',mode:0o600});
       processData.argv=[processData.execPath,path.join(emittedRoot,'index.js'),'@feature',kind==='repair'?'stop':'rm',...(scenario==='forced-claim'?['-f']:[])];
-      let primary;try{await index.main();}catch(error){primary=error;}finally{
+      diagnosticPhase='main '+kind+':'+scenario;let primary;try{await index.main();}catch(error){primary=error;}finally{
         try{recordDenied.assertZero();assert.equal(timers.size,0,'owned timers settled on success/catch/throw');assert(!fs.existsSync(f.guard),'native family guard released after complete main route');}
         catch(checkError){if(primary){try{Object.defineProperty(primary,'workspaceFenceFailure',{value:String(checkError)});}catch{}throw primary;}throw checkError;}
       }
@@ -41176,7 +41179,7 @@ async function workspacePayloadMainConsumer(payload,privateHome,ts,recordDenied,
     assert.equal(brokerImportNegatives.length,6);
     for(const script of ['try{process.env.UNALLOCATED_WORKSPACE_SECRET}catch{}','try{process.binding("fs")}catch{}','try{fetch("https://unallocated.invalid")}catch{}','try{Buffer.constructor("return process")()}catch{}'])recordDenied.assertRejected(()=>runInContext(script,context));
     return {executed,fullEmittedMain:true,unchangedMainBody:true,realPreludeLock:true,realNativeClass:true,realClaims:true,realNativeFamilyGuard:true,ambientNegativeControls:4,namespaceNegativeControls,genuineExportStarEnumeration:true,brokerImportNegativeControls:6,brokerImportNegatives,ownedTimersJoined:0,spawnedActors:0,controlledSubworkflows:['unrelated home-layout migration observation','lower ownership/Git/content repair/quarantine leaves','runtime readiness/inventory/container commands','terminal stop after repair'],nativeCeilings:'allocated private filesystem and genuine same-process native-lock contender only; no host repository/container teardown, cross-process/process-generation or provider acceptance'};
-  } catch(error){lifecyclePrimary=error;throw error;}
+  } catch(error){lifecyclePrimary=error;diagnosticFailure(error);throw error;}
   finally {if(timers.size){if(lifecyclePrimary){try{Object.defineProperty(lifecyclePrimary,'workspaceLiveTimers',{value:timers.size});}catch{}}else throw Error('live owned timers retained; caller must retain root');}}
 }
 
