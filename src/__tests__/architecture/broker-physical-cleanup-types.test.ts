@@ -12,6 +12,8 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     createBrokerPhysicalDevicesApplication(missingRelease);
     // @ts-expect-error definition removal must finish before detach settles
     createBrokerPhysicalDevicesApplication({ ...physical, removeDevice: async () => undefined });
+    // @ts-expect-error captured stop records must be cloned synchronously before lease cleanup
+    createBrokerPhysicalDevicesApplication({ ...physical, clone: async value => structuredClone(value) });
     const { publish, ...missingPublication } = cleanup;
     // @ts-expect-error owner cleanup requires conditional publication
     createBrokerOwnerCleanupApplication(missingPublication);

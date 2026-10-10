@@ -12,4 +12,4 @@ Owner cleanup retains default stop/detach options and backend aliases. It reread
 
 Public bindings remain `broker.physical.attach`, `broker.physical.detach`, physical command plan/invoke, `broker.apple.trust` and `broker.cleanup.owner`, including exported physical/Apple callers and broker-supervision shutdown cleanup. MCP attach/detach and command routing keep their existing paths; no Apple MCP tool is introduced. Administrative cleanup remains a distinct peer.
 
-Ordinary fake-port tests prove application decisions; existing authenticated public/native fixtures prove the broker bindings. Real Apple/Android hardware certification requires an actual host run and is not implied by these tests. Review and strict native-constructor checks are required before accepting this extraction.
+Ordinary fake-port tests cover application decisions; existing authenticated public/native fixtures cover the broker bindings. Current strict/runtime QA and delivery remain pending. Real Apple/Android hardware certification requires an actual host run and is not implied by these tests. Review and strict native-constructor checks are required before accepting this extraction.

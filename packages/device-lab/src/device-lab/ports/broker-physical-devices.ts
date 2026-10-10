@@ -42,6 +42,6 @@ export interface BrokerPhysicalDevicesPorts<Handle> {
     auxiliary(ownerId: string, request: PhysicalStopRequest, expected: unknown): AuxiliaryOutcome;
     publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replacement: unknown): CleanupPublication;
     execute(command: PhysicalCommand): PhysicalExecution;
-    clone(value: unknown): unknown;
+    clone<T>(value: T): T;
     redact(value: unknown): unknown;
 }
