@@ -1,4 +1,4 @@
-import { safeSshText, guestSshInput, guestAgentInput, validateGuestAgent, sshBaseArgs, sshDestination, publicRuntime, publicGuest, publicLab, publicMaterializedResult, publicQemuArgs, publicExecution, redactProviderString, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab, qemuLifecycleSlug, validQemuLabId } from "../domain/qemu-lifecycle.mjs";
+import { safeSshText, guestSshInput, validateGuestAgent, sshBaseArgs, sshDestination, publicLab, publicMaterializedResult, publicQemuArgs, publicExecution, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab, qemuLifecycleSlug, validQemuLabId } from "../domain/qemu-lifecycle.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout } from "../domain/qemu-image-disk-target.mjs";
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuLifecycleArguments} QemuLifecycleArguments */
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuLab} QemuLab */
@@ -234,11 +234,11 @@ function prepareStartedLab(lab, reused = false) {
     return {
         ok: provision?.ok !== false,
         ...(provision?.ok === false ? { error: "lab-guest-agent-provision-failed" } : {}),
-        lab: provision?.lab || publicLab(lab),
+        lab: (provision && "lab" in provision ? provision.lab : undefined) || publicLab(lab),
         guestAgentProvision: provision ? {
             ok: provision.ok,
             ...(provision.error ? { error: provision.error } : {}),
-            ...(provision.status ? { status: provision.status } : {}),
+            ...("status" in provision && provision.status ? { status: provision.status } : {}),
         } : undefined,
     };
 }

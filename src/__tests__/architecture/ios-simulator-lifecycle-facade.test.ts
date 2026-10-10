@@ -12,12 +12,14 @@ afterEach(async () => {
     context = undefined;
 });
 
-function parse(result: { content: unknown; isError?: unknown }) {
-    expect(result.isError).not.toBe(true);
-    expect(Array.isArray(result.content)).toBe(true);
-    const first = (result.content as Array<{ type: string; text?: string }>)[0];
-    expect(first.type).toBe("text");
-    return JSON.parse(first.text!);
+function parse(result: unknown) {
+    if (result === null || typeof result !== "object") throw new Error("Expected an MCP response object");
+    if (!("content" in result) || !Array.isArray(result.content)) throw new Error("Expected MCP content");
+    if ("isError" in result) expect(result.isError).not.toBe(true);
+    const first: unknown = result.content[0];
+    if (first === null || typeof first !== "object" || !("type" in first) || first.type !== "text"
+        || !("text" in first) || typeof first.text !== "string") throw new Error("Expected MCP text content");
+    return JSON.parse(first.text);
 }
 
 describe("iOS simulator public lifecycle", () => {
