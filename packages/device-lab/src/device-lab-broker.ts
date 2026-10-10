@@ -1,3 +1,5 @@
+import { createBrokerRecordingApplication } from "./device-lab/application/broker-recording.js";
+import { recordingRuntimeMatches, recordingPublication } from "./device-lab/domain/broker-recording.js";
 import type { BrokerAppiumVerification } from "./device-lab/ports/broker-appium.js";
 import { createBrokerAppiumApplication } from "./device-lab/application/broker-appium.js";
 import { validateAppiumParams, appiumParamError, appiumRuntimeMatches, appiumRecordReplacement, brokerOwnedAppiumPid, brokerOwnedAppiumEndpoint, brokerOwnedAppiumPort, brokerOwnedAppiumRuntime } from "./device-lab/domain/broker-appium.js";
@@ -613,13 +615,7 @@ const brokerOwnerMutationTails = new Map<string, Promise<void>>();
 const brokerAuthNonces = new Map<string, number>();
 const DEVICE_BROKER_SERVICE_ACTIONS = new Set(["status"]);
 const DEVICE_BROKER_APPLE_TRUST_ACTIONS = new Set(["status", "pair", "connect"]);
-const DEVICE_BROKER_RECORDING_PROVIDERS = new Map([
-    ["android", "adb-screenrecord"],
-    ["android-device", "adb-screenrecord"],
-    ["ios", "simctl-recordVideo"],
-    ["windows", "windows-helper-frame-archive"],
-    ["macos", "ssh-screencapture-video"],
-]);
+
 
 export interface DeviceBrokerOptions {
     cwd?: string;
@@ -3487,7 +3483,7 @@ const observeFocusedInventory = createFocusedInventory<unknown, NormalizedBroker
 
 type DeviceToolMatch = { stateKey: string; backend: string | null; device: Record<string, unknown> };
 
-function findOwnerDeviceForTool(ownerId: string, parsed: DeviceToolParamSuccess): DeviceToolMatch | BrokerRpcResult {
+function findOwnerDeviceForTool(ownerId: string, parsed: { stateKey: string | null; deviceId: string | null; backend: string | null }): DeviceToolMatch | BrokerRpcResult {
     const stateKeys = parsed.stateKey ? [parsed.stateKey] : DEVICE_BROKER_BACKEND_STATE_KEYS;
     const matches: DeviceToolMatch[] = [];
     for (const stateKey of stateKeys) {
@@ -3504,41 +3500,33 @@ function findOwnerDeviceForTool(ownerId: string, parsed: DeviceToolParamSuccess)
     return matches[0];
 }
 
-function invokeDeviceRecordingStatus(ownerId: string, parsed: DeviceToolParamSuccess) {
-    const match = findOwnerDeviceForTool(ownerId, parsed);
-    if ("status" in match) return match;
-    const provider = DEVICE_BROKER_RECORDING_PROVIDERS.get(match.stateKey) || null;
-    const observedRecording = match.device.recording && typeof match.device.recording === "object" && !Array.isArray(match.device.recording)
-        ? match.device.recording as Record<string, unknown>
-        : null;
-    const observation = observedRecording?.processIdentity && typeof observedRecording.pid === "number"
-        ? inspectDeviceRuntimeProcessIdentity(observedRecording.processIdentity, observedRecording.pid)
-        : null;
-    const recordingIsCurrent = !observation
-        || observation.status === "match"
-        || observation.status === "unavailable";
-    const transition = recordingIsCurrent || !observedRecording
-        ? null
-        : transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), observedRecording, null);
-    const recording = transition?.matched ? null : match.device.recording || null;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                tool: parsed.tool,
-                deviceId: parsed.deviceId,
-                backend: match.backend,
-                stateKey: match.stateKey,
-                recording,
-                provider,
-                supported: Boolean(provider),
-                source: "host-broker-owner-state",
-                startsDevices: false,
-            },
-        },
-    };
+function brokerRecordingApplication(normalized: NormalizedBrokerOptions) {
+    return createBrokerRecordingApplication({
+        findTarget: findOwnerDeviceForTool,
+        heartbeat: refreshPhysicalDeviceLeaseForOperation,
+        observeProcess: inspectDeviceRuntimeProcessIdentity,
+        publish: transitionOwnerRecordingRuntime,
+        executable: name => executableFor(name, normalized),
+        resolveIosTarget: (ownerId, device) => resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized),
+        localPath: ownerRecordingLocalPath,
+        prepareOutput: path => { mkdirSync(dirname(path), { recursive: true }); return undefined; },
+        launch: (command, label) => normalized.usesDefaultCommandRunner
+            ? startDetachedProviderCommand(command, normalized, label)
+            : Promise.resolve(normalized.commandRunner(command, {
+                timeoutMs: normalized.commandTimeoutMs,
+                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+            })),
+        execute: command => normalized.commandRunner(command, {
+            timeoutMs: normalized.commandTimeoutMs,
+            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        }),
+        signal: (recording, signal) => signalBrokerOwnedRecording(recording, normalized, signal),
+        waitForExit: (pid, timeoutMs) => normalized.usesDefaultCommandRunner
+            ? waitForProcessExit(pid, timeoutMs)
+            : Promise.resolve(true),
+        timestamp: () => new Date().toISOString(),
+        runtimeId: () => randomBytes(16).toString("hex"),
+    });
 }
 
 function ownerRecordingDir(ownerId: string, stateKey: string, deviceId: string) {
@@ -3631,38 +3619,6 @@ async function startDetachedProviderCommand(command: ProviderCommand, normalized
     });
 }
 
-function recordingUnsupported(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, reason: string): BrokerRpcResult {
-    return {
-        status: 501,
-        payload: {
-            ok: false,
-            error: "broker-device-recording-unsupported",
-            ownerId,
-            tool: parsed.tool,
-            backend: match.backend,
-            stateKey: match.stateKey,
-            deviceId: parsed.deviceId,
-            reason,
-            fallbackAvailable: false,
-            directProviderFallback: false,
-            startsDevices: false,
-        },
-    };
-}
-
-function recordingRuntimeMatches(expected: unknown, current: unknown): boolean {
-    if (expected === null || expected === undefined) return current === null || current === undefined;
-    if (!expected || typeof expected !== "object" || Array.isArray(expected)
-        || !current || typeof current !== "object" || Array.isArray(current)) return false;
-    const expectedRecord = expected as Record<string, unknown>;
-    const currentRecord = current as Record<string, unknown>;
-    const expectedRuntimeId = typeof expectedRecord.runtimeId === "string" ? expectedRecord.runtimeId : null;
-    const currentRuntimeId = typeof currentRecord.runtimeId === "string" ? currentRecord.runtimeId : null;
-    if (expectedRuntimeId || currentRuntimeId) return expectedRuntimeId !== null && expectedRuntimeId === currentRuntimeId;
-    const identityFields = ["authority", "processOwner", "startedBy", "pid", "provider", "startedAt", "remotePath", "localPath"];
-    return identityFields.every((field) => expectedRecord[field] === currentRecord[field]);
-}
-
 function transitionOwnerRecordingRuntime(
     ownerId: string,
     stateKey: string,
@@ -3681,241 +3637,10 @@ function transitionOwnerRecordingRuntime(
         currentRecording = record.recording ?? null;
         if (!recordingRuntimeMatches(expected, currentRecording)) return candidate;
         matched = true;
-        updatedDevice = { ...record, recording: replacement, updatedAt: new Date().toISOString() };
+        updatedDevice = recordingPublication(record, replacement, new Date().toISOString());
         return updatedDevice;
     }));
     return { found, matched, currentRecording, device: updatedDevice };
-}
-
-function recordingStartPlan(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): { command: ProviderCommand; recording: Record<string, unknown> } | { error: BrokerRpcResult } {
-    const deviceId = String(parsed.deviceId);
-    const provider = DEVICE_BROKER_RECORDING_PROVIDERS.get(match.stateKey) || "unknown";
-    const now = new Date().toISOString();
-    if (match.stateKey === "android" || match.stateKey === "android-device") {
-        const serial = androidSerial(match.device);
-        if (!serial) {
-            return { error: { status: 400, payload: { ok: false, error: "missing-provider-metadata", missing: ["serial or port"], backend: match.backend, deviceId } } };
-        }
-        const remotePath = parsed.remotePath || `/sdcard/ccc-${deviceId}-recording.mp4`;
-        const localPath = parsed.localPath || ownerRecordingLocalPath(ownerId, match.stateKey, deviceId, "mp4");
-        mkdirSync(dirname(localPath), { recursive: true });
-        const timeLimitSec = parsed.timeLimitSec || 180;
-        return {
-            command: {
-                mode: "detached",
-                provider: "adb",
-                executable: executableFor("adb", normalized),
-                args: ["-s", serial, "shell", "screenrecord", "--time-limit", String(timeLimitSec), remotePath],
-            },
-            recording: {
-                active: true,
-                provider,
-                authority: "host-broker",
-                processOwner: "host-broker",
-                startedBy: "broker.device.recording.start",
-                remotePath,
-                localPath,
-                timeLimitSec,
-                startedAt: now,
-            },
-        };
-    }
-    if (match.stateKey === "ios") {
-        const ownedTarget = resolveBrokerOwnedIosSimulatorTarget(ownerId, match.device, normalized);
-        if (!ownedTarget.ok) {
-            return { error: { status: 409, payload: { ok: false, error: ownedTarget.error, missing: ownedTarget.missing, backend: match.backend, deviceId } } };
-        }
-        const localPath = parsed.localPath || ownerRecordingLocalPath(ownerId, match.stateKey, deviceId, "mp4");
-        mkdirSync(dirname(localPath), { recursive: true });
-        return {
-            command: {
-                mode: "detached",
-                provider: "xcrun",
-                executable: executableFor("xcrun", normalized),
-                args: ["simctl", "io", ownedTarget.target, "recordVideo", localPath],
-            },
-            recording: {
-                active: true,
-                provider,
-                authority: "host-broker",
-                processOwner: "host-broker",
-                startedBy: "broker.device.recording.start",
-                localPath,
-                timeLimitSec: parsed.timeLimitSec,
-                startedAt: now,
-            },
-        };
-    }
-    if (match.stateKey === "ios-device") return { error: recordingUnsupported(ownerId, parsed, match, "physical iOS recording is not mutated through broker.device.tool.invoke; use a dedicated Appium/Xcode/device-farm path when available") };
-    if (match.stateKey === "windows") return { error: recordingUnsupported(ownerId, parsed, match, "Windows Sandbox recording is not broker-managed because it uses the guest-helper file channel") };
-    if (match.stateKey === "macos") return { error: recordingUnsupported(ownerId, parsed, match, "macOS VM recording is not broker-managed because it uses the SSH guest-helper bridge") };
-    return { error: recordingUnsupported(ownerId, parsed, match, "recording is not supported for this backend through broker.device.tool.invoke") };
-}
-
-async function invokeDeviceRecordingStart(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions) {
-    const match = findOwnerDeviceForTool(ownerId, parsed);
-    if ("status" in match) return match;
-    if (["android", "android-device"].includes(match.stateKey) && parsed.timeLimitSec !== null && parsed.timeLimitSec > 180) {
-        return { status: 400, payload: { ok: false, error: "android-recording-time-limit-invalid", detail: "timeLimitSec must be an integer from 1 to 180" } };
-    }
-    const leaseFailure = refreshPhysicalDeviceLeaseForOperation(ownerId, match, String(parsed.deviceId));
-    if (leaseFailure) return leaseFailure;
-    const currentRecording = match.device.recording && typeof match.device.recording === "object" ? match.device.recording as Record<string, unknown> : null;
-    if (currentRecording?.active) {
-        return { status: 409, payload: { ok: false, error: "recording-already-active", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, recording: currentRecording } };
-    }
-    const plan = recordingStartPlan(ownerId, parsed, match, normalized);
-    if ("error" in plan) return plan.error;
-    const execution = normalized.usesDefaultCommandRunner
-        ? await startDetachedProviderCommand(plan.command, normalized, String(plan.recording.provider || parsed.tool))
-        : normalized.commandRunner(plan.command, {
-            timeoutMs: normalized.commandTimeoutMs,
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        });
-    if (!commandSucceeded(execution)) {
-        return { status: 502, payload: { ok: false, error: "recording-start-failed", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, execution } };
-    }
-    const recording: Record<string, unknown> = {
-        ...plan.recording,
-        runtimeId: randomBytes(16).toString("hex"),
-        pid: execution.pid ?? null,
-        ...(execution.processIdentity ? { processIdentity: execution.processIdentity } : {}),
-    };
-    const transition = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), currentRecording, recording);
-    if (!transition.matched) {
-        const rollback = signalBrokerOwnedRecording(recording, normalized, "SIGINT");
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "recording-runtime-state-conflict",
-                ownerId,
-                backend: match.backend,
-                stateKey: match.stateKey,
-                deviceId: parsed.deviceId,
-                found: transition.found,
-                currentRecording: transition.currentRecording,
-                rollback,
-            },
-        };
-    }
-    const updated = transition.device;
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                tool: parsed.tool,
-                backend: match.backend,
-                stateKey: match.stateKey,
-                deviceId: parsed.deviceId,
-                provider: recording.provider,
-                recording,
-                device: updated,
-                execution,
-                source: "host-broker-owner-state",
-                startsDevices: false,
-            },
-        },
-    };
-}
-
-async function invokeDeviceRecordingStop(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions) {
-    const match = findOwnerDeviceForTool(ownerId, parsed);
-    if ("status" in match) return match;
-    const leaseFailure = refreshPhysicalDeviceLeaseForOperation(ownerId, match, String(parsed.deviceId));
-    if (leaseFailure) return leaseFailure;
-    const recording = match.device.recording && typeof match.device.recording === "object" ? match.device.recording as Record<string, unknown> : null;
-    if (!recording?.active) {
-        return { status: 409, payload: { ok: false, error: "recording-not-active", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, recording: recording || null } };
-    }
-    if (match.stateKey === "windows") return recordingUnsupported(ownerId, parsed, match, "Windows Sandbox recording stop is not broker-managed because it uses the guest-helper file channel");
-    if (match.stateKey === "macos") return recordingUnsupported(ownerId, parsed, match, "macOS VM recording stop is not broker-managed because it uses the SSH guest-helper bridge");
-    if (match.stateKey === "ios-device") return recordingUnsupported(ownerId, parsed, match, "physical iOS recording stop is not managed through broker.device.tool.invoke");
-
-    const signal = signalBrokerOwnedRecording(recording, normalized, "SIGINT");
-    if (!signal.ok) {
-        return { status: 502, payload: { ok: false, error: "recording-stop-signal-failed", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, signal, recording, startsDevices: false } };
-    }
-    const executions: ProviderCommandResult[] = [];
-    let artifactCopy: ProviderCommandResult | null = null;
-    let stopCommandFailed: ProviderCommandResult | null = null;
-    const provider = DEVICE_BROKER_RECORDING_PROVIDERS.get(match.stateKey) || String(recording.provider || "unknown");
-    const localPath = parsed.localPath || (typeof recording.localPath === "string" ? recording.localPath : ownerRecordingLocalPath(ownerId, match.stateKey, String(parsed.deviceId), "mp4"));
-    mkdirSync(dirname(localPath), { recursive: true });
-    let serial: string | null = null;
-    if (match.stateKey === "android" || match.stateKey === "android-device") {
-        serial = androidSerial(match.device);
-        if (!serial) return { status: 400, payload: { ok: false, error: "missing-provider-metadata", missing: ["serial or port"], backend: match.backend, deviceId: parsed.deviceId } };
-        const pkillCommand: ProviderCommand = { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, "shell", "pkill", "-2", "screenrecord"] };
-        const pkill = normalized.commandRunner(pkillCommand, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-        executions.push(pkill);
-        if (!commandSucceeded(pkill)) stopCommandFailed = pkill;
-    }
-    const processExited = normalized.usesDefaultCommandRunner
-        ? await waitForProcessExit(recording.pid, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS)
-        : true;
-    if (!processExited) {
-        return { status: 502, payload: { ok: false, error: "recording-process-still-running", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, signal, executions, recording, startsDevices: false } };
-    }
-    const hostRecorderWasSignaled = signal.attempted === true && signal.ok === true;
-    if (stopCommandFailed && !hostRecorderWasSignaled && !("stale" in signal && signal.stale)) {
-        return { status: 502, payload: { ok: false, error: "recording-stop-command-failed", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, signal, executions, recording, startsDevices: false } };
-    }
-    if (match.stateKey === "android" || match.stateKey === "android-device") {
-        if (!serial) return { status: 400, payload: { ok: false, error: "missing-provider-metadata", missing: ["serial or port"], backend: match.backend, deviceId: parsed.deviceId } };
-        if (typeof recording.remotePath === "string" && recording.remotePath) {
-            const pullCommand: ProviderCommand = { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, "pull", recording.remotePath, localPath] };
-            artifactCopy = normalized.commandRunner(pullCommand, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            if (artifactCopy) executions.push(artifactCopy);
-            const rmCommand: ProviderCommand = { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, "shell", "rm", "-f", recording.remotePath] };
-            executions.push(normalized.commandRunner(rmCommand, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
-        }
-    }
-    const stoppedAt = new Date().toISOString();
-    const transition = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), recording, null);
-    if (!transition.matched) {
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "recording-runtime-state-conflict",
-                ownerId,
-                backend: match.backend,
-                stateKey: match.stateKey,
-                deviceId: parsed.deviceId,
-                found: transition.found,
-                currentRecording: transition.currentRecording,
-                signal,
-                executions,
-            },
-        };
-    }
-    const updated = transition.device;
-    const copyFailed = artifactCopy && !commandSucceeded(artifactCopy);
-    return {
-        status: copyFailed ? 502 : 200,
-        payload: {
-            ok: !copyFailed,
-            ...(copyFailed ? { error: "recording-artifact-copy-failed" } : {}),
-            result: {
-                ownerId,
-                tool: parsed.tool,
-                backend: match.backend,
-                stateKey: match.stateKey,
-                deviceId: parsed.deviceId,
-                stopped: true,
-                provider,
-                signal,
-                executions,
-                recording: { ...recording, active: false, localPath, stoppedAt },
-                device: updated,
-                source: "host-broker-owner-state",
-                startsDevices: false,
-            },
-        },
-    };
 }
 
 function brokerDeviceToolSupportedMethods(backend: string | null): Set<string> {
@@ -5085,11 +4810,11 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
             // The out-of-process backend owns this same cross-process lock.
             return await invokeBackendDeviceTool(ownerId, parsed, normalized);
         }
-        if (parsed.tool === "device_record_video_status") return invokeDeviceRecordingStatus(ownerId, parsed);
+        if (parsed.tool === "device_record_video_status") return brokerRecordingApplication(normalized).status(ownerId, parsed);
         try {
             return await withOwnerDeviceOperation(ownerId, match.stateKey, String(parsed.deviceId), () => parsed.tool === "device_record_video_start"
-                ? invokeDeviceRecordingStart(ownerId, parsed, normalized)
-                : invokeDeviceRecordingStop(ownerId, parsed, normalized));
+                ? brokerRecordingApplication(normalized).start(ownerId, parsed)
+                : brokerRecordingApplication(normalized).stop(ownerId, parsed));
         } catch (error) {
             if (!isDeviceOperationLockTimeout(error)) throw error;
             return deviceOperationLockFailure(ownerId, match.backend || match.stateKey, String(parsed.deviceId), error);

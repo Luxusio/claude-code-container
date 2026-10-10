@@ -5984,6 +5984,59 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    it("reports a failed artifact copy after clearing the stopped recording", async () => {
+        const cwd = "/project/broker-recording-copy-failure-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const localPath = join(ownerRoot(ownerId), "artifacts", "partial.mp4");
+        const commandRunner = vi.fn((command) => ({
+            ...command,
+            status: command.args?.includes("pull") ? 17 : 0,
+            stdout: "",
+            stderr: command.args?.includes("pull") ? "artifact transfer denied" : "",
+        }));
+        const server = createDeviceBrokerServer({
+            cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: "/fake/adb" }, commandRunner,
+        });
+        const baseUrl = await listen(server);
+        try {
+            writeBrokerDevices(ownerId, "android", [{
+                id: "pixel-copy-failed", status: "running", backend: "android-emulator", port: 5580,
+                recording: {
+                    active: true, provider: "adb-screenrecord", authority: "host-broker",
+                    processOwner: "host-broker", startedBy: "broker.device.recording.start",
+                    runtimeId: "copy-failure-runtime", pid: 24680,
+                    remotePath: "/sdcard/partial.mp4", localPath,
+                },
+            }]);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: {
+                    tool: "device_record_video_stop", backend: "android-emulator", deviceId: "pixel-copy-failed",
+                } }),
+            });
+            expect(response.status).toBe(502);
+            expect(await response.json()).toMatchObject({
+                ok: false, error: "recording-artifact-copy-failed",
+                result: {
+                    stopped: true, recording: { active: false, localPath },
+                    device: { id: "pixel-copy-failed", recording: null },
+                    executions: expect.arrayContaining([expect.objectContaining({
+                        args: ["-s", "emulator-5580", "pull", "/sdcard/partial.mp4", localPath],
+                        status: 17, stderr: "artifact transfer denied",
+                    })]),
+                },
+            });
+            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
+                args: ["-s", "emulator-5580", "shell", "rm", "-f", "/sdcard/partial.mp4"],
+            }), expect.any(Object));
+            expect(JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")).devices[0].recording).toBeNull();
+            expect(existsSync(localPath)).toBe(false);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
     it("routes guest-helper recording providers through the backend tool runner", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-recording-helper-test");
         const deviceToolRunner = vi.fn(async (_ownerId, parsed, match) => {
