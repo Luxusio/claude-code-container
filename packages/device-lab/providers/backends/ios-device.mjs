@@ -1,5 +1,6 @@
 import { createIosWirelessApplication } from "../application/ios-wireless.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
+import { createIosAppManagement } from "../application/ios-app-management.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
@@ -385,21 +386,6 @@ async function iosRealAppiumSessionOrResult(deviceId) {
     return { session };
 }
 
-async function postIosRealAppium(deviceId, path, body, provider = "appium-xcuitest") {
-    const resolved = await iosRealAppiumSessionOrResult(deviceId);
-    if (resolved.unknown || resolved.result) return resolved;
-    const { session } = resolved;
-    try {
-        const response = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
-            method: "POST",
-            body: JSON.stringify(body),
-        });
-        return { result: jsonResult({ provider, physical: true, sessionId: session.sessionId, response: response?.value ?? response }) };
-    } catch (error) {
-        return { result: textResult(false, `iOS real-device Appium request failed: ${error.message}`) };
-    }
-}
-
 function currentIosRealObservationDevice(deviceId, attachment, session) {
     const current = findIosRealDevice(deviceId);
     if (!current || current.udid !== attachment.udid
@@ -422,19 +408,13 @@ function guardIosRealObservation(deviceId, attachment, session, budget) {
 }
 
 
-function requirePathArg(path, toolName) {
-    if (!path) return textResult(false, `iOS real-device ${toolName} requires path`);
-    return null;
-}
-
-function requireBundleIdArg(bundleId, toolName) {
-    if (!bundleId) return textResult(false, `iOS real-device ${toolName} requires bundleId`);
-    return null;
-}
-
 export function listIosRealDevices() { return deviceObservation.owned(); }
 
 async function handleIosRealToolUnlocked(name, args) {
+    const outcome = await appManagement.request(name, args);
+    if (outcome?.kind === "json") return jsonResult(outcome.payload);
+    if (outcome?.kind === "text") return textResult(false, outcome.message);
+    if (outcome?.kind === "command-failure") return fail(outcome.command);
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
@@ -635,32 +615,6 @@ async function handleIosRealToolUnlocked(name, args) {
             return { content: [{ type: "image", data, mimeType: "image/png" }] };
         }
 
-        case "device_install_app":
-        case "mobile_install_app": {
-            const { deviceId, path } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const missing = requirePathArg(path, name);
-            if (missing) return missing;
-            const discovery = iosRealDiscovery();
-            if (!discovery.xcrun) return textResult(false, "iOS real-device backend missing prerequisites: xcrun");
-            const r = runWithTimeout(discovery.xcrun, ["devicectl", "device", "install", "app", "--device", device.udid, path], 300_000);
-            return r.status === 0 ? jsonResult({ installed: path, udid: device.udid, provider: "xcrun-devicectl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
-        }
-
-        case "device_launch_app":
-        case "mobile_launch_app": {
-            const { deviceId, bundleId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const missing = requireBundleIdArg(bundleId, name);
-            if (missing) return missing;
-            const discovery = iosRealDiscovery();
-            if (!discovery.xcrun) return textResult(false, "iOS real-device backend missing prerequisites: xcrun");
-            const r = run(discovery.xcrun, ["devicectl", "device", "process", "launch", "--device", device.udid, bundleId]);
-            return r.status === 0 ? jsonResult({ launched: bundleId, udid: device.udid, provider: "xcrun-devicectl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
-        }
-
         case "mobile_tap":
         case "mobile_double_tap":
         case "mobile_long_press":
@@ -748,31 +702,17 @@ async function handleIosRealToolUnlocked(name, args) {
             return jsonResult({ found: false, bundleId, activeApp: lastActiveApp, timeoutMs: budget.timeoutMs, provider: "appium-xcuitest", physical: true });
         }
 
-        case "mobile_stop_app": {
-            const { deviceId, bundleId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const missing = requireBundleIdArg(bundleId, name);
-            if (missing) return missing;
-            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: terminateApp", args: [{ bundleId }] });
-            if (posted.unknown || posted.result?.isError) return posted.result;
-            return jsonResult({ stopped: bundleId, provider: "appium-xcuitest", physical: true });
-        }
-
         case "mobile_back":
         case "mobile_forward":
         case "mobile_recents":
         case "mobile_power":
-        case "mobile_uninstall_app":
-        case "mobile_grant_permission":
-        case "mobile_revoke_permission":
         case "mobile_set_location":
         case "mobile_set_battery":
         case "mobile_set_network":
         case "mobile_toggle_airplane_mode":
         case "mobile_set_clipboard":
         case "mobile_get_clipboard":
-        case "mobile_open_url": {
+        {
             const { deviceId } = args;
             const device = findIosRealDevice(deviceId);
             if (!device) return undefined;
@@ -809,6 +749,26 @@ export async function handleIosRealTool(name, args) {
 }
 
 const deviceObservation = createDeviceObservation({ kind: "ios-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: IOS_REAL_CAPABILITIES, simulatorPrerequisites: () => iosDiscovery(), executable: name => commandPath(name), records: () => readIosRealDevices(), hostResult: xcrun => { const result = run(xcrun, ["xctrace", "list", "devices"]); return { ...result, devices: result.status === 0 ? parseXctraceDevices(result.stdout) : [] }; } });
+
+const appManagement = createIosAppManagement({
+    variant: "physical",
+    device: id => findIosRealDevice(id),
+    xcrun: () => iosRealDiscovery().xcrun,
+    execute: (xcrun, args, timeoutMs) => timeoutMs === undefined ? run(xcrun, args) : runWithTimeout(xcrun, args, timeoutMs),
+    session: async id => {
+        let session;
+        try {
+            session = await withOwnerDeviceOperation("ios-device", id, () => ensureIosRealAppiumSession(id));
+        } catch (error) {
+            if (!error || typeof error !== "object" || !("code" in error) || error.code !== "shared-mutation-lock-timeout") throw error;
+            return { kind: "refused", message: `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        if (session.unknown) return { kind: "unknown" };
+        if (session.error) return { kind: "refused", message: session.error };
+        return { kind: "ready", session };
+    },
+    request: (session, path, body) => fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, { method: "POST", body: JSON.stringify(body) }),
+});
 
 const controlTransfer = createIosControlTransfer({
     kind: "physical",

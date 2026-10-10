@@ -16,7 +16,7 @@ import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } f
 import { spawn } from "child_process";
 import { createHash } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
-import { request } from "http";
+import { createServer, request } from "http";
 import { hostname, tmpdir, uptime } from "os";
 import { delimiter, dirname, join, resolve } from "path";
 import { runInNewContext } from "vm";
@@ -5777,6 +5777,35 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             expect(orientationLog).toContain(`adb -s ${serial} shell settings put system accelerometer_rotation 0\n`);
             expect(orientationLog).toContain(`adb -s ${serial} shell settings put system user_rotation ${physical ? "3" : "1"}\n`);
 
+            const apkPath = join(project, "Test.apk");
+            writeFileSync(apkPath, "owned broker APK");
+            for (const [tool, args, expected] of [
+                ["device_install_app", { path: apkPath, replace: false }, { installed: apkPath }],
+                ["device_launch_app", { packageName: "com.example.Broker", component: "com.example.Broker/.Main" }, { launched: "com.example.Broker/.Main" }],
+                ["mobile_stop_app", { packageName: "com.example.Broker" }, physical ? { packageName: "com.example.Broker" } : { stopped: "com.example.Broker" }],
+                ["mobile_clear_app_data", { packageName: "com.example.Broker" }, physical ? { packageName: "com.example.Broker" } : { reset: { packageName: "com.example.Broker" } }],
+                ["mobile_grant_permission", { packageName: "com.example.Broker", permission: "android.permission.CAMERA" }, { permission: { packageName: "com.example.Broker", permission: "android.permission.CAMERA", action: "grant" } }],
+                ["mobile_revoke_permission", { packageName: "com.example.Broker", permission: "android.permission.CAMERA" }, { permission: { packageName: "com.example.Broker", permission: "android.permission.CAMERA", action: "revoke" } }],
+                ["mobile_open_url", { url: "https://broker.example.test" }, { openedUrl: "https://broker.example.test" }],
+                ["mobile_uninstall_app", { packageName: "com.example.Broker" }, { uninstalled: "com.example.Broker" }],
+            ] as const) {
+                const response = await invoke(tool, args);
+                expect(response.status).toBe(200);
+                const body = await response.json() as { result: { provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body.result.provider).toBe("device-lab-backend-child");
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject({ ...expected, provider: "adb", status: 0 });
+            }
+            const appLog = readFileSync(logPath, "utf8");
+            expect(appLog).toContain(`adb -s ${serial} install ${apkPath}\n`);
+            expect(appLog).not.toContain(`adb -s ${serial} install -r ${apkPath}\n`);
+            expect(appLog).toContain(`adb -s ${serial} shell am start -n com.example.Broker/.Main\n`);
+            expect(appLog).toContain(`adb -s ${serial} shell am force-stop com.example.Broker\n`);
+            expect(appLog).toContain(`adb -s ${serial} shell pm clear com.example.Broker\n`);
+            expect(appLog).toContain(`adb -s ${serial} shell pm grant com.example.Broker android.permission.CAMERA\n`);
+            expect(appLog).toContain(`adb -s ${serial} shell pm revoke com.example.Broker android.permission.CAMERA\n`);
+            expect(appLog).toContain(`adb -s ${serial} uninstall com.example.Broker\n`);
+
             const localPath = join(project, physical ? "download.txt" : "upload.txt");
             writeFileSync(localPath, physical ? "previous destination" : "broker upload bytes\n");
             const remotePath = physical ? "/sdcard/broker-download.txt" : "/sdcard/broker-upload.txt";
@@ -5801,7 +5830,7 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             if (physical) {
                 // A successor claim no longer belongs to this record, even while its expiry is live.
                 writeFileSync(leasePath, JSON.stringify({ ...lease, claimNonce: "successor-physical-nonce" }));
-                for (const [tool, args] of [["mobile_home", {}], ["mobile_set_orientation", { orientation: "portrait" }], ["device_download", { localPath, remotePath }]] as const) {
+                for (const [tool, args] of [["mobile_home", {}], ["mobile_set_orientation", { orientation: "portrait" }], ["device_install_app", { path: apkPath }], ["device_download", { localPath, remotePath }]] as const) {
                     const denied = await invoke(tool, args);
                     expect(denied.status).toBe(409);
                     expect(await denied.json()).toMatchObject({ ok: false, error: "physical-device-not-attached", deviceId, backend });
@@ -5970,6 +5999,7 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
         const originalEnvironment = environmentKeys.map(key => process.env[key]);
         let restoreRouting: (() => void) | undefined;
         let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        let appium: ReturnType<typeof createServer> | undefined;
         try {
             const project = join(context.homeDir, "project");
             const containerRoot = join(context.homeDir, "ios-app-container");
@@ -6042,11 +6072,102 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
             const sdkLog = readFileSync(context.logPath, "utf8");
             expect(sdkLog).toContain("xcrun simctl list devices -j\n");
             expect(sdkLog).toContain("xcrun simctl get_app_container CREATED-IOS-UDID com.example.Test data\n");
+
+            const appPath = join(project, "Test.app");
+            mkdirSync(appPath);
+            const invokeApp = (tool: string, args: Record<string, unknown>) => fetch(endpoint, {
+                method: "POST", headers,
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "ios-simulator", deviceId, ...args } }),
+            });
+            for (const [tool, args, expected] of [
+                ["device_install_app", { path: appPath }, { installed: appPath }],
+                ["device_launch_app", { bundleId: "com.example.Test" }, { launched: "com.example.Test" }],
+                ["mobile_stop_app", { bundleId: "com.example.Test" }, { stopped: "com.example.Test", provider: "simctl" }],
+                ["mobile_grant_permission", { bundleId: "com.example.Test", service: "camera" }, { permission: { bundleId: "com.example.Test", service: "camera", action: "grant" }, provider: "simctl" }],
+                ["mobile_revoke_permission", { bundleId: "com.example.Test", service: "camera" }, { permission: { bundleId: "com.example.Test", service: "camera", action: "revoke" }, provider: "simctl" }],
+                ["mobile_open_url", { url: "https://simulator.example.test" }, { openedUrl: "https://simulator.example.test", provider: "simctl" }],
+                ["mobile_clear_app_data", { bundleId: "com.example.Test" }, { reset: { bundleId: "com.example.Test", containerType: "data" }, containerRoot, provider: "simctl-app-container" }],
+                ["mobile_uninstall_app", { bundleId: "com.example.Test" }, { uninstalled: "com.example.Test", provider: "simctl" }],
+            ] as const) {
+                const response = await invokeApp(tool, args);
+                expect(response.status).toBe(200);
+                const body = await response.json() as { result: { provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body.result.provider).toBe("device-lab-backend-child");
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject(expected);
+            }
+            expect(existsSync(join(containerRoot, "Documents", "broker.txt"))).toBe(false);
+            const state = JSON.parse(readFileSync(join(ownerRoot(ownerId), "ios", "devices.json"), "utf8")) as { devices: Array<{ id: string; lastReset?: { bundleId: string; containerRoot: string } }> };
+            expect(state.devices.find(device => device.id === deviceId)?.lastReset).toMatchObject({ bundleId: "com.example.Test", containerRoot });
+            const appLog = readFileSync(context.logPath, "utf8");
+            expect(appLog).toContain(`xcrun simctl install CREATED-IOS-UDID ${appPath}\n`);
+            expect(appLog).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Test\n");
+            expect(appLog).toContain("xcrun simctl terminate CREATED-IOS-UDID com.example.Test\n");
+            expect(appLog).toContain("xcrun simctl privacy CREATED-IOS-UDID grant camera com.example.Test\n");
+            expect(appLog).toContain("xcrun simctl privacy CREATED-IOS-UDID revoke camera com.example.Test\n");
+            expect(appLog).toContain("xcrun simctl uninstall CREATED-IOS-UDID com.example.Test\n");
+
+            // The physical backend reuses a real verified HTTP session, never a provider stub.
+            const appiumRequests: Array<{ method: string; path: string; body: string }> = [];
+            appium = createServer((req, res) => {
+                let body = "";
+                req.setEncoding("utf8");
+                req.on("data", chunk => { body += chunk; });
+                req.on("end", () => {
+                    appiumRequests.push({ method: req.method!, path: req.url!, body });
+                    res.setHeader("content-type", "application/json");
+                    res.end(JSON.stringify({ value: req.url === "/status" ? { ready: true } : {} }));
+                });
+            });
+            await new Promise<void>(resolve => appium!.listen(0, "127.0.0.1", resolve));
+            const appiumPort = (appium.address() as import("net").AddressInfo).port;
+            const physicalId = "ios-broker-physical-app";
+            const udid = "00008110-001C195E0E91801E";
+            const leasePath = join(context.homeDir, ".ccc/devices/physical-leases/ios-device/locks", `${udid}.json`);
+            mkdirSync(dirname(leasePath), { recursive: true });
+            writeFileSync(leasePath, JSON.stringify({
+                backend: "ios-device", hardwareId: udid, ownerId, deviceId: physicalId,
+                claimId: "ios-app-claim", claimNonce: "ios-app-nonce", expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            }));
+            writeBrokerDevices(ownerId, "ios-device", [{
+                id: physicalId, backend: "ios-device", status: "attached", udid,
+                leaseClaimId: "ios-app-claim", leaseClaimNonce: "ios-app-nonce", appiumPort,
+                appium: { serverUrl: `http://127.0.0.1:${appiumPort}`, sessionId: "OWNED-IOS-APP", physical: true, processOwner: "external", startedBy: "existing-server" },
+            }]);
+            for (const [tool, args, expected] of [
+                ["device_install_app", { path: appPath }, { installed: appPath, udid, provider: "xcrun-devicectl" }],
+                ["device_launch_app", { bundleId: "com.example.Test" }, { launched: "com.example.Test", udid, provider: "xcrun-devicectl" }],
+                ["mobile_stop_app", { bundleId: "com.example.Test" }, { stopped: "com.example.Test", provider: "appium-xcuitest", physical: true }],
+            ] as const) {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                    method: "broker.device.tool.invoke", params: { tool, backend: "ios-device", deviceId: physicalId, ...args },
+                }) });
+                expect(response.status).toBe(200);
+                const body = await response.json() as { result: { provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body.result.provider).toBe("device-lab-backend-child");
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject(expected);
+            }
+            expect(readFileSync(context.logPath, "utf8")).toContain(`xcrun devicectl device install app --device ${udid} ${appPath}\n`);
+            expect(readFileSync(context.logPath, "utf8")).toContain(`xcrun devicectl device process launch --device ${udid} com.example.Test\n`);
+            expect(appiumRequests).toContainEqual({ method: "GET", path: "/status", body: "" });
+            expect(appiumRequests).toContainEqual({ method: "GET", path: "/session/OWNED-IOS-APP", body: "" });
+            expect(appiumRequests).toContainEqual({ method: "POST", path: "/session/OWNED-IOS-APP/execute/sync", body: JSON.stringify({ script: "mobile: terminateApp", args: [{ bundleId: "com.example.Test" }] }) });
         } finally {
             try {
                 // Completed RPCs settle their backend children before the server and fixture close.
-                if (server) await close(server);
-                await cleanupFakeIosMcpContext(context);
+                try {
+                    if (server) await close(server);
+                } finally {
+                    try {
+                        if (appium) {
+                            appium.closeAllConnections();
+                            await new Promise<void>((resolve, reject) => appium!.close(error => error ? reject(error) : resolve()));
+                        }
+                    } finally {
+                        await cleanupFakeIosMcpContext(context);
+                    }
+                }
             } finally {
                 restoreRouting?.();
                 environmentKeys.forEach((key, index) => {

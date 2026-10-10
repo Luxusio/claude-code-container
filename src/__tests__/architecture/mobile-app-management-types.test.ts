@@ -1,0 +1,59 @@
+import { describe, expectTypeOf, it } from "vitest";
+import { createAndroidAppManagement } from "../../../packages/device-lab/providers/application/android-app-management.mjs";
+import { createIosAppManagement } from "../../../packages/device-lab/providers/application/ios-app-management.mjs";
+import { handleAndroidTool } from "../../../packages/device-lab/providers/backends/android.mjs";
+import { handleAndroidRealTool } from "../../../packages/device-lab/providers/backends/android-device.mjs";
+import { handleIosTool } from "../../../packages/device-lab/providers/backends/ios-simulator.mjs";
+import { handleIosRealTool } from "../../../packages/device-lab/providers/backends/ios-device.mjs";
+import type { AndroidAppManagementPorts, AndroidAppOutcome, AndroidAppTarget, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosSimulatorAppDevice, IosPhysicalAppDevice, IosVerifiedAppSession, IosAppOutcome, MobileAppArguments } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
+
+// Import the actual native compositions as well as the actual factories into the strict graph.
+void [handleAndroidTool, handleAndroidRealTool, handleIosTool, handleIosRealTool];
+
+function consumedCapabilities(android: AndroidAppManagementPorts, simulator: IosSimulatorAppManagementPorts, physical: IosPhysicalAppManagementPorts): void {
+    const androidResult: AndroidAppOutcome | undefined = createAndroidAppManagement(android).request("device_install_app", { deviceId: "owned", path: "/Test.apk", replace: false });
+    const simulatorResult: Promise<IosAppOutcome<IosSimulatorAppDevice> | undefined> = createIosAppManagement(simulator).request("mobile_clear_app_data", { deviceId: "owned", bundleId: "com.example.App" });
+    const physicalResult: Promise<IosAppOutcome<IosPhysicalAppDevice> | undefined> = createIosAppManagement<IosPhysicalAppDevice, IosVerifiedAppSession>(physical).request("mobile_stop_app", { deviceId: "owned", bundleId: "com.example.App" });
+    const { target, ...withoutTarget } = android;
+    // @ts-expect-error Every ADB effect requires current native target and lease admission.
+    createAndroidAppManagement(withoutTarget);
+    const { execute, ...withoutExecution } = android;
+    // @ts-expect-error Target-qualified bounded native command execution is required.
+    createAndroidAppManagement(withoutExecution);
+    // @ts-expect-error ADB execution is synchronous, not a deferred receipt.
+    createAndroidAppManagement({ ...android, execute: async () => ({ status: 0 }) });
+    // @ts-expect-error Target admission cannot defer lease/refusal selection.
+    createAndroidAppManagement({ ...android, target: async () => ({ kind: "unknown" as const }) });
+    const { containAppContainer, ...withoutContainment } = simulator;
+    // @ts-expect-error App-container clearing requires native containment authority.
+    createIosAppManagement(withoutContainment);
+    const { publishAppReset, ...withoutPublication } = simulator;
+    // @ts-expect-error Successful clear requires owner-state publication authority.
+    createIosAppManagement(withoutPublication);
+    // @ts-expect-error Native clearing settles synchronously before publication.
+    createIosAppManagement({ ...simulator, clearAppContainer: async () => undefined });
+    // @ts-expect-error Owner-state publication cannot remain pending on success.
+    createIosAppManagement({ ...simulator, publishAppReset: async () => undefined });
+    // @ts-expect-error simctl command execution cannot defer its receipt.
+    createIosAppManagement({ ...simulator, execute: async () => ({ status: 0 }) });
+    const { session, ...withoutSession } = physical;
+    // @ts-expect-error Physical stop requires actual verified session authority.
+    createIosAppManagement(withoutSession);
+    const { request, ...withoutRequest } = physical;
+    // @ts-expect-error Physical stop requires a bounded native Appium request.
+    createIosAppManagement(withoutRequest);
+    // @ts-expect-error Physical terminate cannot use a synchronous unverified session observation.
+    createIosAppManagement({ ...physical, session: () => ({ kind: "unknown" as const }) });
+    void [androidResult, simulatorResult, physicalResult, target, execute, containAppContainer, publishAppReset, session, request];
+}
+void consumedCapabilities;
+
+describe("mobile app management consumed contracts", () => {
+    it("exposes synchronous Android and asynchronous iOS app outcomes", () => {
+        type Android = ReturnType<typeof createAndroidAppManagement<AndroidAppTarget>>;
+        type Ios = ReturnType<typeof createIosAppManagement<IosSimulatorAppDevice, IosVerifiedAppSession>>;
+        expectTypeOf<Parameters<Android["request"]>>().toEqualTypeOf<[string, MobileAppArguments]>();
+        expectTypeOf<ReturnType<Android["request"]>>().toEqualTypeOf<AndroidAppOutcome | undefined>();
+        expectTypeOf<ReturnType<Ios["request"]>>().toEqualTypeOf<Promise<IosAppOutcome<IosSimulatorAppDevice> | undefined>>();
+    });
+});

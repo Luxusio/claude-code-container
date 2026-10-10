@@ -1,3 +1,4 @@
+import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
@@ -400,17 +401,11 @@ function androidHelperTimeoutMs(value, fallback = ANDROID_TRANSFER_TIMEOUT_MS) {
     return Math.min(ANDROID_HELPER_MAX_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
 }
 
-function adbLaunchSemanticFailure(result) {
-    const output = `${result.stdout || ""}\n${result.stderr || ""}`;
-    return /(?:no activities found to run|monkey aborted|error:\s*(?:activity|unable to resolve intent)|activity class .* does not exist)/i.test(output);
-}
-
 function runAdbDeviceCommand(device, adb, args, options = {}) {
     const r = options.timeoutMs
         ? runWithTimeout(adb, adbArgsForDevice(device, args), androidHelperTimeoutMs(options.timeoutMs))
         : run(adb, adbArgsForDevice(device, args));
-    const semanticFailure = options.validateLaunch === true && adbLaunchSemanticFailure(r);
-    return r.status === 0 && !semanticFailure
+    return r.status === 0
         ? { ok: true, stdout: r.stdout, stderr: r.stderr, status: r.status }
         : { ok: false, result: r };
 }
@@ -776,6 +771,32 @@ const androidControlTransferPorts = {
 };
 const androidControlTransfer = createAndroidControlTransfer(androidControlTransferPorts);
 
+/** @type {import('../ports/mobile-app-management.mjs').AndroidAppManagementPorts} */
+const androidAppManagementPorts = {
+    variant: "emulator",
+    target(deviceId) {
+        const target = ensureAdbDevice(deviceId);
+        if (target.unknown) return { kind: "unknown" };
+        if (target.error) return { kind: "refused", message: target.error };
+        return { kind: "ready", target };
+    },
+    execute(target, args, helperTimeoutMs) {
+        return helperTimeoutMs
+            ? runWithTimeout(target.adb, adbArgsForDevice(target.device, args), androidHelperTimeoutMs(helperTimeoutMs))
+            : run(target.adb, adbArgsForDevice(target.device, args));
+    },
+};
+const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
+
+/** @param {import('../ports/mobile-app-management.mjs').AndroidAppOutcome | undefined} outcome */
+function presentAndroidAppOutcome(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "text") return textResult(false, outcome.message);
+    return fail(outcome.command);
+}
+
+
 /** @param {import('../ports/android-control-transfer.mjs').AndroidControlOutcome | undefined} outcome */
 function presentAndroidControlOutcome(outcome) {
     if (!outcome) return undefined;
@@ -977,35 +998,18 @@ async function handleAndroidToolUnlocked(name, args) {
         case "device_download":
             return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
 
-        case "device_install_app": {
-            const { deviceId, path, replace = true, helperTimeoutMs } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const installArgs = replace ? ["install", "-r", path] : ["install", path];
-            return adbJsonResult(target.device, target.adb, installArgs, { installed: path, provider: "adb" }, { timeoutMs: helperTimeoutMs });
-        }
-
-        case "device_launch_app": {
-            const { deviceId, packageName, component } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (component) {
-                return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-n", component], { launched: component, provider: "adb" }, { validateLaunch: true });
-            }
-            if (!packageName) return textResult(false, "Android app launch requires packageName or component");
-            return adbJsonResult(target.device, target.adb, ["shell", "monkey", "-p", packageName, "1"], { launched: packageName, provider: "adb" }, { validateLaunch: true });
-        }
-
-        case "device_reset": {
-            const { deviceId, packageName } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (!packageName) return textResult(false, "Android reset requires packageName to clear app data");
-            return adbJsonResult(target.device, target.adb, ["shell", "pm", "clear", packageName], { reset: { packageName }, provider: "adb" });
-        }
+        case "device_install_app":
+        case "device_launch_app":
+        case "device_reset":
+        case "mobile_open_url":
+        case "mobile_install_app":
+        case "mobile_launch_app":
+        case "mobile_uninstall_app":
+        case "mobile_stop_app":
+        case "mobile_clear_app_data":
+        case "mobile_grant_permission":
+        case "mobile_revoke_permission":
+            return presentAndroidAppOutcome(androidAppManagement.request(name, args));
 
         case "mobile_session_status": {
             const { deviceId } = args;
@@ -1058,58 +1062,6 @@ async function handleAndroidToolUnlocked(name, args) {
         case "mobile_rotate_left":
         case "mobile_rotate_right":
             return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
-
-        case "mobile_open_url": {
-            const { deviceId, url } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], { openedUrl: url, provider: "adb" });
-        }
-
-        case "mobile_install_app": {
-            const { deviceId, path, helperTimeoutMs } = args;
-            return handleAndroidTool("device_install_app", { deviceId, path, helperTimeoutMs });
-        }
-
-        case "mobile_launch_app": {
-            const { deviceId, packageName, component } = args;
-            return handleAndroidTool("device_launch_app", { deviceId, packageName, component });
-        }
-
-        case "mobile_uninstall_app": {
-            const { deviceId, packageName } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (!packageName) return textResult(false, "Android app uninstall requires packageName");
-            return adbJsonResult(target.device, target.adb, ["uninstall", packageName], { uninstalled: packageName, provider: "adb" });
-        }
-
-        case "mobile_stop_app": {
-            const { deviceId, packageName } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (!packageName) return textResult(false, "Android app stop requires packageName");
-            return adbJsonResult(target.device, target.adb, ["shell", "am", "force-stop", packageName], { stopped: packageName, provider: "adb" });
-        }
-
-        case "mobile_clear_app_data": {
-            const { deviceId, packageName } = args;
-            return handleAndroidTool("device_reset", { deviceId, packageName });
-        }
-
-        case "mobile_grant_permission":
-        case "mobile_revoke_permission": {
-            const { deviceId, packageName, permission } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (!packageName || !permission) return textResult(false, `Android ${name} requires packageName and permission`);
-            const action = name === "mobile_grant_permission" ? "grant" : "revoke";
-            return adbJsonResult(target.device, target.adb, ["shell", "pm", action, packageName, permission], { permission: { packageName, permission, action }, provider: "adb" });
-        }
 
         case "mobile_set_location": {
             const { deviceId, latitude, longitude, altitude } = args;

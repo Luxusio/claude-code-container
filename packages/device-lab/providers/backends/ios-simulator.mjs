@@ -1,5 +1,6 @@
 import { iosControlOrientation, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
+import { createIosAppManagement } from "../application/ios-app-management.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
@@ -706,6 +707,13 @@ const iosSimulatorLifecycle = createIosSimulatorLifecycle({
 });
 
 async function handleIosToolUnlocked(name, args) {
+    if (name !== "device_reset" || !args.eraseSimulator) {
+        const outcome = await appManagement.request(name, args);
+        if (outcome?.kind === "json") return jsonResult(outcome.payload);
+        if (outcome?.kind === "text") return textResult(false, outcome.message);
+        if (outcome?.kind === "command-failure") return fail(outcome.command);
+        if (name === "device_reset") return undefined;
+    }
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
@@ -940,7 +948,7 @@ async function handleIosToolUnlocked(name, args) {
             return controlTransfer.handle(name, args);
 
         case "device_reset": {
-            const { deviceId, bundleId, containerType, eraseSimulator = false } = args;
+            const { deviceId, eraseSimulator = false } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
 
@@ -965,22 +973,9 @@ async function handleIosToolUnlocked(name, args) {
                 return jsonResult({ reset: { eraseSimulator: true }, device: updated, stdout: r.stdout, stderr: r.stderr, provider: "simctl" });
             }
 
-            if (!bundleId) return textResult(false, "iOS Simulator reset requires bundleId or eraseSimulator=true");
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const type = iosContainerType(containerType);
-            const container = resolveIosAppContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
-            if (container.error) return fail(container.error);
-            const containment = ensureContainerPathForRead(container.containerRoot, container.containerRoot);
-            if (containment.error) return textResult(false, containment.error);
-            clearDirectoryContents(container.containerRoot);
-            const updated = updateIosDevice(deviceId, (item) => ({
-                ...item,
-                lastReset: { bundleId, containerType: type, containerRoot: container.containerRoot, resetAt: now() },
-                updatedAt: now(),
-            }));
-            return jsonResult({ reset: { bundleId, containerType: type }, containerRoot: container.containerRoot, device: updated, provider: "simctl-app-container" });
+            return undefined;
         }
+
 
         case "mobile_screenshot": {
             const { deviceId } = args;
@@ -1009,107 +1004,6 @@ async function handleIosToolUnlocked(name, args) {
                 sessionId: resolved.session.sessionId,
                 serverUrl: resolved.session.serverUrl,
             });
-        }
-
-        case "mobile_open_url": {
-            const { deviceId, url } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "openurl", ownedTarget.target, url]);
-            return r.status === 0 ? jsonResult({ openedUrl: url, provider: "simctl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
-        }
-
-        case "device_install_app": {
-            const { deviceId, path } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = runWithTimeout(discovery.xcrun, ["simctl", "install", ownedTarget.target, path], 300_000);
-            return r.status === 0 ? jsonResult({ installed: path, stdout: r.stdout, stderr: r.stderr }) : fail(r);
-        }
-
-        case "mobile_install_app": {
-            const { deviceId, path } = args;
-            return handleIosTool("device_install_app", { deviceId, path });
-        }
-
-        case "device_launch_app": {
-            const { deviceId, bundleId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "launch", ownedTarget.target, bundleId]);
-            return r.status === 0 ? jsonResult({ launched: bundleId, stdout: r.stdout, stderr: r.stderr }) : fail(r);
-        }
-
-        case "mobile_launch_app": {
-            const { deviceId, bundleId } = args;
-            return handleIosTool("device_launch_app", { deviceId, bundleId });
-        }
-
-        case "mobile_uninstall_app": {
-            const { deviceId, bundleId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!bundleId) return textResult(false, "iOS Simulator mobile_uninstall_app requires bundleId");
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "uninstall", ownedTarget.target, bundleId]);
-            return r.status === 0 ? jsonResult({ uninstalled: bundleId, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
-        }
-
-        case "mobile_stop_app": {
-            const { deviceId, bundleId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!bundleId) return textResult(false, "iOS Simulator mobile_stop_app requires bundleId");
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "terminate", ownedTarget.target, bundleId]);
-            return r.status === 0 ? jsonResult({ stopped: bundleId, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
-        }
-
-        case "mobile_clear_app_data": {
-            const { deviceId, bundleId, containerType } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!bundleId) return textResult(false, "iOS Simulator mobile_clear_app_data requires bundleId");
-            return handleIosTool("device_reset", { deviceId, bundleId, containerType });
-        }
-
-        case "mobile_grant_permission":
-        case "mobile_revoke_permission": {
-            const { deviceId, bundleId, service } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!bundleId || !service) return textResult(false, `iOS Simulator ${name} requires bundleId and service`);
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const action = name === "mobile_grant_permission" ? "grant" : "revoke";
-            const r = run(discovery.xcrun, ["simctl", "privacy", ownedTarget.target, action, service, bundleId]);
-            return r.status === 0 ? jsonResult({ permission: { bundleId, service, action }, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
         }
 
         case "mobile_set_location": {
@@ -1334,6 +1228,33 @@ function controlTransferResult(result) {
     }
     throw new Error("Invalid native iOS transfer result");
 }
+
+const appManagement = createIosAppManagement({
+    variant: "simulator",
+    device: id => findIosDevice(id),
+    discovery: () => {
+        const facts = iosDiscovery();
+        return facts.available && facts.xcrun
+            ? { available: true, xcrun: facts.xcrun, missing: facts.missing }
+            : { available: false, xcrun: facts.xcrun, missing: facts.missing };
+    },
+    ownedTarget: (xcrun, device) => {
+        const observed = resolveOwnedSimulatorTarget(xcrun, device);
+        return observed.error ? { ok: false, message: observed.error } : { ok: true, target: observed.target };
+    },
+    execute: (xcrun, args, timeoutMs) => timeoutMs === undefined ? run(xcrun, args) : runWithTimeout(xcrun, args, timeoutMs),
+    resolveAppContainer: (xcrun, target, bundleId, type) => {
+        const observed = resolveIosAppContainer(xcrun, target, bundleId, type);
+        return observed.error ? { ok: false, command: observed.error } : { ok: true, containerRoot: observed.containerRoot };
+    },
+    containAppContainer: root => {
+        const observed = ensureContainerPathForRead(root, root);
+        return observed.error ? { ok: false, message: observed.error } : { ok: true };
+    },
+    clearAppContainer: root => { clearDirectoryContents(root); return undefined; },
+    publishAppReset: (id, reset, updatedAt) => updateIosDevice(id, item => ({ ...item, lastReset: reset, updatedAt })),
+    clock: () => now(),
+});
 
 const controlTransfer = createIosControlTransfer({
     kind: "simulator",
