@@ -6943,10 +6943,6 @@ function commandParamError(parsed: CommandParamError) {
     };
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function javaHomeForAppium(normalized: NormalizedBrokerOptions) {
     if (process.env.JAVA_HOME) return process.env.JAVA_HOME;
     const javaName = normalized.platform === "win32" ? "java.exe" : "java";
