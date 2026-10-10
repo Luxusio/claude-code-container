@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **158/218 (72.5%)**.
-Integrated source: **158/218 (72.5%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **56**.
+Implemented including unmerged candidates: **172/218 (78.9%)**.
+Integrated source: **172/218 (78.9%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **42**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -53,6 +53,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | hyper\-v\-snapshot\-workflows | 5 | 0 | `5122a56a` | Actual independent composed and affected Code, Security and Guide PASS; independent current binding\-accounting confirms complete mobile9 and Windows/Linux snapshots5\. Original genuine build stages complete with unchanged early\-stage carries and two narrowly corrected fixture type aliases\. Fresh authenticated Android2/iOS1/Linuxsnapshot1 witnesses, 16 affected files416 cases0skip, 22 qualified core cases/strict native constructor\-body scopes, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Source locally FF\-delivered at5122 preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS diagnostics are not accepted; native host certification and formal hook attestation remain unverified\. | accepted @ 5122a56a |
 | device\-transfers\-physical\-integration | 4 | 0 | `624c26f3` | Actual independent source/composed/affected Code, Security and Guide PASS; current literal all\-binding accounting confirms four whole and twelve partial operations\. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS\. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed\. Actual normal local FF delivery624c preserves all97 user paths and diff bytes\. Original failure logs retained\. Unrelated legacy native\-JS diagnostics, native\-host certification and formal hook closure are unverified\. These twelve bindings were partial at624c; their remaining supported bindings close in device\-interaction\-integration atb4b8 and count once there\. | accepted @ 624c26f3 |
 | device\-interaction\-integration | 13 | 0 | `b4b8e748` | Actual independent composed DEEP Code/Security/Docs PASS after both hunters; genuine complete current production build68\.656s, eighteen affected WHOLE files403cases0skip85\.296s, lint, seven semantic package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS\. Current strict/native body and consumed graph checks qualified unchanged inputs\. All\-binding audit includes actual Appium pointer/reverse\-orientation recipes, default authenticated Android emulator/physical orientation and Apple USB/WiFi/unknown UDID, Windows/Linux Hyper\-V controls/transfers\. Source29/emitted1207/fixeddeps7551/18links/2locks authenticated; generated Vitest cache only delta\. Actual normal local FF delivery b4b8 preserves all97 user paths and diff bytes\. No whole legacy\-native\-JS acceptance, native\-host certification or formal hook close claimed\. | accepted @ b4b8e748 |
+| qemu\-guest\-workflows | 9 | 0 | `1ffe8d8c` | Actual independent source/composed/affected Code, Security and Guide PASS\. Current strict implementation, consumed negative contracts, core and scoped native constructors PASS; unrelated legacy native\-JS diagnostics remain unaccepted\. Joint genuine production build73\.851s plus sixteen required whole files360 effective cases, lint, seven semantic package cases, genuine npm/Unix exports/assets/MCP startup and compiled CLI PASS\. Actual public QEMU stdio snapshot journey covers all four actions; session/readiness/agent/sync/export retain their native guards\. Host\-broker QEMU snapshots remain explicitly unsupported\. Normal local FF delivery592701d0 preserves all97 user paths and diff bytes, with28 source pins/1216 artifacts/fixed dependencies/18 links authenticated; only generated Vitest cache changed\. Formal hook closure, native hosts and inventory certification remain unverified\. | accepted @ 592701d0 |
+| macos\-image\-snapshots | 5 | 0 | `79fc8bf2` | Actual independent source/composed/affected Code, Security and Guide PASS\. Joint current QA and normal592701d0 local delivery qualify the same authenticated production build and sixteen whole files360 effective cases, lint/package7/npm/Unix/CLI checks as QEMU\. Genuine Mac stdio imagecreate/ownedclone/snapshotcreate/confirmedrestore/delete PASS\. All five advertised\-but\-blocked broker image/snapshot bindings return their exact authenticated501 refusals with unchanged owner/resources and no native child effects; this preserves the current contract discrepancy and does not implement positive broker support\. The public state\-write fixture now asserts its precise MCP error while retaining clone/delete compensation and empty state checks\. Existing VM\-create credit is not counted again\. Scoped native constructors and current contracts PASS; native Tart/macOS, unrelated legacy diagnostics, formal hook closure and inventory certification remain unverified\. | accepted @ 592701d0 |
 
 ## 0.2 Active next plans
 
@@ -178,7 +180,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **integrated**; broker\-observations @ 3f020650.
 
-## 9. M08 — Provider capabilities (39/76 implemented)
+## 9. M08 — Provider capabilities (53/76 implemented)
 
 - [x] `OP-android-emulator-create` — android\-emulator create. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-emulator-start` — android\-emulator start. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
@@ -196,20 +198,20 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-qemu-start` — container\-qemu start. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-container-qemu-stop` — container\-qemu stop. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-container-qemu-delete` — container\-qemu delete. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
-- [ ] `OP-qemu-session-open` — Qemu session open. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-workspace-sync` — Qemu workspace sync. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-artifact-export` — Qemu artifact export. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-readiness` — Qemu readiness. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-guest-agent` — Qemu guest agent. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-macos-base-image-create` — Base image create macOS Tart VM. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-base-image-clone` — Base image clone macOS Tart VM. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-snapshot-create` — Snapshot create macOS Tart VM. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-snapshot-restore` — Snapshot restore macOS Tart VM. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-snapshot-delete` — Snapshot delete macOS Tart VM. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-qemu-snapshot-list` — List owned QEMU snapshot. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-snapshot-create` — Create owned QEMU snapshot. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-snapshot-restore` — Restore owned QEMU snapshot. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-qemu-snapshot-delete` — Delete owned QEMU snapshot. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
+- [x] `OP-qemu-session-open` — Qemu session open. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-workspace-sync` — Qemu workspace sync. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-artifact-export` — Qemu artifact export. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-readiness` — Qemu readiness. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-guest-agent` — Qemu guest agent. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-macos-base-image-create` — Base image create macOS Tart VM. **integrated**; macos\-image\-snapshots @ 79fc8bf2.
+- [x] `OP-macos-base-image-clone` — Base image clone macOS Tart VM. **integrated**; macos\-image\-snapshots @ 79fc8bf2.
+- [x] `OP-macos-snapshot-create` — Snapshot create macOS Tart VM. **integrated**; macos\-image\-snapshots @ 79fc8bf2.
+- [x] `OP-macos-snapshot-restore` — Snapshot restore macOS Tart VM. **integrated**; macos\-image\-snapshots @ 79fc8bf2.
+- [x] `OP-macos-snapshot-delete` — Snapshot delete macOS Tart VM. **integrated**; macos\-image\-snapshots @ 79fc8bf2.
+- [x] `OP-qemu-snapshot-list` — List owned QEMU snapshot. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-snapshot-create` — Create owned QEMU snapshot. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-snapshot-restore` — Restore owned QEMU snapshot. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
+- [x] `OP-qemu-snapshot-delete` — Delete owned QEMU snapshot. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
 - [ ] `OP-device-airplane-mode` — Toggle Android emulator airplane mode. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-app-clear-data` — Clear application data. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [ ] `OP-device-app-install` — Install application on device. **TODO**; device\-lab\-mcp/src/server\.mjs.

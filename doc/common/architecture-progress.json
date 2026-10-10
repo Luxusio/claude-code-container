@@ -572,6 +572,48 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "b4b8e748776c1c53eca5fbe77b6e42ca363812d9"
+    },
+    {
+      "id": "qemu-guest-workflows",
+      "branch": "refactor/architecture-qemu-guest-workflows-20261011",
+      "commit": "1ffe8d8cb7c3269b1fcf34af9a4e833408e54cb3",
+      "taskId": "TASK__architecture-qemu-guest-workflows",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-qemu-session-open",
+        "OP-qemu-readiness",
+        "OP-qemu-guest-agent",
+        "OP-qemu-workspace-sync",
+        "OP-qemu-artifact-export",
+        "OP-qemu-snapshot-list",
+        "OP-qemu-snapshot-create",
+        "OP-qemu-snapshot-restore",
+        "OP-qemu-snapshot-delete"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS. Current strict implementation, consumed negative contracts, core and scoped native constructors PASS; unrelated legacy native-JS diagnostics remain unaccepted. Joint genuine production build73.851s plus sixteen required whole files360 effective cases, lint, seven semantic package cases, genuine npm/Unix exports/assets/MCP startup and compiled CLI PASS. Actual public QEMU stdio snapshot journey covers all four actions; session/readiness/agent/sync/export retain their native guards. Host-broker QEMU snapshots remain explicitly unsupported. Normal local FF delivery592701d0 preserves all97 user paths and diff bytes, with28 source pins/1216 artifacts/fixed dependencies/18 links authenticated; only generated Vitest cache changed. Formal hook closure, native hosts and inventory certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "592701d03da86a0cfb1bfdb4aa1ffbf05a08b6bf"
+    },
+    {
+      "id": "macos-image-snapshots",
+      "branch": "refactor/architecture-macos-image-snapshots-20261011",
+      "commit": "79fc8bf2d0f2892683388d0c52838b32bf59b098",
+      "taskId": "TASK__architecture-macos-image-snapshots",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-macos-base-image-create",
+        "OP-macos-base-image-clone",
+        "OP-macos-snapshot-create",
+        "OP-macos-snapshot-restore",
+        "OP-macos-snapshot-delete"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS. Joint current QA and normal592701d0 local delivery qualify the same authenticated production build and sixteen whole files360 effective cases, lint/package7/npm/Unix/CLI checks as QEMU. Genuine Mac stdio imagecreate/ownedclone/snapshotcreate/confirmedrestore/delete PASS. All five advertised-but-blocked broker image/snapshot bindings return their exact authenticated501 refusals with unchanged owner/resources and no native child effects; this preserves the current contract discrepancy and does not implement positive broker support. The public state-write fixture now asserts its precise MCP error while retaining clone/delete compensation and empty state checks. Existing VM-create credit is not counted again. Scoped native constructors and current contracts PASS; native Tart/macOS, unrelated legacy diagnostics, formal hook closure and inventory certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "592701d03da86a0cfb1bfdb4aa1ffbf05a08b6bf"
     }
   ],
   "planningLanes": [
