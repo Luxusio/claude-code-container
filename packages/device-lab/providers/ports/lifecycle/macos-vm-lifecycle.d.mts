@@ -38,7 +38,7 @@ export interface MacosVmDevice {
 export interface MacosVmCommand { command: string; args: string[] }
 export interface MacosVmCommandResult {
     status: number | null; stdout: string; stderr: string; signal?: string | null;
-    error?: {message?: string; code?: string; [key: string]: unknown} | null; [key: string]: unknown;
+    error?: {message?: string; code?: string} | null;
 }
 export interface MacosVmProviderPlan {
     available: boolean; missing: string[]; selectedProvider: string | null;
@@ -60,7 +60,7 @@ export interface MacosVmProvision {
     ok: boolean; error?: string; command?: MacosVmCommandResult; provisioning?: unknown;
     [key: string]: unknown;
 }
-export interface MacosVmSignal { signaled: boolean; exited?: boolean; reason?: string; [key: string]: unknown }
+export interface MacosVmSignal { signaled: boolean; exited?: boolean; reason?: string }
 export interface MacosVmRollback { ok: boolean; attempted?: boolean; [key: string]: unknown }
 
 /** Required native leaves; no callback may perform an entire lifecycle. */
