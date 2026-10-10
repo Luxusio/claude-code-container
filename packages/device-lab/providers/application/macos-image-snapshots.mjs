@@ -5,16 +5,18 @@ import { macosImageProviderRefusal, macosCloneSourceRefusal, selectMacosSnapshot
  * @param {import("./lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycle<Result>} lifecycle */
 export function createMacosImageSnapshots(ports, lifecycle) {
     /** @param {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice} device @param {string} name
-     * @returns {{plan:import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmProviderPlan & {selectedProvider:"tart"},error?:undefined}|{error:Result,plan?:undefined}} */
+     * @returns {{ok:true,plan:import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmProviderPlan & {selectedProvider:"tart"}}|{ok:false,error:Result}} */
     function requireTart(device, name) {
         const plan = ports.providerPlan(device);
         const refusal = macosImageProviderRefusal(plan, device, name);
         if (refusal) {
             return {
+                ok: false,
                 error: ports.textResult(false, refusal)
             };
         }
         return {
+            ok: true,
             plan: {
                 ...plan, selectedProvider: "tart"
             }
@@ -83,7 +85,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             }
         });
         const tart = requireTart(device, name);
-        if (tart.error) {
+        if (!tart.ok) {
             return tart.error;
         }
         /** @type {ReturnType<typeof lifecycle.claimLifecycle>|null} */
@@ -98,7 +100,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
         }
         if (sourceDevice && sourceClaim && sourceDevice.status !== "stopped" && force) {
             const sourcePlan = requireTart(sourceDevice, name);
-            if (sourcePlan.error) {
+            if (!sourcePlan.ok) {
                 lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
                 return sourcePlan.error;
             }
@@ -215,7 +217,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             return ports.textResult(false, `Snapshot already exists for ${deviceId}: ${snapshotName}`);
         }
         const tart = requireTart(device, name);
-        if (tart.error) {
+        if (!tart.ok) {
             return tart.error;
         }
         if (force && device.status !== "stopped" && !tart.plan.stopCommand) {
@@ -299,7 +301,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             return ports.textResult(false, `Refusing to restore ${deviceId} while status is ${device.status}; stop it first or pass force=true.`);
         }
         const tart = requireTart(device, name);
-        if (tart.error) {
+        if (!tart.ok) {
             return tart.error;
         }
         if (force && device.status !== "stopped" && !tart.plan.stopCommand) {
@@ -503,7 +505,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             return ports.textResult(false, `Unknown snapshot for ${deviceId}: ${snapshotName || snapshotId || "<missing>"}`);
         }
         const tart = requireTart(device, name);
-        if (tart.error) {
+        if (!tart.ok) {
             return tart.error;
         }
         const claim = lifecycle.claimLifecycle(deviceId, device, "snapshot-delete");

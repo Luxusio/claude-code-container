@@ -7,7 +7,7 @@ export interface MacosVmLifecycle<Result> {
     delete(input: MacosVmLifecycleInput): Promise<Result | undefined>;
     /** Shared helpers preserve existing snapshot/base-image callers without granting them whole-operation credit. */
     recoverStale(deviceId: string): {device?: MacosVmDevice | null; error?: Result};
-    conflict(deviceId: string | undefined, operation: string, transition: {found: boolean}, rollback?: MacosVmRollback | null): Result;
+    conflict(deviceId: string | undefined, operation: string, transition: {found: boolean; matched?: boolean}, rollback?: MacosVmRollback | null): Result;
     replacement(device: MacosVmDevice, lifecycle: MacosVmLifecycleClaim | null, updates?: Partial<MacosVmDevice>): MacosVmDevice;
     claimLifecycle(deviceId: string | undefined, device: MacosVmDevice, operation: string, updates?: Partial<MacosVmDevice>): {lifecycle: MacosVmLifecycleClaim; claimed: MacosVmDevice | null; transition: MacosVmTransition};
     currentLifecycleDevice(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim): MacosVmDevice | null;
