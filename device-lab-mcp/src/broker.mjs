@@ -1,3 +1,4 @@
+import { createBrokerSupervision } from "./application/broker-supervision.mjs";
 import { fileURLToPath } from "url";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
 import { AsyncLocalStorage } from "async_hooks";
@@ -9,7 +10,8 @@ import { homedir } from "os";
 import { delimiter, dirname, join, resolve } from "path";
 import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "@ccc/device-lab/providers/context.mjs";
 import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
-import { writeJsonFileAtomically } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
+import { isDeepStrictEqual } from "node:util";
+import { withSharedMutationLock, writeJsonFileAtomically } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 import { readDeviceLabStateFile } from "@ccc/device-lab/providers/state/state-file.mjs";
 import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken } from "@ccc/device-lab/providers/state/windows-system-powershell.mjs";
 
@@ -70,6 +72,48 @@ const MAX_LAUNCH_TIMEOUT_MS = 15000;
 const ownedBrokerChildren = new Map();
 let cleanupRegistered = false;
 let exitingFromSignal = false;
+
+const brokerSupervision = createBrokerSupervision({
+    brokerName: BROKER_NAME, protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
+    ownerId, normalizeLaunchOptions, probeBrokerHealth, readBrokerRuntime, probeCccHostBrokerProtocol,
+    resolveBrokerOwner, reusableBrokerProcessVerification, persistVerifiedBrokerRuntime, withSetupEvidence,
+    pidAlive, terminateVerifiedBrokerRuntime, removeBrokerRuntime, waitForBrokerHealth,
+    waitForBrokerOwnerResolve, executableExists, createBrokerLogFile, readBrokerProcessStartToken,
+    terminateBrokerProcess, waitForProcessExit, writeBrokerRuntime, launchedBrokerProcessVerification,
+    cleanupLaunchedBrokerRuntime, brokerLogTail, verifiedBrokerProcess, invalidateBrokerSetup,
+    verifiedOwnedLegacyBrokerProcess: (runtime, port, status, resolver) => verifiedOwnedLegacyBrokerProcess(runtime, port, status, resolver || discoverBrokerPortProcess),
+    currentOperation: () => brokerOperations.getStore(),
+    setupCacheKey: options => JSON.stringify([normalizeLaunchOptions(options), ownerId(), ownerBasis(), projectMountPath(), brokerStateRoot()]),
+    ownedChildrenEntries: () => ownedBrokerChildren.entries(),
+    deleteOwnedChild: pid => { ownedBrokerChildren.delete(pid); },
+    signalChild: (child, signal) => { child.kill?.(signal); },
+    timestamp: () => new Date().toISOString(),
+    pendingLogPath: owner => join(brokerLogsRoot(), `broker-${owner}-pending.log`),
+    closeLog: descriptor => { closeSync(descriptor); },
+    launchOwnedChild: async (launch, descriptor) => {
+        const child = spawn(launch.command, launch.args, { stdio: ["ignore", descriptor, descriptor], detached: false, windowsHide: true });
+        child.once("exit", () => { ownedBrokerChildren.delete(child.pid); });
+        child.once("error", () => { ownedBrokerChildren.delete(child.pid); });
+        let processStartToken = child.pid ? readBrokerProcessStartToken(child.pid) : null;
+        for (let attempt = 0; child.pid && !processStartToken && attempt < 20; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+            processStartToken = readBrokerProcessStartToken(child.pid);
+        }
+        if (child.pid) ownedBrokerChildren.set(child.pid, { child, processStartToken });
+        registerBrokerCleanup();
+        return { child, processStartToken };
+    },
+    cleanupOwner: (runtime, params, timeoutMs, statusBroker, verified) => brokerRpcRequest({
+        method: "broker.cleanup.owner", params,
+        hostCandidates: [runtime.host || "127.0.0.1"], port: runtime.port || 17373, timeoutMs,
+        verifyBeforeAuthenticatedRequest: () => {
+            const current = verifiedBrokerProcess(runtime, Number(runtime.port), statusBroker);
+            return Boolean(current && current.pid === verified?.pid && current.processStartToken
+                && current.processStartToken === (verified?.processStartToken || runtime.processStartToken));
+        },
+    }),
+});
+
 
 function brokerStateRoot() {
     return join(homedir(), ".ccc/devices");
@@ -306,17 +350,38 @@ function runtimeHostCandidates(runtime) {
     return [...new Set(candidates)].slice(0, MAX_PROBE_CANDIDATES);
 }
 
-function writeBrokerRuntime(runtime) {
-    writeJsonFileAtomically(brokerRuntimeFile(), runtime);
+function brokerRuntimeMatches(expected) {
+    if (expected === null) {
+        try { lstatSync(brokerRuntimeFile()); return false; }
+        catch (error) { return error?.code === "ENOENT"; }
+    }
+    return Boolean(expected && isDeepStrictEqual(readBrokerRuntime(), expected));
 }
 
-function removeBrokerRuntime() {
+function writeBrokerRuntime(runtime, expected) {
+    return withSharedMutationLock(`${brokerRuntimeFile()}.lock`, () => {
+        if (!brokerRuntimeMatches(expected)) return false;
+        writeJsonFileAtomically(brokerRuntimeFile(), runtime);
+        return true;
+    });
+}
+
+function removeBrokerRuntime(expected) {
+    if (!expected) return false;
     try {
-        unlinkSync(brokerRuntimeFile());
+        return withSharedMutationLock(`${brokerRuntimeFile()}.lock`, () => {
+            if (!brokerRuntimeMatches(expected)) return false;
+            unlinkSync(brokerRuntimeFile());
+            return true;
+        });
     } catch {
-        // Stale metadata is best-effort cleanup.
+        // Unknown, changed or unreadable metadata is retained as evidence.
+        return false;
     }
 }
+
+export const writeBrokerRuntimeForTest = writeBrokerRuntime;
+export const removeBrokerRuntimeForTest = removeBrokerRuntime;
 
 function pidAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -765,49 +830,9 @@ async function waitForBrokerHealth({ host, port, timeoutMs }) {
     return { requested: true, available: false, selected: null, attempts };
 }
 
-function cleanupOwnedBrokerChildrenOnExit() {
-    for (const [pid, owned] of ownedBrokerChildren.entries()) {
-        const child = owned?.child || owned;
-        const expectedStartToken = owned?.processStartToken || null;
-        if (expectedStartToken && readBrokerProcessStartToken(pid) === expectedStartToken) {
-            try { child.kill?.("SIGTERM"); } catch { /* preserve runtime evidence */ }
-        }
-        ownedBrokerChildren.delete(pid);
-    }
-}
+function cleanupOwnedBrokerChildrenOnExit() { brokerSupervision.cleanupOwnedOnExit(); }
 
-async function cleanupOwnedBrokerChildren() {
-    const confirmedOwnedExits = new Map();
-    for (const [pid, owned] of ownedBrokerChildren.entries()) {
-        const child = owned?.child || owned;
-        const expectedStartToken = owned?.processStartToken || null;
-        if (!expectedStartToken || readBrokerProcessStartToken(pid) !== expectedStartToken) {
-            ownedBrokerChildren.delete(pid);
-            continue;
-        }
-        let termination = await terminateBrokerProcess(pid, 500, expectedStartToken);
-        if (!termination.ok
-            && !termination.reason
-            && readBrokerProcessStartToken(pid) === expectedStartToken) {
-            try { child.kill?.("SIGKILL"); } catch { /* checked below */ }
-            termination = {
-                ok: await waitForProcessExit(pid, 500),
-                pid,
-                reason: "forced-signal-cleanup",
-            };
-        }
-        if (termination.ok && !pidAlive(pid)) confirmedOwnedExits.set(pid, expectedStartToken);
-        ownedBrokerChildren.delete(pid);
-    }
-    const runtime = readBrokerRuntime();
-    const confirmedRuntimeExit = runtime
-        && confirmedOwnedExits.get(Number(runtime.pid)) === runtime.processStartToken;
-    if (confirmedRuntimeExit
-        && runtime.managedBy === "device-lab-mcp"
-        && runtime.ownerId === ownerId()) {
-        removeBrokerRuntime();
-    }
-}
+function cleanupOwnedBrokerChildren() { return brokerSupervision.cleanupOwnedChildren(); }
 
 function registerBrokerCleanup() {
     if (cleanupRegistered) return;
@@ -1338,7 +1363,7 @@ function persistVerifiedBrokerRuntime(runtime, processVerification, statusBroker
     if (!runtime || !processStartToken || !startedAt) return runtime;
     if (runtime.processStartToken === processStartToken && runtime.startedAt === startedAt) return runtime;
     const verifiedRuntime = { ...runtime, processStartToken, startedAt };
-    writeBrokerRuntime(verifiedRuntime);
+    if (!writeBrokerRuntime(verifiedRuntime, runtime)) return runtime;
     return verifiedRuntime;
 }
 
@@ -1394,7 +1419,7 @@ export const terminateVerifiedBrokerRuntimeForTest = terminateVerifiedBrokerRunt
 
 async function cleanupLaunchedBrokerRuntime(runtime, child, timeoutMs) {
     if (!child?.pid) {
-        removeBrokerRuntime();
+        removeBrokerRuntime(runtime);
         return { ok: true, stale: true, pid: null };
     }
     let termination;
@@ -1414,7 +1439,7 @@ async function cleanupLaunchedBrokerRuntime(runtime, child, timeoutMs) {
     }
     if (termination.ok) {
         ownedBrokerChildren.delete(child.pid);
-        removeBrokerRuntime();
+        removeBrokerRuntime(runtime);
     }
     return termination;
 }
@@ -1448,668 +1473,13 @@ export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
     };
 }
 
-async function replaceVerifiedOwnedLegacyBroker(runtime, port, statusBroker, options = {}) {
-    if (Number.isSafeInteger(statusBroker?.protocolVersion) && statusBroker.protocolVersion > DEVICE_BROKER_PROTOCOL_VERSION) return false;
-    const verified = verifiedOwnedLegacyBrokerProcess(
-        runtime,
-        port,
-        statusBroker,
-        options.portProcessResolver || discoverBrokerPortProcess,
-    );
-    if (!verified) return false;
-    const termination = await terminateBrokerProcess(verified.pid, 3000, runtime.processStartToken);
-    if (!termination.ok) return false;
-    ownedBrokerChildren.delete(verified.pid);
-    removeBrokerRuntime();
-    return true;
-}
 
-async function ensureBroker(options = {}) {
-    const operation = brokerOperations.getStore();
-    const setups = operation?.setups;
-    const key = JSON.stringify([normalizeLaunchOptions(options), ownerId(), ownerBasis(), projectMountPath(), brokerStateRoot()]);
-    if (setups?.has(key)) return setups.get(key);
-    try {
-        const result = await ensureBrokerUncached(options);
-        if (result.ok && operation?.setups === setups) setups?.set(key, result);
-        else if (!result.ok) invalidateBrokerSetup();
-        return result;
-    } catch (error) {
-        invalidateBrokerSetup();
-        throw error;
-    }
-}
 
-async function ensureBrokerUncached(options = {}) {
-    const owner = ownerId();
-    const launch = normalizeLaunchOptions(options);
-    const before = await probeBrokerHealth(launch);
-    if (before.available) {
-        const existingRuntime = readBrokerRuntime();
-        const compatibility = await probeCccHostBrokerProtocol(before.selected.host, before.selected.port, launch.timeoutMs);
-        if (!compatibility.ok) {
-            if (existingRuntime?.ownerId === owner && await replaceVerifiedOwnedLegacyBroker(
-                existingRuntime,
-                before.selected.port,
-                compatibility.body?.broker,
-                options,
-            )) {
-                return ensureBrokerUncached(options);
-            }
-            return {
-                ok: false,
-                ownerId: owner,
-                launched: false,
-                reused: false,
-                error: "host-broker-incompatible",
-                runtime: existingRuntime,
-                host: before.selected.host,
-                port: before.selected.port,
-                compatibility,
-                attempts: [...before.attempts, { reason: "host-broker-protocol-mismatch", compatibility }],
-            };
-        }
-        const ownerResolve = await resolveBrokerOwner({
-            hostCandidates: [before.selected.host],
-            port: before.selected.port,
-            timeoutMs: launch.timeoutMs,
-        });
-        if (ownerResolve.ok) {
-            const processVerification = reusableBrokerProcessVerification(
-                existingRuntime,
-                before.selected.port,
-                before.selected.host,
-                { statusBroker: compatibility.body?.broker },
-            );
-            if (!processVerification.ok) {
-                return {
-                    ok: false,
-                    ownerId: owner,
-                    launched: false,
-                    reused: false,
-                    error: "broker-runtime-process-unverified",
-                    runtime: existingRuntime,
-                    host: before.selected.host,
-                    port: before.selected.port,
-                    ownerResolve,
-                    attempts: [...before.attempts, { reason: "broker-reuse-process-unverified", processVerification }],
-                };
-            }
-            const verifiedRuntime = persistVerifiedBrokerRuntime(
-                existingRuntime,
-                processVerification,
-                compatibility.body?.broker,
-            );
-            return withSetupEvidence({
-                ok: true,
-                ownerId: owner,
-                launched: false,
-                reused: true,
-                runtime: verifiedRuntime,
-                host: before.selected.host,
-                port: before.selected.port,
-                attempts: [
-                    ...before.attempts,
-                    { reason: "broker-reuse-process-verified", processVerification },
-                    { reason: "broker-owner-resolve-ready", ownerResolve },
-                ],
-            }, before, ownerResolve);
-        }
-        const runtime = readBrokerRuntime();
-        const attempts = [...before.attempts, { reason: "broker-owner-resolve-incompatible", ownerResolve }];
-        if (
-            runtime?.managedBy === "device-lab-mcp"
-            && runtime.ownerId === owner
-            && Number(runtime.port) === Number(before.selected.port)
-            && pidAlive(runtime.pid)
-        ) {
-            const termination = await terminateVerifiedBrokerRuntime(runtime, 3000, {
-                statusBroker: compatibility.body?.broker,
-            });
-            attempts.push({ reason: "incompatible-broker-termination", runtime, termination });
-            if (!termination.ok) {
-                return {
-                    ok: false,
-                    ownerId: owner,
-                    launched: false,
-                    reused: false,
-                    error: termination.reason === "unverified-broker-port-process"
-                        ? "broker-runtime-process-unverified"
-                        : "broker-incompatible-process-still-running",
-                    runtime,
-                    host: before.selected.host,
-                    port: before.selected.port,
-                    ownerResolve,
-                    attempts,
-                };
-            }
-            ownedBrokerChildren.delete(runtime.pid);
-            removeBrokerRuntime();
-        } else {
-            return {
-                ok: false,
-                ownerId: owner,
-                launched: false,
-                reused: false,
-                error: ownerResolve.error || "broker-owner-resolve-unavailable",
-                runtime,
-                host: before.selected.host,
-                port: before.selected.port,
-                ownerResolve,
-                attempts,
-            };
-        }
-    }
+function ensureBroker(options = {}) { return brokerSupervision.ensure(options); }
 
-    const existing = readBrokerRuntime();
-    const stale = [];
-    if (existing) {
-        const existingPort = Number(existing.port);
-        const runtimeTargetsRequestedPort = Number.isInteger(existingPort) && existingPort === Number(launch.port);
-        if (existing.ownerId !== owner && runtimeTargetsRequestedPort) {
-            return {
-                ok: false,
-                ownerId: owner,
-                error: "runtime-owned-by-another-owner",
-                runtime: existing,
-                attempts: [...before.attempts, { reason: "runtime-owned-by-another-owner", runtime: existing }],
-            };
-        } else if (existing.ownerId !== owner) {
-            stale.push({ reason: "runtime-ignored-for-different-owner-and-port", runtime: existing, requestedPort: launch.port });
-        } else if (!pidAlive(existing.pid)) {
-            stale.push({ reason: "runtime-pid-not-alive", runtime: existing });
-            removeBrokerRuntime();
-        } else {
-            const existingProbe = await probeBrokerHealth({
-                hostCandidates: [existing.host || launch.host],
-                port: existing.port || launch.port,
-                timeoutMs: launch.timeoutMs,
-            });
-            if (existingProbe.available) {
-                const compatibility = await probeCccHostBrokerProtocol(existingProbe.selected.host, existingProbe.selected.port, launch.timeoutMs);
-                if (!compatibility.ok) {
-                    if (await replaceVerifiedOwnedLegacyBroker(
-                        existing,
-                        existingProbe.selected.port,
-                        compatibility.body?.broker,
-                        options,
-                    )) {
-                        return ensureBrokerUncached(options);
-                    }
-                    return {
-                        ok: false,
-                        ownerId: owner,
-                        launched: false,
-                        reused: false,
-                        error: "host-broker-incompatible",
-                        runtime: existing,
-                        host: existingProbe.selected.host,
-                        port: existingProbe.selected.port,
-                        compatibility,
-                        attempts: [...before.attempts, ...existingProbe.attempts, { reason: "host-broker-protocol-mismatch", compatibility }],
-                    };
-                }
-                const ownerResolve = await resolveBrokerOwner({
-                    hostCandidates: [existingProbe.selected.host],
-                    port: existingProbe.selected.port,
-                    timeoutMs: launch.timeoutMs,
-                });
-                if (ownerResolve.ok) {
-                    const processVerification = reusableBrokerProcessVerification(
-                        existing,
-                        existingProbe.selected.port,
-                        existingProbe.selected.host,
-                        { statusBroker: compatibility.body?.broker },
-                    );
-                    if (!processVerification.ok) {
-                        return {
-                            ok: false,
-                            ownerId: owner,
-                            launched: false,
-                            reused: false,
-                            error: "broker-runtime-process-unverified",
-                            runtime: existing,
-                            host: existingProbe.selected.host,
-                            port: existingProbe.selected.port,
-                            ownerResolve,
-                            attempts: [
-                                ...before.attempts,
-                                ...existingProbe.attempts,
-                                { reason: "broker-reuse-process-unverified", processVerification },
-                            ],
-                        };
-                    }
-                    const verifiedRuntime = persistVerifiedBrokerRuntime(
-                        existing,
-                        processVerification,
-                        compatibility.body?.broker,
-                    );
-                    return withSetupEvidence({
-                        ok: true,
-                        ownerId: owner,
-                        launched: false,
-                        reused: true,
-                        runtime: verifiedRuntime,
-                        host: existingProbe.selected.host,
-                        port: existingProbe.selected.port,
-                        attempts: [
-                            ...before.attempts,
-                            ...existingProbe.attempts,
-                            { reason: "broker-reuse-process-verified", processVerification },
-                            { reason: "broker-owner-resolve-ready", ownerResolve },
-                        ],
-                    }, existingProbe, ownerResolve);
-                }
-                stale.push({ reason: "runtime-owner-resolve-incompatible", runtime: existing, attempts: existingProbe.attempts, ownerResolve });
-                const termination = await terminateVerifiedBrokerRuntime(existing, 1500, {
-                    statusBroker: compatibility.body?.broker,
-                });
-                stale.push({ reason: "runtime-owner-resolve-incompatible-termination", runtime: existing, termination });
-                if (!termination.ok) {
-                    return {
-                        ok: false,
-                        ownerId: owner,
-                        error: "broker-runtime-process-unverified",
-                        runtime: existing,
-                        attempts: [...before.attempts, ...stale],
-                    };
-                }
-                ownedBrokerChildren.delete(existing.pid);
-                removeBrokerRuntime();
-            } else {
-                let recoveryStatusBroker = null;
-                const recoveryProbe = await waitForBrokerHealth({
-                    host: existing.host || launch.host,
-                    port: existing.port || launch.port,
-                    timeoutMs: launch.launchTimeoutMs,
-                });
-                if (recoveryProbe.available) {
-                    const compatibility = await probeCccHostBrokerProtocol(recoveryProbe.selected.host, recoveryProbe.selected.port, launch.timeoutMs);
-                    recoveryStatusBroker = compatibility.body?.broker || null;
-                    if (!compatibility.ok) {
-                        if (await replaceVerifiedOwnedLegacyBroker(
-                            existing,
-                            recoveryProbe.selected.port,
-                            compatibility.body?.broker,
-                            options,
-                        )) {
-                            return ensureBrokerUncached(options);
-                        }
-                        return {
-                            ok: false,
-                            ownerId: owner,
-                            launched: false,
-                            reused: false,
-                            error: "host-broker-incompatible",
-                            runtime: existing,
-                            host: recoveryProbe.selected.host,
-                            port: recoveryProbe.selected.port,
-                            compatibility,
-                            attempts: [...before.attempts, ...existingProbe.attempts, ...recoveryProbe.attempts, { reason: "host-broker-protocol-mismatch", compatibility }],
-                        };
-                    }
-                    const ownerResolve = await resolveBrokerOwner({
-                        hostCandidates: [recoveryProbe.selected.host],
-                        port: recoveryProbe.selected.port,
-                        timeoutMs: launch.timeoutMs,
-                    });
-                    if (ownerResolve.ok) {
-                        const processVerification = reusableBrokerProcessVerification(
-                            existing,
-                            recoveryProbe.selected.port,
-                            recoveryProbe.selected.host,
-                            { statusBroker: compatibility.body?.broker },
-                        );
-                        if (!processVerification.ok) {
-                            return {
-                                ok: false,
-                                ownerId: owner,
-                                launched: false,
-                                reused: false,
-                                error: "broker-runtime-process-unverified",
-                                runtime: existing,
-                                host: recoveryProbe.selected.host,
-                                port: recoveryProbe.selected.port,
-                                ownerResolve,
-                                attempts: [
-                                    ...before.attempts,
-                                    ...existingProbe.attempts,
-                                    ...recoveryProbe.attempts,
-                                    { reason: "broker-reuse-process-unverified", processVerification },
-                                ],
-                            };
-                        }
-                        const verifiedRuntime = persistVerifiedBrokerRuntime(
-                            existing,
-                            processVerification,
-                            compatibility.body?.broker,
-                        );
-                        return withSetupEvidence({
-                            ok: true,
-                            ownerId: owner,
-                            launched: false,
-                            reused: true,
-                            runtime: verifiedRuntime,
-                            host: recoveryProbe.selected.host,
-                            port: recoveryProbe.selected.port,
-                            attempts: [
-                                ...before.attempts,
-                                ...existingProbe.attempts,
-                                ...recoveryProbe.attempts,
-                                { reason: "broker-reuse-process-verified", processVerification },
-                                { reason: "broker-owner-resolve-ready", ownerResolve },
-                            ],
-                        }, recoveryProbe, ownerResolve);
-                    }
-                }
-                const termination = await terminateVerifiedBrokerRuntime(existing, 3000, {
-                    statusBroker: recoveryStatusBroker,
-                });
-                stale.push({
-                    reason: "runtime-health-check-failed",
-                    runtime: existing,
-                    attempts: [...existingProbe.attempts, ...recoveryProbe.attempts],
-                    termination,
-                });
-                if (!termination.ok) {
-                    return {
-                        ok: false,
-                        ownerId: owner,
-                        error: termination.reason === "unverified-broker-port-process"
-                            ? "broker-runtime-process-unverified"
-                            : "broker-unresponsive-process-still-running",
-                        runtime: existing,
-                        attempts: [...before.attempts, ...stale],
-                    };
-                }
-                ownedBrokerChildren.delete(existing.pid);
-                removeBrokerRuntime();
-            }
-        }
-    }
 
-    const startedAt = new Date().toISOString();
-    let logPath = join(brokerLogsRoot(), `broker-${owner}-pending.log`);
-    let logFd = null;
-    let launchedChild = null;
-    let launchedRuntime = null;
-    try {
-        if (!executableExists(launch.command)) {
-            return {
-                ok: false,
-                ownerId: owner,
-                error: "broker-launch-failed",
-                detail: "executable-not-found",
-                command: launch.command,
-                args: launch.args,
-                logPath,
-                attempts: [...before.attempts, ...stale],
-            };
-        }
-        const log = createBrokerLogFile(owner);
-        logPath = log.path;
-        logFd = log.descriptor;
-        const child = spawn(launch.command, launch.args, {
-            stdio: ["ignore", logFd, logFd],
-            detached: false,
-            windowsHide: true,
-        });
-        launchedChild = child;
-        child.once("exit", () => {
-            ownedBrokerChildren.delete(child.pid);
-        });
-        child.once("error", () => {
-            ownedBrokerChildren.delete(child.pid);
-        });
-        let processStartToken = child.pid ? readBrokerProcessStartToken(child.pid) : null;
-        for (let attempt = 0; child.pid && !processStartToken && attempt < 20; attempt += 1) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
-            processStartToken = readBrokerProcessStartToken(child.pid);
-        }
-        if (child.pid) ownedBrokerChildren.set(child.pid, { child, processStartToken });
-        registerBrokerCleanup();
-        const runtime = {
-            name: BROKER_NAME,
-            ownerId: owner,
-            pid: child.pid || null,
-            host: launch.host,
-            port: launch.port,
-            command: launch.command,
-            args: launch.args,
-            logPath,
-            startedAt,
-            processStartToken,
-            managedBy: "device-lab-mcp",
-        };
-        launchedRuntime = runtime;
-        writeBrokerRuntime(runtime);
-        const ready = await waitForBrokerHealth({ host: launch.host, port: launch.port, timeoutMs: launch.launchTimeoutMs });
-        if (ready.available) {
-            const ownerResolve = await waitForBrokerOwnerResolve(launch.host, launch.port, launch.launchTimeoutMs);
-            if (ownerResolve.ok) {
-                const compatibility = await probeCccHostBrokerProtocol(launch.host, launch.port, launch.timeoutMs);
-                if (!compatibility.ok) {
-                    const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 3000);
-                    return {
-                        ok: false,
-                        ownerId: owner,
-                        launched: true,
-                        reused: false,
-                        error: "host-broker-incompatible",
-                        runtime,
-                        host: launch.host,
-                        port: launch.port,
-                        compatibility,
-                        launchCleanup,
-                        attempts: [
-                            ...before.attempts,
-                            ...stale,
-                            ...ready.attempts,
-                            { reason: "broker-launch-incompatible", compatibility },
-                        ],
-                    };
-                }
-                const launchProcessVerification = launchedBrokerProcessVerification(
-                    runtime,
-                    launch.port,
-                    launch.host,
-                    compatibility.body?.broker,
-                );
-                const processVerification = launchProcessVerification.verification;
-                if (!processVerification.ok) {
-                    const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 3000);
-                    return {
-                        ok: false,
-                        ownerId: owner,
-                        launched: true,
-                        reused: false,
-                        error: "broker-runtime-process-unverified",
-                        runtime,
-                        host: launch.host,
-                        port: launch.port,
-                        launchCleanup,
-                        attempts: [
-                            ...before.attempts,
-                            ...stale,
-                            ...ready.attempts,
-                            { reason: "broker-launch-process-unverified", processVerification },
-                        ],
-                    };
-                }
-                Object.assign(runtime, launchProcessVerification.runtime);
-                writeBrokerRuntime(runtime);
-                return withSetupEvidence({
-                    ok: true,
-                    ownerId: ownerResolve.ownerId,
-                    launched: true,
-                    reused: false,
-                    runtime,
-                    host: launch.host,
-                    port: launch.port,
-                    attempts: [
-                        ...before.attempts,
-                        ...stale,
-                        ...ready.attempts,
-                        { reason: "broker-launch-process-verified", processVerification },
-                        { reason: "broker-owner-resolve-ready", ownerResolve },
-                    ],
-                }, ready, ownerResolve);
-            }
-            const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 3000);
-            return {
-                ok: false,
-                ownerId: owner,
-                error: "broker-launch-owner-resolve-timeout",
-                detail: ownerResolve.selected
-                    ? `${ownerResolve.error}: ${JSON.stringify(ownerResolve.selected)}`
-                    : brokerLogTail(logPath) || `broker owner resolution did not become ready within ${launch.launchTimeoutMs}ms`,
-                runtime,
-                launchCleanup,
-                ownerResolve,
-                attempts: [...before.attempts, ...stale, ...ready.attempts, { reason: "broker-owner-resolve-readiness-timeout", ownerResolve }],
-            };
-        }
-        const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 1500);
-        return {
-            ok: false,
-            ownerId: owner,
-            error: "broker-launch-health-timeout",
-            detail: brokerLogTail(logPath) || `broker did not become healthy within ${launch.launchTimeoutMs}ms`,
-            runtime,
-            launchCleanup,
-            attempts: [...before.attempts, ...stale, ...ready.attempts],
-        };
-    } catch (error) {
-        const launchCleanup = launchedRuntime && launchedChild
-            ? await cleanupLaunchedBrokerRuntime(launchedRuntime, launchedChild, 1500)
-            : (removeBrokerRuntime(), null);
-        return {
-            ok: false,
-            ownerId: owner,
-            error: "broker-launch-failed",
-            detail: error?.message || String(error),
-            command: launch.command,
-            args: launch.args,
-            logPath,
-            ...(launchCleanup ? { launchCleanup } : {}),
-            attempts: [...before.attempts, ...stale],
-        };
-    } finally {
-        if (logFd !== null) {
-            try {
-                closeSync(logFd);
-            } catch {
-                // Ignore log close failures.
-            }
-        }
-    }
-}
 
-export async function brokerShutdown(options = {}) {
-    invalidateBrokerSetup();
-    const owner = ownerId();
-    const runtime = readBrokerRuntime();
-    if (!runtime) return { ok: true, ownerId: owner, stopped: false, reason: "no-runtime" };
-    if (runtime.ownerId !== owner) {
-        return { ok: false, ownerId: owner, error: "runtime-owned-by-another-owner", runtime };
-    }
-    if (runtime.managedBy !== "device-lab-mcp") {
-        return { ok: false, ownerId: owner, error: "runtime-not-managed-by-device-lab-mcp", runtime };
-    }
-    const status = await probeCccHostBrokerProtocol(
-        runtime.host || "127.0.0.1",
-        Number(runtime.port) || 17373,
-        options.timeoutMs || 1500,
-    );
-    const runtimeAlive = pidAlive(runtime.pid);
-    if (!runtimeAlive) {
-        ownedBrokerChildren.delete(runtime.pid);
-        removeBrokerRuntime();
-        return {
-            ok: true,
-            ownerId: owner,
-            stopped: false,
-            reason: "runtime-pid-not-alive",
-            runtime,
-        };
-    }
-    const verified = runtimeAlive
-        ? verifiedBrokerProcess(
-            runtime,
-            Number(runtime.port),
-            status.body?.broker || null,
-        )
-        : null;
-    if (runtimeAlive && !verified) {
-        return {
-            ok: false,
-            ownerId: owner,
-            error: "broker-runtime-process-unverified",
-            stopped: false,
-            runtime,
-        };
-    }
-    const cleanup = await brokerRpcRequest({
-        method: "broker.cleanup.owner",
-        params: {
-            reason: "mcp-broker-shutdown",
-            stopDevices: options.stopDevices !== false,
-            detachPhysical: options.detachPhysical !== false,
-        },
-        hostCandidates: [runtime.host || "127.0.0.1"],
-        port: runtime.port || 17373,
-        timeoutMs: options.cleanupTimeoutMs || options.timeoutMs || 1500,
-        verifyBeforeAuthenticatedRequest: () => {
-            const current = verifiedBrokerProcess(
-                runtime,
-                Number(runtime.port),
-                status.body?.broker || null,
-            );
-            return Boolean(
-                current
-                && current.pid === verified?.pid
-                && current.processStartToken
-                && current.processStartToken === (verified?.processStartToken || runtime.processStartToken),
-            );
-        },
-    });
-    let signaled = false;
-    if (runtimeAlive && verified) {
-        try {
-            const termination = await terminateBrokerProcess(
-                verified.pid,
-                options.force === true ? 500 : 1500,
-                verified.processStartToken || runtime.processStartToken || null,
-            );
-            if (!termination.ok) {
-                return {
-                    ok: false,
-                    ownerId: owner,
-                    error: termination.reason || "broker-shutdown-timeout",
-                    stopped: false,
-                    runtime,
-                    cleanup,
-                };
-            }
-            signaled = true;
-        } catch (error) {
-            return { ok: false, ownerId: owner, error: "broker-shutdown-failed", detail: error?.message || String(error), runtime, cleanup };
-        }
-    }
-    ownedBrokerChildren.delete(runtime.pid);
-    removeBrokerRuntime();
-    const cleanupOk = cleanup.ok === true && cleanup.result?.failed !== undefined
-        ? cleanup.result.failed === 0
-        : cleanup.ok === true;
-    return {
-        ok: cleanupOk,
-        ownerId: owner,
-        ...(cleanupOk ? {} : { error: "broker-owner-cleanup-failed" }),
-        stopped: signaled,
-        runtime,
-        cleanup,
-    };
-}
+export async function brokerShutdown(options = {}) { return brokerSupervision.shutdown(options); }
 
 function isolatedBrokerAuthFile() {
     const configured = String(process.env.CCC_DEVICE_BROKER_AUTH_FILE || "").trim();

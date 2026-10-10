@@ -1,3 +1,5 @@
+import { createBrokerSupervision } from "../../device-lab-mcp/src/application/broker-supervision.mjs";
+import type { BrokerSupervisionPorts } from "../../device-lab-mcp/src/ports/broker-supervision.mjs";
 import { pathToFileURL } from "node:url";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { deviceLabTestHomeEnvironment } from "./helpers/device-lab-test-environment.js";
@@ -19,7 +21,7 @@ import {
     type DeviceLabMcpTestContext,
 } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort, installFakeCccBroker, installIgnoringCccBroker, pidAlive, waitForHealthUnavailable } from "./helpers/fake-broker-mcp-fixture.js";
-import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, BROKER_RPC_SCREENSHOT_RESPONSE_LIMIT_BYTES, authenticatedBrokerHeadersForTest, brokerCommand, brokerDeviceTool, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, launchedBrokerProcessVerificationForTest, parseWindowsNetstatListenerForTest, reusableBrokerProcessVerificationForTest, terminateVerifiedBrokerRuntimeForTest, verifiedBrokerProcessForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
+import { removeBrokerRuntimeForTest, writeBrokerRuntimeForTest, BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, BROKER_RPC_SCREENSHOT_RESPONSE_LIMIT_BYTES, authenticatedBrokerHeadersForTest, brokerCommand, brokerDeviceTool, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, launchedBrokerProcessVerificationForTest, parseWindowsNetstatListenerForTest, reusableBrokerProcessVerificationForTest, terminateVerifiedBrokerRuntimeForTest, verifiedBrokerProcessForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
 import { projectMountPath } from "@ccc/device-lab/providers/context.mjs";
 
 const TEST_BROKER_OWNER_ID = "1111111111111111";
@@ -1446,7 +1448,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it.runIf(process.platform !== "win32")("atomically replaces a linked MCP runtime without mutating its target", { timeout: TIMEOUT }, async () => {
+    it.runIf(process.platform !== "win32")("refuses to overwrite unreadable linked MCP runtime evidence", { timeout: TIMEOUT }, async () => {
         const initial = await callInternalBroker(client, { operation: "brokerStatus", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             state: { runtimeFile: string };
@@ -1479,14 +1481,10 @@ describe("device-lab MCP", () => {
                 ok: boolean;
                 launch: { runtime: { pid: number } };
             };
-            expect(payload.ok).toBe(true);
-            launchedPid = payload.launch.runtime.pid;
+            expect(payload.ok).toBe(false);
+            launchedPid = payload.launch.runtime?.pid ?? null;
             expect(readFileSync(external, "utf8")).toBe(externalBytes);
-            expect(lstatSync(runtimeFile).isSymbolicLink()).toBe(false);
-            expect(JSON.parse(readFileSync(runtimeFile, "utf8"))).toEqual(expect.objectContaining({
-                managedBy: "device-lab-mcp",
-                port,
-            }));
+            expect(lstatSync(runtimeFile).isSymbolicLink()).toBe(true);
         } finally {
             if (launchedPid && pidAlive(launchedPid)) process.kill(launchedPid, "SIGTERM");
             rmSync(runtimeFile, { force: true });
@@ -2969,6 +2967,132 @@ setInterval(() => {}, 1000);
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         }
+    });
+
+});
+
+
+describe("owned broker child supervision", () => {
+    function fixture() {
+        const child = { pid: 41 };
+        const children = new Map([[41, { child, processStartToken: "birth-41" }]]);
+        const runtime = { host: "127.0.0.1", ownerId: "owner", managedBy: "device-lab-mcp", pid: 41, port: 17373, processStartToken: "birth-41" };
+        const unexpected = () => { throw new Error("unexpected supervision operation"); };
+        const ports: BrokerSupervisionPorts = {
+            brokerName: "ccc-host-broker", protocolVersion: 1,
+            ownerId: () => "owner", ownedChildrenEntries: () => children.entries(),
+            deleteOwnedChild: pid => { children.delete(Number(pid)); },
+            readBrokerProcessStartToken: vi.fn(() => "birth-41"),
+            signalChild: vi.fn(() => undefined),
+            terminateBrokerProcess: vi.fn(async () => ({ ok: true, pid: 41 })),
+            waitForProcessExit: vi.fn(async () => true), pidAlive: vi.fn(() => false),
+            readBrokerRuntime: () => runtime, removeBrokerRuntime: vi.fn(() => true),
+            normalizeLaunchOptions: unexpected, probeBrokerHealth: unexpected,
+            probeCccHostBrokerProtocol: unexpected, resolveBrokerOwner: unexpected,
+            reusableBrokerProcessVerification: unexpected, persistVerifiedBrokerRuntime: unexpected,
+            withSetupEvidence: unexpected, terminateVerifiedBrokerRuntime: unexpected,
+            waitForBrokerHealth: unexpected, waitForBrokerOwnerResolve: unexpected,
+            executableExists: unexpected, createBrokerLogFile: unexpected,
+            writeBrokerRuntime: unexpected, launchedBrokerProcessVerification: unexpected,
+            cleanupLaunchedBrokerRuntime: unexpected, brokerLogTail: unexpected,
+            verifiedBrokerProcess: unexpected, invalidateBrokerSetup: unexpected,
+            verifiedOwnedLegacyBrokerProcess: unexpected, currentOperation: unexpected,
+            setupCacheKey: unexpected, timestamp: unexpected, pendingLogPath: unexpected,
+            closeLog: unexpected, launchOwnedChild: unexpected, cleanupOwner: unexpected,
+        };
+        return { ports, children, child, runtime, supervision: createBrokerSupervision(ports) };
+    }
+
+    it("keeps exit cleanup synchronous and signals only the retained child generation", () => {
+        const f = fixture();
+        expect(f.supervision.cleanupOwnedOnExit()).toBeUndefined();
+        expect(f.ports.signalChild).toHaveBeenCalledWith(f.child, "SIGTERM");
+        expect(f.ports.terminateBrokerProcess).not.toHaveBeenCalled();
+        expect(f.ports.removeBrokerRuntime).not.toHaveBeenCalled();
+        expect(f.children.size).toBe(0);
+    });
+
+    it("does not signal a successor process or erase its runtime evidence", async () => {
+        const f = fixture();
+        vi.mocked(f.ports.readBrokerProcessStartToken).mockReturnValue("successor-birth");
+        await f.supervision.cleanupOwnedChildren();
+        expect(f.ports.signalChild).not.toHaveBeenCalled();
+        expect(f.ports.terminateBrokerProcess).not.toHaveBeenCalled();
+        expect(f.ports.removeBrokerRuntime).not.toHaveBeenCalled();
+    });
+
+    it("retains evidence when native termination refuses the process generation", async () => {
+        const f = fixture();
+        vi.mocked(f.ports.terminateBrokerProcess).mockResolvedValue({ ok: false, reason: "process-start-token-mismatch" });
+        await f.supervision.cleanupOwnedChildren();
+        expect(f.ports.signalChild).not.toHaveBeenCalled();
+        expect(f.ports.removeBrokerRuntime).not.toHaveBeenCalled();
+    });
+
+    it("removes runtime evidence only after a confirmed exit of its matching generation", async () => {
+        const f = fixture();
+        await f.supervision.cleanupOwnedChildren();
+        expect(f.ports.terminateBrokerProcess).toHaveBeenCalledWith(41, 500, "birth-41");
+        expect(f.ports.removeBrokerRuntime).toHaveBeenCalledOnce();
+        const successor = fixture();
+        successor.runtime.processStartToken = "successor-birth";
+        await successor.supervision.cleanupOwnedChildren();
+        expect(successor.ports.removeBrokerRuntime).not.toHaveBeenCalled();
+    });
+
+    async function withPrivateRuntime(test: (file: string) => Promise<void>) {
+        const home = mkdtempSync(join(tmpdir(), "broker-runtime-generation-"));
+        const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+        process.env.HOME = home;
+        process.env.USERPROFILE = home;
+        const file = join(home, ".ccc", "devices", "broker", "runtime.json");
+        try { await test(file); }
+        finally {
+            for (const key of ["HOME", "USERPROFILE"] as const) {
+                if (previous[key] === undefined) delete process.env[key];
+                else process.env[key] = previous[key];
+            }
+            rmSync(home, { recursive: true, force: true });
+        }
+    }
+
+    it("preserves a successor published while shutdown awaits owner cleanup", async () => {
+        await withPrivateRuntime(async file => {
+            const f = fixture();
+            const original = { ...f.runtime };
+            const successor = { ...original, pid: 42, processStartToken: "birth-42" };
+            expect(writeBrokerRuntimeForTest(original, null)).toBe(true);
+            f.ports.readBrokerRuntime = () => original;
+            f.ports.pidAlive = () => true;
+            f.ports.invalidateBrokerSetup = () => undefined;
+            f.ports.probeCccHostBrokerProtocol = async () => ({ ok: true });
+            f.ports.verifiedBrokerProcess = () => ({ pid: 41, processStartToken: "birth-41" });
+            f.ports.cleanupOwner = async () => {
+                expect(writeBrokerRuntimeForTest(successor, original)).toBe(true);
+                return { ok: true };
+            };
+            f.ports.removeBrokerRuntime = removeBrokerRuntimeForTest;
+            expect(await f.supervision.shutdown()).toEqual(expect.objectContaining({ ok: true, stopped: true }));
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(successor);
+        });
+    });
+
+    it("refuses stale removal and late publication but removes the exact captured record", async () => {
+        await withPrivateRuntime(async file => {
+            const original = { ...fixture().runtime };
+            const successor = { ...original, pid: 42, processStartToken: "birth-42" };
+            expect(writeBrokerRuntimeForTest(original, null)).toBe(true);
+            expect(writeBrokerRuntimeForTest(successor, original)).toBe(true);
+            expect(removeBrokerRuntimeForTest(original)).toBe(false);
+            expect(writeBrokerRuntimeForTest({ ...original, startedAt: "late" }, original)).toBe(false);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(successor);
+            expect(removeBrokerRuntimeForTest(successor)).toBe(true);
+            expect(existsSync(file)).toBe(false);
+            writeFileSync(file, "unreadable-json");
+            expect(writeBrokerRuntimeForTest(original, null)).toBe(false);
+            expect(removeBrokerRuntimeForTest(original)).toBe(false);
+            expect(readFileSync(file, "utf8")).toBe("unreadable-json");
+        });
     });
 
 });
