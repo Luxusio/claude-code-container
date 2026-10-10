@@ -4,7 +4,7 @@ const f = vi.hoisted(() => ({
     handoffStarted: undefined as boolean | undefined,
     realCleanup: false, devices: vi.fn(),
     locked: false, failPostExitLock: false, failTool: false, failState: false, launchFailure: false,
-    probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), confirm: vi.fn(), command: vi.fn(),
+    probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), confirm: vi.fn(), command: vi.fn(), clipboard: vi.fn(), socket: vi.fn(),
 }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: f.spawn }));
 // Native filesystem metadata stays real. Only the exact synthetic claim is removed
@@ -27,7 +27,7 @@ vi.mock("../docker.js", () => ({
     getContainerName: () => "ccc-fixture", getContainerStatus: () => ({ exists: f.exists, running: f.running, imageId: "sha256:old", containerId: "old-id" }),
     startProjectContainer: f.start, isContainerRunning: f.probeRunning,
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
-    syncClipboardShims: () => f.events.push("clipboard"), ensureContainerManagerSocketAccess: vi.fn(),
+    syncClipboardShims: f.clipboard, ensureContainerManagerSocketAccess: f.socket,
 }));
 vi.mock("../container-runtime.js", async original => ({ ...await original<typeof import("../container-runtime.js")>(), runtimeCli: () => "docker", deviceBrokerBindHostForContainer: () => "127.0.0.1" }));
 vi.mock("../worktree.js", async original => ({ ...await original<typeof import("../worktree.js")>(), detectWorktreeWorkspaceBranch: () => null, getWorktreeGitMounts: () => [] }));
@@ -86,6 +86,8 @@ beforeEach(() => {
     vi.spyOn(process, "exit").mockImplementation(code => { throw new Exit(Number(code)); });
     vi.spyOn(process.stderr, "write").mockReturnValue(true); vi.spyOn(console, "error").mockImplementation(() => {});
     f.probeRunning.mockReturnValue(true);
+    f.clipboard.mockImplementation(() => { f.events.push("clipboard"); });
+    f.socket.mockImplementation(() => { f.events.push("socket"); });
     f.confirm.mockImplementation(async () => { f.events.push("confirm"); });
     f.command.mockImplementation(async (_runtime: string, args: string[]) => {
         expect(args).toContain("final-id");
@@ -115,6 +117,8 @@ it.each([false, true])("preserves final-ID Codex setup and resume ordering when 
     expect(f.start).toHaveBeenCalledOnce();
     const command = f.command.mock.calls[0][1];
     expect(command).toContain("resume"); expect(command).toContain("--last");
+    expect(f.clipboard).toHaveBeenCalledWith("final-id", expect.any(String));
+    expect(f.socket).toHaveBeenCalledWith("final-id");
 });
 it.each(["tool", "state"])("stops before launch after %s setup failure without retrying a live container", async failure => {
     f.running = true; f.failTool = failure === "tool"; f.failState = failure === "state";
@@ -125,6 +129,30 @@ it("preserves upstream daemon-preparation failure status and cleans invocation s
     f.launchFailure = true;
     await expect(main()).rejects.toMatchObject({ status: 9 });
     expect(f.events).not.toContain("command");
+    expect(f.events.slice(-3)).toEqual(["restore", "unlink", "cleanup"]);
+});
+
+it("public dispatch uses the replacement ID for clipboard, socket access and the requested command", async () => {
+    let first = true;
+    f.probeRunning.mockReturnValueOnce(false).mockReturnValue(true);
+    f.restore.mockImplementation(() => { f.events.push("restore"); });
+    f.start.mockImplementation((...args: unknown[]) => {
+        const id = first ? "setup-id" : "final-id"; first = false;
+        (args[9] as (id: string) => void)(id);
+        (args[7] as (id: string, handoff: { startedByInvocation: boolean }) => void)(id, { startedByInvocation: true });
+        return "ccc-fixture";
+    });
+    await expect(main()).rejects.toMatchObject({ status: 0 });
+    expect(f.clipboard).toHaveBeenCalledWith("final-id", expect.any(String));
+    expect(f.socket).toHaveBeenCalledWith("final-id");
+    expect(f.command.mock.calls[0][1]).toContain("final-id");
+    expect(f.command.mock.calls[0][1]).not.toContain("setup-id");
+});
+
+it("public command failure disposes its owned environment artifact and cleans the session", async () => {
+    const failure = new Error("container command failed");
+    f.command.mockRejectedValue(failure);
+    await expect(main()).rejects.toBe(failure);
     expect(f.events.slice(-3)).toEqual(["restore", "unlink", "cleanup"]);
 });
 

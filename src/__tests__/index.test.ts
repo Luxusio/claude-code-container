@@ -1322,58 +1322,6 @@ describe('strandedBranchNotice escaping', () => {
   })
 })
 
-describe('container-manager socket access call site', () => {
-  it('grants socket access on the final container for every start path, including reused and deferred ones', async () => {
-    const { readFileSync } = await vi.importActual<typeof import('fs')>('fs')
-    const { fileURLToPath } = await vi.importActual<typeof import('url')>('url')
-    const source = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8')
-    const call = source.indexOf('ensureContainerManagerSocketAccess(readyContainerName);')
-    expect(call).toBeGreaterThan(-1)
-    // After the last step that can replace the container...
-    expect(call).toBeGreaterThan(source.indexOf('readyContainerName = ensureToolsForSetupContainer('))
-    // ...and immediately before the setup callback returns that final ID.
-    expect(source.slice(call)).toMatch(/^ensureContainerManagerSocketAccess\(readyContainerName\);\s*return readyContainerName;/)
-    // Not nested in the new-container-only branch.
-    const onlyNew = source.lastIndexOf('if (!wasAlreadyRunning) {', call)
-    const onlyNewEnd = source.indexOf('\n        }\n', onlyNew)
-    expect(onlyNewEnd).toBeLessThan(call)
-  })
-})
-
-describe('clipboard delivery setup call site', () => {
-  it('refreshes clipboard commands on the final container for new, reused and replaced sessions under the readiness lock', async () => {
-    const { readFileSync } = await vi.importActual<typeof import('fs')>('fs')
-    const { fileURLToPath } = await vi.importActual<typeof import('url')>('url')
-    const source = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8')
-    const setup = source.indexOf('await withContainerSetupReadiness(sessionContainerPrefix, async () => {')
-    const returned = source.indexOf('return readyContainerName;', setup)
-    const call = source.indexOf('syncClipboardShims(readyContainerName, __dirname);', setup)
-    expect(setup).toBeGreaterThan(-1)
-    expect(call).toBeGreaterThan(setup)
-    expect(call).toBeLessThan(returned)
-    expect(source.match(/syncClipboardShims\(readyContainerName, __dirname\);/g)).toHaveLength(1)
-
-    // A restart-capable tool check may replace the originally selected container.
-    const finalReadiness = source.indexOf('readyContainerName = ensureToolsForSetupContainer(', setup)
-    expect(finalReadiness).toBeGreaterThan(setup)
-    expect(call).toBeGreaterThan(finalReadiness)
-    expect(source.slice(call, returned)).not.toMatch(/readyContainerName\s*=/)
-    expect(call).toBeLessThan(source.indexOf('ensureContainerManagerSocketAccess(readyContainerName);', setup))
-
-    // Reused sessions skip the heavy setup branches, but must receive new copy code.
-    const setupBeforeCopy = source.slice(setup, call)
-    const newOnlyBranches = [...setupBeforeCopy.matchAll(/if \(!wasAlreadyRunning\) \{/g)]
-    expect(newOnlyBranches.length).toBeGreaterThan(0)
-    for (const branch of newOnlyBranches) {
-      const branchEnd = source.indexOf('\n        }', setup + branch.index!)
-      expect(branchEnd).toBeGreaterThan(setup + branch.index!)
-      expect(branchEnd).toBeLessThan(call)
-    }
-    const toolBranchEnd = source.indexOf('\n        }', finalReadiness)
-    expect(toolBranchEnd).toBeLessThan(call)
-  })
-})
-
 describe('~/.ccc layout migration and default profile wiring', () => {
   it('migrates host-side before any profile, lock or container work, and maps CCC_PROFILE=default to no profile', async () => {
     const { readFileSync } = await vi.importActual<typeof import('fs')>('fs')

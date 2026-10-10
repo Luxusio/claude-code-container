@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process";
-import { runContainerCommand } from "./container-command.js";
+import { createContainerExec, ensureContainerExecSetupAvailable, ensureContainerExecTools, containerExecReplacementBlockReason, resolveContainerExecTools, attachContainerExecClipboardImage } from "./application/container-exec.js";
+import { createNativeContainerExecPorts } from "./composition/container-exec.js";
+import type { ContainerExecOptions } from "./ports/container-exec.js";
 import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";
 import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
-import {
-    existsSync,
-    mkdirSync,
-    writeFileSync,
-    readFileSync,
-} from "fs";
-import { basename, dirname, join, relative, resolve } from "path";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { basename, dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
 import {
     formatScannedFiles,
@@ -24,109 +21,18 @@ import {
     remoteExec,
     remoteTerminate,
 } from "./remote.js";
-import {
-    getProjectId,
-    CONTAINER_ENV_KEY,
-    CONTAINER_ENV_VALUE,
-    prompt,
-    DATA_DIR,
-    CLI_VERSION,
-    getClaudeDir,
-    getClaudeJsonFile,
-    collectForwardedEnv,
-    writeOwnedEnvFile,
-    LAB_RUNNER_PROFILE_NAME,
-} from "./utils.js";
+import { getProjectId, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, DATA_DIR, CLI_VERSION, getClaudeDir, getClaudeJsonFile, LAB_RUNNER_PROFILE_NAME } from "./utils.js";
 
-import { ensureClipboardServer, hasAnyActiveSessionsExcept, retireClipboardServerFromPortFile } from "./clipboard-server.js";
-import { clipboardPortFile as clipboardPortFilePath, DEFAULT_PROFILE_NAME, defaultProfileDir, ensureDefaultProfileDir, migrateHomeLayout, normalizeProfile } from "./home-layout.js";
-import { withCodexConfigLock } from "./codex-config-lock.js";
-import { ensureCodexHarness } from "./codex-harness.js";
-import { assertCodexStateAccessible } from "./codex-state-ownership.js";
+import { hasAnyActiveSessionsExcept, retireClipboardServerFromPortFile } from "./clipboard-server.js";
+import { DEFAULT_PROFILE_NAME, defaultProfileDir, ensureDefaultProfileDir, migrateHomeLayout, normalizeProfile } from "./home-layout.js";
 import { hasLegacyHomeLayoutContainerMounts } from "./home-layout-container-guard.js";
 import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
-import { prepareCodexLaunch } from "./codex-launch.js";
-import { ContainerRestartRequiredError, formatContainerStartupError } from "./container-restart-guidance.js";
-import { buildCodexResumeRecoveryCommand } from "./codex-resume-recovery.js";
+import { formatContainerStartupError } from "./container-restart-guidance.js";
 import { maybeAttachCodexClipboardImage } from "./codex-clipboard-image.js";
-import {
-    parseWorktreeArg,
-    validateBranchName,
-    listWorkspaces,
-    createWorkspace,
-    removeWorkspace,
-    repairWorkspace,
-    detectBrokenWorktrees,
-    fixBrokenWorktree,
-    getWorkspacePath,
-    getWorktreeGitMounts,
-    assertWorkspaceBranch,
-    assertWorkspaceRootOwnership,
-    strandedBranchRegistrations,
-    terminalSafeLiteral,
-    pasteableArgument,
-    type StrandedBranchRegistration,
-    repairWorkspaceRootOwnership,
-    hasGitMetadata,
-    detectWorktreeWorkspaceBranch,
-    workspaceExists,
-    needsSubmoduleSetup,
-    initWithSubmodules,
-    DamagedWorkspaceMetadataError,
-    MissingWorkspaceRootRegistrationError,
-    canRecreateMissingWorkspaceRootRegistration,
-    WorktreeContentConflictError,
-    setAsideConflictingContent,
-    repairWorkspaceWorktree,
-} from "./worktree.js";
-import {
-    getContainerName,
-    isDockerDesktop,
-    ensureDockerRunning,
-    isContainerRunning,
-    isContainerConfirmedStopped,
-    isContainerExists,
-    getContainerIdentity,
-    getManagedProjectContainerIdentity,
-    inspectSessionContainerOwnership,
-    type ContainerIdentity,
-    isImageExists,
-    getImageLabel,
-    startProjectContainer,
-    stopProjectContainer,
-    removeProjectContainer,
-    syncClipboardShims,
-    getContainerStatus,
-    ensureCredentialHostDir,
-    prepareCodexConfigForContainer,
-    ensureContainerManagerSocketAccess,
-    restoreCodexConfigHostOwnership,
-} from "./docker.js";
-import {
-    DEVICE_BROKER_DEFAULT_HOST,
-    ensureHostDeviceBroker,
-} from "@ccc/device-lab/device-lab-broker.js";
-import {
-    ensureClaudeInContainer,
-    ensureTools,
-    ensureUvAvailable,
-    CLAUDE_BIN_PATH,
-} from "./container-setup.js";
-import {
-    createSessionLock,
-    getActiveSessionsForContainer,
-    getSessionLockClaimsForProjectFamily,
-    recreateContainerWithoutInterruptingSessions,
-    withContainerLifecycleLock,
-    withContainerSetupLockAsync,
-    withProjectFamilyLifecycleLock,
-    withProjectFamilyLifecycleLockAsync,
-    cleanupSession,
-    setSessionContainerId,
-    acquireHostSessionOwnership,
-    confirmSessionOwnership,
-    setSessionCleanupEnabled,
-} from "./session.js";
+import { parseWorktreeArg, validateBranchName, listWorkspaces, createWorkspace, removeWorkspace, repairWorkspace, detectBrokenWorktrees, fixBrokenWorktree, getWorkspacePath, assertWorkspaceBranch, assertWorkspaceRootOwnership, strandedBranchRegistrations, terminalSafeLiteral, pasteableArgument, type StrandedBranchRegistration, repairWorkspaceRootOwnership, hasGitMetadata, detectWorktreeWorkspaceBranch, workspaceExists, needsSubmoduleSetup, initWithSubmodules, DamagedWorkspaceMetadataError, MissingWorkspaceRootRegistrationError, canRecreateMissingWorkspaceRootRegistration, WorktreeContentConflictError, setAsideConflictingContent, repairWorkspaceWorktree } from "./worktree.js";
+import { getContainerName, ensureDockerRunning, isContainerRunning, isContainerConfirmedStopped, isContainerExists, getContainerIdentity, getManagedProjectContainerIdentity, type ContainerIdentity, isImageExists, getImageLabel, stopProjectContainer, removeProjectContainer, getContainerStatus, ensureCredentialHostDir } from "./docker.js";
+import { ensureTools } from "./container-setup.js";
+import { createSessionLock, getActiveSessionsForContainer, getSessionLockClaimsForProjectFamily, recreateContainerWithoutInterruptingSessions, withContainerSetupLockAsync, withProjectFamilyLifecycleLock, withProjectFamilyLifecycleLockAsync, cleanupSession } from "./session.js";
 
 export const RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the existing container is running. It will be applied after the container stops.";
 export const INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the container was running when this session started. Restart ccc after that session exits to upgrade.";
@@ -144,9 +50,7 @@ export function ensureSetupContainerAvailable(
     runningProbe: typeof isContainerRunning = isContainerRunning,
     log: (message: string) => void = console.log,
 ): string {
-    if (runningProbe(containerId, "id")) return containerId;
-    log(CONTAINER_SETUP_RESTART_MESSAGE);
-    return restart();
+    return ensureContainerExecSetupAvailable(containerId, restart, { running: runningProbe, log });
 }
 
 type ContainerSetupLock = <T>(
@@ -169,29 +73,8 @@ export function ensureToolsForSetupContainer(
     runningProbe: typeof isContainerRunning = isContainerRunning,
     installer: typeof ensureTools = ensureTools,
 ): string {
-    let readyContainerId = containerId;
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt++) {
-        readyContainerId = ensureSetupContainerAvailable(
-            readyContainerId,
-            restart,
-            runningProbe,
-        );
-        try {
-            installer(readyContainerId, setupTool);
-            return readyContainerId;
-        } catch (error) {
-            // Retry only when setup actually lost its container. Retrying a
-            // package/probe failure against the same live container can double
-            // the mutation deadline and race an in-container cleanup.
-            if (runningProbe(readyContainerId, "id")) throw error;
-            lastError = error;
-        }
-    }
-    throw new Error("Failed to install tools in container", { cause: lastError });
+    return ensureContainerExecTools(containerId, setupTool, restart, { running: runningProbe, install: installer, log: console.log });
 }
-import { buildMcpConfig } from "./mcp-forward.js";
-import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
 import {
     validateProfileName,
     listProfiles,
@@ -242,34 +125,6 @@ export function runWorktreeLifecycleOperation<T>(
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-function deviceBrokerBindHostForContainer(): string {
-    return DEVICE_BROKER_DEFAULT_HOST;
-}
-
-async function prepareHostDeviceBroker(fullPath: string, profile?: string): Promise<void> {
-    const result = await ensureHostDeviceBroker({
-        cwd: fullPath,
-        profile,
-        trustedCliPaths: [__filename],
-        bindHost: deviceBrokerBindHostForContainer(),
-        probeHost: DEVICE_BROKER_DEFAULT_HOST,
-        timeoutMs: 250,
-        startupTimeoutMs: 2500,
-    });
-    if (!("ok" in result) || result.ok !== true) {
-        const detail = "error" in result && result.error ? `${result.error}${"detail" in result && result.detail ? `: ${result.detail}` : ""}` : "unknown error";
-        const diagnostic = "diagnostics" in result && Array.isArray(result.diagnostics) && result.diagnostics.length > 0
-            ? ` ${result.diagnostics.join("; ")}.`
-            : "";
-        console.warn(`[ccc] WARNING: device broker auto-start failed (${detail}).${diagnostic} Host-backed device MCP tools may be unavailable.`);
-    }
-}
-
-// Progress indicator for startup steps (dim text on stderr)
-function progress(msg: string): void {
-    process.stderr.write(`\x1b[2m▸ ${msg}\x1b[0m\n`);
-}
 
 export function replaceStoppedContainerWithoutInterruptingSessions(
     containerName: string,
@@ -334,24 +189,7 @@ export function containerReplacementBlockReason(
     sessionProbe: typeof getActiveSessionsForContainer = getActiveSessionsForContainer,
     statusProbe: typeof getContainerStatus = getContainerStatus,
 ): string | null {
-    const currentLockName = basename(currentLockFile);
-    const claims = sessionProbe(containerPrefix, currentLockFile);
-    const currentClaims = claims.filter((claim) => claim === currentLockName);
-    if (currentClaims.length !== 1) {
-        return "the current session lock ownership could not be verified";
-    }
-    const otherClaims = claims.filter((claim) => claim !== currentLockName);
-    if (otherClaims.length > 0) {
-        return `${otherClaims.length} live or indeterminate session lock claim(s) remain: ${otherClaims.join(", ")}`;
-    }
-    const status = statusProbe(containerName);
-    if (!status.exists || !status.containerId) {
-        return "the container identity could not be verified";
-    }
-    if (status.containerId !== expectedContainerId) {
-        return "the container identity changed before replacement";
-    }
-    return null;
+    return containerExecReplacementBlockReason(containerName, containerPrefix, currentLockFile, expectedContainerId, { claims: sessionProbe, status: statusProbe, lockName: basename });
 }
 
 
@@ -432,11 +270,7 @@ export function resolveExecTools(
     cmd: string[],
     optionsTool?: ToolDefinition,
 ): { setupTool: ToolDefinition; commandTool?: ToolDefinition } {
-    const commandTool = optionsTool ?? getToolByName(cmd[0]);
-    return {
-        setupTool: commandTool ?? getDefaultTool(),
-        commandTool,
-    };
+    return resolveContainerExecTools(cmd, optionsTool, { tool: getToolByName, defaultTool: getDefaultTool });
 }
 
 /**
@@ -470,16 +304,7 @@ export async function maybeAttachCodexClipboardImageForCommand(
     clipboard?: { url?: string; token?: string },
     attachClipboardImage: typeof maybeAttachCodexClipboardImage = maybeAttachCodexClipboardImage,
 ): Promise<string[]> {
-    if (commandTool?.name !== "codex") {
-        return [...cmd];
-    }
-
-    const attached = await attachClipboardImage(projectPath, [...cmd], {
-        enabled: true,
-        clipboardUrl: clipboard?.url,
-        clipboardToken: clipboard?.token,
-    });
-    return attached.args;
+    return attachContainerExecClipboardImage(projectPath, cmd, commandTool, clipboard, attachClipboardImage);
 }
 
 // Check if mise.toml exists and offer to create if not
@@ -522,424 +347,16 @@ export async function ensureMiseConfig(projectPath: string): Promise<void> {
     }
 }
 
-async function exec(
-    projectPath: string,
-    cmd: string[],
-    options: {
-        interactive?: boolean;
-        env?: Record<string, string>;
-        tool?: ToolDefinition;
-        expectedWorktreeBranch?: string;
-        expectedWorktreeSourcePath?: string;
-    } = {},
-    profile?: string,
-): Promise<void> {
-    // Check Docker is running first
-    ensureDockerRunning();
+const containerExec = createContainerExec(createNativeContainerExecPorts({
+    ensureDirectories: ensureDirs,
+    ensureProjectTools: ensureMiseConfig,
+    assetDirectory: __dirname,
+    trustedCliPath: __filename,
+}));
 
-    const fullPath = resolve(projectPath);
-
-    // Ensure directories exist before syncing credentials
-    ensureDirs(profile);
-
-
-    // Check for mise.toml and offer to create if not exists
-    await ensureMiseConfig(fullPath);
-
-    // Create session lock BEFORE starting container so other sessions
-    // see us during their cleanup and don't stop the container prematurely.
-    // This prevents a race condition where:
-    //   Terminal A cleanup checks for other sessions → finds none → stops container
-    //   Terminal B is still setting up but hasn't created its lock yet → container dies
-    const projectId = getProjectId(fullPath);
-    if (process.env.DEBUG) {
-        console.error(`[ccc:debug] exec: projectPath=${projectPath}`);
-        console.error(`[ccc:debug] exec: fullPath=${fullPath}`);
-        console.error(`[ccc:debug] exec: projectId=${projectId}`);
-        console.error(`[ccc:debug] exec: mountPath=/project/${projectId}`);
-        console.error(`[ccc:debug] exec: cmd=${cmd.join(" ")}`);
-    }
-    const { setupTool, commandTool } = resolveExecTools(cmd, options.tool);
-    const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
-    const worktreeBranch = options.expectedWorktreeBranch ?? detectWorktreeWorkspaceBranch(fullPath);
-    const acquire = () => acquireHostSessionOwnership({
-        projectId, projectPath: fullPath, profile,
-        toolName: (commandTool ?? options.tool)?.name ?? "command",
-    }, (request) => {
-        const runtime = runtimeCli();
-        if (runtime !== "docker" && runtime !== "podman") throw new Error("Invalid session container runtime.");
-        return { ...inspectSessionContainerOwnership(request.projectPath, request.profile), runtime };
-    });
-    const { lockFile: sessionLockFile } = worktreeBranch
-        ? await withProjectFamilyLifecycleLockAsync(projectId, () => {
-            assertWorkspaceBranch(fullPath, worktreeBranch, spawnSync, options.expectedWorktreeSourcePath);
-            return acquire();
-        })
-        : await acquire();
-
-    // Start clipboard server early — must complete before container creation so
-    // the port file exists and can be bind-mounted (file mount requires the file
-    // to already exist at docker run time).
-    const clipboardPort = await ensureClipboardServer().catch(() => null);
-    const clipboardPortFile = clipboardPortFilePath();
-
-    // Detect worktree mounts (source .git directories needed for git operations)
-    const worktreeMounts = getWorktreeGitMounts(
-        fullPath,
-        worktreeBranch !== null,
-        `/project/${projectId}`,
-    );
-    if (process.env.DEBUG && worktreeMounts.length > 0) {
-        console.error(`[ccc:debug] worktreeGitMounts (${worktreeMounts.length}):`);
-        for (const m of worktreeMounts) {
-            console.error(`[ccc:debug]   ${m.hostPath} -> ${m.containerPath}`);
-        }
-    }
-
-    // Single docker inspect to get container status (replaces 3-4 separate docker commands)
-    const targetContainer = getContainerName(fullPath, profile);
-    progress("Checking container...");
-    const containerStatus = getContainerStatus(targetContainer);
-    let wasAlreadyRunning = containerStatus.running;
-    const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
-    // Image and numeric-user upgrades are reconciled together by startProjectContainer.
-    // It retains the previous immutable image/mount evidence until Codex state
-    // migration completes, under the startup and existing session guards.
-
-    // Start or get container (with extra mounts for worktree workspaces)
-    if (!wasAlreadyRunning) progress("Starting container...");
-    progress("Preparing device broker...");
-    await prepareHostDeviceBroker(fullPath, profile).catch((error) => {
-        console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
-    });
-    const recreateInsideLifecycleLock = (recreate: () => void) => {
-        const blockedReason = containerReplacementBlockReason(
-            targetContainer,
-            sessionContainerPrefix,
-            sessionLockFile,
-            containerStatus.containerId ?? "",
-            getActiveSessionsForContainer,
-            getContainerStatus,
-        );
-        if (blockedReason) {
-            if (process.env.DEBUG) console.error(`[ccc] Automatic container replacement blocked: ${blockedReason}.`);
-            return false;
-        }
-        recreate();
-        return true;
-    };
-    const invocationStartedContainers = new Set<string>();
-    const startContainer = (
-        mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
-        portFile: string | undefined = clipboardPortFile,
-        onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
-    ): string => {
-        return withContainerLifecycleLock(sessionContainerPrefix, () => {
-            let readyContainerId: string | null = null;
-            startProjectContainer(
-                fullPath,
-                () => ensureDirs(profile),
-                mounts,
-                portFile,
-                profile,
-                onRecreate,
-                recreateInsideLifecycleLock,
-                (containerId, handoff) => {
-                    readyContainerId = containerId;
-                    setSessionContainerId(containerId);
-                    if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
-                    setSessionCleanupEnabled(invocationStartedContainers.has(containerId));
-                },
-                containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
-                (containerId) => {
-                    invocationStartedContainers.add(containerId);
-                    setSessionContainerId(containerId);
-                    setSessionCleanupEnabled(true);
-                },
-            );
-            if (!readyContainerId) {
-                throw new Error("Container became unavailable before the session handoff.");
-            }
-            return readyContainerId;
-        });
-    };
-    const projectMountPath = `/project/${projectId}`;
-    const runMiseInstall = (readyContainerName: string) => {
-        // Keep mise's stderr visible — that's where it streams download/build
-        // progress. This remains non-fatal by design, but simultaneous joiners
-        // must not pass the setup lock while the first install is still active.
-        spawnSync(
-            runtimeCli(),
-            [
-                "exec", "-w", projectMountPath, readyContainerName,
-                "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true",
-            ],
-            { stdio: "inherit" },
-        );
-    };
-    // A running container is not necessarily setup-ready. Hold the distinct
-    // setup lock from start/handoff through the complete preparation phase, so
-    // a simultaneous joiner cannot exec while the creator is still installing
-    // commands or configuring the container.
-    progress("Synchronizing container setup...");
-    let containerName = await withContainerSetupReadiness(sessionContainerPrefix, async () => {
-        let readyContainerName = startContainer();
-        await confirmSessionOwnership();
-        withCodexConfigLock(() => restoreCodexConfigHostOwnership(readyContainerName, profile), profile);
-
-        // Skip heavy setup if the container was already running before this
-        // launch; the setup lock guarantees a simultaneous creator has finished
-        // that work before this joiner reaches the lightweight path.
-        if (!wasAlreadyRunning) {
-            // Setup steps. spawnSync blocks the event loop so wrapping in Promise.all
-            // doesn't actually parallelize — run each step with its own progress line
-            // so the user can see exactly where time is being spent.
-            progress("Ensuring uv...");
-            ensureUvAvailable(readyContainerName);
-
-            progress("Building MCP config...");
-            const forwardedMcp = await buildMcpConfig(profile, () => restoreCodexConfigHostOwnership(readyContainerName, profile));
-
-            progress("Setting up localhost proxy...");
-            setupLocalhostProxy(readyContainerName);
-
-            if (forwardedMcp.length > 0) {
-                console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
-            }
-
-            // Verify container is still running before exec.
-            readyContainerName = ensureSetupContainerAvailable(
-                readyContainerName,
-                () => startContainer(undefined, undefined, undefined),
-            );
-            await confirmSessionOwnership();
-        } else {
-            // Container already running — only rebuild MCP config (lightweight, may have changed)
-            const forwardedMcp = await buildMcpConfig(profile, () => restoreCodexConfigHostOwnership(readyContainerName, profile));
-            if (forwardedMcp.length > 0) {
-                console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
-            }
-        }
-
-        if (!wasAlreadyRunning) {
-            progress("Installing project tools (mise)...");
-            runMiseInstall(readyContainerName);
-        }
-
-        // This is deliberately the final restart-capable readiness step. A
-        // late setup checkpoint may have returned a replacement container, so
-        // prove/install the requested command against that final pinned ID.
-        if (shouldEnsureTool) {
-            progress("Checking tools...");
-            readyContainerName = ensureToolsForSetupContainer(
-                readyContainerName,
-                setupTool,
-                () => startContainer(undefined, undefined, undefined),
-            );
-            await confirmSessionOwnership();
-        }
-        if (commandTool?.name === "claude") {
-            // Re-verify after mise because a project shim can replace the fixed
-            // command path while setup owns the readiness lock.
-            ensureClaudeInContainer(readyContainerName);
-        } else if (commandTool?.name === "codex") {
-            withCodexConfigLock(() => prepareCodexConfigForContainer(readyContainerName, profile), profile);
-            assertCodexStateAccessible(readyContainerName, profile);
-            ensureCodexHarness(readyContainerName, profile);
-        }
-        progress("Syncing clipboard shims...");
-        syncClipboardShims(readyContainerName, __dirname);
-        // Runs for new, restarted, reused and deferred containers alike, on the final ID.
-        ensureContainerManagerSocketAccess(readyContainerName);
-        return readyContainerName;
-    }).catch(async (error) => {
-        // A native start may succeed before its subsequent setup helper fails.
-        // Settle that captured start's guardian authorization before cleanup.
-        try {
-            await confirmSessionOwnership();
-        } catch {
-            try {
-                console.warn("[ccc] Unable to confirm session ownership after setup failure.");
-            } catch { /* A diagnostic must not replace the setup failure. */ }
-        }
-        if (error instanceof ContainerRestartRequiredError) throw error;
-        const detail = error instanceof Error ? `: ${error.message}` : "";
-        throw new Error(`Container setup failed${detail}`, { cause: error });
-    });
-
-    // Build docker exec command
-    const clipboardHost = clipboardPort
-        ? ((process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal")
-        : null;
-    let clipboardToken: string | null = null;
-    if (clipboardPort) {
-        try {
-            const portFileContent = readFileSync(clipboardPortFilePath(), "utf-8").trim();
-            clipboardToken = portFileContent.split(":").slice(1).join(":") || null;
-        } catch {
-            clipboardToken = null;
-        }
-    }
-
-    const clipboardUrl = clipboardHost && clipboardPort
-        ? `http://${clipboardHost}:${clipboardPort}`
-        : undefined;
-
-    let resolvedCmd = [...cmd];
-    resolvedCmd = await maybeAttachCodexClipboardImageForCommand(
-        fullPath,
-        resolvedCmd,
-        commandTool,
-        { url: clipboardUrl, token: clipboardToken ?? undefined },
-    );
-
-    // Spin up the in-container X11 clipboard bridge (Xvfb :99 + sync daemon)
-    // on every session. Idle Xvfb is ~15-30MB RAM so running it always is
-    // cheaper than branching per-tool and lets GUI MCPs / Electron apps work
-    // out of the box even if no clipboard server is up (sync loop just idles).
-    // Script is idempotent; reuses an existing bridge.
-    {
-        const bridgeEnv: string[] = [];
-        if (clipboardUrl) bridgeEnv.push("-e", `CCC_CLIPBOARD_URL=${clipboardUrl}`);
-        if (clipboardToken) bridgeEnv.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
-        spawnSync(runtimeCli(), [
-            "exec", "-d", ...bridgeEnv, containerName,
-            "/usr/local/bin/ccc-x11-bridge",
-        ], { stdio: "ignore" });
-    }
-
-    const execArgs = ["exec", "-w", projectMountPath];
-
-    // Collect all env vars into a temp file and pass --env-file to docker exec.
-    // This avoids the OS ARG_MAX limit ("Argument list too long") that occurs when
-    // forwarding many environment variables as repeated -e KEY=VALUE flags.
-    const forwardedEnvPlan = collectForwardedEnv(process.env);
-    if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
-        console.error(
-            `Skipped ${forwardedEnvPlan.skippedDueToLimit.length} host env var(s) to keep exec size bounded; use --env KEY=VALUE for required overrides.`,
-        );
-    }
-
-    const envEntries: Array<[string, string]> = [
-        // Container marker: enables per-project env separation via mise.toml [env]
-        [CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE],
-        ...forwardedEnvPlan.forwarded,
-        ["MISE_TRUSTED_CONFIG_PATHS", projectMountPath],
-    ];
-
-    // Locale: forward host LANG/LC_* (no longer excluded).
-    // If host has no LANG set, inject en_US.UTF-8 as fallback.
-    if (!process.env.LANG) {
-        envEntries.push(["LANG", "en_US.UTF-8"]);
-    }
-
-    // Timezone: detect host timezone and forward to container.
-    // Priority: TZ env var → Intl API detection → UTC fallback.
-    const hostTz = process.env.TZ
-        || Intl.DateTimeFormat().resolvedOptions().timeZone
-        || "UTC";
-    envEntries.push(["TZ", hostTz]);
-
-    // Profile: env vars handled by mise.toml [env], not by ccc
-
-    // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
-    if (clipboardPort) {
-        envEntries.push(["CCC_CLIPBOARD_URL", `http://${clipboardHost}:${clipboardPort}`]);
-        if (clipboardToken) {
-            envEntries.push(["CCC_CLIPBOARD_TOKEN", clipboardToken]);
-        }
-    }
-
-    // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
-    // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
-    // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
-    if (commandTool?.needsNodeRuntime) {
-        envEntries.push(["MISE_NODE_VERSION", "22"]);
-        envEntries.push(["BASH_ENV", "/home/ccc/.bashrc_hooks"]);
-    }
-
-    // options.env: per-session overrides from --env KEY=VALUE CLI flag (applied last)
-    if (options.env) {
-        for (const [key, value] of Object.entries(options.env)) {
-            envEntries.push([key, value]);
-        }
-    }
-
-    let preparationStatus: number | null = null;
-    let resultStatus: number;
-    const envFile = writeOwnedEnvFile(envEntries);
-    try {
-        execArgs.push("--env-file", envFile.path);
-
-        if (commandTool?.name === "codex" && options.interactive !== false) {
-            const preparation = prepareCodexLaunch(runtimeCli(), [...execArgs, containerName], resolvedCmd);
-            if (!preparation.ok) {
-                console.error(`[ccc] ${preparation.error}`);
-                preparationStatus = preparation.status;
-            } else {
-                resolvedCmd = preparation.command;
-                if (preparation.notice) console.error(`[ccc] ${preparation.notice}`);
-            }
-        }
-
-        if (options.interactive !== false && process.stdin.isTTY && process.stdout.isTTY) {
-            execArgs.push("-it");
-            if (commandTool?.name === "codex" && preparationStatus === null) {
-                resolvedCmd = buildCodexResumeRecoveryCommand(resolvedCmd);
-            }
-        }
-
-        execArgs.push(containerName);
-
-        if (commandTool?.name === "claude") {
-            // Run claude directly (no shell wrapper — avoids mise interception)
-            execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
-        } else {
-            execArgs.push(...resolvedCmd);
-        }
-
-        await confirmSessionOwnership();
-        if (preparationStatus === null) {
-            setSessionCleanupEnabled(true);
-            await confirmSessionOwnership();
-            resultStatus = await runContainerCommand(runtimeCli(), execArgs, options.interactive !== false);
-        } else {
-            resultStatus = preparationStatus;
-        }
-    } finally {
-        try {
-            withCodexConfigLock(() => restoreCodexConfigHostOwnership(containerName, profile), profile);
-        } catch (error) {
-            try {
-                console.warn(`[ccc] Unable to restore Codex config access after command exit: ${error instanceof Error ? error.message : String(error)}`);
-            } catch { /* A diagnostic must not replace the command outcome. */ }
-        } finally {
-            try {
-                envFile.dispose();
-            } finally {
-                try {
-                    cleanupSession();
-                } catch {
-                    try {
-                        console.warn("[ccc] Session cleanup failed after command exit.");
-                    } catch { /* A diagnostic must not replace the command outcome. */ }
-                }
-            }
-        }
-    }
-
-    if (process.env.DEBUG) {
-        // Check conversation directory state after Claude exits
-        const claudeProjectDir = `/home/ccc/.claude/projects/-project-${projectId}`;
-        const checkResult = spawnSync(runtimeCli(), [
-            "exec", containerName, "sh", "-c",
-            `ls -1 "${claudeProjectDir}"/*.jsonl 2>/dev/null | wc -l; echo "dir:${claudeProjectDir}"`,
-        ], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-        const output = (checkResult.stdout ?? "").trim();
-        console.error(`[ccc:debug] post-exit conversation check: ${output}`);
-    }
-
-    process.exit(resultStatus);
+async function exec(projectPath: string, cmd: string[], options: ContainerExecOptions = {}, profile?: string): Promise<void> {
+    const status = await containerExec.exec(projectPath, cmd, options, profile);
+    process.exit(status);
 }
 
 function showStatus(): void {
