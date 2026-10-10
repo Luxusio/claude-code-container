@@ -275,6 +275,14 @@ describe("minimal public Device Lab output", () => {
             const detailedBackends = await call("devices", { view: "backends", detail: true });
             expect(compactBackends.value.backends.some((backend: { capabilities?: string[] }) => backend.capabilities?.includes("screenshot"))).toBe(true);
             expect(detailedBackends.value.backends.some((backend: { capabilities?: string[] }) => backend.capabilities?.includes("screenshot"))).toBe(true);
+            const refused = await context.client.callTool({ name: "delete", arguments: { deviceId: id, confirmDestructive: false } });
+            expect(refused.isError).toBe(true);
+            expect(JSON.parse((refused.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                ok: false,
+                policy: { error: "destructive-action-confirmation-required", confirmationField: "confirmDestructive" },
+            });
+            const retained = await call("status", { deviceId: id });
+            expect(retained.value.device.deviceId).toBe(id);
             const deleted = await call("delete", { deviceId: id, confirmDestructive: true });
             expect(deleted.value.deleted).toBe(id);
         } finally {

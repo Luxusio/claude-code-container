@@ -126,6 +126,13 @@ describe("device-lab MCP broker routing", () => {
                     ] } } }));
                     return;
                 }
+                if (parsed.params?.command === "device_start") {
+                    res.end(JSON.stringify({ ok: true, result: {
+                        device: { id: parsed.params.deviceId, backend: activeGuiBackend, status: "running" },
+                        bootReady: false,
+                    } }));
+                    return;
+                }
                 res.end(JSON.stringify({ ok: true, result: { deviceId: parsed.params?.deviceId } }));
             });
         });
@@ -187,6 +194,7 @@ describe("device-lab MCP broker routing", () => {
                     deviceId: "hyper-v-create-routing",
                     incarnationId: "22222222222222222222222222222222",
                     viaBroker: true,
+                    implicitBroker: false,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
                 },
@@ -198,6 +206,25 @@ describe("device-lab MCP broker routing", () => {
                 deviceId: "hyper-v-create-routing",
                 incarnationId: "22222222222222222222222222222222",
             }));
+
+            const started = await client.callTool({
+                name: "start",
+                arguments: {
+                    deviceId: "hyper-v-create-routing",
+                    incarnationId: "22222222222222222222222222222222",
+                    viaBroker: true,
+                    waitForBoot: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            expect(started.isError).toBe(true);
+            expect(JSON.parse((started.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "device-start-not-ready",
+                deviceId: "hyper-v-create-routing",
+                detail: "boot-readiness-failed",
+            });
+            expect(receivedParams).toMatchObject({ command: "device_start", waitForBoot: true });
 
             const snapshots = await client.callTool({
                 name: "snapshot",
@@ -283,6 +310,83 @@ describe("device-lab MCP broker routing", () => {
         }
     });
 
+    it("routes explicit deletion to the broker and refuses implicit cross-backend ownership ambiguity", { timeout: TIMEOUT }, async () => {
+        const deviceId = "qemu-broker-delete-route";
+        const localLab = { id: deviceId, name: "Retained QEMU lab", provider: "container-qemu", runtimeState: "stopped", runtime: null };
+        const labDir = join(homeDir, ".ccc/labs/owners", brokerOwnerId(), "labs", deviceId);
+        const labFile = join(labDir, "lab.json");
+        mkdirSync(labDir, { recursive: true });
+        writeFileSync(labFile, JSON.stringify(localLab));
+        const windowsRoot = join(homeDir, ".ccc/devices/owners", brokerOwnerId(), "windows");
+        const windowsFile = join(windowsRoot, "devices.json");
+        const previousWindows = existsSync(windowsFile) ? readFileSync(windowsFile) : undefined;
+        const authRoot = join(homeDir, ".ccc/devices/broker/auth");
+        const authFile = join(authRoot, `${brokerOwnerId()}.json`);
+        const previousAuth = existsSync(authFile) ? readFileSync(authFile) : undefined;
+        mkdirSync(authRoot, { recursive: true });
+        writeFileSync(authFile, JSON.stringify({ ownerId: brokerOwnerId(), secret: "b".repeat(64), version: 1 }), { mode: 0o600 });
+        const invocations: Array<Record<string, unknown>> = [];
+        const server = createServer(async (req, res) => {
+            res.setHeader("content-type", "application/json");
+            if (req.url === "/health" || req.url === "/status") {
+                res.end(JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon", broker: { protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION } }));
+                return;
+            }
+            if (sendOwnerResolve(req, res)) return;
+            let rawBody = "";
+            for await (const chunk of req) rawBody += chunk;
+            const body = JSON.parse(rawBody || "{}") as { method?: string; params?: Record<string, unknown> };
+            if (body.method === "broker.inventory") {
+                res.end(JSON.stringify({ ok: true, result: { backends: [{ stateKey: "windows-vm", devices: [{ id: deviceId, backend: "windows-vm" }] }] } }));
+                return;
+            }
+            if (body.method === "broker.command.invoke") {
+                invocations.push(body.params || {});
+                res.end(JSON.stringify({ ok: true, result: { deleted: deviceId } }));
+                return;
+            }
+            res.statusCode = 500;
+            res.end(JSON.stringify({ ok: false, error: "unexpected-broker-operation" }));
+        });
+        await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const route = { deviceId, confirmDestructive: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 };
+            const explicit = await client.callTool({ name: "delete", arguments: { ...route, broker: true, incarnationId: "5".repeat(32) } });
+            expect(explicit.isError, JSON.stringify(explicit.content)).not.toBe(true);
+            expect(invocations).toEqual([expect.objectContaining({ command: "device_delete", backend: "windows-vm", deviceId })]);
+            expect(JSON.parse(readFileSync(labFile, "utf8"))).toEqual(localLab);
+
+            invocations.length = 0;
+            const implicit = await client.callTool({ name: "delete", arguments: route });
+            expect(implicit.isError).toBe(true);
+            expect(JSON.parse((implicit.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "ambiguous-device-backend", deviceId, matches: ["linux-vm", "windows-vm"],
+            });
+            expect(invocations).toEqual([]);
+            expect(JSON.parse(readFileSync(labFile, "utf8"))).toEqual(localLab);
+
+            const localWindows = { id: deviceId, backend: "windows-sandbox", status: "stopped", configPath: join(windowsRoot, "owned-collision.wsb") };
+            mkdirSync(windowsRoot, { recursive: true });
+            writeFileSync(windowsFile, JSON.stringify({ devices: [localWindows] }));
+            const localCollision = await client.callTool({ name: "delete", arguments: route });
+            expect(localCollision.isError).toBe(true);
+            expect(JSON.parse((localCollision.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "ambiguous-device-backend", deviceId, matches: ["windows-sandbox", "linux-vm"],
+            });
+            expect(invocations).toEqual([]);
+            expect(JSON.parse(readFileSync(labFile, "utf8"))).toEqual(localLab);
+            expect(JSON.parse(readFileSync(windowsFile, "utf8"))).toEqual({ devices: [localWindows] });
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+            rmSync(labDir, { recursive: true, force: true });
+            if (previousWindows) writeFileSync(windowsFile, previousWindows);
+            else rmSync(windowsFile, { force: true });
+            if (previousAuth) writeFileSync(authFile, previousAuth, { mode: 0o600 });
+            else rmSync(authFile, { force: true });
+        }
+    });
+
     it("preserves the Hyper-V Linux create response contract across MCP broker routing", { timeout: TIMEOUT }, async () => {
         const device = {
             id: "hyper-v-linux-create-response",
@@ -357,7 +461,9 @@ describe("device-lab MCP broker routing", () => {
 
                     deviceId: device.id,
                     name: "Hyper-V Linux create response",
-                    viaBroker: true,
+                    provider: "hyper-v",
+                    broker: true,
+                    implicitBroker: false,
                     hostCandidates: ["127.0.0.1"],
                     brokerPort: address.port,
                 },

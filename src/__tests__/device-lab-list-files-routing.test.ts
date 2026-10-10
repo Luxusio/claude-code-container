@@ -46,6 +46,7 @@ describe("public list_files routing", () => {
         expect(fixture.calls).toHaveLength(1);
         expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId } });
         expect(fixture.calls[0].args.command).toBeTypeOf("string");
+        expect(fixture.inventoryCalls).toBe(0);
     });
     it.each(["hv", "hv-linux"])("preserves %s incarnation through the existing broker exec path", async deviceId => {
         const incarnationId = "a".repeat(32);
@@ -53,6 +54,14 @@ describe("public list_files routing", () => {
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         expect(fixture.calls).toHaveLength(1);
         expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId, incarnationId } });
+    });
+    it("honors an explicit broker route while implicit routing is disabled", async () => {
+        fixture.stdout = JSON.stringify({ entries: [{ name: "hello.txt", type: "file", size: 5 }] });
+        const incarnationId = "b".repeat(32);
+        const result = await call({ deviceId: "hv", path: "C:\\work", incarnationId, broker: true, implicitBroker: false });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(JSON.parse(result.content[0].text)).toEqual({ entries: [{ name: "hello.txt", type: "file", size: 5 }] });
+        expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId: "hv", backend: "windows-vm", incarnationId } });
     });
     it("refuses a missing or ambiguous owner target before execution", async () => {
         expect((await call({ deviceId: "absent", path: "/" })).isError).toBe(true);

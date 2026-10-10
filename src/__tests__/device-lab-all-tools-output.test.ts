@@ -168,6 +168,12 @@ describe("minimal schemas and diagnostic bypass", () => {
             expect(minimalValue.id).toBe(detailedValue.id);
             expect(detailedValue.capabilities).toContain("screenshot");
             expect(detailedValue.capabilities).not.toContain("device_screenshot");
+            const files = await context.client.callTool({ name: "list_files", arguments: { deviceId: "x11-current-display", path: "/work", implicitBroker: false } });
+            expect(files.isError).toBe(true);
+            expect(JSON.parse((files.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "list-files-unsupported",
+                detail: "Current-display targets do not provide a filesystem adapter.",
+            });
         } finally { await cleanupDeviceLabMcpTestContext(context); }
     });
 });
