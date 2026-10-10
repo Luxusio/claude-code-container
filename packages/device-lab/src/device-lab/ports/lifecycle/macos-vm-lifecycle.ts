@@ -1,4 +1,4 @@
-import type { BrokerMacosLifecycleRequest, BrokerMacosLifecycleResponse, BrokerMacosProviderCommand, BrokerMacosProviderResult, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange } from "../../domain/lifecycle/macos-vm-lifecycle.js";
+import type { BrokerMacosLifecycleRequest, BrokerMacosProviderCommand, BrokerMacosProviderResult, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange } from "../../domain/lifecycle/macos-vm-lifecycle.js";
 export interface BrokerMacosAuxiliaryCleanup {
     result: { ok: boolean; changed: boolean; stateConflict?: boolean; appium: Record<string, unknown>; recording: Record<string, unknown>; minimizeWatchdog: Record<string, unknown> };
     device: unknown; committed: boolean;
@@ -13,7 +13,7 @@ export interface BrokerMacosVmLifecyclePorts {
     readonly publish: (ownerId: string, stateKey: string, deviceId: string, expected: unknown, change: BrokerMacosPublicationChange) => BrokerMacosPublication;
     readonly redactDevice: (device: unknown) => unknown;
     readonly stateErrorCode: (error: unknown) => string | null;
-    readonly stateFailure: (error: unknown, parsed: BrokerMacosLifecycleRequest) => BrokerMacosLifecycleResponse;
+    readonly stateFailure: (error: unknown, parsed: BrokerMacosLifecycleRequest) => { status: number; payload: Record<string, unknown> };
     readonly failureDetail: (result: BrokerMacosProviderResult) => string;
     readonly commandTimeoutMs: number;
     readonly outputLimit: number;

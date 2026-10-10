@@ -20,7 +20,7 @@ export interface BrokerIosLifecyclePlan {
 export interface BrokerIosLifecycleInput {
     ownerId: string; parsed: BrokerIosLifecycleRequest; plan: BrokerIosLifecyclePlan | undefined; expectedDevice: unknown;
 }
-export type BrokerIosLifecycleResponse = { status: number; payload: Record<string, unknown> };
+export type BrokerIosLifecycleResponse = { status: number; payload: unknown };
 export type BrokerIosPublication = { found: boolean; matched: boolean; device: unknown };
 export type BrokerIosClaim = { ok: true; device: Record<string, unknown> } |
     { ok: false; error: string; field: string; value: unknown; existing: Record<string, unknown> };

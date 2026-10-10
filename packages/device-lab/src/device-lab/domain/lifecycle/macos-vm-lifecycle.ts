@@ -20,7 +20,7 @@ export interface BrokerMacosLifecyclePlan {
 export interface BrokerMacosLifecycleInput {
     ownerId: string; parsed: BrokerMacosLifecycleRequest; plan: BrokerMacosLifecyclePlan | undefined; expectedDevice: unknown;
 }
-export type BrokerMacosLifecycleResponse = { status: number; payload: Record<string, unknown> };
+export type BrokerMacosLifecycleResponse = { status: number; payload: unknown };
 export type BrokerMacosPublication = { found: boolean; matched: boolean; device: unknown };
 export type BrokerMacosClaim = { ok: true; device: Record<string, unknown> } |
     { ok: false; error: string; field: string; value: unknown; existing: Record<string, unknown> };

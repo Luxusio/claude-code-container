@@ -5387,7 +5387,7 @@ function readOwnerDevices(ownerId: string, stateKey: string) {
     return readOwnerDeviceStateFile(ownerDevicesFile(ownerId, stateKey), DEVICE_BROKER_INVENTORY_FILE_LIMIT);
 }
 
-function ownerDeviceStateFailure(error: unknown, context: { backend?: string; stateKey?: string } = {}): BrokerRpcResult {
+function ownerDeviceStateFailure(error: unknown, context: { backend?: string; stateKey?: string } = {}): { status: number; payload: Record<string, unknown> } {
     const code = ownerDeviceStateErrorCode(error);
     if (!code) throw error;
     return {

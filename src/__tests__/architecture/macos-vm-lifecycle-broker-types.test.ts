@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createBrokerMacosVmLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerMacosLifecycleInput, BrokerMacosLifecycleRequest, BrokerMacosLifecycleResponse, BrokerMacosBoot, BrokerMacosPublicationChange } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import type { DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
 
 // Proposed mechanical names from the independent read-only contract drafter.
 // Source and genuine-emission consumers must both be checked with
@@ -32,7 +33,25 @@ function positiveConsumers(){
     void create;void start;void stop;void remove;
 }
 void positiveConsumers;
-function negativeConsumers(){
+// Derive the actual native result through its public options contract, rather
+// than copying the private BrokerRpcResult alias into this consumer.
+type NativeBrokerRpcResult=Awaited<ReturnType<NonNullable<DeviceBrokerOptions["deviceToolRunner"]>>>;
+function opaqueNativeCompatibility(native:NativeBrokerRpcResult){
+    const inward:BrokerMacosLifecycleResponse=native;
+    const outward:NativeBrokerRpcResult=inward;
+    const raw:unknown=inward.payload;
+    const undefinedPayload:NativeBrokerRpcResult={status:503,payload:undefined};
+    const textPayload:BrokerMacosLifecycleResponse={status:503,payload:"raw-native-payload"};
+    const structuredPayload:BrokerMacosLifecycleResponse={status:503,payload:new Map([["kept",new Set([1,2])]])};
+    void outward;void raw;void undefinedPayload;void textPayload;void structuredPayload;
+}
+void opaqueNativeCompatibility;
+function negativeConsumers(native:NativeBrokerRpcResult){
+    const opaque:BrokerMacosLifecycleResponse={status:503,payload:undefined};
+    // @ts-expect-error native payload is opaque until a caller narrows it
+    const uncheckedError=opaque.payload.error;void uncheckedError;
+    // @ts-expect-error the canonical state-failure leaf guarantees its object envelope
+    const opaqueStateFailure:BrokerMacosVmLifecyclePorts={...ports,stateFailure:()=>native};void opaqueStateFailure;
     const {sleep,...missingSleep}=ports;void sleep;
     // @ts-expect-error bounded synchronous pacing is required, even for create-only callers
     createBrokerMacosVmLifecycle(missingSleep);

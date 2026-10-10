@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 import { createBrokerIosSimulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerIosLifecycleInput, BrokerIosLifecycleRequest, BrokerIosLifecycleResponse, BrokerIosPublication, BrokerIosPublicationChange, BrokerIosProviderResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
+import type { DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
 import { coreBoundaryViolations } from "./core-boundary.js";
 
+type NativeBrokerRpcResult = Awaited<ReturnType<NonNullable<DeviceBrokerOptions["deviceToolRunner"]>>>;
 type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
 const allNativeLeavesRequired: [OptionalKeys<BrokerIosSimulatorLifecyclePorts>] extends [never] ? true : false = true;
 void allNativeLeavesRequired;
@@ -15,6 +17,18 @@ void allNativeLeavesRequired;
 function strictContracts(ports: BrokerIosSimulatorLifecyclePorts, input: BrokerIosLifecycleInput): void {
     const lifecycle = createBrokerIosSimulatorLifecycle(ports);
     const outcomes: Promise<BrokerIosLifecycleResponse>[] = [lifecycle.create(input), lifecycle.start(input), lifecycle.stop(input), lifecycle.delete(input)];
+    // Native BrokerRpcResult payload is opaque; consumers must narrow it.
+    const nativeFailure: NativeBrokerRpcResult = { status: 409, payload: new Error("raw native carrier") };
+    const compatibleResponse: BrokerIosLifecycleResponse = nativeFailure;
+    const compatibleNative: NativeBrokerRpcResult = compatibleResponse;
+    void compatibleNative;
+    const opaqueArrayResponse: BrokerIosLifecycleResponse = { status: 200, payload: ["raw", { retained: true }] };
+    const opaquePrimitiveResponse: BrokerIosLifecycleResponse = { status: 502, payload: "raw native refusal" };
+    // @ts-expect-error opaque native payload cannot expose unchecked properties
+    const uncheckedPayloadError = compatibleResponse.payload.error;
+    // @ts-expect-error the specific native stateFailure leaf always returns object-shaped payload
+    const opaqueStateFailure: BrokerIosSimulatorLifecyclePorts = { ...ports, stateFailure: () => nativeFailure };
+    void opaqueStateFailure; void opaqueArrayResponse; void opaquePrimitiveResponse; void uncheckedPayloadError;
     const mutable: Record<string, unknown> = lifecycle.createRecord(input.ownerId, input.parsed);
     mutable.raw = { arbitraryMutableNativeField: true };
     const { execute, ...missingExecution } = ports; void execute;
