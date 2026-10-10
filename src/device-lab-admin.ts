@@ -1,3 +1,5 @@
+import { createDeviceAdminPrune } from "./application/device-admin-prune.js";
+import { macosManagedProviderResources } from "./domain/device-admin-prune.js";
 import { admitDeviceAdminInventoryCommand } from "./domain/device-admin-inventory.js";
 import { createDeviceAdminInventory } from "./application/device-admin-inventory.js";
 import type { DeviceAdminOwnerSnapshot } from "./ports/device-admin-inventory.js";
@@ -1237,69 +1239,11 @@ function releasePhysicalLeaseForOwner(ownerId: string, backend: Backend, device:
     });
 }
 
-function pruneOwnerDeviceRecord(ownerId: string, backend: Backend, expected: DeviceRecord): boolean {
-    if (!expected.id) return false;
-    return withAdminOwnerDeviceOperation(ownerId, backend.stateKey, expected.id, () => {
-        const current = readDevices(ownerId, backend.stateKey).find((candidate) => candidate.id === expected.id);
-        if (!current || !isDeepStrictEqual(current, expected)) return false;
-        if ((current.status !== "stopped" && current.status !== "detached") || hasMacosManagedProviderResources(backend, current)) return false;
-
-        return transitionOwnerDeviceRecordWithPhysicalLease(ownerId, backend, current, null);
-    });
-}
-
 function deleteMacosArgs(provider: string, instance: string): string[] | null {
     if (provider === "tart") return ["delete", instance];
     if (provider === "vz") return ["delete", instance];
     if (provider === "utmctl") return ["delete", instance];
     return null;
-}
-
-function macosManagedProviderResource(device: DeviceRecord): boolean {
-    return Boolean(
-        device.providerResourceManaged ||
-        device.provisioning === "image-created" ||
-        device.provisioning === "image-cloned" ||
-        device.imageSource ||
-        device.clonedFrom ||
-        device.imageCreatedAt ||
-        device.clonedAt,
-    );
-}
-
-function macosSnapshotProviderResources(device: DeviceRecord): Array<{ provider: string; instance: string }> {
-    const snapshots = Array.isArray(device.snapshots) ? device.snapshots : [];
-    return snapshots.flatMap((snapshot) => {
-        if (!snapshot || typeof snapshot !== "object") return [];
-        const record = snapshot as Record<string, unknown>;
-        const provider = typeof record.provider === "string" ? record.provider : null;
-        const instance = typeof record.providerInstance === "string" ? record.providerInstance : null;
-        return provider && instance ? [{ provider, instance }] : [];
-    });
-}
-
-function macosRestoreRecoveryProviderResource(device: DeviceRecord): { provider: string; instance: string } | null {
-    const recovery = device.restoreRecovery;
-    if (!recovery || typeof recovery !== "object") return null;
-    const record = recovery as Record<string, unknown>;
-    const provider = typeof record.provider === "string" ? record.provider : typeof device.provider === "string" ? device.provider : null;
-    const instance = typeof record.candidateProviderInstance === "string" ? record.candidateProviderInstance : null;
-    return provider && instance ? { provider, instance } : null;
-}
-
-function macosManagedProviderResources(device: DeviceRecord): Array<{ provider: string; instance: string }> {
-    const resources = [
-        ...macosSnapshotProviderResources(device),
-        macosRestoreRecoveryProviderResource(device),
-    ].filter((resource): resource is { provider: string; instance: string } => Boolean(resource));
-    const provider = typeof device.provider === "string" ? device.provider : null;
-    const instance = typeof device.providerInstance === "string" ? device.providerInstance : null;
-    if (provider && instance && macosManagedProviderResource(device)) resources.push({ provider, instance });
-    return resources;
-}
-
-function hasMacosManagedProviderResources(backend: Backend, device: DeviceRecord): boolean {
-    return backend.stateKey === "macos" && macosManagedProviderResources(device).length > 0;
 }
 
 function macosProviderDeleteFailure(provider: string, instance: string, stderr: string): CommandResult {
@@ -1413,20 +1357,20 @@ export function deleteOwnerDevice(deviceId: string, cwd = process.cwd(), profile
     return { ok: true, text: `${lines.join("\n")}\n` };
 }
 
+function deviceAdminPrune() {
+    return createDeviceAdminPrune<Backend>({
+        get backends() { return DEVICE_BACKENDS; },
+        resolveOwnerId: (cwd, profile) => deviceLabOwnerId(cwd, profile),
+        enumerateOwnerIds: () => allOwnerIds(),
+        readDevices: (ownerId, stateKey) => readDevices(ownerId, stateKey),
+        sameRecord: (current, expected) => isDeepStrictEqual(current, expected),
+        withRecordLock: (ownerId, stateKey, deviceId, decide) => withAdminOwnerDeviceOperation(ownerId, stateKey, deviceId, decide),
+        removeRecord: (ownerId, backend, expected) => transitionOwnerDeviceRecordWithPhysicalLease(ownerId, backend, expected, null),
+    });
+}
+
 export function pruneOwnerDevices(cwd = process.cwd(), profile?: string): { ok: boolean; text: string } {
-    const ownerId = deviceLabOwnerId(cwd, profile);
-    const lines = [`owner: ${ownerId}`];
-    let deleted = 0;
-    for (const backend of DEVICE_BACKENDS) {
-        for (const device of readDevices(ownerId, backend.stateKey)) {
-            if (pruneOwnerDeviceRecord(ownerId, backend, device)) {
-                deleted += 1;
-                lines.push(`pruned: ${device.id || "(unknown)"}  backend=${backend.name}`);
-            }
-        }
-    }
-    if (deleted === 0) lines.push("pruned: 0");
-    return { ok: true, text: `${lines.join("\n")}\n` };
+    return deviceAdminPrune().owner(cwd, profile);
 }
 
 export function stopAllProjectDevices(timeoutMs = 5000): { ok: boolean; text: string } {
@@ -1466,21 +1410,7 @@ export function stopAllProjectDevices(timeoutMs = 5000): { ok: boolean; text: st
 }
 
 export function pruneAllProjectDevices(): { ok: boolean; text: string } {
-    const lines = ["projects: prune --all-projects"];
-    let deleted = 0;
-    for (const ownerId of allOwnerIds()) {
-        lines.push(`project: ${ownerId}`);
-        for (const backend of DEVICE_BACKENDS) {
-            for (const device of readDevices(ownerId, backend.stateKey)) {
-                if (pruneOwnerDeviceRecord(ownerId, backend, device)) {
-                    deleted += 1;
-                    lines.push(`pruned: ${device.id || "(unknown)"}  backend=${backend.name}`);
-                }
-            }
-        }
-    }
-    if (deleted === 0) lines.push("pruned: 0");
-    return { ok: true, text: `${lines.join("\n")}\n` };
+    return deviceAdminPrune().allProjects();
 }
 
 export function formatDevicesStatus(cwd = process.cwd(), profile?: string): string {
