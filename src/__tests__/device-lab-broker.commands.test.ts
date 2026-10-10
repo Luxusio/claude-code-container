@@ -9,12 +9,14 @@ import * as fixtureFs from "fs";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { isolatedDeviceLabPackage } from "./helpers/isolated-device-lab-package.js";
+import { fakeAndroidProviderScript } from "./helpers/fake-android-provider-script.js";
+import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { spawn } from "child_process";
 import { createHash } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { request } from "http";
 import { hostname, tmpdir, uptime } from "os";
-import { dirname, join, resolve } from "path";
+import { delimiter, dirname, join, resolve } from "path";
 import { runInNewContext } from "vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeviceBrokerServer as createRawDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "@ccc/device-lab/device-lab-broker.js";
@@ -5490,6 +5492,123 @@ describe("device-lab host broker lifecycle commands", () => {
             await close(server);
             cleanupOwner(ownerId);
             rmSync(fakeRoot, { recursive: true, force: true });
+        }
+    });
+
+    it.each(["android-emulator", "android-device"] as const)("executes %s control and transfer through the authenticated real backend child", { timeout: process.platform === "win32" ? 120000 : 30000 }, async (backend) => {
+        const project = join(fixtureHome!, "project");
+        const binDir = join(fixtureHome!, "android-bin");
+        const logPath = join(fixtureHome!, "android-sdk.log");
+        const guestUpload = join(fixtureHome!, "guest-upload.txt");
+        mkdirSync(project);
+        mkdirSync(binDir);
+        writeFileSync(logPath, "");
+        for (const tool of ["adb", "emulator", "avdmanager"]) {
+            const program = join(binDir, tool);
+            // Observe bytes at the native push boundary; the existing SDK program handles commands.
+            const observeUpload = tool === "adb"
+                ? `if (process.argv.length === 7 && process.argv[2] === '-s' && process.argv[3] === 'emulator-5580' && process.argv[4] === 'push' && process.argv[6] === '/sdcard/broker-upload.txt') require('node:fs').copyFileSync(process.argv[5], ${JSON.stringify(guestUpload)});\n`
+                : "";
+            writeFileSync(program, `#!${process.execPath}\nconst tool = ${JSON.stringify(tool)};\n${observeUpload}${fakeAndroidProviderScript}`);
+            chmodSync(program, 0o755);
+        }
+        const preload = join(fixtureHome!, "android-node-routing.cjs");
+        writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
+        const ownerId = deviceLabOwnerId(project);
+        const physical = backend === "android-device";
+        const deviceId = physical ? "android-real-broker" : "android-emulator-broker";
+        const serial = physical ? "R5CREAL123" : "emulator-5580";
+        writeFileSync(join(fixtureHome!, `fake-adb-active-${encodeURIComponent(serial)}`), "1");
+        writeBrokerDevices(ownerId, physical ? "android-device" : "android", [{
+            id: deviceId,
+            backend,
+            status: physical ? "attached" : "running",
+            ...(physical
+                ? { serial, leaseClaimId: "broker-physical-claim", leaseClaimNonce: "broker-physical-nonce" }
+                : { port: 5580, avdName: `ccc-${ownerId}-broker` }),
+        }]);
+        const leasePath = join(fixtureHome!, ".ccc/devices/physical-leases/android-device/locks", `${encodeURIComponent(serial)}.json`);
+        const lease = {
+            backend: "android-device", hardwareId: serial, ownerId, deviceId,
+            claimId: "broker-physical-claim", claimNonce: "broker-physical-nonce",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        };
+        if (physical) {
+            mkdirSync(dirname(leasePath), { recursive: true });
+            writeFileSync(leasePath, JSON.stringify(lease));
+        }
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "FAKE_ANDROID_LOG"] as const;
+        const originalEnvironment = environmentKeys.map((key) => process.env[key]);
+        let restoreRouting: (() => void) | undefined;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            process.env.PATH = `${binDir}${delimiter}${originalEnvironment[0] || ""}`;
+            process.env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+            process.env.FAKE_ANDROID_LOG = logPath;
+            restoreRouting = installNodeProviderFixtureRouting(binDir);
+            // No runner overrides: the broker imports the current package-owned native backend.
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId);
+            const headers = ownerRpcHeaders(ownerId);
+            const invoke = (tool: string, extra: Record<string, unknown> = {}) => fetch(endpoint, {
+                method: "POST", headers,
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend, deviceId, ...extra } }),
+            });
+            const control = await invoke(physical ? "mobile_home" : "mobile_long_press", physical ? {} : { x: 17, y: 27 });
+            expect(control.status).toBe(200);
+            const controlBody = await control.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+            expect(controlBody).toMatchObject({ ok: true, result: { deviceId, backend, provider: "device-lab-backend-child" } });
+            expect(controlBody.result.mcpResult.isError).not.toBe(true);
+            expect(JSON.parse(controlBody.result.mcpResult.content[0].text)).toMatchObject(physical
+                ? { key: 3, provider: "adb", status: 0 }
+                : { longPressed: { x: 17, y: 27, durationMs: 700 }, provider: "adb", status: 0 });
+            expect(readFileSync(logPath, "utf8")).toContain(physical
+                ? "adb -s R5CREAL123 shell input keyevent 3\n"
+                : "adb -s emulator-5580 shell input swipe 17 27 17 27 700\n");
+
+            const localPath = join(project, physical ? "download.txt" : "upload.txt");
+            writeFileSync(localPath, physical ? "previous destination" : "broker upload bytes\n");
+            const remotePath = physical ? "/sdcard/broker-download.txt" : "/sdcard/broker-upload.txt";
+            const transferTool = physical ? "device_download" : "device_upload";
+            const transfer = await invoke(transferTool, { localPath, remotePath });
+            expect(transfer.status).toBe(200);
+            const transferBody = await transfer.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+            expect(transferBody).toMatchObject({ ok: true, result: { deviceId, backend, provider: "device-lab-backend-child" } });
+            expect(transferBody.result.mcpResult.isError).not.toBe(true);
+            expect(JSON.parse(transferBody.result.mcpResult.content[0].text)).toMatchObject({
+                [physical ? "downloaded" : "uploaded"]: { localPath, remotePath }, provider: "adb", status: 0,
+            });
+            expect(readFileSync(physical ? localPath : guestUpload, "utf8")).toBe(physical ? "downloaded" : "broker upload bytes\n");
+            const log = readFileSync(logPath, "utf8");
+            const stagePath = physical
+                ? log.match(/adb -s R5CREAL123 pull \/sdcard\/broker-download\.txt (.+)/)?.[1]
+                : log.match(/adb -s emulator-5580 push (.+) \/sdcard\/broker-upload\.txt/)?.[1];
+            if (!stagePath) throw new Error("Real Android transfer did not reach its allocated ADB stage");
+            expect(stagePath).not.toBe(localPath);
+            expect(existsSync(dirname(stagePath))).toBe(false);
+
+            if (physical) {
+                // A successor claim no longer belongs to this record, even while its expiry is live.
+                writeFileSync(leasePath, JSON.stringify({ ...lease, claimNonce: "successor-physical-nonce" }));
+                for (const [tool, args] of [["mobile_home", {}], ["device_download", { localPath, remotePath }]] as const) {
+                    const denied = await invoke(tool, args);
+                    expect(denied.status).toBe(409);
+                    expect(await denied.json()).toMatchObject({ ok: false, error: "physical-device-not-attached", deviceId, backend });
+                    expect(readFileSync(logPath, "utf8")).toBe(log);
+                    expect(readFileSync(localPath, "utf8")).toBe("downloaded");
+                }
+            }
+        } finally {
+            try {
+                if (server) await close(server);
+            } finally {
+                restoreRouting?.();
+                environmentKeys.forEach((key, index) => {
+                    if (originalEnvironment[index] === undefined) delete process.env[key];
+                    else process.env[key] = originalEnvironment[index];
+                });
+                cleanupOwner(ownerId);
+            }
         }
     });
 
