@@ -1,4 +1,4 @@
-import type { PhysicalRecord, CleanupRpcResult, CleanupSignal, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback } from '../domain/broker-owner-cleanup.js';
+import type { PhysicalRecord, CleanupSignal, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback } from '../domain/broker-owner-cleanup.js';
 export interface OwnerCleanupCommand {
     mode: 'exec' | 'detached' | 'noop';
     provider: string;
@@ -20,7 +20,7 @@ export interface BrokerOwnerCleanupPorts<Handle> {
     read(ownerId: string, stateKey: string): unknown[];
     equal(left: unknown, right: unknown): boolean;
     publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replacement: unknown): CleanupPublication;
-    withDeviceOperation<T>(ownerId: string, stateKey: string, deviceId: string, operation: () => T): Promise<Awaited<T>>;
+    withDeviceOperation<T>(ownerId: string, stateKey: string, deviceId: string, operation: () => T | Promise<T>): Promise<T>;
     withLeaseGuard<T>(ownerId: string, stateKey: string, record: PhysicalRecord, operation: (guard: CleanupLeaseGuard<Handle>) => T): T;
     releaseLease(ownerId: string, guard: CleanupLeaseGuard<Handle>): CleanupLeaseResult;
     restoreLease(ownerId: string, guard: CleanupLeaseGuard<Handle>): CleanupRollback;

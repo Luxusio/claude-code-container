@@ -9526,7 +9526,7 @@ async function lifecycleCommandInvokeUnlocked(
     if (plan.status !== 200) return plan;
     if ((parsed.stateKey === "android-device" || parsed.stateKey === "ios-device") && parsed.command === "device_stop") {
         const planPayload = cleanupRecord(plan.payload) ? plan.payload : {};
-        const result = cleanupRecord(planPayload.result) ? planPayload.result : {};
+        const result = "result" in planPayload && cleanupRecord(planPayload.result) ? planPayload.result : {};
         return brokerPhysicalDevicesApplication(normalized).stop(ownerId, parsed, result, expectedDevice);
     }
     const payload = plan.payload as { result?: { create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: ProviderCommand | { error: string; missing: string[] } } };
