@@ -1273,7 +1273,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
         expect(calls).toEqual([]);
-        expect(listLabs({ env, stateRoot: root }).labs[0].sessions).toEqual([
+        const recordedLab = listLabs({ env, stateRoot: root }).labs[0];
+        assert.ok(recordedLab && "sessions" in recordedLab);
+        expect(recordedLab.sessions).toEqual([
             expect.objectContaining({ id: "guest-ssh-session", sessionType: "guest-ssh", state: "open" }),
         ]);
         expect(JSON.stringify(session)).not.toContain(keyPath);
@@ -1283,6 +1285,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.stringify(session)).not.toContain("secret");
         expect(JSON.stringify(session)).not.toContain("secret-state");
         expect(JSON.stringify(session)).not.toContain("args");
+        assert.ok(session.lab);
         expect(session.lab.readiness).toBe("process-running");
         expect(session.target.readiness).toBe("process-running");
     });
@@ -1935,6 +1938,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(sessionJson).not.toContain(createdLab.paths.artifactsDir);
         expect(sessionJson).not.toContain(createdLab.paths.workspaceDir);
         expect(sessionJson).not.toContain("args");
+        assert.ok("agent" in session.session.attach && session.session.attach.agent);
         expect(session.session.attach.agent.lastStatus).toEqual(expect.objectContaining({
             id: "tampered",
             state: "ready",
@@ -2595,6 +2599,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             readiness: "stopped",
             readinessProbe: null,
         }));
+        assert.ok(session.lab?.readiness);
         expect(session.lab.readiness.latest).toBeNull();
     });
 
