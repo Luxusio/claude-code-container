@@ -1,3 +1,5 @@
+import { createMacosVmLifecycleApplication } from "../application/lifecycle/macos-vm-lifecycle.mjs";
+import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
 import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
 import { commandPath, run, runWithTimeout } from "../commands.mjs";
@@ -66,6 +68,53 @@ const MACOS_PROVIDER_TIMEOUTS = {
 const MACOS_HELPER_TIMEOUT_MS = 30000;
 const MACOS_LIFECYCLE_CLAIM_TTL_MS = 15 * 60 * 1000;
 const tartFeatureCache = new Map();
+
+// Lazy native leaf selection retains imported-callee timing and bare calls.
+const macosVmLifecycle = createMacosVmLifecycleApplication({
+    get read() { return readMacosDevices; },
+    get find() { return findMacosDevice; },
+    get claim() { return claimMacosDevice; },
+    get transition() { return transitionMacosDevice; },
+    get owner() { return ownerId; },
+    get deviceId() { return macosDeviceId; },
+    get runtimeId() { return randomUUID; },
+    get claimTtlMs() { return macosLifecycleClaimTtlMs; },
+    get validateSshKey() { return validateMacosSshKeyPath; },
+    get helperMetadata() { return macosHelperMetadata; },
+    get providerPlan() { return macosProviderPlan; },
+    get tartPlan() { return tartProviderPlan; },
+    get publicDevice() { return deviceWithPlan; },
+    get providerCommand() { return runProviderCommand; },
+    get commandTimedOut() { return providerCommandTimedOut; },
+    get supportsFeature() { return tartSupportsFeature; },
+    get waitProviderStart() { return waitForProviderStart; },
+    get waitBoot() { return waitForMacosBoot; },
+    get waitGuestHelper() { return waitForMacosGuestHelper; },
+    get provisionHelper() { return provisionMacosGuestHelper; },
+    get signalRecording() { return signalOwnedRuntimeProcess; },
+    get waitRecordingExit() { return waitForProcessExit; },
+    get sshBridge() { return sshBridge; },
+    get sshBaseArgs() { return sshBaseArgs; },
+    get shellQuote() { return shellQuote; },
+    get sshCommandOptions() { return sshCommandOptions; },
+    get helperCommand() { return runHelperCommand; },
+    get textResult() { return textResult; },
+    get jsonResult() { return jsonResult; },
+    get fail() { return fail; },
+    timestamp: () => new Date().toISOString(),
+    now: () => Date.now(),
+    get tartStartArgs() { return providerByName("tart").startArgs; },
+    get spawn() {
+        const launch = spawn;
+        return (command, args) => launch(command, args, {
+            detached: true,
+            stdio: "ignore",
+            env: process.env,
+            windowsHide: true,
+        });
+    },
+});
+
 
 function macosProviderTimeoutMs(kind) {
     const envKey = `CCC_MACOS_VM_${kind.toUpperCase()}_TIMEOUT_MS`;
@@ -441,51 +490,15 @@ function findSnapshot(device, snapshotName, snapshotId) {
 }
 
 function macosLifecycleConflict(deviceId, operation, transition, rollback = null) {
-    return textResult(false, JSON.stringify({
-        ok: false,
-        error: "owner-device-state-conflict",
-        backend: "macos-vm",
-        deviceId,
-        operation,
-        found: transition.found,
-        ...(rollback ? { rollback } : {}),
-    }));
+    return macosVmLifecycle.conflict(deviceId, operation, transition, rollback);
 }
 
 function macosLifecycleReplacement(device, lifecycle, updates = {}) {
-    const replacement = {
-        ...device,
-        ...updates,
-        updatedAt: new Date().toISOString(),
-    };
-    if (lifecycle) replacement.lifecycle = lifecycle;
-    else delete replacement.lifecycle;
-    return replacement;
+    return macosVmLifecycle.replacement(device, lifecycle, updates);
 }
 
 function claimMacosLifecycle(deviceId, device, operation, updates = {}) {
-    const lifecycle = {
-        runtimeId: randomUUID(),
-        operation,
-        claimedAt: new Date().toISOString(),
-        previousStatus: device.status,
-    };
-    const claimed = macosLifecycleReplacement(device, lifecycle, {
-        ...updates,
-        status: operation === "delete"
-            ? "deleting"
-            : operation === "stop" || operation === "clone-source-stop"
-                ? "stopping"
-                : operation === "start"
-                    ? "starting"
-                    : device.status,
-    });
-    const transition = transitionMacosDevice(deviceId, device, claimed);
-    return {
-        lifecycle,
-        claimed: transition.matched ? findMacosDevice(deviceId) : claimed,
-        transition,
-    };
+    return macosVmLifecycle.claimLifecycle(deviceId, device, operation, updates);
 }
 
 function macosLifecycleClaimTtlMs() {
@@ -493,175 +506,45 @@ function macosLifecycleClaimTtlMs() {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : MACOS_LIFECYCLE_CLAIM_TTL_MS;
 }
 
-function staleMacosLifecycle(lifecycle) {
-    if (!lifecycle) return false;
-    const claimedAt = Date.parse(lifecycle.claimedAt || "");
-    return !Number.isFinite(claimedAt) || Date.now() - claimedAt >= macosLifecycleClaimTtlMs();
-}
 
 function recoverStaleMacosLifecycle(deviceId) {
-    const device = findMacosDevice(deviceId);
-    if (!device?.lifecycle || !staleMacosLifecycle(device.lifecycle)) return { device };
-
-    const lifecycle = device.lifecycle;
-    if (lifecycle.operation === "start") {
-        const plan = macosProviderPlan(device);
-        if (!plan.stopCommand) {
-            return { error: textResult(false, `Cannot recover stale macOS VM start lifecycle for ${deviceId}: provider stop is unavailable`) };
-        }
-        const stopped = runProviderCommand(plan.stopCommand.command, plan.stopCommand.args, "stop");
-        if (stopped.status !== 0) {
-            return { error: textResult(false, `Cannot recover stale macOS VM start lifecycle for ${deviceId}: ${stopped.stderr || stopped.stdout || stopped.error?.message || `exit ${stopped.status}`}`) };
-        }
-    }
-
-    const previousStatus = typeof lifecycle.previousStatus === "string"
-        ? lifecycle.previousStatus
-        : lifecycle.operation === "start"
-            ? "stopped"
-            : device.runtime
-                ? "running"
-                : "stopped";
-    const recovered = macosLifecycleReplacement(device, null, {
-        status: previousStatus,
-        ...(lifecycle.operation === "start" ? {
-            runtime: null,
-            bootReady: false,
-            lastBootCheck: null,
-        } : {}),
-        lastLifecycleRecovery: {
-            runtimeId: lifecycle.runtimeId || null,
-            operation: lifecycle.operation || "unknown",
-            claimedAt: lifecycle.claimedAt || null,
-            recoveredAt: new Date().toISOString(),
-        },
-    });
-    const transition = transitionMacosDevice(deviceId, device, recovered);
-    if (!transition.matched) {
-        return { error: macosLifecycleConflict(deviceId, "stale-lifecycle-recovery", transition) };
-    }
-    return { device: transition.device };
+    return macosVmLifecycle.recoverStale(deviceId);
 }
 
 function currentMacosLifecycleDevice(deviceId, lifecycle) {
-    const current = findMacosDevice(deviceId);
-    return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
+    return macosVmLifecycle.currentLifecycleDevice(deviceId, lifecycle);
 }
 
 function abortMacosLifecycle(deviceId, lifecycle, original, updates = {}) {
-    const current = currentMacosLifecycleDevice(deviceId, lifecycle);
-    if (!current) return { matched: false, found: Boolean(findMacosDevice(deviceId)) };
-    const restored = macosLifecycleReplacement(current, original.lifecycle || null, {
-        ...updates,
-        status: updates.status ?? original.status,
-    });
-    return transitionMacosDevice(deviceId, current, restored);
+    return macosVmLifecycle.abortLifecycle(deviceId, lifecycle, original, updates);
 }
 
 function transitionCurrentMacosLifecycle(deviceId, lifecycle, updater) {
-    const current = currentMacosLifecycleDevice(deviceId, lifecycle);
-    if (!current) return { matched: false, found: Boolean(findMacosDevice(deviceId)) };
-    return transitionMacosDevice(deviceId, current, updater(current));
+    return macosVmLifecycle.transitionCurrent(deviceId, lifecycle, updater);
 }
 
 function rollbackStartedMacosVm(deviceId, lifecycle, plan) {
-    const current = findMacosDevice(deviceId);
-    if (current?.lifecycle?.runtimeId !== lifecycle.runtimeId && current?.providerInstance === plan.providerInstance) {
-        return { ok: false, attempted: false, reason: "provider-instance-owned-by-successor", providerInstance: plan.providerInstance };
-    }
-    if (!plan.stopCommand || !plan.providerInstance) {
-        return { ok: false, attempted: false, reason: "provider-stop-command-unavailable", providerInstance: plan.providerInstance || null };
-    }
-    const stopped = runProviderCommand(plan.stopCommand.command, plan.stopCommand.args, "stop");
-    return {
-        ok: stopped.status === 0,
-        attempted: true,
-        providerInstance: plan.providerInstance,
-        status: stopped.status,
-        stdout: stopped.stdout,
-        stderr: stopped.stderr,
-    };
+    return macosVmLifecycle.rollbackStarted(deviceId, lifecycle, plan);
 }
 
-function macosProviderInstanceReferenced(device, instance) {
-    if (!device || !instance) return false;
-    if (device.providerInstance === instance || device.restoreRecovery?.candidateProviderInstance === instance) return true;
-    if ((device.restoreRecovery?.supersededCandidateProviderInstances || []).includes(instance)) return true;
-    return (device.snapshots || []).some((snapshot) => snapshot.providerInstance === instance);
-}
 
 function rollbackCreatedMacosResource(deviceId, plan, instance) {
-    const current = findMacosDevice(deviceId);
-    if (macosProviderInstanceReferenced(current, instance)) {
-        return { ok: false, attempted: false, reason: "provider-instance-owned-by-successor", providerInstance: instance };
-    }
-    const deleted = tartDeleteInstance(plan, instance);
-    return {
-        ok: deleted.status === 0,
-        attempted: true,
-        providerInstance: instance,
-        status: deleted.status,
-        stdout: deleted.stdout,
-        stderr: deleted.stderr,
-    };
+    return macosVmLifecycle.rollbackCreated(deviceId, plan, instance);
 }
 
-function managedProviderResource(device) {
-    return Boolean(
-        device.providerResourceManaged ||
-        device.provisioning === "image-created" ||
-        device.provisioning === "image-cloned" ||
-        device.imageSource ||
-        device.clonedFrom ||
-        device.imageCreatedAt ||
-        device.clonedAt
-    );
-}
 
-function snapshotProviderInstances(device) {
-    return (Array.isArray(device.snapshots) ? device.snapshots : [])
-        .filter((snapshot) => snapshot.provider === "tart" && snapshot.providerInstance)
-        .map((snapshot) => ({ kind: "snapshot", id: snapshot.id, instance: snapshot.providerInstance }));
-}
 
-function restoreRecoveryProviderInstances(device) {
-    const recovery = device.restoreRecovery;
-    if (!recovery?.candidateProviderInstance) return [];
-    return [recovery.candidateProviderInstance, ...(recovery.supersededCandidateProviderInstances || [])]
-        .map((instance) => ({ kind: "restore-recovery", instance }));
-}
 
 function tartDeleteInstance(plan, instance) {
     return runProviderCommand(plan.providerCommand, ["delete", instance], "delete");
 }
 
 function runTartClone(plan, source, target) {
-    const result = runProviderCommand(plan.providerCommand, ["clone", source, target], "clone");
-    const cleanup = result.status !== 0 && providerCommandTimedOut(result)
-        ? tartDeleteInstance(plan, target)
-        : null;
-    return { result, cleanup };
+    return macosVmLifecycle.clone(plan, source, target);
 }
 
 function tartCloneFailure(result, cleanup, target) {
-    if (!cleanup) return fail(result);
-    return textResult(false, JSON.stringify({
-        ok: false,
-        error: "macos-tart-clone-failed",
-        target,
-        timedOut: true,
-        command: {
-            status: result.status,
-            signal: result.signal || null,
-            detail: result.stderr || result.stdout || result.error?.message || "clone timed out",
-        },
-        cleanup: {
-            ok: cleanup.status === 0,
-            status: cleanup.status,
-            signal: cleanup.signal || null,
-            detail: cleanup.stderr || cleanup.stdout || cleanup.error?.message || null,
-        },
-    }));
+    return macosVmLifecycle.cloneFailure(result, cleanup, target);
 }
 
 function sshDiscovery() {
@@ -1286,75 +1169,7 @@ async function handleMacosToolUnlocked(name, args) {
             });
         }
 
-        case "device_base_image_create": {
-            const { backend = "macos-vm", name: deviceName, deviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
-            if (backend !== "macos-vm") return undefined;
-            if (!sourceImage) return textResult(false, `${name} requires sourceImage`);
-
-            const id = deviceId || macosDeviceId(deviceName);
-            const devices = readMacosDevices();
-            if (devices.some((device) => device.id === id)) {
-                return textResult(false, `Device already exists for this owner: ${id}`);
-            }
-            const sshKeyPolicy = validateMacosSshKeyPath(sshKeyPath);
-            if (!sshKeyPolicy.ok) return textResult(false, sshKeyPolicy.message);
-
-            const ssh = macosSshConfig({ sshHost, sshPort, sshUser, sshKeyPath: sshKeyPolicy.path, sshPassword, provider, image: sourceImage });
-            const device = macosDeviceDefinition({
-                id,
-                name: deviceName,
-                provider,
-                image: sourceImage,
-                memoryMb,
-                cpus,
-                ssh,
-                extra: {
-                    imageSource: sourceImage,
-                    headless,
-                    provisioning: "image-created",
-                },
-            });
-            const tart = tartProviderPlan(device, name);
-            if (tart.error) return tart.error;
-            const target = tart.plan.providerInstance;
-            const clone = runTartClone(tart.plan, sourceImage, target);
-            const r = clone.result;
-            if (r.status !== 0) return tartCloneFailure(r, clone.cleanup, target);
-
-            const created = {
-                ...device,
-                provider: tart.plan.selectedProvider,
-                providerInstance: target,
-                providerResourceManaged: true,
-                imageCreatedAt: new Date().toISOString(),
-            };
-            let claim;
-            try {
-                claim = claimMacosDevice(created);
-            } catch (error) {
-                const rollback = runProviderCommand(tart.plan.providerCommand, ["delete", target], "delete");
-                if (rollback.status !== 0) {
-                    return textResult(false, `Owner device state update failed; macOS VM rollback failed: ${rollback.stderr || rollback.stdout}`);
-                }
-                throw error;
-            }
-            if (!claim.ok) {
-                if (claim.existing?.provider !== created.provider || claim.existing?.providerInstance !== target) {
-                    const rollback = runProviderCommand(tart.plan.providerCommand, ["delete", target], "delete");
-                    if (rollback.status !== 0) {
-                        return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); macOS VM rollback failed: ${rollback.stderr || rollback.stdout}`);
-                    }
-                }
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${typeof claim.value === "object" ? JSON.stringify(claim.value) : claim.value})`);
-            }
-            return jsonResult({
-                operation: "base-image-create",
-                device: deviceWithPlan(created),
-                stdout: r.stdout,
-                stderr: r.stderr,
-                status: r.status,
-            });
-        }
+        case "device_base_image_create": return macosVmLifecycle.createImage(args);
 
         case "device_base_image_clone": {
             const { backend = "macos-vm", name: deviceName, deviceId, sourceDeviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword, force = false } = args;
@@ -1497,138 +1312,9 @@ async function handleMacosToolUnlocked(name, args) {
             });
         }
 
-        case "device_create": {
-            if (args.backend === "macos-vm" && (args.sourceImage || args.image)) {
-                return handleMacosToolUnlocked("device_base_image_create", { ...args, sourceImage: args.sourceImage || args.image });
-            }
-            const { backend, name: deviceName, deviceId, provider = "auto", image = null, memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
-            if (backend !== "macos-vm") return undefined;
+        case "device_create": return macosVmLifecycle.create(args);
 
-            const id = deviceId || macosDeviceId(deviceName);
-            const devices = readMacosDevices();
-            if (devices.some((device) => device.id === id)) {
-                return textResult(false, `Device already exists for this owner: ${id}`);
-            }
-            const sshKeyPolicy = validateMacosSshKeyPath(sshKeyPath);
-            if (!sshKeyPolicy.ok) return textResult(false, sshKeyPolicy.message);
-            const ssh = macosSshConfig({ sshHost, sshPort, sshUser, sshKeyPath: sshKeyPolicy.path, sshPassword, provider, image });
-
-            const device = {
-                id,
-                name: deviceName,
-                backend,
-                kind: "desktop",
-                platform: "macos",
-                ownerId: ownerId(),
-                provider,
-                image,
-                memoryMb,
-                cpus,
-                headless: Boolean(headless),
-                providerInstance: `ccc-${ownerId()}-${id}`,
-                ssh,
-                helper: macosHelperMetadata({ id, ssh }),
-                status: "stopped",
-                creatable: true,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            };
-            const claim = claimMacosDevice(device);
-            if (!claim.ok) {
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${typeof claim.value === "object" ? JSON.stringify(claim.value) : claim.value})`);
-            }
-            return jsonResult({ device: deviceWithPlan(device) });
-        }
-
-        case "device_delete": {
-            const { deviceId, force = false } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (!force && device.status !== "stopped") {
-                return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
-            }
-            if (device.lifecycle) {
-                return textResult(false, `Refusing to delete ${deviceId} while lifecycle operation ${device.lifecycle.operation || "unknown"} is active`);
-            }
-            const claim = claimMacosLifecycle(deviceId, device, "delete");
-            if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "delete-claim", claim.transition);
-            let forcedStopPlan = null;
-            let forcedStopUpdates = {};
-            if (force && device.status !== "stopped") {
-                const plan = macosProviderPlan(device);
-                if (!plan.available) {
-                    abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                    return textResult(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
-                }
-                if (plan.stopCommand) {
-                    const stop = runProviderCommand(plan.stopCommand.command, plan.stopCommand.args, "stop");
-                    if (stop.status !== 0) {
-                        abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                        return fail(stop);
-                    }
-                    forcedStopPlan = plan;
-                    const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-                    if (recorderSignal.signaled) await waitForProcessExit(device.recording.pid, 1000);
-                    forcedStopUpdates = {
-                        status: "stopped",
-                        runtime: null,
-                        bootReady: false,
-                        lastBootCheck: null,
-                        recording: null,
-                    };
-                }
-            }
-            const managedInstances = [
-                ...snapshotProviderInstances(device),
-                ...restoreRecoveryProviderInstances(device),
-                ...(managedProviderResource(device) && device.providerInstance ? [{ kind: "device", instance: device.providerInstance }] : []),
-            ];
-            const providerDeleted = [];
-            if (managedInstances.length > 0) {
-                const tart = forcedStopPlan?.selectedProvider === "tart" ? { plan: forcedStopPlan } : tartProviderPlan(device, name);
-                if (tart.error) {
-                    abortMacosLifecycle(deviceId, claim.lifecycle, device, forcedStopUpdates);
-                    return tart.error;
-                }
-                for (const resource of managedInstances) {
-                    if (!currentMacosLifecycleDevice(deviceId, claim.lifecycle)) {
-                        return macosLifecycleConflict(deviceId, "delete-resource-ownership", { found: Boolean(findMacosDevice(deviceId)), matched: false });
-                    }
-                    const deleted = tartDeleteInstance(tart.plan, resource.instance);
-                    if (deleted.status !== 0) {
-                        abortMacosLifecycle(deviceId, claim.lifecycle, device, forcedStopUpdates);
-                        return fail(deleted);
-                    }
-                    providerDeleted.push(resource.instance);
-                    if (resource.kind === "snapshot") {
-                        const progress = transitionCurrentMacosLifecycle(deviceId, claim.lifecycle, (item) => macosLifecycleReplacement(item, claim.lifecycle, {
-                            snapshots: (item.snapshots || []).filter((snapshot) => snapshot.id !== resource.id),
-                        }));
-                        if (!progress.matched) return macosLifecycleConflict(deviceId, "delete-snapshot-progress", progress);
-                    } else if (resource.kind === "restore-recovery") {
-                        const progress = transitionCurrentMacosLifecycle(deviceId, claim.lifecycle, (item) => {
-                            const remaining = [
-                                item.restoreRecovery?.candidateProviderInstance,
-                                ...(item.restoreRecovery?.supersededCandidateProviderInstances || []),
-                            ].filter((instance) => instance && instance !== resource.instance);
-                            return macosLifecycleReplacement(item, claim.lifecycle, {
-                                restoreRecovery: remaining.length === 0 ? null : {
-                                    ...item.restoreRecovery,
-                                    candidateProviderInstance: remaining[0],
-                                    supersededCandidateProviderInstances: remaining.slice(1),
-                                },
-                            });
-                        });
-                        if (!progress.matched) return macosLifecycleConflict(deviceId, "delete-recovery-progress", progress);
-                    }
-                }
-            }
-            const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return macosLifecycleConflict(deviceId, "delete", { found: Boolean(findMacosDevice(deviceId)), matched: false });
-            const transition = transitionMacosDevice(deviceId, current, null);
-            if (!transition.matched) return macosLifecycleConflict(deviceId, "delete", transition);
-            return jsonResult({ deleted: deviceId, providerDeleted });
-        }
+        case "device_delete": return macosVmLifecycle.delete(args);
 
         case "device_status": {
             const { deviceId } = args;
@@ -1910,178 +1596,9 @@ async function handleMacosToolUnlocked(name, args) {
             return jsonResult({ device: deviceWithPlan(transition.device), deleted: snapshot.id, stdout: r.stdout, stderr: r.stderr, status: r.status });
         }
 
-        case "device_start": {
-            const { deviceId, headless, waitForBoot = true, bootTimeoutMs = 300000 } = args;
-            const startDeadlineAt = Date.now() + (Number.isFinite(bootTimeoutMs) ? Math.min(600000, Math.max(1000, bootTimeoutMs)) : 300000);
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (device.status !== "stopped" || device.lifecycle) {
-                return textResult(false, `Refusing to start ${deviceId} while status is ${device.status}${device.lifecycle ? ` and lifecycle operation ${device.lifecycle.operation || "unknown"} is active` : ""}`);
-            }
-            const keyPolicy = validateMacosSshKeyPath(device.ssh?.keyPath);
-            if (!keyPolicy.ok) return textResult(false, keyPolicy.message);
-            const safeDevice = device.ssh?.keyPath && keyPolicy.path !== device.ssh.keyPath
-                ? { ...device, ssh: { ...device.ssh, keyPath: keyPolicy.path } }
-                : device;
-            const startDevice = headless === undefined ? safeDevice : { ...safeDevice, headless: Boolean(headless) };
+        case "device_start": return macosVmLifecycle.start(args);
 
-            const plan = macosProviderPlan(startDevice);
-            if (!plan.available) {
-                return textResult(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
-            }
-
-            const claim = claimMacosLifecycle(deviceId, device, "start", {
-                provider: plan.selectedProvider,
-                providerInstance: plan.providerInstance,
-                ssh: startDevice.ssh,
-                headless: startDevice.headless,
-            });
-            if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "start-claim", claim.transition);
-
-            const startCommand = plan.selectedProvider === "tart" && plan.providerCommand
-                ? {
-                    command: plan.providerCommand,
-                    args: providerByName("tart").startArgs(plan.providerInstance, {
-                        ...startDevice,
-                        softnet: startDevice.softnet !== false && tartSupportsFeature(plan.providerCommand, "--with-softnet"),
-                    }),
-                }
-                : plan.startCommand;
-
-            const child = spawn(startCommand.command, startCommand.args, {
-                detached: true,
-                stdio: "ignore",
-                env: process.env,
-                windowsHide: true,
-            });
-            const startError = await waitForProviderStart(child, "macOS VM provider start");
-            if (startError) {
-                abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                return startError;
-            }
-            child.unref();
-
-            const startedDevice = {
-                ...startDevice,
-                provider: plan.selectedProvider,
-                providerInstance: plan.providerInstance,
-                status: waitForBoot ? "starting" : "running",
-                runtime: {
-                    runtimeId: claim.lifecycle.runtimeId,
-                    providerPid: child.pid || null,
-                    startedAt: new Date().toISOString(),
-                    startCommand,
-                    detached: true,
-                },
-            };
-            const started = macosLifecycleReplacement(claim.claimed, claim.lifecycle, {
-                provider: plan.selectedProvider,
-                providerInstance: plan.providerInstance,
-                ssh: startedDevice.ssh,
-                headless: startedDevice.headless,
-                status: "starting",
-                runtime: startedDevice.runtime,
-            });
-            const startedTransition = transitionMacosDevice(deviceId, claim.claimed, started);
-            if (!startedTransition.matched) {
-                const rollback = rollbackStartedMacosVm(deviceId, claim.lifecycle, plan);
-                return macosLifecycleConflict(deviceId, "start-runtime", startedTransition, rollback);
-            }
-            const persistedStarted = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!persistedStarted) {
-                const rollback = rollbackStartedMacosVm(deviceId, claim.lifecycle, plan);
-                return macosLifecycleConflict(deviceId, "start-runtime-readback", { found: Boolean(findMacosDevice(deviceId)), matched: false }, rollback);
-            }
-            const boot = waitForBoot ? await waitForMacosBoot(plan, bootTimeoutMs, startDeadlineAt) : { ready: false, skipped: true };
-            startedDevice.status = boot.ready || boot.skipped ? "running" : "starting";
-            startedDevice.bootReady = boot.ready;
-            startedDevice.lastBootCheck = boot;
-            if (boot.ready && boot.ip && startedDevice.ssh?.user && !startedDevice.ssh.host) {
-                startedDevice.ssh = { ...startedDevice.ssh, host: boot.ip };
-            }
-            const provision = waitForBoot
-                ? await waitForMacosGuestHelper(startedDevice, startDeadlineAt)
-                : provisionMacosGuestHelper(startedDevice);
-            const completed = macosLifecycleReplacement(persistedStarted, null, {
-                provider: plan.selectedProvider,
-                providerInstance: plan.providerInstance,
-                ssh: startedDevice.ssh,
-                headless: startedDevice.headless,
-                helper: macosHelperMetadata({ ...startedDevice, helper: { ...(persistedStarted.helper || {}), provisioning: provision.provisioning } }),
-                status: startedDevice.status,
-                runtime: startedDevice.runtime,
-                bootReady: startedDevice.bootReady,
-                lastBootCheck: startedDevice.lastBootCheck,
-            });
-            const completedTransition = transitionMacosDevice(deviceId, persistedStarted, completed);
-            if (!completedTransition.matched) {
-                const rollback = rollbackStartedMacosVm(deviceId, claim.lifecycle, plan);
-                return macosLifecycleConflict(deviceId, "start-complete", completedTransition, rollback);
-            }
-            const updated = completedTransition.device;
-            if (waitForBoot && !boot.ready && !boot.skipped) {
-                return textResult(false, JSON.stringify({ ok: false, error: "macos-boot-not-ready", device: deviceWithPlan(updated), boot }));
-            }
-            if (!provision.ok) {
-                return textResult(false, JSON.stringify({
-                    ok: false,
-                    error: provision.error,
-                    command: provision.command,
-                    device: deviceWithPlan(updated),
-                    helper: provision.provisioning,
-                    providerStart: startedDevice.runtime,
-                    boot,
-                }));
-            }
-            return jsonResult({ device: deviceWithPlan(updated), helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
-        }
-
-        case "device_stop": {
-            const { deviceId } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (device.lifecycle) {
-                return textResult(false, `Refusing to stop ${deviceId} while lifecycle operation ${device.lifecycle.operation || "unknown"} is active`);
-            }
-            const claim = claimMacosLifecycle(deviceId, device, "stop");
-            if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "stop-claim", claim.transition);
-
-            const plan = macosProviderPlan(device);
-            if (device.status !== "stopped" && (!plan.available || !plan.stopCommand)) {
-                abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, `macOS VM stop is unavailable for ${deviceId}: ${plan.missing?.join(", ") || "provider stop command missing"}`);
-            }
-            if (plan.stopCommand && device.providerInstance && device.status !== "stopped") {
-                const r = runProviderCommand(plan.stopCommand.command, plan.stopCommand.args, "stop");
-                if (r.status !== 0) {
-                    abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                    return fail(r);
-                }
-            }
-
-            const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-            if (device.recording?.active) {
-                const bridge = sshBridge(device, "device_record_video_stop");
-                if (!bridge.error) {
-                    runHelperCommand(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `pkill -INT -f ${shellQuote(`screencapture.*${device.recording.remotePath}`)} || true`], undefined, sshCommandOptions(device));
-                }
-            }
-            if (recorderSignal.signaled) {
-                await waitForProcessExit(device.recording.pid, 1000);
-            }
-            const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return macosLifecycleConflict(deviceId, "stop", { found: Boolean(findMacosDevice(deviceId)), matched: false });
-            const stopped = macosLifecycleReplacement(current, null, {
-                status: "stopped",
-                runtime: null,
-                bootReady: false,
-                lastBootCheck: null,
-                recording: null,
-            });
-            const transition = transitionMacosDevice(deviceId, current, stopped);
-            if (!transition.matched) return macosLifecycleConflict(deviceId, "stop", transition);
-            return jsonResult({ device: deviceWithPlan(transition.device) });
-        }
+        case "device_stop": return macosVmLifecycle.stop(args);
 
         case "device_exec": {
             const { deviceId, command, helperTimeoutMs } = args;
