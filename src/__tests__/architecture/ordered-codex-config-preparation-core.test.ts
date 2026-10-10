@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createOrderedCodexConfigPreparation } from "../../application/credentials/codex-config-preparation.js";
-import type { CodexPreparationPorts, CodexPreparationObservation } from "../../ports/credentials/codex-config-preparation.js";
+import type { CodexPreparationPorts } from "../../ports/credentials/codex-config-preparation.js";
 
 const config = "/private/named/config.toml";
 const names = ["resolveConfig", "hasHostIdentity", "inspectParent", "inspectConfig", "currentHostUid", "mappedContainerUid", "probeDirectory", "repairDirectory", "verifyDirectory", "probeConfig", "repairConfig", "verifyConfig"] as const;

@@ -9,6 +9,10 @@ const root=path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "../..
 const DECLARATION_OPTIONS=Object.freeze({allowJs:true,checkJs:false,declaration:true,emitDeclarationOnly:true,strict:true,
     module:ts.ModuleKind.NodeNext,moduleResolution:ts.ModuleResolutionKind.NodeNext,target:ts.ScriptTarget.ES2022,skipLibCheck:false});
 
+function messages(diagnostics: readonly ts.Diagnostic[]): string[] {
+    return diagnostics.map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+}
+
 function checkConsumers(emitted:boolean) {
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),"ccc-wireless-types-"));
     try {

@@ -4,15 +4,8 @@ import { describe, expect, it } from "vitest";
 import { coreBoundaryViolations } from "./core-boundary.js";
 
 describe("Codex resume dependency boundaries", () => {
-    const candidate = readFileSync(fileURLToPath(new URL("../../codex-resume-recovery.ts", import.meta.url)), "utf8");
-    const cases = [
-        [], ["codex"], ["claude", "resume"], ["codex", "resume"], ["codex", "resume", "id"],
-        ["codex", "-c", 'model="private"', "resume", "--last", "--all", "--include-non-interactive"],
-        ["codex", "--enable=x", "--disable", "x", "resume", "--model=m", "--search"],
-        ["codex", "resume", "id", "prompt"], ["codex", "resume", "--remote=wss://invalid"],
-        ["codex", "resume", "--image", "image"], ["codex", "--profile", "p", "resume"],
-        ["codex", "resume", "--"], ["codex", "resume", "-c"], ["codex", "resume", "--unknown"],
-    ];
+
+
 
     it("keeps every actual inward module inside the existing dependency boundary", () => {
         for (const path of ["domain/tool-session/codex-resume", "ports/tool-session/codex-resume-recovery", "application/tool-session/codex-resume-recovery"]) {

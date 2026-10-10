@@ -10,7 +10,6 @@ vi.mock("os", async original => ({ ...await original<typeof import("node:os")>()
 const adapter = await import("../../adapters/credentials/host-refresh.js");
 const { createHostCredentialRefresh } = await import("../../application/credentials/host-refresh.js");
 const assets = await import("../../adapters/credentials/ssh-material.js");
-const { readFileSync } = await vi.importActual<typeof import("node:fs")>("node:fs");
 beforeEach(() => {
     vi.resetAllMocks(); native.events.length = 0;
     native.home.mockImplementation(() => { native.events.push("home"); return "/fixture/home"; });

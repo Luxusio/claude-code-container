@@ -113,7 +113,7 @@ describe("container socket access actual public facade", () => {
         expect(native.spawn.mock.calls).toEqual([probeCall("docker", "one"), grantCall("docker", "one"), probeCall("docker", "two"), probeCall("docker", "three"), grantCall("docker", "three")]);
     });
 
-    const steps = ["probe", "status:1", "stdout", "coerce", "status:2", "grant", "grant-status", "warn"];
+
 
     it("deduplicates reentrant and later warnings after publication throws", () => {
         const failure = { warning: "failure" };
