@@ -8,8 +8,8 @@ import {
 import { HYPER_V_ELEVATED_NETWORK_ERROR_CODES } from "./elevated-network-session.js";
 
 type ProviderExecution = {
-    mode: string;
-    provider: string;
+    mode?: string;
+    provider?: string;
     executable?: string;
     args?: string[];
     input?: string;

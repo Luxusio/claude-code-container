@@ -1,3 +1,5 @@
+import { snapshotInventoryConflict } from "../../domain/lifecycle/hyper-v-snapshots.js";
+import { settleSnapshotInventory } from "../../application/lifecycle/hyper-v-snapshots.js";
 import { posix, win32 } from "path";
 import type { HyperVVmObservation } from "../../../host-control/hyper-v/index.js";
 import type {
@@ -8,7 +10,7 @@ import type {
 // Windows provider paths are case-insensitive; POSIX fixture paths retain their semantics.
 // Never equate a relative path or an active checkpoint with the owned terminal disk.
 export function hyperVSnapshotObservationMismatch(
-    observation: HyperVVmObservation | null,
+    observation: Pick<HyperVVmObservation, "vmId" | "vmName" | "diskPath"> | null,
     expected: { vmId: string; vmName: string; diskPath: string },
 ): string | null {
     if (!observation) return "hyper-v-snapshot-observation-invalid";
@@ -58,45 +60,21 @@ export type DeviceLabHyperVSnapshotRepairTarget = {
 type InventoryTrackedSnapshot = { readonly id: string; readonly name: string; readonly providerName: string };
 type InventoryLiveSnapshot = { readonly snapshotId: string; readonly snapshotName: string };
 
-export function hyperVSnapshotInventoryConflict(
-    ownerId: string,
-    tracked: readonly InventoryTrackedSnapshot[],
-    live: readonly InventoryLiveSnapshot[],
-) {
-    const liveById = new Map(live.map((snapshot) => [snapshot.snapshotId.toLowerCase(), snapshot]));
-    const trackedIds = new Set(tracked.map((snapshot) => snapshot.id.toLowerCase()));
-    const ownerPrefix = `ccc-${ownerId}-`;
-    return {
-        untracked: live.filter((snapshot) => snapshot.snapshotName.toLowerCase().startsWith(ownerPrefix)
-            && !trackedIds.has(snapshot.snapshotId.toLowerCase()))
-            .map((snapshot) => ({ id: snapshot.snapshotId, providerName: snapshot.snapshotName })),
-        missing: tracked.filter((snapshot) => {
-            const candidate = liveById.get(snapshot.id.toLowerCase());
-            return !candidate || candidate.snapshotName !== snapshot.providerName;
-        }).map((snapshot) => ({ id: snapshot.id, name: snapshot.name })),
-    };
+export function hyperVSnapshotInventoryConflict(ownerId: string, tracked: readonly InventoryTrackedSnapshot[], live: readonly InventoryLiveSnapshot[]) {
+    return snapshotInventoryConflict(ownerId, tracked, live);
 }
 
 // Re-observe a conflicting inventory twice without changing tracked checkpoint state.
 // A read error stays an error; a stable mismatch stays a conflict.
 export async function settleHyperVSnapshotInventory<T>(
-    ownerId: string,
-    tracked: readonly InventoryTrackedSnapshot[],
-    first: readonly InventoryLiveSnapshot[],
+    ownerId: string, tracked: readonly InventoryTrackedSnapshot[], first: readonly InventoryLiveSnapshot[],
     readAgain: () => Promise<{ readonly ok: true; readonly snapshots: readonly InventoryLiveSnapshot[] } | { readonly ok: false; readonly error: T }>,
     limits: { readonly deadlineAt: number; readonly timeoutError: T; readonly delayMilliseconds?: number },
 ): Promise<{ readonly ok: true; readonly conflict: ReturnType<typeof hyperVSnapshotInventoryConflict> } | { readonly ok: false; readonly error: T }> {
-    let conflict = hyperVSnapshotInventoryConflict(ownerId, tracked, first);
-    for (let attempt = 0; attempt < 2 && (conflict.untracked.length > 0 || conflict.missing.length > 0); attempt += 1) {
-        const delayMilliseconds = limits.delayMilliseconds ?? 300;
-        if (Date.now() + delayMilliseconds >= limits.deadlineAt) return { ok: false, error: limits.timeoutError };
-        await new Promise((resolve) => setTimeout(resolve, delayMilliseconds));
-        if (Date.now() >= limits.deadlineAt) return { ok: false, error: limits.timeoutError };
-        const observed = await readAgain();
-        if (!observed.ok) return observed;
-        conflict = hyperVSnapshotInventoryConflict(ownerId, tracked, observed.snapshots);
-    }
-    return { ok: true, conflict };
+    return settleSnapshotInventory(ownerId, tracked, first, readAgain, limits, {
+        now: Date.now,
+        sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    });
 }
 
 export async function repairDeviceLabHyperVSnapshotState(

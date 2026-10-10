@@ -1,0 +1,17 @@
+# Broker Hyper-V snapshots
+
+One broker snapshot application owns list, create, restore, delete, and journal repair for Windows VMs and Hyper-V Linux VMs. Authenticated device-tool routing, owner queues, target lookup, and device-operation locks remain in the broker. Snapshot-specific admission, transaction decisions, result classification, and Linux restore readiness live inward.
+
+Native peers retain checkpoint ownership checks, VM identity and terminal disk-chain observation, guarded journal files, PowerShell sessions, SSH commands, and atomic owner-state mutation. The application consumes explicit structural facts and capabilities, never a native client or normalized broker options. Construction does not start providers.
+
+List compares owner-tracked snapshots with live inventory and performs at most two bounded resamples inside one deadline. Compatibility exports use the same inward comparison and settling policy. Missing, untracked, or inconsistent snapshots remain conflicts; read failure is not empty success.
+
+Create stages its journal before mutation and records a trustworthy returned checkpoint ID before confirmation. Unconfirmed or conflicting create evidence remains journaled for exact reconciliation. On a publication conflict, compensation targets only that newly created ID and expected provider name, and reports whether deletion was confirmed. Restore and delete do not invent rollback effects.
+
+Restore requires destructive confirmation. Windows restores remain stopped; Linux restores start through the existing native peer and must become SSH-ready before publication. Snapshot publication compares the complete captured owner record under the native mutation lock. A changed record is preserved.
+
+Repair is internal. Ordinary Hyper-V tool preflight, native snapshot failure recovery, non-create lifecycle preflight, and create preflight all reach the same application. Repair validates owner/incarnation, VM/disk, checkpoint policy, exact provider name, and candidate cardinality. An indeterminate restore requires the exact retry ID and retains its journal. The existing forced VM-delete exception may supersede an unreconcilable snapshot journal.
+
+Repair merges its selected snapshot/runtime fields into the current device selected by ID; this is the existing repair contract, not the stronger full-record CAS used by actions. Journal and native identity failures stay explicit. Existing deadlines, confirmation limits, command bounds, secret redaction, and native session fallback rules remain unchanged.
+
+Verification combines ordinary policy and consumed type tests with the existing Windows/Linux authenticated broker, journal, status, and typed snapshot fixtures. Portable fixtures do not certify a real Windows host or live VM/checkpoint effects. Independent review, coordinated QA, a genuine build, and local delivery are required before acceptance.

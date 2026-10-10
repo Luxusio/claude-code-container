@@ -1,3 +1,7 @@
+import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyper-v-snapshots.js";
+import type { SnapshotExecution } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
+import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
+import { isSnapshotTool } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerRecordingApplication } from "./device-lab/application/broker-recording.js";
 import { recordingRuntimeMatches, recordingPublication } from "./device-lab/domain/broker-recording.js";
 import type { BrokerAppiumVerification } from "./device-lab/ports/broker-appium.js";
@@ -116,13 +120,10 @@ import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from ".
 import { createHyperVWindowsNetworkClient, HyperVWindowsError, type HyperVGuestDirectAction, type HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
 import {
     createDeviceLabHyperVSnapshot,
-    settleHyperVSnapshotInventory,
     hyperVSnapshotObservationMismatch,
     deleteDeviceLabHyperVSnapshot,
     repairDeviceLabHyperVSnapshotState,
     restoreDeviceLabHyperVSnapshot,
-    type DeviceLabHyperVSnapshotDeleteObservation,
-    type DeviceLabHyperVSnapshotObservation,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
 import { hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxGuiTypeGuestCommand, hyperVLinuxGuiScrollGuestCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
@@ -3728,13 +3729,7 @@ function translateDeviceToolPathsForHost(parsed: DeviceToolParamSuccess, normali
     };
 }
 
-type HyperVTrackedSnapshot = {
-    id: string;
-    name: string;
-    providerName: string;
-    snapshotType?: string;
-    createdAt?: string;
-};
+
 
 function hyperVJournalPersistenceRuntime(): HyperVJournalPersistenceRuntime {
     return {
@@ -3778,134 +3773,84 @@ function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: 
     );
 }
 
-async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions, retryRestoreSnapshotId?: string): Promise<
-    | { ok: true; device: Record<string, unknown>; reconciled: boolean }
-    | { ok: false; status: number; error: string; detail?: string }> {
-    let journal: HyperVSnapshotJournal | null;
-    try {
-        journal = readHyperVSnapshotJournal(ownerId, backend, deviceId);
-    } catch (error) {
-        return {
-            ok: false,
-            status: 409,
-            error: "hyper-v-snapshot-journal-invalid",
-            detail: hyperVBoundedErrorCode(error, "hyper-v-snapshot-journal-invalid"),
-        };
-    }
-    if (!journal) return { ok: true, device, reconciled: false };
-    if (journal.tool === "device_snapshot_create" && journal.confirmationRequired && !journal.snapshotId) {
-        return { ok: false, status: 409, error: "hyper-v-snapshot-create-outcome-indeterminate" };
-    }
-    const vmId = field(device, "vmId");
-    const vmName = field(device, "vmName");
-    const diskPath = field(device, "diskPath");
-    const incarnationId = hyperVDeviceIncarnationId(device);
-    if (!vmId || !vmName || !diskPath || !incarnationId || incarnationId !== journal.incarnationId) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-    const expectedCheckpointPolicy = backend === "linux-vm" ? "Production" : "ProductionOnly";
-    if (journal.providerName !== hyperVSnapshotName(ownerId, journal.snapshotName)) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-    const repairRecording = createRecordingDeviceLabHyperVWindowsClient({
-        executable: powershell,
-        timeoutMilliseconds: 30000,
-        run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
-    });
-    let repairObservation: { readonly checkpointPolicy: "Production" | "ProductionOnly"; readonly candidateCount: 0 | 1 };
-    try {
-        repairObservation = await repairDeviceLabHyperVSnapshotState(repairRecording.client, {
-            vmId,
-            vmName,
-            expectedNotes: ownershipMarker(ownerId, deviceId, incarnationId),
-            providerName: journal.providerName,
-            expectedCheckpointPolicy,
+function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
+    let lastExecution: SnapshotExecution | null = null;
+    function recording(executable: string, timeoutMilliseconds: number | (() => number)) {
+        return createRecordingDeviceLabHyperVWindowsClient({
+            executable, timeoutMilliseconds,
+            run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+            ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
         });
-    } catch (error) {
-        if (error instanceof HyperVWindowsError && error.category === "validation") {
-            return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-        }
-        const lastExecution = repairRecording.lastExecution();
-        const detail = hyperVProviderDiagnosticCode({
-            error: error instanceof HyperVWindowsError ? error.code : lastExecution?.error,
-            stdout: lastExecution?.stdout,
-            stderr: lastExecution?.stderr,
-        }, "hyper-v-snapshot-reconciliation-failed");
-        return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail };
     }
-    if (repairObservation.checkpointPolicy !== expectedCheckpointPolicy) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-invalid-result" };
-    const execution = await hyperVTypedStatusExecution(normalized, { executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId }, Date.now() + 30000, 30000, true);
-    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-snapshot-reconciliation-failed") };
-    const observation = parseHyperVVmObservation(execution.stdout || "");
-    if (!observation || hyperVSnapshotObservationMismatch(observation, { vmId, vmName, diskPath })
-        || observation.checkpointPolicy !== expectedCheckpointPolicy) {
-        return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-invalid-result" };
-    }
-    const live = (observation.snapshots || []).filter((snapshot) => snapshot.snapshotName.toLowerCase() === journal!.providerName.toLowerCase());
-    if (live.length > 1) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-ambiguous" };
-    if (live.length !== repairObservation.candidateCount) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-invalid-result" };
-    if (live.some((snapshot) => snapshot.snapshotName !== journal!.providerName)) {
-        return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-    }
-    if (journal.tool === "device_snapshot_create" && journal.confirmationRequired
-        && (live.length !== 1 || live[0].snapshotId.toLowerCase() !== journal.snapshotId!.toLowerCase())) {
-        return { ok: false, status: 409, error: "hyper-v-snapshot-create-outcome-indeterminate" };
-    }
-    let preserveJournalForRestoreRetry = false;
-    if (journal.tool === "device_snapshot_restore") {
-        const snapshotId = journal.snapshotId!.toLowerCase();
-        if (live.length !== 1 || live[0].snapshotId.toLowerCase() !== snapshotId) {
-            return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-        }
-        if (retryRestoreSnapshotId?.toLowerCase() !== snapshotId) {
-            return { ok: false, status: 409, error: "hyper-v-snapshot-restore-outcome-indeterminate" };
-        }
-        preserveJournalForRestoreRetry = true;
-    }
-    const tracked = trackedHyperVSnapshots(device);
-    if (journal.tool === "device_snapshot_delete" && live.length === 1
-        && live[0].snapshotId.toLowerCase() !== journal.snapshotId!.toLowerCase()) {
-        return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-    }
-    let snapshots = tracked;
-    let activeSnapshotId = typeof device.activeSnapshotId === "string" ? device.activeSnapshotId : null;
-    if (journal.tool === "device_snapshot_create" && live.length === 1) {
-        const snapshotId = live[0].snapshotId.toLowerCase();
-        snapshots = [...tracked.filter((snapshot) => snapshot.name !== journal!.snapshotName && snapshot.id.toLowerCase() !== snapshotId), {
-            id: snapshotId,
-            name: journal.snapshotName,
-            providerName: journal.providerName,
-            ...(live[0].snapshotType ? { snapshotType: live[0].snapshotType } : {}),
-            createdAt: journal.startedAt,
-        }];
-    } else if (journal.tool === "device_snapshot_delete" && live.length === 0) {
-        snapshots = tracked.filter((snapshot) => snapshot.id.toLowerCase() !== journal!.snapshotId!.toLowerCase());
-        if (activeSnapshotId?.toLowerCase() === journal.snapshotId!.toLowerCase()) activeSnapshotId = null;
-    }
-    let updated = device;
-    mutateOwnerDevices(ownerId, backend, (devices) => devices.map((candidate) => {
-        if (!candidate || typeof candidate !== "object" || (candidate as Record<string, unknown>).id !== deviceId) return candidate;
-        updated = { ...(candidate as Record<string, unknown>), snapshots, activeSnapshotId, runtimeState: observation.state, status: observation.state.toLowerCase() === "running" ? "running" : "stopped", updatedAt: new Date().toISOString() };
-        return updated;
-    }));
-    if (!preserveJournalForRestoreRetry) {
-        rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true });
-    }
-    return { ok: true, device: updated, reconciled: true };
+    const ports: BrokerHyperVSnapshotPorts = {
+        executable: name => providerExecutable(name, normalized),
+        incarnation: hyperVDeviceIncarnationId,
+        validIncarnation: validHyperVIncarnationId,
+        providerName: hyperVSnapshotName,
+        ownershipNotes: ownershipMarker,
+        journalExists: (ownerId, backend, deviceId) => existsSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId)),
+        readJournal: readHyperVSnapshotJournal,
+        writeJournal: (...args) => { writeHyperVSnapshotJournal(...args); return undefined; },
+        recordCreatedId: (...args) => { recordHyperVSnapshotCreatedId(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
+        clearJournal: (...args) => { clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
+        removeRepairJournal: (ownerId, backend, deviceId) => { rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true }); return undefined; },
+        status: (identity, deadlineAt, timeoutMs) => hyperVTypedStatusExecution(normalized, identity, deadlineAt, timeoutMs, true),
+        parseStatus: parseHyperVVmObservation,
+        observationMismatch: hyperVSnapshotObservationMismatch,
+        create: async (executable, target, options) => {
+            const effect = recording(executable, options.timeoutMilliseconds);
+            try { return await createDeviceLabHyperVSnapshot(effect.client, target, options); }
+            finally { lastExecution = effect.lastExecution(); }
+        },
+        restore: async (executable, target, options) => {
+            const effect = recording(executable, 120000);
+            try { return await restoreDeviceLabHyperVSnapshot(effect.client, target, options); }
+            finally { lastExecution = effect.lastExecution(); }
+        },
+        delete: async (executable, target) => {
+            const effect = recording(executable, 120000);
+            try { return await deleteDeviceLabHyperVSnapshot(effect.client, target); }
+            finally { lastExecution = effect.lastExecution(); }
+        },
+        repairPolicy: async (executable, target) => {
+            const effect = recording(executable, 30000);
+            try { return await repairDeviceLabHyperVSnapshotState(effect.client, target); }
+            finally { lastExecution = effect.lastExecution(); }
+        },
+        lastExecution: () => lastExecution,
+        isValidationError: error => error instanceof HyperVWindowsError && error.category === "validation",
+        providerErrorCode: error => error instanceof HyperVWindowsError ? error.code : undefined,
+        errorCode: hyperVBoundedErrorCode,
+        diagnosticCode: hyperVProviderDiagnosticCode,
+        redactExecution: redactProviderCommandInput,
+        redactDevice: redactHyperVDeviceSecrets,
+        publish: transitionHyperVSnapshotState,
+        mergeRepair: (ownerId, backend, deviceId, original, patch) => {
+            let updated = original;
+            mutateOwnerDevices(ownerId, backend, devices => devices.map(candidate => {
+                if (!candidate || typeof candidate !== "object" || !("id" in candidate) || candidate.id !== deviceId) return candidate;
+                updated = { ...candidate, ...patch, updatedAt: new Date().toISOString() };
+                return updated;
+            }));
+            return updated;
+        },
+        forgetConsole: (ownerId, backend, deviceId) => { forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId)); return undefined; },
+        sshReady: (executable, target) => hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
+            executable, ...target, timeoutMs: 15000,
+        }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        remainingTimeout: hyperVRemainingTimeout,
+        now: Date.now,
+        timestamp: () => new Date().toISOString(),
+        sleep,
+    };
+    return createBrokerHyperVSnapshotApplication(ports);
 }
 
-function trackedHyperVSnapshots(device: Record<string, unknown>): HyperVTrackedSnapshot[] {
-    if (!Array.isArray(device.snapshots)) return [];
-    return device.snapshots.flatMap((snapshot) => {
-        if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return [];
-        const record = snapshot as Record<string, unknown>;
-        if (typeof record.id !== "string" || typeof record.name !== "string" || typeof record.providerName !== "string") return [];
-        return [{
-            id: record.id,
-            name: record.name,
-            providerName: record.providerName,
-            ...(typeof record.snapshotType === "string" ? { snapshotType: record.snapshotType } : {}),
-            ...(typeof record.createdAt === "string" ? { createdAt: record.createdAt } : {}),
-        }];
-    });
+function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions, retryRestoreSnapshotId?: string) {
+    return brokerHyperVSnapshotApplication(normalized).repair(ownerId, { backend, deviceId, device, executable: powershell }, retryRestoreSnapshotId);
 }
+
+
 
 function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>) {
     let found = false;
@@ -3923,42 +3868,15 @@ function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceI
     return { found, matched, device: current };
 }
 
-function hyperVSnapshotStateConflict(ownerId: string, backend: string, deviceId: string, transition: ReturnType<typeof transitionHyperVSnapshotState>, rollback?: unknown): BrokerRpcResult {
-    return {
-        status: 409,
-        payload: {
-            ok: false,
-            error: "hyper-v-snapshot-state-conflict",
-            ownerId,
-            backend,
-            deviceId,
-            found: transition.found,
-            currentDevice: redactHyperVDeviceSecrets(transition.device),
-            ...(rollback ? { rollback } : {}),
-        },
-    };
-}
+
 
 async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
+    if (isSnapshotTool(parsed.tool)) return brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match);
     const deviceId = String(parsed.deviceId);
     let device = match.device;
     const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
     if (!powershell) return { status: 400, payload: { ok: false, error: "missing-provider-command", missing: ["powershell"], backend: match.backend, deviceId } };
-    if ((parsed.tool === "device_snapshot_restore" || parsed.tool === "device_snapshot_delete")
-        && parsed.params.confirmDestructive !== true) {
-        return {
-            status: 400,
-            payload: {
-                ok: false,
-                error: "destructive-confirmation-required",
-                confirmationField: "confirmDestructive",
-                ownerId,
-                backend: match.backend,
-                deviceId,
-                tool: parsed.tool,
-            },
-        };
-    }
+
     const initialIncarnationId = hyperVDeviceIncarnationId(device);
     const pendingSnapshotJournal = existsSync(hyperVSnapshotJournalPath(ownerId, match.stateKey, deviceId));
     const cursorMove = parsed.tool === "device_cursor_position" && (parsed.params.x !== undefined || parsed.params.y !== undefined);
@@ -3991,9 +3909,7 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
     if (!vmId || !vmName || !diskPath || !incarnationId) {
         return { status: 409, payload: { ok: false, error: "missing-provider-metadata", missing: ["vmId", "vmName", "diskPath", "incarnationId"], backend: match.backend, deviceId } };
     }
-    if (parsed.tool === "device_snapshot_restore") {
-        forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, match.backend || "", deviceId));
-    }
+
     if (parsed.tool === "device_window_list" || parsed.tool === "device_focus_window") {
         if (match.backend === "windows-vm" && typeof parsed.params.helperTimeoutMs === "number" && parsed.params.helperTimeoutMs < 30000) {
             return { status: 400, payload: { ok: false, error: parsed.tool === "device_focus_window" ? "window-focus-timeout-too-short" : "window-list-timeout-too-short", minimumTimeoutMs: 30000, deviceId } };
@@ -4141,90 +4057,7 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         }
         });
     }
-    if (parsed.tool === "device_snapshot_list") {
-        // The packaged MCP route allows 60 seconds for this tool. Keep all native reads,
-        // including conflict retries, inside one shorter broker deadline.
-        const listDeadlineAt = Date.now() + 45000;
-        const execution = await hyperVTypedStatusExecution(normalized, { executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId }, listDeadlineAt, 30000, true);
-        if (!commandSucceeded(execution)) {
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: "hyper-v-snapshot-list-provider-failed",
-                    detail: hyperVProviderDiagnosticCode(execution, "hyper-v-snapshot-list-provider-failed"),
-                    ownerId,
-                    backend: match.backend,
-                    deviceId,
-                    execution: redactProviderCommandInput(
-                        execution,
-                        true,
-                        "hyper-v-snapshot-list-provider-failed",
-                    ),
-                },
-            };
-        }
-        const observation = parseHyperVVmObservation(execution.stdout || "");
-        const mismatch = hyperVSnapshotObservationMismatch(observation, { vmId, vmName, diskPath });
-        if (!observation || mismatch) {
-            return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-list-invalid-result", detail: mismatch, ownerId, backend: match.backend, deviceId } };
-        }
-        const tracked = trackedHyperVSnapshots(device);
-        let observedOwnerSnapshotCount = observation.snapshots?.length ?? 0;
-        const settled = await settleHyperVSnapshotInventory<BrokerRpcResult>(ownerId, tracked, observation.snapshots || [], async () => {
-            const retryExecution = await hyperVTypedStatusExecution(normalized, { executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId }, listDeadlineAt, 30000, true);
-            if (!commandSucceeded(retryExecution)) {
-                return { ok: false as const, error: { status: 502, payload: { ok: false, error: "hyper-v-snapshot-list-provider-failed", ownerId, backend: match.backend, deviceId,
-                    detail: hyperVProviderDiagnosticCode(retryExecution, "hyper-v-snapshot-list-provider-failed"),
-                    execution: redactProviderCommandInput(retryExecution, true, "hyper-v-snapshot-list-provider-failed") } } };
-            }
-            const retryObservation = parseHyperVVmObservation(retryExecution.stdout || "");
-            const retryMismatch = hyperVSnapshotObservationMismatch(retryObservation, { vmId, vmName, diskPath });
-            if (!retryObservation || retryMismatch) {
-                return { ok: false as const, error: { status: 502, payload: { ok: false, error: "hyper-v-snapshot-list-invalid-result", detail: retryMismatch, ownerId, backend: match.backend, deviceId } } };
-            }
-            observedOwnerSnapshotCount = retryObservation.snapshots?.length ?? 0;
-            return { ok: true as const, snapshots: retryObservation.snapshots || [] };
-        }, {
-            deadlineAt: listDeadlineAt,
-            timeoutError: { status: 502, payload: { ok: false, error: "hyper-v-snapshot-list-provider-failed", ownerId, backend: match.backend, deviceId,
-                detail: "hyper-v-status-timeout" } },
-        });
-        if (!settled.ok) return settled.error;
-        const { untracked, missing } = settled.conflict;
-        if (untracked.length > 0 || missing.length > 0) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "hyper-v-snapshot-inventory-conflict",
-                    ownerId,
-                    backend: match.backend,
-                    deviceId,
-                    observedOwnerSnapshotCount,
-                    untracked,
-                    missing,
-                },
-            };
-        }
-        return {
-            status: 200,
-            payload: {
-                ok: true,
-                result: {
-                    ownerId,
-                    backend: match.backend,
-                    stateKey: match.stateKey,
-                    deviceId,
-                    tool: parsed.tool,
-                    provider: "hyper-v",
-                    snapshots: tracked,
-                    activeSnapshotId: typeof device.activeSnapshotId === "string" ? device.activeSnapshotId : null,
-                    startsDevices: false,
-                },
-            },
-        };
-    }
+
     if (match.backend === "linux-vm" && (parsed.tool === "device_exec" || parsed.tool === "device_upload" || parsed.tool === "device_download")) {
         const deviceRoot = field(device, "deviceRoot");
         const privateRoot = field(device, "privateRoot");
@@ -4465,288 +4298,7 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
             },
         };
     }
-    const requestedName = typeof parsed.params.snapshotName === "string" ? parsed.params.snapshotName : null;
-    const requestedId = typeof parsed.params.snapshotId === "string" ? parsed.params.snapshotId.toLowerCase() : null;
-    const snapshots = trackedHyperVSnapshots(device);
-    let tracked: HyperVTrackedSnapshot | null = null;
-    if (parsed.tool !== "device_snapshot_create") {
-        const matches = snapshots.filter((snapshot) => (!requestedName || snapshot.name === requestedName) && (!requestedId || snapshot.id.toLowerCase() === requestedId));
-        if ((!requestedName && !requestedId) || matches.length !== 1) {
-            return { status: 404, payload: { ok: false, error: "hyper-v-snapshot-not-found", ownerId, backend: match.backend, deviceId, snapshotName: requestedName, snapshotId: requestedId } };
-        }
-        tracked = matches[0];
-    }
-    if (parsed.tool === "device_snapshot_create") {
-        if (!requestedName) return { status: 400, payload: { ok: false, error: "missing-snapshot-name", deviceId } };
-        if (snapshots.some((snapshot) => snapshot.name === requestedName)) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-already-exists", ownerId, backend: match.backend, deviceId, snapshotName: requestedName } };
-        }
-    }
-    const snapshotName = parsed.tool === "device_snapshot_create" ? String(requestedName) : String(tracked?.name);
-    const expectedProviderName = hyperVSnapshotName(ownerId, snapshotName);
-    const expectedCheckpointPolicy = match.backend === "linux-vm" ? "Production" : "ProductionOnly";
-    if (parsed.tool === "device_snapshot_create") {
-        const statusExecution = await hyperVTypedStatusExecution(normalized, { executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId }, Date.now() + 30000, 30000, true);
-        const statusObservation = commandSucceeded(statusExecution) ? parseHyperVVmObservation(statusExecution.stdout || "") : null;
-        const mismatch = hyperVSnapshotObservationMismatch(statusObservation, { vmId, vmName, diskPath });
-        if (!statusObservation || mismatch) {
-            return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-preflight-failed", ownerId, backend: match.backend, deviceId,
-                detail: commandSucceeded(statusExecution) ? mismatch : hyperVProviderDiagnosticCode(statusExecution, "hyper-v-snapshot-preflight-failed") } };
-        }
-        if (statusObservation.checkpointPolicy !== expectedCheckpointPolicy) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-policy-invalid", ownerId, backend: match.backend, deviceId } };
-        }
-    }
-    const snapshotTarget = { vmId, providerName: expectedProviderName, snapshotId: tracked?.id || null };
-    const snapshotCreateDeadlineAt = parsed.tool === "device_snapshot_create" ? Date.now() + 45000 : null;
-    let snapshotConfirmationDeadlineAt: number | null = null;
-    const snapshotRecording = createRecordingDeviceLabHyperVWindowsClient({
-        executable: powershell,
-        timeoutMilliseconds: snapshotCreateDeadlineAt !== null
-            ? () => hyperVRemainingTimeout(Math.min(snapshotCreateDeadlineAt, snapshotConfirmationDeadlineAt ?? Number.POSITIVE_INFINITY), 45000)
-            : 120000,
-        run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-        // Only when this broker owns process execution. An injected command runner means the caller
-        // owns it, and spawning a long-lived child behind that seam would execute work it never
-        // saw — which is exactly what a test harness injects a runner to prevent.
-        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
-    });
-    try {
-        writeHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool as HyperVSnapshotJournal["tool"], snapshotName, expectedProviderName, tracked?.id, match.backend === "linux-vm" ? "Production" : "ProductionOnly");
-    } catch (error) {
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "hyper-v-snapshot-journal-write-failed",
-                ownerId,
-                backend: match.backend,
-                deviceId,
-                detail: hyperVBoundedErrorCode(
-                    error,
-                    "hyper-v-snapshot-journal-write-failed",
-                ),
-            },
-        };
-    }
-    let observation: DeviceLabHyperVSnapshotObservation | DeviceLabHyperVSnapshotDeleteObservation;
-    try {
-        observation = parsed.tool === "device_snapshot_create"
-            ? await createDeviceLabHyperVSnapshot(snapshotRecording.client, snapshotTarget, {
-                operationDeadlineAt: snapshotCreateDeadlineAt!,
-                onConfirmationDeadline: (deadlineAt) => { snapshotConfirmationDeadlineAt = deadlineAt; },
-                onCreatedId: (snapshotId) => recordHyperVSnapshotCreatedId(
-                    hyperVJournalPersistenceRuntime(), ownerId, match.stateKey, deviceId,
-                    incarnationId, expectedProviderName, snapshotId,
-                ),
-            })
-            : parsed.tool === "device_snapshot_restore"
-                ? await restoreDeviceLabHyperVSnapshot(snapshotRecording.client, snapshotTarget, {
-                    force: parsed.params.force === true,
-                    startAfterRestore: match.backend === "linux-vm",
-                })
-                : await deleteDeviceLabHyperVSnapshot(snapshotRecording.client, snapshotTarget);
-    } catch (error) {
-        // The legacy path answered `hyper-v-snapshot-invalid-result` — and stayed off journal
-        // reconciliation — only for its post-success checks on the provider's own report. The
-        // adapter raises those as `hyper-v-snapshot-result-mismatch` (the created checkpoint is not
-        // the owner-scoped one) and `hyper-v-snapshot-delete-unconfirmed` (which replaces the
-        // distrusted `deleted` flag). Both mean the mutation ran and its report cannot be trusted,
-        // so there is no drift for reconciliation to repair.
-        //
-        // One legacy condition deliberately does not come back: an observation the broker could not
-        // parse at all also answered `hyper-v-snapshot-invalid-result`. The typed client raises that
-        // as a protocol error, which reaches the provider-failure branch with reconciliation behind
-        // it — a stricter answer for a response the library itself could not decode.
-        //
-        // The ownership fences stay off this list on purpose. `hyper-v-snapshot-ownership-mismatch`
-        // and `hyper-v-snapshot-vm-ownership-mismatch` were `ownedSnapshotPrelude`/`ownedVmPrelude`
-        // throws inside PowerShell: they fired before any mutation, exited non-zero, and reached the
-        // provider-failure branch precisely so reconciliation could repair the out-of-band drift
-        // that caused them.
-        const boundedErrorCode = hyperVBoundedErrorCode(error, "");
-        if (parsed.tool === "device_snapshot_create"
-            && (boundedErrorCode === "hyper-v-snapshot-create-unconfirmed"
-                || boundedErrorCode === "hyper-v-snapshot-create-identity-conflict"
-                || boundedErrorCode === "hyper-v-snapshot-created-id-invalid"
-                || boundedErrorCode === "hyper-v-snapshot-created-id-journal-mismatch")) {
-            // The staged create journal keeps the returned ID when one was trustworthy.
-            // Leave it in place and let a later exact-ID reconciliation resolve the outcome.
-            return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-create-outcome-indeterminate",
-                ownerId, backend: match.backend, deviceId, detail: boundedErrorCode } };
-        }
-        if (boundedErrorCode === "hyper-v-snapshot-delete-unconfirmed"
-            || boundedErrorCode === "hyper-v-snapshot-result-mismatch") {
-            return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-invalid-result", ownerId, backend: match.backend, deviceId } };
-        }
-        // Building the legacy provider command rejected bad options before anything ran, and that
-        // answered 400. The typed client performs the same rejection as a validation error, still
-        // before the first provider round trip, so it stays a request error rather than becoming a
-        // provider failure that drags journal reconciliation in behind it.
-        // The stable public code is kept as-is rather than derived from the error: every library
-        // validation message starts with `hyper-v-windows-validation`, so deriving it would replace
-        // the public code with the library's internal namespace on every rejection.
-        //
-        // The journal is cleared on the way out. Legacy rejected bad options before writing it at
-        // all; here the write already happened, and leaving it behind would make a request that
-        // never touched the provider cost the next caller a repair round trip — or, for a restore
-        // journal, wedge the next call on `hyper-v-snapshot-restore-outcome-indeterminate`. Nothing
-        // ran, so there is nothing to reconcile.
-        if (error instanceof HyperVWindowsError && error.category === "validation") {
-            clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ownerId, match.stateKey, deviceId);
-            return { status: 400, payload: { ok: false, error: "invalid-hyper-v-snapshot-options", ownerId, backend: match.backend, deviceId } };
-        }
-        // The typed client throws instead of returning an execution, so the recorded raw provider
-        // result keeps the response's `execution` field intact. It carries the mode/provider fields
-        // redactProviderCommandInput reads; the adapter's return type deliberately does not name
-        // them, so the broker restates the shape it already owns here.
-        const execution = (snapshotRecording.lastExecution() ?? { mode: "exec", provider: "hyper-v", status: null }) as ProviderCommandResult;
-        const reconciliation = await reconcileHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell, normalized);
-        return {
-            status: reconciliation.ok ? 502 : reconciliation.status,
-            payload: {
-                ok: false,
-                error: reconciliation.ok ? "hyper-v-snapshot-provider-failed" : reconciliation.error,
-                ownerId,
-                backend: match.backend,
-                deviceId,
-                execution: redactProviderCommandInput(
-                    execution,
-                    true,
-                    hyperVBoundedErrorCode(error, "hyper-v-snapshot-provider-failed"),
-                ),
-                ...(!reconciliation.ok && reconciliation.detail ? { detail: reconciliation.detail } : {}),
-            },
-        };
-    }
-    if (parsed.tool === "device_snapshot_restore" && match.backend === "linux-vm") {
-        // A production checkpoint restore leaves the VM off (no saved memory), and device_exec does not
-        // auto-start devices. The restore command starts the VM; here we wait for the guest to be
-        // SSH-ready so the restored device is immediately usable.
-        const restoreDeviceRoot = field(device, "deviceRoot");
-        const restorePrivateRoot = field(device, "privateRoot");
-        const restoreSshPrivateKeyPath = field(device, "sshPrivateKeyPath");
-        const restoreKnownHostsPath = field(device, "sshKnownHostsPath");
-        const restoreGuestUsername = field(device, "guestUsername");
-        const restoreNetworkAddress = field(device, "networkAddress");
-        const restoreSsh = providerExecutable("ssh.exe", normalized) || providerExecutable("ssh", normalized);
-        if (!restoreSsh || !restoreDeviceRoot || !restoreSshPrivateKeyPath || !restoreKnownHostsPath || !restoreGuestUsername || !restoreNetworkAddress) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-linux-guest-metadata-invalid", ownerId, backend: match.backend, deviceId } };
-        }
-        const restoreReadyDeadline = Date.now() + 120000;
-        let restoreGuestReady = false;
-        while (Date.now() < restoreReadyDeadline) {
-            const restoreReadyExecution = await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
-                executable: restoreSsh,
-                deviceRoot: restoreDeviceRoot,
-                ...(restorePrivateRoot ? { privateRoot: restorePrivateRoot } : {}),
-                sshPrivateKeyPath: restoreSshPrivateKeyPath,
-                knownHostsPath: restoreKnownHostsPath,
-                guestUsername: restoreGuestUsername,
-                networkAddress: restoreNetworkAddress,
-                timeoutMs: 15000,
-            }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            if (commandSucceeded(restoreReadyExecution) && String(restoreReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) {
-                restoreGuestReady = true;
-                break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
-        if (!restoreGuestReady) {
-            return { status: 502, payload: { ok: false, error: "hyper-v-linux-guest-provider-failed", ownerId, backend: match.backend, deviceId } };
-        }
-    }
-    const now = new Date().toISOString();
-    const snapshot: HyperVTrackedSnapshot = tracked || {
-        id: observation.snapshotId.toLowerCase(),
-        name: snapshotName,
-        providerName: observation.snapshotName,
-        ...(observation.snapshotType ? { snapshotType: observation.snapshotType } : {}),
-        createdAt: now,
-    };
-    const nextSnapshots = parsed.tool === "device_snapshot_create"
-        ? [...snapshots, snapshot]
-        : parsed.tool === "device_snapshot_delete"
-            ? snapshots.filter((candidate) => candidate.id.toLowerCase() !== snapshot.id.toLowerCase())
-            : snapshots;
-    const replacement = {
-        ...device,
-        snapshots: nextSnapshots,
-        ...(parsed.tool === "device_snapshot_restore"
-            ? (match.backend === "linux-vm"
-                ? { activeSnapshotId: snapshot.id, status: "running", runtimeState: observation.state || "Running", bootReady: true }
-                : { activeSnapshotId: snapshot.id, status: "stopped", runtimeState: observation.state || "Off" })
-            : {}),
-        ...(parsed.tool === "device_snapshot_delete" && device.activeSnapshotId === snapshot.id ? { activeSnapshotId: null } : {}),
-        updatedAt: now,
-    };
-    const transition = transitionHyperVSnapshotState(ownerId, match.stateKey, deviceId, device, replacement);
-    if (!transition.matched) {
-        if (parsed.tool === "device_snapshot_create") {
-            const rollbackRecording = createRecordingDeviceLabHyperVWindowsClient({
-                executable: powershell,
-                timeoutMilliseconds: 120000,
-                run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-                // Only when this broker owns process execution. An injected command runner means the
-                // caller owns it, and spawning a long-lived child behind that seam would execute work
-                // it never saw — which is exactly what a test harness injects a runner to prevent.
-                ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
-            });
-            let rollbackObservation: DeviceLabHyperVSnapshotDeleteObservation | null = null;
-            try {
-                rollbackObservation = await deleteDeviceLabHyperVSnapshot(rollbackRecording.client, {
-                    vmId,
-                    providerName: expectedProviderName,
-                    snapshotId: snapshot.id,
-                });
-            } catch {
-                rollbackObservation = null;
-            }
-            const rollback = (rollbackRecording.lastExecution() ?? { mode: "exec", provider: "hyper-v", status: null }) as ProviderCommandResult;
-            const rollbackConfirmed = Boolean(rollbackObservation
-                && rollbackObservation.snapshotId.toLowerCase() === snapshot.id.toLowerCase()
-                && rollbackObservation.snapshotName === expectedProviderName);
-            return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId, transition, {
-                execution: redactProviderCommandInput(
-                    rollback,
-                    true,
-                    "hyper-v-snapshot-rollback-failed",
-                ),
-                confirmed: rollbackConfirmed,
-                ...(!rollbackConfirmed ? { error: "hyper-v-snapshot-rollback-unconfirmed" } : {}),
-            });
-        }
-        return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId, transition);
-    }
-    clearHyperVSnapshotJournal(
-        hyperVJournalPersistenceRuntime(),
-        ownerId,
-        match.stateKey,
-        deviceId,
-    );
-    return {
-        status: 200,
-        payload: {
-            ok: true,
-            result: {
-                ownerId,
-                backend: match.backend,
-                stateKey: match.stateKey,
-                deviceId,
-                tool: parsed.tool,
-                provider: "hyper-v",
-                snapshot,
-                device: redactHyperVDeviceSecrets(transition.device),
-                // The last primitive the adapter issued for this tool call, kept so the success
-                // payload keeps reporting a provider execution exactly as it did before.
-                execution: redactProviderCommandInput(
-                    (snapshotRecording.lastExecution() ?? { mode: "exec", provider: "hyper-v", status: 0 }) as ProviderCommandResult,
-                    true,
-                ),
-                startsDevices: false,
-            },
-        },
-    };
+    return { status: 501, payload: { ok: false, error: "broker-hyper-v-tool-not-supported" } };
 }
 
 async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
