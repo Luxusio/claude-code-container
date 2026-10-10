@@ -71,7 +71,12 @@ describe("frozen actual Sandbox create replay", () => {
     });
     it("retains direct native workspace generators and external lock wrapper", () => {
         const old = baseline(directPath); const current = readFileSync(resolve(root, directPath), "utf8");
-        for (const name of ["ensureHelperWorkspace", "windowsHelperMetadata", "windowsHelperScript", "windowsHelperBootstrapScript", "windowsHelperBootstrapLauncherScript", "handleWindowsTool"]) expect(declaration(current, name), name).toBe(declaration(old, name));
+        for (const name of ["ensureHelperWorkspace", "windowsHelperMetadata", "windowsHelperScript", "windowsHelperBootstrapScript", "windowsHelperBootstrapLauncherScript"]) expect(declaration(current, name), name).toBe(declaration(old, name));
+        const originalWrapper = declaration(old, "handleWindowsTool");
+        const wrapperEntry = "export async function handleWindowsTool(name, args) {\n";
+        const foreignCreateGuard = '    if (name === "device_create" && args?.backend && args.backend !== "windows-sandbox") return undefined;\n';
+        expect(originalWrapper.startsWith(wrapperEntry)).toBe(true);
+        expect(declaration(current, "handleWindowsTool")).toBe(originalWrapper.replace(wrapperEntry, wrapperEntry + foreignCreateGuard));
         const oldBroker = baseline(brokerPath); const currentBroker = readFileSync(resolve(root, brokerPath), "utf8");
         expect(declaration(currentBroker, "lifecycleCommandInvoke")).toBe(declaration(oldBroker, "lifecycleCommandInvoke"));
     });

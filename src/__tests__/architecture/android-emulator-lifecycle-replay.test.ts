@@ -74,7 +74,9 @@ describe("Android emulator original native allocation witnesses", () => {
                 Object.defineProperty(args, key, { get() { trace.push(key); receivers.push(this === args); if (key === "port") throw thrown; return value; } });
             }
             await expect(facade.handleAndroidTool("device_create", args)).rejects.toBe(thrown);
-            expect(trace).toEqual(ORIGINAL_ANDROID_LIFECYCLE.directAccessorReads);
+            const originalAccessorReads = ["deviceId", "deviceId", "backend", "backend", "backend", "name", "deviceId", "avdName", "port"];
+            expect(ORIGINAL_ANDROID_LIFECYCLE.directAccessorReads).toEqual(originalAccessorReads);
+            expect(trace).toEqual(["backend", "backend", ...originalAccessorReads]);
             expect(receivers.every(Boolean)).toBe(true); expect(denied).toEqual({ spawn: 0, spawnSync: 0, signal: 0 });
             originalObservation("direct-accessor", { trace, receivers, sameThrownIdentity: true, denied: { ...denied } });
             // Separate guard-negative witness: count the attempt before throwing.
