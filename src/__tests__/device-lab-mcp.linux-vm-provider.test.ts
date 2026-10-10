@@ -1,8 +1,9 @@
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
+import * as nativeFs from "fs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     createLab,
     exportArtifacts,
@@ -28,6 +29,29 @@ import {
     deleteLab,
 } from "@ccc/device-lab/providers/backends/linux-vm.mjs";
 import { ownerId as deviceLabOwnerId } from "@ccc/device-lab/providers/context.mjs";
+import { createQemuLifecycleApplication } from "@ccc/device-lab/providers/application/qemu-lifecycle.mjs";
+import type { QemuLab, QemuLifecyclePorts } from "@ccc/device-lab/providers/ports/qemu-lifecycle.mjs";
+
+// Compile-only: this function is deliberately never invoked by the runtime suite.
+function requiredSynchronousLifecyclePorts(ports: QemuLifecyclePorts) {
+    const { removeLabDirectory, ...missingRemoval } = ports;
+    // @ts-expect-error removal authority is required
+    createQemuLifecycleApplication(missingRemoval);
+    // @ts-expect-error publication cannot defer settlement
+    createQemuLifecycleApplication({ ...ports, writeLab: async () => undefined });
+    // @ts-expect-error allocated directory mutation cannot defer settlement
+    createQemuLifecycleApplication({ ...ports, ensureDirectory: async () => undefined });
+    // @ts-expect-error deletion cannot defer settlement
+    createQemuLifecycleApplication({ ...ports, removeLabDirectory: async () => undefined });
+    // @ts-expect-error legacy signal mutation cannot defer settlement
+    createQemuLifecycleApplication({ ...ports, legacyKill: async () => undefined });
+    // @ts-expect-error launch must settle synchronously
+    createQemuLifecycleApplication({ ...ports, launchRunner: () => async () => ({ ok: true }) });
+    // @ts-expect-error provision leaves are required and synchronous
+    createQemuLifecycleApplication({ ...ports, bindProvisionLeaves: async () => ({}) });
+    return removeLabDirectory;
+}
+void requiredSynchronousLifecyclePorts;
 
 describe("device-lab Linux VM container-QEMU provider", () => {
     const roots: string[] = [];
@@ -83,6 +107,124 @@ describe("device-lab Linux VM container-QEMU provider", () => {
 
     afterEach(() => {
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    it("keeps launch-before-clock faults without publishing a running record or compensating", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "launch-fault", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Launch Fault" }, { env, stateRoot: root });
+        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
+        const trace: string[] = [], fault = new Error("raw clock fault");
+        const options = {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            get commandRunner() { trace.push("runner-get"); return () => { trace.push("launch"); return { ok: true, pid: 4242 }; }; },
+            get now() { trace.push("clock"); throw fault; },
+            killProcess: () => { trace.push("unexpected-compensation"); },
+        };
+        const plan = startLab({ labId: created.lab.id, dryRun: true }, options);
+        expect(plan).toEqual(expect.objectContaining({ ok: true, dryRun: true }));
+        expect(trace).toEqual([]);
+        expect(readFileSync(file, "utf8")).toBe(before);
+        let caught: unknown;
+        try { startLab({ labId: created.lab.id }, options); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(trace).toEqual(["runner-get", "launch", "clock"]);
+        expect(readFileSync(file, "utf8")).toBe(before);
+    });
+
+    it("keeps legacy stop ESRCH handling and failed forced-delete residue", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "stop-fault", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Stop Fault" }, { env, stateRoot: root });
+        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242 }) });
+        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
+        const trace: unknown[] = [], fault = Object.assign(new Error("raw legacy stop"), { code: "EPERM" });
+        const killProcess = function (this: unknown, pid: number) { trace.push([this, pid]); throw fault; };
+        const options = { env, stateRoot: root, killProcess };
+        expect(deleteLab({ labId: created.lab.id, force: "true" }, options)).toEqual({ ok: false, error: "lab-running", labId: created.lab.id });
+        expect(trace).toEqual([]);
+        expect(deleteLab({ labId: created.lab.id, force: true }, options)).toEqual({
+            ok: false, error: "lab-delete-stop-failed", labId: created.lab.id,
+            stop: { ok: false, error: "lab-stop-failed", message: "raw legacy stop" },
+        });
+        expect(trace).toEqual([[options, 4242]]);
+        expect(readFileSync(file, "utf8")).toBe(before);
+        const exited = Object.assign(new Error("already exited"), { code: "ESRCH" });
+        expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { throw exited; } })).toEqual(
+            expect.objectContaining({ ok: true, stopped: true, lab: expect.objectContaining({ runtimeState: "stopped", runtime: null }) }),
+        );
+        expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { throw new Error("must not signal twice"); } }).stopped).toBe(false);
+        expect(deleteLab({ labId: created.lab.id }, { env, stateRoot: root }).deleted).toBe(true);
+        expect(existsSync(created.lab.paths.labDir)).toBe(false);
+    });
+
+    it("publishes stopped state before a raw application removal fault", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "remove-fault" };
+        const created = createLab({ name: "Remove Fault" }, { env, stateRoot: root });
+        const lab = { ...created.lab, runtimeState: "running", runtime: { pid: 4242 } };
+        const scope = { env, stateRoot: root, owner: ownerId(env), ownerRoot: join(root, "owners", ownerId(env)) };
+        const trace: unknown[] = [], fault = new Error("raw removal fault");
+        const unexpected = (): never => { throw new Error("unreached leaf"); };
+        let retained: QemuLab = lab;
+        const ports: QemuLifecyclePorts = {
+            providerName: "container-qemu", scope: () => scope,
+            readLab: () => { trace.push("read"); return { ok: true, lab: retained }; },
+            legacyKillAvailable: () => true,
+            legacyKill: (pid) => { trace.push(["kill", pid]); return undefined; },
+            clock: () => { trace.push("clock"); return "stopped-time"; },
+            writeLab: (_scope, next) => { trace.push("publish"); retained = next; return undefined; },
+            removeLabDirectory: () => { trace.push("remove"); throw fault; },
+            runnerUnavailable: unexpected, metadataExists: unexpected, labDirectory: unexpected,
+            allocatedPath: unexpected, ensureDirectory: unexpected, resolveBaseImage: unexpected,
+            boundedSource: unexpected, resolveSshKey: unexpected, validateDisk: unexpected,
+            diskExists: unexpected, imageDiskTargetApplication: unexpected, providerStatus: unexpected,
+            launchRunner: unexpected, runtimeId: unexpected, signalRuntime: unexpected, bindProvisionLeaves: unexpected,
+        };
+        const application = createQemuLifecycleApplication(ports);
+        expect(trace).toEqual([]);
+        let caught: unknown;
+        try { application.delete({ labId: lab.id, force: true }); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(trace).toEqual(["read", "read", ["kill", 4242], "clock", "publish", "remove"]);
+        expect(retained).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null, updatedAt: "stopped-time" }));
+        expect(existsSync(created.lab.paths.labDir)).toBe(true);
+    });
+
+    it("only strict create force overwrites a running definition without stopping its old process", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "create-force", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Original", labId: "same" }, { env, stateRoot: root });
+        startLab({ labId: "same" }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242 }) });
+        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), trace: unknown[] = [];
+        const options = { env, stateRoot: root, killProcess: (pid: number) => { trace.push(pid); } };
+        for (const force of [undefined, "true", 1]) {
+            expect(createLab({ name: "Replacement", labId: "same", force }, options)).toEqual({ ok: false, error: "lab-already-exists", labId: "same" });
+            expect(readFileSync(file, "utf8")).toBe(before);
+        }
+        const overwritten = createLab({ name: "Replacement", labId: "same", force: true }, options);
+        expect(overwritten).toEqual(expect.objectContaining({ ok: true, lab: expect.objectContaining({ name: "Replacement", runtimeState: "stopped", runtime: null }) }));
+        expect(JSON.parse(readFileSync(file, "utf8")).name).toBe("Replacement");
+        expect(trace).toEqual([]);
+    });
+
+    it("retains native stopped metadata when forced delete removal throws the identical fault", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "native-remove", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Native Remove" }, { env, stateRoot: root });
+        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242 }) });
+        const file = join(created.lab.paths.labDir, "lab.json"), fault = new Error("native removal fault"), trace: unknown[] = [];
+        const originalRemove = nativeFs.rmSync;
+        const removal = vi.spyOn(nativeFs, "rmSync").mockImplementation((path, options) => {
+            if (path === created.lab.paths.labDir) {
+                trace.push(["remove", JSON.parse(readFileSync(file, "utf8")).runtimeState]);
+                throw fault;
+            }
+            return originalRemove(path, options);
+        });
+        let caught: unknown;
+        try {
+            deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root, killProcess: (pid: number) => { trace.push(["kill", pid]); } });
+        } catch (error) { caught = error; } finally { removal.mockRestore(); }
+        expect(caught).toBe(fault);
+        expect(trace).toEqual([["kill", 4242], ["remove", "stopped"]]);
+        expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
+        expect(existsSync(created.lab.paths.labDir)).toBe(true);
     });
 
     it("reports unsupported outside the lab-runner profile without requiring user configuration", () => {
@@ -463,6 +605,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(started.ok).toBe(true);
         expect(started.lab.runtimeState).toBe("running");
         expect(started.lab.runtime.pid).toBe(4242);
+        const reused = startLab({ labId: "ready-vm" }, {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            get commandRunner() { throw new Error("running reuse must not select a launcher"); },
+        });
+        expect(reused).toEqual(expect.objectContaining({ ok: true, reused: true, lab: expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 4242 }) }) }));
         expect(JSON.stringify(started)).not.toContain("qemu-monitor.sock");
         expect(started.materialized).toEqual(expect.objectContaining({ ok: true, materialized: true }));
         expect(calls).toHaveLength(2);
@@ -1293,6 +1440,21 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             commandRunner: () => ({ ok: true, pid: 7980 }),
         }).guestAgentProvision).toBeUndefined();
 
+        const metadataFile = join(created.lab.paths.labDir, "lab.json");
+        const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
+        metadata.guest.agent.provisionHistory = Array.from({ length: 50 }, (_, index) => ({ id: `prior-${index}`, state: "failed" }));
+        writeFileSync(metadataFile, JSON.stringify(metadata));
+        const beforeProvision = readFileSync(metadataFile, "utf8"), sshFault = new Error("raw SSH fault");
+        let caughtSsh: unknown;
+        try {
+            guestAgentProvision({ labId: "guest-agent-provision-vm" }, {
+                env, stateRoot: root, sshPath: "/usr/bin/ssh", processExists: () => true,
+                sshCommandRunner: () => { throw sshFault; },
+            });
+        } catch (error) { caughtSsh = error; }
+        expect(caughtSsh).toBe(sshFault);
+        expect(readFileSync(metadataFile, "utf8")).toBe(beforeProvision);
+
         const calls: Array<{ command: string; args: string[] }> = [];
         const provisioned = guestAgentProvision({ labId: "guest-agent-provision-vm", timeoutMs: 7000 }, {
             env,
@@ -1322,6 +1484,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
         expect(calls).toHaveLength(1);
+        const persistedProvision = JSON.parse(readFileSync(metadataFile, "utf8")).guest.agent;
+        expect(persistedProvision.provisionHistory).toHaveLength(50);
+        expect(persistedProvision.provisionHistory[0].id).toBe("prior-1");
+        expect(persistedProvision.provisionHistory[49]).toEqual(persistedProvision.lastProvision);
         expect(calls[0]).toEqual(expect.objectContaining({
             command: "/usr/bin/ssh",
             args: expect.arrayContaining([provisionCommand]),
@@ -1372,6 +1538,41 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }));
         expect(autoCalls).toHaveLength(1);
         expect(autoCalls[0].args).toEqual(expect.arrayContaining([provisionCommand]));
+        const autoFile = join(auto.lab.paths.labDir, "lab.json"), reuseTrace: string[] = [];
+        const reuseOptions = {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, sshPath: "/usr/bin/ssh",
+            commandRunner: () => { throw new Error("reuse cannot invoke launcher"); },
+            sshCommandRunner: () => { reuseTrace.push("provision"); return { ok: true, status: 0 }; },
+        };
+        expect(startLab({ labId: auto.lab.id }, reuseOptions).reused).toBe(true);
+        expect(reuseTrace).toEqual([]);
+        for (const lastProvision of [undefined, { ok: false }]) {
+            const stored = JSON.parse(readFileSync(autoFile, "utf8"));
+            stored.guest.agent.lastProvision = lastProvision;
+            writeFileSync(autoFile, JSON.stringify(stored));
+            expect(startLab({ labId: auto.lab.id }, reuseOptions)).toEqual(expect.objectContaining({ ok: true, reused: true }));
+        }
+        expect(reuseTrace).toEqual(["provision", "provision"]);
+
+        const failedStart = createLab({
+            name: "Post Launch Provision Fault", guestSshHost: "127.0.0.1", guestSshUser: "ccc", guestSshKeyPath: keyPath,
+            guestAgentHealthCommand: healthCommand, guestAgentProvisionCommand: provisionCommand, guestAgentAutoProvision: true,
+        }, { env, stateRoot: root });
+        expect(failedStart.ok).toBe(true);
+        const startTrace: string[] = [], postLaunchFault = new Error("post-launch SSH fault");
+        let rawPostLaunch: unknown;
+        try {
+            startLab({ labId: failedStart.lab.id }, {
+                env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, sshPath: "/usr/bin/ssh",
+                commandRunner: () => { startTrace.push("launch"); return { ok: true, pid: 7982 }; },
+                sshCommandRunner: () => { startTrace.push("provision"); throw postLaunchFault; },
+            });
+        } catch (error) { rawPostLaunch = error; }
+        expect(rawPostLaunch).toBe(postLaunchFault);
+        expect(startTrace).toEqual(["launch", "provision"]);
+        expect(JSON.parse(readFileSync(join(failedStart.lab.paths.labDir, "lab.json"), "utf8"))).toEqual(
+            expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 7982 }) }),
+        );
         expect(JSON.stringify(started)).not.toContain(keyPath);
         expect(JSON.stringify(started)).not.toContain(provisionCommand);
         expect(JSON.stringify(started)).not.toContain("/usr/bin/ssh");

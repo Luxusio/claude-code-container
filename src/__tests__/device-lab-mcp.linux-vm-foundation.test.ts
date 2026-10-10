@@ -127,6 +127,16 @@ describe("device-lab Linux VM foundation", () => {
             device: expect.objectContaining({ deviceId: "mcp-lab", runtimeState: "stopped" }),
             readiness: expect.objectContaining({ state: "stopped" }),
         }));
+        const stopped = await client.callTool({ name: "stop", arguments: { detail: true, deviceId: "mcp-lab" } });
+        expect(stopped.isError).not.toBe(true);
+        expect(JSON.parse(((stopped.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
+            expect.objectContaining({ ok: true, stopped: false, device: expect.objectContaining({ runtimeState: "stopped" }) }),
+        );
+        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId: "mcp-lab" } });
+        expect(deleted.isError).not.toBe(true);
+        expect(JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
+            expect.objectContaining({ ok: true, deleted: true, labId: "mcp-lab" }),
+        );
     });
 
     it("imports base images and creates labs from image catalog ids over MCP", { timeout: TIMEOUT }, async () => {

@@ -44,6 +44,9 @@ describe("device-lab Linux VM provider smoke runner", () => {
             { name: "image-import", status: "PASS" },
             { name: "lab-create", status: "PASS" },
         ]);
+        expect(report.steps.map((step) => step.name)).not.toContain("lab-start");
+        expect(report.steps.map((step) => step.name)).not.toContain("lab-stop");
+        expect(report.steps.map((step) => step.name)).not.toContain("lab-delete");
         expect(report.steps).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 name: "disk-materialize",

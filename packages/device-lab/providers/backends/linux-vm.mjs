@@ -1,3 +1,5 @@
+import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
+import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicGuestExecResult as qemuLifecyclePublicGuestExecResult, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult, requireRunningLab as qemuLifecycleRequireRunningLab } from "../domain/qemu-lifecycle.mjs";
 import { createQemuImageImportApplication } from "../application/qemu-image-import.mjs";
 import { createQemuImageDiskTargetApplication } from "../application/qemu-image-disk-target.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
@@ -214,11 +216,8 @@ function rejectSymlinkAncestors(root, candidate, label, options = {}) {
     return { ok: true };
 }
 
-function safeSshText(value, label, pattern, maxLength) {
-    if (typeof value !== "string" || value.length === 0 || value.length > maxLength || /[\u0000-\u001f]/.test(value) || !pattern.test(value)) {
-        return { ok: false, error: `invalid-${label}` };
-    }
-    return { ok: true, value };
+function safeSshText(value, label, pattern, maxLength){
+    return qemuLifecycleSafeSshText(value, label, pattern, maxLength);
 }
 
 function resolveSshKeyPath(ctx, value) {
@@ -248,88 +247,20 @@ function resolveSshKeyPath(ctx, value) {
     return { ok: true, path: candidate };
 }
 
-function guestSshInput(args = {}) {
-    const nested = args.guestSsh && typeof args.guestSsh === "object" ? args.guestSsh : {};
-    return {
-        host: args.guestSshHost ?? nested.host,
-        port: args.guestSshPort ?? nested.port,
-        user: args.guestSshUser ?? nested.user,
-        keyPath: args.guestSshKeyPath ?? nested.keyPath,
-        readinessCommand: args.guestReadinessCommand ?? nested.readinessCommand,
-    };
+function guestSshInput(args = {}){
+    return qemuLifecycleGuestSshInput(args);
 }
 
 function validateGuestSsh(ctx, args = {}) {
-    const input = guestSshInput(args);
-    const values = Object.values(input).filter((value) => value !== undefined && value !== null && value !== "");
-    if (values.length === 0) return { ok: true, ssh: null };
-    if (!input.host || !input.user) return { ok: false, error: "guest-ssh-requires-host-and-user" };
-    const host = safeSshText(String(input.host), "guest-ssh-host", /^[A-Za-z0-9._:-]+$/, 255);
-    if (!host.ok) return host;
-    const user = safeSshText(String(input.user), "guest-ssh-user", /^[A-Za-z0-9._-]+$/, 64);
-    if (!user.ok) return user;
-    const port = input.port === undefined || input.port === null || input.port === "" ? 22 : Number(input.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: "invalid-guest-ssh-port" };
-    const key = resolveSshKeyPath(ctx, input.keyPath);
-    if (!key.ok) return key;
-    const readinessCommand = input.readinessCommand === undefined || input.readinessCommand === null || input.readinessCommand === ""
-        ? "true"
-        : String(input.readinessCommand);
-    if (readinessCommand.length > 512 || /[\u0000-\u001f]/.test(readinessCommand)) {
-        return { ok: false, error: "invalid-guest-readiness-command" };
-    }
-    return {
-        ok: true,
-        ssh: {
-            host: host.value,
-            port,
-            user: user.value,
-            keyPath: key.path,
-            readinessCommand,
-        },
-    };
+    return qemuLifecycleApplication().validateGuestSsh(ctx, args);
 }
 
-function guestAgentInput(args = {}) {
-    const nested = args.guestAgent && typeof args.guestAgent === "object" ? args.guestAgent : {};
-    return {
-        name: args.guestAgentName ?? nested.name,
-        healthCommand: args.guestAgentHealthCommand ?? nested.healthCommand,
-        provisionCommand: args.guestAgentProvisionCommand ?? nested.provisionCommand,
-        autoProvision: args.guestAgentAutoProvision ?? nested.autoProvision,
-    };
+function guestAgentInput(args = {}){
+    return qemuLifecycleGuestAgentInput(args);
 }
 
-function validateGuestAgent(args = {}) {
-    const input = guestAgentInput(args);
-    const values = Object.values(input).filter((value) => value !== undefined && value !== null && value !== "");
-    if (values.length === 0) return { ok: true, agent: null };
-    const name = input.name === undefined || input.name === null || input.name === "" ? "ccc-guest-agent" : String(input.name);
-    if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)) return { ok: false, error: "invalid-guest-agent-name" };
-    if (input.healthCommand === undefined || input.healthCommand === null || input.healthCommand === "") {
-        return { ok: false, error: "guest-agent-requires-health-command" };
-    }
-    const healthCommand = String(input.healthCommand);
-    if (healthCommand.length > MAX_GUEST_AGENT_HEALTH_COMMAND_LENGTH || /[\u0000-\u001f]/.test(healthCommand)) {
-        return { ok: false, error: "invalid-guest-agent-health-command" };
-    }
-    let provisionCommand = null;
-    if (input.provisionCommand !== undefined && input.provisionCommand !== null && input.provisionCommand !== "") {
-        provisionCommand = String(input.provisionCommand);
-        if (provisionCommand.length > MAX_GUEST_AGENT_PROVISION_COMMAND_LENGTH || /[\u0000-\u001f]/.test(provisionCommand)) {
-            return { ok: false, error: "invalid-guest-agent-provision-command" };
-        }
-    }
-    return {
-        ok: true,
-        agent: {
-            name,
-            protocol: "bounded-ssh-health-command",
-            healthCommand,
-            provisionCommand,
-            autoProvision: input.autoProvision === undefined ? Boolean(provisionCommand) : input.autoProvision === true,
-        },
-    };
+function validateGuestAgent(args = {}){
+    return qemuLifecycleValidateGuestAgent(args);
 }
 
 function redactSensitiveStrings(value, sensitiveStrings = []) {
@@ -575,15 +506,8 @@ function sshCommandPaths(env = process.env, options = {}) {
     };
 }
 
-function sshBaseArgs(ssh) {
-    const args = [
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", `ConnectTimeout=${DEFAULT_SSH_CONNECT_TIMEOUT_SEC}`,
-        "-p", String(ssh.port || 22),
-    ];
-    if (ssh.keyPath) args.push("-i", ssh.keyPath);
-    return args;
+function sshBaseArgs(ssh){
+    return qemuLifecycleSshBaseArgs(ssh);
 }
 
 function scpBaseArgs(ssh) {
@@ -597,8 +521,8 @@ function scpBaseArgs(ssh) {
     return args;
 }
 
-function sshDestination(ssh) {
-    return `${ssh.user}@${ssh.host}`;
+function sshDestination(ssh){
+    return qemuLifecycleSshDestination(ssh);
 }
 
 function sshSafeGuestPath(path) {
@@ -664,52 +588,7 @@ function runSshGuestAgentProbe(lab, options = {}) {
     };
 }
 
-function runSshGuestAgentProvision(lab, options = {}) {
-    const ssh = lab.guest?.ssh;
-    const agent = lab.guest?.agent;
-    if (!agent) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-agent-not-configured" }],
-            diagnostics: { kind: "guest-agent-provision", available: false },
-        };
-    }
-    if (!agent.provisionCommand) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-agent-provision-not-configured", agent: agent.name }],
-            diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
-        };
-    }
-    if (!ssh) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-ssh-not-configured", agent: agent.name }],
-            diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
-        };
-    }
-    const paths = sshCommandPaths(options.env || process.env, options);
-    if (!paths.ssh) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "ssh-command-missing", agent: agent.name }],
-            diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
-        };
-    }
-    const runner = sshRunner(options);
-    const args = [...sshBaseArgs(ssh), sshDestination(ssh), agent.provisionCommand];
-    const result = runner(paths.ssh, args, { cwd: lab.paths.labDir, env: options.env || process.env, timeoutMs: boundedTimeout(options.guestAgentProvisionTimeoutMs || options.sshTimeoutMs || 30000, 30000) });
-    return {
-        ok: result?.ok === true,
-        provisioned: result?.ok === true,
-        checks: [{ name: "guest-agent-provision", status: result?.ok === true ? "pass" : "fail", agent: agent.name, exitStatus: result?.status ?? null }],
-        diagnostics: { kind: "guest-agent-provision", available: true, agent: agent.name, result: publicGuestExecResult(result, lab, ssh, [paths.ssh, agent.healthCommand, agent.provisionCommand]) },
-    };
-}
+
 
 function defaultSshGuestTransportRunner(transport, contextArg = {}, options = {}) {
     const lab = contextArg.lab;
@@ -766,32 +645,12 @@ function boundedTimeout(value, fallback = DEFAULT_GUEST_EXEC_TIMEOUT_MS) {
     return qemuCommandTimeout(value, fallback);
 }
 
-function redactProviderString(value, lab, ssh, extraProviderPaths = []) {
-    if (typeof value !== "string") return value;
-    let next = value;
-    const providerPaths = [
-        ssh?.keyPath,
-        lab?.paths?.labDir,
-        lab?.paths?.workspaceDir,
-        lab?.paths?.artifactsDir,
-        lab?.paths?.snapshotsDir,
-        lab?.paths?.exportsDir,
-        ...extraProviderPaths,
-    ].filter(Boolean).sort((left, right) => right.length - left.length);
-    for (const providerPath of providerPaths) {
-        next = next.split(providerPath).join("<provider-internal>");
-    }
-    return next;
+function redactProviderString(value, lab, ssh, extraProviderPaths = []){
+    return qemuLifecycleRedactProviderString(value, lab, ssh, extraProviderPaths);
 }
 
-function publicGuestExecResult(result, lab, ssh, extraProviderPaths = []) {
-    if (!result || typeof result !== "object") return result;
-    return {
-        ok: result.ok === true,
-        status: result.status ?? null,
-        stdout: redactProviderString(result.stdout || "", lab, ssh, extraProviderPaths),
-        stderr: redactProviderString(result.stderr || "", lab, ssh, extraProviderPaths),
-    };
+function publicGuestExecResult(result, lab, ssh, extraProviderPaths = []){
+    return qemuLifecyclePublicGuestExecResult(result, lab, ssh, extraProviderPaths);
 }
 
 function preflightGuestExec(lab, env, options = {}) {
@@ -957,65 +816,45 @@ function validateLabDiskPath(lab) {
 
 
 
+function qemuLifecycleApplication(options = {}) {
+    return createQemuLifecycleApplication({
+        providerName: PROVIDER_NAME,
+        scope: () => context(options),
+        runnerUnavailable: (ctx) => labStateUnavailable(ctx),
+        readLab: (ctx, id) => readLab(ctx, id),
+        writeLab: (ctx, lab) => writeLab(ctx, lab),
+        metadataExists: (ctx, id) => existsSync(metadataPath(ctx, id)),
+        labDirectory: (ctx, id) => ownerLabDir(ctx, id),
+        allocatedPath: (...segments) => join(...segments),
+        ensureDirectory: (directory) => { mkdirSync(directory, { recursive: true }); },
+        removeLabDirectory: (ctx, id) => { rmSync(ownerLabDir(ctx, id), { recursive: true, force: true }); },
+        resolveBaseImage: (ctx, id) => resolveBaseImage(ctx, id),
+        boundedSource: (ctx, value, label) => boundedPath(ctx, value, label),
+        resolveSshKey: (ctx, value) => resolveSshKeyPath(ctx, value),
+        validateDisk: (lab) => validateLabDiskPath(lab),
+        diskExists: (file) => existsSync(file),
+        imageDiskTargetApplication: () => qemuImageDiskTargetApplication(options),
+        providerStatus: () => labProviderStatus(options),
+        launchRunner: () => options.commandRunner || defaultCommandRunner,
+        clock: () => nowIso(options),
+        runtimeId: () => randomUUID(),
+        legacyKillAvailable: () => typeof options.killProcess === "function",
+        legacyKill: (pid) => { options.killProcess(pid); },
+        signalRuntime: (runtime, signal) => signalOwnedRuntimeProcess(runtime, signal),
+        bindProvisionLeaves: (timeoutMs, env) => {
+            const scopedOptions = { ...options, env, guestAgentProvisionTimeoutMs: timeoutMs };
+            return {
+                commandPaths: () => sshCommandPaths(scopedOptions.env || process.env, scopedOptions),
+                commandRunner: () => sshRunner(scopedOptions),
+                environment: () => scopedOptions.env || process.env,
+                timeoutMs: () => boundedTimeout(scopedOptions.guestAgentProvisionTimeoutMs || scopedOptions.sshTimeoutMs || 30000, 30000),
+            };
+        },
+    });
+}
+
 export function createLab(args = {}, options = {}) {
-    const ctx = context(options);
-    const unavailable = labStateUnavailable(ctx);
-    if (unavailable) return unavailable;
-    const name = String(args.name || "").trim();
-    const labId = args.labId ? String(args.labId) : slug(name);
-    if (!name) return { ok: false, error: "missing-lab-name" };
-    if (!validId(labId)) return { ok: false, error: "invalid-lab-id" };
-    const labDir = ownerLabDir(ctx, labId);
-    if (existsSync(metadataPath(ctx, labId)) && args.force !== true) return { ok: false, error: "lab-already-exists", labId };
-    if (args.baseImageId && args.sourceImage) return { ok: false, error: "ambiguous-source-image" };
-    const baseImage = args.baseImageId ? resolveBaseImage(ctx, String(args.baseImageId)) : null;
-    if (baseImage && !baseImage.ok) return baseImage;
-    const source = baseImage ? { ok: true, path: baseImage.image.path } : boundedPath(ctx, args.sourceImage, "source-image");
-    if (!source.ok) return source;
-    const guestSsh = validateGuestSsh(ctx, args);
-    if (!guestSsh.ok) return guestSsh;
-    const guestAgent = validateGuestAgent(args);
-    if (!guestAgent.ok) return guestAgent;
-    if (guestAgent.agent && !guestSsh.ssh) return { ok: false, error: "guest-agent-requires-guest-ssh" };
-    mkdirSync(join(labDir, "disks"), { recursive: true });
-    mkdirSync(join(labDir, "snapshots"), { recursive: true });
-    mkdirSync(join(labDir, "artifacts"), { recursive: true });
-    const timestamp = nowIso(options);
-    const lab = {
-        id: labId,
-        name,
-        ownerId: ctx.owner,
-        provider: PROVIDER_NAME,
-        runtimeState: "stopped",
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        resources: {
-            memoryMb: Number.isInteger(args.memoryMb) ? args.memoryMb : 2048,
-            cpus: Number.isInteger(args.cpus) ? args.cpus : 2,
-        },
-        image: {
-            baseImageId: baseImage?.image?.id || null,
-            sourceImage: source.path,
-            diskImage: join(labDir, "disks", "root.qcow2"),
-            format: baseImage?.image?.format || inferImageFormat({}, source.path || "") || "qcow2",
-        },
-        paths: {
-            labDir,
-            workspaceDir: join(labDir, "workspace"),
-            snapshotsDir: join(labDir, "snapshots"),
-            artifactsDir: join(labDir, "artifacts"),
-            exportsDir: join(ctx.ownerRoot, "exports", labId),
-        },
-        runtime: null,
-        guest: {
-            ssh: guestSsh.ssh,
-            agent: guestAgent.agent,
-        },
-        snapshots: [],
-        fileOperations: [],
-    };
-    writeLab(ctx, lab);
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab) };
+    return qemuLifecycleApplication(options).create(args);
 }
 
 export function materializeDisk(args = {}, options = {}) {
@@ -1023,25 +862,7 @@ export function materializeDisk(args = {}, options = {}) {
 }
 
 export function buildQemuArgs(lab, options = {}) {
-    const args = [
-        "-machine", "q35,accel=kvm:tcg",
-        "-m", String(lab.resources.memoryMb),
-        "-smp", String(lab.resources.cpus),
-        "-name", `ccc-${lab.ownerId}-${lab.id}`,
-        "-display", "none",
-        "-monitor", `unix:${join(lab.paths.labDir, "qemu-monitor.sock")},server,nowait`,
-        "-pidfile", join(lab.paths.labDir, "qemu.pid"),
-    ];
-    const materializedDisk = lab.image?.disk?.path || null;
-    const disk = options.preferDiskImage && materializedDisk
-        ? materializedDisk
-        : materializedDisk && existsSync(materializedDisk)
-            ? materializedDisk
-            : existsSync(lab.image.diskImage)
-                ? lab.image.diskImage
-                : lab.image.sourceImage;
-    if (disk) args.push("-drive", `file=${disk},if=virtio,format=qcow2`);
-    return args;
+    return qemuLifecycleApplication().buildQemuArgs(lab, options);
 }
 
 function safeReadinessState(value, fallback = "process-running") {
@@ -1052,80 +873,28 @@ function targetForLab(lab) {
     return qemuTargetForLab(lab);
 }
 
-function publicRuntime(runtime) {
-    if (!runtime || typeof runtime !== "object") return null;
-    return {
-        pid: runtime.pid || null,
-        command: runtime.command || null,
-        startedAt: runtime.startedAt || null,
-    };
+function publicRuntime(runtime){
+    return qemuLifecyclePublicRuntime(runtime);
 }
 
-function publicGuest(guest) {
-    if (!guest || typeof guest !== "object" || (!guest.ssh && !guest.agent)) return undefined;
-    const ssh = guest.ssh && typeof guest.ssh === "object"
-        ? {
-            host: guest.ssh.host,
-            port: guest.ssh.port,
-            user: guest.ssh.user,
-            keyConfigured: Boolean(guest.ssh.keyPath),
-            readinessCommandConfigured: Boolean(guest.ssh.readinessCommand),
-        }
-        : null;
-    const agent = guest.agent && typeof guest.agent === "object"
-        ? {
-            name: guest.agent.name,
-            protocol: guest.agent.protocol,
-            healthCommandConfigured: Boolean(guest.agent.healthCommand),
-            provisionCommandConfigured: Boolean(guest.agent.provisionCommand),
-            autoProvision: guest.agent.autoProvision === true,
-            lastStatus: guest.agent.lastStatus || null,
-            lastProvision: guest.agent.lastProvision || null,
-        }
-        : null;
-    const result = { ...guest };
-    if (ssh) result.ssh = ssh;
-    else delete result.ssh;
-    if (agent) result.agent = agent;
-    else delete result.agent;
-    return result;
+function publicGuest(guest){
+    return qemuLifecyclePublicGuest(guest);
 }
 
-function publicLab(lab) {
-    const readiness = lab.runtimeState === "running"
-        ? lab.readiness
-        : lab.readiness ? { ...lab.readiness, latest: null } : lab.readiness;
-    const result = {
-        ...lab,
-        readiness,
-        runtime: publicRuntime(lab.runtime),
-    };
-    const guest = publicGuest(lab.guest);
-    if (guest !== undefined) result.guest = guest;
-    else delete result.guest;
-    return result;
+function publicLab(lab){
+    return qemuLifecyclePublicLab(lab);
 }
 
-function publicMaterializedResult(result) {
-    if (!result || typeof result !== "object") return result;
-    return result.lab ? { ...result, lab: publicLab(result.lab) } : result;
+function publicMaterializedResult(result){
+    return qemuLifecyclePublicMaterializedResult(result);
 }
 
-function publicQemuArgs(args) {
-    if (!Array.isArray(args)) return args;
-    return args.map((arg, index) => {
-        if (args[index - 1] === "-monitor") return "unix:<provider-internal-monitor>,server,nowait";
-        if (typeof arg === "string" && arg.includes("qemu-monitor.sock")) return arg.replace(/unix:[^,]+qemu-monitor\.sock/, "unix:<provider-internal-monitor>");
-        return arg;
-    });
+function publicQemuArgs(args){
+    return qemuLifecyclePublicQemuArgs(args);
 }
 
-function publicExecution(result) {
-    if (!result || typeof result !== "object") return result;
-    return {
-        ...result,
-        args: publicQemuArgs(result.args),
-    };
+function publicExecution(result){
+    return qemuLifecyclePublicExecution(result);
 }
 
 function sessionIdFor(args, timestamp) {
@@ -1296,32 +1065,8 @@ function combineReadinessProbes(probes) {
     };
 }
 
-function publicReadinessProbeResult(result) {
-    if (!result || typeof result !== "object") return {};
-    const stripKeys = new Set(["args", "argv", "command", "providerArgs", "socketPath"]);
-    const sanitize = (value) => {
-        if (Array.isArray(value)) return value.map((entry) => sanitize(entry));
-        if (value && typeof value === "object") {
-            return Object.fromEntries(Object.entries(value)
-                .filter(([key]) => !stripKeys.has(key))
-                .map(([key, entry]) => [key, sanitize(entry)]));
-        }
-        if (typeof value === "string") {
-            let next = value;
-            if (next.includes("qemu-monitor.sock")) {
-                next = next.replace(/unix:[^,\s]+qemu-monitor\.sock/g, "unix:<provider-internal-monitor>");
-            }
-            if (/\/[^\s"'<>]+/.test(next)) {
-                next = next.replace(/\/[^\s"'<>]+/g, "<provider-internal>");
-            }
-            if (/^-/.test(next) || next.startsWith("file=/") || next.startsWith("/")) {
-                return "<provider-internal>";
-            }
-            return next;
-        }
-        return value;
-    };
-    return sanitize(result);
+function publicReadinessProbeResult(result){
+    return qemuLifecyclePublicReadinessProbeResult(result);
 }
 
 function buildReadinessResult(lab, target, options = {}) {
@@ -1409,79 +1154,10 @@ function defaultCommandRunner(command, args, runOptions) {
     return { ok: true, pid: child.pid, processIdentity, command, args };
 }
 
-function prepareStartedLab(lab, options, reused = false) {
-    const agent = lab.guest?.agent;
-    const prepare = agent?.autoProvision === true && Boolean(agent.provisionCommand)
-        && (!reused || agent.lastProvision?.ok !== true);
-    const provision = prepare ? guestAgentProvision({ labId: lab.id }, options) : null;
-    return {
-        ok: provision?.ok !== false,
-        ...(provision?.ok === false ? { error: "lab-guest-agent-provision-failed" } : {}),
-        lab: provision?.lab || publicLab(lab),
-        guestAgentProvision: provision ? {
-            ok: provision.ok,
-            ...(provision.error ? { error: provision.error } : {}),
-            ...(provision.status ? { status: provision.status } : {}),
-        } : undefined,
-    };
-}
+
 
 export function startLab(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const status = labProviderStatus(options);
-    const disk = validateLabDiskPath(loaded.lab);
-    if (!disk.ok) return disk;
-    if (args.dryRun === true) {
-        const needsMaterialize = Boolean(loaded.lab.image?.sourceImage) && !existsSync(disk.diskPath);
-        const materialized = needsMaterialize
-            ? materializeDisk({ labId: loaded.lab.id, dryRun: true }, options)
-            : { ok: true, materialized: false, reused: existsSync(disk.diskPath), lab: loaded.lab };
-        if (!materialized.ok) return { ok: false, error: "lab-disk-materialize-failed", materialized };
-        const planLab = needsMaterialize
-            ? {
-                ...loaded.lab,
-                image: {
-                    ...loaded.lab.image,
-                    diskImage: disk.diskPath,
-                    disk: { kind: "qcow2-overlay", path: disk.diskPath, backingPath: loaded.lab.image.sourceImage, backingFormat: loaded.lab.image.format || "qcow2", planned: true },
-                },
-            }
-            : loaded.lab;
-        const qemuArgs = buildQemuArgs(planLab, { preferDiskImage: needsMaterialize });
-        return { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(planLab), command: status.qemu || "qemu-system-x86_64", args: publicQemuArgs(qemuArgs), providerStatus: status, materialized };
-    }
-    if (!status.available) return { ok: false, error: "lab-provider-unsupported", providerStatus: status };
-    if (loaded.lab.runtimeState === "running") return { ownerId: ctx.owner, reused: true, ...prepareStartedLab(loaded.lab, options, true) };
-    const shouldMaterialize = Boolean(loaded.lab.image?.sourceImage);
-    const materialized = !shouldMaterialize
-        ? { ok: true, materialized: false, skipped: true, reason: "source-image-not-configured", lab: loaded.lab }
-        : existsSync(disk.diskPath)
-        ? { ok: true, materialized: false, reused: true, lab: loaded.lab }
-        : materializeDisk({ labId: loaded.lab.id }, options);
-    if (!materialized.ok) return { ok: false, error: "lab-disk-materialize-failed", materialized };
-    const startLabState = materialized.lab || loaded.lab;
-    const startArgs = buildQemuArgs(startLabState, { preferDiskImage: materialized.materialized === true });
-    const runner = options.commandRunner || defaultCommandRunner;
-    const started = runner(status.qemu, startArgs, { cwd: startLabState.paths.labDir, env: ctx.env });
-    if (!started?.ok) return { ok: false, error: "lab-start-failed", result: publicExecution(started) };
-    const timestamp = nowIso(options);
-    const lab = {
-        ...startLabState,
-        runtimeState: "running",
-        updatedAt: timestamp,
-        runtime: {
-            runtimeId: randomUUID(),
-            pid: started.pid || null,
-            processIdentity: started.processIdentity || null,
-            command: status.qemu,
-            args: startArgs,
-            startedAt: timestamp,
-        },
-    };
-    writeLab(ctx, lab);
-    return { ownerId: ctx.owner, ...prepareStartedLab(lab, options), materialized: publicMaterializedResult(materialized), started: publicExecution(started) };
+    return qemuLifecycleApplication(options).start(args);
 }
 
 export function rebootLab(args = {}, options = {}) {
@@ -1580,41 +1256,11 @@ export function openSession(args = {}, options = {}) {
 }
 
 export function stopLab(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const pid = loaded.lab.runtime?.pid;
-    if (loaded.lab.runtimeState !== "running" || !pid) {
-        return { ok: true, ownerId: ctx.owner, lab: publicLab(loaded.lab), stopped: false };
-    }
-    if (typeof options.killProcess === "function") {
-        try {
-            options.killProcess(pid);
-        } catch (error) {
-            if (error?.code !== "ESRCH") return { ok: false, error: "lab-stop-failed", message: error.message };
-        }
-    } else {
-        const signaled = signalOwnedRuntimeProcess(loaded.lab.runtime, args.force ? "SIGKILL" : "SIGTERM");
-        if (!signaled.signaled && signaled.reason !== "runtime-process-exited") {
-            return { ok: false, error: "lab-stop-process-identity-unverified", reason: signaled.reason, labId: loaded.lab.id };
-        }
-    }
-    const lab = { ...loaded.lab, runtimeState: "stopped", updatedAt: nowIso(options), runtime: null };
-    writeLab(ctx, lab);
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(lab), stopped: true };
+    return qemuLifecycleApplication(options).stop(args);
 }
 
 export function deleteLab(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    if (loaded.lab.runtimeState === "running") {
-        if (args.force !== true) return { ok: false, error: "lab-running", labId: loaded.lab.id };
-        const stopped = stopLab({ labId: loaded.lab.id, force: true }, options);
-        if (!stopped.ok) return { ok: false, error: "lab-delete-stop-failed", labId: loaded.lab.id, stop: stopped };
-    }
-    rmSync(ownerLabDir(ctx, loaded.lab.id), { recursive: true, force: true });
-    return { ok: true, ownerId: ctx.owner, labId: loaded.lab.id, deleted: true };
+    return qemuLifecycleApplication(options).delete(args);
 }
 
 function qemuImgSnapshot(action, lab, snapshotName, options) {
@@ -1773,9 +1419,8 @@ function resolveGuestPullDestination(lab, destinationPath) {
     return { ok: true, destinationPath: candidate };
 }
 
-function requireRunningLab(lab) {
-    if (lab.runtimeState !== "running") return { ok: false, error: "lab-not-running", labId: lab.id };
-    return { ok: true };
+function requireRunningLab(lab){
+    return qemuLifecycleRequireRunningLab(lab);
 }
 
 export function exportArtifacts(args = {}, options = {}) {
@@ -2030,44 +1675,7 @@ export function guestAgentStatus(args = {}, options = {}) {
 }
 
 export function guestAgentProvision(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const running = requireRunningLab(loaded.lab);
-    if (!running.ok) return running;
-    const agent = loaded.lab.guest?.agent;
-    if (!agent) return { ok: false, error: "guest-agent-not-configured", ownerId: ctx.owner, labId: loaded.lab.id };
-    if (!agent.provisionCommand) return { ok: false, error: "guest-agent-provision-not-configured", ownerId: ctx.owner, labId: loaded.lab.id };
-    const timeoutMs = boundedTimeout(args.timeoutMs, 30000);
-    const probe = runSshGuestAgentProvision(loaded.lab, { ...options, env: ctx.env, guestAgentProvisionTimeoutMs: timeoutMs });
-    const checkedAt = nowIso(options);
-    const status = publicReadinessProbeResult({
-        id: `guest-agent-provision-${checkedAt.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`,
-        labId: loaded.lab.id,
-        provider: loaded.lab.provider || PROVIDER_NAME,
-        checkedAt,
-        timeoutMs,
-        state: probe?.ok === true ? "ready" : "failed",
-        ok: probe?.ok === true,
-        provisioned: probe?.provisioned === true,
-        checks: Array.isArray(probe?.checks) ? probe.checks : [],
-        diagnostics: probe?.diagnostics || { kind: "guest-agent-provision", available: false },
-    });
-    const history = Array.isArray(agent.provisionHistory) ? agent.provisionHistory : [];
-    const next = {
-        ...loaded.lab,
-        updatedAt: checkedAt,
-        guest: {
-            ...(loaded.lab.guest || {}),
-            agent: {
-                ...agent,
-                lastProvision: status,
-                provisionHistory: [...history.filter((entry) => entry.id !== status.id), status].slice(-50),
-            },
-        },
-    };
-    writeLab(ctx, next);
-    return { ok: status.state !== "failed", ownerId: ctx.owner, lab: publicLab(next), status };
+    return qemuLifecycleApplication(options).provisionGuestAgent(args);
 }
 
 export const LINUX_VM_CAPABILITIES = [
