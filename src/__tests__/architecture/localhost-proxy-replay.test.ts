@@ -30,6 +30,121 @@ const originalHashes: Record<string, string> = {
     "src/index.ts": "b70ba8715cc9c613614eb6bdc4dd357ce0fa36ab54632a8ddd550abf9c23f59a",
     "src/network-reach.ts": "619e1d1c071f3bfb04e7b51a7892f7f1de7d44507d52be0e9b2768404812a21c"
 };
+// Independently admitted pre-QA workspace repair/removal extraction, sourceCommit
+// 64df6afbc161e1a706f6dbfdfb27ce5e76e8ec63: index81798/8ec71a95 below.
+// The complete historical92120/b70ba original remains the base. Only these18 exact
+// reviewed spans (two inward imports and workspace extraction seams) may evolve.
+const admittedWorkspaceIndexSpans = [
+    {
+        "start": 126,
+        "end": 126,
+        "removedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "replacement": "import * as workspaceCliRemoval from \"./application/workspace/cli-removal.js\";\nimport { createWorkspaceContentRepairAdmission } from \"./application/workspace/content-repair-admission.js\";\n"
+    },
+    {
+        "start": 41410,
+        "end": 41447,
+        "removedSha256": "dbf22ab652b195628090e84cf284e6197a60b03847e75586667733de85e77665",
+        "replacement": "// Capture invocation once; message/getter evaluation must not introduce a new\n// mutable .call/.apply lookup after the native console method was selected.\nconst invokeWorkspaceContentRepairLog = Reflect.apply;\nconst admitWorkspaceContentRepair = createWorkspaceContentRepairAdmission({\n    repairConfirmed: (cwd, wsPath, name, branch, confirmed) => fixBrokenWorktree(cwd, wsPath, name, branch, confirmed),\n    isContentConflict: (cause): cause is WorktreeContentConflictError => cause instanceof WorktreeContentConflictError,\n    selectLog: () => {\n        const receiver = console;\n        const log = receiver.log;\n        return (message) => invokeWorkspaceContentRepairLog(log, receiver, [message]);\n    },\n    selectRelative: () => relative,\n    prompt: (question, normalize) => prompt(question, normalize),\n    selectSetAside: () => setAsideConflictingContent,\n});\n\nfunction repairBrokenWorktree(\n"
+    },
+    {
+        "start": 41541,
+        "end": 43678,
+        "removedSha256": "b9bc1ebfcea94a6a8e3d0dfb45d2623b8076da44119d84bd519ae9cc4bff159a",
+        "replacement": "    return admitWorkspaceContentRepair(cwd, wsPath, name, branch);\n"
+    },
+    {
+        "start": 52529,
+        "end": 52857,
+        "removedSha256": "641cd2aca71312a58ec75f54a5f69319a3ab21433144db92455ea6ecb07ca7f0",
+        "replacement": "    return workspaceCliRemoval.withWorkspaceRemovalLifecycleLock(projectId, force, operation, lifecycleLock, activeSessions);\n"
+    },
+    {
+        "start": 53012,
+        "end": 53523,
+        "removedSha256": "2880d3dffa187859df7e293aabab1a34f90982b96642cc253d645e344244e21d",
+        "replacement": "    return workspaceCliRemoval.listWorkspaceContainerNames(workspacePath, runner, cli, getContainerName);\n"
+    },
+    {
+        "start": 53818,
+        "end": 54518,
+        "removedSha256": "bc61b83002b1c694ab877529d0881c338e2b9556f123e2febfb6409cb66c6ce1",
+        "replacement": "    return workspaceCliRemoval.removeWorkspaceContainerByIdentity(containerName, identityProbe, runner, cli, existsProbe);\n"
+    },
+    {
+        "start": 54875,
+        "end": 55056,
+        "removedSha256": "82c14b1f22da10ccd258f2a0ad0d70805b6525b43032744202372e9cd74a78a5",
+        "replacement": "    return workspaceCliRemoval.removeManagedWorkspaceContainerByIdentity(containerName, workspacePath, identityProbe, runner, cli, existsProbe);\n"
+    },
+    {
+        "start": 55354,
+        "end": 55586,
+        "removedSha256": "9c6c6d8a89a0881c43a952d2db3767c1a34ff6a3fb7b2d647e4cfc8fac1b6a40",
+        "replacement": "    return workspaceCliRemoval.removeWorkspaceContainers(workspacePath, listContainers, removeContainer);\n"
+    },
+    {
+        "start": 56114,
+        "end": 56875,
+        "removedSha256": "6b2f1509cadf0f2573a8d85012fb347351fe8110becf6d6c62cbddd268fbc3d1",
+        "replacement": "    return workspaceCliRemoval.prepareWorkspaceContainerRemovalPlan(workspacePath, listContainers, identityProbe, existsProbe);\n"
+    },
+    {
+        "start": 57057,
+        "end": 57390,
+        "removedSha256": "b242277504b824af2c93afc67346431d08fa4e345e64ab06d43d9dbaf1d2364b",
+        "replacement": "    return workspaceCliRemoval.removePreparedWorkspaceContainers(plan, runner, cli, isContainerExists);\n"
+    },
+    {
+        "start": 58318,
+        "end": 59546,
+        "removedSha256": "9bc1f2c05df6af72c4da186a79b82bc334b3f959eeef1dec0c98c8df5aca7dc0",
+        "replacement": "    return workspaceCliRemoval.workspaceRemovalAdvice(force, removed);\n"
+    },
+    {
+        "start": 59639,
+        "end": 59678,
+        "removedSha256": "105f93c04ac6a3bd2a8afbdb472d581b8ec43a1f18cfd8b5216fae8505e733aa",
+        "replacement": "    return workspaceCliRemoval.workspaceRemovalCompleted(result);\n"
+    },
+    {
+        "start": 59894,
+        "end": 60098,
+        "removedSha256": "ccf648cff0e537a3e55959ce55c070e559a6780f8822da50c64759b80b9f38dc",
+        "replacement": "    return workspaceCliRemoval.removeWorkspaceThenContainers(removeWorkspaceOperation, removeContainersOperation);\n"
+    },
+    {
+        "start": 60101,
+        "end": 60249,
+        "removedSha256": "2c39a23c1febdc5048a02127d1d4838eb88bd34b7ac51259c0ceaa8b16f5e8ba",
+        "replacement": "const invokeWorkspaceCliRemoval = Reflect.apply;\n"
+    },
+    {
+        "start": 60250,
+        "end": 62364,
+        "removedSha256": "db0b1398cc22161eb3a774439f18b12cca4050415419bd57d90639e3ee943def",
+        "replacement": "function handleWorktreeRemove(cwd: string, branch: string, force: boolean): void {\n    workspaceCliRemoval.createWorkspaceCliRemoval({\n        selectWorkspacePath: () => getWorkspacePath,\n        selectProjectId: () => getProjectId,\n        selectFamilyLock: () => withProjectFamilyLifecycleLock,\n        selectClaims: () => getSessionLockClaimsForProjectFamily,\n        selectOwnershipAssertion: () => (path, name, source, options) => {\n            assertWorkspaceBranch(path, name, spawnSync, source, options);\n            return undefined;\n        },\n        selectRuntimeReadiness: () => {\n            const ready = ensureDockerRunning;\n            return () => {\n                ready();\n                return undefined;\n            };\n        },\n        selectContainerName: () => getContainerName,\n        selectManagedIdentity: () => getManagedProjectContainerIdentity,\n        selectExists: () => isContainerExists,\n        selectRunner: () => spawnSync,\n        selectRuntimeCli: () => runtimeCli,\n        selectRemoveWorkspace: () => removeWorkspace,\n        selectLog: () => {\n            const receiver = console;\n            const log = receiver.log;\n            return (message) => {\n                invokeWorkspaceCliRemoval(log, receiver, [message]);\n                return undefined;\n            };\n        },\n        selectError: () => {\n            const receiver = console;\n            const error = receiver.error;\n            return (message) => {\n                invokeWorkspaceCliRemoval(error, receiver, [message]);\n                return undefined;\n            };\n        },\n        selectExit: () => {\n            const receiver = process;\n            const exit = receiver.exit;\n            return (status) => invokeWorkspaceCliRemoval(exit, receiver, [status]) as never;\n        },\n        selectStrandedRegistrations: () => strandedBranchRegistrations,\n        selectTerminalSafeLiteral: () => terminalSafeLiteral,\n        selectPasteableArgument: () => pasteableArgument,\n    })(cwd, branch, force);\n"
+    },
+    {
+        "start": 63805,
+        "end": 64905,
+        "removedSha256": "131d8e20cc1f9d3e9fbea6e40cfbe341a8a137d7f02d620d3b3c0d5e7ba74121",
+        "replacement": "    return workspaceCliRemoval.assertRemovableWorkspace(workspacePath, branch, sourcePath, (path, name, source, options) => {\n        assertWorkspaceBranch(path, name, spawn, source, options);\n        return undefined;\n"
+    },
+    {
+        "start": 66155,
+        "end": 67846,
+        "removedSha256": "c15478509095e2e483e460c13594620b93ecaca31920f1881d5b70987f620d22",
+        "replacement": "    return workspaceCliRemoval.strandedBranchNotice(branch, stranded, () => terminalSafeLiteral, () => pasteableArgument);\n"
+    },
+    {
+        "start": 67942,
+        "end": 71267,
+        "removedSha256": "d4307e61d142630a6078bb2dca8219efc9701109ab59d6151c26b1476ed06c57",
+        "replacement": "    return workspaceCliRemoval.workspaceRemovalFailureNote(error, force);\n"
+    }
+];
+
 function readSource(tree: string, file: string): string {
     if (tree !== frozen) return readFileSync(file, "utf8");
     const entry = Object.keys(originalSources).find(name => resolve(frozen, name) === file);
@@ -201,13 +316,23 @@ it("retained native TS mechanisms and entrypoint/module/build assets match immut
     for (const [file, source] of Object.entries(originalSources)) {
         expect(createHash("sha256").update(source).digest("hex")).toBe(originalHashes[file]);
     }
+    let admittedIndex = Buffer.from(originalSources["src/index.ts"]);
+    expect(admittedIndex.length).toBe(92120);
+    for (const {start,end,removedSha256,replacement} of [...admittedWorkspaceIndexSpans].reverse()) {
+        expect(createHash("sha256").update(admittedIndex.subarray(start,end)).digest("hex")).toBe(removedSha256);
+        admittedIndex = Buffer.concat([admittedIndex.subarray(0,start),Buffer.from(replacement),admittedIndex.subarray(end)]);
+    }
+    expect(admittedWorkspaceIndexSpans).toHaveLength(18);
+    expect(admittedIndex.length).toBe(81798);
+    expect(createHash("sha256").update(admittedIndex).digest("hex")).toBe("8ec71a95b2446d43b52c356ba40d46c6cf084f4751efcad6aaa825bb037301b1");
+    expect(readFileSync(resolve(root,"src/index.ts"))).toEqual(admittedIndex);
     const original = ts.createSourceFile("baseline.ts", readSource(frozen,resolve(frozen,"src/localhost-proxy.ts")),ts.ScriptTarget.ES2022,true);
     const candidate = ts.createSourceFile("candidate.ts", readFileSync(resolve(root,"src/localhost-proxy.ts"),"utf8"),ts.ScriptTarget.ES2022,true);
     for (const name of ["tryConnect","startProxy","stopProxy"]) {
         const find = (source: ts.SourceFile) => source.statements.filter(ts.isFunctionDeclaration).find(node => node.name?.text === name)?.getText(source);
         expect(find(candidate)).toBe(find(original)); expect(find(original)).toBeDefined();
     }
-    for (const file of ["scripts/ccc-entrypoint.sh","scripts/localhost-proxy/go.mod","Dockerfile","Containerfile","src/index.ts","src/network-reach.ts"]) {
+    for (const file of ["scripts/ccc-entrypoint.sh","scripts/localhost-proxy/go.mod","Dockerfile","Containerfile","src/network-reach.ts"]) {
         expect(readFileSync(resolve(root,file))).toEqual(Buffer.from(readSource(frozen,resolve(frozen,file))));
     }
 });
