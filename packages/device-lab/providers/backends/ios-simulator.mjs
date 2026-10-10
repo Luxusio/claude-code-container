@@ -1,3 +1,4 @@
+import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
 import { listContainedDirectory, validateListFilesArgs, LIST_FILES_DEFAULT_LIMIT } from "../file-listing.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
 import { spawn } from "child_process";
@@ -22,53 +23,6 @@ const IOS_APPIUM_HTTP_TIMEOUT_MS = 5000;
 export const IOS_APPIUM_HTTP_MAX_TIMEOUT_MS = 300000;
 export const IOS_APPIUM_RESPONSE_LIMIT_BYTES = 16 * 1024 * 1024;
 const IOS_APPIUM_ERROR_TEXT_LIMIT_BYTES = 32 * 1024;
-
-function iosLifecycleConflict(deviceId, operation, transition, rollback = null) {
-    return textResult(false, JSON.stringify({
-        ok: false,
-        error: "owner-device-state-conflict",
-        backend: "ios-simulator",
-        deviceId,
-        operation,
-        found: transition.found,
-        ...(rollback ? { rollback } : {}),
-    }));
-}
-
-function claimIosLifecycle(deviceId, device, operation) {
-    const lifecycle = {
-        runtimeId: randomUUID(),
-        operation,
-        claimedAt: now(),
-    };
-    const claimed = {
-        ...device,
-        status: operation === "delete" ? "deleting" : operation === "stop" ? "stopping" : "starting",
-        lifecycle,
-        updatedAt: now(),
-    };
-    return { lifecycle, claimed, transition: transitionIosDevice(deviceId, device, claimed) };
-}
-
-function currentIosLifecycleDevice(deviceId, lifecycle) {
-    const current = findIosDevice(deviceId);
-    return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
-}
-
-function abortIosLifecycle(deviceId, lifecycle, original, actual = {}) {
-    const current = currentIosLifecycleDevice(deviceId, lifecycle);
-    if (!current) return { matched: false, found: Boolean(findIosDevice(deviceId)) };
-    const restored = {
-        ...current,
-        status: original.status,
-        ...actual,
-        updatedAt: now(),
-    };
-    if (Object.prototype.hasOwnProperty.call(actual, "lifecycle")) restored.lifecycle = actual.lifecycle;
-    else if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
-    else delete restored.lifecycle;
-    return transitionIosDevice(deviceId, current, restored);
-}
 
 export function iosDiscovery() {
     const xcrun = commandPath("xcrun");
@@ -875,6 +829,36 @@ export function listIosDevices({ identityOnly = false } = {}) {
     return iosDevicesWithInventory(devices, discovery, inventory);
 }
 
+const iosSimulatorLifecycle = createIosSimulatorLifecycle({
+    iosDeviceId: (...args) => iosDeviceId(...args),
+    readIosDevices: (...args) => readIosDevices(...args),
+    findIosDevice: (...args) => findIosDevice(...args),
+    ownerSimulatorPrefix: (...args) => ownerSimulatorPrefix(...args),
+    slug: (...args) => slug(...args),
+    isOwnedSimulatorName: (...args) => isOwnedSimulatorName(...args),
+    iosDiscovery: (...args) => iosDiscovery(...args),
+    simctlJson: (...args) => simctlJson(...args),
+    run: (...args) => run(...args),
+    runWithTimeout: (...args) => runWithTimeout(...args),
+    ownerId: (...args) => ownerId(...args),
+    appiumPortForIosDevice: (...args) => appiumPortForIosDevice(...args),
+    claimIosDevice: (...args) => claimIosDevice(...args),
+    transitionIosDevice: (...args) => transitionIosDevice(...args),
+    signalOwnedRuntimeProcess: (...args) => signalOwnedRuntimeProcess(...args),
+    waitForProcessExit: (...args) => waitForProcessExit(...args),
+    inspectProcessIdentity: (...args) => inspectProcessIdentity(...args),
+    deleteAppiumSession: (...args) => deleteAppiumSession(...args),
+    terminateOwnedAppiumProcess: (...args) => terminateOwnedAppiumProcess(...args),
+    discardLocalOutputStage: (...args) => discardLocalOutputStage(...args),
+    iosRecordingDir: (...args) => iosRecordingDir(...args),
+    withTargetStatus: (...args) => withTargetStatus(...args),
+    textResult: (...args) => textResult(...args),
+    jsonResult: (...args) => jsonResult(...args),
+    fail: (...args) => fail(...args),
+    runtimeId: (...args) => randomUUID(...args),
+    wallTimestamp: (...args) => now(...args),
+});
+
 async function handleIosToolUnlocked(name, args) {
     switch (name) {
         case "device_inventory": {
@@ -892,164 +876,11 @@ async function handleIosToolUnlocked(name, args) {
             });
         }
 
-        case "device_create": {
-            const { backend, name: deviceName, deviceId, simulatorName, deviceType, runtime, udid, createSimulator = false } = args;
-            if (backend !== "ios-simulator") return undefined;
+        case "device_create":
+            return iosSimulatorLifecycle.create(args);
 
-            const id = deviceId || iosDeviceId(deviceName);
-            const devices = readIosDevices();
-            if (devices.some((device) => device.id === id)) {
-                return textResult(false, `Device already exists for this owner: ${id}`);
-            }
-
-            const simulatorDisplayName = simulatorName || `${ownerSimulatorPrefix()}${slug(deviceName)}`;
-            let createdUdid = udid || null;
-            let provisioning = "definition-only";
-            if (createSimulator) {
-                if (!isOwnedSimulatorName(simulatorDisplayName)) {
-                    return textResult(false, `Refusing to create non-owned iOS Simulator name: ${simulatorDisplayName}`);
-                }
-                if (!deviceType || !runtime) {
-                    return textResult(false, "iOS Simulator provisioning requires deviceType and runtime");
-                }
-                const discovery = iosDiscovery();
-                if (!discovery.available) return missingPrereqResult(discovery);
-                const r = run(discovery.xcrun, ["simctl", "create", simulatorDisplayName, deviceType, runtime]);
-                if (r.status !== 0) return fail(r);
-                createdUdid = r.stdout.trim();
-                provisioning = "created";
-            }
-
-            const device = {
-                id,
-                name: deviceName,
-                backend,
-                kind: "mobile",
-                platform: "ios",
-                ownerId: ownerId(),
-                simulatorName: simulatorDisplayName,
-                deviceType: deviceType || null,
-                runtime: runtime || null,
-                udid: createdUdid,
-                appiumPort: appiumPortForIosDevice(id),
-                appium: null,
-                status: "stopped",
-                creatable: true,
-                provisioning,
-                createdAt: now(),
-                updatedAt: now(),
-            };
-            let claim;
-            try {
-                claim = claimIosDevice(device);
-            } catch (error) {
-                if (provisioning === "created" && createdUdid) {
-                    const discovery = iosDiscovery();
-                    const rollback = run(discovery.xcrun, ["simctl", "delete", createdUdid]);
-                    if (rollback.status !== 0 && !String(rollback.stderr || rollback.stdout).includes("Invalid device")) {
-                        return textResult(false, `Owner device state update failed; iOS Simulator rollback failed: ${rollback.stderr || rollback.stdout}`);
-                    }
-                }
-                throw error;
-            }
-            if (!claim.ok) {
-                if (provisioning === "created" && createdUdid && claim.existing?.udid !== createdUdid) {
-                    const discovery = iosDiscovery();
-                    const rollback = run(discovery.xcrun, ["simctl", "delete", createdUdid]);
-                    if (rollback.status !== 0 && !String(rollback.stderr || rollback.stdout).includes("Invalid device")) {
-                        return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); iOS Simulator rollback failed: ${rollback.stderr || rollback.stdout}`);
-                    }
-                }
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
-            }
-            return jsonResult({ device: withTargetStatus(device) });
-        }
-
-        case "device_delete": {
-            const { deviceId, force = false, deleteSimulator = false } = args;
-            const devices = readIosDevices();
-            const device = devices.find((item) => item.id === deviceId);
-            if (!device) return undefined;
-            if (device.recording && !force) {
-                return textResult(false, `Refusing to delete ${deviceId} while a recording is active or pending finalization; stop the recording or retry with force=true`);
-            }
-            if (!force && device.status !== "stopped") {
-                return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
-            }
-            let discovery = null;
-            let ownedTarget = null;
-            if (deleteSimulator) {
-                discovery = iosDiscovery();
-                if (!discovery.available) return missingPrereqResult(discovery);
-                ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-                if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            }
-            const claim = claimIosLifecycle(deviceId, device, "delete");
-            if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "delete-claim", claim.transition);
-            const actual = { lifecycle: null };
-            if (device.recording?.active) {
-                const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-                if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
-                    abortIosLifecycle(deviceId, claim.lifecycle, device);
-                    return textResult(false, `iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); device was not deleted.`);
-                }
-                if (recorderSignal.signaled) {
-                    const exited = await waitForProcessExit(device.recording.pid, 3000);
-                    if (!exited) {
-                        abortIosLifecycle(deviceId, claim.lifecycle, device);
-                        return textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; device was not deleted.`);
-                    }
-                }
-                actual.recording = { ...device.recording, active: false, endedAt: now() };
-            }
-
-            const appiumStop = await stopOwnedAppium(device.appium, "iOS Simulator Appium");
-            if (!appiumStop.exited) {
-                abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
-                return textResult(false, `${appiumStop.error}; device was not deleted.`);
-            }
-            actual.appium = null;
-
-            if (deleteSimulator) {
-                if (force && device.status !== "stopped") {
-                    const shutdown = run(discovery.xcrun, ["simctl", "shutdown", ownedTarget.target]);
-                    if (shutdown.status === 0 || String(shutdown.stderr || shutdown.stdout).includes("Unable to shutdown device in current state: Shutdown")) {
-                        actual.status = "stopped";
-                        actual.bootReady = false;
-                    }
-                }
-                const r = run(discovery.xcrun, ["simctl", "delete", ownedTarget.target]);
-                if (r.status !== 0 && !String(r.stderr || r.stdout).includes("Invalid device")) {
-                    abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
-                    return fail(r);
-                }
-            }
-
-            if (device.recording?.stagingPath) {
-                const discarded = discardLocalOutputStage(device.recording.stagingPath, {
-                    label: "recording-local-path",
-                    stageParent: iosRecordingDir(device),
-                    stagePrefix: ".recording-stage-",
-                });
-                if (!discarded.ok) {
-                    if (deleteSimulator) {
-                        const current = currentIosLifecycleDevice(deviceId, claim.lifecycle);
-                        if (!current) return iosLifecycleConflict(deviceId, "delete-after-simulator-delete", { found: Boolean(findIosDevice(deviceId)), matched: false });
-                        const transition = transitionIosDevice(deviceId, current, null);
-                        if (!transition.matched) return iosLifecycleConflict(deviceId, "delete-after-simulator-delete", transition);
-                        return textResult(false, `${discarded.message}; simulator and device metadata were deleted, but the staged recording requires explicit recovery`);
-                    }
-                    abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
-                    return textResult(false, `${discarded.message}; device metadata was preserved for explicit recovery`);
-                }
-            }
-
-            const current = currentIosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return iosLifecycleConflict(deviceId, "delete", { found: Boolean(findIosDevice(deviceId)), matched: false });
-            const transition = transitionIosDevice(deviceId, current, null);
-            if (!transition.matched) return iosLifecycleConflict(deviceId, "delete", transition);
-            return jsonResult({ deleted: deviceId, simulatorDeleted: Boolean(deleteSimulator) });
-        }
+        case "device_delete":
+            return iosSimulatorLifecycle.delete(args);
 
         case "device_status": {
             const { deviceId } = args;
@@ -1059,121 +890,11 @@ async function handleIosToolUnlocked(name, args) {
             return jsonResult({ device: withTargetStatus(reconcileIosDevice(device, discovery)), backend: iosBackend(discovery), automation: iosAppiumStatus(device) });
         }
 
-        case "device_start": {
-            const { deviceId, waitForBoot = true, bootTimeoutMs = 60000 } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
+        case "device_start":
+            return iosSimulatorLifecycle.start(args);
 
-            const discovery = iosDiscovery();
-            if (!discovery.available) {
-                return missingPrereqResult(discovery);
-            }
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const target = ownedTarget.target;
-            const claim = claimIosLifecycle(deviceId, device, "start");
-            if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "start-claim", claim.transition);
-            const r = run(discovery.xcrun, ["simctl", "boot", target]);
-            if (r.status !== 0 && !String(r.stderr || r.stdout).includes("Unable to boot device in current state: Booted")) {
-                abortIosLifecycle(deviceId, claim.lifecycle, device);
-                return fail(r);
-            }
-
-            let boot = { ready: true, skipped: true };
-            if (waitForBoot) {
-                const bootstatus = runWithTimeout(discovery.xcrun, ["simctl", "bootstatus", target, "-b"], bootTimeoutMs);
-                boot = {
-                    ready: bootstatus.status === 0,
-                    skipped: false,
-                    status: bootstatus.status,
-                    stdout: bootstatus.stdout,
-                    stderr: bootstatus.stderr,
-                };
-                if (bootstatus.error) boot.error = bootstatus.error;
-            }
-
-            const updated = {
-                ...claim.claimed,
-                status: boot.ready ? "booted" : "starting",
-                bootReady: boot.ready,
-                lastBootCheck: boot,
-                updatedAt: now(),
-            };
-            const transition = transitionIosDevice(deviceId, claim.claimed, updated);
-            if (!transition.matched) {
-                const shutdown = run(discovery.xcrun, ["simctl", "shutdown", target]);
-                const rollback = { ok: shutdown.status === 0, status: shutdown.status, stdout: shutdown.stdout, stderr: shutdown.stderr };
-                return iosLifecycleConflict(deviceId, "start-complete", transition, rollback);
-            }
-            return jsonResult({ device: withTargetStatus(updated), boot });
-        }
-
-        case "device_stop": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            let ownedTarget = null;
-            if (!discovery.available && device.status !== "stopped") {
-                return missingPrereqResult(discovery);
-            }
-            if (discovery.available) {
-                ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-                if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            }
-            const claim = claimIosLifecycle(deviceId, device, "stop");
-            if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "stop-claim", claim.transition);
-            if (device.recording?.active) {
-                const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-                if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
-                    abortIosLifecycle(deviceId, claim.lifecycle, device);
-                    return textResult(false, `iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); recording metadata was preserved.`);
-                }
-                if (recorderSignal.signaled) {
-                    const exited = await waitForProcessExit(device.recording.pid, 3000);
-                    if (!exited) {
-                        abortIosLifecycle(deviceId, claim.lifecycle, device);
-                        return textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; recording metadata was preserved.`);
-                    }
-                }
-            }
-            if (discovery.available) {
-                const shutdown = run(discovery.xcrun, ["simctl", "shutdown", ownedTarget.target]);
-                const alreadyShutdown = String(shutdown.stderr || shutdown.stdout).includes("Unable to shutdown device in current state: Shutdown");
-                if (shutdown.status !== 0 && !alreadyShutdown) {
-                    abortIosLifecycle(deviceId, claim.lifecycle, device);
-                    return fail(shutdown);
-                }
-            }
-            const appiumStop = await stopOwnedAppium(device.appium, "iOS Simulator Appium");
-            if (!appiumStop.exited) {
-                abortIosLifecycle(deviceId, claim.lifecycle, device, {
-                    status: "stopped",
-                    lifecycle: null,
-                    ...(device.recording?.active
-                        ? { recording: { ...device.recording, active: false, endedAt: now() } }
-                        : {}),
-                });
-                return textResult(false, appiumStop.error);
-            }
-            const current = currentIosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return iosLifecycleConflict(deviceId, "stop", { found: Boolean(findIosDevice(deviceId)), matched: false });
-            const recording = current.recording?.active
-                ? { ...current.recording, active: false, endedAt: now() }
-                : current.recording ?? null;
-            const updated = {
-                ...current,
-                status: "stopped",
-                lifecycle: null,
-                appium: null,
-                recording,
-                updatedAt: now(),
-            };
-            const transition = transitionIosDevice(deviceId, current, updated);
-            if (!transition.matched) return iosLifecycleConflict(deviceId, "stop", transition);
-            return jsonResult({ device: withTargetStatus(updated) });
-        }
+        case "device_stop":
+            return iosSimulatorLifecycle.stop(args);
 
         case "device_exec": {
             const { deviceId, command } = args;
