@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **180/218 (82.6%)**.
-Integrated source: **180/218 (82.6%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **34**.
+Implemented including unmerged candidates: **188/218 (86.2%)**.
+Integrated source: **188/218 (86.2%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **26**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -57,6 +57,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | macos\-image\-snapshots | 5 | 0 | `79fc8bf2` | Actual independent source/composed/affected Code, Security and Guide PASS\. Joint current QA and normal592701d0 local delivery qualify the same authenticated production build and sixteen whole files360 effective cases, lint/package7/npm/Unix/CLI checks as QEMU\. Genuine Mac stdio imagecreate/ownedclone/snapshotcreate/confirmedrestore/delete PASS\. All five advertised\-but\-blocked broker image/snapshot bindings return their exact authenticated501 refusals with unchanged owner/resources and no native child effects; this preserves the current contract discrepancy and does not implement positive broker support\. The public state\-write fixture now asserts its precise MCP error while retaining clone/delete compensation and empty state checks\. Existing VM\-create credit is not counted again\. Scoped native constructors and current contracts PASS; native Tart/macOS, unrelated legacy diagnostics, formal hook closure and inventory certification remain unverified\. | accepted @ 592701d0 |
 | hyper\-v\-stop\-delete | 4 | 0 | `2c8bcbe6` | Actual independent source/composed/affected Code, Security and Guide PASS\. Current native package strict compilation and genuine production build64\.981s PASS; ten required whole files473 effective cases, lint, package7, real npm/Unix exports/assets/module\-chain startup and compiled CLI0/0/1 PASS\. The test\-only deadline correction imports the actual720000ms lifecycle budget instead of a stale600000ms offset, retaining504/Off/owner/journal/disk assertions\. Ordinary full\-record CAS stays distinct from replay selected\-ID authority; mutation\-free dry\-run and native resource guards remain\. Normal local4ced delivery preserves all97 user paths and binary diff;17source/1228artifacts/fixed dependencies/18links authenticated, only generated cache changed\. Native hosts, formal hook closure and inventory certification remain unverified\. | accepted @ 4cedc1fa |
 | installer\-workflows | 4 | 0 | `ab5b5518` | Actual independent full/affected/composed Code, Security and Guide PASS\. Strict architecture compilation consumes actual native installer and synchronous application; installer three whole files35cases0skip PASS\. Same genuine joint build and ten whole files473cases/package7/lint/npm\+materializedUnix module\-chain/startup/CLI proof as Hyper\-V qualify normal4ced local delivery\. Source build precedes installation mutation; User PATH is scoped and best effort, image/cache/partial\-copy outcomes remain truthful\. Private executable PATH prevents disappearing fake Podman from falling through to a host runtime\. No live global installation, Windows User PATH/native runtime certification, formal hook closure or inventory certification is claimed\. | accepted @ 4cedc1fa |
+| mobile\-app\-management | 8 | 0 | `c04cdf6e` | Actual independent full Code/Security/Guide and current affected/composed Code PASS\. Original strict actual inward JavaScript and twelve consumed negative contracts PASS; whole legacy native JavaScript strictness is not claimed\. One genuine current production build65\.192s PASS; nine required whole files225 effective cases with zero skips, lint, seven package semantic cases, actual extracted npm and materialized Unix exports/assets/MCP startup, compiled CLI0/0/1 PASS\. Genuine authenticated default native\-child journeys cover both Android variants, Simulator app/container actions and physical iOS devicectl/verified Appium stop; existing inward request/broker\-Appium peers retain supported other facets\. Normal currentc04 local FF delivery preserves all97 user paths and binary diff;18source/1232artifacts/fixed dependencies/18links authenticated, only generated cache changed and owned actors joined\. Native hardware/hosts, formal hook closure and inventory certification remain unverified\. | accepted @ c04cdf6e |
 
 ## 0.2 Active next plans
 
@@ -182,7 +183,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **integrated**; broker\-observations @ 3f020650.
 
-## 9. M08 — Provider capabilities (53/76 implemented)
+## 9. M08 — Provider capabilities (61/76 implemented)
 
 - [x] `OP-android-emulator-create` — android\-emulator create. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-emulator-start` — android\-emulator start. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
@@ -215,11 +216,11 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-qemu-snapshot-restore` — Restore owned QEMU snapshot. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
 - [x] `OP-qemu-snapshot-delete` — Delete owned QEMU snapshot. **integrated**; qemu\-guest\-workflows @ 1ffe8d8c.
 - [ ] `OP-device-airplane-mode` — Toggle Android emulator airplane mode. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-app-clear-data` — Clear application data. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-app-install` — Install application on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-app-launch` — Launch application on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-app-stop` — Stop application on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-app-uninstall` — Uninstall application on device. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-app-clear-data` — Clear application data. **integrated**; mobile\-app\-management @ c04cdf6e.
+- [x] `OP-device-app-install` — Install application on device. **integrated**; mobile\-app\-management @ c04cdf6e.
+- [x] `OP-device-app-launch` — Launch application on device. **integrated**; mobile\-app\-management @ c04cdf6e.
+- [x] `OP-device-app-stop` — Stop application on device. **integrated**; mobile\-app\-management @ c04cdf6e.
+- [x] `OP-device-app-uninstall` — Uninstall application on device. **integrated**; mobile\-app\-management @ c04cdf6e.
 - [x] `OP-device-back` — Press mobile Back. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [ ] `OP-device-battery` — Set Android emulator battery. **TODO**; device\-lab\-mcp/src/server\.mjs.
 - [x] `OP-device-click` — Click or tap device point. **integrated**; device\-interaction\-integration @ b4b8e748.
@@ -239,10 +240,10 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-device-lock` — Lock mobile screen. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [x] `OP-device-long-press` — Long press mobile device. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [ ] `OP-device-network` — Set supported virtual device network. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-open-url` — Open URL on mobile device. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-open-url` — Open URL on mobile device. **integrated**; mobile\-app\-management @ c04cdf6e.
 - [x] `OP-device-orientation` — Set mobile orientation. **integrated**; device\-interaction\-integration @ b4b8e748.
-- [ ] `OP-device-permission-grant` — Grant application permission. **TODO**; device\-lab\-mcp/src/server\.mjs.
-- [ ] `OP-device-permission-revoke` — Revoke application permission. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-permission-grant` — Grant application permission. **integrated**; mobile\-app\-management @ c04cdf6e.
+- [x] `OP-device-permission-revoke` — Revoke application permission. **integrated**; mobile\-app\-management @ c04cdf6e.
 - [x] `OP-device-power-key` — Press Android power key. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [x] `OP-device-recents` — Show Android recent applications. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [ ] `OP-device-reset` — Reset existing device/app data. **TODO**; device\-lab\-mcp/src/server\.mjs.
