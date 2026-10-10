@@ -69884,7 +69884,7 @@ function lifecycleDeclarationConsumers() {
   const aliases={'@APPLICATION@':'./dist/packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.mjs','@PORTS@':'./dist/packages/device-lab/providers/ports/lifecycle/ios-simulator-lifecycle.mjs','@BROKER_APPLICATION@':'./dist/packages/device-lab/dist/device-lab/application/lifecycle/ios-simulator-lifecycle.js','@BROKER_DOMAIN@':'./dist/packages/device-lab/dist/device-lab/domain/lifecycle/ios-simulator-lifecycle.js','@BROKER_PORTS@':'./dist/packages/device-lab/dist/device-lab/ports/lifecycle/ios-simulator-lifecycle.js','@NATIVE_BROKER@':'./dist/packages/device-lab/dist/device-lab-broker.js'};
   let emitted=text;for(const [alias,target]of Object.entries(aliases))emitted=emitted.replaceAll(alias,JSON.stringify(target));
   assert(!/@[A-Z_]+@/.test(emitted),'unknown lifecycle declaration alias');
-  const source=emitted.replaceAll('./dist/packages/device-lab/providers/',join(root,'packages/device-lab/providers')+'/').replaceAll('./dist/packages/device-lab/dist/',join(root,'packages/device-lab/src')+'/').replaceAll('.js"','.ts"');
+  const source=emitted.replaceAll('./dist/packages/device-lab/providers/',join(root,'packages/device-lab/providers')+'/').replaceAll('./dist/packages/device-lab/dist/',join(root,'packages/device-lab/src')+'/');
   return [[name,emitted],[name+'-source',source]];
  });
 }
