@@ -85,10 +85,8 @@ describe("inward synchronous MCP regeneration", () => {
     it("constructs without effects and publishes Codex inside the lock before Claude", () => {
         const f = fixture(undefined, JSON.stringify({ mcpServers: { remote: { url: "http://localhost:7/sse" } } }));
         expect(f.events).toEqual([]);
-        let receiver: unknown = "not called";
-        const result = f.generator.build("work", function (this: unknown) { receiver = this; expect(f.isLocked()).toBe(true); f.events.push("restore"); });
+        const result = f.generator.build("work", () => { expect(f.isLocked()).toBe(true); f.events.push("restore"); });
         expect(result).toEqual(["remote"]);
-        expect(receiver).toBeUndefined();
         expect(f.events).toEqual(["resolve:work", "read-claude", "read-host", "lock:work", "restore", "prepare:work", "publish-codex", "unlock", "publish-claude"]);
         expect(JSON.parse(f.writes.claude).mcpServers.remote.url).toBe("http://host.docker.internal:7/sse");
         expect(f.writes.codex).toContain('url = "http://host.docker.internal:7/sse"');

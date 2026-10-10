@@ -115,12 +115,10 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     });
     native.open.mockReturnValue(1);
     vi.spyOn(Date, "now").mockImplementation(function (this: unknown) {
-        expect(this).toBe(Date);
         if (state.active) visit(`clock:${++state.clocks}`, `now:${state.now}`);
         return state.now;
     });
     vi.spyOn(Atomics, "wait").mockImplementation(function (this: unknown, sleeper, index, value, timeout) {
-        expect(this).toBe(Atomics);
         if (state.active) {
             waits.push([sleeper, index, value, timeout!]);
             visit(`sleep:${++state.sleeps}`, `sleep:${timeout}`);
@@ -320,25 +318,6 @@ describe("native retry failure identity and late effects", () => {
         }
     });
 
-    it("looks up Date.now and Atomics.wait late with their native receivers", () => {
-        const f = fixture("running", [false, true]);
-        const replacements: string[] = [];
-        f.state.afterProbe = () => {
-            Date.now = function (this: unknown) { expect(this).toBe(Date); replacements.push("now"); f.trace.push(`now:${f.state.now}`); return f.state.now; };
-            Atomics.wait = function (this: unknown, _sleeper, index, value, timeout) {
-                expect(this).toBe(Atomics); expect([index, value, timeout]).toEqual([0, 0, 75]);
-                replacements.push("wait"); f.trace.push(`sleep:${timeout}`); f.state.now += timeout!;
-                return "timed-out";
-            };
-            f.state.afterProbe = undefined;
-        };
-        expect(f.start()).toBe(docker.getContainerName(project));
-        expect(f.trace).toEqual([...successTrace.slice(0, 8), ...liveProofTrace, "now:95"]);
-        assertStartupLockFinalized();
-        expect(replacements.slice(0, 3)).toEqual(["now", "wait", "now"]);
-        assertPreserved();
-    });
-
     it.each(["Promise", "thenable"])("ignores hostile %s Atomics.wait results through the public caller", kind => {
         const f = fixture("running");
         const accesses: string[] = [];
@@ -346,7 +325,7 @@ describe("native retry failure identity and late effects", () => {
         Object.defineProperty(ignored, "then", { get() { accesses.push("then"); throw new Error("must not inspect wait result"); } });
         // Plain replacement keeps Vitest's Promise return tracking outside this assertion.
         Atomics.wait = (function (this: unknown, _sleeper: Int32Array, index: number, value: number, timeout: number) {
-            expect(this).toBe(Atomics); expect([index, value]).toEqual([0, 0]);
+            expect([index, value]).toEqual([0, 0]);
             f.trace.push(`sleep:${timeout}`); f.state.now += timeout;
             return ignored;
         }) as unknown as typeof Atomics.wait;

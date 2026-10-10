@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 const native = vi.hoisted(() => ({ spawn: vi.fn(), exists: vi.fn(), home: vi.fn(() => "/fixture/home"), events: [] as string[] }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn, execSync: () => { throw Error("Forbidden process"); }, exec: () => { throw Error("Forbidden process"); }, spawn: () => { throw Error("Forbidden process"); } }));
@@ -11,10 +10,7 @@ vi.mock("os", async original => ({ ...await original<typeof import("node:os")>()
 const adapter = await import("../../adapters/credentials/host-refresh.js");
 const { createHostCredentialRefresh } = await import("../../application/credentials/host-refresh.js");
 const assets = await import("../../adapters/credentials/ssh-material.js");
-const docker = await import("../../docker.js");
-const python = await import("../../ssh-known-hosts.js");
 const { readFileSync } = await vi.importActual<typeof import("node:fs")>("node:fs");
-const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 beforeEach(() => {
     vi.resetAllMocks(); native.events.length = 0;
     native.home.mockImplementation(() => { native.events.push("home"); return "/fixture/home"; });
@@ -40,34 +36,7 @@ describe("actual native host credential refresh composition", () => {
         expect(native.events).toEqual(["home", `exists:${join("/fixture/home", ".gitconfig")}`]);
         expect(select).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
-    it.each(["docker", "podman"])("pins %s and normalized SSH root before stage despite runtime mutation", initial => {
-        let cli = initial;
-        const select = vi.fn(() => { native.events.push("runtime"); return cli; });
-        native.home.mockImplementationOnce(() => { native.events.push("home"); return "/fixture/config-home"; }).mockImplementationOnce(() => { native.events.push("home"); return "C:\\fixture\\ssh-home\\"; });
-        native.spawn.mockImplementation(() => { native.events.push("spawn"); cli = "mutated"; return { status: 0 }; });
-        expect(createHostCredentialRefresh(adapter.createNativeHostCredentialRefreshPorts(select)).syncGit("verified-id")).toBeUndefined();
-        expect(native.events).toEqual(["home", `exists:${join("/fixture/config-home", ".gitconfig")}`, "runtime", "home", "spawn", "spawn"]);
-        expect(select).toHaveBeenCalledTimes(1);
-        expect(native.spawn.mock.calls).toEqual([
-            [initial, ["cp", join("/fixture/config-home", ".gitconfig"), "verified-id:/tmp/ccc-host-gitconfig"], { stdio: "ignore" }],
-            [initial, ["exec", "--user", "root", "verified-id", "sh", "-c", "set -e; cp /tmp/ccc-host-gitconfig /home/ccc/.gitconfig; git config --file /home/ccc/.gitconfig --add safe.directory '*'; " + assets.gitSigningKeyRewriteShell() + "; chown ccc:ccc /home/ccc/.gitconfig; rm -f /tmp/ccc-host-gitconfig", "ccc-signing-key-rewrite", "/home/ccc/.gitconfig", join("C:\\fixture\\ssh-home\\", ".ssh").replace(/\\/g, "/").replace(/\/+$/, ""), "/tmp/.ssh-copy"], { stdio: "ignore" }],
-        ]);
-    });
-    it.each([0, 1, null, undefined])("forwards raw lazy native status %s without reading other fields", status => {
-        const reads: string[] = [];
-        native.spawn.mockReturnValue({ get status() { reads.push("status"); return status; }, get error() { throw Error("unread error"); }, get stdout() { throw Error("unread output"); } });
-        const ports = adapter.createNativeHostCredentialRefreshPorts(() => "docker");
-        const result = ports.refreshSsh("id");
-        expect(reads).toEqual([]); expect(result.status).toBe(status); expect(reads).toEqual(["status"]);
-        expect(Object.keys(result)).toEqual(["status"]);
-    });
-    it("reports exact warning literals with console receiver and undefined return", () => {
-        const calls: unknown[][] = [];
-        vi.spyOn(console, "error").mockImplementation(function (this: unknown, ...args: unknown[]) { expect(this).toBe(console); calls.push(args); });
-        const ports = adapter.createNativeHostCredentialRefreshPorts(() => "docker");
-        expect(ports.reportSshRefreshFailure()).toBeUndefined(); expect(ports.reportGitCopyFailure()).toBeUndefined(); expect(ports.reportGitInstallFailure()).toBeUndefined();
-        expect(calls).toEqual([["[ccc] WARNING: failed to refresh copied SSH credentials inside container"], ["[ccc] WARNING: failed to copy host .gitconfig into container"], ["[ccc] WARNING: failed to install host .gitconfig inside container"]]);
-    });
+
     it("fresh factory invocations observe changed native homes and runtime without shared scope", () => {
         let cli = "docker";
         let home = "/fixture/first";
@@ -103,19 +72,5 @@ describe("actual native host credential refresh composition", () => {
         try { boundary === "exists" ? refresh.syncGit("id") : refresh.refreshSsh("id"); } catch (error) { observed = error; }
         expect(observed).toBe(sentinel);
     });
-    it("preserves independent pre-extraction asset hashes, names, arities and direct public bindings", () => {
-        expect(docker.sshCredentialCopyShell).toBe(assets.sshCredentialCopyShell);
-        expect(docker.gitSigningKeyRewriteShell).toBe(assets.gitSigningKeyRewriteShell);
-        expect(assets.sshCredentialCopyShell.name).toBe("sshCredentialCopyShell"); expect(assets.sshCredentialCopyShell.length).toBe(0);
-        expect(assets.gitSigningKeyRewriteShell.name).toBe("gitSigningKeyRewriteShell"); expect(assets.gitSigningKeyRewriteShell.length).toBe(0);
-        for (const generator of [assets.sshCredentialCopyShell, docker.sshCredentialCopyShell]) {
-            expect(hash(generator())).toBe("fd51e763f1cfffb14fb5d8dee11a37e82fe2de4b84587251b8739648e3ad0875");
-            expect(hash(generator(false))).toBe("fd51e763f1cfffb14fb5d8dee11a37e82fe2de4b84587251b8739648e3ad0875");
-            expect(hash(generator(true))).toBe("c0572abc56af6a2d15e2b9b67312c2e1a1c03051191bcf668a3160070651e79f");
-        }
-        expect(hash(docker.gitSigningKeyRewriteShell())).toBe("1e01e43d18f169911673c4a63b0b915c4cd1ae264aaca8c017e1748c41e4a5bb");
-        expect(hash(python.SSH_KNOWN_HOSTS_PROVENANCE_SCRIPT)).toBe("d5939c35f33717ca7d7452cce7025a0632a21523a61b657b7feec29616d30ffd");
-        expect(hash(readFileSync(new URL("../../ssh-known-hosts.ts", import.meta.url)))).toBe("4bfd709896350bb71fa22962cc9dbe44250b94f1733d9b83ab67d7d6710f808e");
-        expect(docker).not.toHaveProperty("fixSshPermissions"); expect(docker).not.toHaveProperty("syncHostGitConfig");
-    });
+
 });

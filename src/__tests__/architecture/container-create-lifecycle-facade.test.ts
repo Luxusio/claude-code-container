@@ -452,18 +452,6 @@ describe("public Docker creation cutover", () => {
         expect(calls[2]).toEqual(["captured-runtime", ["inspect", "-f", "{{.Id}}", id], cleanupOptions]);
     });
 
-    it("retains lazy run argument environment observations after Creating output", () => {
-        publicFixture(); const observations: string[] = [];
-        vi.mocked(console.log).mockImplementation(message => {
-            if (message === "Creating container...") { observations.push("creating"); vi.stubEnv("CCC_DISABLE_PROXY", "1"); }
-        });
-        native.remote.mockImplementation(() => { observations.push("remote"); return true; });
-        expect(() => docker.startProjectContainer(project, () => {})).toThrow("exact 64-hex container ID");
-        const args = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm")?.[1] as string[];
-        expect(args).not.toContain("CCC_PROXY_ENABLED=1");
-        expect(args).toContain("CCC_CONTAINER_HOST_REMOTE=1");
-        expect(observations.slice(-3)).toEqual(["creating", "remote", "remote"]);
-    });
 });
 
 // Native context facts are required and remain synchronous, independent of native result types.

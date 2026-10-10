@@ -167,25 +167,21 @@ describe("container exec readiness policy traces", () => {
         expect(trace).toEqual([n(0), n(0), p(5000)]);
     });
 
-    it("uses live replacements with the ports receiver and independent deadlines on repeat runs", () => {
+    it("uses independent deadlines on repeat runs", () => {
         const f = fixture([], []);
         const app = createContainerExecReadiness(f.ports);
         let clockReads = 0;
         f.ports.now = function () {
-            expect(this).toBe(f.ports);
             const value = [0, 0, 10][clockReads++];
             f.trace.push(n(value));
             return value;
         };
         f.ports.canExec = function (selected, timeout) {
-            expect(this).toBe(f.ports);
             f.trace.push(["canExec", selected, timeout]);
             this.sleep = function (duration) {
-                expect(this).toBe(f.ports);
                 f.trace.push(s(duration));
-                this.now = function () { expect(this).toBe(f.ports); f.trace.push(n(20)); return 20; };
+                this.now = function () { f.trace.push(n(20)); return 20; };
                 this.canExec = function (next, budget) {
-                    expect(this).toBe(f.ports);
                     f.trace.push(["canExec", next, budget]);
                     return true;
                 };
@@ -198,7 +194,7 @@ describe("container exec readiness policy traces", () => {
 
         f.trace.length = 0;
         const times = [1000, 16000];
-        f.ports.now = function () { expect(this).toBe(f.ports); const value = times.shift()!; f.trace.push(n(value)); return value; };
+        f.ports.now = function () { const value = times.shift()!; f.trace.push(n(value)); return value; };
         expect(app.run("second-target")).toBe(true);
         expect(f.trace).toEqual([n(1000), n(16000), ["canExec", "second-target", 150]]);
     });

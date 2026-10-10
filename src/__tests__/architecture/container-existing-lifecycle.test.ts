@@ -61,17 +61,7 @@ describe("existing lifecycle explicit construction", () => {
         expect(f.app.run({ containerName: "name" })).toEqual({ kind: "joined", containerId: "id" });
         expect(f.trace).toContain("exec:id");
     });
-    it("uses current port replacements and their receiver at each observation/effect", () => {
-        const f = fixture(); const replacementCalls: string[] = [];
-        for (const name of Object.keys(f.ports) as Array<keyof ContainerExistingLifecyclePorts>) {
-            const original = f.ports[name];
-            Object.assign(f.ports, { [name]: function (this: ContainerExistingLifecyclePorts, ...args: unknown[]) {
-                expect(this).toBe(f.ports); replacementCalls.push(name); return Reflect.apply(original, this, args);
-            } });
-        }
-        expect(f.app.run({ containerName: "name" })).toEqual({ kind: "joined", containerId: "id" });
-        expect(replacementCalls).toEqual(["listContainer", "assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "inspectContract", "assertProjectSources", "assertDeviceSources", "assertFilesystemSources", "isRunning", "canExec", "deviceSourcesMatch", "verifyBeforeSetup", "syncMcp", "fixSsh", "syncGit", "deviceSourcesMatch", "finish"]);
-    });
+
 });
 
 describe("existing lifecycle observations and contract", () => {

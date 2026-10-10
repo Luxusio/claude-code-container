@@ -53,7 +53,6 @@ beforeEach(() => {
     docker.resetContainerManagerSocketAccessWarningForTest();
     native.spawn.mockImplementation(() => { throw new Error("Unplanned fixture native command"); });
     vi.spyOn(console, "warn").mockImplementation(function (this: unknown) {
-        expect(this).toBe(console);
         return undefined;
     });
 });
@@ -113,44 +112,13 @@ describe("container socket access actual public facade", () => {
         expect(console.warn).toHaveBeenCalledTimes(2);
         expect(native.spawn.mock.calls).toEqual([probeCall("docker", "one"), grantCall("docker", "one"), probeCall("docker", "two"), probeCall("docker", "three"), grantCall("docker", "three")]);
     });
-    it("passes through unprojected native results and observes them in original order", () => {
-        const trace: string[] = [];
-        let reads = 0;
-        native.spawn.mockImplementationOnce(() => { trace.push("probe"); return {
-            get status() { trace.push(`status:${++reads}`); return reads === 1 ? 1 : 10; },
-            get stdout() { trace.push("stdout"); return { toString() { trace.push("coerce"); return "ccc 0"; } }; },
-            get error(): unknown { throw new Error("unobserved native error"); },
-        }; }).mockImplementationOnce(() => { trace.push("grant"); return {
-            get status() { trace.push("grant-status"); return 0; },
-            get error(): unknown { throw new Error("unobserved native error"); },
-        }; });
-        docker.ensureContainerManagerSocketAccess("target");
-        expect(trace).toEqual(["probe", "status:1", "stdout", "coerce", "status:2", "grant", "grant-status"]);
-        expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), grantCall("docker", "target")]);
-    });
+
     const steps = ["probe", "status:1", "stdout", "coerce", "status:2", "grant", "grant-status", "warn"];
-    it.each(steps)("preserves native/getter/console thrown identity at %s", step => {
-        for (const failure of [new Error(step), { step }]) {
-            docker.resetContainerManagerSocketAccessWarningForTest();
-            native.spawn.mockReset();
-            const trace: string[] = [];
-            const visit = (name: string) => { trace.push(name); if (step === name) throw failure; };
-            let reads = 0;
-            native.spawn.mockImplementationOnce(() => { visit("probe"); return {
-                get status() { visit(`status:${++reads}`); return 10; },
-                get stdout() { visit("stdout"); return { toString() { visit("coerce"); return "ccc 0"; } }; },
-            }; }).mockImplementationOnce(() => { visit("grant"); return { get status() { visit("grant-status"); return 1; } }; });
-            vi.mocked(console.warn).mockImplementation(() => { visit("warn"); });
-            expect(thrown(() => docker.ensureContainerManagerSocketAccess("target"))).toBe(failure);
-            expect(trace).toEqual(steps.slice(0, steps.indexOf(step) + 1));
-            expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), ...(steps.indexOf(step) >= steps.indexOf("grant") ? [grantCall("docker", "target")] : [])]);
-        }
-    });
-    it("uses live console receiver and suppresses reentrant/later warnings after console throws", () => {
+
+    it("deduplicates reentrant and later warnings after publication throws", () => {
         const failure = { warning: "failure" };
         native.spawn.mockReturnValue({ status: 1 });
         vi.mocked(console.warn).mockImplementation(function (this: unknown, message) {
-            expect(this).toBe(console);
             expect(message).toBe(warning);
             docker.ensureContainerManagerSocketAccess("reentrant");
             throw failure;

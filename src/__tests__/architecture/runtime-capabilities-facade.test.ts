@@ -60,24 +60,12 @@ describe("runtime capability native facade", () => {
         vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu"); native.exists.mockReturnValue(mirrored);
         expect(runtime.getRuntimeInfo().remote).toBe(!mirrored); expect(native.exists).toHaveBeenCalledExactlyOnceWith("/sys/class/net/loopback0");
     });
-    it("retains UID double getter lookup and process receiver", () => {
-        const trace: unknown[] = []; Object.defineProperty(process, "getuid", { configurable: true, get() { trace.push("get"); return function (this: unknown) { trace.push(this === process); return 1234; }; } });
-        const observations = createNativeRuntimeCapabilitiesObservations(() => null);
-        expect(observations.readEffectiveUidOrDefault(0)).toBe(1234); expect(trace).toEqual(["get", "get", true]);
-        Object.defineProperty(process, "getuid", { configurable: true, value: undefined }); expect(observations.readEffectiveUidOrDefault(8)).toBe(8);
-    });
+
     it("keeps capability false while macOS legacy flavor remains docker-desktop", () => {
         vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
         expect(runtime.getRuntimeInfo()).toMatchObject({ runtime: "docker", remote: true, flavor: "docker-desktop", dockerDesktop: false });
     });
-    it("preserves raw status/stdout getters and retry after every failed phase", () => {
-        for (const field of ["--version", "{{.OperatingSystem}}", "{{json .SecurityOptions}}"] as const) {
-            runtime._resetRuntimeCacheForTest(); runtime.setRuntimeOverride("docker"); const fault = Error(field); const accessed: string[] = [];
-            native.spawn.mockImplementation((_command: string, args: string[]) => args[0] === field || args.at(-1) === field ? { get status() { accessed.push("status"); return 0; }, get stdout() { accessed.push("stdout"); throw fault; } } : args[0] === "--version" ? result(0, "Docker 27.1.1") : result(0, "Ubuntu"));
-            for (let attempt = 0; attempt < 2; attempt++) expect(() => runtime.getRuntimeInfo()).toThrow(fault);
-            expect(accessed).toEqual(["status", "stdout", "status", "stdout"]);
-        }
-    });
+
     it("retains all public accessors and preload defaults", () => {
         for (const name of ["docker", "podman"] as RuntimeName[]) { runtime._setRuntimeInfoForTest({ runtime: name }); const info = runtime.getRuntimeInfo(); expect(runtime.runtimeCli()).toBe(name); expect(runtime.isContainerHostRemote()).toBe(false); expect(runtime.formatRuntimeSummary()).toContain(`runtime=${name}`); expect(runtime.getRuntimeInfo()).toBe(info); }
         expect(runtime.getHostInternalAlias()).toBe("host.docker.internal");

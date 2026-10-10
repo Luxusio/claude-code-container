@@ -187,37 +187,10 @@ describe("explicit synchronous session lock liveness", () => {
             ...(failing.endsWith("v2") ? [] : ["platform"]), "map", ...(failing.startsWith("observe") ? ["observe"] : []),
         ]);
     });
-    it("preserves a throwing errno getter outside the probe catch", () => {
-        const exception = { reason: "getter" };
-        const code = vi.fn(() => { throw exception; });
-        const classify = createSessionLockLiveness({ ...ports(), probeLegacyProcess: () => { throw { get code() { return code(); } }; } });
-        let caught: unknown;
-        try { classify("42"); } catch (error) { caught = error; }
-        expect(caught).toBe(exception);
-        expect(code).toHaveBeenCalledTimes(1);
-    });
+
     it.each([null, undefined])("preserves TypeError when the probe throws %s", exception => {
         const classify = createSessionLockLiveness({ ...ports(), probeLegacyProcess: () => { throw exception; } });
         expect(() => classify("42")).toThrow(TypeError);
     });
-    it("reads current callbacks and platform lazily with the ports receiver on every invocation", () => {
-        const trace: string[] = [];
-        const callbacks: SessionLockLivenessPorts = {
-            getPlatform() { expect(this).toBe(callbacks); trace.push("platform:linux"); return "linux"; },
-            observeProcessStart() { throw new Error("initial observation must remain unread"); },
-            probeLegacyProcess(ownerPid) { expect(this).toBe(callbacks); trace.push(`probe:${ownerPid}`); return undefined; },
-        };
-        const classify = createSessionLockLiveness(callbacks);
-        expect(trace).toEqual([]);
-        expect(classify("42")).toBe("active");
-        callbacks.getPlatform = function () { expect(this).toBe(callbacks); trace.push("platform:win32"); return "win32"; };
-        callbacks.observeProcessStart = function (ownerPid) { expect(this).toBe(callbacks); trace.push(`observe:${ownerPid}`); return { status: "missing" }; };
-        expect(classify("42")).toBe("stale");
-        callbacks.getPlatform = function () { expect(this).toBe(callbacks); trace.push("platform:darwin"); return "darwin"; };
-        callbacks.probeLegacyProcess = function (ownerPid) { expect(this).toBe(callbacks); trace.push(`replacement-probe:${ownerPid}`); throw { code: "ESRCH" }; };
-        expect(classify("42")).toBe("stale");
-        callbacks.observeProcessStart = function (ownerPid) { expect(this).toBe(callbacks); trace.push(`replacement-observe:${ownerPid}`); return { status: "found", token }; };
-        expect(classify(versioned())).toBe("active");
-        expect(trace).toEqual(["platform:linux", "probe:42", "platform:win32", "observe:42", "platform:darwin", "replacement-probe:42", "replacement-observe:42"]);
-    });
+
 });

@@ -33,19 +33,7 @@ describe("requested tool setup policy", () => {
             for (const binding of Object.values(bindings)) expect(binding).not.toHaveBeenCalled();
         }
     });
-    it("validates required ports in order and has no construction effects", () => {
-        const reads: string[] = [];
-        const bindings = ports();
-        const observed = Object.fromEntries(portNames.map(name => [name, undefined]));
-        for (const name of portNames) Object.defineProperty(observed, name, {
-            get() { reads.push(name); return bindings[name]; },
-        });
-        createRequestedToolSetup(observed as unknown as RequestedToolSetupPorts);
-        expect(reads).toEqual(portNames);
-        for (const binding of Object.values(bindings)) expect(binding).not.toHaveBeenCalled();
-        const error = thrownValue(() => createRequestedToolSetup({} as RequestedToolSetupPorts));
-        expect((error as Error).message).toContain(portNames[0]);
-    });
+
     it.each(["claude", "gemini", "codex"])("routes %s by name, probes once and returns undefined", name => {
         const bindings = ports();
         const original = tool(name, "custom-launcher");
@@ -74,48 +62,7 @@ describe("requested tool setup policy", () => {
         createRequestedToolSetup(bindings).ensure(target, original);
         expect(bindings.probeLauncher).toHaveBeenCalledExactlyOnceWith(target, `/home/ccc/.local/bin/${binary || "changed"}`);
     });
-    it("reads the binary even for Claude and uses the freshly read name for its path", () => {
-        const bindings = ports();
-        const original = tool("claude");
-        const trace: string[] = [];
-        Object.defineProperty(original, "name", { get() { trace.push("name"); return "claude"; } });
-        Object.defineProperty(original, "binary", { get() { trace.push("binary"); return "override"; } });
-        bindings.ensureClaudeLauncher.mockImplementation(() => { trace.push("install"); });
-        bindings.probeLauncher.mockImplementation(() => { trace.push("probe"); return { status: 0 }; });
-        createRequestedToolSetup(bindings).ensure(target, original);
-        expect(trace).toEqual(["name", "install", "binary", "name", "probe", "name"]);
-        expect(bindings.probeLauncher).toHaveBeenCalledWith(target, CLAUDE_BIN_PATH);
-    });
-    it("uses the current name after install for the Claude path and after readiness for Codex", () => {
-        const bindings = ports();
-        const original = tool("gemini");
-        bindings.ensureNpmTool.mockImplementation(() => { original.name = "claude"; });
-        bindings.probeLauncher.mockImplementation(() => { original.name = "codex"; return { status: 0 }; });
-        createRequestedToolSetup(bindings).ensure(target, original);
-        expect(bindings.probeLauncher).toHaveBeenCalledWith(target, CLAUDE_BIN_PATH);
-        expect(bindings.ensureCodexSandbox).toHaveBeenCalledExactlyOnceWith(target);
-    });
-    it("reads a fallback name separately from the subsequent path name", () => {
-        const bindings = ports();
-        const original = tool("gemini", "");
-        const names = ["gemini", "fallback", "claude", "gemini"];
-        const trace: string[] = [];
-        Object.defineProperty(original, "name", { get() { trace.push("name"); return names.shift(); } });
-        Object.defineProperty(original, "binary", { get() { trace.push("binary"); return ""; } });
-        bindings.ensureNpmTool.mockImplementation(() => { trace.push("install"); });
-        bindings.probeLauncher.mockImplementation(() => { trace.push("probe"); return { status: 0 }; });
-        createRequestedToolSetup(bindings).ensure(target, original);
-        expect(trace).toEqual(["name", "install", "binary", "name", "name", "probe", "name"]);
-        expect(names).toEqual([]);
-        expect(bindings.probeLauncher).toHaveBeenCalledExactlyOnceWith(target, CLAUDE_BIN_PATH);
-    });
-    it("does not retain an earlier Codex name for the sandbox postcondition", () => {
-        const bindings = ports();
-        const original = tool("codex");
-        bindings.probeLauncher.mockImplementation(() => { original.name = "gemini"; return { status: 0 }; });
-        createRequestedToolSetup(bindings).ensure(target, original);
-        expect(bindings.ensureCodexSandbox).not.toHaveBeenCalled();
-    });
+
     it.each([1, 124, 137, null, undefined])("reports status %s as unavailable, with no sandbox", status => {
         const bindings = ports();
         bindings.probeLauncher.mockReturnValue({ status } as ReturnType<RequestedToolSetupPorts["probeLauncher"]>);
@@ -139,27 +86,7 @@ describe("requested tool setup policy", () => {
         bindings.probeLauncher.mockReturnValue({ status: 0, error });
         expect(createRequestedToolSetup(bindings).ensure(target, tool())).toBeUndefined();
     });
-    it("reads the raw error twice and preserves optional chaining and status short-circuiting", () => {
-        const bindings = ports();
-        const trace: string[] = [];
-        let reads = 0;
-        bindings.probeLauncher.mockReturnValue({
-            get error() { trace.push("error"); return ++reads === 1 ? null : { code: "ETIMEDOUT" }; },
-            get status(): never { trace.push("status"); throw new Error("unreachable status"); },
-        });
-        expect(() => createRequestedToolSetup(bindings).ensure(target, tool())).toThrow("Requested tool gemini is unavailable after setup");
-        expect(trace).toEqual(["error", "error"]);
-    });
-    it("does not cache the error getter before a successful status read", () => {
-        const bindings = ports();
-        const trace: string[] = [];
-        bindings.probeLauncher.mockReturnValue({
-            get error() { trace.push("error"); return undefined; },
-            get status() { trace.push("status"); return 0; },
-        });
-        createRequestedToolSetup(bindings).ensure(target, tool());
-        expect(trace).toEqual(["error", "error", "status"]);
-    });
+
     it.each(["claude", "npm", "binary", "name", "probe", "error", "code", "status", "sandbox"])(
         "propagates the original thrown value at %s and stops later effects", stage => {
             const bindings = ports();

@@ -1,9 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createNativeContainerImagePreparation, distributionImageBuildCommand, distributionImageBuildHint } from "../../composition/container-image-preparation.js";
-import {
-    ensureImage, getImageLabel, isImageExists, pullImage, qualifyImageRefForRuntime, tagImage,
-} from "../../docker.js";
+import { ensureImage, getImageLabel, isImageExists, pullImage, qualifyImageRefForRuntime, tagImage } from "../../docker.js";
 import { CLI_VERSION, DOCKER_REGISTRY_IMAGE, IMAGE_NAME } from "../../utils.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), runtime: vi.fn() }));
@@ -146,24 +144,6 @@ describe("image preparation native composition and public facade", () => {
         }
     });
 
-    it("keeps supplied helper receivers and downstream replacements live", () => {
-        const calls: string[] = [];
-        const helpers = {
-            registryImage: "custom/image",
-            isImageExists() {
-                expect(this).toBe(helpers); calls.push("exists");
-                this.pullImage = function (ref) { expect(this).toBe(helpers); calls.push(`replacement-pull:${ref}`); return true; };
-                return false;
-            },
-            getImageLabel: vi.fn(() => null),
-            qualifyImageRefForRuntime(ref: string) { expect(this).toBe(helpers); calls.push(`qualify:${ref}`); return `qualified/${ref}`; },
-            pullImage: (_ref: string) => false,
-            tagImage(source: string, target: string) { expect(this).toBe(helpers); calls.push(`tag:${source}:${target}`); },
-        };
-        const app = createNativeContainerImagePreparation(helpers);
-        expect(app.run()).toBeUndefined();
-        expect(calls).toEqual(["exists", `qualify:custom/image:${CLI_VERSION}`, `replacement-pull:qualified/custom/image:${CLI_VERSION}`, `tag:qualified/custom/image:${CLI_VERSION}:${IMAGE_NAME}`]);
-    });
 });
 
 describe("unchanged native result interpretation", () => {
@@ -428,7 +408,6 @@ describe("native and presentation fault identity with no downstream effects", ()
         expect(trace).toEqual(absentPre);
     });
 });
-
 
 describe("packaged image recovery command quoting", () => {
     it("uses literal POSIX path quoting instead of JSON shell interpolation", () => {

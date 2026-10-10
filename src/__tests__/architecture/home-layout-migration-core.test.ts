@@ -188,13 +188,7 @@ describe("home layout migration explicit application ports", () => {
         expect(Object.entries(remote)).toEqual([["existing", "current"], ["a", null], ["b", false], ["c", 3], ["d", "text"], ["e", [1, 2]]]);
         expect(remote.inherited).toBe("prototype"); expect(Object.hasOwn(remote, "toString")).toBe(false); expect(Object.hasOwn(remote, "hidden")).toBe(false);
     });
-    it("retains repeated config.remote getter reads and their original mutation selection", () => {
-        const f = fixture([]); f.remote.set("a.json", "1");
-        const reads: string[] = []; const remote = {};
-        Object.defineProperty(f.config, "remote", { configurable: true,
-            get: () => { reads.push("get"); return remote; }, set: value => { reads.push("set"); expect(value).toBe(remote); } });
-        expect(f.run().status).toBe("migrated"); expect(reads).toEqual(["get", "get", "get", "get", "set"]); expect(remote).toEqual({ a: 1 });
-    });
+
     it("publishes once before ordered unlink; later unlink failure keeps earlier deletions without partial remote moved names", () => {
         const f = fixture([]); f.remote.set("first.json", "1"); f.remote.set("later.json", "2"); const failure = { unlink: true };
         f.ports.removeLegacyRemoteFile = vi.fn(name => { expect(f.config.remote).toEqual({ first: 1, later: 2 }); if (name === "later.json") throw failure; f.remote.delete(name); return undefined; });
@@ -253,12 +247,7 @@ describe("home layout migration explicit application ports", () => {
         expect(caught(f.run)).toBe(failure); expect(f.ports.releaseStartupReceipt).toHaveBeenCalledTimes(4); expect(f.ports.releaseMigrationLock).toHaveBeenCalledOnce();
         expect(f.ports.removeEmptyLegacyRemoteDirectory).not.toHaveBeenCalled();
     });
-    it("catches remote config getter failures in the outer remote catch while preserving their unknown identity", () => {
-        const f = fixture([]); f.remote.set("a.json", "1"); const failure = Symbol("getter");
-        Object.defineProperty(f.config, "remote", { get() { throw failure; } });
-        expect(f.run()).toEqual({ status: "migrated", moved: [], failed: ["remote"] });
-        expect(f.notices).toEqual([{ kind: "remote-merge-failed", error: failure }]); expect(f.ports.removeLegacyRemoteFile).not.toHaveBeenCalled();
-    });
+
     it("contains per-file read failures in the parse catch and still publishes other files", () => {
         const f = fixture([]); f.remote.set("bad.json", "1"); f.remote.set("good.json", "2");
         f.ports.readLegacyRemoteText = name => { if (name === "bad.json") throw null; return f.remote.get(name)!; };

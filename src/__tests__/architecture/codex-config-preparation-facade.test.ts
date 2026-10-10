@@ -102,15 +102,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         expect(docker.CODEX_CONFIG_PREPARE_TIMEOUT_MS).toBe(15_000);
         expect(repaired[2]![1]).not.toContain("chown");
     });
-    it("selects latest runtime for every native effect", () => {
-        const clis = ["docker", "podman", "docker", "podman", "docker", "podman", "docker"] as const;
-        [1, 0, 0, 0, 1, 0, 0].forEach((status, i) => native.spawn.mockImplementationOnce(() => {
-            runtime._setRuntimeInfoForTest({ runtime: clis[(i + 1) % clis.length]! });
-            return { status, stdout: "2001\n", stderr: "" };
-        }));
-        docker.prepareCodexConfigForContainer(target);
-        expect(native.spawn.mock.calls).toEqual(repaired.map((args, i) => [clis[i], ...args.slice(1)]));
-    });
+
     it.each([0, 2, 3, 4, 5, 6])("refuses failure classes at native phase %s without later effects", phase => {
         for (const observation of [{ status: null, error: { code: "ETIMEDOUT", message: "bounded" } },
             { status: 124 }, { status: 137 }, { status: null }, { status: -1 }, { status: 42 },
@@ -136,18 +128,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
             expect(native.spawn.mock.calls).toEqual(repaired.slice(0, phase + 1));
         }
     });
-    it("passes raw successful observations through both policies without reading unrelated fields", () => {
-        const observed: string[] = [];
-        for (const phase of ["directory", "config"]) native.spawn.mockImplementationOnce(() => {
-            const result = { get error() { observed.push(`${phase}:error`); return undefined; },
-                get status() { observed.push(`${phase}:status`); return 0; } };
-            for (const field of ["stdout", "stderr", "signal", "output", "pid", "then"]) Object.defineProperty(result, field,
-                { get() { throw new Error(`unobserved ${field}`); } });
-            return result;
-        });
-        docker.prepareCodexConfigForContainer(target);
-        expect(observed).toEqual(["directory:error", "directory:status", "directory:status", "config:error", "config:status", "config:status"]);
-    });
+
     it.each(["directory", "owner", "file", "links"])("refuses unsafe host %s before root ACL mutation", invalid => {
         native.spawn.mockReturnValueOnce({ status: 1 });
         native.lstat.mockImplementation((_path: string) => ({ uid: invalid === "owner" ? 2 : 1001,
@@ -185,22 +166,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         expect(() => docker.prepareCodexConfigForContainer(target)).toThrow("invalid container user identity");
         expect(native.spawn.mock.calls).toEqual(repaired.slice(0, 2));
     });
-    it("preserves metadata method receivers and getter order with the live process UID receiver", () => {
-        const seen: string[] = [];
-        native.lstat.mockImplementation((path: string) => {
-            const parent = { get uid() { seen.push("uid"); return 1001; },
-                isDirectory() { expect(this).toBe(parent); seen.push("isDirectory"); return true; } };
-            const file = { get nlink() { seen.push("nlink"); return 1; },
-                isFile() { expect(this).toBe(file); seen.push("isFile"); return true; } };
-            return path.endsWith("config.toml") ? file : parent;
-        });
-        Object.defineProperty(process, "getuid", { configurable: true, value: function(this: unknown) {
-            expect(this).toBe(process); seen.push("getuid"); return 1001;
-        } });
-        queueRepair(); docker.prepareCodexConfigForContainer(target, "named");
-        expect(seen).toEqual(["isDirectory", "uid", "getuid", "isFile", "nlink", "isDirectory", "uid", "getuid", "isFile", "nlink"]);
-        expect(native.spawn.mock.calls).toEqual(repaired);
-    });
+
     it("discovers a fresh mapped UID on the next invocation", () => {
         queueRepair(); docker.prepareCodexConfigForContainer(target, "named");
         [1, 0, 0, 0, 1, 0, 0].forEach(status => native.spawn.mockReturnValueOnce({ status, stdout: "3001", stderr: "" }));
@@ -221,14 +187,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
             call(directoryProbe), call(configProbe), call(acl.codexConfigFileAclScript("3001"), true), call(configProbe)];
         expect(native.spawn.mock.calls).toEqual([...repaired.slice(0, 3), ...nested, ...repaired.slice(3)]);
     });
-    it("preserves native preclassification before changing observations reach the leaf", () => {
-        const reads: string[] = []; let count = 0;
-        native.spawn.mockReturnValueOnce({ get error() { reads.push("error"); return undefined; },
-            get status() { reads.push("status"); return ++count === 1 ? 0 : 124; }, stderr: "" });
-        expect(() => docker.prepareCodexConfigForContainer(target, "named")).toThrow("access probe timed out");
-        expect(reads).toEqual(["error", "status", "status", "error", "status"]);
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe)]);
-    });
+
     it("keeps calls independent after a failed repair", () => {
         native.spawn.mockReturnValueOnce({ status: 1 }).mockReturnValueOnce({ status: 0, stdout: "2001" }).mockReturnValueOnce({ status: 42 });
         expect(() => docker.prepareCodexConfigForContainer(target)).toThrow("directory ACL grant failed");

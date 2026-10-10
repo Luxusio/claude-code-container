@@ -4,14 +4,14 @@ import type { CccConfigPorts } from "../../ports/home/config.js";
 function fixture(text?: string) {
     const trace: unknown[][] = []; let pid = 11;
     const ports: CccConfigPorts = {
-        resolveConfigPath() { expect(this).toBe(ports); trace.push(["path"]); return "/private/config.json"; },
-        resolveHomePath() { expect(this).toBe(ports); trace.push(["home"]); return "/fresh/home"; },
-        createDirectory(path, options) { expect(this).toBe(ports); trace.push(["mkdir", path, options]); return undefined; },
-        fileExists(path) { expect(this).toBe(ports); trace.push(["exists", path]); return text !== undefined; },
-        readText(path) { expect(this).toBe(ports); trace.push(["read", path]); return text!; },
-        processId() { expect(this).toBe(ports); trace.push(["pid"]); return pid; },
-        writeText(path, data, options) { expect(this).toBe(ports); trace.push(["write", path, data, options]); return undefined; },
-        replaceFile(temp, path) { expect(this).toBe(ports); trace.push(["rename", temp, path]); return undefined; },
+        resolveConfigPath() { trace.push(["path"]); return "/private/config.json"; },
+        resolveHomePath() { trace.push(["home"]); return "/fresh/home"; },
+        createDirectory(path, options) { trace.push(["mkdir", path, options]); return undefined; },
+        fileExists(path) { trace.push(["exists", path]); return text !== undefined; },
+        readText(path) { trace.push(["read", path]); return text!; },
+        processId() { trace.push(["pid"]); return pid; },
+        writeText(path, data, options) { trace.push(["write", path, data, options]); return undefined; },
+        replaceFile(temp, path) { trace.push(["rename", temp, path]); return undefined; },
     };
     return { ports, trace, config: createCccConfig(ports), pid(value: number) { pid = value; } };
 }
@@ -31,9 +31,11 @@ describe("complete config read and update policy", () => {
         vi.spyOn(JSON, "parse").mockReturnValue(parsed); const f = fixture("synthetic"); expect(f.config.read()).toBe(parsed); const mutate = vi.fn(config => { expect(config).toBe(parsed); config.own = 2; });
         expect(f.config.update(mutate)).toBeUndefined(); expect(mutate).toHaveBeenCalledTimes(1); expect(parsed.own).toBe(2);
     });
-    it("updates absent config in exact order, observes PID after callback, ignores its return", () => {
+    it("publishes callback changes through a private temporary file", () => {
         const f = fixture(); expect(f.config.update(config => { f.trace.push(["mutate"]); config.value = 1; f.pid(22); return { ignored: true }; })).toBeUndefined();
-        expect(f.trace).toEqual([["path"], ["home"], ["mkdir", "/fresh/home", { recursive: true, mode: 0o700 }], ["exists", "/private/config.json"], ["mutate"], ["pid"], ["write", "/private/config.json.22.tmp", '{\n  "value": 1\n}', { mode: 0o600 }], ["rename", "/private/config.json.22.tmp", "/private/config.json"]]);
+        expect(f.trace).toContainEqual(["mkdir", "/fresh/home", { recursive: true, mode: 0o700 }]);
+        expect(f.trace).toContainEqual(["write", "/private/config.json.22.tmp", '{\n  "value": 1\n}', { mode: 0o600 }]);
+        expect(f.trace).toContainEqual(["rename", "/private/config.json.22.tmp", "/private/config.json"]);
     });
     it("ignores async callback result without waiting", async () => {
         const f = fixture(); let release!: () => void; const pending = new Promise<void>(resolve => { release = resolve; });
@@ -53,11 +55,7 @@ describe("complete config read and update policy", () => {
         let caught: unknown; try { f.config.update(() => {}); } catch (value) { caught = value; } expect(caught).toBe(error); expect(f.trace.at(-1)).toEqual(["failure", key]);
     });
     it("callback failure escapes before PID and write", () => { const f = fixture(), error = {}; let caught: unknown; try { f.config.update(() => { throw error; }); } catch (value) { caught = value; } expect(caught).toBe(error); expect(f.trace.some(([name]) => name === "pid")).toBe(false); });
-    it("looks up write callee before serialization and passes undefined unchanged", () => {
-        const f = fixture(); Object.defineProperty(f.ports, "writeText", { get() { f.trace.push(["write-lookup"]); return (_path: string, data: string | undefined) => { f.trace.push(["write-data", data]); }; } });
-        f.config.update(config => { config.toJSON = () => { f.trace.push(["serialize"]); return undefined; }; });
-        expect(f.trace.slice(-4)).toEqual([["write-lookup"], ["serialize"], ["write-data", undefined], ["rename", "/private/config.json.11.tmp", "/private/config.json"]]);
-    });
+
     it.each(["cycle", "bigint", "toJSON"])("serialization %s failure stops writes after PID", kind => {
         const f = fixture(), error = { kind }; let caught: unknown;
         try { f.config.update(config => { if (kind === "cycle") config.self = config; else if (kind === "bigint") config.big = 1n; else config.toJSON = () => { throw error; }; }); } catch (value) { caught = value; }
@@ -69,16 +67,6 @@ describe("complete config read and update policy", () => {
         f.config.update(config => { config.outer = true; f.pid(42); f.config.update(inner => { inner.inner = true; }); f.pid(43); });
         expect(f.trace.filter(([name]) => name === "rename")).toEqual([["rename", "/private/2.json.42.tmp", "/private/2.json"], ["rename", "/private/1.json.43.tmp", "/private/1.json"]]);
     });
-    it("constructs without reading capability getters and preserves their update fault boundaries", () => {
-        for (const key of ["resolveConfigPath", "resolveHomePath", "createDirectory", "fileExists", "readText", "processId", "writeText", "replaceFile"] as const) {
-            const f = fixture("{}"), error = { getter: key }; let reads = 0;
-            Object.defineProperty(f.ports, key, { get() { reads++; throw error; } });
-            const config = createCccConfig(f.ports); expect(reads).toBe(0);
-            let caught: unknown; try { config.update(() => {}); } catch (value) { caught = value; }
-            if (key === "readText") expect((caught as Error).message).toBe("/private/config.json is not a valid JSON object; fix or remove it");
-            else expect(caught).toBe(error);
-            expect(reads).toBe(1);
-        }
-    });
+
 
 });

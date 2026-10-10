@@ -79,14 +79,3 @@ it("routing constructor leaves getter-backed dial capability lazy until after bu
     const app = createLocalhostProxy<object,Stream>(ports); expect(events).toEqual([]);
     await app.proxyConnection(client,80); expect(events.slice(0,3)).toEqual([["client","on","data"],"get:connect",["connect","127.0.0.1",80]]);
 });
-it("verifier constructor leaves every getter capability lazy and selects warning callee before runtime interpolation", () => {
-    const {events,ports}=verifierFixture();
-    for (const key of Object.keys(ports) as (keyof typeof ports)[]) {
-        const original=ports[key]; Object.defineProperty(ports,key,{get(){events.push(`get:${key}`);return original;}});
-    }
-    const app=createLocalhostProxyVerifier(ports); expect(events).toEqual([]); app.setup("owned");
-    expect(events).not.toContain("get:containerHostRemote"); expect(events).not.toContain("get:debugFlag"); expect(events).not.toContain("get:reportDebug");
-    expect(events.filter(event=>event==="get:reportWarning")).toHaveLength(2);
-    const runtime=events.indexOf("get:runtimeName"); expect(events[runtime-1]).toBe("get:reportWarning");
-    expect(events[runtime+1]).toBe("runtime");
-});

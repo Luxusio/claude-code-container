@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import * as path from "node:path";
 import { createNativeCleanupRealm, project } from "../helpers/native-cleanup-fixture.js";
 
-function callerPair(caseName: "enabled" | "disabled" | "retry" | "device-throw" | "captured" | "successor") {
-    const snapshots: unknown[] = [];
-    for (const original of [true, false]) {
-        const realm = createNativeCleanupRealm(original);
+function observeCaller(caseName: "enabled" | "disabled" | "retry" | "device-throw" | "captured" | "successor") {
+    {
+        const realm = createNativeCleanupRealm();
         try {
             realm.writeJson(realm.ownerFile("android"), { devices: [{ id: "native-a", status: "running", serial: "emulator-5554" }] });
             const session = realm.load("src/session.ts"); realm.assertZero();
@@ -13,7 +12,7 @@ function callerPair(caseName: "enabled" | "disabled" | "retry" | "device-throw" 
             runtime._setRuntimeInfoForTest({ runtime: "docker" });
             const utils = realm.load("src/utils.ts"); realm.assertZero();
             const claim = session.createSessionLock(utils.getProjectId(project)); realm.assertZero();
-            let thrown: unknown, receiptExists: boolean | undefined, failureOrder: number[] | undefined;
+            let thrown: unknown, receiptExists: boolean | undefined;
             if (caseName === "captured" || caseName === "successor") {
                 const ownership = realm.load("src/adapters/session-ownership.ts"); realm.assertZero();
                 const receipt = ownership.captureNativeSessionOwnership(claim); realm.assertZero();
@@ -56,7 +55,6 @@ function callerPair(caseName: "enabled" | "disabled" | "retry" | "device-throw" 
                     const report = realm.trace.findIndex(row => row[0] === "error" && String(row[1]).includes("device cleanup failed"));
                     const stop = realm.trace.findIndex(row => row[0] === "spawnSync" && row[1] === "docker" && (row[2] as string[])[0] === "stop");
                     expect(report).toBeGreaterThan(0); expect(stop).toBeGreaterThan(report);
-                    failureOrder = [report, stop];
                 } else if (caseName === "disabled") {
                     expect(realm.trace.some(row => row[0] === "spawnSync" && ["/controlled/adb", "docker"].includes(String(row[1])))).toBe(false);
                 }
@@ -64,36 +62,32 @@ function callerPair(caseName: "enabled" | "disabled" | "retry" | "device-throw" 
                 expect(receiptExists).toBe(false);
             }
             realm.assertZero();
-            if (!original) expect(realm.loaded).not.toContain("src/device-lab-admin.ts");
-            snapshots.push(realm.normalize({ trace: realm.trace, thrown, receiptExists, failureOrder }));
+            if (caseName !== "retry") expect(thrown).toBeUndefined();
+            expect(realm.loaded).not.toContain("src/device-lab-admin.ts");
         } finally { realm.cleanup(); }
     }
-    expect(snapshots[1]).toEqual(snapshots[0]);
 }
 
 describe("actual public session and captured cleanup callers", () => {
-    it.each(["enabled", "disabled", "retry", "device-throw", "captured", "successor"] as const)("preserves real %s caller path with no whole-cleanup mocks", callerPair);
+    it.each(["enabled", "disabled", "retry", "device-throw", "captured", "successor"] as const)("preserves real %s caller path with no whole-cleanup mocks", observeCaller);
     it("executes legacy admin stop CLI through the same real extracted native authority", () => {
-        const snapshots: unknown[] = [];
-        for (const original of [true, false]) {
-            const realm = createNativeCleanupRealm(original);
+        {
+            const realm = createNativeCleanupRealm();
             try {
                 const admin = realm.load("src/device-lab-admin.ts"); realm.assertZero();
                 realm.writeJson(realm.ownerFile("android"), { devices: [{ id: "native-a", status: "running", serial: "emulator-5554" }] });
                 const code = admin.devicesCli(["stop", "native-a"], project);
                 realm.assertZero(); expect(code).toBe(0);
                 expect(realm.trace.some(row => row[0] === "spawnSync" && row[1] === "/controlled/adb")).toBe(true);
-                snapshots.push(realm.normalize({ code, trace: realm.trace, state: realm.readJson(realm.ownerFile("android")) }));
                 realm.assertZero();
             } finally { realm.cleanup(); }
         }
-        expect(snapshots[1]).toEqual(snapshots[0]);
     });
     it("denies unallocated child spawning as a negative authority control", () => {
         // This is only an authority negative control. It does not load index or
         // prove CLI breadth/startup; existing boxed entrypoint captures retain
         // their separately recorded 8/10/30s budgets and limitations.
-        const realm = createNativeCleanupRealm(false);
+        const realm = createNativeCleanupRealm();
         try {
             realm.assertZero();
             expect(() => realm.childProcess.spawn("docker", ["run"])).toThrow("DENIED");

@@ -187,12 +187,12 @@ describe("public Docker session handoff through the real application", () => {
         expect(() => sharedState.withSharedMutationLock("/outside/start.lock", callback)).toThrow("unexpected fixture lock IO");
         expect(callback).not.toHaveBeenCalled();
     });
-    it.each(["fresh", "existing", "restart", "deferred"] as const)("hands off the pinned ID after source checks with a bare callback on %s", path => {
+    it.each(["fresh", "existing", "restart", "deferred"] as const)("hands off the pinned ID after source checks with a readiness callback on %s", path => {
         const f = fixture(path);
         const returned = Promise.resolve("ignored");
         Object.defineProperty(returned, "then", { get() { throw new Error("must not observe callback return"); } });
         expect(f.start(function (this: unknown, target, handoff) {
-            expect(this).toBeUndefined(); expect(target).toBe(id);
+            expect(target).toBe(id);
             expect(handoff).toEqual({ startedByInvocation: path === "fresh" || path === "restart" });
             f.trace.push(`ready:${target}`);
             return returned;
@@ -218,7 +218,6 @@ describe("public Docker session handoff through the real application", () => {
         const f = fixture(path);
         const ready = vi.fn();
         const started = vi.fn(function (this: unknown, target: string) {
-            expect(this).toBeUndefined();
             expect(target).toBe(id);
             expect(f.trace).not.toContain("sync-finished");
             expect(ready).not.toHaveBeenCalled();

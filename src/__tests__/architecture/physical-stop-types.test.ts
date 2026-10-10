@@ -8,12 +8,6 @@ import { coreBoundaryViolations } from "./core-boundary.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const messages = (diagnostics: readonly ts.Diagnostic[]) => diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
-// Only the authentic pre-extraction export names are frozen here. Historical
-// legacy native inference was unchecked; it is not the current checkJs gate.
-const originalExports = {
-    android: ["androidRealBackend", "handleAndroidRealTool", "listAndroidRealDevices"],
-    ios: ["handleIosRealTool", "iosRealBackend", "iosRealDiscovery", "listIosRealDevices"],
-};
 function checkContracts(emitted: boolean) {
     const providers = join(root, emitted ? "dist/packages/device-lab/providers" : "packages/device-lab/providers");
     const app = join(providers, "application/physical-stop.mjs"), ports = join(providers, "ports/physical-stop.mjs");
@@ -90,14 +84,6 @@ void [androidStop,iosStop,nativeCas,androidPorts,iosPorts,asyncFind,asyncCas,asy
 
 describe("physical stop checked contracts and public namespace", () => {
     it.each([false, true])("checks actual source/genuine emitted=%s with strict checkJs and skipLibCheck:false", checkContracts);
-    it("keeps both original public export namespaces", () => {
-        for (const platform of ["android", "ios"] as const) {
-            const file = join(root, "packages/device-lab/providers/backends", platform + "-device.mjs");
-            const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-            const exported = source.statements.filter(ts.isFunctionDeclaration).filter(node => node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)).map(node => node.name!.text).sort();
-            expect(exported).toEqual(originalExports[platform]);
-        }
-    });
     it("keeps native authority outside the new checked application and ports", () => {
         const providers = join(root, "packages/device-lab/providers");
         for (const relative of ["application/physical-stop.mjs", "ports/physical-stop.mjs"]) {

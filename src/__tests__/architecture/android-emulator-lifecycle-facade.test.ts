@@ -4,12 +4,12 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
-import { ANDROID_SYSTEM_IMAGE, ORIGINAL_ANDROID_LIFECYCLE, androidRawState, androidStatePath, assertCurrentAndroidLifecycleEmission, originalObservation, toolJson, toolText, withAndroidLifecycleFixture } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { ANDROID_SYSTEM_IMAGE, androidRawState, androidStatePath, assertCurrentAndroidLifecycleEmission, toolJson, toolText, withAndroidLifecycleFixture } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { deviceLabTestHomeEnvironment } from "../helpers/device-lab-test-environment.js";
 
 const project = fileURLToPath(new URL("../../../", import.meta.url));
 
-describe("Android emulator lifecycle original direct public MCP witnesses", () => {
+describe("Android emulator lifecycle current public MCP lifecycle", () => {
     it("genuine current emitted MCP executes all four policies through existing native SDK authority", async () => {
         assertCurrentAndroidLifecycleEmission();
         await withAndroidLifecycleFixture("emitted-direct-four", async (c, ownerId) => {
@@ -76,7 +76,7 @@ describe("Android emulator lifecycle original direct public MCP witnesses", () =
             const createIndex = log.indexOf(`avdmanager create avd --name ${avdName}`), launchIndex = log.indexOf(`emulator -avd ${avdName} -port 5668`);
             expect(createIndex).toBeGreaterThanOrEqual(0); expect(launchIndex).toBeGreaterThan(createIndex);
             expect(log.indexOf("adb -s emulator-5668 emu kill")).toBeGreaterThan(launchIndex);
-            originalObservation("direct-four", { outcomes, rawCreated, rawStarted, log, unknownSignalsAttempted: "not counted; native identity authority retained" });
+
         });
     }, 30000);
 
@@ -84,18 +84,18 @@ describe("Android emulator lifecycle original direct public MCP witnesses", () =
         await withAndroidLifecycleFixture("direct-order", async (c, ownerId) => {
             const before = readFileSync(c.logPath, "utf8");
             const invalid = await c.client.callTool({ name: "create_android_emulator", arguments: { name: "Invalid", deviceId: "android-invalid", port: 5555, systemImage: ANDROID_SYSTEM_IMAGE } });
-            expect(invalid.isError).toBe(true); expect(toolJson(invalid)).toEqual({ ok: false, error: ORIGINAL_ANDROID_LIFECYCLE.directOddPortError });
+            expect(invalid.isError).toBe(true); expect(toolJson(invalid)).toEqual({ ok: false, error: "create Android port must be even and from 5554 to 5682" });
             expect(readFileSync(c.logPath, "utf8")).toBe(before);
             const args = { name: "Duplicate", deviceId: "android-duplicate", port: 5670, systemImage: ANDROID_SYSTEM_IMAGE };
             const first = await c.client.callTool({ name: "create_android_emulator", arguments: args });
             expect(first.isError, toolText(first)).not.toBe(true);
             const second = await c.client.callTool({ name: "create_android_emulator", arguments: args });
-            expect(second.isError).toBe(true); expect(toolText(second)).toBe(ORIGINAL_ANDROID_LIFECYCLE.directAllocatedDuplicateError);
+            expect(second.isError).toBe(true); expect(toolText(second)).toBe("android-emulator-port-conflict: port-5670-already-allocated");
             const duplicate = await c.client.callTool({ name: "create_android_emulator", arguments: { name: args.name, deviceId: args.deviceId, systemImage: args.systemImage } });
-            expect(duplicate.isError).toBe(true); expect(toolText(duplicate)).toBe(ORIGINAL_ANDROID_LIFECYCLE.directDuplicateError);
+            expect(duplicate.isError).toBe(true); expect(toolText(duplicate)).toBe("Device already exists for this owner: android-duplicate");
             expect(readFileSync(c.logPath, "utf8").match(/avdmanager create avd /g)).toHaveLength(1);
             expect(androidRawState(c.homeDir, ownerId).devices).toHaveLength(1);
-            originalObservation("direct-order", { invalid, first, second, duplicate });
+
         });
     }, 30000);
 
@@ -107,7 +107,7 @@ describe("Android emulator lifecycle original direct public MCP witnesses", () =
             expect(failed.isError).toBe(true); expect(toolText(failed)).toContain("injected partial AVD creation failure");
             expect(androidRawState(c.homeDir, ownerId).devices).toEqual([]);
             for (const suffix of [".ini", ".avd"]) expect(existsSync(join(c.homeDir, ".android", "avd", avdName + suffix))).toBe(false);
-            originalObservation("direct-compensation", { failed, state: androidRawState(c.homeDir, ownerId) });
+
         });
     }, 30000);
 
@@ -121,7 +121,7 @@ describe("Android emulator lifecycle original direct public MCP witnesses", () =
             expect(failed.isError).toBe(true); expect(toolText(failed)).toContain(`Device identity already exists for this owner (id: ${deviceId})`);
             expect(androidRawState(c.homeDir, ownerId).devices).toEqual([winner]);
             expect(existsSync(join(c.homeDir, ".android", "avd", avdName + ".avd"))).toBe(false);
-            originalObservation("direct-successor", { failed, winner, state: androidRawState(c.homeDir, ownerId) });
+
         });
     }, 30000);
 });

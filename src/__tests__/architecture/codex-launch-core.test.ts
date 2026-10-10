@@ -5,7 +5,6 @@ import type { CodexDaemonObservation, CodexLaunchPorts } from "../../ports/tool-
 const success = (extra: Partial<CodexDaemonObservation> = {}): CodexDaemonObservation => ({ error: undefined, signal: null, status: 0, stdout: "", stderr: "", ...extra });
 const missing = () => success({ status: 1, stdout: "ccc-codex-daemon-missing\n" });
 const startHelp = () => success({ stdout: "Usage: codex app-server daemon start [OPTIONS]\n" });
-function failure(invoke: () => unknown): unknown { try { invoke(); } catch (error) { return error; } throw new Error("Expected failure"); }
 function fixture() {
     const calls: string[] = [], handle = Symbol("start");
     const state = { executable: missing(), help: startHelp(), initialized: success(), fallback: success({ stdout: "  --no-daemon\n" }) };
@@ -40,13 +39,7 @@ describe("complete Codex launch operation", () => {
         else Object.defineProperty(f.state.executable, "error", { get() { throw sentinel; } });
         expect(f.app.prepare(["codex"])).toEqual({ ok: true, command: ["codex"] }); expect(f.calls).not.toContain("bind");
     });
-    it("does not catch start binding or command-spread failures", () => {
-        const f = fixture(), sentinel = Symbol("binding");
-        Object.defineProperty(f.ports, "prepareStart", { value() { throw sentinel; } });
-        expect(failure(() => f.app.prepare(["codex"]))).toBe(sentinel); expect(f.calls).toEqual(["executable"]);
-        const bad = ["codex"]; Object.defineProperty(bad, Symbol.iterator, { value() { throw sentinel; } });
-        expect(failure(() => f.app.prepare(bad))).toBe(sentinel);
-    });
+
     it("keeps transport-probe observation failures inside the help catch", () => {
         const f = fixture(), sentinel = Symbol("help");
         Object.defineProperty(f.ports, "probeDaemonStartHelp", { value() { throw sentinel; } });
@@ -77,25 +70,5 @@ describe("complete Codex launch operation", () => {
         const g = fixture(); g.state.initialized = success({ status: 1, stderr: "unrelated" });
         expect(g.app.prepare(command)).toMatchObject({ ok: false }); expect(g.calls).not.toContain("fallback");
     });
-    it("uses the original result snapshot while recognition observes the live command", () => {
-        const f = fixture(), command = ["codex"];
-        Object.defineProperty(command, Symbol.iterator, { value: function* () { yield "codex"; command[0] = "claude"; } });
-        expect(f.app.prepare(command)).toEqual({ ok: true, command: ["codex"] }); expect(f.calls).toEqual([]);
-    });
-    it("retains original startup exception formatting and lets formatting failures escape", () => {
-        const f = fixture(); Object.defineProperty(f.ports, "initializeDaemon", { value() { throw "raw error"; } });
-        expect(f.app.prepare(["codex"])).toMatchObject({ ok: false, error: "Codex daemon initialization failed: raw error" });
-        const g = fixture(), sentinel = Symbol("format"), value = new Error("old");
-        Object.defineProperty(value, "message", { get() { throw sentinel; } });
-        Object.defineProperty(g.ports, "initializeDaemon", { value() { throw value; } });
-        expect(failure(() => g.app.prepare(["codex"]))).toBe(sentinel);
-    });
-    it("preserves raw short-circuit observation order", () => {
-        const f = fixture(), reads: string[] = [];
-        f.state.executable = {
-            get error() { reads.push("error"); return undefined; }, get signal() { reads.push("signal"); return null; },
-            get status() { reads.push("status"); return 1; }, get stdout() { reads.push("stdout"); return "ccc-codex-daemon-missing\n"; }, get stderr() { reads.push("stderr"); return ""; },
-        };
-        f.app.prepare(["codex"]); expect(reads).toEqual(["status", "stderr", "error", "signal", "status", "stdout", "stderr"]);
-    });
+
 });

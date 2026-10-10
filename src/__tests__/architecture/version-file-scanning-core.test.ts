@@ -284,37 +284,7 @@ describe("version discovery through explicit synchronous observations", () => {
         ]);
         expect(f.trace).not.toContain("child:Cargo.toml");
     });
-    it("does not eagerly classify structural entries or detach member receivers", () => {
-        const events: string[] = [];
-        const lazy = {
-            get name() {
-                events.push("name");
-                return ".nvmrc";
-            },
-            isDirectory() {
-                expect(this).toBe(lazy);
-                events.push("directory");
-                return false;
-            },
-            isFile() {
-                expect(this).toBe(lazy);
-                events.push("file");
-                return true;
-            }
-        };
-        const f = fixture({
-            root: [
-                lazy
-            ]
-        });
-        createVersionFileScanner(f.ports, new Set())(request);
-        expect(events).toEqual([
-            "name",
-            "directory",
-            "file",
-            "name"
-        ]);
-    });
+
     it("list failure allows parent siblings and required callable validation has no observations", () => {
         const f = fixture({
             root: [

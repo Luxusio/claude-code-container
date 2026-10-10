@@ -5,10 +5,6 @@ import { describe, expect, it } from "vitest";
 import { createWorkspaceCliRemoval } from "../../application/workspace/cli-removal.js";
 import type { WorkspaceCliRemovalPorts, WorkspaceCliContainerIdentity } from "../../ports/workspace/cli-removal.js";
 
-// Original public helper generics/default signatures were checked strictly
-// through b51 SOURCE and genuine production DTS before candidate writes.
-// Original420 SOURCE/196 DTS files: zero diagnostics, strict:true,
-// skipLibCheck:false, same options and seven consumed negative contracts.
 function contracts(ports: WorkspaceCliRemovalPorts) {
     const operation: (cwd: string, branch: string, force: boolean) => void = createWorkspaceCliRemoval(ports);
     const result: void = operation("source", "branch", false);
@@ -50,7 +46,7 @@ function contracts(ports: WorkspaceCliRemovalPorts) {
 }
 void contracts;
 
-const originalPublicContracts = `
+const publicContracts = `
 const value={errors: [] as string[],extra: 123};
 const completed=removeWorkspaceThenContainers(()=>value,()=>['container']);
 const same: typeof value = completed.result;
@@ -60,7 +56,7 @@ const removals:string[]=removePreparedWorkspaceContainers(plan);
 const result:boolean=workspaceRemovalCompleted(value);
 const receipt: {exact:true}=withWorkspaceRemovalLifecycleLock('project',false,()=>({exact:true as const}));
 void [same,names,removals,result,receipt];
-// @ts-expect-error original child result is synchronous
+// @ts-expect-error child result is synchronous
 removeWorkspaceThenContainers(async()=>value,()=>[]);
 // @ts-expect-error container removals synchronous
 removeWorkspaceThenContainers(()=>value,async()=>[]);
@@ -129,7 +125,7 @@ describe("workspace CLI removal strict source/genuine declarations and inward bo
             const probe = `import {createWorkspaceCliRemoval} from './${root}/application/workspace/cli-removal.js';\n`
                 + `import type {WorkspaceCliRemovalPorts,WorkspaceCliContainerIdentity} from './${root}/ports/workspace/cli-removal.js';\n`
                 + `import {removeWorkspaceThenContainers,prepareWorkspaceContainerRemovalPlan,removePreparedWorkspaceContainers,workspaceRemovalCompleted,withWorkspaceRemovalLifecycleLock} from './${root}/index.js';\n`
-                + `import type {WorkspaceContainerRemoval} from './${root}/index.js';\n${body}\n${originalPublicContracts}`;
+                + `import type {WorkspaceContainerRemoval} from './${root}/index.js';\n${body}\n${publicContracts}`;
             const options: ts.CompilerOptions = { ...parsed.options, noEmit: true, rootDir: undefined, skipLibCheck: false };
             const host = ts.createCompilerHost(options);
             const read = host.readFile.bind(host), exists = host.fileExists.bind(host), source = host.getSourceFile.bind(host);

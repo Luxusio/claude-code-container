@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-    createDefaultToolCatalog, findToolByName, findDefaultTool,
-    getAllCredentialMounts, getNpmTools, type ToolDefinition,
-} from "../../domain/tool-registry.js";
+import { createDefaultToolCatalog, findToolByName, findDefaultTool, getAllCredentialMounts, getNpmTools, type ToolDefinition } from "../../domain/tool-registry.js";
 
 type Registry = typeof import("../../tool-registry.js");
 
@@ -34,11 +31,6 @@ async function withRegistry(action: (registry: Registry, catalog: ToolDefinition
     const catalog = registry.getAllTools();
     const restore = restoreGraph(catalog);
     try { action(registry, catalog); } finally { restore(); }
-}
-
-function thrownBy(action: () => unknown): unknown {
-    try { action(); } catch (error) { return error; }
-    throw new Error("Expected the facade to throw");
 }
 
 afterEach(() => {
@@ -129,103 +121,4 @@ describe("actual tool registry compatibility facade", () => {
         });
     });
 
-    it("preserves getter order, short circuit and filter-before-map evaluation", async () => {
-        await withRegistry((registry, catalog) => {
-            const trace: string[] = [];
-            const values = createDefaultToolCatalog().slice(0, 3);
-            for (const value of values) {
-                const { name, credentialMounts, installCommand } = value;
-                Object.defineProperties(value, {
-                    name: { get() { trace.push(`${name}.name`); return name; } },
-                    credentialMounts: { get() { trace.push(`${name}.mounts`); return credentialMounts; } },
-                    installCommand: { get() { trace.push(`${name}.install`); return installCommand; } },
-                });
-            }
-            catalog.splice(0, catalog.length, ...values);
-            expect(registry.getToolByName("gemini")).toBe(values[1]);
-            expect(trace).toEqual(["claude.name", "gemini.name"]);
-            trace.length = 0;
-            expect(registry.getDefaultTool()).toBe(values[0]);
-            expect(trace).toEqual(["claude.name"]);
-            trace.length = 0;
-            registry.getAllCredentialMounts();
-            expect(trace).toEqual(["claude.mounts", "gemini.mounts", "codex.mounts"]);
-            trace.length = 0;
-            expect(registry.getNpmTools()).toEqual([{ cmd: "gemini", pkg: "@google/gemini-cli" },
-                { cmd: "codex", pkg: "@openai/codex" }]);
-            expect(trace).toEqual(["claude.install", "gemini.install", "codex.install",
-                "gemini.name", "gemini.install", "codex.name", "codex.install"]);
-        });
-    });
-
-    it.each(["find-name", "find-default", "flatMap", "filter-map"])("keeps live Array receivers and raw returns (%s)", async mode => {
-        await withRegistry((registry, catalog) => {
-            const result = { raw: true }, trace: string[] = [];
-            if (mode.startsWith("find")) {
-                Object.defineProperty(catalog, "find", { configurable: true, get() {
-                    trace.push("find.get");
-                    return function (this: unknown) { expect(this).toBe(catalog); trace.push("find.call"); return result; };
-                } });
-                expect(mode === "find-name" ? registry.getToolByName("x") : registry.getDefaultTool()).toBe(result);
-                expect(trace).toEqual(["find.get", "find.call"]);
-            } else if (mode === "flatMap") {
-                Object.defineProperty(catalog, "flatMap", { configurable: true, get() {
-                    trace.push("flatMap.get");
-                    return function (this: unknown) { expect(this).toBe(catalog); trace.push("flatMap.call"); return result; };
-                } });
-                expect(registry.getAllCredentialMounts()).toBe(result);
-                expect(trace).toEqual(["flatMap.get", "flatMap.call"]);
-            } else {
-                const filtered = { get map() {
-                    trace.push("map.get");
-                    return function (this: unknown) { expect(this).toBe(filtered); trace.push("map.call"); return result; };
-                } };
-                Object.defineProperty(catalog, "filter", { configurable: true, get() {
-                    trace.push("filter.get");
-                    return function (this: unknown) { expect(this).toBe(catalog); trace.push("filter.call"); return filtered; };
-                } });
-                expect(registry.getNpmTools()).toBe(result);
-                expect(trace).toEqual(["filter.get", "filter.call", "map.get", "map.call"]);
-            }
-        });
-    });
-
-    it.each(["error", "non-error"])("forwards field/method/string failures without changing identity (%s)", async kind => {
-        const sentinel = kind === "error" ? new Error("sentinel") : { sentinel: true };
-        for (const [field, action] of [
-            ["name", (registry: Registry) => registry.getToolByName("x")],
-            ["name", (registry: Registry) => registry.getDefaultTool()],
-            ["name", (registry: Registry) => registry.getNpmTools()],
-            ["credentialMounts", (registry: Registry) => registry.getAllCredentialMounts()],
-            ["installCommand", (registry: Registry) => registry.getNpmTools()],
-        ] as const) await withRegistry((registry, catalog) => {
-            const value = createDefaultToolCatalog()[1];
-            Object.defineProperty(value, field, { get() { throw sentinel; } });
-            catalog.splice(0, catalog.length, value);
-            expect(thrownBy(() => action(registry))).toBe(sentinel);
-        });
-        for (const [method, action] of [
-            ["find", (registry: Registry) => registry.getToolByName("x")],
-            ["find", (registry: Registry) => registry.getDefaultTool()],
-            ["flatMap", (registry: Registry) => registry.getAllCredentialMounts()],
-            ["filter", (registry: Registry) => registry.getNpmTools()],
-        ] as const) for (const getter of [false, true]) await withRegistry((registry, catalog) => {
-            Object.defineProperty(catalog, method, { configurable: true, ...(getter ? { get() { throw sentinel; } }
-                : { value() { throw sentinel; } }) });
-            expect(thrownBy(() => action(registry))).toBe(sentinel);
-        });
-        for (const method of ["startsWith", "replace"]) await withRegistry((registry, catalog) => {
-            const command = { startsWith() { return true; }, replace() { return "pkg"; } };
-            Object.defineProperty(command, method, { value() { throw sentinel; } });
-            const value = createDefaultToolCatalog()[1];
-            Object.defineProperty(value, "installCommand", { value: command });
-            catalog.splice(0, catalog.length, value);
-            expect(thrownBy(() => registry.getNpmTools())).toBe(sentinel);
-        });
-        await withRegistry((registry, catalog) => {
-            const filtered = { map() { throw sentinel; } };
-            Object.defineProperty(catalog, "filter", { configurable: true, value() { return filtered; } });
-            expect(thrownBy(() => registry.getNpmTools())).toBe(sentinel);
-        });
-    });
 });

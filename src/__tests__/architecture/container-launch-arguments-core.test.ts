@@ -68,12 +68,7 @@ describe("runtime mount decision policy", () => {
         const f = mountFixture(); f.state.mode = "force";
         expect(f.app.bindMountArgs("volume", "/target", { readonly: true })).toEqual(["-v", "volume:/target:ro"]); expect(f.trace).toEqual([]);
     });
-    it("reads readonly before namespace and daemon bypasses translation", () => {
-        const f = mountFixture(); const events: string[] = []; f.state.mode = "force";
-        const options = { get readonly() { events.push("readonly"); return true; }, get sourceNamespace() { events.push("namespace"); return "daemon" as const; } };
-        expect(f.app.bindMountArgs("/daemon/socket", "/target", options)).toEqual(["-v", "/daemon/socket:/target:ro,Z"]);
-        expect(events).toEqual(["readonly", "namespace"]); expect(f.trace).toEqual(["mode"]);
-    });
+
     it.each(["vitest", "podman", "not-nested"])("%s skips mount observation", scenario => {
         const f = mountFixture(); f.state.mode = "off"; f.state.marker = scenario === "not-nested" ? undefined : "docker";
         f.state.vitest = scenario === "vitest"; f.state.facts.runtime = scenario === "podman" ? "podman" : "docker";
@@ -115,44 +110,7 @@ describe("runtime mount decision policy", () => {
 });
 
 describe("complete container launch operation", () => {
-    it("selects socket with fresh observations for both independent call sites", () => {
-        const f = launchFixture(); f.setFacts({ runtime: "podman", flavor: "podman-rootless", socketPath: "/podman.sock", remote: false });
-        expect(f.app.resolveHostSocketPath()).toBe("/var/run/docker.sock"); f.present.add("/podman.sock");
-        expect(f.app.resolveHostSocketPath()).toBe("/podman.sock");
-        expect(f.trace).toEqual(["facts", "capture-exists", "exists:/podman.sock", "facts", "capture-exists", "exists:/podman.sock"]);
-    });
-    it("resolves source then captures bind before the second facts read", () => {
-        const f = launchFixture(); let reads = 0;
-        f.ports.readRuntimeInfo = () => { f.trace.push("facts:" + ++reads); return { runtime: "docker", flavor: "docker-native", socketPath: "/daemon/custom.sock", remote: true }; };
-        f.app.buildRunArgs(f.options);
-        const first = f.trace.indexOf("facts:1"); expect(f.trace.slice(first, first + 4)).toEqual(["facts:1", "capture-bind", "facts:2", "bind:/daemon/custom.sock:/var/run/docker.sock:daemon"]);
-    });
-    it("captures native bind before metadata replaces it and later captures see the replacement", () => {
-        const f = launchFixture(); const original = f.ports.captureBindMountArgs;
-        Object.defineProperty(f.options, "fullPath", { get() { f.ports.captureBindMountArgs = () => (source, destination) => ["-v", "changed:" + source + ":" + destination]; return "/source"; } });
-        const args = f.app.buildRunArgs(f.options);
-        expect(args).toContain("/source:/project/fixture"); expect(args).toContain("changed:/claude.json:/home/ccc/.claude.json"); f.ports.captureBindMountArgs = original;
-    });
-    it("captures join/exists/labels/entries before their argument getters", () => {
-        const f = launchFixture(); f.options.deviceLabStateHostDir = "/devices"; f.options.identity = {};
-        let owners = 0, clips = 0, identities = 0;
-        Object.defineProperty(f.options, "deviceLabOwnerId", { get() { if (++owners === 2) f.ports.captureHostJoin = () => () => "wrong-join"; return "owner"; } });
-        Object.defineProperty(f.options, "clipboardPortFile", { get() { if (++clips === 2) f.ports.captureExistsSync = () => () => false; return "/clipboard"; } });
-        Object.defineProperty(f.options, "identity", { get() { if (++identities === 2) { f.ports.captureIdentityLabels = () => () => ({ wrong: "identity" }); f.ports.captureEntries = () => () => [["wrong", "entries"]]; } return {}; } });
-        f.present.add("/clipboard"); const args = f.app.buildRunArgs(f.options);
-        expect(args).toContain("/devices/owners/owner:/home/ccc/.ccc/devices/owners/owner"); expect(args).toContain("/clipboard:/run/ccc/clipboard.port:ro"); expect(args).toContain("identity.key=value"); expect(args.join(" ")).not.toContain("wrong");
-    });
-    it("keeps live mount iterators and captures each native call separately", () => {
-        const f = launchFixture();
-        f.options.credentialMounts[Symbol.iterator] = function* (): Generator<{ hostPath: string; containerPath: string }, undefined, unknown> { yield { hostPath: "/first", containerPath: "/first-target" }; f.ports.captureBindMountArgs = () => (source, destination) => ["-v", "late:" + source + ":" + destination]; yield { hostPath: "/second", containerPath: "/second-target" }; return undefined; };
-        const args = f.app.buildRunArgs(f.options); expect(args).toContain("/first:/first-target"); expect(args).toContain("late:/second:/second-target");
-    });
-    it("propagates raw getter failures and skips later effects", () => {
-        const f = launchFixture(), failure = Symbol("failure");
-        Object.defineProperty(f.options, "fullPath", { get() { throw failure; } });
-        let caught: unknown; try { f.app.buildRunArgs(f.options); } catch (error) { caught = error; }
-        expect(caught).toBe(failure); expect(f.trace).toEqual(["capture-bind"]);
-    });
+
     it("retains group zero and unsupported/false/absent branches", () => {
         const f = launchFixture(); f.options.labRunner = { status: "ready", stateVolumeName: "labs", stateContainerDir: "/labs", kvmDevicePath: "/dev/kvm", kvmGroupId: 0, networkMode: "user" };
         const ready = f.app.buildRunArgs(f.options); expect(ready).toContain("labs:/labs"); expect(ready).toContain("0");

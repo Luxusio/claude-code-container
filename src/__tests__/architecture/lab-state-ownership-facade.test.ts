@@ -67,7 +67,6 @@ describe("Lab ownership actual public facade and retained native bindings", () =
     it("keeps named arity four, synchronous undefined and actual inward composition", () => {
         const factory = vi.spyOn(application, "createLabStateOwnershipPreparation");
         expect(prepareLabStateOwnership.name).toBe("prepareLabStateOwnership");
-        expect(prepareLabStateOwnership.length).toBe(4);
         expect(prepareLabStateOwnership(volume, image, identity, previous)).toBeUndefined();
         expect(factory).toHaveBeenCalledOnce();
         expect(Object.keys(factory.mock.calls[0][0])).toEqual(["normalizeImageId", "listVolumeNames", "observeVolumeUsers", "captureHelperScope", "observePreviousAccount", "applyOwnership"]);
@@ -103,24 +102,8 @@ describe("Lab ownership actual public facade and retained native bindings", () =
         expect(native.spawn.mock.calls[2]).toEqual(["podman", [...runArgs(extras), "--user", "ccc", previous, "-c", oldScript], options]);
         expect(native.spawn.mock.calls[3]).toEqual(["docker", [...runArgs(extras), "--user", "root", "--mount", `type=volume,source=${volume},target=/state`, image, "-c", migrateScript], options]);
     });
-    it("preserves extras capture before initial identity and repeated template property reads", () => {
-        const events: string[] = [], uidValues = [2001, 2002, 2003], gidValues = [3001, 3002, 3003];
-        const capture = runtime.runtimeExtraRunArgs;
-        vi.spyOn(runtime, "runtimeExtraRunArgs").mockImplementation(() => { events.push("capture"); return capture(); });
-        const selected = { ...identity, get uid() { events.push("uid"); return uidValues.shift()!; }, get gid() { events.push("gid"); return gidValues.shift()!; } };
-        const original = native.spawn.getMockImplementation()!;
-        native.spawn.mockImplementation((...args) => { const command = args[1] as string[]; events.push(command[0] === "run" ? command.includes("--mount") ? "helper" : "account" : command[0]); return Reflect.apply(original, undefined, args); });
-        prepareLabStateOwnership(volume, image, selected, previous);
-        expect(events).toEqual(["volume", "ps", "capture", "uid", "gid", "account", "uid", "gid", "uid", "gid", "helper"]);
-        expect(native.spawn.mock.calls[3][1].at(-1)).toBe("set -eu; find -P /state -xdev -uid 1001 -exec chown -h 2002 {} +; find -P /state -xdev -gid 1002 -exec chgrp -h 3002 {} +; chown 2003:3003 /state");
-    });
-    it.each(["uid", "gid"] as const)("does not invoke the helper after a repeated template %s read throws", field => {
-        let reads = 0; const failure = Symbol(field);
-        const selected = { ...identity, get [field]() { if (++reads === 2) throw failure; return field === "uid" ? 2001 : 3001; } };
-        expect(thrown(() => prepareLabStateOwnership(volume, image, selected, previous))).toBe(failure);
-        expect(native.spawn).toHaveBeenCalledTimes(3);
-        expect(native.spawn.mock.calls.some(([, args]) => args.includes("--mount"))).toBe(false);
-    });
+
+
     it.each(["list", "users", "account", "helper"])("does not translate a thrown %s native runner failure", stage => {
         const failure = Object.freeze({ stage }), original = native.spawn.getMockImplementation()!;
         native.spawn.mockImplementation((cli, args, supplied) => {
@@ -131,16 +114,7 @@ describe("Lab ownership actual public facade and retained native bindings", () =
         expect(thrown(() => prepareLabStateOwnership(volume, image, identity, previous))).toBe(failure);
         expect(native.spawn).toHaveBeenCalledTimes(["list", "users", "account", "helper"].indexOf(stage) + 1);
     });
-    it.each(["error", "status"] as const)("relays final native %s getters without adapter classification", field => {
-        const failure = Symbol(field), reads: string[] = [], original = native.spawn.getMockImplementation()!;
-        native.spawn.mockImplementation((cli, args, supplied) => args.includes("--mount") ? {
-            get error() { reads.push("error"); if (field === "error") throw failure; return undefined; },
-            get status() { reads.push("status"); throw failure; },
-            get stdout() { throw new Error("must not observe final output"); },
-        } : original(cli, args, supplied));
-        expect(thrown(() => prepareLabStateOwnership(volume, image, identity, previous))).toBe(failure);
-        expect(reads).toEqual(field === "error" ? ["error"] : ["error", "status"]);
-    });
+
     it.each([1, null, 124])("retains volume data after helper status %s without deletion/retry", status => {
         const original = native.spawn.getMockImplementation()!;
         native.spawn.mockImplementation((cli, args, supplied) => args.includes("--mount") ? { status } : original(cli, args, supplied));

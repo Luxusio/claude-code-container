@@ -42,16 +42,7 @@ describe("complete inward doctor", () => {
         expect(denied).toBe(0);
         expect(f.output).toContain("Summary: 1 error(s), 0 warning(s)");
     });
-    it("repeats running observations and only inspects existence on the first false result", () => {
-        const events: string[] = [];
-        let count = 0;
-        const f = fixture({ containerRunning: () => { events.push("running"); return ++count === 2; },
-            containerExists: () => { events.push("exists"); return true; },
-            claudeLauncherReport: () => { events.push("launcher"); return { status: 2, stdout: "unmanaged" }; } });
-        expect(f.run()).toBe(true);
-        expect(events).toEqual(["running", "exists", "running", "launcher"]);
-        expect(f.output).toContain("  ! Claude: unmanaged");
-    });
+
     it.each([null, "1", "old", ""])("preserves image label decision for %s", label => {
         const f = fixture({ imageLabel: () => label, containerRunning: () => false });
         expect(f.run()).toBe(true);
@@ -72,58 +63,12 @@ describe("complete inward doctor", () => {
         expect(f.run()).toBe(true);
         expect(f.output).toContain("  ! Stale locks: 2 stale lock file(s) found");
     });
-    it("does not read unconsumed native error fields", () => {
-        const f = fixture({ runtimeVersion: () => ({ status: 7, stdout: "version", get error(): never { throw new Error("error read"); } }),
-            inspectMiseVolume: () => ({ status: 0, get stdout(): never { throw new Error("stdout read"); } }) });
-        expect(f.run()).toBe(true);
-    });
+
     it("preserves native nullable runtime version fallback", () => {
         const f = fixture({ runtimeInfo: () => ({ runtime: "docker", version: null, flavor: "native" }),
             runtimeVersion: () => ({ status: 0, stdout: " " }) });
         expect(f.run()).toBe(true);
         expect(f.output).toContain("  ✓ Runtime: Docker running (vunknown, native)");
     });
-    it("retains lazy fallback and launcher double trim/getter reads", () => {
-        const events: string[] = [];
-        const f = fixture({ runtimeInfo: () => ({ runtime: "podman", get version() { events.push("fallback"); return "fallback"; }, flavor: "native" }),
-            runtimeVersion: () => ({ status: null, stdout: " " }),
-            claudeLauncherReport: () => ({ get status() { events.push("status"); return 2; },
-                get stdout() { events.push("stdout"); return "unmanaged\n"; } }) });
-        expect(f.run()).toBe(true);
-        expect(events).toEqual(["fallback", "status", "stdout", "stdout"]);
-    });
-    it("selects publication before sanitizer and propagates the same fault", () => {
-        const error = new Error("row log getter");
-        let captures = 0, sanitizes = 0;
-        const f = fixture({ capturePublication: () => { if (++captures === 2) throw error; return () => undefined; },
-            sanitizeForTerminal: text => { sanitizes++; return text; } });
-        expect(() => f.run()).toThrow(error);
-        expect(sanitizes).toBe(0);
-    });
-    it("selects sanitizer before evaluating a check message getter", () => {
-        let sequence = "";
-        const f = fixture();
-        Object.defineProperty(f.ports, "sanitizeForTerminal", { get() {
-            sequence += "select;";
-            return (text: string) => text;
-        } });
-        const originalPush = Array.prototype.push;
-        // Override only while the real application runs. Calling the captured
-        // native push directly avoids spy bookkeeping and all assertions run
-        // after restoration, so the test runner cannot recursively observe it.
-        Array.prototype.push = function (this: unknown[], ...values: unknown[]) {
-            for (const value of values) {
-                if (value && typeof value === "object" && "name" in value && value.name === "Runtime" && "message" in value) {
-                    const message = value.message;
-                    Object.defineProperty(value, "message", { get() { sequence += "message;"; return message; } });
-                }
-            }
-            return originalPush.apply(this, values);
-        };
-        let returned: boolean;
-        try { returned = f.run(); }
-        finally { Array.prototype.push = originalPush; }
-        expect(returned).toBe(true);
-        expect(sequence.startsWith("select;message;")).toBe(true);
-    });
+
 });

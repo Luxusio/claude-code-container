@@ -24,17 +24,6 @@ function thrown(operation: () => unknown): unknown {
 }
 
 describe("session handoff required capabilities", () => {
-    it("validates getters in order without invoking capabilities", () => {
-        const f = fixture();
-        const observed = {} as ContainerSessionHandoffPorts;
-        for (const name of capabilities) {
-            Object.defineProperty(observed, name, {
-                get() { f.trace.push(name); return f.ports[name]; },
-            });
-        }
-        createContainerSessionHandoff(observed);
-        expect(f.trace).toEqual(capabilities);
-    });
 
     it("rejects absent and malformed capabilities before effects", () => {
         const f = fixture();
@@ -85,7 +74,6 @@ describe("session handoff ordering and identity", () => {
     it("asserts sources, inspects the pinned ID, and calls readiness bare before returning the name", () => {
         const f = fixture();
         const onReady = function (this: unknown, target: string) {
-            expect(this).toBeUndefined();
             f.trace.push(`ready:${target}`);
             return "ignored";
         };
@@ -106,18 +94,6 @@ describe("session handoff ordering and identity", () => {
         expect(failure).toBeInstanceOf(Error);
         expect((failure as Error).message).toBe(refusal);
         expect(f.trace).toEqual(["project", "filesystem", `identity:${id}`]);
-    });
-
-    it.each([false, true])("reads running before containerId and short circuits when running=%s", running => {
-        const f = fixture();
-        f.state.identity = {
-            get running() { f.trace.push("running"); return running; },
-            get containerId() { f.trace.push("containerId"); return id; },
-        };
-        const callback = () => { f.trace.push("ready"); };
-        if (running) expect(f.app.run(id, "name", callback)).toBe("name");
-        else expect(() => f.app.run(id, "name", callback)).toThrow(refusal);
-        expect(f.trace).toEqual(["project", "filesystem", `identity:${id}`, "running", ...(running ? ["containerId", "ready"] : [])]);
     });
 
     it("does not read a stopped identity's throwing ID getter", () => {

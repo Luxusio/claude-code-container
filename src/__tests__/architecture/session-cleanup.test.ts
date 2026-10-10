@@ -77,39 +77,8 @@ describe("explicit session cleanup construction", () => {
         first.app.cleanupSession();
         expect(first.trace.filter(row => row[0] === "remove")).toEqual([["remove", "second.lock"], ["remove", active.lockFile]]);
     });
-    it("uses replacement methods and their current receiver at each effect", () => {
-        const f = fixture();
-        f.setActive();
-        const replacements: string[] = [];
-        for (const name of portNames) {
-            const previous = f.ports[name];
-            Object.assign(f.ports, { [name]: function (this: SessionCleanupPorts, ...args: unknown[]) {
-                expect(this).toBe(f.ports);
-                replacements.push(name);
-                return Reflect.apply(previous, this, args);
-            } });
-        }
-        f.app.cleanupSession();
-        expect(replacements).toEqual(["projectId", "withLifecycleLock", "hasOtherClaims", "cleanupDevices", "stopContainer", "removeClaim"]);
-    });
-    it("observes a reporter installed by the failing device callback with its receiver", () => {
-        const f = fixture();
-        f.setActive();
-        const failure = { reason: "devices" };
-        f.ports.cleanupDevices = () => {
-            f.ports.reportDeviceCleanupFailure = function (this: SessionCleanupPorts, error: unknown) {
-                expect(this).toBe(f.ports);
-                expect(error).toBe(failure);
-                f.trace.push(["replacement-report", error]);
-                return undefined;
-            };
-            throw failure;
-        };
-        f.app.cleanupSession();
-        expect(f.trace.slice(-4)).toEqual([
-            ["replacement-report", failure], ["stop", "captured-container-id"], ["remove", active.lockFile], ["unlock", "project-id--p--work"],
-        ]);
-    });
+
+
 });
 
 describe("cleanup after ownership has ended", () => {

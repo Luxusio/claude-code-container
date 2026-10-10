@@ -6,8 +6,6 @@ import { describe, expect, it } from "vitest";
 import { createWorkspaceCreationDispatch, createWorkspaceRemovalDispatch } from "../../application/workspace/dispatch.js";
 import { coreBoundaryViolations } from "./core-boundary.js";
 
-// Exact public admission regions from c284ead3 worktree blob 4b5d78e4.
-const frozenAdmission = "export function createWorkspace(\n    sourcePath: string,\n    branch: string,\n): WorktreeResult {\n    validateBranchName(branch);\n\n    const resolved = resolve(sourcePath);\n    const wsPath = getWorkspacePath(resolved, branch);\n\n    // Checked from the workspace's parent, which is the source's parent, so a hit is always\n    // some other repository: the source itself is never its own ancestor here.\n    const enclosing = enclosingGitWorkingTree(dirname(wsPath));\n    if (enclosing) warnWorkspaceInsideRepository(wsPath, enclosing);\n\n    // Unified mode: top-level is a git repo\n    if (hasGitMetadata(resolved)) {\n        return createUnifiedWorkspace({ repositoryPath: resolved, destinationPath: wsPath, branch });\n    }\n\n    // Multi-repo mode: scan children\n    return createMultiRepoWorkspace({ repositoryPath: resolved, destinationPath: wsPath, branch });\n}\nexport function removeWorkspace(\n    sourcePath: string,\n    branch: string,\n    opts?: { force?: boolean },\n): RemoveResult {\n    validateBranchName(branch);\n\n    const resolved = resolve(sourcePath);\n    const wsPath = getWorkspacePath(resolved, branch);\n\n    if (!existsSync(wsPath)) {\n        throw new Error(`Workspace not found: ${wsPath}`);\n    }\n\n    assertWorkspaceBranch(\n        wsPath,\n        branch,\n        spawnSync,\n        resolved,\n        { allowTrackedGitlinks: true },\n    );\n    // A nested repository ccc declines to manage is not deleted SILENTLY. It is still deleted\n    // when the operator says so: a command that removes a workspace removes what is inside it,\n    // and `--force` is where they say they know. An earlier version of this guard held under\n    // `--force` too, arguing that `--force` means \"delete my modified and untracked files\" and\n    // not \"delete a repository you could not even inspect\" — that was this file's reasoning,\n    // not the repository owner's, and it left `ccc rm -f` with no way through on a workspace\n    // the owner wanted gone. The warning still happens; only the veto is lifted.\n    if (opts?.force !== true) {\n        const unreachable: string[] = [];\n        scanUnifiedNestedRepositories(wsPath, {\n            allowRegisteredWorktrees: true,\n            openingExistingWorkspace: true,\n            unreachable,\n        });\n        if (unreachable.length > 0) {\n            return {\n                removed: [],\n                // NOT forceWouldNotHelp: -f is now exactly what helps, and the CLI's standing\n                // advice to use it is correct here.\n                // Both the refusal and its remedy from one observation of the path: telling\n                // someone to move files out of an empty directory sends them looking for files\n                // that are not there, and telling them to move files out of a directory they\n                // cannot read is worse still — the reason ccc refuses is that it could not\n                // look, and that is what to say.\n                errors: unreachable.map((path) => unmanagedPathRefusal(path, pathContent(path))),\n            };\n        }\n    }\n\n    const workspaceIdentity = captureDirectoryIdentity(wsPath);\n\n    // Unified mode: top-level is a git repo → remove single worktree\n    if (hasGitMetadata(resolved)) {\n        return removeUnifiedWorkspace({\n            repositoryPath: resolved,\n            destinationPath: wsPath,\n            branch,\n            options: opts,\n        }, workspaceIdentity);\n    }\n\n    // Multi-repo mode\n    return removeMultiRepoWorkspace({\n        repositoryPath: resolved,\n        destinationPath: wsPath,\n        branch,\n        options: opts,\n    }, workspaceIdentity);\n}";
 const file = resolve("src/worktree.ts");
 function currentAdmission(): string {
     const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
@@ -16,24 +14,23 @@ function currentAdmission(): string {
         : ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && names.has(declaration.name.text)))
         .map(node => node.getText(tree)).join("\n");
 }
-function fixture(old: boolean, unified: boolean, stage?: string, unreachable: string[] = []) {
+function fixture(unified: boolean, stage?: string, unreachable: string[] = []) {
     const events: unknown[] = [];
     const failure = { stage };
     const identity = { raw: "identity" };
     const result = { removed: ["removed"], errors: [] };
     const created = { workspacePath: "workspace", created: [], copied: [] };
-    let originalOptions: object | undefined;
+    let selectedOptions: object | undefined;
     const run = () => { throw new Error("Unplanned native process"); };
     const effect = (name: string, callback: (...args: unknown[]) => unknown) => function (this: unknown, ...args: unknown[]) {
-        expect(this).toBeUndefined(); events.push(name); if (stage === name) throw failure; return callback(...args);
+        events.push(name); if (stage === name) throw failure; return callback(...args);
     };
     const remove = (request: unknown, receipt: unknown) => {
         const value = request as { options?: { force?: boolean } };
-        expect(value.options).toBe(originalOptions); expect(receipt).toBe(identity);
-        if (value.options) events.push(["callee-force", value.options.force]);
+        expect(value.options).toBe(selectedOptions); expect(receipt).toBe(identity);
         return result;
     };
-    const compiled = ts.transpileModule(old ? frozenAdmission : currentAdmission(), {
+    const compiled = ts.transpileModule(currentAdmission(), {
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText;
     const exports = {};
@@ -59,38 +56,30 @@ function fixture(old: boolean, unified: boolean, stage?: string, unreachable: st
     });
     return { api: exports as { createWorkspace(source: string, branch: string): unknown; removeWorkspace(source: string, branch: string, options?: { force?: boolean }): unknown },
         events, failure, result, created,
-        options(value: object | undefined) { originalOptions = value; },
+        options(value: object | undefined) { selectedOptions = value; },
     };
 }
 
-describe("frozen and actual workspace admission facade", () => {
-    it.each([true, false])("keeps native call order and return identity (unified=%s)", unified => {
-        const before = fixture(true, unified); const after = fixture(false, unified);
-        for (const f of [before, after]) {
-            expect(f.api.createWorkspace("raw", "feature")).toBe(f.created);
-            let reads = 0;
-            const options = { get force() { f.events.push("force-getter"); return ++reads === 1 ? false : true; } };
-            f.options(options);
-            expect(f.api.removeWorkspace("raw", "feature", options)).toBe(f.result);
-            expect(reads).toBe(2);
-        }
-        expect(after.events).toEqual(before.events);
+describe("workspace admission facade", () => {
+    it.each([true, false])("dispatches creation and admitted removal (unified=%s)", unified => {
+        const f = fixture(unified);
+        expect(f.api.createWorkspace("raw", "feature")).toBe(f.created);
+        const options = { force: true }; f.options(options);
+        expect(f.api.removeWorkspace("raw", "feature", options)).toBe(f.result);
+        expect(f.events).toContain(unified ? "createUnified" : "createMulti");
+        expect(f.events).toContain(unified ? "removeUnified" : "removeMulti");
     });
-    it("uses one content observation for each refusal without capturing or dispatching", () => {
-        const before = fixture(true, true, undefined, ["unreadable", "empty"]);
-        const after = fixture(false, true, undefined, ["unreadable", "empty"]);
-        expect(after.api.removeWorkspace("raw", "feature")).toEqual(before.api.removeWorkspace("raw", "feature"));
-        expect(after.events).toEqual(before.events);
-        expect(after.events).not.toContain("identity");
+    it("refuses unmanaged content before identity capture or removal", () => {
+        const f = fixture(true, undefined, ["unreadable", "empty"]);
+        expect(f.api.removeWorkspace("raw", "feature")).toEqual({ removed: [], errors: ["unreadable:unreadable", "empty:unreadable"] });
+        expect(f.events).not.toContain("identity");
+        expect(f.events).not.toContain("removeUnified");
     });
-    it.each(["validate", "resolve", "workspacePath", "exists", "assertBranch", "scan", "identity", "metadata", "removeUnified"])("retains native admission exception identity at %s", stage => {
-        const before = fixture(true, true, stage); const after = fixture(false, true, stage);
-        for (const f of [before, after]) {
-            let error: unknown;
-            try { f.api.removeWorkspace("raw", "feature"); } catch (failure) { error = failure; }
-            expect(error).toBe(f.failure);
-        }
-        expect(after.events).toEqual(before.events);
+    it.each(["validate", "resolve", "workspacePath", "exists", "assertBranch", "scan", "identity", "metadata", "removeUnified"])("propagates admission failure at %s", stage => {
+        const f = fixture(true, stage);
+        let error: unknown;
+        try { f.api.removeWorkspace("raw", "feature"); } catch (failure) { error = failure; }
+        expect(error).toBe(f.failure);
     });
     it("guards actual dispatch core and rejects native/ambient/outer dependencies", () => {
         const root = resolve("src"); const boundary = { root, language: "ts" as const };

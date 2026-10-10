@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,25 +7,8 @@ import type { AndroidEmulatorCommandResult, AndroidEmulatorDevice, AndroidEmulat
 import type { BrokerAndroidLifecycleInput, BrokerAndroidLifecycleRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidEmulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 
-// Original provenance only. Current tests never require an ignored archive or
-// reject a candidate because its complete policy source hash changed.
-export const ORIGINAL_ANDROID_LIFECYCLE_SOURCE = "da5c4bd2ff4121c8ca2ab0f8ff9d0e3332007c8d";
 export const ANDROID_SYSTEM_IMAGE = "system-images;android-35;google_apis;x86_64";
 export const ANDROID_PORT_ALLOWED = "even integer 5554-5682";
-// Minimal immutable values observed against the reconciled ORIGINAL public and
-// native bindings in capture run03. Full receipts are diagnostic evidence, not
-// a dependency of these durable tests. Keep variant differences explicit.
-export const ORIGINAL_ANDROID_LIFECYCLE = Object.freeze({
-    allocationOwner: "0123456789abcdef", allocationId: "android-original-allocation", firstPort: 5630, nextPort: 5632,
-    directOddPortError: "create Android port must be even and from 5554 to 5682",
-    directAllocatedDuplicateError: "android-emulator-port-conflict: port-5670-already-allocated",
-    directDuplicateError: "Device already exists for this owner: android-duplicate",
-    brokerSuccessorStatus: 409, brokerSuccessorError: "owner-device-state-conflict",
-    directAccessorReads: Object.freeze(["deviceId", "deviceId", "backend", "backend", "backend", "name", "deviceId", "avdName", "port"]),
-});
-// Capture configuration belongs to this controller, before the existing owner
-// isolation deliberately clears inherited CCC settings from native requests.
-const observationRoot = process.env.CCC_ANDROID_LIFECYCLE_CAPTURE_DIR;
 const project = fileURLToPath(new URL("../../../", import.meta.url));
 
 export function assertCurrentAndroidLifecycleEmission(): void {
@@ -48,13 +31,6 @@ export function toolJson(result: unknown): Record<string, unknown> {
     const value: unknown = JSON.parse(toolText(result));
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw Error("Expected MCP JSON object");
     return value as Record<string, unknown>;
-}
-export function originalObservation(name: string, value: unknown): void {
-    const capture = observationRoot;
-    if (!capture) return;
-    if (!/^[a-z0-9-]+$/.test(name)) throw Error("Unsafe observation name");
-    mkdirSync(capture, { recursive: true });
-    writeFileSync(join(capture, name + ".json"), JSON.stringify({ source: ORIGINAL_ANDROID_LIFECYCLE_SOURCE, value }, null, 2) + "\n", { flag: "wx" });
 }
 export function androidStatePath(home: string, ownerId: string): string {
     return join(home, ".ccc", "devices", "owners", ownerId, "android", "devices.json");
@@ -90,10 +66,6 @@ export async function withAndroidLifecycleFixture(name: string, check: (context:
                 }
             }
             if (readFileSync(unknown, "utf8") !== "unallocated resource retained\n") throw Error("Unknown resource changed");
-            originalObservation(name + "-terminal", {
-                log: readFileSync(context.logPath, "utf8"), state: ownerId && androidRawState(context.homeDir, ownerId),
-                unknownRetained: true, assertionFailures: failures.map(error => String(error)),
-            });
         } catch (error) { failures.push(error); }
         try { await cleanupFakeAndroidMcpContext(context); } catch (error) { failures.push(error); }
     }

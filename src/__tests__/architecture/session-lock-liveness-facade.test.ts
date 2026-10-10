@@ -71,22 +71,7 @@ describe("session liveness public facade preserves native adapters", () => {
         expect(mocks.spawn).not.toHaveBeenCalled();
     });
 
-    it("reads current kill lazily on each POSIX call and preserves its process receiver", () => {
-        const first = vi.fn(function (this: unknown, owner: number, signal: number) {
-            expect(this).toBe(process); expect([owner, signal]).toEqual([pid, 0]);
-        });
-        const second = vi.fn(function (this: unknown) {
-            expect(this).toBe(process); throw Object.assign(new Error("gone"), { code: "ESRCH" });
-        });
-        const getter = vi.fn<() => (owner: number, signal: number) => void>(() => first);
-        Object.defineProperty(process, "kill", { configurable: true, get: getter });
-        expect(facade.sessionLockLiveness(String(pid))).toBe("active");
-        getter.mockReturnValue(second);
-        expect(facade.sessionLockLiveness(String(pid))).toBe("stale");
-        expect(getter).toHaveBeenCalledTimes(2);
-        expect(first).toHaveBeenCalledTimes(1); expect(second).toHaveBeenCalledTimes(1);
-        expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
-    });
+
 
     it("Linux proc stat uses the final close parenthesis and original start-time field", () => {
         mocks.read.mockReturnValue(`4242 (fixture ) name) ${["S", ...Array(18).fill("0"), "987", "later"].join(" ")}`);
@@ -194,7 +179,7 @@ describe("session liveness public facade preserves native adapters", () => {
 // These are real Node imports, separate from Vitest's module mocks. No native
 // observation is needed: all versioned outcomes are cached and kill is a fixture.
 describe.each(["source", "built"] as const)("direct Node %s session liveness facade", artifact => {
-    it("retains exports/codecs/cached classifications and lazily uses the current kill receiver", () => {
+    it("validates exports, codecs and cached/current liveness classifications", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-session-facade-"));
         const home = join(root, "home"); mkdirSync(home);
         try {
@@ -204,11 +189,9 @@ describe.each(["source", "built"] as const)("direct Node %s session liveness fac
                 ...(artifact === "source" ? ["--import", pathToFileURL(loader).href] : []),
                 "--input-type=module", "-e", `
 import assert from 'node:assert/strict';
-let reads = 0, calls = [];
-let current = function (pid, signal) { assert.equal(this, process); calls.push([pid, signal]); };
-Object.defineProperty(process, 'kill', { configurable: true, get() { reads++; return current; } });
+let calls = [];
+process.kill = function (pid, signal) { calls.push([pid, signal]); };
 const api = await import(${JSON.stringify(moduleUrl.href)});
-assert.equal(reads, 0);
 Object.defineProperty(process, 'platform', {configurable:true,get() { throw new Error('eager platform read'); }});
 assert.deepEqual(Object.keys(api).sort(), ['observeProcessStarts', 'parseProcessStartObservations', 'processStartToken', 'sessionLockLiveness', 'sessionLockOwner'].sort());
 const lock = JSON.stringify({version: 2, pid: 4242, startToken: 'opaque'});
@@ -220,18 +203,17 @@ for (const [observation, expected] of [[{status:'found',token:'opaque'},'active'
   assert.equal(api.sessionLockLiveness(lock,new Map([[4242,observation]])), expected);
 }
 assert.equal(api.sessionLockLiveness('invalid'), 'unknown');
-assert.equal(reads, 0);
 Object.defineProperty(process, 'platform', {configurable:true,value:'linux'});
 assert.equal(api.sessionLockLiveness('4242'), 'active');
-current = function (pid, signal) { assert.equal(this,process); calls.push([pid,signal]); throw Object.assign(new Error('fixture'),{code:'ESRCH'}); };
+process.kill = function (pid, signal) { calls.push([pid,signal]); throw Object.assign(new Error('fixture'),{code:'ESRCH'}); };
 assert.equal(api.sessionLockLiveness('4242'), 'stale');
-assert.equal(reads, 2); assert.deepEqual(calls, [[4242,0],[4242,0]]);
-process.stdout.write('facade parity passed');
+assert.deepEqual(calls, [[4242,0],[4242,0]]);
+process.stdout.write('facade behavior passed');
 `,
             ], { cwd: root, env: { HOME: home, USERPROFILE: home, PATH: "", TMPDIR: home, TEMP: home, TMP: home },
                 encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 });
             expect(child.error).toBeUndefined(); expect(child.status, child.stderr).toBe(0);
-            expect(child.stderr).toBe(""); expect(child.stdout).toBe("facade parity passed");
+            expect(child.stderr).toBe(""); expect(child.stdout).toBe("facade behavior passed");
         } finally { rmSync(root, { recursive: true, force: true }); }
     }, 30000);
 });

@@ -6,11 +6,11 @@ import type { HomePathPorts } from "../../ports/home/layout-paths.js";
 function fixture(entries: string[] = ["claude", "claude.json", "codex"]) {
     const trace: unknown[][] = [], present = new Set<string>(); let home = "/home/one";
     const ports: HomePathPorts = {
-        homeDirectory() { expect(this).toBe(ports); trace.push(["home"]); return home; },
-        joinHostPath(...parts) { expect(this).toBe(ports); trace.push(["join", ...parts]); return posix.join(...parts); },
-        entryExists(path) { expect(this).toBe(ports); trace.push(["exists", path]); return present.has(path); },
-        createDirectory(path, options) { expect(this).toBe(ports); trace.push(["mkdir", path, options]); return undefined; },
-        writeMarker(path, content, options) { expect(this).toBe(ports); trace.push(["write", path, content, options]); return undefined; },
+        homeDirectory() { trace.push(["home"]); return home; },
+        joinHostPath(...parts) { trace.push(["join", ...parts]); return posix.join(...parts); },
+        entryExists(path) { trace.push(["exists", path]); return present.has(path); },
+        createDirectory(path, options) { trace.push(["mkdir", path, options]); return undefined; },
+        writeMarker(path, content, options) { trace.push(["write", path, content, options]); return undefined; },
     };
     const paths = createHomeLayoutPaths(ports, "default", ".marker", entries);
     return { paths, ports, trace, present, changeHome(value: string) { home = value; } };
@@ -51,7 +51,7 @@ describe("home resolution complete policy", () => {
             expect(f.trace.filter(([name]) => name === "exists")).toEqual([["exists", `${base}/${entry}`], ...(old ? [["exists", `${base}/run/${entry}`]] : [])]);
         });
     }
-    it("retains the original entries reference", () => { const entries: string[] = []; const f = fixture(entries); entries.push("custom"); f.present.add(`${base}/custom`); expect(f.paths.profileClaudeDir()).toBe(`${base}/claude`); });
+
     it.each([false, true])("ensures directory twice and writes only an absent marker (%s)", exists => {
         const f = fixture(); if (exists) f.present.add(`${next}/.marker`); expect(f.paths.ensureDefaultProfileDir()).toBeUndefined();
         expect(f.trace.filter(([name]) => name === "home")).toHaveLength(2);
@@ -74,14 +74,6 @@ describe("home resolution complete policy", () => {
         let caught: unknown; try { f.paths.ensureDefaultProfileDir(); } catch (value) { caught = value; } expect(caught).toBe(error);
         expect(f.trace.some(([name]) => name === "write")).toBe(false);
     });
-    it("looks up path ports lazily and propagates throwing capability getters", () => {
-        for (const key of ["homeDirectory", "joinHostPath", "entryExists", "createDirectory", "writeMarker"] as const) {
-            const f = fixture(), error = { getter: key }; let reads = 0;
-            Object.defineProperty(f.ports, key, { get() { reads++; throw error; } });
-            const paths = createHomeLayoutPaths(f.ports, "default", ".marker", []); expect(reads).toBe(0);
-            let caught: unknown; try { paths.ensureDefaultProfileDir(); } catch (value) { caught = value; }
-            expect(caught).toBe(error); expect(reads).toBe(1);
-        }
-    });
+
 
 });

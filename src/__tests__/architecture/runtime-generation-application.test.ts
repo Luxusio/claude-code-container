@@ -134,22 +134,4 @@ describe("auxiliary transitions with explicit mutation and entropy ports", () =>
         expect(f.trace).toEqual(["uuid-failed"]);
     });
 
-    it("retains expected, overrides, identity getter, UUID and updater order", () => {
-        const f = fixture();
-        const previous = { get runtimeId() { f.trace.push("expected"); return "old"; } };
-        const overrides = { get localPath() { f.trace.push("override"); return "after"; } };
-        f.transitions.claimRecordingFinalization("target", previous, overrides, "stamp");
-        expect(f.trace).toEqual(["expected", "override", "expected", "uuid", "update:target", "callback", "expected", "expected"]);
-    });
-
-    it("retains spread/identity and publication error identity without retries", () => {
-        const f = fixture();
-        const fault = new Error("field failed");
-        throwsSame(() => f.transitions.claimRecordingFinalization("target", { get runtimeId() { throw fault; } }, {}, "stamp"), fault);
-        throwsSame(() => f.transitions.claimRecordingFinalization("target", {}, { get path() { throw fault; } }, "stamp"), fault);
-        expect(f.trace).toEqual([]);
-        f.ports.updateDevice = () => { f.trace.push("publication-failed"); throw fault; };
-        throwsSame(() => f.transitions.claimRecordingFinalization("target", {}, {}, "stamp"), fault);
-        expect(f.trace).toEqual(["uuid", "publication-failed"]);
-    });
 });

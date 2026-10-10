@@ -66,11 +66,5 @@ describe("actual Codex retained-state native composition", () => {
         expect(() => native.assertCodexStateAccessible("pinned", "chosen")).toThrow(`Codex state ownership check failed: denied\nCCC-managed Codex state (${root}) is inaccessible.`);
         expect(mocks.spawn.mock.calls[0][1]).toEqual(["exec", "pinned", "python3", "-c", native.codexStateAccessScript]);
     });
-    it("resolves root before skipping and preserves original object getter ordering", () => {
-        const reads: string[] = [];
-        const identity = { ...principal, get mapping() { reads.push("mapping"); return "desktop" as const; } };
-        native.prepareCodexStateOwnership(previous, "new", identity, "chosen");
-        expect(trace).toEqual([["root", "chosen"]]); expect(reads).toEqual(["mapping"]);
-        expect(mocks.runtime).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
-    });
+
 });

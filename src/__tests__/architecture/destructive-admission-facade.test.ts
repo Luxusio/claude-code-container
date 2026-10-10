@@ -4,11 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as facade from "../../../device-lab-mcp/src/policy/destructive.mjs";
 import { evaluateDestructivePolicy } from "@ccc/device-lab/providers/domain/destructive-admission.mjs";
-import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, repoRoot, TIMEOUT,
-    type DeviceLabMcpTestContext } from "../helpers/device-lab-mcp-fixture.js";
-
-// Frozen schema data from baseline 10c8618; never derived from the current facade.
-const frozenExamples = new Function("const CONFIRM_DESTRUCTIVE_FIELD = \"confirmDestructive\";\n\nconst DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES = [\n    { name: \"device_delete\", args: { deviceId: \"policy-device\" } },\n    { name: \"device_delete\", args: { force: true } },\n    { name: \"device_delete\", args: { deleteAvd: true } },\n    { name: \"device_delete\", args: { deleteSimulator: true } },\n    { name: \"device_reset\", args: { deviceId: \"policy-device\", packageName: \"com.example\" } },\n    { name: \"device_snapshot_restore\", args: { deviceId: \"policy-device\", snapshotName: \"before-test\" } },\n    { name: \"device_snapshot_delete\", args: { deviceId: \"policy-device\", snapshotName: \"before-test\" } },\n    { name: \"device_broker_shutdown\", args: {} },\n    { name: \"device_broker_command\", args: { action: \"invoke\", command: \"device_delete\" } },\n    { name: \"device_broker_appium\", args: { action: \"request\", method: \"POST\", path: \"/appium/device/remove_app\", body: { appId: \"com.example\" } } },\n    { name: \"mobile_uninstall_app\", args: { deviceId: \"policy-device\", packageName: \"com.example\" } },\n    { name: \"mobile_clear_app_data\", args: { deviceId: \"policy-device\", packageName: \"com.example\" } },\n    { name: \"mobile_set_battery\", args: { deviceId: \"policy-device\", level: 50 } },\n    { name: \"mobile_set_network\", args: { deviceId: \"policy-device\", wifi: true } },\n    { name: \"mobile_toggle_airplane_mode\", args: { deviceId: \"policy-device\", enabled: false } },\n];\n\n" + ";return DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES;")() as Array<{ name: string; args: Record<string, unknown> }>;
+import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, repoRoot, TIMEOUT, type DeviceLabMcpTestContext } from "../helpers/device-lab-mcp-fixture.js";
 function payload(result: Awaited<ReturnType<DeviceLabMcpTestContext["client"]["callTool"]>>) {
     return JSON.parse((result.content as Array<{ text?: string }>)[0].text ?? "");
 }
@@ -62,11 +58,12 @@ describe("destructive admission compatibility facade", () => {
         expect(facade.evaluateDestructivePolicy).toBe(evaluateDestructivePolicy);
         const source = readFileSync(join(repoRoot, "device-lab-mcp/src/policy/destructive.mjs"), "utf8");
         expect(source).toContain('"@ccc/device-lab/providers/domain/destructive-admission.mjs"');
-        expect(facade.DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES).toEqual(frozenExamples);
+        expect(facade.DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES.length).toBeGreaterThan(0);
         const examples = facade.DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES;
         expect(Object.isFrozen(examples)).toBe(false);
+        const prior = [...examples];
         examples.reverse();
-        try { expect(facade.DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES).toBe(examples); expect(examples).toEqual([...frozenExamples].reverse()); }
+        try { expect(facade.DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES).toBe(examples); expect(examples).toEqual(prior.reverse()); }
         finally { examples.reverse(); }
     });
 

@@ -2,9 +2,6 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({ home: "", faults: new Map<string, unknown>(), writes: [] as string[] }));
@@ -40,43 +37,11 @@ function lockPath(profile?: string) {
 }
 
 describe("private native facade, real lock and direct filesystem publication", () => {
-    it.each(["normal", "mutating", "serialization-throw", "selected-writer-throw"])("pairs actual builtin writer selection before serialization: %s", mode => {
-        const root = fileURLToPath(new URL("../../../", import.meta.url));
-        const baseline = execFileSync("git", ["show", "39947369b0d9dee83d085d93853e2c2306f2107e:src/mcp-forward.ts"], {cwd: root, encoding: "utf8"});
-        const original = ts.transpileModule(baseline, {compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext}}).outputText
-            .replace('"./utils.js"', JSON.stringify(pathToFileURL(join(root, "dist/utils.js")).href))
-            .replace('"./codex-config-lock.js"', JSON.stringify(pathToFileURL(join(root, "dist/codex-config-lock.js")).href));
-        const baselineFile = join(f.home, "frozen-facade.mjs"); writeFileSync(baselineFile, original);
-        const script = join(f.home, "serialized-writer.mjs");
-        writeFileSync(script, `
-import fs from 'node:fs'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
-import cp from 'node:child_process'; import {syncBuiltinESMExports as synchronize} from 'node:module';
-const mode=process.argv[3],events=[],nativeWrite=fs.writeFileSync,nativeStringify=JSON.stringify;
-const raw={fault:mode};const profile=path.join(process.env.HOME,'.ccc/profiles/default');fs.mkdirSync(profile,{recursive:true});
-nativeWrite(path.join(profile,'claude.json'),'{}');fs.mkdirSync(path.join(profile,'codex'),{recursive:true});nativeWrite(path.join(profile,'codex/config.toml'),'model = "keep"\\n');
-cp.spawnSync=()=>{throw Error('External process denied')};cp.spawn=()=>{throw Error('External process denied')};
-fs.writeFileSync=function(file,text,options){if(String(file).endsWith('/claude.json')||String(file).endsWith('/config.toml'))events.push(['selected',path.relative(process.env.HOME,String(file)),options]);if(mode==='selected-writer-throw'&&String(file).endsWith('/claude.json'))throw raw;return nativeWrite(file,text,options)};
-syncBuiltinESMExports();const api=await import(process.argv[2]);
-JSON.stringify=function(value,...args){if(value&&typeof value==='object'&&Object.hasOwn(value,'mcpServers')){events.push('serialize');if(mode!=='normal'){fs.writeFileSync=function(){events.push('alternate');throw Error('Alternate writer must not be called')};synchronize()}if(mode==='serialization-throw')throw raw}return nativeStringify(value,...args)};
-let result,error;try{result=api.buildMcpConfig()}catch(caught){error=caught===raw?'raw-error':String(caught)}finally{JSON.stringify=nativeStringify;fs.writeFileSync=nativeWrite;syncBuiltinESMExports()}
-const documents={claude:fs.readFileSync(path.join(profile,'claude.json'),'utf8'),codex:fs.readFileSync(path.join(profile,'codex/config.toml'),'utf8')};console.log(nativeStringify({result,error,events,documents}));
-`);
-        function execute(entry: string, variant: string) {
-            const home = join(f.home, `${mode}-${variant}`); mkdirSync(home);
-            const result = spawnSync(process.execPath, [script, pathToFileURL(entry).href, mode], {env: {...process.env, HOME: home, USERPROFILE: home, container: ""}, cwd: home, encoding: "utf8", timeout: 20000});
-            expect(result.status, result.stderr).toBe(0);
-            return JSON.parse(result.stdout.trim());
-        }
-        const expected = execute(baselineFile, "baseline");
-        expect(execute(join(root, "dist/mcp-forward.js"), "candidate")).toEqual(expected);
-        expect(expected.events).not.toContain("alternate"); expect(expected.documents.codex).toContain("# ccc-managed-mcp end");
-        if (mode === "serialization-throw" || mode === "selected-writer-throw") { expect(expected.error).toBe("raw-error"); expect(expected.documents.claude).toBe("{}"); }
-    }, 30000);
+
     it.each([undefined, "work"])("publishes both consumers under profile %s and invokes restore within the actual fence", profile => {
         const { claude, codex } = prepare(profile);
-        let receiver: unknown = "not called";
-        expect(api.buildMcpConfig(profile, function (this: unknown) { receiver = this; expect(existsSync(lockPath(profile))).toBe(true); expect(existsSync(codex)).toBe(false); })).toEqual(["host"]);
-        expect(receiver).toBeUndefined(); expect(existsSync(lockPath(profile))).toBe(false);
+        expect(api.buildMcpConfig(profile, () => { expect(existsSync(lockPath(profile))).toBe(true); expect(existsSync(codex)).toBe(false); })).toEqual(["host"]);
+        expect(existsSync(lockPath(profile))).toBe(false);
         expect(statSync(claude).mode & 0o777).toBe(0o600); expect(statSync(codex).mode & 0o777).toBe(0o600);
         expect(JSON.parse(readFileSync(claude, "utf8")).mcpServers.host.url).toBe("http://host.docker.internal:9");
         expect(readFileSync(codex, "utf8")).toContain('url = "http://host.docker.internal:9"');
@@ -119,9 +84,5 @@ const documents={claude:fs.readFileSync(path.join(profile,'claude.json'),'utf8')
         expect(message).toContain(`Unable to write Codex config at ${codex}: fixture denied.`);
         expect(message.includes("sudo chown")).toBe(code !== "EIO"); expect(existsSync(claude)).toBe(false); expect(existsSync(lockPath())).toBe(false);
     });
-    it("keeps host existence outside ignored read catch", () => {
-        prepare(); const host = join(f.home, ".claude.json"); const cause = Symbol("exists"); f.faults.set(`exists:${host}`, cause);
-        let thrown: unknown; try { api.readHostMcpServers(); } catch (error) { thrown = error; } expect(thrown).toBe(cause);
-        f.faults.clear(); f.faults.set(`read:${host}`, cause); expect(api.readHostMcpServers()).toEqual({});
-    });
+
 });

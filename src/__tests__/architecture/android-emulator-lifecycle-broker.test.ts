@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
-import { ANDROID_SYSTEM_IMAGE, ORIGINAL_ANDROID_LIFECYCLE, androidRawState, originalObservation, privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { ANDROID_SYSTEM_IMAGE, androidRawState, privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
 
 type NativeCommand = { mode: string; provider: string; executable?: string; args?: string[]; input?: string; reason?: string; [key: string]: unknown };
 type NativeResult = NativeCommand & { status: number | null; stdout: string; stderr: string; error?: string };
@@ -75,12 +75,11 @@ async function withBroker(name: string, check: (c: BrokerControl) => Promise<voi
         await check(control);
         expect(denied).toEqual({ provider: 0 });
         expect(readFileSync(sentinel, "utf8")).toBe("unallocated resource retained\n");
-        originalObservation(name, { outcomes, calls, denied, state: androidRawState(fixture.home, ownerId), unknownRetained: true,
-            nativeProcessCeiling: "commandRunner leaves allocate no process; genuine broker policy/storage/HTTP auth execute" });
+
     } catch (error) { failures.push(error); }
     finally {
         try { if (server && host) await host.close(server); } catch (error) { failures.push(error); }
-        try { originalObservation(name + "-terminal", { calls, denied, outcomes, failures: failures.map(error => String(error)) }); } catch (error) { failures.push(error); }
+
         try { restore(); } catch (error) { failures.push(error); }
         try { fixture.remove(); } catch (error) { failures.push(error); }
     }
@@ -154,7 +153,7 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
             });
             const stopped = await c.rpc({ command: "device_stop", deviceId });
             expect(injected).toBe(true);
-            expect(stopped).toMatchObject({ status: ORIGINAL_ANDROID_LIFECYCLE.brokerSuccessorStatus, body: { ok: false, error: ORIGINAL_ANDROID_LIFECYCLE.brokerSuccessorError } });
+            expect(stopped).toMatchObject({ status: 409, body: { ok: false, error: "owner-device-state-conflict" } });
             expect(androidRawState(c.home, c.ownerId).devices).toEqual([successor]);
         });
     });

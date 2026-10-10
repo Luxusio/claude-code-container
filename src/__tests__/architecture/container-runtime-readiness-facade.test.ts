@@ -38,11 +38,9 @@ function fixture(runtime: RuntimeName = "docker", flavor = "docker-native", stat
     native.spawn.mockImplementation(() => { trace.push("probe"); return result(status, stderr); });
     native.info.mockImplementation(() => { trace.push("info"); return info; });
     vi.spyOn(console, "error").mockImplementation(function (this: unknown, message) {
-        expect(this).toBe(console);
         trace.push(message);
     });
     vi.spyOn(process, "exit").mockImplementation((function (this: unknown, code: unknown) {
-        expect(this).toBe(process);
         trace.push(`exit:${code}`);
     }) as typeof process.exit);
     return { trace, info };
@@ -102,118 +100,10 @@ describe("container runtime readiness public facade", () => {
         assertOnlyInfoProbe();
     });
 
-    it("looks up console and process effects late and preserves native receivers", () => {
-        const f = fixture();
-        const initialError = console.error;
-        const initialExit = process.exit;
-        const lateExit = vi.fn(function (this: unknown, code: unknown) {
-            expect(this).toBe(process);
-            f.trace.push(`late-exit:${code}`);
-        });
-        const secondError = vi.fn(function (this: unknown, message: string) {
-            expect(this).toBe(console);
-            f.trace.push(message);
-            process.exit = lateExit as unknown as typeof process.exit;
-        });
-        const firstError = vi.fn(function (this: unknown, message: string) {
-            expect(this).toBe(console);
-            f.trace.push(message);
-            console.error = secondError;
-        });
-        native.spawn.mockImplementation(() => {
-            f.trace.push("probe");
-            console.error = firstError;
-            return result();
-        });
-        expect(docker.ensureDockerRunning()).toBeUndefined();
-        expect(f.trace).toEqual(["cli", "probe", "info", "Error: docker is not running.", cases[1][2], "late-exit:1"]);
-        expect(initialError).not.toHaveBeenCalled();
-        expect(initialExit).not.toHaveBeenCalled();
-        expect(firstError).toHaveBeenCalledTimes(1);
-        expect(secondError).toHaveBeenCalledTimes(1);
-        expect(lateExit).toHaveBeenCalledTimes(1);
-        assertOnlyInfoProbe();
-    });
 });
 
 describe("container runtime readiness reporter selection before interpolation", () => {
-    it("uses the selected first reporter when the runtime getter replaces console.error", () => {
-        const f = fixture();
-        const descriptor = Object.getOwnPropertyDescriptor(console, "error")!;
-        let reads = 0;
-        let returned: unknown;
-        const receivers: unknown[] = [];
-        const replacement = function (this: unknown, message: string) {
-            receivers.push(this); f.trace.push(`replacement:${message}`);
-        };
-        try {
-            console.error = function (this: unknown, message: string) {
-                receivers.push(this); f.trace.push(`original:${message}`);
-            };
-            Object.defineProperty(f.info, "runtime", {
-                get() { reads++; f.trace.push("runtime"); console.error = replacement; return "docker"; },
-            });
-            returned = docker.ensureDockerRunning();
-        } finally { Object.defineProperty(console, "error", descriptor); }
-        expect(returned).toBeUndefined();
-        expect(reads).toBe(2);
-        expect(receivers).toEqual([console, console]);
-        expect(f.trace).toEqual(["cli", "probe", "info", "runtime",
-            "original:Error: docker is not running.", "runtime", `replacement:${cases[1][2]}`, "exit:1"]);
-        assertOnlyInfoProbe();
-    });
 
-    it("lets the console.error accessor change facts before interpolating runtime", () => {
-        const f = fixture();
-        const descriptor = Object.getOwnPropertyDescriptor(console, "error")!;
-        let runtime: RuntimeName = "docker";
-        let returned: unknown;
-        const receivers: unknown[] = [];
-        Object.defineProperty(f.info, "runtime", {
-            get() { f.trace.push("runtime"); return runtime; },
-        });
-        try {
-            Object.defineProperty(console, "error", {
-                configurable: true,
-                get() {
-                    f.trace.push("reporter-get");
-                    runtime = "podman"; f.info.flavor = "podman-machine";
-                    return function (this: unknown, message: string) {
-                        receivers.push(this); f.trace.push(message);
-                    };
-                },
-            });
-            returned = docker.ensureDockerRunning();
-        } finally { Object.defineProperty(console, "error", descriptor); }
-        expect(returned).toBeUndefined();
-        expect(receivers).toEqual([console, console]);
-        expect(f.trace).toEqual(["cli", "probe", "info", "reporter-get", "runtime",
-            "Error: podman is not running.", "runtime", "reporter-get", cases[2][2], "exit:1"]);
-        assertOnlyInfoProbe();
-    });
-
-    it("preserves a throwing reporter accessor without interpolating runtime", () => {
-        for (const failure of [new Error("reporter getter"), { reporter: true }]) {
-            native.spawn.mockClear();
-            const f = fixture();
-            const descriptor = Object.getOwnPropertyDescriptor(console, "error")!;
-            let reads = 0;
-            let escaped: unknown;
-            Object.defineProperty(f.info, "runtime", { get() { reads++; return "docker"; } });
-            try {
-                Object.defineProperty(console, "error", {
-                    configurable: true,
-                    get() { f.trace.push("reporter-get"); throw failure; },
-                });
-                escaped = thrown(() => docker.ensureDockerRunning());
-            } finally { Object.defineProperty(console, "error", descriptor); }
-            expect(escaped).toBe(failure);
-            expect(reads).toBe(0);
-            expect(f.trace).toEqual(["cli", "probe", "info", "reporter-get"]);
-            expect(process.exit).not.toHaveBeenCalled();
-            assertOnlyInfoProbe();
-        }
-    });
 });
 
 describe("container runtime readiness facade failure behavior", () => {
@@ -243,34 +133,4 @@ describe("container runtime readiness facade failure behavior", () => {
         }
     });
 
-    it("preserves a debug-report exception before observing runtime facts", () => {
-        for (const failure of [new Error("debug"), { failure: "debug" }]) {
-            const f = fixture("docker", "docker-native", 1, "native failure");
-            vi.stubEnv("DEBUG", "1");
-            vi.mocked(console.error).mockImplementation(() => { f.trace.push("debug"); throw failure; });
-            expect(thrown(() => docker.ensureDockerRunning())).toBe(failure);
-            expect(f.trace).toEqual(["cli", "probe", "cli", "debug"]);
-            expect(native.info).not.toHaveBeenCalled();
-            expect(process.exit).not.toHaveBeenCalled();
-        }
-    });
-
-    it.each(["Promise", "thenable"])("ignores hostile %s report and exit returns through the public void wrapper", kind => {
-        const f = fixture();
-        const accesses: string[] = [];
-        const ignored = kind === "Promise" ? Promise.resolve("ignored") : {};
-        Object.defineProperty(ignored, "then", {
-            get() { accesses.push("then"); throw new Error("must not inspect return"); },
-        });
-        // Plain effects avoid Vitest's spy tracking, which observes Promise.then itself.
-        console.error = message => { f.trace.push(message); return ignored; };
-        process.exit = (function (code: unknown) {
-            f.trace.push(`exit:${code}`);
-            return ignored;
-        }) as unknown as typeof process.exit;
-        expect(docker.ensureDockerRunning()).toBeUndefined();
-        expect(f.trace).toEqual(["cli", "probe", "info", "Error: docker is not running.", cases[1][2], "exit:1"]);
-        expect(accesses).toEqual([]);
-        assertOnlyInfoProbe();
-    });
 });

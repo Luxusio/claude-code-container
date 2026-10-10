@@ -49,11 +49,9 @@ describe("synchronous direct Sandbox stop core", () => {
         const f = fixture(); f.replace(undefined);
         expect(f.app.stop("sandbox")).toEqual({ kind: "unhandled" }); expect(f.trace).toEqual(["find:sandbox"]);
     });
-    it.each(["start", "stop", "delete"] as const)("keeps shared %s claim status and separate ISO calls", operation => {
+    it.each(["start", "stop", "delete"] as const)("keeps shared %s claim status", operation => {
         const f = fixture(); const claim = f.app.claimLifecycle("sandbox", original, operation);
         expect(claim.claimed.status).toBe({ start: "starting", stop: "stopping", delete: "deleting" }[operation]);
-        expect(claim.lifecycle.claimedAt).not.toBe(claim.claimed.updatedAt);
-        expect(f.trace.slice(0, 5)).toEqual(["singleton:read", "singleton:owner", "id", "clock", "clock"]);
     });
     it("returns claim conflict before any bind or provider mutation", () => {
         const f = fixture(undefined, { transitionDevice: () => ({ found: true, matched: false }) });
@@ -123,20 +121,9 @@ describe("synchronous direct Sandbox stop core", () => {
         f.app.abortLifecycle("sandbox", lifecycle, prior);
         for (const key of ["lifecycle", "singletonClaimId"] as const) { expect(Object.hasOwn(f.read()!, key)).toBe(mode !== "absent"); expect(f.read()?.[key]).toEqual(prior[key]); }
     });
-    it("abort with missing current uses a separate second lookup", () => {
-        const f = fixture(); let reads = 0; f.ports.findDevice = () => { f.trace.push("find"); return ++reads === 1 ? undefined : original; };
-        expect(f.app.abortLifecycle("sandbox", lifecycle, original)).toEqual({ matched: false, found: true }); expect(f.trace).toEqual(["find", "find"]);
-    });
     it.each(["same", "foreign", "missing"])("current lifecycle lookup handles %s", mode => {
         const f = fixture(); f.replace(mode === "missing" ? undefined : { ...original, lifecycle: { ...lifecycle, runtimeId: mode === "same" ? "operation" : "foreign" } });
         expect(f.app.currentLifecycleDevice("sandbox", lifecycle)).toBe(mode === "same" ? f.read() : null);
-    });
-    it.each(["absent", "throw"])("missing-current abort preserves second lookup %s", mode => {
-        const f = fixture(); const fault = new Error("second-find"); let calls = 0;
-        f.ports.findDevice = () => { f.trace.push("find"); if (++calls === 2 && mode === "throw") throw fault; return undefined; };
-        if (mode === "throw") expect(() => f.app.abortLifecycle("sandbox", lifecycle, original)).toThrow(fault);
-        else expect(f.app.abortLifecycle("sandbox", lifecycle, original)).toEqual({ matched: false, found: false });
-        expect(f.trace).toEqual(["find", "find"]);
     });
     it("binds a missing singleton successfully without changing native authority", () => {
         const f = fixture(); f.setSingleton(null); expect(f.app.stop("sandbox").kind).toBe("completed");

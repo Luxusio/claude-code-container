@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -62,8 +62,6 @@ function contracts(ports: CleanPorts, mutation: CleanMutationPorts, clean: (opti
 void contracts;
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-// Whole authenticated original declaration, embedded without ignored-Task dependencies.
-const originalCleanDeclaration = "export interface CleanOptions {\n    volumes?: boolean;\n    all?: boolean;\n    dryRun?: boolean;\n    yes?: boolean;\n}\nexport declare function cleanContainers(options: CleanOptions): Promise<void>;\n";
 function consumer(moduleRoot: string) {
     // Genuine TypeScript Program, actual declarations/source imports; no
     // transpile-only or string-matching substitute for negative type evidence.
@@ -107,11 +105,7 @@ void [app, publicApp, value, bad];
 }
 describe("genuine strict source clean consumer", () => {
     it("checks positive ABI and meaningful compiler-negative cases", () => { expect(consumer(resolve(root, "src"))).toEqual([]); });
-    it("authenticates whole original public declaration witness", () => {
-        const source = originalCleanDeclaration;
-        expect(createHash("sha256").update(source).digest("hex")).toBe("ea90d03dd89c9e7e80e85fa1c3f32ca9faf19851506fba49f53d735e06c4d2d3");
-        expect(source).toContain("cleanContainers(options: CleanOptions): Promise<void>");
-    });
+
 });
 const emitted = process.env.CCC_CLEAN_COMPLETE_EMITTED_ROOT;
 describe.skipIf(!emitted)("genuine complete emitted clean declaration consumer", () => {

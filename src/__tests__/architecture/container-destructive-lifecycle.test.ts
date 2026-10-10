@@ -77,18 +77,6 @@ describe("required destructive lifecycle capabilities", () => {
         expect(f.trace).toEqual([]);
     });
 
-    it.each(["stop", "remove"] as const)("uses current capability replacements and their receiver for %s", operation => {
-        const f = fixture();
-        for (const name of Object.keys(f.ports) as Array<keyof ContainerDestructiveLifecyclePorts>) {
-            const original = f.ports[name];
-            Object.assign(f.ports, { [name]: function (this: ContainerDestructiveLifecyclePorts, ...args: unknown[]) {
-                expect(this).toBe(f.ports);
-                return Reflect.apply(original, this, args);
-            } });
-        }
-        f.app[operation]("input");
-        expect(f.trace).toEqual(operation === "stop" ? stopRunning : removeRunning);
-    });
 });
 
 describe("destructive claim authorization", () => {

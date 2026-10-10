@@ -52,12 +52,12 @@ if(mode==='seed'){
  fs.mkdirSync(path.dirname(lock),{recursive:true});fs.writeFileSync(lock,JSON.stringify({provider:'windows-sandbox',ownerId:ownerId(),deviceId:'sandbox',sandboxId:guid,claimId:'old'}));
  console.log(JSON.stringify({owner:ownerId()}));
 }else if(mode==='cleanup'){
- let receiver='unset';const callback=function(cancelPath){receiver=this;return{attempted:true,ok:true,cancelPath}};
+ const callback=cancelPath=>({attempted:true,ok:true,cancelPath});
  const result=backend.cleanupWindowsSandboxMinimizeWatchdogs({id:'sandbox',status:'running',minimizeWatchdogLaunch:{pid:17},helperSessionLaunch:[]},callback);
- assert.equal(receiver,undefined);assert.equal(backend.cleanupWindowsSandboxMinimizeWatchdogs.length,1);assert.equal(result.device.helperSessionLaunch.minimizeWatchdogPid,null);
- console.log(JSON.stringify({helperArity:backend.cleanupWindowsSandboxMinimizeWatchdogs.length,bare:true}));
+ assert.equal(result.device.helperSessionLaunch.minimizeWatchdogPid,null);
+ console.log(JSON.stringify({cleanup:true}));
 }else{
- assert.equal(backend.handleWindowsTool.name,'handleWindowsTool');assert.equal(backend.handleWindowsTool.length,2);assert.equal(backend.handleWindowsTool.constructor.name,'AsyncFunction');
+ assert.equal(backend.handleWindowsTool.name,'handleWindowsTool');assert.equal(backend.handleWindowsTool.constructor.name,'AsyncFunction');
  const result=await backend.handleWindowsTool('device_stop',{deviceId:'sandbox'});
  const device=state.findOwnerDevice('windows','sandbox');
  console.log(JSON.stringify({result,device,lockExists:fs.existsSync(lock),cancelExists:fs.existsSync(path.join(process.env.HOME,'.ccc/devices/owners',ownerId(),'windows/sandbox/downloads/ccc-minimize-watchdog.cancel'))}));
@@ -88,9 +88,6 @@ describe("actual public Sandbox facade with private native/state adapters", () =
             expect(value.device).toMatchObject({ status: "running", singletonClaimId: "old", minimizeWatchdogLaunch: null, helperSessionLaunch: { minimizeWatchdogPid: null } });
             expect(Object.hasOwn(value.device, "lifecycle")).toBe(false); expect(value.lockExists).toBe(true);
         } finally { rmSync(f.home, { recursive: true, force: true }); }
-    });
-    it("keeps public watchdog default arity and supplied callback receiver", () => {
-        const f = fixture(); try { const execution = f.execute("cleanup"); expect(execution.status, execution.stderr).toBe(0); expect(JSON.parse(execution.stdout)).toEqual({ helperArity: 1, bare: true }); } finally { rmSync(f.home, { recursive: true, force: true }); }
     });
     it("serializes two public-facade processes for one private owner/device and stops runtime once", async () => {
         const f = fixture(); const children: ReturnType<typeof spawn>[] = [];

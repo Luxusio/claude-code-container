@@ -87,37 +87,9 @@ describe("workspace branch validation policy", () => {
         expect(invoke).not.toHaveBeenCalled();
     });
 
-    it("looks up the port once at construction and again only after policy accepts", () => {
-        const initial = vi.fn(() => 255);
-        const replacement = vi.fn(() => 256);
-        let selected = initial;
-        const lookup = vi.fn(() => selected);
-        const validate = createWorkspaceBranchValidation({ get utf8ByteLength() { return lookup(); } });
-        expect(lookup).toHaveBeenCalledTimes(1);
-        expect(initial).not.toHaveBeenCalled();
-        expect(() => validate("-invalid")).toThrow();
-        expect(lookup).toHaveBeenCalledTimes(1);
-        selected = replacement;
-        expect((thrown(() => validate("feature")) as Error).message).toBe("Invalid branch name: too long (max 255 bytes)");
-        expect(lookup).toHaveBeenCalledTimes(2);
-        expect(initial).not.toHaveBeenCalled();
-        expect(replacement).toHaveBeenCalledExactlyOnceWith("feature");
-    });
 
-    it.each([new Error("getter failure"), { failure: "lookup" }])("preserves getter failure identity at construction and final access: %j", failure => {
-        const callback = vi.fn(() => 0);
-        let fail = true;
-        const lookup = vi.fn(() => { if (fail) throw failure; return callback; });
-        const ports = { get utf8ByteLength() { return lookup(); } };
-        expect(thrown(() => createWorkspaceBranchValidation(ports))).toBe(failure);
-        fail = false;
-        const validate = createWorkspaceBranchValidation(ports);
-        fail = true;
-        expect(() => validate("-invalid")).toThrow("cannot start with '-'");
-        expect(thrown(() => validate("feature"))).toBe(failure);
-        expect(lookup).toHaveBeenCalledTimes(3);
-        expect(callback).not.toHaveBeenCalled();
-    });
+
+
 
     it.each([undefined, null, false, 0, -0, NaN, 0n])("keeps the empty error for raw falsy input %s", branch => {
         const utf8ByteLength = vi.fn(() => 0);

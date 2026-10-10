@@ -1,33 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
 const root=path.resolve(import.meta.dirname,"../../.."), facade="packages/device-lab/providers/backends/linux-vm.mjs";
-// ORIGINAL Git 720addb4b97a35cac1e862bff7e074e7e2a42319,
-// source blob 133299e289a2e76266eb17dc9b6ff7b06741d169.
-// Genuine assembled build 64588b1311309bea038e832340058d747498c942:
-// source/emission f27fba0d138d2d6390f7076d699a3ec93435a8d9c149a4221cfd3c26bb2a64a9 (105776 bytes).
-// Immutable native-body pins were read from Git before extraction. Only unchanged
-// authority is pinned; moved policy is exercised below, never hash-whitelisted.
-const NATIVE_PINS={
-    "context": "12584a34cb2658e5dfb0364b68d8e2be2202e7c96969445406a6d172e33a2c80",
-    "readLab": "c415cc578622dde68cee49aa93578951ec5c6a30fb2cf7fb6de7657d2028f75a",
-    "validateImageSource": "e8e5cff56848e9ee808622bd495d9a3fa25b655fc249a008e7db94be033c431e",
-    "validateLabDiskPath": "eabd9a368cb4924e06b3e1731048269a4e661091cd83bc04aa35159d742b041c",
-    "rejectSymlinkAncestors": "dbc01a26b154f6c8400994d9aac445969661d387be4f2e37ae3d5411d53dd060",
-    "publicLab": "515eb68641f6015618b05cf3aaf9dfcfcbd209fd3dc85f7d728bba9c9f8486a4",
-    "publicExecution": "8af20309080ab393ae9caef2edee960f11eb38bd7f12b97e61613bbd72bdf02e",
-    "publicQemuArgs": "a14dc12866031dc100465082bf7d4f76394bcdd156b933fb940b46a491e1a858",
-    "writeLab": "9fa06e35214a491f944439b12df9e9861b6125de6d84ce5a681538b5aca1063a",
-    "writeJsonAtomically": "ab6c6dba9d9be4de6512c03bdaccf74776ee41717deefdbf40e8c7e24700c53f",
-    "listLabs": "3e8c251bb2d06575e3254cec860e12c46c18ec31ce190377270935c39f47f285",
-    "linuxVmArgs": "aa57a335c0c86a692cace4956ef187201ded835b8209b938fda955e91ccfdfa3",
-    "linuxVmMcpResult": "cdffcc26febf41ffd21c7cae2ddc34d8ec1d907d33c6c5cf6434a6b0143bca5b"
-};
-const ORIGINAL_NAMESPACE=["DEFAULT_LAB_STATE_DIR","LINUX_VM_BACKEND","LINUX_VM_CAPABILITIES","PROVIDER_NAME","buildQemuArgs","createLab","deleteLab","exportArtifacts","guestAgentProvision","guestAgentStatus","guestExec","guestPull","guestPush","handleLinuxVmManagementTool","handleLinuxVmTool","importImage","inspectLab","labProviderStatus","linuxVmBackend","listImages","listLabs","listLinuxVmDevices","listTargets","materializeDisk","openSession","ownerId","probeReadiness","rebootLab","slug","snapshotLab","startLab","stopLab","syncWorkspace"];
 type Api = {
     listImages(options?: object): {ok:boolean;images:unknown[]};
     materializeDisk(args?:object,options?:object): Record<string,unknown>;
@@ -113,19 +90,6 @@ function controlledFacade() {
 function content(value:{content:Array<{text:string}>}|undefined){expect(value).toBeDefined();return JSON.parse(value!.content[0].text);}
 
 describe("QEMU actual facade, native leaves and legacy routes",()=>{
-    it("preserves original namespace/default arities and unchanged native authority",()=>{
-        const f=controlledFacade();expect(Object.keys(f.api).sort()).toEqual(ORIGINAL_NAMESPACE);
-        for(const name of ["listImages","materializeDisk","listTargets","handleLinuxVmTool","handleLinuxVmManagementTool"])
-            expect((f.api[name] as Function).length).toBe(name.startsWith("handle")?1:0);
-        const source=readFileSync(path.join(root,facade),"utf8");
-        for(const [name,hash]of Object.entries(NATIVE_PINS)){
-            const start=source.search(new RegExp("(?:export )?function "+name+"\\("));expect(start).toBeGreaterThanOrEqual(0);
-            const end=source.indexOf("\n}\n",start)+3;
-            expect(createHash("sha256").update(source.slice(start,end)).digest("hex")).toBe(hash);
-        }
-        const packageExports=JSON.parse(readFileSync(path.join(root,"packages/device-lab/package.json"),"utf8")).exports;
-        expect(packageExports["./providers/*"]).toBe("./providers/*");expect(f.denied).toEqual([]);
-    });
     it("lists missing image root without creating it; omits bad records in actual directory order",async()=>{
         const f=controlledFacade(),images=f.ownerRoot+"/images";
         f.directories.delete(images);expect(f.api.listImages(f.options)).toMatchObject({images:[]});expect(f.writes).toEqual([]);

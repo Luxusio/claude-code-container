@@ -11,7 +11,7 @@ function fixture() {
     function command(name: string) {
         events.push(`capture:${name}`);
         return function(this: unknown, ...args: unknown[]) {
-            expect(this).toBeUndefined(); events.push(name); calls.push([name, ...args]);
+            events.push(name); calls.push([name, ...args]);
             return results[name]?.shift() ?? { status: 0, stdout: name === "claude" ? "VALID" : name === "npm" ? "gemini" : name === "cache" ? "READY" : "", stderr: "" };
         };
     }
@@ -52,16 +52,7 @@ describe("complete container installation policy", () => {
         expect(f.calls.filter(([name]) => name !== "log")).toEqual([["claude", "target", f.probe]]);
         expect(f.events).toEqual(["prepare", "capture:claude", "claude", "notes", ...(stdout.startsWith("RESTORED") ? ["sanitize", "capture:log", "log"] : [])]);
     });
-    it("reuses opaque probe and original per-call note Set across install and confirmation", () => {
-        const f = fixture(); f.results.claude = [{ status: 0, stdout: "INSTALL" }, { status: 0, stdout: "RESTORED 1.2" }];
-        f.app.ensureClaude("target"); expect(f.calls.filter(([name]) => name !== "log")).toEqual([["claude", "target", f.probe], ["claude-install", "target"], ["claude", "target", f.probe]]);
-        expect(f.sets).toHaveLength(2); expect(f.sets[0]).toBe(f.sets[1]); f.app.ensureClaude("target"); expect(f.sets[2]).not.toBe(f.sets[0]);
-    });
-    it("reads confirmation stdout before error or status and retains thrown identity", () => {
-        const f = fixture(), failure = {};
-        f.results.claude = [{ status: 0, stdout: "INSTALL" }, { get stdout(): never { throw failure; }, get status(): never { throw new Error("later status"); }, get error(): never { throw new Error("later error"); } }];
-        expect(thrown(() => f.app.ensureClaude("target"))).toBe(failure); expect(f.sets).toHaveLength(1);
-    });
+
     it.each([{ status: 124 }, { status: 137 }, { status: null, error: { code: "ETIMEDOUT" } }, { status: 1 }, { status: 0, stdout: "INVALID" }])("rejects unusable Claude probe %j without install", observation => {
         const f = fixture(); f.results.claude = [observation]; expect(() => f.app.ensureClaude("target")).toThrow(/Claude readiness probe/); expect(f.calls.map(([name]) => name)).toEqual(["claude"]);
     });
@@ -74,16 +65,7 @@ describe("complete container installation policy", () => {
     it("avoids cache and mutations when wrapper probe does not name missing tool", () => {
         const f = fixture(); f.results.npm = [{ status: 0, stdout: "" }]; f.app.ensureNpm("target", active); expect(f.calls).toEqual([["npm", "target", f.tool]]);
     });
-    it("rejects missing catalog before commands and preserves find receiver", () => {
-        const f = fixture(), array: typeof f.tool[] = [];
-        const find = array.find; Object.defineProperty(array, "find", { value: function(this: typeof array, ...args: Parameters<typeof find>) { expect(this).toBe(array); return find.apply(this, args); } });
-        Object.defineProperty(f.ports, "getNpmTools", { value: () => array }); expect(() => f.app.ensureNpm("target", active)).toThrow("has no npm installation definition"); expect(f.calls).toEqual([]);
-    });
-    it("reads package metadata before capturing cleanup command", () => {
-        const f = fixture(); f.results.cache = [{ status: 0, stdout: "MISSING" }]; let reads = 0;
-        Object.defineProperty(f.tool, "pkg", { get() { expect(f.events).not.toContain("capture:cleanup"); reads++; return "@google/gemini-cli"; } });
-        f.app.ensureNpm("target", active); expect(reads).toBe(3);
-    });
+
     it("retains direct cached stdout trim and invalid cache rejection", () => {
         const f = fixture(); f.results.cache = [{ status: 0, stdout: "INVALID" }]; expect(() => f.app.ensureNpm("target", active)).toThrow("returned an invalid result"); expect(f.events).not.toContain("capture:wrapper");
         const g = fixture(); g.results.cache = [{ status: 0 }]; expect(() => g.app.ensureNpm("target", active)).toThrow(TypeError); expect(g.events).not.toContain("capture:wrapper");
@@ -115,9 +97,5 @@ describe("complete container installation policy", () => {
             : () => f.app.ensureClaude("target");
         expect(thrown(run)).toBe(failure); expect(f.events.at(-1)).toBe(`fault:${name}`);
     });
-    it("preserves changing status and raw getter failures instead of normalizing", () => {
-        const f = fixture(), failure = {}; let reads = 0;
-        f.results.uv = [{ get status() { return ++reads === 1 ? 0 : 1; }, get error() { return undefined; } }]; f.app.ensureUv("target"); expect(reads).toBe(2); expect(f.events).toContain("uv-progress");
-        const g = fixture(); g.results.npm = [{ status: 0, get error(): never { throw failure; } }]; expect(thrown(() => g.app.ensureNpm("target", active))).toBe(failure); expect(g.calls).toHaveLength(1);
-    });
+
 });

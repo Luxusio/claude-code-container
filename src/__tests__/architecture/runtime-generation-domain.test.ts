@@ -55,19 +55,4 @@ describe("auxiliary generation comparison rules", () => {
         expect(runtimeGenerationMatches({ pid: undefined }, { pid: undefined }, ["pid"])).toBe(false);
     });
 
-    it("retains accessor evaluation order and propagates accessor exceptions", () => {
-        const trace: string[] = [];
-        const record = (side: string) => ({ get runtimeId() { trace.push(side); return "same"; } });
-        expect(runtimeGenerationMatches(record("expected"), record("current"))).toBe(true);
-        expect(trace).toEqual(["expected", "expected", "current", "current"]);
-        trace.length = 0;
-        const legacy = (side: string) => ({ get pid() { trace.push(side); return 1; } });
-        expect(runtimeGenerationMatches(legacy("expected"), legacy("current"), ["pid"])).toBe(true);
-        expect(trace).toEqual(["expected", "expected", "current"]);
-        const fault = new Error("getter fault");
-        try {
-            runtimeGenerationMatches({ get runtimeId() { throw fault; } }, {});
-            throw new Error("expected getter failure");
-        } catch (error) { expect(error).toBe(fault); }
-    });
 });

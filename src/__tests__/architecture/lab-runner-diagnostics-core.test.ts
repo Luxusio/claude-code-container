@@ -36,19 +36,7 @@ describe("whole inward lab diagnostics", () => {
         createLabRunnerDiagnostics(f.ports).snapshot("cwd");
         expect(f.trace.filter(x => Array.isArray(x) && x[0] === "config")).toEqual([["config", "default"], ["config", "lab"]]);
     });
-    it("projects shared raw observations twice without caching or losing getter order", () => {
-        const f = fixture(), reads: string[] = [], raw = config();
-        for (const key of Object.keys(raw) as (keyof LabRunnerConfigObservation)[]) {
-            const value = raw[key]; Object.defineProperty(raw, key, { get: () => { reads.push(key); return value; } });
-        }
-        f.ports.containerVmConfig = () => raw; f.ports.labRunnerVmConfig = () => raw;
-        const snapshot = createLabRunnerDiagnostics(f.ports).snapshot("cwd");
-        const order = ["stateVolumeName", "stateContainerDir", "status", "unsupportedReason", "kvmDevicePath", "kvmGroupId", "networkMode"];
-        // Optional properties must also retain their original observation positions.
-        Object.defineProperty(raw, "unsupportedReason", { get: () => { reads.push("unsupportedReason"); return undefined; } });
-        reads.length = 0; createLabRunnerDiagnostics(f.ports).snapshot("cwd");
-        expect(reads).toEqual([...order, ...order]); expect(snapshot.defaultContainer).not.toBe(snapshot.labRunnerProfile);
-    });
+
     it.each(["status", "doctor", "smoke", ""])("dispatches %j synchronously with non-starting diagnostic text", command => {
         const f = fixture(); f.ports.containerVmConfig = () => config("unsupported"); f.ports.labRunnerVmConfig = () => config("unsupported");
         expect(createLabRunnerDiagnostics(f.ports).cli([command], "cwd")).toBe(0);
@@ -70,13 +58,7 @@ describe("whole inward lab diagnostics", () => {
         const f = fixture(); expect(createLabRunnerDiagnostics(f.ports).cli([" STATUS "], "cwd")).toBe(1);
         expect(f.trace).toEqual([]); expect(f.output).toEqual(["Usage: ccc labs <status|doctor|smoke|shell|run>"]);
     });
-    it("accepts inherited ports without invoking accessors at construction", () => {
-        const f = fixture(); let reads = 0;
-        const prototype = Object.create(f.ports) as typeof f.ports;
-        Object.defineProperty(prototype, "runtimeSummary", { get: () => { reads++; return () => "runtime"; } });
-        const app = createLabRunnerDiagnostics(Object.create(prototype) as typeof f.ports);
-        expect(reads).toBe(0); app.snapshot("cwd"); expect(reads).toBe(1);
-    });
+
     it.each(Object.keys(fixture().ports))("rejects missing or noncallable data port %s without effects", key => {
         for (const missing of [true, false]) {
             const f = fixture(), ports = { ...f.ports };

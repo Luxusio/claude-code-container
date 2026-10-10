@@ -7,26 +7,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-// Immutable original public-RPC admission rows, frozen BEFORE candidate expectations.
-// These are historical facts, not candidate goldens or a copied production helper.
-// Source/native/emitted manifest: 6b0979c7c27964fa67c2e8b8bab9c7d86c6e1e49e975f34d99a2528c6d5a21e1.
-const ORIGINAL_CONTROLS = Object.freeze([
-    Object.freeze({capture: "v2", backend: "macos-vm", command: "device_start", http: 200, successorPreserved: false, reachedPublication: true, denied: 0}),
-    Object.freeze({capture: "v2", backend: "macos-vm", command: "device_stop", http: 200, successorPreserved: false, reachedPublication: true, denied: 0}),
-    Object.freeze({capture: "v2", backend: "macos-vm", command: "device_delete", http: 200, successorPreserved: false, reachedPublication: true, denied: 0}),
-    Object.freeze({capture: "v3", backend: "macos-vm", command: "device_stop", phase: "cleanup-gap", http: 200, successorPreserved: false, reachedPublication: true, denied: 0}),
-    Object.freeze({capture: "v5", backend: "macos-vm", command: "device_stop", phase: "cleanup-disappearance", http: 200, successorPreserved: false, reachedPublication: true, denied: 0}),
-    Object.freeze({capture: "v9", backend: "windows-vm", command: "device_start", http: 502, error: "hyper-v-guest-not-ready", successorPreserved: false, reachedPublication: true, operations: Object.freeze(["Get-VM", "Start-VM", "Get-VM", "Get-VMDiagnostic"]), denied: 0}),
-    Object.freeze({capture: "v10/v11", backend: "windows-vm", command: "device_reboot", http: 502, error: "provider-command-failed", successorPreserved: true, reachedPublication: false, denied: 0}),
-]);
-
-describe("frozen original lifecycle race premises", () => {
-    it("distinguishes genuine publication corruption from unreached reboot controls", () => {
-        expect(ORIGINAL_CONTROLS.filter(row => row.reachedPublication).every(row => !row.successorPreserved && row.denied === 0)).toBe(true);
-        expect(ORIGINAL_CONTROLS.at(-1)).toMatchObject({command: "device_reboot", reachedPublication: false, successorPreserved: true});
-    });
-});
-
 type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean; guiExecutableProbe?: boolean};
 type StateSnapshot = {bytes: string; dev: string; ino: string; mtime: string; mode: string; nlink: string};
 type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};

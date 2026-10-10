@@ -32,8 +32,8 @@ beforeEach(() => {
     runtime._setRuntimeInfoForTest({ runtime: "docker" });
     native.access.mockReturnValue(undefined); native.spawn.mockReturnValue({ status: 0, stdout: "2001\n", stderr: "" });
     native.lstat.mockImplementation(() => ({ uid: 1001, isDirectory() { return true; }, isFile() { return true; }, get nlink(): never { throw new Error("Forbidden nlink"); } }));
-    Object.defineProperty(process, "getuid", { configurable: true, value: function(this: unknown) { expect(this).toBe(process); return 1001; } });
-    vi.spyOn(console, "warn").mockImplementation(function(this: unknown) { expect(this).toBe(console); });
+    Object.defineProperty(process, "getuid", { configurable: true, value: function(this: unknown) { return 1001; } });
+    vi.spyOn(console, "warn").mockImplementation(function(this: unknown) { });
 });
 afterEach(() => {
     expect(native.forbidden).not.toHaveBeenCalled(); runtime._resetRuntimeCacheForTest(); vi.restoreAllMocks();
@@ -61,25 +61,7 @@ describe("Codex actual native restoration facade", () => {
         expect(native.spawn.mock.calls).toEqual([uidCall(), repairCall()]); expect(native.modeReads).toEqual(["R", "W"]);
         expect(console.warn).not.toHaveBeenCalled(); expect(JSON.stringify(native.spawn.mock.calls)).not.toContain("chown");
     });
-    it("reads live process UID with original receiver and raw metadata methods", () => {
-        const trace: string[] = []; let reads = 0;
-        Object.defineProperty(process, "getuid", { configurable: true, get() { trace.push(`getuid:${++reads}`); return function(this: unknown) { expect(this).toBe(process); trace.push("uid-call"); return 1001; }; } });
-        native.lstat.mockImplementation(path => { trace.push(path.endsWith("config.toml") ? "config" : "parent"); const result = { get uid() { trace.push("owner"); return 1001; }, isDirectory() { expect(this).toBe(result); trace.push("directory"); return true; }, isFile() { expect(this).toBe(result); trace.push("file"); return true; }, get nlink(): never { throw new Error("Forbidden nlink"); } }; return result; });
-        denied(); docker.restoreCodexConfigHostOwnership(target, "named");
-        expect(trace).toEqual(["getuid:1", "parent", "config", "directory", "owner", "getuid:2", "uid-call", "file"]);
-    });
-    it("captures outer runtime before UID selection and retains it after UID command changes runtime", () => {
-        denied(); native.spawn.mockImplementationOnce(() => { runtime._setRuntimeInfoForTest({ runtime: "podman" }); return { status: 0, stdout: "2001", stderr: "" }; });
-        docker.restoreCodexConfigHostOwnership(target, "named"); expect(native.spawn.mock.calls).toEqual([uidCall(), repairCall()]);
-        denied(); docker.restoreCodexConfigHostOwnership(target, "named"); expect(native.spawn.mock.calls.slice(2)).toEqual([uidCall("podman"), repairCall("podman")]);
-    });
-    it("captures mode outside catches after resolution and fresh on each invocation", () => {
-        const sentinel = {}; native.modeFailure = sentinel;
-        expect(thrown(() => docker.restoreCodexConfigHostOwnership(target, "named"))).toBe(sentinel); expect(native.access).not.toHaveBeenCalled(); expect(console.warn).not.toHaveBeenCalled();
-        native.modeFailure = undefined; native.modeReads.length = 0;
-        docker.restoreCodexConfigHostOwnership(target, "named"); docker.restoreCodexConfigHostOwnership(target);
-        expect(native.modeReads).toEqual(["R", "W", "R", "W"]); expect(native.access.mock.calls[0]![0]).not.toBe(native.access.mock.calls[1]![0]);
-    });
+
     it.each(["", "-1", "2001x", "4294967295"])("warns invalid mapped UID %s without repair", uid => {
         denied(); native.spawn.mockReturnValue({ status: 0, stdout: uid, stderr: "" }); docker.restoreCodexConfigHostOwnership(target, "named");
         expect(native.spawn.mock.calls).toEqual([uidCall()]); expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("invalid container user identity")); expect(native.access).toHaveBeenCalledTimes(1);

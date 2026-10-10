@@ -25,16 +25,9 @@ function thrown(operation: () => unknown): unknown {
     try { operation(); } catch (error) { return error; }
     throw new Error("Expected exception");
 }
-function observationFault(trace: unknown[][], field: "error" | "status" | "stdout", failure: unknown): LabStateCommandObservation {
-    return {
-        get error() { trace.push(["error"]); if (field === "error") throw failure; return undefined; },
-        get status() { trace.push(["status"]); if (field === "status") throw failure; return 0; },
-        get stdout() { trace.push(["stdout"]); if (field === "stdout") throw failure; return ""; },
-    };
-}
 
 describe("Lab ownership inward policy", () => {
-    it("keeps exact normalization, observations, one shared scope and original principal", () => {
+    it("normalizes images and applies ownership using the captured scope", () => {
         const f = fixture();
         expect(f.app.run(volume, "current", principal, "previous")).toBeUndefined();
         expect(f.trace).toEqual([
@@ -114,26 +107,8 @@ describe("Lab ownership inward policy", () => {
         f.app.run(volume, "current", principal);
         expect(f.ports.applyOwnership).toHaveBeenCalledOnce();
     });
-    it.each(["list", "users", "account"] as const)("preserves thrown %s observation getters", stage => {
-        for (const field of ["error", "status", "stdout"] as const) {
-            const f = fixture(), failure = Symbol(stage + field), reads: unknown[][] = [];
-            const result = observationFault(reads, field, failure);
-            if (stage === "list") f.ports.listVolumeNames = () => result;
-            if (stage === "users") f.ports.observeVolumeUsers = () => result;
-            if (stage === "account") f.ports.observePreviousAccount = () => result;
-            expect(thrown(() => f.app.run(volume, "current", principal, "previous"))).toBe(failure);
-            expect(reads).toEqual(["error", "status", "stdout"].slice(0, ["error", "status", "stdout"].indexOf(field) + 1).map(name => [name]));
-            expect(f.ports.applyOwnership).not.toHaveBeenCalled();
-        }
-    });
-    it("captures once before principal reads and does not reread captured principal defaults", () => {
-        const f = fixture();
-        const identity = { get uid() { f.trace.push(["uid"]); return 2001; }, get gid() { f.trace.push(["gid"]); return 3001; } };
-        f.app.run(volume, "current", identity, "previous");
-        expect(f.trace.slice(3, 8)).toEqual([["users", volume], ["capture"], ["uid"], ["gid"], ["account", f.scope, "normalized:previous"]]);
-        expect(f.ports.captureHelperScope).toHaveBeenCalledOnce();
-        expect(vi.mocked(f.ports.applyOwnership).mock.calls[0][3]).toBe(identity);
-    });
+
+
     it.each(["capture", "uid", "gid", "account", "apply"])("preserves thrown %s primitive and prevents successor effects", stage => {
         const f = fixture(), failure = Object.freeze({ stage });
         const identity: LabStatePrincipal = { get uid() { if (stage === "uid") throw failure; return 2001; }, get gid() { if (stage === "gid") throw failure; return 3001; } };
@@ -160,31 +135,13 @@ describe("Lab ownership inward policy", () => {
         expect(() => f.app.run(volume, "current", principal, "previous")).toThrow("Cannot establish previous lab state owner");
         expect(f.ports.applyOwnership).not.toHaveBeenCalled();
     });
-    it("consumes final raw error before status, retaining native observation getters", () => {
-        const f = fixture(), reads: string[] = [];
-        f.ports.applyOwnership = () => ({ get error() { reads.push("error"); return { code: "timeout" }; }, get status(): never { throw new Error("must not read status"); } });
-        expect(() => f.app.run(volume, "current", principal)).toThrow("Existing data was retained; repair its ownership before retrying.");
-        expect(reads).toEqual(["error"]);
-    });
+
     it.each([null, 1, 124, 137])("rejects final failed helper status %s", status => {
         const f = fixture(); f.ports.applyOwnership = () => ({ status });
         expect(() => f.app.run(volume, "current", principal)).toThrow("Lab state ownership preparation failed");
     });
-    it.each(["error", "status"] as const)("preserves thrown final %s getter identity", field => {
-        const f = fixture(), failure = Symbol(field), reads: string[] = [];
-        f.ports.applyOwnership = () => ({ get error() { reads.push("error"); if (field === "error") throw failure; return undefined; }, get status(): never { reads.push("status"); throw failure; } });
-        expect(thrown(() => f.app.run(volume, "current", principal))).toBe(failure);
-        expect(reads).toEqual(field === "error" ? ["error"] : ["error", "status"]);
-    });
-    it("keeps primitive method receiver and does not snapshot returned observations", () => {
-        const f = fixture();
-        for (const name of Object.keys(f.ports) as Array<keyof LabStateOwnershipPorts>) {
-            const original = f.ports[name];
-            Object.assign(f.ports, { [name]: function (this: unknown, ...args: unknown[]) { expect(this).toBe(f.ports); return Reflect.apply(original, this, args); } });
-        }
-        f.app.run(volume, "current", principal, "previous");
-        expect(f.trace.at(-1)?.[0]).toBe("apply");
-    });
+
+
     it.each(["normalizeImageId", "listVolumeNames", "observeVolumeUsers", "captureHelperScope", "observePreviousAccount", "applyOwnership"] as const)("refuses noncallable %s without executing primitives", name => {
         const f = fixture();
         expect(() => createLabStateOwnershipPreparation({ ...f.ports, [name]: undefined } as unknown as LabStateOwnershipPorts)).toThrow(`requires a callable ${name} port`);

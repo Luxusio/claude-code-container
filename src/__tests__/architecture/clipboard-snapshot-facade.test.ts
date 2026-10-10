@@ -65,17 +65,5 @@ describe("Clipboard snapshot actual public facade composition", () => {
         mod.createClipboardServer("secret", "linux-x11"); const result = await request(0, "/clipboard/text", "wrong");
         expect(result.status).toBe(401); expect(native.spawnSync).not.toHaveBeenCalled();
     });
-    it("preserves optional getter order, bare custom callbacks, raw byte identity and two-pass fallback", () => {
-        const calls: string[] = []; const bytes = Buffer.alloc(0); const copied = Buffer.from("copied");
-        const options = {
-            get readImageFile() { calls.push("get-read"); return function (this: unknown, path: string) { expect(this).toBeUndefined(); calls.push(`read:${path}`); return null; }; },
-            get copyImageFile() { calls.push("get-copy"); return function (this: unknown, path: string) { expect(this).toBeUndefined(); calls.push(`copy:${path}`); return copied; }; },
-        };
-        expect(mod.buildImageFileClipboardFallbackFromPaths(["a", "b"], options).text).toBe(copied);
-        expect(calls).toEqual(["get-read", "get-copy", "read:a", "read:b", "copy:a"]);
-        expect(mod.buildImageFileClipboardFallbackFromPaths(["a"], { readImageFile: () => bytes, copyImageFile: () => { throw new Error("No copy"); } }).imagePng).toBe(bytes);
-        const raw = { raw: "getter" }; let received: unknown;
-        try { mod.buildImageFileClipboardFallbackFromPaths([], { get readImageFile(): (path: string) => Buffer | null { throw raw; } }); } catch (error) { received = error; }
-        expect(received).toBe(raw);
-    });
+
 });

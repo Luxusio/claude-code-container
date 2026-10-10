@@ -7,116 +7,8 @@ import * as util from "node:util";
 import * as url from "node:url";
 import * as vm from "node:vm";
 import ts from "typescript";
-import { NATIVE_CLEANUP_ORIGINAL } from "./native-cleanup-original.mjs";
 
 export const nativeCleanupRoot = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "../../..");
-export const nativeCleanupAdmission = path.join(nativeCleanupRoot, "doc/harness/tasks/TASK__session-startup-native-cleanup/admission");
-export { NATIVE_CLEANUP_ORIGINAL };
-
-/** Controller-only original files. Allocation happens during a test execution,
- * never during collection, and never grants the native realm filesystem access. */
-export function materializeOriginalPayload() {
-    const digest = (text: string | Buffer) => crypto.createHash("sha256").update(text).digest("hex");
-    const assertOrdinary = (file: string) => {
-        if (!path.isAbsolute(file) || path.resolve(file) !== file) throw new Error("noncanonical original path");
-        let current = path.parse(file).root;
-        for (const segment of file.slice(current.length).split(path.sep).filter(Boolean)) {
-            current = path.join(current, segment);
-            const stat = fs.lstatSync(current);
-            if (stat.isSymbolicLink() || (!stat.isDirectory() && current !== file)) throw new Error("original link/ancestor");
-        }
-    };
-    const temporary = path.resolve(os.tmpdir());
-    assertOrdinary(temporary);
-    const root = fs.mkdtempSync(path.join(temporary, "ccc-native-cleanup-original-"));
-    fs.chmodSync(root, 0o700);
-    const roots = new Map<string, { dev: number; ino: number; uid: number; directory: boolean }>();
-    const register = (file: string, directory: boolean) => {
-        assertOrdinary(file);
-        const stat = fs.lstatSync(file);
-        if (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) throw new Error("original inode kind");
-        roots.set(file, { dev: stat.dev, ino: stat.ino, uid: stat.uid, directory });
-    };
-    register(root, true);
-    const canonical = (relative: string) => {
-        if (!relative || relative.includes("\\") || relative.includes("\0") || path.posix.isAbsolute(relative)
-            || path.posix.normalize(relative) !== relative || relative.split("/").some(part => !part || part === "." || part === "..")) {
-            throw new Error("unregistered original path");
-        }
-        const file = path.join(root, relative);
-        if (!file.startsWith(root + path.sep)) throw new Error("original root escape");
-        return file;
-    };
-    const authenticateInode = (file: string) => {
-        assertOrdinary(file);
-        const saved = roots.get(file), stat = fs.lstatSync(file);
-        if (!saved || stat.dev !== saved.dev || stat.ino !== saved.ino || stat.uid !== saved.uid || stat.isSymbolicLink()
-            || (saved.directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1)) throw new Error("original inode changed");
-    };
-    const read = (file: string): string => {
-        if (!path.isAbsolute(file) || path.resolve(file) !== file || !file.startsWith(root + path.sep)) throw new Error("original read escape");
-        const relative = path.relative(root, file).split(path.sep).join("/");
-        const expected = Object.hasOwn(NATIVE_CLEANUP_ORIGINAL.files, relative) ? NATIVE_CLEANUP_ORIGINAL.files[relative] : undefined;
-        if (!expected || canonical(relative) !== file) throw new Error("missing original module");
-        for (let parent = path.dirname(file); ; parent = path.dirname(parent)) {
-            authenticateInode(parent); if (parent === root) break;
-        }
-        authenticateInode(file);
-        const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        try {
-            const stat = fs.fstatSync(fd), saved = roots.get(file)!;
-            if (!stat.isFile() || stat.dev !== saved.dev || stat.ino !== saved.ino || stat.uid !== saved.uid || stat.nlink !== 1 || stat.size !== expected.bytes) throw new Error("original descriptor changed");
-            const buffer = Buffer.alloc(expected.bytes + 1);
-            let offset = 0;
-            for (;;) {
-                const count = fs.readSync(fd, buffer, offset, buffer.length - offset, null);
-                if (count === 0) break;
-                offset += count;
-                if (offset > expected.bytes) throw new Error("original read bound");
-            }
-            const bytes = buffer.subarray(0, offset);
-            if (offset !== expected.bytes || digest(bytes) !== expected.sha256 || bytes.toString("utf8") !== expected.text) throw new Error("original bytes changed");
-            authenticateInode(file);
-            return bytes.toString("utf8");
-        } finally { fs.closeSync(fd); }
-    };
-    const assertAuthenticated = () => {
-        for (const file of roots.keys()) authenticateInode(file);
-        for (const relative of Object.keys(NATIVE_CLEANUP_ORIGINAL.files)) read(canonical(relative));
-        for (const [file, saved] of roots) if (saved.directory) {
-            for (const entry of fs.readdirSync(file)) if (!roots.has(path.join(file, entry))) throw new Error("unregistered original entry");
-        }
-    };
-    try {
-        if (NATIVE_CLEANUP_ORIGINAL.version !== 1 || Object.keys(NATIVE_CLEANUP_ORIGINAL.files).length !== 101) throw new Error("original schema/count");
-        for (const [relative, expected] of Object.entries(NATIVE_CLEANUP_ORIGINAL.files)) {
-            const file = canonical(relative);
-            if (Buffer.byteLength(expected.text) !== expected.bytes || digest(expected.text) !== expected.sha256) throw new Error("original witness bytes");
-            const missing: string[] = [];
-            for (let directory = path.dirname(file); !roots.has(directory); directory = path.dirname(directory)) missing.push(directory);
-            for (const directory of missing.reverse()) { fs.mkdirSync(directory, { mode: 0o700 }); register(directory, true); }
-            const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-            try {
-                const stat = fs.fstatSync(fd);
-                if (!stat.isFile() || stat.nlink !== 1) throw new Error("original allocation descriptor");
-                fs.writeFileSync(fd, expected.text, "utf8");
-                register(file, false);
-                const registered = roots.get(file)!;
-                if (stat.dev !== registered.dev || stat.ino !== registered.ino || stat.uid !== registered.uid) throw new Error("original allocation changed");
-            } finally { fs.closeSync(fd); }
-        }
-        assertAuthenticated();
-    } catch (error) {
-        // Never remove a root whose registered inode or contents were replaced.
-        for (const file of roots.keys()) authenticateInode(file);
-        for (const [file, saved] of [...roots].reverse()) saved.directory ? fs.rmdirSync(file) : fs.unlinkSync(file);
-        throw error;
-    }
-    return { root, read, assertAuthenticated, cleanup: () => {
-        assertAuthenticated();
-        for (const [file, saved] of [...roots].reverse()) saved.directory ? fs.rmdirSync(file) : fs.unlinkSync(file);
-    } };
-}
 export const project = "/project/native-cleanup-0123456789ab";
 export type NativeDevice = Record<string, unknown> & { id?: string; status?: string };
 type CleanupApi = {
@@ -130,7 +22,7 @@ type CleanupApi = {
 
 /** Test-controller reads are separate from the fenced native realm. Every native
  * dependency body is real; only builtins/native authority are controlled. */
-export function createNativeCleanupRealm(original: boolean) {
+export function createNativeCleanupRealm() {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-native-cleanup-pair-"));
     const trace: unknown[][] = [];
     const modules = new Map<string, { exports: Record<string, any> }>();
@@ -408,9 +300,8 @@ export function createNativeCleanupRealm(original: boolean) {
         os: { homedir: () => home, hostname: () => "fixture-host", uptime: () => 1 },
         child_process: childProcess, readline: inert, events: { EventEmitter: class { on() { return deny("EventEmitter.on"); } } }, net: inert, http: inert, https: inert, dgram: inert, dns: inert, tls: inert,
     };
-    const originalFiles = original ? materializeOriginalPayload() : undefined;
-    const sourceRoot = originalFiles?.root ?? nativeCleanupRoot;
-    const source = !original;
+    const sourceRoot = nativeCleanupRoot;
+    const source = true;
     const sourceFile = (file: string) => source && file.endsWith(".js") && fs.existsSync(file.slice(0, -3) + ".ts") ? file.slice(0, -3) + ".ts" : file;
     const resolveModule = (specifier: string, from: string): string => {
         if (specifier.startsWith(".")) return sourceFile(path.resolve(path.dirname(from), specifier));
@@ -427,14 +318,13 @@ export function createNativeCleanupRealm(original: boolean) {
         // Unrelated legacy admin imports are import-only denied capabilities.
         // None of the reachable native cleanup dependencies are replaced here.
         const relative = path.relative(sourceRoot, file).split(path.sep).join("/");
-        const inertEdges = NATIVE_CLEANUP_ORIGINAL.inertAdminImports.map(edge => original ? edge.path
-            : edge.path.replace(/^dist\/packages\/device-lab\/dist\//, "packages/device-lab/src/").replace(/\.js$/, ".ts"));
+        const inertEdges = ["packages/device-lab/src/device-lab-broker.ts", "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts", "packages/device-lab/src/device-lab/hyper-v-images.ts", "packages/device-lab/src/device-lab/hyper-v-linux-image-readiness.ts", "packages/device-lab/src/host-control/hyper-v/index.ts"];
         if (inertEdges.includes(relative)) {
             loaded.push(path.relative(sourceRoot, file));
             return inert as Record<string, any>;
         }
         const mod = { exports: {} }; modules.set(file, mod); loaded.push(path.relative(sourceRoot, file));
-        const body = originalFiles ? originalFiles.read(file) : fs.readFileSync(file, "utf8");
+        const body = fs.readFileSync(file, "utf8");
         const common = ts.transpileModule(body.replace(/import\.meta\.url/g, JSON.stringify(url.pathToFileURL(file).href)), {
             // Compiler-only CTS identity prevents a genuine .mjs asset from
             // retaining ESM syntax inside this CommonJS sandbox. Read paths,
@@ -461,10 +351,9 @@ export function createNativeCleanupRealm(original: boolean) {
     };
     let native: CleanupApi, ownerId: string;
     try {
-        native = load(original ? "dist/device-lab-admin.js" : "src/device-lab-cleanup.ts") as CleanupApi;
+        native = load("src/device-lab-cleanup.ts") as CleanupApi;
         ownerId = native.deviceLabOwnerId(project);
     } catch (error) {
-        originalFiles?.cleanup();
         expect(descriptors.size).toBe(0);
         fs.rmSync(home, { recursive: true, force: true });
         throw error;
@@ -476,9 +365,9 @@ export function createNativeCleanupRealm(original: boolean) {
     assertZero();
     return {
         home, trace, loaded, state, native, ownerId, ownerFile, writeJson, readJson,
-        load: (file: string) => load(original ? file.replace(/^src\//, "dist/").replace(/\.ts$/, ".js") : file),
+        load: (file: string) => load(file),
         normalize, assertZero, context, get denied() { return denied; }, fencedFs, childProcess, nativeProcess,
-        cleanup: () => { expect(descriptors.size).toBe(0); originalFiles?.cleanup(); fs.rmSync(home, { recursive: true, force: true }); },
+        cleanup: () => { expect(descriptors.size).toBe(0); fs.rmSync(home, { recursive: true, force: true }); },
         identity: (pid = 999002) => ({ pid, startToken: "linux:123", commandHash: crypto.createHash("sha256").update("fixture-runtime").digest("hex") }),
     };
 }

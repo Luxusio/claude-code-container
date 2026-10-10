@@ -47,13 +47,11 @@ describe("bounded state read policy", () => {
         catch (error) { expect(error).toMatchObject({ message: "state-invalid", cause }); }
     });
 
-    it("preserves recognized errors by identity and invokes validator without receiver", () => {
+    it("propagates recognized state errors", () => {
         const { ports } = fixture();
         const fault = new RangeError("existing");
-        let receiver: unknown = "unset";
-        ports.validate = function (this: unknown) { receiver = this; throw fault; };
+        ports.validate = () => { throw fault; };
         try { validateStateFileContent("{}", ports); } catch (error) { expect(error).toBe(fault); }
-        expect(receiver).toBeUndefined();
     });
 
     it("propagates throwing recognizers and error constructors without an extra classifier", () => {

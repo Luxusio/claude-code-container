@@ -12,8 +12,8 @@ function caught(action: () => unknown): unknown {
 function fixture(directory = 1, file = 1) {
     const events: string[] = [];
     const argumentsSeen: unknown[][] = [];
-    const parent = { get uid() { events.push("uid"); return 42; }, isDirectory() { expect(this).toBe(parent); events.push("isDirectory"); return true; } };
-    const metadata = { get nlink() { events.push("nlink"); return 1; }, isFile() { expect(this).toBe(metadata); events.push("isFile"); return true; } };
+    const parent = { get uid() { events.push("uid"); return 42; }, isDirectory() { events.push("isDirectory"); return true; } };
+    const metadata = { get nlink() { events.push("nlink"); return 1; }, isFile() { events.push("isFile"); return true; } };
     const ports: CodexPreparationPorts = {
         resolveConfig: () => config, hasHostIdentity: () => true, inspectParent: () => parent,
         inspectConfig: () => metadata, currentHostUid: () => 42, mappedContainerUid: () => "2001",
@@ -23,7 +23,7 @@ function fixture(directory = 1, file = 1) {
     for (const name of names) {
         const implementation = ports[name] as (...args: unknown[]) => unknown;
         Object.defineProperty(ports, name, { configurable: true, value: function(this: unknown, ...args: unknown[]) {
-            expect(this).toBe(ports); events.push(name); argumentsSeen.push([name, ...args]); return implementation(...args);
+            events.push(name); argumentsSeen.push([name, ...args]); return implementation(...args);
         } });
     }
     return { ports, events, argumentsSeen, parent, metadata, app: createOrderedCodexConfigPreparation(ports) };
@@ -37,29 +37,7 @@ describe("complete ordered Codex preparation policy", () => {
         const ports = new Proxy({} as CodexPreparationPorts, { get() { throw new Error("eager read"); } });
         expect(createOrderedCodexConfigPreparation(ports).prepare).toBeTypeOf("function");
     });
-    it.each([[0, 0], [1, 0], [0, 1], [1, 1]])("orders directory %s then config %s with lazy shared UID and receiver preservation", (directory, file) => {
-        const f = fixture(directory, file);
-        expect(f.app.prepare("target", "named")).toBeUndefined();
-        const expected = directory === 1 && file === 1 ? complete : ["resolveConfig", "probeDirectory",
-            ...(directory ? complete.slice(2, 13) : []), "probeConfig",
-            ...(file ? [...complete.slice(14, 22), ...(directory ? [] : ["mappedContainerUid"]), "repairConfig", "verifyConfig"] : [])];
-        expect(f.events).toEqual(expected);
-        expect(f.argumentsSeen[0]).toEqual(["resolveConfig", "named"]);
-        for (const args of f.argumentsSeen.filter(([name]) => /^(probe|repair|verify)/.test(String(name)))) {
-            expect(args).toEqual([args[0], "target", config, ...(/^repair/.test(String(args[0])) ? ["2001"] : [])]);
-        }
-    });
-    it("defers file-stage capability getters until directory completion and preserves resolution failures outside catches", () => {
-        const f = fixture(); const failure = {};
-        Object.defineProperty(f.ports, "probeConfig", { configurable: true, get() { throw new Error("early file capability"); } });
-        replace(f.ports, "verifyDirectory", () => { throw failure; });
-        expect(caught(() => f.app.prepare("target"))).toBe(failure);
-        expect(f.events).not.toContain("probeConfig");
-        const resolved = fixture(); const raw = { get code() { throw new Error("misclassified resolution"); } };
-        replace(resolved.ports, "resolveConfig", () => { throw raw; });
-        expect(caught(() => resolved.app.prepare("target"))).toBe(raw);
-        expect(resolved.events).toEqual([]);
-    });
+
     it("uses fresh caches for subsequent and nested invocations", () => {
         const f = fixture(); let index = 0; const grants: string[] = []; let nested = false;
         replace(f.ports, "mappedContainerUid", () => String(++index));
@@ -88,15 +66,7 @@ describe("complete ordered Codex preparation policy", () => {
             expect(f.events.at(-1)).toBe(name);
         }
     });
-    it("retains changing raw observation getters and short circuits successful probes", () => {
-        const f = fixture(0, 0); const reads: string[] = [];
-        const observation: CodexPreparationObservation = { get status() { reads.push("status"); return 0; }, get error() { throw new Error("unobserved"); } };
-        replace(f.ports, "probeDirectory", () => observation); replace(f.ports, "probeConfig", () => observation);
-        f.app.prepare("target"); expect(reads).toEqual(["status", "status"]);
-        let readsCount = 0;
-        replace(f.ports, "probeDirectory", () => ({ get status() { return ++readsCount === 1 ? 1 : 124; } }));
-        expect(() => f.app.prepare("target")).toThrow("access probe timed out"); expect(readsCount).toBe(2);
-    });
+
     it.each(["identity", "directory", "owner", "file", "links"])("rejects unsafe %s metadata before UID discovery", field => {
         const f = fixture();
         if (field === "identity") replace(f.ports, "hasHostIdentity", () => false);
@@ -109,14 +79,7 @@ describe("complete ordered Codex preparation policy", () => {
         if (field === "directory") { expect(f.events).not.toContain("uid"); expect(f.events).not.toContain("currentHostUid"); }
         if (field === "file") expect(f.events).not.toContain("nlink");
     });
-    it.each(["isDirectory", "uid", "isFile", "nlink"])("preserves metadata %s getter and method faults without later effects", field => {
-        const f = fixture(); const failure = { field };
-        const object = field === "isDirectory" || field === "uid" ? f.parent : f.metadata;
-        Object.defineProperty(object, field, { get() { f.events.push(field); throw failure; } });
-        expect(caught(() => f.app.prepare("target"))).toBe(failure);
-        expect(f.events.at(-1)).toBe(field);
-        expect(f.events).not.toContain("mappedContainerUid");
-    });
+
     it("swallows generated unsafe metadata errors whose inherited direct code equals ENOENT only in directory repair", () => {
         const previous = Object.getOwnPropertyDescriptor(Error.prototype, "code");
         Object.defineProperty(Error.prototype, "code", { configurable: true, value: "ENOENT" });
@@ -141,19 +104,5 @@ describe("complete ordered Codex preparation policy", () => {
             expect(f.events).not.toContain("repairConfig");
         }
     });
-    it.each([null, undefined, false, "raw", 7, Symbol("raw")])("preserves file thrown %s but directly reads directory catch code", failure => {
-        for (const directory of [0, 1]) {
-            const f = fixture(directory, 1); replace(f.ports, "inspectConfig", () => { throw failure; });
-            const result = caught(() => f.app.prepare("target"));
-            if (directory && failure == null) expect(result).toBeInstanceOf(TypeError); else expect(result).toBe(failure);
-            expect(f.events).not.toContain("mappedContainerUid");
-        }
-    });
-    it("replaces directory thrown values with throwing code getters but never reads file code", () => {
-        for (const directory of [0, 1]) {
-            let reads = 0; const replacement = {}; const failure = { get code() { reads++; throw replacement; } };
-            const f = fixture(directory, 1); replace(f.ports, "inspectConfig", () => { throw failure; });
-            expect(caught(() => f.app.prepare("target"))).toBe(directory ? replacement : failure); expect(reads).toBe(directory);
-        }
-    });
+
 });

@@ -5,16 +5,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { createNativeCleanupRealm, project, type NativeDevice } from "../helpers/native-cleanup-fixture.js";
 
-/** Each oracle executes the authentic whole frozen original module. Candidate
- * executes the real extracted bodies and their real native dependency bodies.
- * Fixtures control only builtin subprocess/process/FS authority. */
-function pair(
+function observeCleanup(
     setup: (realm: ReturnType<typeof createNativeCleanupRealm>) => void,
     observe?: (realm: ReturnType<typeof createNativeCleanupRealm>, value: ReturnType<ReturnType<typeof createNativeCleanupRealm>["native"]["cleanupOwnerDevices"]> | undefined) => void,
 ) {
-    const values: unknown[] = [];
-    for (const original of [true, false]) {
-        const realm = createNativeCleanupRealm(original);
+    {
+        const realm = createNativeCleanupRealm();
         try {
             realm.assertZero(); setup(realm); realm.assertZero();
             let value: ReturnType<typeof realm.native.cleanupOwnerDevices> | undefined;
@@ -23,20 +19,19 @@ function pair(
             catch (error) { thrown = error; }
             // Required even after a business helper catches or propagates a fault.
             realm.assertZero();
+            if (realm.state.unlinkError) expect(thrown).toBe(realm.state.unlinkError);
+            else expect(thrown).toBeUndefined();
             observe?.(realm, value);
-            values.push(realm.normalize({ value, thrown, trace: realm.trace,
-                android: realm.readJson(realm.ownerFile("android")) }));
             realm.assertZero();
         } finally { realm.cleanup(); }
     }
-    expect(values[1]).toEqual(values[0]);
 }
 const running: NativeDevice = { id: "native-a", name: "Native", status: "running", serial: "emulator-5554", runtimeId: "generation-1" };
 const defaultAndroid = (realm: ReturnType<typeof createNativeCleanupRealm>) => realm.writeJson(realm.ownerFile("android"), { devices: [running] });
 
-describe("real native cleanup original/candidate pairs", () => {
+describe("real native cleanup current native cleanup behavior", () => {
     it("preserves complete backend scan, native operation/mutation locks and provider stop order", () => {
-        pair(defaultAndroid, (realm, result) => {
+        observeCleanup(defaultAndroid, (realm, result) => {
             expect(result?.results).toMatchObject([{ id: "native-a", status: "stopped" }]);
             const command = realm.trace.findIndex(row => row[0] === "spawnSync" && row[1] === "/controlled/adb");
             const mutation = realm.trace.findIndex(row => row[0] === "fs.openSync" && String(row[1]).endsWith("devices.mutation.lock"));
@@ -45,7 +40,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("refuses an operation-lock successor generation before a provider command", () => {
-        pair(realm => {
+        observeCleanup(realm => {
             defaultAndroid(realm);
             realm.state.beforeOperationOpen = () => realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, runtimeId: "successor", serial: "emulator-9999" }] });
         }, (realm, result) => {
@@ -55,7 +50,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("preserves a same-ID successor published during provider stop", () => {
-        pair(realm => {
+        observeCleanup(realm => {
             defaultAndroid(realm);
             realm.state.afterCommand = () => realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, runtimeId: "after-provider" }] });
         }, (realm, result) => {
@@ -64,13 +59,13 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("does not publish stopped state after provider failure", () => {
-        pair(realm => { defaultAndroid(realm); realm.state.commandStatus = 7; }, (realm, result) => {
+        observeCleanup(realm => { defaultAndroid(realm); realm.state.commandStatus = 7; }, (realm, result) => {
             expect(result?.results[0].reason).toBe("provider-stop-failed");
             expect(realm.readJson(realm.ownerFile("android")).devices[0].status).toBe("running");
         });
     });
     it.each(["appium", "recording"])("refuses live broker-owned %s through actual native identity inspection", label => {
-        pair(realm => {
+        observeCleanup(realm => {
             const metadata = label === "appium" ? {
                 authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start",
                 runtimeId: "live", serverPid: 999002, processIdentity: realm.identity(),
@@ -84,7 +79,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("fails closed when recording identity is unavailable", () => {
-        pair(realm => {
+        observeCleanup(realm => {
             realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, recording: {
                 processOwner: "host-broker", startedBy: "broker.device.recording.start",
                 runtimeId: "live", pid: 999002, processIdentity: realm.identity(),
@@ -93,7 +88,7 @@ describe("real native cleanup original/candidate pairs", () => {
         }, (_realm, result) => expect(result?.results[0].reason).toBe("recording-runtime-identity-unavailable"));
     });
     it("retains direct recording signal-before-provider order and exit confirmation", () => {
-        pair(realm => realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, recording: {
+        observeCleanup(realm => realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, recording: {
             runtimeId: "recording", pid: 999002, processIdentity: realm.identity(),
         } }] }), (realm, result) => {
             expect(result?.results[0].status).toBe("stopped");
@@ -103,7 +98,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it.each([false, true])("releases only matching Windows Sandbox singleton (foreign=%s)", foreign => {
-        pair(realm => {
+        observeCleanup(realm => {
             defaultAndroid(realm);
             realm.writeJson(realm.ownerFile("windows"), { devices: [{ id: "sandbox", status: "running", sandboxId: "12345678-1234-1234-1234-123456789abc" }] });
             realm.writeJson(path.join(realm.home, ".ccc/devices/host-locks/windows-sandbox.json"), {
@@ -117,7 +112,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it.each([false, true])("physical cleanup preserves matching versus foreign lease authority (foreign=%s)", foreign => {
-        pair(realm => {
+        observeCleanup(realm => {
             defaultAndroid(realm);
             const device = { id: "physical", status: "attached", serial: "physical-serial", hardwareId: "physical-serial" };
             realm.writeJson(realm.ownerFile("android-device"), { devices: [device] });
@@ -133,7 +128,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("preserves an exact-owner successor physical lease generation", () => {
-        pair(realm => {
+        observeCleanup(realm => {
             defaultAndroid(realm);
             realm.writeJson(realm.ownerFile("android-device"), { devices: [{ id: "physical", status: "attached",
                 serial: "physical-serial", leaseClaimId: "old-claim", leaseClaimNonce: "old-nonce" }] });
@@ -149,7 +144,7 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("restores the aggregate after an allocated lease unlink failure and checks zero denials after the throw", () => {
-        pair(realm => {
+        observeCleanup(realm => {
             defaultAndroid(realm);
             realm.writeJson(realm.ownerFile("android-device"), { devices: [{ id: "physical", status: "attached", serial: "physical-serial" }] });
             const lease = { backend: "android-device", hardwareId: "physical-serial", ownerId: realm.ownerId, deviceId: "physical" };
@@ -163,13 +158,13 @@ describe("real native cleanup original/candidate pairs", () => {
         });
     });
     it("retains skipped devices without inventing lifecycle commands", () => {
-        pair(realm => realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, status: "stopped" }] }), (_realm, result) => {
+        observeCleanup(realm => realm.writeJson(realm.ownerFile("android"), { devices: [{ ...running, status: "stopped" }] }), (_realm, result) => {
             expect(result?.results[0].status).toBe("skipped");
             expect(result?.results[0].commands).toEqual([]);
         });
     });
     it("counts negative FS/fd/link/callback/network/process controls before throw", () => {
-        const realm = createNativeCleanupRealm(false);
+        const realm = createNativeCleanupRealm();
         const probes = [() => realm.fencedFs.copyFileSync("/outside", "/outside-other"),
             () => realm.fencedFs.fchmodSync(99999, 0o600), () => realm.fencedFs.readFile("/outside", () => {}),
             () => realm.fencedFs.promises.open("/outside"), () => realm.fencedFs.createReadStream("/outside"),
@@ -185,7 +180,7 @@ describe("real native cleanup original/candidate pairs", () => {
         } finally { realm.cleanup(); }
     });
     it("counts denial before following an inside-root symlink leaf or ancestor", () => {
-        const realm = createNativeCleanupRealm(false);
+        const realm = createNativeCleanupRealm();
         const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-native-cleanup-negative-target-"));
         // Both roots are test-owned. No unknown host pathname is followed even
         // if the containment guard regresses; the target holds only fixture data.
@@ -246,7 +241,7 @@ describe("real native cleanup original/candidate pairs", () => {
     });
 
     it("allows only exact retained Docker probe options through the actual mocked spawn binding", () => {
-        const realm = createNativeCleanupRealm(false);
+        const realm = createNativeCleanupRealm();
         const commands = [["--version"], ["info", "--format", "{{.OperatingSystem}}"],
             ["info", "--format", "{{json .SecurityOptions}}"]];
         const valid = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
@@ -298,9 +293,9 @@ describe("real native cleanup original/candidate pairs", () => {
         } finally { realm.cleanup(); }
     });
 
-    it("admits literal Docker options from the actual original and candidate VM adapters", () => {
-        for (const original of [true, false]) {
-            const realm = createNativeCleanupRealm(original);
+    it("admits literal Docker options from the actual VM adapters", () => {
+        {
+            const realm = createNativeCleanupRealm();
             try {
                 const adapter = realm.load("src/adapters/runtime-capabilities.ts");
                 realm.assertZero();
@@ -324,7 +319,7 @@ describe("real native cleanup original/candidate pairs", () => {
             "Object.defineProperty(Array.prototype, 'getter', { configurable: true, get() { globalThis.getterCalls++; return true; } })",
         ];
         for (const mutation of mutations) {
-            const realm = createNativeCleanupRealm(false);
+            const realm = createNativeCleanupRealm();
             try {
                 const adapter = realm.load("src/adapters/runtime-capabilities.ts"); realm.assertZero();
                 const observations = adapter.createNativeRuntimeCapabilitiesObservations(() => null);

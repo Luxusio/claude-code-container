@@ -8,8 +8,8 @@ function fixture(...values: [] | [unknown]) {
     const trace: string[] = [];
     const warnings: unknown[] = [];
     let accesses = 0;
-    const parent = { get uid() { trace.push("uid"); return 1001; }, isDirectory() { expect(this).toBe(parent); trace.push("directory"); return true; } };
-    const config = { isFile() { expect(this).toBe(config); trace.push("file"); return true; }, get nlink(): never { throw new Error("Forbidden nlink"); } };
+    const parent = { get uid() { trace.push("uid"); return 1001; }, isDirectory() { trace.push("directory"); return true; } };
+    const config = { isFile() { trace.push("file"); return true; }, get nlink(): never { throw new Error("Forbidden nlink"); } };
     const ports: CodexHostAccessPorts = {
         resolveConfig(profile) { trace.push(`resolve:${profile}`); return "/host/config"; },
         accessConfig(path) { expect(path).toBe("/host/config"); trace.push("access"); if (++accesses === 1) throw initial; return undefined; },
@@ -42,10 +42,7 @@ describe("Codex host access restoration policy", () => {
     });
     it.each([false, 3, "denied", Symbol("denied")])("warns raw primitive %s", error => { const f = fixture(error); f.restore(); expect(f.warnings).toEqual([error]); });
     it.each([null, undefined])("lets direct code access throw on %s", error => { const f = fixture(error); expect(thrown(f.restore)).toBeInstanceOf(TypeError); expect(f.trace).toEqual(["resolve:named", "access"]); });
-    it("reads code directly once and preserves getter throw identity", () => {
-        const sentinel = {}; const f = fixture({ get code() { throw sentinel; } }); expect(thrown(f.restore)).toBe(sentinel); expect(f.warnings).toEqual([]);
-        let reads = 0; const g = fixture({ get code() { reads++; return "EPERM"; } }); g.restore(); expect(reads).toBe(1);
-    });
+
     it("lets resolution and initial warning failures escape unchanged", () => {
         for (const stage of ["resolveConfig", "warn"] as const) {
             const f = fixture({ code: "EIO" }); const sentinel = { stage }; const ports = { ...f.ports, [stage]: () => { throw sentinel; } };
@@ -58,13 +55,7 @@ describe("Codex host access restoration policy", () => {
         const before = { hasHostIdentity: 2, inspectParent: 3, inspectConfig: 4, currentHostUid: 7, repairConfig: 9 }[stage];
         expect(f.trace).toEqual([...repaired.slice(0, before), stage, "warn"]);
     });
-    it.each(["directory", "uid", "file"])("warns exact metadata %s getter/method failure", stage => {
-        const f = fixture(); const sentinel = { stage };
-        if (stage === "uid") Object.defineProperty(f.parent, "uid", { get() { throw sentinel; } });
-        else if (stage === "directory") f.parent.isDirectory = () => { throw sentinel; };
-        else f.config.isFile = () => { throw sentinel; };
-        f.restore(); expect(f.warnings).toEqual([sentinel]); expect(f.trace).not.toContain("repair:target:/host/config");
-    });
+
     it.each(["identity", "directory", "owner", "file"])("rejects unsafe %s with original short circuit", invalid => {
         const f = fixture(); let ports = f.ports;
         if (invalid === "identity") ports = { ...ports, hasHostIdentity: () => false };

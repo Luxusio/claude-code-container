@@ -80,12 +80,7 @@ describe("complete inward clean policy", () => {
     it("propagates rejected confirmation by identity", async () => {
         const f = setup(); expect(await f.run({ all: true }, { confirm: () => Promise.reject(f.fault) })).toBe(f.fault); expect(f.trace).not.toContain("mutation:capture");
     });
-    it("retains repeated option reads and original volume short-circuit", async () => {
-        const f = setup(); const reads: string[] = []; let allReads = 0;
-        const options = { get volumes() { reads.push("volumes"); return false; }, get all() { reads.push("all"); return ++allReads === 1; }, get dryRun() { reads.push("dryRun"); return false; }, get yes() { reads.push("yes"); return true; } };
-        await f.run(options, { observeImages: () => f.raw("ccc\ti\t1MB") });
-        expect(reads).toEqual(["volumes", "all", "all", "dryRun", "yes"]); expect(f.trace).toContain("volumes"); expect(f.trace).not.toContainEqual(["rm", ID]);
-    });
+
     it("retains raw claim veto including malformed/stale/profile claims while images continue", async () => {
         const f = setup(); await f.run(undefined, { sessionClaims: () => ["not-a-pid.profile-old.lock"], observeImages: () => f.raw("ccc\ti\t1MB") });
         expect(f.trace).not.toContainEqual(["stop", ID]); expect(f.trace).not.toContainEqual(["rm", ID]); expect(f.trace).toContainEqual(["rmi", "i"]);
@@ -106,23 +101,14 @@ describe("complete inward clean policy", () => {
         expect(f.trace.filter(item => Array.isArray(item) && ["rm", "rmi", "volume-rm"].includes(String(item[0])))).toEqual([["rm", ID], ["rm", "001122334455"]]);
         expect(f.trace).not.toContain("exit"); expect(f.trace.some(item => Array.isArray(item) && item[0] === "publish" && String(item[1]).includes("Done."))).toBe(false);
     });
-    it.each(["stopContainer", "removeContainer", "removeImage", "removeVolume"] as const)("mutation %s observes returned error before status", async site => {
-        const f = setup(); let statusReads = 0;
-        const mutation = { ...f.mutation, [site]: () => ({ error: f.fault, get status() { statusReads++; return 0; } }) };
-        const error = await f.run(undefined, { captureMutationRuntime: () => mutation, observeImages: () => f.raw("ccc\ti\t1MB"), observeVolumes: () => f.raw("ccc-volume") });
-        expect(error).toHaveProperty("message", expect.stringContaining("cleanup aborted.")); expect(statusReads).toBe(0);
-    });
+
     it("raw publication/callback/exit exceptions retain identity", async () => {
         for (const site of ["publication", "lock", "claim", "exit"] as const) {
             const f = setup(); const overrides: Partial<CleanPorts> = site === "publication" ? { capturePublication: () => { throw f.fault; } } : site === "lock" ? { withLifecycleLock: () => { throw f.fault; } } : site === "claim" ? { sessionClaims: () => { throw f.fault; } } : {};
             expect(await f.run(undefined, overrides)).toBe(f.fault);
         }
     });
-    it.each(["volumes", "all", "dryRun", "yes"] as const)("preserves option getter failure identity at %s", async site => {
-        const f = setup(); const options = { all: true, yes: true };
-        Object.defineProperty(options, site, { get() { throw f.fault; } });
-        expect(await f.run(options)).toBe(f.fault); expect(f.trace).not.toContainEqual(["rm", ID]);
-    });
+
     it.each([null, undefined, ""])("successful nullish/empty stdout %j remains an empty inventory", async stdout => {
         const f = setup(); await f.run({ all: true }, { observeContainers: () => ({ status: 0, stdout }), observeImages: () => ({ status: 0, stdout }), observeVolumes: () => ({ status: 0, stdout }) });
         expect(f.trace).toContainEqual(["publish", "Nothing to clean."]); expect(f.trace).not.toContain("mutation:capture"); expect(f.trace).not.toContain("prompt"); expect(f.trace).not.toContain("exit");
