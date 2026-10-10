@@ -5,8 +5,8 @@ Updated: 2026\-10\-10. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **102/218 (46.8%)**.
-Integrated source: **102/218 (46.8%)**; historical baseline: **31**. Candidates: **0**; partial: **18**; TODO: **98**.
+Implemented including unmerged candidates: **108/218 (49.5%)**.
+Integrated source: **108/218 (49.5%)**; historical baseline: **31**. Candidates: **0**; partial: **16**; TODO: **94**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -28,7 +28,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | codex\-resume | 1 | 0 | `b625854d` | code/security/qa actual PASS; hook receipts absent | accepted @ 10c86183 |
 | codex\-clipboard | 1 | 0 | `fb6c26f7` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
 | broker\-observations | 6 | 3 | `3f020650` | code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked | accepted @ 10c86183 |
-| sandbox\-stop | 0 | 1 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked | accepted @ 10c86183 |
+| sandbox\-stop | 0 | 0 | `e80e5afe` | code/security/qa actual PASS; hook receipts absent, formal source close parked Historical direct\-stop contribution; whole operation now counted once in sandbox\-request\-admin\-integration\. | accepted @ 10c86183 |
 | codex\-state\-ownership | 1 | 0 | `912ec696` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
 | lab\-state\-ownership | 1 | 0 | `75bd30de` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
 | clipboard\-bridge | 4 | 0 | `fb7457c7` | independent code/security/QA actual PASS; one task\_verify attempted, hook receipts absent, formal close parked; admitted to root integration | accepted @ 10c86183 |
@@ -44,12 +44,12 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | admin\-qemu\-integration | 4 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
 | qemu\-admin\-lifecycle\-integration | 15 | 0 | `d24e5ca1` | Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS\. Relevant unchanged tests carry\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ d24e5ca1 |
 | exec\-broker\-image\-integration | 4 | 0 | `acefb933` | Actual independent source/composed and affected Code/Security/Guide PASS\. Required JS and image\-test strict checks, genuine current production build, 17 affected files with 587 passing cases, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Test\-only fixes carried unchanged successful production checks\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ acefb933 |
+| sandbox\-request\-admin\-integration | 6 | 0 | `d0bb62a9` | Actual independent source/composed and affected Code/Security/Docs PASS; strict consumed JS/TS contracts including five negative controls, current genuine build, 21 required files with 867 passing current cases using qualified unchanged results, lint, seven actual package cases, npm/Unix startup smoke and compiled CLI PASS\. Verified local source delivery and all97preserved user changes\. Empty automatic receipt stream parked after one verification; no formal close or native\-host certification\. | accepted @ d0bb62a9 |
 
 ## 0.2 Active next plans
 
 | Lane | Operation ids | State |
 | --- | --- | --- |
-| sandbox\-stop | OP\-windows\-sandbox\-stop | direct binding source frozen and independent code/security/QA PASS; broker binding remains legacy, whole operation partial |
 | clipboard\-bridge | OP\-clipboard\-read, OP\-clipboard\-write, OP\-clipboard\-server\-ensure, OP\-clipboard\-server\-retire | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
 | codex\-state\-ownership | OP\-codex\-state\-ownership\-migration | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
 | lab\-state\-ownership | OP\-lab\-state\-ownership\-migration | source and combined review/QA PASS; accepted local feature delivery at10c86183; formal missing\-hook close remains parked, native acceptance unverified |
@@ -60,8 +60,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | state\-access | OP\-state\-storage | Partial state\-read/native\-adapter binding accepted; broader atomic/CAS/repository storage remains incomplete; no whole credit\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | runtime\-capabilities | OP\-runtime\-capabilities | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | mcp\-forward | OP\-mcp\-forward | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
-| windows\-sandbox\-completion | OP\-windows\-sandbox\-start, OP\-windows\-sandbox\-stop, OP\-windows\-sandbox\-delete | Independent plan GO; production and separate ordinary test authoring underway in isolated worktree\. Both direct and broker bindings required; current QA and accepted\-parent reconciliation pending; zero new completion credit\. |
-| device\-request | OP\-device\-dispatch | Independent plan GO; shared request application and separate ordinary tests underway in isolated worktree\. Current strict contracts, public routing/output QA and accepted\-parent reconciliation pending; one operation only, zero completion credit yet\. |
+| broker\-owner\-leases | OP\-broker\-owner\-register, OP\-broker\-owner\-resolve, OP\-lease\-claim, OP\-lease\-heartbeat, OP\-lease\-prune, OP\-lease\-release | Source and ordinary tests committed61aba969; actual independent Code/Security/Docs and composed merge review PASS\. Current accepted parent reconciliation and one combined QA with test\-only verifier cleanup pending; zero new completion credit\. |
+| verifier\-trim |  | Seven obsolete custom VM loaders deleted; required CLI forwarding and connection deadline cases retained in two ordinary suites\. Committedff245b02 with affected independent Code PASS; combined current QA and accepted\-parent reconciliation pending\. No product\-operation credit\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -78,21 +78,21 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-broker-owner-register` — Register canonical host project/profile broker owner mapping. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-broker-owner-resolve` — Resolve registered canonical owner and ensure broker auth material. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 4. M03 — Routes and transport (2/6 implemented)
+## 4. M03 — Routes and transport (3/6 implemented)
 
-- [ ] `OP-device-dispatch` — Select and dispatch supported device operation. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-dispatch` — Select and dispatch supported device operation. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 - [ ] `OP-device-inventory` — Device inventory. **partial**; broker\-observations @ 3f020650.
 - [ ] `OP-backend-discovery` — Backend discovery. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [x] `OP-device-destructive-admission` — Authorize existing destructive Device Lab action. **integrated**; destructive\-admission @ b94cb28d.
 - [x] `OP-device-flow` — Run bounded ordered Device Lab action flow. **integrated**; device\-flow @ d5b9bfe2.
 - [ ] `OP-device-owned-list` — List current owner device definitions. **partial**; broker\-observations @ 3f020650.
 
-## 5. M04 — Sandbox lifecycle (1/4 implemented)
+## 5. M04 — Sandbox lifecycle (4/4 implemented)
 
 - [x] `OP-windows-sandbox-create` — windows\-sandbox create. **integrated**; sandbox\-create @ c9261aed.
-- [ ] `OP-windows-sandbox-start` — windows\-sandbox start. **partial**; packages/device\-lab/providers/backends/windows\-sandbox\.mjs.
-- [ ] `OP-windows-sandbox-stop` — windows\-sandbox stop. **partial**; sandbox\-stop @ e80e5afe.
-- [ ] `OP-windows-sandbox-delete` — windows\-sandbox delete. **TODO**; packages/device\-lab/providers/backends/windows\-sandbox\.mjs.
+- [x] `OP-windows-sandbox-start` — windows\-sandbox start. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
+- [x] `OP-windows-sandbox-stop` — windows\-sandbox stop. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
+- [x] `OP-windows-sandbox-delete` — windows\-sandbox delete. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 
 ## 6. M05 — Hyper-V lifecycle (0/15 implemented)
 
@@ -112,12 +112,12 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 7. M06 — Images/network/admin (7/14 implemented)
+## 7. M06 — Images/network/admin (9/14 implemented)
 
 - [x] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-prune` — Prune stale Device Lab records. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
-- [ ] `OP-device-admin-diagnostics` — Diagnose and smoke Device Lab. **TODO**; src/device\-lab\-admin\.ts.
-- [ ] `OP-device-admin-setup` — Set up Hyper\-V host fabric. **TODO**; src/device\-lab\-admin\.ts.
+- [x] `OP-device-admin-diagnostics` — Diagnose and smoke Device Lab. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
+- [x] `OP-device-admin-setup` — Set up Hyper\-V host fabric. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 - [ ] `OP-broker-owner-cleanup` — Broker owner cleanup. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [x] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [ ] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.

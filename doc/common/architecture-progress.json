@@ -120,10 +120,8 @@
       "taskId": "TASK__architecture-sandbox-stop",
       "implementation": "direct-binding-complete",
       "wholeOperationIds": [],
-      "partialOperationIds": [
-        "OP-windows-sandbox-stop"
-      ],
-      "codeReview": "code/security/qa actual PASS; hook receipts absent, formal source close parked",
+      "partialOperationIds": [],
+      "codeReview": "code/security/qa actual PASS; hook receipts absent, formal source close parked Historical direct-stop contribution; whole operation now counted once in sandbox-request-admin-integration.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "10c8618383811ced1f24305c35f6098ab858d25d"
@@ -394,17 +392,29 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "acefb9333eab25139a6112bdcdeba0779e2db15c"
+    },
+    {
+      "id": "sandbox-request-admin-integration",
+      "branch": "refactor/architecture-sandbox-request-integration-20261010",
+      "commit": "d0bb62a9791974bee0b790616a25872ab1fc01f1",
+      "taskId": "TASK__architecture-sandbox-request-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-windows-sandbox-start",
+        "OP-windows-sandbox-stop",
+        "OP-windows-sandbox-delete",
+        "OP-device-dispatch",
+        "OP-device-admin-diagnostics",
+        "OP-device-admin-setup"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed and affected Code/Security/Docs PASS; strict consumed JS/TS contracts including five negative controls, current genuine build, 21 required files with 867 passing current cases using qualified unchanged results, lint, seven actual package cases, npm/Unix startup smoke and compiled CLI PASS. Verified local source delivery and all97preserved user changes. Empty automatic receipt stream parked after one verification; no formal close or native-host certification.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "d0bb62a9791974bee0b790616a25872ab1fc01f1"
     }
   ],
   "planningLanes": [
-    {
-      "id": "sandbox-stop",
-      "taskId": "TASK__architecture-sandbox-stop",
-      "coveredOperationIds": [
-        "OP-windows-sandbox-stop"
-      ],
-      "status": "direct binding source frozen and independent code/security/QA PASS; broker binding remains legacy, whole operation partial"
-    },
     {
       "id": "clipboard-bridge",
       "taskId": "TASK__architecture-clipboard-bridge",
@@ -489,22 +499,23 @@
       "status": "Whole operation source and both shipping forms passed combined portable QA. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified."
     },
     {
-      "id": "windows-sandbox-completion",
-      "taskId": "TASK__architecture-windows-sandbox-completion",
+      "id": "broker-owner-leases",
+      "taskId": "TASK__architecture-broker-owner-leases",
       "coveredOperationIds": [
-        "OP-windows-sandbox-start",
-        "OP-windows-sandbox-stop",
-        "OP-windows-sandbox-delete"
+        "OP-broker-owner-register",
+        "OP-broker-owner-resolve",
+        "OP-lease-claim",
+        "OP-lease-heartbeat",
+        "OP-lease-prune",
+        "OP-lease-release"
       ],
-      "status": "Independent plan GO; production and separate ordinary test authoring underway in isolated worktree. Both direct and broker bindings required; current QA and accepted-parent reconciliation pending; zero new completion credit."
+      "status": "Source and ordinary tests committed61aba969; actual independent Code/Security/Docs and composed merge review PASS. Current accepted parent reconciliation and one combined QA with test-only verifier cleanup pending; zero new completion credit."
     },
     {
-      "id": "device-request",
-      "taskId": "TASK__architecture-device-request",
-      "coveredOperationIds": [
-        "OP-device-dispatch"
-      ],
-      "status": "Independent plan GO; shared request application and separate ordinary tests underway in isolated worktree. Current strict contracts, public routing/output QA and accepted-parent reconciliation pending; one operation only, zero completion credit yet."
+      "id": "verifier-trim",
+      "taskId": "TASK__architecture-verifier-trim",
+      "coveredOperationIds": [],
+      "status": "Seven obsolete custom VM loaders deleted; required CLI forwarding and connection deadline cases retained in two ordinary suites. Committedff245b02 with affected independent Code PASS; combined current QA and accepted-parent reconciliation pending. No product-operation credit."
     }
   ]
 }
