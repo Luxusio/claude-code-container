@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupFakeAndroidMcpContext, createFakeAndroidMcpContext, TIMEOUT, type FakeAndroidMcpContext } from "./helpers/fake-android-mcp-fixture.js";
 
@@ -371,6 +371,22 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
         expect((rejectedRemoteDownload.content as Array<{ text?: string }>)[0].text).toContain("download-remote-path-not-absolute");
         expect(readFileSync(logPath, "utf-8")).toBe(logBeforeRejectedRemoteTransfer);
 
+        const uploaded = await client.callTool({ name: "upload", arguments: { deviceId: "android-device-real-pixel", localPath: realUploadPath, remotePath: "/sdcard/real-upload.txt" } });
+        expect(uploaded.isError, JSON.stringify(uploaded.content)).not.toBe(true);
+        expect(parseToolJson(uploaded)).toMatchObject({ uploaded: { localPath: realUploadPath, remotePath: "/sdcard/real-upload.txt" }, provider: "adb" });
+        const realDownloadPath = join(homeDir, "real-download.txt");
+        const downloaded = await client.callTool({ name: "download", arguments: { deviceId: "android-device-real-pixel", remotePath: "/sdcard/real-download.txt", localPath: realDownloadPath } });
+        expect(downloaded.isError, JSON.stringify(downloaded.content)).not.toBe(true);
+        expect(parseToolJson(downloaded)).toMatchObject({ downloaded: { localPath: realDownloadPath, remotePath: "/sdcard/real-download.txt" }, provider: "adb" });
+        expect(readFileSync(realDownloadPath, "utf8")).toBe("downloaded");
+        writeFileSync(realDownloadPath, "retained physical download");
+        const failedDownload = await client.callTool({ name: "download", arguments: { deviceId: "android-device-real-pixel", remotePath: "/sdcard/fail-pull.txt", localPath: realDownloadPath } });
+        expect(failedDownload.isError).toBe(true);
+        expect(readFileSync(realDownloadPath, "utf8")).toBe("retained physical download");
+        const failedStage = readFileSync(logPath, "utf8").match(/adb -s R5CREAL123 pull \/sdcard\/fail-pull\.txt (.+)/)?.[1];
+        if (!failedStage) throw new Error("Failed physical download did not reach its allocated ADB stage");
+        expect(existsSync(dirname(failedStage))).toBe(false);
+
         const realRecordingPath = join(homeDir, "real-recording.mp4");
         writeFileSync(realRecordingPath, "original");
         const realRecordStart = await client.callTool({
@@ -504,10 +520,15 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
             };
             writeFileSync(leasePath, JSON.stringify(forgedLease, null, 2));
             writeFileSync(logPath, "");
+            const uploadPath = join(homeDir, "lease-fenced-upload.txt");
+            writeFileSync(uploadPath, "owned transfer input");
 
             for (const request of [
                 { name: "status", arguments: { deviceId } },
                 { name: "exec", arguments: { deviceId, command: "echo fenced" } },
+                { name: "click", arguments: { deviceId, x: 1, y: 2 } },
+                { name: "upload", arguments: { deviceId, localPath: uploadPath, remotePath: "/sdcard/fenced.txt" } },
+                { name: "download", arguments: { deviceId, remotePath: "/sdcard/fenced.txt", localPath: join(homeDir, "lease-fenced-download.txt") } },
                 { name: "start", arguments: { deviceId } },
                 { name: "detach", arguments: { deviceId } },
             ]) {

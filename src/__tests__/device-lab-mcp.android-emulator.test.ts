@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { spawn } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { androidWindowsHiddenLauncherScript } from "@ccc/device-lab/providers/backends/android.mjs";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
@@ -633,12 +633,18 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
         });
         expect(failedDownload.isError).toBe(true);
         expect(readFileSync(preservedDownloadPath, "utf-8")).toBe("original");
+        const failedDownloadStage = readFileSync(logPath, "utf-8").match(/adb -s emulator-5582 pull \/sdcard\/fail-pull\.txt (.+)/)?.[1];
+        if (!failedDownloadStage) throw new Error("Failed download did not reach its allocated ADB stage");
+        expect(existsSync(dirname(failedDownloadStage))).toBe(false);
 
         const failedUpload = await client.callTool({
             name: "upload",
             arguments: { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/fail-push.txt" },
         });
         expect(failedUpload.isError).toBe(true);
+        const failedUploadStage = readFileSync(logPath, "utf-8").match(/adb -s emulator-5582 push (.+) \/sdcard\/fail-push\.txt/)?.[1];
+        if (!failedUploadStage) throw new Error("Failed upload did not reach its allocated ADB stage");
+        expect(existsSync(dirname(failedUploadStage))).toBe(false);
 
         const secretUploadPath = join(homeDir, ".env");
         writeFileSync(secretUploadPath, "TOKEN=secret");

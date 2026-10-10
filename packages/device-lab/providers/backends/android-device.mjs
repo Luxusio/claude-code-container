@@ -1,3 +1,4 @@
+import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
@@ -153,10 +154,6 @@ function adbArgsForDevice(device, args) {
     return ["-s", targetSerial(device), ...args];
 }
 
-function adbTextValue(text) {
-    return String(text).replace(/\s/g, "%s");
-}
-
 function orientationRotation(orientation) {
     const rotations = {
         portrait: "0",
@@ -306,6 +303,53 @@ function stopVolatileProcesses(device, adb) {
 }
 
 export function listAndroidRealDevices() { return deviceObservation.owned(); }
+
+/** @typedef {ReturnType<typeof ensureAdbDevice>} AndroidControlTarget */
+/** @typedef {ReturnType<typeof stageLocalInputFile>} AndroidControlInputStage */
+/** @typedef {ReturnType<typeof createLocalOutputStage>} AndroidControlOutputStage */
+/** @type {import('../ports/android-control-transfer.mjs').AndroidControlTransferPorts<AndroidControlTarget,AndroidControlInputStage,AndroidControlOutputStage>} */
+const androidControlTransferPorts = {
+    variant: "physical",
+    target(deviceId) {
+        const target = ensureAdbDevice(deviceId);
+        if (target.unknown) return { kind: "unknown" };
+        if (target.error) return { kind: "refused", message: target.error };
+        return { kind: "ready", target };
+    },
+    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    transfer: (target, args, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, args), timeoutMs),
+    guestPath: (value, label) => {
+        const policy = validateGuestPath(value, { label, platform: "posix" });
+        return policy.ok ? { ok: true, path: policy.path } : { ok: false, message: policy.message };
+    },
+    stageInput(value) {
+        const stage = stageLocalInputFile(value, { label: "upload-local-path" });
+        return stage.ok
+            ? { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage }
+            : { ok: false, message: stage.message };
+    },
+    stageOutput(value) {
+        const stage = createLocalOutputStage(value, { label: "download-local-path" });
+        return stage.ok
+            ? { ok: true, path: stage.path, stagedPath: stage.stagedPath, handle: stage }
+            : { ok: false, message: stage.message };
+    },
+    commitOutput(stage) {
+        const result = commitLocalOutputStage(stage, { label: "download-local-path" });
+        return result.ok ? { ok: true, path: result.path } : { ok: false, message: result.message };
+    },
+    disposeInput(stage) { stage.cleanup(); return undefined; },
+    disposeOutput(stage) { stage.cleanup(); return undefined; },
+};
+const androidControlTransfer = createAndroidControlTransfer(androidControlTransferPorts);
+
+/** @param {import('../ports/android-control-transfer.mjs').AndroidControlOutcome | undefined} outcome */
+function presentAndroidControlOutcome(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "text") return textResult(false, outcome.message);
+    return fail(outcome.command);
+}
 
 async function handleAndroidRealToolUnlocked(name, args) {
     if (!backendHintAllows(args, "android-device")) return undefined;
@@ -647,44 +691,9 @@ async function handleAndroidRealToolUnlocked(name, args) {
             return handleAndroidRealTool("device_screenshot", { deviceId });
         }
 
-        case "device_upload": {
-            const { deviceId, localPath, remotePath } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const remotePolicy = validateGuestPath(remotePath, { label: "upload-remote-path", platform: "posix" });
-            if (!remotePolicy.ok) return textResult(false, remotePolicy.message);
-            const localStage = stageLocalInputFile(localPath, { label: "upload-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const r = runWithTimeout(target.adb, adbArgsForDevice(target.device, ["push", localStage.stagedPath, remotePolicy.path]), ANDROID_TRANSFER_TIMEOUT_MS);
-                return r.status === 0
-                    ? jsonResult({ uploaded: { localPath: localStage.path, remotePath: remotePolicy.path }, provider: "adb", stdout: r.stdout, stderr: r.stderr, status: r.status })
-                    : fail(r);
-            } finally {
-                localStage.cleanup();
-            }
-        }
-
-        case "device_download": {
-            const { deviceId, remotePath, localPath } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const remotePolicy = validateGuestPath(remotePath, { label: "download-remote-path", platform: "posix" });
-            if (!remotePolicy.ok) return textResult(false, remotePolicy.message);
-            const localStage = createLocalOutputStage(localPath, { label: "download-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const r = runWithTimeout(target.adb, adbArgsForDevice(target.device, ["pull", remotePolicy.path, localStage.stagedPath]), ANDROID_TRANSFER_TIMEOUT_MS);
-                if (r.status !== 0) return fail(r);
-                const committed = commitLocalOutputStage(localStage, { label: "download-local-path" });
-                if (!committed.ok) return textResult(false, committed.message);
-                return jsonResult({ downloaded: { remotePath: remotePolicy.path, localPath: committed.path }, provider: "adb", stdout: r.stdout, stderr: r.stderr, status: r.status });
-            } finally {
-                localStage.cleanup();
-            }
-        }
+        case "device_upload":
+        case "device_download":
+            return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
 
         case "device_install_app": {
             const { deviceId, path, replace = true, helperTimeoutMs } = args;
@@ -730,67 +739,21 @@ async function handleAndroidRealToolUnlocked(name, args) {
             return jsonResult({ provider: "adb-uiautomator", source: dump.source, remotePath: dump.remotePath, stdout: dump.dump.stdout, stderr: dump.dump.stderr });
         }
 
-        case "mobile_tap": {
-            const { deviceId, x, y } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)], { tapped: { x, y }, provider: "adb" });
-        }
-
-        case "mobile_double_tap": {
-            const { deviceId, x, y } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const first = runAdbDeviceCommand(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)]);
-            if (!first.ok) return fail(first.result);
-            const second = runAdbDeviceCommand(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)]);
-            return second.ok ? jsonResult({ doubleTapped: { x, y }, provider: "adb" }) : fail(second.result);
-        }
-
-        case "mobile_long_press": {
-            const { deviceId, x, y, durationMs = 700 } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x), String(y), String(x), String(y), String(durationMs)], { longPressed: { x, y, durationMs }, provider: "adb" });
-        }
-
+        case "mobile_tap":
+        case "mobile_double_tap":
+        case "mobile_long_press":
         case "mobile_swipe":
-        case "mobile_drag": {
-            const { deviceId, x1, y1, x2, y2, durationMs = name === "mobile_drag" ? 700 : 300 } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(durationMs)], { [name === "mobile_drag" ? "dragged" : "swiped"]: { x1, y1, x2, y2, durationMs }, provider: "adb" });
-        }
-
-        case "mobile_type_text": {
-            const { deviceId, text } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "input", "text", adbTextValue(text)], { typed: true, provider: "adb" });
-        }
-
-        case "mobile_key": {
-            const { deviceId, key, keyCode } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const resolvedKey = keyCode ?? key;
-            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") return textResult(false, "mobile_key requires key or keyCode");
-            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", String(resolvedKey)], { key: resolvedKey, provider: "adb" });
-        }
-
-        case "mobile_back": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 4 });
-        case "mobile_home": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 3 });
-        case "mobile_forward": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 125 });
-        case "mobile_recents": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 187 });
-        case "mobile_power": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 26 });
-        case "mobile_lock": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 223 });
-        case "mobile_unlock": return handleAndroidRealTool("mobile_key", { deviceId: args.deviceId, keyCode: 224 });
+        case "mobile_drag":
+        case "mobile_type_text":
+        case "mobile_key":
+        case "mobile_back":
+        case "mobile_home":
+        case "mobile_forward":
+        case "mobile_recents":
+        case "mobile_power":
+        case "mobile_lock":
+        case "mobile_unlock":
+            return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
 
         case "mobile_set_orientation": {
             const { deviceId, orientation } = args;
