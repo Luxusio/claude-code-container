@@ -3,6 +3,7 @@ import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     DeviceLabProjectEnumerationError,
+    cleanupOwnerDevices,
     deleteOwnerDevice,
     devicesCli,
     devicesCliAsync,
@@ -175,6 +176,96 @@ describe("device-lab admin delete, prune, and CLI commands", () => {
         writeFileSync(aggregateFile, JSON.stringify({ leases: [lease] }));
         return { ...files, devices, current, lease, leaseFile, aggregateFile };
     }
+
+
+    it("cleanup compensates both physical lease stores when matching owner publication sees a successor", () => {
+        const cwd = "/project/admin-cleanup-native-cas-compensation";
+        const f = matchingDetachedLease(cwd);
+        f.current.status = "attached";
+        writeFileSync(f.androidDeviceFile, JSON.stringify({ devices: f.devices }));
+        const successor = { ...f.current, marker: "successor" };
+        const mutationFile = join(dirname(f.androidDeviceFile), "devices.mutation.lock"), actualLock = sharedState.withSharedMutationLock;
+        let replaced = false;
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, decide, options) =>
+            actualLock(file, () => {
+                if (file === mutationFile && !replaced) {
+                    replaced = true;
+                    expect(nativeFs.existsSync(f.leaseFile)).toBe(false);
+                    expect(JSON.parse(readFileSync(f.aggregateFile, "utf8"))).toEqual({ leases: [] });
+                    writeFileSync(f.androidDeviceFile, JSON.stringify({ devices: f.devices.map(record => record.id === f.current.id ? successor : record) }));
+                }
+                return decide();
+            }, options)
+        );
+        const result = cleanupOwnerDevices(cwd, 37);
+        expect(result.results.find(record => record.id === f.current.id)).toEqual({
+            id: f.current.id, backend: "android-device", previousStatus: "attached", status: "failed", commands: [], reason: "owner-device-state-conflict",
+        });
+        expect(replaced).toBe(true);
+        // A later sibling can finish independently; this exact successor remains.
+        expect(fixture.readDevices(f.androidDeviceFile).find(record => record.id === f.current.id)).toEqual(successor);
+        expect(JSON.parse(readFileSync(f.leaseFile, "utf8"))).toEqual(f.lease);
+        expect(JSON.parse(readFileSync(f.aggregateFile, "utf8"))).toEqual({ leases: [f.lease] });
+    });
+
+    it("cleanup rethrows raw publication failure after restoring both matching physical leases", () => {
+        const cwd = "/project/admin-cleanup-native-publication-compensation";
+        const f = matchingDetachedLease(cwd), fault = { native: "cleanup publication" };
+        f.current.status = "attached";
+        writeFileSync(f.androidDeviceFile, JSON.stringify({ devices: f.devices }));
+        const actualWrite = sharedState.writeJsonFileAtomically, order: string[] = [];
+        vi.spyOn(sharedState, "writeJsonFileAtomically").mockImplementation((file, value) => {
+            if (file === f.aggregateFile) order.push("aggregate");
+            if (file === f.leaseFile) order.push("lease");
+            if (file === f.androidDeviceFile) { order.push("owner"); throw fault; }
+            return actualWrite(file, value);
+        });
+        let caught: unknown;
+        try { cleanupOwnerDevices(cwd, 37); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(order).toEqual(["aggregate", "owner", "lease", "aggregate"]);
+        expect(fixture.readDevices(f.androidDeviceFile)).toEqual(f.devices);
+        expect(JSON.parse(readFileSync(f.leaseFile, "utf8"))).toEqual(f.lease);
+        expect(JSON.parse(readFileSync(f.aggregateFile, "utf8"))).toEqual({ leases: [f.lease] });
+    });
+
+    it.each(["release", "publication"])("cleanup preserves exact ordered raw errors when %s compensation fails", kind => {
+        const cwd = "/project/admin-cleanup-native-rollback-errors";
+        const f = matchingDetachedLease(cwd);
+        f.current.status = "attached";
+        writeFileSync(f.androidDeviceFile, JSON.stringify({ devices: f.devices }));
+        const primary = { native: kind }, leaseRollback = { native: "lease rollback" }, aggregateRollback = { native: "aggregate rollback" };
+        const actualWrite = sharedState.writeJsonFileAtomically, actualUnlink = nativeFs.unlinkSync, order: string[] = [];
+        let aggregateWrites = 0;
+        vi.spyOn(nativeFs, "unlinkSync").mockImplementation(file => {
+            if (kind === "release" && file === f.leaseFile) { order.push("unlink"); throw primary; }
+            return actualUnlink(file);
+        });
+        vi.spyOn(sharedState, "writeJsonFileAtomically").mockImplementation((file, value) => {
+            if (file === f.aggregateFile) {
+                order.push("aggregate");
+                if (++aggregateWrites === 2) throw aggregateRollback;
+            }
+            if (file === f.androidDeviceFile) { order.push("owner"); throw primary; }
+            if (file === f.leaseFile) { order.push("lease"); throw leaseRollback; }
+            return actualWrite(file, value);
+        });
+        let caught: unknown;
+        try { cleanupOwnerDevices(cwd, 37); } catch (error) { caught = error; }
+        expect(caught).toBeInstanceOf(AggregateError);
+        const failure = caught as AggregateError;
+        expect(failure.message).toBe(kind === "release" ? "physical-lease-aggregate-rollback-failed" : "physical-lease-owner-state-rollback-failed");
+        expect(failure.errors).toHaveLength(kind === "release" ? 2 : 3);
+        expect(failure.errors[0]).toBe(primary);
+        if (kind === "publication") expect(failure.errors[1]).toBe(leaseRollback);
+        expect(failure.errors.at(-1)).toBe(aggregateRollback);
+        expect(order).toEqual(kind === "release" ? ["aggregate", "unlink", "aggregate"] : ["aggregate", "owner", "lease", "aggregate"]);
+        expect(fixture.readDevices(f.androidDeviceFile)).toEqual(f.devices);
+        expect(nativeFs.existsSync(f.leaseFile)).toBe(kind === "release");
+        if (kind === "release") expect(JSON.parse(readFileSync(f.leaseFile, "utf8"))).toEqual(f.lease);
+        expect(JSON.parse(readFileSync(f.aggregateFile, "utf8"))).toEqual({ leases: [] });
+    });
+
 
     it.each([false, true])("actual %s async CLI preserves owner/profile output and argument refusals without effects", async asynchronous => {
         const cwd = "/project/admin-prune-cli-contract", profile = "chosen-profile";

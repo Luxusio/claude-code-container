@@ -15,11 +15,520 @@ import {
 } from "../device-lab-admin.js";
 import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
 import { createDeviceLabAdminTestFixture } from "./helpers/device-lab-admin-fixture.js";
+import * as nativeFs from "fs";
+import { isDeepStrictEqual } from "util";
+import ts from "typescript";
+import * as ownerState from "@ccc/device-lab/device-lab-owner-state.js";
+import * as sharedState from "@ccc/device-lab/device-lab-shared-state.js";
+import * as session from "../session.js";
+import { getProjectId } from "../utils.js";
+import { createDeviceAdminCleanup, createDeviceAdminAllProjectCleanup } from "../application/device-admin-cleanup.js";
+import type { DeviceAdminCleanupPorts, DeviceAdminAllProjectCleanupPorts } from "../ports/device-admin-cleanup.js";
+import type { CleanupBackend, CleanupRecord, CleanupCommandResult } from "../domain/device-admin-cleanup.js";
+
+vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
+vi.mock("@ccc/device-lab/device-lab-owner-state.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab-owner-state.js")>(),
+}));
+vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(),
+}));
+
+// Exact reached policy from basee11c cleanup71641e44/admin e1854fcb.
+// Native process guards, locks and lease compensation are not copied or modeled.
+const ORIGINAL_CLEANUP = "function isGuid(value: unknown): value is string {\n    return typeof value === \"string\" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);\n}\n\nfunction serialForAndroid(device: DeviceRecord): string | null {\n    if (typeof device.serial === \"string\" && device.serial) return device.serial;\n    if (typeof device.port === \"number\") return `emulator-${device.port}`;\n    return null;\n}\n\nfunction simctlTarget(device: DeviceRecord): string | null {\n    for (const key of [\"udid\", \"simulatorName\", \"name\", \"id\"]) {\n        const value = device[key];\n        if (typeof value === \"string\" && value) return value;\n    }\n    return null;\n}\n\nfunction stopMacosArgs(provider: string, instance: string): string[] | null {\n    if (provider === \"tart\") return [\"stop\", instance];\n    if (provider === \"vz\") return [\"stop\", instance];\n    if (provider === \"utmctl\") return [\"stop\", instance];\n    return null;\n}\n\nfunction lifecycleActive(device: DeviceRecord): boolean {\n    return [\"running\", \"starting\", \"booted\"].includes(device.status || \"\");\n}\n\nfunction appiumServerPid(device: DeviceRecord): unknown {\n    const appium = device.appium as { serverPid?: unknown } | null | undefined;\n    return appium?.serverPid;\n}\n\nfunction recordingPid(device: DeviceRecord): unknown {\n    const recording = device.recording as { pid?: unknown } | null | undefined;\n    return recording?.pid;\n}\n\nfunction hasVolatileProcessMetadata(device: DeviceRecord): boolean {\n    return Boolean(device.pid || appiumServerPid(device) || recordingPid(device) || device.recording || device.appium);\n}\n\nfunction ownedCleanupRuntimes(device: DeviceRecord): OwnedCleanupRuntime[] {\n    const runtimes: OwnedCleanupRuntime[] = [];\n    const recording = device.recording;\n    if (recording && typeof recording === \"object\" && !Array.isArray(recording)) {\n        const metadata = recording as Record<string, unknown>;\n        if (typeof metadata.runtimeId === \"string\" && typeof metadata.pid === \"number\" && metadata.processIdentity) {\n            runtimes.push({ label: \"recording\", runtime: metadata, signal: \"SIGINT\", signalDirectly: true });\n        }\n    }\n    const appium = device.appium;\n    if (appium && typeof appium === \"object\" && !Array.isArray(appium)) {\n        const metadata = appium as Record<string, unknown>;\n        if (metadata.processOwner === \"device-lab-mcp\"\n            && metadata.startedBy === \"direct-provider\"\n            && typeof metadata.runtimeId === \"string\"\n            && typeof metadata.serverPid === \"number\"\n            && metadata.processIdentity) {\n            runtimes.push({\n                label: \"appium\",\n                runtime: { ...metadata, pid: metadata.serverPid },\n                signal: \"SIGTERM\",\n                signalDirectly: true,\n            });\n        }\n    }\n    const runtime = device.runtime;\n    if (runtime && typeof runtime === \"object\" && !Array.isArray(runtime)) {\n        const metadata = runtime as Record<string, unknown>;\n        if (typeof metadata.runtimeId === \"string\" && typeof metadata.pid === \"number\" && metadata.processIdentity) {\n            runtimes.push({ label: \"runtime\", runtime: metadata, signal: \"SIGTERM\", signalDirectly: false });\n        }\n    }\n    return runtimes;\n}\n\nfunction stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs = 5000): { commands: CommandResult[]; reason?: string } {\n    const results: CommandResult[] = [];\n    const runtimes = ownedCleanupRuntimes(match.device);\n    for (const runtime of runtimes) {\n        if (!runtime.signalDirectly || runtimeExited(runtime)) continue;\n        const signal = signalDeviceRuntimeProcess(runtime.runtime, runtime.signal);\n        if (!signal.ok) return { commands: results, reason: `${runtime.label}-process-signal-failed` };\n    }\n\n    if (match.backend.stateKey === \"android\") {\n        const adb = commandPath(\"adb\");\n        const serial = serialForAndroid(match.device);\n        if (adb && serial && match.device.recording) {\n            const result = runCommand(adb, [\"-s\", serial, \"shell\", \"pkill\", \"-2\", \"screenrecord\"], timeoutMs);\n            if (result) results.push(result);\n        }\n        if (adb && serial && lifecycleActive(match.device)) {\n            const result = runCommand(adb, [\"-s\", serial, \"emu\", \"kill\"], timeoutMs);\n            if (result) results.push(result);\n        }\n    } else if (match.backend.stateKey === \"android-device\") {\n        const adb = commandPath(\"adb\");\n        const serial = serialForAndroid(match.device);\n        if (adb && serial && match.device.recording) {\n            const result = runCommand(adb, [\"-s\", serial, \"shell\", \"pkill\", \"-2\", \"screenrecord\"], timeoutMs);\n            if (result) results.push(result);\n        }\n    } else if (match.backend.stateKey === \"ios\") {\n        const xcrun = commandPath(\"xcrun\");\n        const target = simctlTarget(match.device);\n        if (xcrun && target && lifecycleActive(match.device)) {\n            const result = runCommand(xcrun, [\"simctl\", \"shutdown\", target], timeoutMs);\n            if (result) results.push(result);\n        }\n    } else if (match.backend.stateKey === \"ios-device\") {\n        // Physical iOS devices are never powered off or disconnected by cleanup.\n    } else if (match.backend.stateKey === \"windows\") {\n        if (lifecycleActive(match.device)) {\n            const sandboxId = isGuid(match.device.sandboxId) ? match.device.sandboxId : null;\n            const result = sandboxId ? runCommand(commandPath(\"wsb\"), [\"stop\", \"--id\", sandboxId], timeoutMs) : null;\n            if (result) results.push(result);\n        }\n    } else if (match.backend.stateKey === \"macos\") {\n        const provider = typeof match.device.provider === \"string\" ? match.device.provider : null;\n        const instance = typeof match.device.providerInstance === \"string\" ? match.device.providerInstance : null;\n        if (provider && instance && lifecycleActive(match.device)) {\n            const args = stopMacosArgs(provider, instance);\n            if (args) {\n                const result = runCommand(commandPath(provider), args, timeoutMs);\n                if (result) results.push(result);\n            }\n        }\n    }\n    for (const runtime of runtimes) {\n        if (!waitForRuntimeExit(runtime, timeoutMs)) {\n            return { commands: results, reason: `${runtime.label}-process-still-active` };\n        }\n    }\n    return { commands: results };\n}\n\nfunction lifecycleStopRequired(backend: Backend, device: DeviceRecord): boolean {\n    if (!lifecycleActive(device)) return false;\n    if (backend.stateKey === \"android-device\" || backend.stateKey === \"ios-device\") return false;\n    return true;\n}\n\nfunction lifecycleStopFailed(backend: Backend, device: DeviceRecord, commands: CommandResult[]): boolean {\n    if (!lifecycleStopRequired(backend, device)) return false;\n    return commands.length === 0 || commands.some((command) => command.status !== 0);\n}\n\nfunction stoppedDevice(device: DeviceRecord): DeviceRecord {\n    return {\n        ...device,\n        status: \"stopped\",\n        pid: null,\n        appium: null,\n        recording: null,\n        updatedAt: now(),\n    };\n}\n\nfunction cleanedDevice(backend: Backend, device: DeviceRecord): DeviceRecord {\n    if (backend.stateKey === \"android-device\" || backend.stateKey === \"ios-device\") {\n        return {\n            ...device,\n            status: \"detached\",\n            pid: null,\n            appium: null,\n            recording: null,\n            updatedAt: now(),\n        };\n    }\n    return stoppedDevice(device);\n}\n\nfunction commitCleanedDevice(\n    ownerId: string,\n    backend: Backend,\n    current: DeviceRecord,\n    releaseWindowsClaim: boolean,\n): boolean {\n    if (!hardwareIdForPhysicalDevice(backend, current)) {\n        const matched = transitionOwnerDeviceRecord(ownerId, backend, current, cleanedDevice(backend, current)).matched;\n        if (matched && releaseWindowsClaim) releaseWindowsSandboxLockForOwner(ownerId, backend, current);\n        return matched;\n    }\n    return transitionOwnerDeviceRecordWithPhysicalLease(ownerId, backend, current, cleanedDevice(backend, current));\n}\n\nexport function shouldCleanupDevice(backend: Backend, device: DeviceRecord): boolean {\n    if ((backend.stateKey === \"android-device\" || backend.stateKey === \"ios-device\") && device.status === \"attached\") return true;\n    return lifecycleActive(device) || hasVolatileProcessMetadata(device);\n}\n\nexport function stopOwnerDeviceRecord(\n    ownerId: string,\n    backend: Backend,\n    expected: DeviceRecord,\n    timeoutMs?: number,\n    releaseWindowsClaim = false,\n): CleanupDeviceResult {\n    const id = expected.id || \"(unknown)\";\n    if (!expected.id) {\n        return { id, backend: backend.name, previousStatus: expected.status || \"unknown\", status: \"failed\", commands: [], reason: \"owner-device-id-missing\" };\n    }\n    return withAdminOwnerDeviceOperation(ownerId, backend.stateKey, expected.id, () => {\n        const current = readDevices(ownerId, backend.stateKey).find((candidate) => candidate.id === expected.id);\n        if (!current || !isDeepStrictEqual(current, expected)) {\n            return { id, backend: backend.name, previousStatus: expected.status || \"unknown\", status: \"failed\", commands: [], reason: \"owner-device-state-conflict\" };\n        }\n        const appiumBlock = brokerOwnedAppiumCleanupBlock(current);\n        if (appiumBlock) {\n            return { id, backend: backend.name, previousStatus: current.status || \"unknown\", status: \"failed\", commands: [], reason: appiumBlock };\n        }\n        const ownedRuntimeBlock = runtimeCleanupBlock(current);\n        if (ownedRuntimeBlock) {\n            return { id, backend: backend.name, previousStatus: current.status || \"unknown\", status: \"failed\", commands: [], reason: ownedRuntimeBlock };\n        }\n        const stopped = stopOwnedDevice({ backend, devices: [current], index: 0, device: current }, timeoutMs);\n        const commands = stopped.commands;\n        if (stopped.reason) {\n            return { id, backend: backend.name, previousStatus: current.status || \"unknown\", status: \"failed\", commands, reason: stopped.reason };\n        }\n        if (lifecycleStopFailed(backend, current, commands)) {\n            return { id, backend: backend.name, previousStatus: current.status || \"unknown\", status: \"failed\", commands, reason: \"provider-stop-failed\" };\n        }\n        if (!commitCleanedDevice(ownerId, backend, current, releaseWindowsClaim)) {\n            return { id, backend: backend.name, previousStatus: current.status || \"unknown\", status: \"failed\", commands, reason: \"owner-device-state-conflict\" };\n        }\n        return { id, backend: backend.name, previousStatus: current.status || \"unknown\", status: \"stopped\", commands };\n    });\n}\n\nexport function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000, profile?: string): { ownerId: string; results: CleanupDeviceResult[] } {\n    const ownerId = deviceLabOwnerId(cwd, profile);\n    const results: CleanupDeviceResult[] = [];\n    for (const backend of DEVICE_BACKENDS) {\n        const devices = readDevices(ownerId, backend.stateKey);\n        devices.forEach((device) => {\n            if (!device.id || !shouldCleanupDevice(backend, device)) {\n                results.push({\n                    id: device.id || \"(unknown)\",\n                    backend: backend.name,\n                    previousStatus: device.status || \"unknown\",\n                    status: \"skipped\",\n                    commands: [],\n                });\n                return;\n            }\n\n            results.push(stopOwnerDeviceRecord(ownerId, backend, device, timeoutMs, true));\n        });\n    }\n    return { ownerId, results };\n}\n\nexport function stopAllProjectDevices(timeoutMs = 5000): { ok: boolean; text: string } {\n    const lines = [\"projects: stop --all-projects\"];\n    let stopped = 0;\n    let skipped = 0;\n    let failed = 0;\n    for (const ownerId of allOwnerIds()) {\n        lines.push(`project: ${ownerId}`);\n        for (const backend of DEVICE_BACKENDS) {\n            const devices = readDevices(ownerId, backend.stateKey);\n            devices.forEach((device) => {\n                if (!device.id || !shouldCleanupDevice(backend, device)) {\n                    skipped += 1;\n                    lines.push(`skipped: ${device.id || \"(unknown)\"}  backend=${backend.name}  status=${device.status || \"unknown\"}`);\n                    return;\n                }\n\n                const result = stopOwnerDeviceRecord(ownerId, backend, device, timeoutMs);\n                if (result.status !== \"stopped\") {\n                    failed += 1;\n                    lines.push(`failed: ${device.id}  backend=${backend.name}  previous=${device.status || \"unknown\"}  reason=${result.reason || \"device-stop-failed\"}`);\n                    for (const command of result.commands) lines.push(`command: ${command.command} -> ${command.status ?? \"unknown\"}`);\n                    return;\n                }\n\n                stopped += 1;\n                lines.push(`stopped: ${device.id}  backend=${backend.name}  previous=${device.status || \"unknown\"}`);\n                for (const command of result.commands) lines.push(`command: ${command.command} -> ${command.status ?? \"unknown\"}`);\n            });\n        }\n    }\n    if (stopped === 0) lines.push(\"stopped: 0\");\n    if (failed > 0) lines.push(`failed: ${failed}`);\n    lines.push(`skipped: ${skipped}`);\n    return { ok: failed === 0, text: `${lines.join(\"\\n\")}\\n` };\n}";
+const ORIGINAL_CLEANUP_SHA = "648c2fe37f5d1126621389678bafb772aba8e787a8c2d25731e7abbd813e1eae";
+type CleanupRows = Record<string, CleanupRecord[]>;
+type CleanupTraceOptions = {
+    backends?: CleanupBackend[];
+    owners?: string[];
+    readFault?: { owner: string; backend: string; error: unknown };
+    successor?: CleanupRecord | null;
+    appiumBlock?: string;
+    runtimeBlock?: string;
+    exited?: boolean;
+    signalOk?: boolean;
+    waitOk?: boolean;
+    unavailable?: readonly string[];
+    commandStatus?: number | null;
+    failedTarget?: string;
+    commandFault?: unknown;
+    commandNull?: boolean;
+    hardwareId?: string | null;
+    matched?: boolean;
+    transitionFault?: unknown;
+    releaseFault?: unknown;
+};
+const cleanupAndroid: CleanupBackend = { stateKey: "android", name: "android-emulator" };
+const cleanupWindows: CleanupBackend = { stateKey: "windows", name: "windows-sandbox" };
+const cleanupPhysicalIos: CleanupBackend = { stateKey: "ios-device", name: "ios-device" };
+
+function frozenCleanup(ports: DeviceAdminAllProjectCleanupPorts<CleanupBackend>) {
+    expect(Buffer.byteLength(ORIGINAL_CLEANUP)).toBe(13470);
+    expect(createHash("sha256").update(ORIGINAL_CLEANUP).digest("hex")).toBe(ORIGINAL_CLEANUP_SHA);
+    const code = ts.transpileModule(ORIGINAL_CLEANUP, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText;
+    return new Function("ports", `
+        const exports = {}, DEVICE_BACKENDS = ports.backends;
+        const deviceLabOwnerId = (...args) => ports.resolveOwnerId(...args);
+        const allOwnerIds = () => ports.enumerateOwnerIds();
+        const readDevices = (...args) => ports.readDevices(...args);
+        const isDeepStrictEqual = (...args) => ports.sameRecord(...args);
+        const withAdminOwnerDeviceOperation = (...args) => ports.withRecordLock(...args);
+        const brokerOwnedAppiumCleanupBlock = (...args) => ports.appiumCleanupBlock(...args);
+        const runtimeCleanupBlock = (...args) => ports.runtimeCleanupBlock(...args);
+        const runtimeExited = (...args) => ports.runtimeExited(...args);
+        const signalDeviceRuntimeProcess = (...args) => ports.signalRuntime(...args);
+        const waitForRuntimeExit = (...args) => ports.waitForRuntimeExit(...args);
+        const commandPath = (...args) => ports.commandPath(...args);
+        const runCommand = (...args) => ports.runCommand(...args);
+        const now = () => ports.timestamp();
+        const hardwareIdForPhysicalDevice = (...args) => ports.hardwareId(...args);
+        const transitionOwnerDeviceRecord = (...args) => ports.transitionRecord(...args);
+        const transitionOwnerDeviceRecordWithPhysicalLease = (...args) => ports.transitionPhysicalRecord(...args);
+        const releaseWindowsSandboxLockForOwner = (...args) => ports.releaseWindowsClaim(...args);
+        ${code}
+        return { owner: cleanupOwnerDevices, stopRecord: stopOwnerDeviceRecord, allProjects: stopAllProjectDevices };
+    `)(ports) as ReturnType<typeof createDeviceAdminCleanup<CleanupBackend>> & ReturnType<typeof createDeviceAdminAllProjectCleanup<CleanupBackend>>;
+}
+
+function cleanupTrace(original: boolean, initial: CleanupRows, options: CleanupTraceOptions = {}) {
+    const rows = structuredClone(initial), trace: unknown[][] = [];
+    let replaced = false;
+    const publish = (kind: string, owner: string, backend: CleanupBackend, expected: CleanupRecord, replacement: CleanupRecord) => {
+        trace.push([kind, owner, backend.stateKey, structuredClone(expected), structuredClone(replacement)]);
+        if (Object.hasOwn(options, "transitionFault")) throw options.transitionFault;
+        if (options.matched === false) return false;
+        rows[`${owner}/${backend.stateKey}`] = rows[`${owner}/${backend.stateKey}`].map(record => record.id === expected.id ? structuredClone(replacement) : record);
+        return true;
+    };
+    const ports: DeviceAdminAllProjectCleanupPorts<CleanupBackend> = {
+        backends: options.backends || [cleanupAndroid],
+        resolveOwnerId(cwd, profile) { trace.push(["owner", cwd, profile]); return "owner"; },
+        enumerateOwnerIds() { trace.push(["owners"]); return options.owners || ["later", "owner"]; },
+        readDevices(owner, backend) {
+            trace.push(["read", owner, backend]);
+            if (options.readFault?.owner === owner && options.readFault.backend === backend) throw options.readFault.error;
+            return structuredClone(rows[`${owner}/${backend}`] || []);
+        },
+        sameRecord(current, expected) { trace.push(["same", current.id]); return isDeepStrictEqual(current, expected); },
+        withRecordLock(owner, backend, id, decide) {
+            trace.push(["lock", owner, backend, id]);
+            if (!replaced && Object.hasOwn(options, "successor")) {
+                replaced = true;
+                rows[`${owner}/${backend}`] = rows[`${owner}/${backend}`].flatMap(record =>
+                    record.id !== id ? [record] : options.successor === null ? [] : [structuredClone(options.successor!)]
+                );
+            }
+            return decide();
+        },
+        appiumCleanupBlock(record) { trace.push(["appium-block", record.id]); return options.appiumBlock || null; },
+        runtimeCleanupBlock(record) { trace.push(["runtime-block", record.id]); return options.runtimeBlock || null; },
+        runtimeExited(runtime) { trace.push(["exited", runtime.label]); return options.exited === true; },
+        signalRuntime(runtime, signal) { trace.push(["signal", runtime.runtimeId, signal]); return { ok: options.signalOk !== false }; },
+        waitForRuntimeExit(runtime, timeout) { trace.push(["wait", runtime.label, timeout]); return options.waitOk !== false; },
+        commandPath(name) { trace.push(["lookup", name]); return options.unavailable?.includes(name) ? null : "/allocated/" + name; },
+        runCommand(command, args, timeout) {
+            trace.push(["command", command, [...args], timeout]);
+            if (Object.hasOwn(options, "commandFault")) throw options.commandFault;
+            if (!command || options.commandNull) return null;
+            const status = options.failedTarget && args.includes(options.failedTarget) ? 17 : Object.hasOwn(options, "commandStatus") ? options.commandStatus! : 0;
+            return { command: [command, ...args].join(" "), status, stdout: "raw stdout", stderr: "raw stderr", absent: undefined } as CleanupCommandResult;
+        },
+        timestamp() { trace.push(["time"]); return "raw-time"; },
+        hardwareId(_backend, record) { trace.push(["hardware", record.id]); return options.hardwareId || null; },
+        transitionRecord(owner, backend, expected, replacement) { return { matched: publish("publish", owner, backend, expected, replacement) }; },
+        transitionPhysicalRecord(owner, backend, expected, replacement) { return publish("physical-publish", owner, backend, expected, replacement); },
+        releaseWindowsClaim(owner, backend, record) {
+            trace.push(["release", owner, backend.stateKey, record.id]);
+            expect(rows[`${owner}/${backend.stateKey}`].find(candidate => candidate.id === record.id)?.status).toBe("stopped");
+            if (Object.hasOwn(options, "releaseFault")) throw options.releaseFault;
+            return undefined;
+        },
+    };
+    const policy = original ? frozenCleanup(ports) : { ...createDeviceAdminCleanup(ports), ...createDeviceAdminAllProjectCleanup(ports) };
+    return { policy, ports, rows, trace };
+}
+const cleanupPair = (rows: CleanupRows, options?: CleanupTraceOptions) => [cleanupTrace(true, rows, options), cleanupTrace(false, rows, options)];
+
+// Compile-only required/synchronous contracts. The owned strict draft includes
+// both cleanup and prune tests; this function is intentionally never invoked.
+function requiredSynchronousCleanupPortTypes(
+    valid: DeviceAdminCleanupPorts<CleanupBackend>,
+    all: DeviceAdminAllProjectCleanupPorts<CleanupBackend>,
+) {
+    const without = <Key extends keyof DeviceAdminCleanupPorts<CleanupBackend>>(key: Key) => {
+        const { [key]: omitted, ...remaining } = valid;
+        void omitted;
+        return remaining;
+    };
+    const accept = (ports: DeviceAdminCleanupPorts<CleanupBackend>) => createDeviceAdminCleanup(ports);
+    // @ts-expect-error backends is a required native leaf
+    accept(without("backends"));
+    // @ts-expect-error resolveOwnerId is a required native leaf
+    accept(without("resolveOwnerId"));
+    // @ts-expect-error readDevices is a required native leaf
+    accept(without("readDevices"));
+    // @ts-expect-error sameRecord is a required native leaf
+    accept(without("sameRecord"));
+    // @ts-expect-error withRecordLock is a required native leaf
+    accept(without("withRecordLock"));
+    // @ts-expect-error appiumCleanupBlock is a required native leaf
+    accept(without("appiumCleanupBlock"));
+    // @ts-expect-error runtimeCleanupBlock is a required native leaf
+    accept(without("runtimeCleanupBlock"));
+    // @ts-expect-error runtimeExited is a required native leaf
+    accept(without("runtimeExited"));
+    // @ts-expect-error signalRuntime is a required native leaf
+    accept(without("signalRuntime"));
+    // @ts-expect-error waitForRuntimeExit is a required native leaf
+    accept(without("waitForRuntimeExit"));
+    // @ts-expect-error commandPath is a required native leaf
+    accept(without("commandPath"));
+    // @ts-expect-error runCommand is a required native leaf
+    accept(without("runCommand"));
+    // @ts-expect-error timestamp is a required native leaf
+    accept(without("timestamp"));
+    // @ts-expect-error hardwareId is a required native leaf
+    accept(without("hardwareId"));
+    // @ts-expect-error transitionRecord is a required native leaf
+    accept(without("transitionRecord"));
+    // @ts-expect-error transitionPhysicalRecord is a required native leaf
+    accept(without("transitionPhysicalRecord"));
+    // @ts-expect-error releaseWindowsClaim is a required native leaf
+    accept(without("releaseWindowsClaim"));
+    const { enumerateOwnerIds: omittedOwners, ...withoutOwners } = all;
+    void omittedOwners;
+    // @ts-expect-error all-project traversal requires enumeration
+    createDeviceAdminAllProjectCleanup(withoutOwners);
+    // @ts-expect-error backends must remain synchronous
+    accept({ ...valid, backends: Promise.resolve(valid.backends) });
+    // @ts-expect-error resolveOwnerId must remain synchronous
+    accept({ ...valid, resolveOwnerId: async () => "owner" });
+    // @ts-expect-error readDevices must remain synchronous
+    accept({ ...valid, readDevices: async () => [] });
+    // @ts-expect-error sameRecord must remain synchronous
+    accept({ ...valid, sameRecord: async () => true });
+    // @ts-expect-error withRecordLock must remain synchronous
+    accept({ ...valid, withRecordLock: async (_owner, _backend, _id, decide) => decide() });
+    // @ts-expect-error appiumCleanupBlock must remain synchronous
+    accept({ ...valid, appiumCleanupBlock: async () => null });
+    // @ts-expect-error runtimeCleanupBlock must remain synchronous
+    accept({ ...valid, runtimeCleanupBlock: async () => null });
+    // @ts-expect-error runtimeExited must remain synchronous
+    accept({ ...valid, runtimeExited: async () => true });
+    // @ts-expect-error signalRuntime must remain synchronous
+    accept({ ...valid, signalRuntime: async () => ({ ok: true }) });
+    // @ts-expect-error waitForRuntimeExit must remain synchronous
+    accept({ ...valid, waitForRuntimeExit: async () => true });
+    // @ts-expect-error commandPath must remain synchronous
+    accept({ ...valid, commandPath: async () => "/allocated/tool" });
+    // @ts-expect-error runCommand must remain synchronous
+    accept({ ...valid, runCommand: async () => null });
+    // @ts-expect-error timestamp must remain synchronous
+    accept({ ...valid, timestamp: async () => "raw-time" });
+    // @ts-expect-error hardwareId must remain synchronous
+    accept({ ...valid, hardwareId: async () => null });
+    // @ts-expect-error transitionRecord must remain synchronous
+    accept({ ...valid, transitionRecord: async () => ({ matched: true }) });
+    // @ts-expect-error transitionPhysicalRecord must remain synchronous
+    accept({ ...valid, transitionPhysicalRecord: async () => true });
+    // @ts-expect-error releaseWindowsClaim must remain synchronous
+    accept({ ...valid, releaseWindowsClaim: async () => undefined });
+    // @ts-expect-error all-project owner enumeration is synchronous
+    createDeviceAdminAllProjectCleanup({ ...all, enumerateOwnerIds: async () => [] });
+}
+void requiredSynchronousCleanupPortTypes;
+
+
+const cleanupOutcome = (backend: string, previousStatus: string, status: "stopped" | "failed" | "skipped", reason?: string) => ({
+    id: "unit", backend, previousStatus, status, commands: [], ...(reason ? { reason } : {}),
+});
+
 
 // Keep the subprocess namespace spyable while preserving actual process execution.
 vi.mock("child_process", async (importOriginal) => ({
     ...await importOriginal<typeof import("child_process")>(),
 }));
+
+
+describe("device-admin cleanup frozen/current policy traces", () => {
+    it("constructs both factories without observations and resolves identity/enumeration before backend lookup", () => {
+        const f = cleanupTrace(false, {}, { owners: [] });
+        expect(f.trace).toEqual([]);
+        Object.defineProperty(f.ports, "backends", { get() { f.trace.push(["backends"]); return []; } });
+        expect(f.policy.owner("/chosen", 17, "profile")).toEqual({ ownerId: "owner", results: [] });
+        expect(f.trace).toEqual([["owner", "/chosen", "profile"], ["backends"]]);
+        f.trace.length = 0;
+        expect(f.policy.allProjects()).toEqual({ ok: true, text: "projects: stop --all-projects\nstopped: 0\nskipped: 0\n" });
+        expect(f.trace).toEqual([["owners"]]);
+    });
+
+    it("cleans stopped auxiliary metadata in signal/provider/wait/publication order while preserving open carriers", () => {
+        const recording = { runtimeId: "recording", pid: 41, processIdentity: { raw: "birth" }, active: true };
+        const appium = { processOwner: "device-lab-mcp", startedBy: "direct-provider", runtimeId: "appium", serverPid: 42, processIdentity: { raw: "birth" } };
+        const runtime = { runtimeId: "runtime", pid: 43, processIdentity: { raw: "birth" } };
+        const record = { id: "unit", status: "stopped", serial: "emulator-7", pid: 99, recording, appium, runtime, absent: undefined, nested: new Map([["raw", new Set([1])]]) };
+        const replacement = { ...record, status: "stopped", pid: null, recording: null, appium: null, updatedAt: "raw-time" };
+        const command = { command: "/allocated/adb -s emulator-7 shell pkill -2 screenrecord", status: 0, stdout: "raw stdout", stderr: "raw stderr", absent: undefined };
+        const pair = cleanupPair({ "owner/android": [record] });
+        for (const f of pair) {
+            expect(f.policy.owner("/chosen", 37, "profile")).toEqual({
+                ownerId: "owner", results: [{ id: "unit", backend: "android-emulator", previousStatus: "stopped", status: "stopped", commands: [command] }],
+            });
+            expect(f.trace).toEqual([
+                ["owner", "/chosen", "profile"], ["read", "owner", "android"], ["lock", "owner", "android", "unit"], ["read", "owner", "android"], ["same", "unit"],
+                ["appium-block", "unit"], ["runtime-block", "unit"], ["exited", "recording"], ["signal", "recording", "SIGINT"],
+                ["exited", "appium"], ["signal", "appium", "SIGTERM"], ["lookup", "adb"],
+                ["command", "/allocated/adb", ["-s", "emulator-7", "shell", "pkill", "-2", "screenrecord"], 37],
+                ["wait", "recording", 37], ["wait", "appium", 37], ["wait", "runtime", 37],
+                ["hardware", "unit"], ["time"], ["publish", "owner", "android", record, replacement], ["release", "owner", "android", "unit"],
+            ]);
+            expect(f.rows["owner/android"]).toEqual([replacement]);
+            expect(Object.hasOwn(f.rows["owner/android"][0], "absent")).toBe(true);
+            expect(f.rows["owner/android"][0].nested).toBeInstanceOf(Map);
+            expect((f.rows["owner/android"][0].nested as Map<string, unknown>).get("raw")).toBeInstanceOf(Set);
+            expect(f.rows["owner/android"][0].runtime).toEqual(runtime);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it("completes earlier backend effects before a later raw read error", () => {
+        const record = { id: "unit", status: "stopped", pid: 9 }, fault = { raw: "later read", absent: undefined };
+        const pair = cleanupPair({ "owner/android": [record], "owner/ios-device": [{ id: "later", status: "attached" }] }, {
+            backends: [cleanupAndroid, cleanupPhysicalIos], readFault: { owner: "owner", backend: "ios-device", error: fault },
+        });
+        for (const f of pair) {
+            let caught: unknown;
+            try { f.policy.owner("/chosen"); } catch (error) { caught = error; }
+            expect(caught).toBe(fault);
+            expect(f.rows).toEqual({
+                "owner/android": [{ ...record, pid: null, appium: null, recording: null, updatedAt: "raw-time" }],
+                "owner/ios-device": [{ id: "later", status: "attached" }],
+            });
+            expect(f.trace.map(row => row[0])).toEqual(["owner", "read", "lock", "read", "same", "appium-block", "runtime-block", "lookup", "hardware", "time", "publish", "release", "read"]);
+            expect(f.trace.at(-1)).toEqual(["read", "owner", "ios-device"]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it("completes an earlier owner's effects before a later owner read error without eager inventory", () => {
+        const fault = new Error("later owner failed"), record = { id: "unit", status: "stopped", pid: 9 };
+        const pair = cleanupPair({ "later/android": [record], "owner/android": [{ id: "untouched", status: "running" }] }, {
+            readFault: { owner: "owner", backend: "android", error: fault },
+        });
+        for (const f of pair) {
+            let caught: unknown;
+            try { f.policy.allProjects(37); } catch (error) { caught = error; }
+            expect(caught).toBe(fault);
+            expect(f.rows["later/android"]).toEqual([{ ...record, pid: null, appium: null, recording: null, updatedAt: "raw-time" }]);
+            expect(f.rows["owner/android"]).toEqual([{ id: "untouched", status: "running" }]);
+            expect(f.trace[0]).toEqual(["owners"]);
+            expect(f.trace.at(-1)).toEqual(["read", "owner", "android"]);
+            expect(f.trace.filter(row => row[0] === "release")).toEqual([]);
+            expect(f.trace.findIndex(row => row[0] === "publish")).toBeLessThan(f.trace.length - 1);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it.each([
+        ["changed field", { id: "unit", status: "running", serial: "successor" }],
+        ["lost own undefined", { id: "unit", status: "running", serial: "old" }],
+        ["disappearance", null],
+    ] as const)("refuses %s after acquiring the per-record lock before native effects", (_name, successor) => {
+        const record = { id: "unit", status: "running", serial: "old", absent: undefined };
+        const pair = cleanupPair({ "owner/android": [record] }, { successor });
+        for (const f of pair) {
+            expect(f.policy.owner("/chosen").results).toEqual([cleanupOutcome("android-emulator", "running", "failed", "owner-device-state-conflict")]);
+            expect(f.trace.filter(row => ["lookup", "signal", "wait", "publish", "physical-publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.rows["owner/android"]).toEqual(successor === null ? [] : [successor]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it.each([
+        ["appium-runtime-active", "appium"], ["appium-runtime-identity-unavailable", "appium"],
+        ["recording-runtime-active", "runtime"], ["recording-runtime-identity-unavailable", "runtime"],
+    ])("preserves native %s refusal without invoking provider or publication leaves", (reason, leaf) => {
+        const record = { id: "unit", status: "running", serial: "owned" };
+        const pair = cleanupPair({ "owner/android": [record] }, leaf === "appium" ? { appiumBlock: reason } : { runtimeBlock: reason });
+        for (const f of pair) {
+            expect(f.policy.owner("/chosen").results).toEqual([cleanupOutcome("android-emulator", "running", "failed", reason)]);
+            expect(f.rows["owner/android"]).toEqual([record]);
+            expect(f.trace.filter(row => ["lookup", "exited", "signal", "wait", "hardware", "publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.trace.some(row => row[0] === "runtime-block")).toBe(leaf !== "appium");
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it.each([
+        ["recording signal refusal", { signalOk: false }, "recording-process-signal-failed"],
+        ["recording wait refusal", { waitOk: false }, "recording-process-still-active"],
+        ["provider failure", { commandStatus: 17 }, "provider-stop-failed"],
+        ["missing executable", { unavailable: ["adb"] }, "provider-stop-failed"],
+        ["null command result", { commandNull: true }, "provider-stop-failed"],
+    ] as const)("preserves %s with the original record available for retry", (_name, options, reason) => {
+        const record = { id: "unit", status: "running", serial: "owned", recording: { runtimeId: "recording", pid: 41, processIdentity: { raw: "birth" } } };
+        const pair = cleanupPair({ "owner/android": [record] }, options);
+        for (const f of pair) {
+            const result = f.policy.owner("/chosen", 37).results[0];
+            expect(result.status).toBe("failed");
+            expect(result.reason).toBe(reason);
+            expect(f.rows["owner/android"]).toEqual([record]);
+            expect(f.trace.filter(row => ["publish", "physical-publish", "release", "time"].includes(String(row[0])))).toEqual([]);
+            if (reason === "recording-process-signal-failed") expect(f.trace.filter(row => ["lookup", "command", "wait"].includes(String(row[0])))).toEqual([]);
+            if (reason === "recording-process-still-active") expect(result.commands).toHaveLength(2);
+            if (reason === "provider-stop-failed") expect(f.trace.at(-1)).toEqual(["wait", "recording", 37]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it("does not signal already exited runtimes or foreign Appium metadata and retains direct wait order", () => {
+        const record = {
+            id: "unit", status: "stopped", pid: 9,
+            appium: { processOwner: "foreign", startedBy: "foreign", runtimeId: "foreign", serverPid: 42, processIdentity: { raw: "birth" } },
+            recording: { runtimeId: "recording", pid: 41, processIdentity: { raw: "birth" } },
+        };
+        const pair = cleanupPair({ "owner/android": [record] }, { exited: true });
+        for (const f of pair) {
+            expect(f.policy.owner("/chosen", 37).results[0].status).toBe("stopped");
+            expect(f.trace.filter(row => row[0] === "signal")).toEqual([]);
+            expect(f.trace.filter(row => row[0] === "exited")).toEqual([["exited", "recording"]]);
+            expect(f.trace.filter(row => row[0] === "wait")).toEqual([["wait", "recording", 37]]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it.each([
+        ["android", { id: "unit", status: "running", port: 5554 }, ["-s", "emulator-5554", "emu", "kill"], "adb"],
+        ["android-device", { id: "unit", status: "attached", serial: "physical", recording: { active: true } }, ["-s", "physical", "shell", "pkill", "-2", "screenrecord"], "adb"],
+        ["ios", { id: "unit", status: "booted", simulatorName: "fallback" }, ["simctl", "shutdown", "fallback"], "xcrun"],
+        ["windows", { id: "unit", status: "starting", sandboxId: "12345678-1234-4234-9234-1234567890ab" }, ["stop", "--id", "12345678-1234-4234-9234-1234567890ab"], "wsb"],
+        ["macos", { id: "unit", status: "running", provider: "tart", providerInstance: "owned" }, ["stop", "owned"], "tart"],
+        ["macos", { id: "unit", status: "running", provider: "vz", providerInstance: "owned" }, ["stop", "owned"], "vz"],
+        ["macos", { id: "unit", status: "running", provider: "utmctl", providerInstance: "owned" }, ["stop", "owned"], "utmctl"],
+    ] as const)("preserves %s provider selection and raw command arguments", (stateKey, record, args, command) => {
+        const backend = { stateKey, name: stateKey };
+        const pair = cleanupPair({ [`owner/${stateKey}`]: [record] }, { backends: [backend] });
+        for (const f of pair) {
+            expect(f.policy.owner("/chosen", 37).results[0].status).toBe("stopped");
+            expect(f.trace.filter(row => row[0] === "command")).toEqual([["command", "/allocated/" + command, [...args], 37]]);
+            expect(f.rows[`owner/${stateKey}`][0].status).toBe(stateKey === "android-device" ? "detached" : "stopped");
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it("uses the physical transition for iOS without executable lookup or power-off commands", () => {
+        const record = { id: "unit", status: "attached", udid: "owned" };
+        const pair = cleanupPair({ "owner/ios-device": [record] }, { backends: [cleanupPhysicalIos], hardwareId: "owned" });
+        for (const f of pair) {
+            expect(f.policy.owner("/chosen", 37).results).toEqual([cleanupOutcome("ios-device", "attached", "stopped")]);
+            expect(f.trace.filter(row => ["lookup", "command", "publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.trace.filter(row => row[0] === "physical-publish")).toEqual([
+                ["physical-publish", "owner", "ios-device", record, { ...record, status: "detached", pid: null, appium: null, recording: null, updatedAt: "raw-time" }],
+            ]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+    it("keeps the current-owner Windows release flag after matching publication while all-project stop omits it", () => {
+        const record = { id: "unit", status: "running", sandboxId: "12345678-1234-4234-9234-1234567890ab" };
+        for (const original of [true, false]) {
+            const currentOwner = cleanupTrace(original, { "owner/windows": [record] }, { backends: [cleanupWindows] });
+            expect(currentOwner.policy.owner("/chosen").results[0].status).toBe("stopped");
+            expect(currentOwner.trace.slice(-2).map(row => row[0])).toEqual(["publish", "release"]);
+            const all = cleanupTrace(original, { "owner/windows": [record] }, { backends: [cleanupWindows], owners: ["owner"] });
+            expect(all.policy.allProjects().ok).toBe(true);
+            expect(all.trace.filter(row => row[0] === "release")).toEqual([]);
+            const refused = cleanupTrace(original, { "owner/windows": [record] }, { backends: [cleanupWindows], matched: false });
+            expect(refused.policy.owner("/chosen").results[0].reason).toBe("owner-device-state-conflict");
+            expect(refused.trace.filter(row => row[0] === "release")).toEqual([]);
+            expect(refused.rows["owner/windows"]).toEqual([record]);
+        }
+    });
+
+    it("preserves command and native publication errors by identity without extra wait/publication/rollback", () => {
+        const commandFault = { raw: "command" }, publication = { raw: "publication" }, rollback = { raw: "rollback" };
+        const aggregate = new AggregateError([publication, rollback], "physical-lease-owner-state-rollback-failed");
+        const record = { id: "unit", status: "attached", udid: "owned" };
+        for (const f of cleanupPair({ "owner/android": [{ id: "unit", status: "running", serial: "owned" }] }, { commandFault })) {
+            let caught: unknown;
+            try { f.policy.owner("/chosen"); } catch (error) { caught = error; }
+            expect(caught).toBe(commandFault);
+            expect(f.trace.filter(row => ["wait", "hardware", "publish", "physical-publish", "release"].includes(String(row[0])))).toEqual([]);
+        }
+        for (const f of cleanupPair({ "owner/ios-device": [record] }, { backends: [cleanupPhysicalIos], hardwareId: "owned", transitionFault: aggregate })) {
+            let caught: unknown;
+            try { f.policy.owner("/chosen"); } catch (error) { caught = error; }
+            expect(caught).toBe(aggregate);
+            expect((caught as AggregateError).errors[0]).toBe(publication);
+            expect((caught as AggregateError).errors[1]).toBe(rollback);
+            expect(f.rows["owner/ios-device"]).toEqual([record]);
+            expect(f.trace.at(-1)?.[0]).toBe("physical-publish");
+        }
+    });
+
+    it("retains exact all-project owner/record output, command carriers and success/failure/skip counts", () => {
+        const pair = cleanupPair({
+            "later/android": [{ id: "unit", status: "stopped", pid: 9 }, { status: "running" }],
+            "owner/android": [{ id: "bad", status: "running", serial: "bad" }, { id: "good", status: "running", serial: "good" }, { id: "skip", status: "stopped" }],
+        }, { failedTarget: "bad" });
+        for (const f of pair) {
+            expect(f.policy.allProjects(37)).toEqual({
+                ok: false, text: "projects: stop --all-projects\nproject: later\nstopped: unit  backend=android-emulator  previous=stopped\nskipped: (unknown)  backend=android-emulator  status=running\nproject: owner\nfailed: bad  backend=android-emulator  previous=running  reason=provider-stop-failed\ncommand: /allocated/adb -s bad emu kill -> 17\nstopped: good  backend=android-emulator  previous=running\ncommand: /allocated/adb -s good emu kill -> 0\nskipped: skip  backend=android-emulator  status=stopped\nfailed: 1\nskipped: 2\n",
+            });
+            expect(f.rows["owner/android"]).toEqual([
+                { id: "bad", status: "running", serial: "bad" },
+                { id: "good", status: "stopped", serial: "good", pid: null, appium: null, recording: null, updatedAt: "raw-time" },
+                { id: "skip", status: "stopped" },
+            ]);
+            expect(f.trace.filter(row => row[0] === "release")).toEqual([]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+
+
+    it("selects timestamp after copying the record and preserves the stop default timeout", () => {
+        for (const original of [true, false]) {
+            const f = cleanupTrace(original, { "owner/android": [] });
+            const current: CleanupRecord = { id: "unit", status: "stopped", pid: 9 };
+            Object.defineProperty(current, "marker", { enumerable: true, get() { f.trace.push(["spread"]); return "raw-marker"; } });
+            f.ports.readDevices = (owner, backend) => { f.trace.push(["read", owner, backend]); return [current]; };
+            f.ports.sameRecord = (left, right) => { f.trace.push(["same"]); return left === right; };
+            Object.defineProperty(f.ports, "timestamp", { get() {
+                f.trace.push(["timestamp-lookup"]);
+                return () => { f.trace.push(["time"]); return "raw-time"; };
+            } });
+            let published: CleanupRecord | undefined;
+            f.ports.transitionRecord = (_owner, _backend, _expected, replacement) => { published = replacement; return { matched: true }; };
+            f.ports.releaseWindowsClaim = () => undefined;
+            expect(f.policy.stopRecord("owner", cleanupAndroid, current)).toEqual(cleanupOutcome("android-emulator", "stopped", "stopped"));
+            expect(f.trace.filter(row => ["spread", "timestamp-lookup", "time"].includes(String(row[0])))).toEqual([["spread"], ["timestamp-lookup"], ["time"]]);
+            expect(published).toEqual({ id: "unit", status: "stopped", pid: null, marker: "raw-marker", appium: null, recording: null, updatedAt: "raw-time" });
+        }
+        const recording = { runtimeId: "recording", pid: 41, processIdentity: { raw: "birth" } };
+        for (const f of cleanupPair({ "owner/android": [{ id: "unit", status: "running", serial: "owned", recording }] })) {
+            expect(f.policy.stopRecord("owner", cleanupAndroid, { id: "unit", status: "running", serial: "owned", recording }).status).toBe("stopped");
+            expect(f.trace.filter(row => row[0] === "command").every(row => row[3] === 5000)).toBe(true);
+            expect(f.trace.filter(row => row[0] === "wait")).toEqual([["wait", "recording", 5000]]);
+        }
+    });
+
+
+    it("skips inactive unknown and malformed facts without locks or native cleanup effects", () => {
+        const rows = [{ status: "running" }, { id: "upper", status: "RUNNING" }, { id: "stopped", status: "stopped" }, { id: "unknown" }, { id: "array", appium: [], recording: null, pid: 0 }];
+        const pair = cleanupPair({ "owner/android": rows });
+        for (const f of pair) {
+            const results = f.policy.owner("/chosen").results;
+            expect(results.map(result => [result.id, result.status])).toEqual([["(unknown)", "skipped"], ["upper", "skipped"], ["stopped", "skipped"], ["unknown", "skipped"], ["array", "stopped"]]);
+            // A truthy empty appium array is existing volatile metadata, not inventory authority.
+            expect(f.rows["owner/android"].slice(0, 4)).toEqual(rows.slice(0, 4));
+            expect(f.trace.filter(row => row[0] === "lock").map(row => row[3])).toEqual(["array"]);
+        }
+        expect(pair[1].trace).toEqual(pair[0].trace);
+    });
+});
 
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
@@ -130,6 +639,199 @@ describe("device-lab admin cleanup and stop commands", () => {
         vi.restoreAllMocks();
         fixture.cleanup();
     });
+
+
+    function cleanupOnly(cwd: string, profile?: string) {
+        const files = fixture.setupFixture(cwd, profile);
+        for (const file of [files.androidFile, files.androidDeviceFile, files.iosFile, files.iosDeviceFile, files.windowsFile, files.macosFile, files.otherOwnerFile]) {
+            writeFileSync(file, JSON.stringify({ devices: [] }));
+        }
+        return files;
+    }
+
+    it.each(["owner", "all-projects", "sync-cli", "async-cli"])("actual %s cleanup propagates a later native read fault after an earlier committed cleanup", async action => {
+        const cwd = "/project/admin-cleanup-partial-native";
+        const { owner, androidFile, iosFile } = cleanupOnly(cwd);
+        const earlier = { id: "early", status: "stopped", pid: 999999, nested: { raw: "kept" } };
+        writeFileSync(androidFile, JSON.stringify({ devices: [earlier] }));
+        writeFileSync(iosFile, JSON.stringify({ devices: [{ id: "later", status: "booted", udid: "later" }] }));
+        const laterBefore = readFileSync(iosFile, "utf8"), fault = { native: "later owner state read" };
+        const actualRead = ownerState.readOwnerDeviceStateFile;
+        vi.spyOn(ownerState, "readOwnerDeviceStateFile").mockImplementation((file, limit) => {
+            if (file === iosFile) throw fault;
+            return actualRead(file, limit);
+        });
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined), error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        let caught: unknown;
+        try {
+            if (action === "owner") cleanupOwnerDevices(cwd, 37);
+            else if (action === "all-projects") stopAllProjectDevices(37);
+            else if (action === "sync-cli") devicesCli(["stop", "--all-projects"], cwd);
+            else await devicesCliAsync(["stop", "--all-projects"], cwd);
+        } catch (err) { caught = err; }
+        expect(caught).toBe(fault);
+        expect(fixture.readDevices(androidFile)).toEqual([{ ...earlier, pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
+        expect(readFileSync(iosFile, "utf8")).toBe(laterBefore);
+        expect(log).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+        expect(owner).not.toBe("other-owner");
+    });
+
+    it("actual cleanup rereads under the native per-record lock before physical lease effects", () => {
+        const cwd = "/project/admin-cleanup-locked-native";
+        const { iosDeviceFile } = cleanupOnly(cwd);
+        const current = { id: "ios-real", status: "attached", udid: "REAL-IOS-UDID", nested: { generation: "original" } };
+        const successor = { ...current, nested: { generation: "successor" } };
+        writeFileSync(iosDeviceFile, JSON.stringify({ devices: [current] }));
+        const leaseFile = fixture.physicalLeaseLockPath("ios-device", "REAL-IOS-UDID"), leaseBefore = readFileSync(leaseFile, "utf8");
+        const operationLock = join(dirname(iosDeviceFile), "operations", createHash("sha256").update(current.id).digest("hex").slice(0, 32) + ".lock");
+        const actualLock = sharedState.withSharedMutationLock;
+        let replaced = false;
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, decide, options) =>
+            actualLock(file, () => {
+                if (file === operationLock && !replaced) {
+                    replaced = true;
+                    expect(existsSync(file)).toBe(true);
+                    writeFileSync(iosDeviceFile, JSON.stringify({ devices: [successor] }));
+                }
+                return decide();
+            }, options)
+        );
+        const result = cleanupOwnerDevices(cwd, 37);
+        expect(result.results).toEqual([{ id: "ios-real", backend: "ios-device", previousStatus: "attached", status: "failed", reason: "owner-device-state-conflict", commands: [] }]);
+        expect(replaced).toBe(true);
+        expect(fixture.readDevices(iosDeviceFile)).toEqual([successor]);
+        expect(readFileSync(leaseFile, "utf8")).toBe(leaseBefore);
+        expect(existsSync(operationLock)).toBe(false);
+    });
+
+    it.each(["owner", "all-projects"])("actual %s cleanup retains the Windows claim release-flag distinction after publication", action => {
+        const cwd = "/project/admin-cleanup-windows-release-flag";
+        const { owner, windowsFile } = cleanupOnly(cwd);
+        const current = { id: "windows-owned", status: "stopped", pid: 999999, sandboxId: "12345678-1234-4234-9234-1234567890ab" };
+        writeFileSync(windowsFile, JSON.stringify({ devices: [current] }));
+        const claimFile = join(fixture.homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+        mkdirSync(dirname(claimFile), { recursive: true });
+        const claim = { provider: "windows-sandbox", ownerId: owner, deviceId: current.id, sandboxId: current.sandboxId };
+        writeFileSync(claimFile, JSON.stringify(claim));
+        const actualUnlink = nativeFs.unlinkSync, releases: string[] = [];
+        vi.spyOn(nativeFs, "unlinkSync").mockImplementation(file => {
+            if (file === claimFile) {
+                releases.push("windows-claim");
+                expect(fixture.readDevices(windowsFile)).toEqual([{ ...current, pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
+            }
+            return actualUnlink(file);
+        });
+        if (action === "owner") expect(cleanupOwnerDevices(cwd, 37).results[0].status).toBe("stopped");
+        else expect(stopAllProjectDevices(37).ok).toBe(true);
+        expect(releases).toEqual(action === "owner" ? ["windows-claim"] : []);
+        expect(existsSync(claimFile)).toBe(action !== "owner");
+        if (action === "all-projects") expect(JSON.parse(readFileSync(claimFile, "utf8"))).toEqual(claim);
+    });
+
+    it("actual cleanup preserves the Windows claim when matching publication loses its generation", () => {
+        const cwd = "/project/admin-cleanup-windows-publication-conflict";
+        const { owner, windowsFile } = cleanupOnly(cwd);
+        const current = { id: "windows-owned", status: "stopped", pid: 999999, sandboxId: "12345678-1234-4234-9234-1234567890ab" };
+        const successor = { ...current, marker: "successor" };
+        writeFileSync(windowsFile, JSON.stringify({ devices: [current] }));
+        const claimFile = join(fixture.homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+        mkdirSync(dirname(claimFile), { recursive: true });
+        writeFileSync(claimFile, JSON.stringify({ provider: "windows-sandbox", ownerId: owner, deviceId: current.id, sandboxId: current.sandboxId }));
+        const claimBefore = readFileSync(claimFile, "utf8"), mutationFile = join(dirname(windowsFile), "devices.mutation.lock");
+        const actualLock = sharedState.withSharedMutationLock;
+        let replaced = false;
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, decide, options) =>
+            actualLock(file, () => {
+                if (file === mutationFile && !replaced) {
+                    replaced = true;
+                    writeFileSync(windowsFile, JSON.stringify({ devices: [successor] }));
+                }
+                return decide();
+            }, options)
+        );
+        expect(cleanupOwnerDevices(cwd, 37).results[0]).toEqual({
+            id: "windows-owned", backend: "windows-sandbox", previousStatus: "stopped", status: "failed", commands: [], reason: "owner-device-state-conflict",
+        });
+        expect(replaced).toBe(true);
+        expect(fixture.readDevices(windowsFile)).toEqual([successor]);
+        expect(readFileSync(claimFile, "utf8")).toBe(claimBefore);
+    });
+
+    it("actual cleanup leaves the committed Windows record when claim release throws a raw native fault", () => {
+        const cwd = "/project/admin-cleanup-windows-release-fault";
+        const { owner, windowsFile } = cleanupOnly(cwd);
+        const current = { id: "windows-owned", status: "stopped", pid: 999999, sandboxId: "12345678-1234-4234-9234-1234567890ab" };
+        writeFileSync(windowsFile, JSON.stringify({ devices: [current] }));
+        const claimFile = join(fixture.homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+        mkdirSync(dirname(claimFile), { recursive: true });
+        writeFileSync(claimFile, JSON.stringify({ provider: "windows-sandbox", ownerId: owner, deviceId: current.id, sandboxId: current.sandboxId }));
+        const claimBefore = readFileSync(claimFile, "utf8"), fault = { native: "windows unlink" }, actualUnlink = nativeFs.unlinkSync;
+        vi.spyOn(nativeFs, "unlinkSync").mockImplementation(file => {
+            if (file === claimFile) throw fault;
+            return actualUnlink(file);
+        });
+        let caught: unknown;
+        try { cleanupOwnerDevices(cwd, 37); } catch (err) { caught = err; }
+        expect(caught).toBe(fault);
+        expect(fixture.readDevices(windowsFile)).toEqual([{ ...current, pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
+        expect(readFileSync(claimFile, "utf8")).toBe(claimBefore);
+    });
+
+    it("actual public session cleanup completes native physical iOS cleanup synchronously before removing its claim", () => {
+        const cwd = "/project/admin-cleanup-session-binding", profile = "chosen";
+        const { iosDeviceFile } = cleanupOnly(cwd, profile);
+        const current = { id: "ios-real", status: "attached", udid: "REAL-IOS-UDID", nested: { raw: "kept" } };
+        writeFileSync(iosDeviceFile, JSON.stringify({ devices: [current] }));
+        const leaseFile = fixture.physicalLeaseLockPath("ios-device", "REAL-IOS-UDID");
+        const claimFile = join(fixture.homeDir, ".ccc/run/locks", getProjectId(cwd) + "--p--" + profile + "--cleanup-test.lock");
+        mkdirSync(dirname(claimFile), { recursive: true, mode: 0o700 });
+        writeFileSync(claimFile, String(process.pid));
+        const actualUnlink = nativeFs.unlinkSync, order: string[] = [];
+        vi.spyOn(nativeFs, "unlinkSync").mockImplementation(file => {
+            if (file === leaseFile) order.push("physical-lease");
+            if (file === claimFile) {
+                order.push("session-claim");
+                expect(fixture.readDevices(iosDeviceFile)).toEqual([{ ...current, status: "detached", pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
+                expect(existsSync(leaseFile)).toBe(false);
+            }
+            return actualUnlink(file);
+        });
+        session.clearSession();
+        try {
+            session.setSession(claimFile, cwd, profile);
+            expect(session.cleanupSession()).toBeUndefined();
+            expect(order).toEqual(["physical-lease", "session-claim"]);
+            expect(existsSync(claimFile)).toBe(false);
+            expect(session.getCurrentSession().lockFile).toBe(null);
+        } finally { session.clearSession(); }
+    });
+
+    it("actual public session reports the precise native cleanup fault after earlier effects and removes only its own claim", () => {
+        const cwd = "/project/admin-cleanup-session-raw-failure", profile = "chosen";
+        const { androidFile, iosFile } = cleanupOnly(cwd, profile);
+        const earlier = { id: "early", status: "stopped", pid: 999999 };
+        writeFileSync(androidFile, JSON.stringify({ devices: [earlier] }));
+        const fault = new Error("exact later native read fault"), actualRead = ownerState.readOwnerDeviceStateFile;
+        vi.spyOn(ownerState, "readOwnerDeviceStateFile").mockImplementation((file, limit) => {
+            if (file === iosFile) throw fault;
+            return actualRead(file, limit);
+        });
+        const claimFile = join(fixture.homeDir, ".ccc/run/locks", getProjectId(cwd) + "--p--" + profile + "--cleanup-test.lock");
+        mkdirSync(dirname(claimFile), { recursive: true, mode: 0o700 });
+        writeFileSync(claimFile, String(process.pid));
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        session.clearSession();
+        try {
+            session.setSession(claimFile, cwd, profile);
+            expect(session.cleanupSession()).toBeUndefined();
+            expect(error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup failed during session cleanup: exact later native read fault");
+            expect(fixture.readDevices(androidFile)).toEqual([{ ...earlier, pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
+            expect(existsSync(claimFile)).toBe(false);
+            expect(fixture.readDevices(iosFile)).toEqual([]);
+        } finally { session.clearSession(); }
+    });
+
 
     it("stops an owned device without mutating other owner devices", () => {
         const cwd = "/project/admin-stop-test";

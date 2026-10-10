@@ -1,3 +1,4 @@
+import { createDeviceAdminAllProjectCleanup } from "./application/device-admin-cleanup.js";
 import { createDeviceAdminPrune } from "./application/device-admin-prune.js";
 import { macosManagedProviderResources } from "./domain/device-admin-prune.js";
 import { admitDeviceAdminInventoryCommand } from "./domain/device-admin-inventory.js";
@@ -5,6 +6,7 @@ import { createDeviceAdminInventory } from "./application/device-admin-inventory
 import type { DeviceAdminOwnerSnapshot } from "./ports/device-admin-inventory.js";
 import {
     DEVICE_BACKENDS,
+    deviceAdminCleanupNativePorts,
     commandPath,
     deviceLabOwnerId,
     hardwareIdForPhysicalDevice,
@@ -17,7 +19,6 @@ import {
     readPhysicalLeaseAggregate,
     releaseWindowsSandboxLockForOwner,
     runCommand,
-    shouldCleanupDevice,
     stopOwnerDeviceRecord,
     transitionOwnerDeviceRecord,
     transitionOwnerDeviceRecordWithPhysicalLease,
@@ -1374,39 +1375,12 @@ export function pruneOwnerDevices(cwd = process.cwd(), profile?: string): { ok: 
 }
 
 export function stopAllProjectDevices(timeoutMs = 5000): { ok: boolean; text: string } {
-    const lines = ["projects: stop --all-projects"];
-    let stopped = 0;
-    let skipped = 0;
-    let failed = 0;
-    for (const ownerId of allOwnerIds()) {
-        lines.push(`project: ${ownerId}`);
-        for (const backend of DEVICE_BACKENDS) {
-            const devices = readDevices(ownerId, backend.stateKey);
-            devices.forEach((device) => {
-                if (!device.id || !shouldCleanupDevice(backend, device)) {
-                    skipped += 1;
-                    lines.push(`skipped: ${device.id || "(unknown)"}  backend=${backend.name}  status=${device.status || "unknown"}`);
-                    return;
-                }
-
-                const result = stopOwnerDeviceRecord(ownerId, backend, device, timeoutMs);
-                if (result.status !== "stopped") {
-                    failed += 1;
-                    lines.push(`failed: ${device.id}  backend=${backend.name}  previous=${device.status || "unknown"}  reason=${result.reason || "device-stop-failed"}`);
-                    for (const command of result.commands) lines.push(`command: ${command.command} -> ${command.status ?? "unknown"}`);
-                    return;
-                }
-
-                stopped += 1;
-                lines.push(`stopped: ${device.id}  backend=${backend.name}  previous=${device.status || "unknown"}`);
-                for (const command of result.commands) lines.push(`command: ${command.command} -> ${command.status ?? "unknown"}`);
-            });
-        }
-    }
-    if (stopped === 0) lines.push("stopped: 0");
-    if (failed > 0) lines.push(`failed: ${failed}`);
-    lines.push(`skipped: ${skipped}`);
-    return { ok: failed === 0, text: `${lines.join("\n")}\n` };
+ const native = deviceAdminCleanupNativePorts();
+ return createDeviceAdminAllProjectCleanup({
+  ...native,
+  get backends() { return DEVICE_BACKENDS; },
+  enumerateOwnerIds: () => allOwnerIds(),
+ }).allProjects(timeoutMs);
 }
 
 export function pruneAllProjectDevices(): { ok: boolean; text: string } {
