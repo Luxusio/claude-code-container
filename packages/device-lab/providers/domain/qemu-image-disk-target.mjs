@@ -1,4 +1,27 @@
-/** @typedef {import("../ports/qemu-image-disk-target.mjs").QemuLab} QemuLab */
+/** Domain-owned mutable facts mirror the existing public structural carriers.
+ * @typedef {{[key: string]: unknown, pid?: unknown, command?: unknown, startedAt?: unknown}} QemuRuntime
+ * @typedef {{
+ *   [key: string]: unknown,
+ *   id: string,
+ *   name: string,
+ *   provider?: string,
+ *   runtimeState: string,
+ *   image?: {[key: string]: unknown, sourceImage?: string, diskImage?: string, format?: unknown},
+ *   paths: {[key: string]: unknown, labDir: string, workspaceDir: string, artifactsDir: string},
+ *   runtime?: unknown,
+ *   readiness?: {[key: string]: unknown, latest?: {[key: string]: unknown, state?: unknown} | null},
+ *   guest?: {[key: string]: unknown, ssh?: unknown, agent?: unknown}
+ * }} QemuLab
+ * @typedef {{[key: string]: unknown, ok: true, path: string, format: string}} QemuImageSource
+ * @typedef {{
+ *   id: string, labId: string, name: string, targetKind: string, provider: string, runtimeState: string,
+ *   readiness: string, sessionState: string, attachable: boolean, creatable: boolean,
+ *   runtime: {pid: unknown, command: unknown, startedAt: unknown} | null,
+ *   readinessProbe: {[key: string]: unknown, state?: unknown} | null,
+ *   paths: {workspaceDir: string, artifactsDir: string},
+ *   sessionHints: {monitor: string, metadata: string, guestSsh: string, guestAgent: string}
+ * }} QemuTarget
+ */
 const SUPPORTED_IMAGE_FORMATS = new Set(["qcow2", "raw"]);
 const MAX_GUEST_EXEC_TIMEOUT_MS = 600000;
 const PROVIDER_NAME = "container-qemu";
@@ -28,7 +51,7 @@ function safeReadinessState(value, fallback = "process-running") {
     return ["ready", "failed", "process-running", "stopped"].includes(/** @type {string} */ (value)) ? /** @type {string} */ (value) : fallback;
 }
 
-/** @param {QemuLab} lab @returns {import("../ports/qemu-image-disk-target.mjs").QemuTarget} */
+/** @param {QemuLab} lab @returns {QemuTarget} */
 export function qemuTargetForLab(lab) {
     const running = lab.runtimeState === "running";
     const latestReadiness = running ? lab.readiness?.latest || null : null;
@@ -68,7 +91,7 @@ export function qemuTargetForLab(lab) {
 /** @param {unknown} runtime */
 function publicRuntime(runtime) {
     if (!runtime || typeof runtime !== "object") return null;
-    const record = /** @type {import("../ports/qemu-image-disk-target.mjs").QemuRuntime} */ (runtime);
+    const record = /** @type {QemuRuntime} */ (runtime);
     return {
         pid: record.pid || null,
         command: record.command || null,
@@ -76,7 +99,7 @@ function publicRuntime(runtime) {
     };
 }
 
-/** @param {import("../ports/qemu-image-disk-target.mjs").QemuImageSource} source @param {string} diskPath @returns {string[]} */
+/** @param {QemuImageSource} source @param {string} diskPath @returns {string[]} */
 export function qemuOverlayArguments(source, diskPath) {
     return ["create", "-f", "qcow2", "-F", source.format, "-b", source.path, diskPath];
 }

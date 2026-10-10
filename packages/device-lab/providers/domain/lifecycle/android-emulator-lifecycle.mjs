@@ -1,3 +1,4 @@
+/** @typedef {{ok: true, port: number} | {ok: false, error: string, detail?: string, allowed?: string}} AndroidEmulatorPortAllocation */
 export const ANDROID_EMULATOR_PORT_MIN = 5554;
 export const ANDROID_EMULATOR_PORT_MAX = 5682;
 
@@ -10,7 +11,7 @@ export function validAndroidEmulatorPort(port) {
 }
 
 /** @param {unknown} requestedPort
- * @returns {Extract<import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorPortAllocation, {ok: false}> | null} */
+ * @returns {Extract<AndroidEmulatorPortAllocation, {ok: false}> | null} */
 export function validateAndroidEmulatorPortRequest(requestedPort) {
     if (requestedPort !== undefined && !validAndroidEmulatorPort(requestedPort)) {
         return {
@@ -26,7 +27,7 @@ export function validateAndroidEmulatorPortRequest(requestedPort) {
  * @param {Set<number>} used
  * @param {number | undefined} requestedPort
  * @param {number | undefined} initialSeed
- * @returns {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorPortAllocation} */
+ * @returns {AndroidEmulatorPortAllocation} */
 export function selectAndroidEmulatorPort(used, requestedPort, initialSeed) {
     if (requestedPort !== undefined) {
         return used.has(requestedPort)

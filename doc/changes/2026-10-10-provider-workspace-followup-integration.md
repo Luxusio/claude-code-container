@@ -27,3 +27,11 @@ The new Admin proof executes the complete compiled CLI caller. QEMU proofs execu
 ## Current limits
 
 Current focused provider/workspace checks previously passed 33 complete files, but affected results must be reevaluated against the combined candidate. Failed shipping attempts and failed builds remain retained evidence. Native host/provider acceptance remains separate. Missing Harness hook receipts are non-attesting and never become a formal close PASS. No hosted CI, push, global installation or resource-default change is part of this work.
+
+## Parallel implementation and fast fixture checks
+
+Implementation on an isolated reviewed parent can overlap parent acceptance QA. Broker policy and independently authored platform tests use separate path owners; Node SDK fixture portability has its own source and test owners. Parent reconciliation, affected reviews and genuine final verification still precede local delivery and operation credit. One heavy QA lane runs; unchanged successful stages carry only through authenticated transitive dependencies.
+
+A complete architecture fixture check now runs before another unfiltered full suite. It caught the omitted-cwd trace expectation and five missing fixed provider-evolution admissions in 112.64 seconds. The reviewed corrections then passed 59 tests in 7.39 seconds and test typechecking in 1.25 seconds. A subsequent preflight found real domain-to-port type dependencies; a batch scan reported all six affected edges across two current files, so they can be repaired together while retaining the normative checker. These results do not establish full-suite acceptance.
+
+Raw comparisons retain own undefined fields, Map/Set metadata, native error identity and CAS publication observations. Capability negatives execute in the same fixture VM and count denials before throwing. Whole immutable originals and independently admitted commit bytes remain separate from candidate expectations. Original failures stay retained. The statically reviewed iOS and macOS source packets establish no functional, Windows, native or shipping acceptance. Final full QA, the required 33-file terminal ledger and local delivery remain pending; accepted WBS remains 68/218.
