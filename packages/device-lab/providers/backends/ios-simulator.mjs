@@ -28,6 +28,7 @@ const IOS_APPIUM_ERROR_TEXT_LIMIT_BYTES = 32 * 1024;
 
 export function iosDiscovery() { return deviceObservation.discovery(); }
 
+/** @param {import("../ports/device-observation.mjs").IosFacts & {xcodebuild?: string | null}} [ios] */
 export function iosAppiumDiscovery(ios = iosDiscovery()) {
     const appium = localBinPath("appium") || commandPath("appium");
     const xcuitestDriver = localBinPath("appium-xcuitest-driver") || commandPath("appium-xcuitest-driver");

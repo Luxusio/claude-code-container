@@ -121,7 +121,7 @@ export interface AndroidHostDevice {
 export interface IosHostDevice {
     name: string;
     udid: string;
-    version: string;
+    version: string | null;
     connection: string;
     raw: string;
 }
