@@ -1,3 +1,5 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
 import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicGuestExecResult as qemuLifecyclePublicGuestExecResult, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult, requireRunningLab as qemuLifecycleRequireRunningLab } from "../domain/qemu-lifecycle.mjs";
 import { createQemuImageImportApplication } from "../application/qemu-image-import.mjs";
@@ -674,34 +676,7 @@ function defaultProcessExists(pid) {
     }
 }
 
-export function labProviderStatus(options = {}) {
-    const ctx = context(options);
-    const qemu = options.qemuPath ?? commandPath("qemu-system-x86_64", ctx.env);
-    const qemuImg = options.qemuImgPath ?? commandPath("qemu-img", ctx.env);
-    const kvmPath = options.kvmPath || "/dev/kvm";
-    const networkMode = "user";
-    const kvmAvailable = options.kvmAvailable ?? existsSync(kvmPath);
-    let status = "unsupported";
-    let reason = "";
-    if (ctx.env.CCC_LAB_RUNNER !== "1") reason = "CCC_LAB_RUNNER is not enabled for this container";
-    else if (ctx.env.CCC_LAB_RUNNER_STATUS !== "ready") reason = ctx.env.CCC_LAB_RUNNER_UNSUPPORTED_REASON || `lab-runner status is ${ctx.env.CCC_LAB_RUNNER_STATUS || "unset"}`;
-    else if (!kvmAvailable) reason = `${kvmPath} is not available`;
-    else if (!qemu) reason = "qemu-system-x86_64 is not available";
-    else status = "ready";
-    return {
-        ok: true,
-        provider: PROVIDER_NAME,
-        available: status === "ready",
-        status,
-        unsupportedReason: reason || null,
-        ownerId: ctx.owner,
-        stateRoot: ctx.stateRoot,
-        qemu,
-        qemuImg,
-        kvmPath,
-        networkMode,
-    };
-}
+export function labProviderStatus(options = {}) { return linuxDeviceObservation(options).discovery(); }
 
 // Inside a ccc container that cannot run nested VMs there is no lab state volume, so
 // anything written under stateRoot would land in the container layer and be lost.
@@ -714,25 +689,7 @@ function labStateUnavailable(ctx) {
     };
 }
 
-export function listLabs(options = {}) {
-    const ctx = context(options);
-    const labsRoot = join(ctx.ownerRoot, "labs");
-    if (!existsSync(labsRoot)) return { ok: true, ownerId: ctx.owner, labs: [] };
-    const labs = readdirSync(labsRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => {
-            try {
-                const loaded = readLab(ctx, entry.name);
-                return loaded.ok ? loaded.lab : null;
-            } catch {
-                if (options.strictState === true) throw new Error("lab-state-invalid");
-                return null;
-            }
-        })
-        .filter(Boolean)
-        .map((lab) => publicLab(lab));
-    return { ok: true, ownerId: ctx.owner, labs };
-}
+export function listLabs(options = {}) { return linuxDeviceObservation(options).labs({strictState:options.strictState}); }
 
 function qemuImageDiskTargetApplication(options) {
     const ctx = context(options);
@@ -1769,32 +1726,13 @@ function ownsLinuxVm(args = {}, options = {}) {
     return listLabs(options).labs.some((lab) => lab.id === args.deviceId);
 }
 
-export function linuxVmBackend(options = {}) {
-    const status = labProviderStatus(options);
-    return {
-        name: LINUX_VM_BACKEND,
-        host: "container",
-        creatable: true,
-        available: status.available,
-        lazy: true,
-        status: status.status,
-        missing: status.available ? [] : [status.unsupportedReason].filter(Boolean),
-        provider: PROVIDER_NAME,
-        capabilities: LINUX_VM_CAPABILITIES,
-    };
-}
+export function linuxVmBackend(options = {}) { return linuxDeviceObservation(options).backend(); }
 
-export function listLinuxVmDevices(options = {}) {
-    return listLabs(options).labs.map(deviceFromLab);
-}
+export function listLinuxVmDevices(options = {}) { return linuxDeviceObservation(options).owned({strictState:options.strictState}); }
 
 function handleLinuxVmToolUnlocked(name, args = {}, options = {}) {
     const linuxArgs = linuxVmArgs(args);
-    if (name === "device_inventory") {
-        if (args.backend !== LINUX_VM_BACKEND) return undefined;
-        const status = labProviderStatus(options);
-        return linuxVmMcpResult({ ...listLabs(options), discovery: status });
-    }
+    if (name === "device_inventory") {const value=linuxDeviceObservation(options).inventory(args);return value===undefined?undefined:textResult(true,JSON.stringify(value,null,2));}
     if (name === "device_create") {
         if (args.backend !== LINUX_VM_BACKEND) return undefined;
         return linuxVmMcpResult(createLab({ ...linuxArgs, labId: args.deviceId }, options));
@@ -1850,3 +1788,5 @@ export async function handleLinuxVmManagementTool(name, args = {}, options = {})
     if (name !== "device_image_import") return undefined;
     return withOwnerDeviceOperation("linux", "__images__", () => linuxVmMcpResult(importImage(args, options)));
 }
+
+function linuxDeviceObservation(options = {}) { const ctx = context(options); const labsRoot = join(ctx.ownerRoot, "labs"); return createDeviceObservation({ kind: "linux-vm", capabilities: LINUX_VM_CAPABILITIES, ownerId: () => ctx.owner, now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), runnerFacts: () => { const qemu = options.qemuPath ?? commandPath("qemu-system-x86_64", ctx.env), qemuImg = options.qemuImgPath ?? commandPath("qemu-img", ctx.env); const kvmPath = options.kvmPath || "/dev/kvm"; return { ownerId: ctx.owner, stateRoot: ctx.stateRoot, runner: ctx.env.CCC_LAB_RUNNER, runnerStatus: ctx.env.CCC_LAB_RUNNER_STATUS, unsupportedReason: ctx.env.CCC_LAB_RUNNER_UNSUPPORTED_REASON, kvmPath, kvmAvailable: options.kvmAvailable ?? existsSync(kvmPath), qemu, qemuImg }; }, labsRootExists: () => existsSync(labsRoot), labEntries: () => readdirSync(labsRoot, { withFileTypes: true }), readLab: name => readLab(ctx, name) }); }

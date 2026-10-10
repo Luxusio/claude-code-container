@@ -1,3 +1,6 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
+import { observationMacosHelper, observationMacosStartArgs } from "../domain/device-observation.mjs";
 import { createMacosVmLifecycleApplication } from "../application/lifecycle/macos-vm-lifecycle.mjs";
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
@@ -12,7 +15,6 @@ import { withOwnerDeviceOperation, withOwnerDeviceOperations } from "../state/de
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
 import { inspectProcessIdentity, readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 import { claimRecordingFinalization, recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
-import { withTargetStatus } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
@@ -39,21 +41,21 @@ const PROVIDERS = [
     {
         name: "tart",
         command: "tart",
-        startArgs: (instance, options = {}) => ["run", ...(options.softnet ? ["--with-softnet"] : []), ...(options.headless ? ["--no-graphics"] : []), instance],
+        startArgs: (instance, options = {}) => observationMacosStartArgs("tart", instance, options),
         stopArgs: (instance) => ["stop", instance],
         deleteArgs: (instance) => ["delete", instance],
     },
     {
         name: "vz",
         command: "vz",
-        startArgs: (instance) => ["start", instance],
+        startArgs: (instance) => observationMacosStartArgs("vz", instance),
         stopArgs: (instance) => ["stop", instance],
         deleteArgs: (instance) => ["delete", instance],
     },
     {
         name: "utmctl",
         command: "utmctl",
-        startArgs: (instance) => ["start", instance],
+        startArgs: (instance) => observationMacosStartArgs("utmctl", instance),
         stopArgs: (instance) => ["stop", instance],
         deleteArgs: (instance) => ["delete", instance],
     },
@@ -160,69 +162,11 @@ function runHelperCommand(command, args, timeoutMs, options = {}) {
     return runWithTimeout(command, args, macosHelperTimeoutMs(timeoutMs), options);
 }
 
-function providerCandidates() {
-    return PROVIDERS
-        .map((provider) => ({ ...provider, command: commandPath(provider.command) }))
-        .filter((provider) => provider.command);
-}
 
-function macosDiscovery() {
-    const hostSupported = process.platform === "darwin";
-    const providers = hostSupported ? providerCandidates() : [];
-    const missing = [];
-    if (!hostSupported) missing.push("macos-host");
-    if (hostSupported && providers.length === 0) missing.push("macos-vm-provider");
-    return {
-        hostSupported,
-        providers,
-        available: hostSupported && providers.length > 0,
-        missing,
-    };
-}
 
-export function macosBackend(discovery = macosDiscovery()) {
-    return {
-        name: "macos-vm",
-        host: "macos-host",
-        creatable: true,
-        available: discovery.available,
-        lazy: true,
-        status: discovery.available ? "available" : "missing-prerequisites",
-        missing: discovery.missing,
-        providers: discovery.providers,
-        capabilities: [
-            "device_list_files",
-            "device_inventory",
-            "device_create",
-            "device_delete",
-            "device_start",
-            "device_stop",
-            "device_status",
-            "device_exec",
-            "device_screenshot",
-            "device_click",
-            "device_double_click",
-            "device_key",
-            "device_type",
-            "device_scroll",
-            "device_cursor_position",
-            "device_window_list",
-            "device_focus_window",
-            "device_drag",
-            "device_accessibility_snapshot",
-            "device_base_image_create",
-            "device_base_image_clone",
-            "device_snapshot_create",
-            "device_snapshot_restore",
-            "device_snapshot_delete",
-            "device_record_video_start",
-            "device_record_video_stop",
-            "device_record_video_status",
-            "device_upload",
-            "device_download",
-        ],
-    };
-}
+function macosDiscovery() { return deviceObservation.discovery(); }
+
+export function macosBackend(discovery = macosDiscovery()) { return deviceObservation.backend(discovery); }
 
 function macosDeviceId(name) {
     return `macos-${slug(name)}`;
@@ -345,90 +289,19 @@ function writeMacosExecutableArtifact(path, value, options = {}) {
     throw new Error("macos-artifact-create-failed");
 }
 
-function macosHelperMetadata(device) {
-    ensureMacosWorkspace(device);
-    const remoteScriptPath = device.helper?.remoteScriptPath || `/tmp/ccc-${device.id}-guest-helper.sh`;
-    const provisioning = device.helper?.provisioning || null;
-    const bridgeConfigured = Boolean(device.ssh?.host && device.ssh?.user);
-    return {
-        workspaceDir: macosWorkspaceDir(device),
-        toolsDir: macosToolsDir(device),
-        hostHelperScript: join(macosToolsDir(device), "ccc-guest-helper.sh"),
-        remoteScriptPath,
-        bridge: bridgeConfigured ? "ssh" : "missing",
-        ssh: publicSshConfig(device.ssh),
-        status: provisioning?.status || (bridgeConfigured ? "ssh-configured" : "planned"),
-        provisioning,
-        requiredFor: ["device_focus_window", "device_drag", "device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_window_list", "device_accessibility_snapshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
-    };
-}
+function macosHelperMetadata(device) { return observationMacosHelper(device,macosObservationHelperPaths(device)); }
 
-function publicSshConfig(ssh) {
-    if (!ssh) return null;
-    const { password, ...publicSsh } = ssh;
-    return password ? { ...publicSsh, passwordConfigured: true } : publicSsh;
-}
 
-function publicMacosDevice(device) {
-    return {
-        ...device,
-        ssh: publicSshConfig(device.ssh),
-    };
-}
+
+
 
 function providerByName(name) {
     return PROVIDERS.find((provider) => provider.name === name);
 }
 
-function macosProviderPlan(device, discovery = macosDiscovery()) {
-    const requestedProvider = device.provider || "auto";
-    const selected = requestedProvider === "auto"
-        ? discovery.providers[0]
-        : discovery.providers.find((provider) => provider.name === requestedProvider);
-    const catalog = selected ? providerByName(selected.name) : null;
-    const instance = device.providerInstance || `ccc-${ownerId()}-${device.id}`;
-    const missing = [...discovery.missing];
-    if (discovery.hostSupported && !selected) {
-        const providerMissing = requestedProvider === "auto" ? "macos-vm-provider" : `macos-vm-provider:${requestedProvider}`;
-        if (!missing.includes(providerMissing)) missing.push(providerMissing);
-    }
-    const command = selected?.command || null;
-    return {
-        requestedProvider,
-        selectedProvider: selected?.name || null,
-        providerCommand: command,
-        providerInstance: instance,
-        workspaceDir: macosWorkspaceDir(device),
-        image: device.image || null,
-        memoryMb: device.memoryMb,
-        cpus: device.cpus,
-        helper: macosHelperMetadata(device),
-        available: missing.length === 0 && Boolean(catalog && command),
-        missing,
-        startCommand: catalog && command ? { command, args: catalog.startArgs(instance, device) } : null,
-        stopCommand: catalog && command ? { command, args: catalog.stopArgs(instance) } : null,
-        deleteCommand: catalog && command ? { command, args: catalog.deleteArgs(instance) } : null,
-        implemented: catalog?.name === "tart" ? [
-            "base-image-create",
-            "base-image-clone",
-            "snapshot-clone",
-            "snapshot-restore",
-            "snapshot-delete",
-            "provider-delete",
-        ] : [],
-        deferred: [
-            ...(device.ssh ? [] : ["guest-helper-auto-provisioning-requires-ssh"]),
-        ],
-    };
-}
+function macosProviderPlan(device,discovery=macosDiscovery()) { return deviceObservation.plan(device,discovery); }
 
-function deviceWithPlan(device, discovery) {
-    const publicDevice = publicMacosDevice(device);
-    return withTargetStatus({
-        ...publicDevice,
-        providerPlan: macosProviderPlan(publicDevice, discovery),
-    });
-}
+function deviceWithPlan(device,discovery) { return deviceObservation.project(device,discovery); }
 
 function helperRequiredResult(device, toolName) {
     return textResult(false, `macOS VM ${toolName} requires SSH bridge metadata. Configure sshUser plus sshHost, or start a Tart VM with waitForBoot so the host can be inferred from tart ip. Optional fields: sshPort, sshKeyPath, sshPassword. Workspace: ${macosWorkspaceDir(device)}`);
@@ -1157,13 +1030,7 @@ function sshBridge(device, toolName) {
     return { target, discovery };
 }
 
-export function listMacosDevices({ identityOnly = false } = {}) {
-    const devices = readMacosDevices();
-    if (identityOnly) return devices;
-    if (!devices.length) return [];
-    const discovery = macosDiscovery();
-    return devices.map((device) => deviceWithPlan({ ...device, ownerId: ownerId() }, discovery));
-}
+export function listMacosDevices({identityOnly=false}={}) { return deviceObservation.owned({identityOnly}); }
 
 async function handleMacosToolUnlocked(name, args) {
     if (requiresOwnerDeviceOperation("macos", name)) {
@@ -1174,30 +1041,8 @@ async function handleMacosToolUnlocked(name, args) {
         }
     }
     switch (name) {
-        case "device_inventory": {
-            const { backend = "macos-vm" } = args;
-            if (backend !== "macos-vm") return undefined;
-            const discovery = macosDiscovery();
-            return jsonResult({
-                ownerId: ownerId(),
-                backend,
-                devices: readMacosDevices().map((device) => {
-                    const publicDevice = publicMacosDevice({ ...device, ownerId: ownerId() });
-                    return withTargetStatus({ ...publicDevice, providerPlan: macosProviderPlan(publicDevice, discovery) });
-                }),
-                discovery,
-                hostVms: {
-                    providers: discovery.providers.map((provider) => ({
-                        name: provider.name,
-                        command: provider.command,
-                    })),
-                    available: discovery.available,
-                    missing: discovery.missing,
-                    lazy: true,
-                    note: "Provider discovery checks command availability only; VM list/start operations are not run by inventory.",
-                },
-            });
-        }
+        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
+
 
         case "device_base_image_create": return macosVmLifecycle.createImage(args);
 
@@ -2027,3 +1872,36 @@ export async function handleMacosTool(name, args) {
         return textResult(false, `macOS VM device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+function macosObservationHelperPaths(device) { ensureMacosWorkspace(device); return { workspaceDir: macosWorkspaceDir(device), toolsDir: macosToolsDir(device), hostHelperScript: join(macosToolsDir(device), "ccc-guest-helper.sh") }; }
+const deviceObservation = createDeviceObservation({ kind: "macos-vm", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: [
+        "device_list_files",
+        "device_inventory",
+        "device_create",
+        "device_delete",
+        "device_start",
+        "device_stop",
+        "device_status",
+        "device_exec",
+        "device_screenshot",
+        "device_click",
+        "device_double_click",
+        "device_key",
+        "device_type",
+        "device_scroll",
+        "device_cursor_position",
+        "device_window_list",
+        "device_focus_window",
+        "device_drag",
+        "device_accessibility_snapshot",
+        "device_base_image_create",
+        "device_base_image_clone",
+        "device_snapshot_create",
+        "device_snapshot_restore",
+        "device_snapshot_delete",
+        "device_record_video_start",
+        "device_record_video_stop",
+        "device_record_video_status",
+        "device_upload",
+        "device_download",
+    ], platform: process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device) });

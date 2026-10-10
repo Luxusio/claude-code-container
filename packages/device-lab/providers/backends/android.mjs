@@ -1,3 +1,6 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
+import { publicObservationAndroidDevice } from "../domain/device-observation.mjs";
 import { createAndroidEmulatorLifecycle } from "../application/lifecycle/android-emulator-lifecycle.mjs";
 import { waitForAndroidText, waitForAndroidApp } from "./android-wait.mjs";
 import { androidCreationChoices } from "./android-sdk-inventory.mjs";
@@ -82,25 +85,7 @@ function androidToolSubdirs(sdk, name) {
     return ["platform-tools"];
 }
 
-export function androidDiscovery() {
-    const adb = findAndroidTool("adb");
-    const emulator = findAndroidTool("emulator");
-    const avdmanager = findAndroidTool("avdmanager");
-    const missing = [];
-    if (!adb) missing.push("adb");
-    if (!emulator) missing.push("emulator");
-    const provisioningMissing = [];
-    if (!avdmanager) provisioningMissing.push("avdmanager");
-    return {
-        adb,
-        emulator,
-        avdmanager,
-        available: missing.length === 0,
-        missing,
-        provisioningAvailable: provisioningMissing.length === 0,
-        provisioningMissing,
-    };
-}
+export function androidDiscovery() { return deviceObservation.discovery(); }
 
 function androidEmulatorHeadlessArgs(device, args = {}) {
     const headless = typeof args.headless === "boolean"
@@ -147,43 +132,7 @@ export function appiumDiscovery(android = { adb: findAndroidTool("adb") }) {
     return { appium, adb: android.adb, available: missing.length === 0, missing };
 }
 
-export function androidBackend(discovery = androidDiscovery()) {
-    return {
-        name: "android-emulator",
-        host: "host-or-container",
-        creatable: true,
-        available: discovery.available,
-        lazy: true,
-        status: discovery.available ? "available" : "missing-prerequisites",
-        missing: discovery.missing,
-        tools: { adb: discovery.adb, emulator: discovery.emulator, avdmanager: discovery.avdmanager },
-        provisioning: {
-            available: discovery.provisioningAvailable,
-            missing: discovery.provisioningMissing,
-        },
-        capabilities: [
-            "device_list_files",
-            "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
-            "device_status", "device_exec", "device_screenshot",
-            "device_record_video_start", "device_record_video_stop", "device_record_video_status",
-            "device_upload", "device_download",
-            "device_install_app", "device_launch_app",
-            "mobile_session_status", "mobile_dump_ui", "mobile_tap",
-            "mobile_double_tap", "mobile_long_press", "mobile_swipe",
-            "mobile_drag",
-            "mobile_type_text", "mobile_key", "mobile_home", "mobile_back",
-            "mobile_forward", "mobile_recents", "mobile_power", "mobile_lock",
-            "mobile_unlock", "mobile_rotate_left", "mobile_rotate_right",
-            "mobile_set_orientation", "mobile_open_url", "mobile_install_app",
-            "mobile_launch_app", "mobile_uninstall_app", "mobile_stop_app",
-            "mobile_clear_app_data", "mobile_grant_permission", "mobile_revoke_permission",
-            "mobile_set_location", "mobile_set_battery", "mobile_set_network",
-            "mobile_toggle_airplane_mode", "mobile_set_clipboard",
-            "mobile_get_clipboard", "mobile_wait_for_text", "mobile_wait_for_app",
-            "mobile_screenshot",
-        ],
-    };
-}
+export function androidBackend(discovery = androidDiscovery()) { return deviceObservation.backend(discovery); }
 
 function appiumBackendStatus(android) {
     const discovery = appiumDiscovery(android);
@@ -207,11 +156,7 @@ function androidSerial(device) {
     return device.serial || (device.port ? `emulator-${device.port}` : undefined);
 }
 
-function publicAndroidDevice(device) {
-    const publicDevice = { ...withTargetStatus(device) };
-    delete publicDevice.avdRoot;
-    return publicDevice;
-}
+function publicAndroidDevice(device) { return publicObservationAndroidDevice(withTargetStatus(device)); }
 
 export function androidEmulatorPortsFromAdbDevices(output) {
     const ports = new Set();
@@ -570,23 +515,7 @@ function isSafeDeviceProfile(deviceProfile) {
         && /^[A-Za-z0-9._ -]+$/.test(deviceProfile);
 }
 
-function listHostAvds(discovery = androidDiscovery()) {
-    if (!discovery.emulator) return { available: false, missing: ["emulator"], avds: [] };
-    const r = run(discovery.emulator, ["-list-avds"]);
-    if (r.status !== 0) {
-        return {
-            available: false,
-            missing: [],
-            avds: [],
-            error: r.stderr || r.stdout || `exit ${r.status}`,
-        };
-    }
-    return {
-        available: true,
-        missing: [],
-        avds: r.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
-    };
-}
+
 
 function androidEmulatorProcessExit(child) {
     if (!child || (child.exitCode === null && child.signalCode === null)) return null;
@@ -739,9 +668,7 @@ function dumpAndroidUiWithAdb(device, adb) {
 
 
 
-export function listAndroidDevices() {
-    return readAndroidDevices().map((device) => publicAndroidDevice({ ...device, ownerId: ownerId() }));
-}
+export function listAndroidDevices() { return deviceObservation.owned(); }
 
 const androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
     androidAvdHome,
@@ -789,20 +716,8 @@ const androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
 async function handleAndroidToolUnlocked(name, args) {
     if (!backendHintAllows(args, "android-emulator")) return undefined;
     switch (name) {
-        case "device_inventory": {
-            const { backend = "android-emulator" } = args;
-            if (backend !== "android-emulator") return undefined;
+        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
-            const discovery = androidDiscovery();
-            return jsonResult({
-                backend,
-                ownerId: ownerId(),
-                devices: listAndroidDevices(),
-                hostAvds: listHostAvds(discovery),
-                ...androidCreationChoices(discovery, androidSdkCandidates()),
-                discovery,
-            });
-        }
 
         case "device_create": {
             return androidEmulatorLifecycle.create(args);
@@ -1418,3 +1333,25 @@ export async function handleAndroidTool(name, args) {
         return textResult(false, `Android device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+const deviceObservation = createDeviceObservation({ kind: "android-emulator", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: [
+        "device_list_files",
+        "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
+        "device_status", "device_exec", "device_screenshot",
+        "device_record_video_start", "device_record_video_stop", "device_record_video_status",
+        "device_upload", "device_download",
+        "device_install_app", "device_launch_app",
+        "mobile_session_status", "mobile_dump_ui", "mobile_tap",
+        "mobile_double_tap", "mobile_long_press", "mobile_swipe",
+        "mobile_drag",
+        "mobile_type_text", "mobile_key", "mobile_home", "mobile_back",
+        "mobile_forward", "mobile_recents", "mobile_power", "mobile_lock",
+        "mobile_unlock", "mobile_rotate_left", "mobile_rotate_right",
+        "mobile_set_orientation", "mobile_open_url", "mobile_install_app",
+        "mobile_launch_app", "mobile_uninstall_app", "mobile_stop_app",
+        "mobile_clear_app_data", "mobile_grant_permission", "mobile_revoke_permission",
+        "mobile_set_location", "mobile_set_battery", "mobile_set_network",
+        "mobile_toggle_airplane_mode", "mobile_set_clipboard",
+        "mobile_get_clipboard", "mobile_wait_for_text", "mobile_wait_for_app",
+        "mobile_screenshot",
+    ], executable: name => findAndroidTool(name), records: () => readAndroidDevices(), avdResult: emulator => run(emulator, ["-list-avds"]), creationFacts: facts => androidCreationChoices(facts, androidSdkCandidates()) });

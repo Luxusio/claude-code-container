@@ -1,3 +1,5 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
 import { listContainedDirectory, validateListFilesArgs, LIST_FILES_DEFAULT_LIMIT } from "../file-listing.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
@@ -24,16 +26,7 @@ export const IOS_APPIUM_HTTP_MAX_TIMEOUT_MS = 300000;
 export const IOS_APPIUM_RESPONSE_LIMIT_BYTES = 16 * 1024 * 1024;
 const IOS_APPIUM_ERROR_TEXT_LIMIT_BYTES = 32 * 1024;
 
-export function iosDiscovery() {
-    const xcrun = commandPath("xcrun");
-    const missing = [];
-    if (!xcrun) missing.push("xcrun");
-    return {
-        xcrun,
-        available: missing.length === 0,
-        missing,
-    };
-}
+export function iosDiscovery() { return deviceObservation.discovery(); }
 
 export function iosAppiumDiscovery(ios = iosDiscovery()) {
     const appium = localBinPath("appium") || commandPath("appium");
@@ -61,66 +54,7 @@ export function normalizeIosOrientation(orientation) {
     return null;
 }
 
-export function iosBackend(discovery = iosDiscovery()) {
-    return {
-        name: "ios-simulator",
-        host: "macos-host",
-        creatable: true,
-        available: discovery.available,
-        lazy: true,
-        status: discovery.available ? "available" : "missing-prerequisites",
-        missing: discovery.missing,
-        tools: { xcrun: discovery.xcrun },
-        capabilities: [
-            "device_list_files",
-            "device_inventory",
-            "device_create",
-            "device_delete",
-            "device_start",
-            "device_stop",
-            "device_status",
-            "device_exec",
-            "device_screenshot",
-            "device_record_video_start",
-            "device_record_video_stop",
-            "device_record_video_status",
-            "device_upload",
-            "device_download",
-            "device_reset",
-            "device_install_app",
-            "device_launch_app",
-            "mobile_open_url",
-            "mobile_install_app",
-            "mobile_launch_app",
-            "mobile_screenshot",
-            "mobile_session_status",
-            "mobile_dump_ui",
-            "mobile_tap",
-            "mobile_double_tap",
-            "mobile_long_press",
-            "mobile_swipe",
-            "mobile_drag",
-            "mobile_type_text",
-            "mobile_key",
-            "mobile_home",
-            "mobile_lock",
-            "mobile_unlock",
-            "mobile_rotate_left",
-            "mobile_rotate_right",
-            "mobile_set_orientation",
-            "mobile_uninstall_app",
-            "mobile_stop_app",
-            "mobile_clear_app_data",
-            "mobile_grant_permission",
-            "mobile_revoke_permission",
-            "mobile_set_location",
-            "mobile_set_clipboard",
-            "mobile_get_clipboard",
-            "mobile_wait_for_text",
-            "mobile_wait_for_app",
-        ],
-    };
-}
+export function iosBackend(discovery = iosDiscovery()) { return deviceObservation.backend(discovery); }
 
 function iosDeviceId(name) {
     return `ios-${slug(name)}`;
@@ -759,75 +693,15 @@ function simctlJson(xcrun, args) {
     }
 }
 
-function hostSimulatorInventory(discovery = iosDiscovery(), inventory) {
-    if (!discovery.available) {
-        return {
-            available: false,
-            missing: discovery.missing,
-            devices: {},
-            runtimes: [],
-            deviceTypes: [],
-        };
-    }
-    const listed = inventory ?? simctlJson(discovery.xcrun, ["list", "-j"]);
-    if (listed.error) {
-        return {
-            available: false,
-            missing: [],
-            devices: {},
-            runtimes: [],
-            deviceTypes: [],
-            error: listed.error.stderr || listed.error.stdout || `exit ${listed.error.status}`,
-        };
-    }
-    return {
-        available: true,
-        missing: [],
-        devices: listed.value.devices || {},
-        runtimes: listed.value.runtimes || [],
-        deviceTypes: listed.value.devicetypes || listed.value.deviceTypes || [],
-    };
-}
 
-function normalizeSimState(state) {
-    if (!state) return "unknown";
-    return String(state).toLowerCase() === "booted" ? "booted" : "stopped";
-}
 
-function reconcileIosDevice(device, discovery = iosDiscovery(), inventory) {
-    if (!discovery.available) return device;
-    const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device, inventory);
-    if (ownedTarget.error) return device;
-    const simulator = ownedTarget.simulator;
 
-    const status = normalizeSimState(simulator.state);
-    if (status === device.status && simulator.name === device.simulatorName) return device;
 
-    return updateIosDevice(device.id, (item) => item.updatedAt === device.updatedAt
-        && item.status === device.status
-        && item.udid === device.udid
-        && item.simulatorName === device.simulatorName
-        ? {
-            ...item,
-            simulatorName: simulator.name || item.simulatorName,
-            status,
-            updatedAt: now(),
-        }
-        : item) || device;
-}
+function reconcileIosDevice(device, discovery = iosDiscovery(), inventory) { return deviceObservation.reconcile(device,discovery,inventory); }
 
-function iosDevicesWithInventory(devices, discovery, inventory) {
-    return devices.map((device) => withTargetStatus({ ...reconcileIosDevice(device, discovery, inventory), ownerId: ownerId() }));
-}
 
-export function listIosDevices({ identityOnly = false } = {}) {
-    const devices = readIosDevices();
-    if (identityOnly) return devices;
-    if (devices.length === 0) return [];
-    const discovery = iosDiscovery();
-    const inventory = discovery.available ? simctlJson(discovery.xcrun, ["list", "devices", "-j"]) : undefined;
-    return iosDevicesWithInventory(devices, discovery, inventory);
-}
+
+export function listIosDevices({ identityOnly = false } = {}) { return deviceObservation.owned({identityOnly}); }
 
 const iosSimulatorLifecycle = createIosSimulatorLifecycle({
     iosDeviceId: (...args) => iosDeviceId(...args),
@@ -861,20 +735,8 @@ const iosSimulatorLifecycle = createIosSimulatorLifecycle({
 
 async function handleIosToolUnlocked(name, args) {
     switch (name) {
-        case "device_inventory": {
-            const { backend = "ios-simulator" } = args;
-            if (backend !== "ios-simulator") return undefined;
+        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
-            const discovery = iosDiscovery();
-            const inventory = discovery.available ? simctlJson(discovery.xcrun, ["list", "-j"]) : undefined;
-            return jsonResult({
-                backend,
-                ownerId: ownerId(),
-                devices: iosDevicesWithInventory(readIosDevices(), discovery, inventory),
-                hostSimulators: hostSimulatorInventory(discovery, inventory),
-                discovery,
-            });
-        }
 
         case "device_create":
             return iosSimulatorLifecycle.create(args);
@@ -1597,3 +1459,52 @@ export async function handleIosTool(name, args) {
         return textResult(false, `iOS Simulator device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+const deviceObservation = createDeviceObservation({ kind: "ios-simulator", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: [
+        "device_list_files",
+        "device_inventory",
+        "device_create",
+        "device_delete",
+        "device_start",
+        "device_stop",
+        "device_status",
+        "device_exec",
+        "device_screenshot",
+        "device_record_video_start",
+        "device_record_video_stop",
+        "device_record_video_status",
+        "device_upload",
+        "device_download",
+        "device_reset",
+        "device_install_app",
+        "device_launch_app",
+        "mobile_open_url",
+        "mobile_install_app",
+        "mobile_launch_app",
+        "mobile_screenshot",
+        "mobile_session_status",
+        "mobile_dump_ui",
+        "mobile_tap",
+        "mobile_double_tap",
+        "mobile_long_press",
+        "mobile_swipe",
+        "mobile_drag",
+        "mobile_type_text",
+        "mobile_key",
+        "mobile_home",
+        "mobile_lock",
+        "mobile_unlock",
+        "mobile_rotate_left",
+        "mobile_rotate_right",
+        "mobile_set_orientation",
+        "mobile_uninstall_app",
+        "mobile_stop_app",
+        "mobile_clear_app_data",
+        "mobile_grant_permission",
+        "mobile_revoke_permission",
+        "mobile_set_location",
+        "mobile_set_clipboard",
+        "mobile_get_clipboard",
+        "mobile_wait_for_text",
+        "mobile_wait_for_app",
+    ], executable: name => commandPath(name), records: () => readIosDevices(), simulators: (xcrun, args) => simctlJson(xcrun, args), ownedTarget: (xcrun, device, inventory) => resolveOwnedSimulatorTarget(xcrun, device, inventory), publishObserved: (device, status, simulatorName) => updateIosDevice(device.id, item => item.updatedAt === device.updatedAt && item.status === device.status && item.udid === device.udid && item.simulatorName === device.simulatorName ? { ...item, simulatorName: simulatorName || item.simulatorName, status, updatedAt: now() } : item) });

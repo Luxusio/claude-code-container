@@ -5,9 +5,33 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { listLabs } from "@ccc/device-lab/providers/backends/linux-vm.mjs";
 
 const repoRoot = join(__dirname, "../..");
 const TIMEOUT = 30000;
+
+describe("direct Linux inventory state admission", () => {
+    it("returns an empty owner inventory without reading another owner's malformed lab", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-linux-observation-empty-"));
+        try {
+            const foreignLab = join(root, "owners", "foreign", "labs", "foreign-lab");
+            mkdirSync(foreignLab, { recursive: true });
+            writeFileSync(join(foreignLab, "lab.json"), "{");
+            expect(listLabs({ stateRoot: root, ownerId: "current", strictState: true })).toEqual({ ok: true, ownerId: "current", labs: [] });
+        } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it("omits malformed lab state ordinarily but rejects it when strict state is requested", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-linux-observation-invalid-"));
+        try {
+            const lab = join(root, "owners", "current", "labs", "broken-lab");
+            mkdirSync(lab, { recursive: true });
+            writeFileSync(join(lab, "lab.json"), "{");
+            expect(listLabs({ stateRoot: root, ownerId: "current" })).toEqual({ ok: true, ownerId: "current", labs: [] });
+            expect(() => listLabs({ stateRoot: root, ownerId: "current", strictState: true })).toThrow("lab-state-invalid");
+        } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
 
 describe("device-lab Linux VM foundation", () => {
     let client: Client;

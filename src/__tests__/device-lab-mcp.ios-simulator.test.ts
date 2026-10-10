@@ -1,10 +1,29 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import nativeFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
+import { ownerId } from "@ccc/device-lab/providers/context.mjs";
+import { ownerStateFile } from "@ccc/device-lab/providers/state/device-store.mjs";
+import { readIosDevices } from "@ccc/device-lab/providers/state/ios-state.mjs";
+import { createDeviceObservation } from "@ccc/device-lab/providers/application/device-observation.mjs";
+import type { IosObservationPorts } from "@ccc/device-lab/providers/ports/device-observation.mjs";
 import { createServer } from "http";
 import type { AddressInfo } from "net";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fetchIosAppiumJson, IOS_APPIUM_HTTP_MAX_TIMEOUT_MS, IOS_APPIUM_RESPONSE_LIMIT_BYTES, normalizeIosAppiumHttpTimeoutMs } from "@ccc/device-lab/providers/backends/ios-simulator.mjs";
+import { fetchIosAppiumJson, IOS_APPIUM_HTTP_MAX_TIMEOUT_MS, IOS_APPIUM_RESPONSE_LIMIT_BYTES, normalizeIosAppiumHttpTimeoutMs, listIosDevices } from "@ccc/device-lab/providers/backends/ios-simulator.mjs";
 import { exerciseStaleExternalIosSession, cleanupFakeIosMcpContext, createFakeIosMcpContext, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
+
+function simulatorObservationContracts(ports: IosObservationPorts): void {
+    createDeviceObservation(ports).owned({ identityOnly: true });
+    const { publishObserved: _publication, ...withoutPublication } = ports;
+    // @ts-expect-error Simulator reconciliation requires conditional native publication.
+    createDeviceObservation(withoutPublication);
+    // @ts-expect-error Synchronous observations cannot defer their state publication result.
+    createDeviceObservation({ ...ports, publishObserved: async () => undefined });
+    void _publication;
+}
+void simulatorObservationContracts;
 
 function parseToolJson(result: { content?: unknown }) {
     return JSON.parse((((result.content as Array<{ text?: string }> | undefined) ?? [])[0]?.text ?? "{}")) as Record<string, unknown>;
@@ -178,6 +197,52 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         expect(log).toContain("xcrun simctl list -j");
         expect(log).not.toContain("xcrun simctl boot ");
         expect(log).not.toContain("xcrun simctl create ");
+    });
+
+    it("preserves a successor when simulator observation reaches conditional state publication", () => {
+        const previousPath = process.env.PATH;
+        const previousLog = process.env.FAKE_IOS_LOG;
+        const restoreEnvironment = isolateDeviceLabTestEnvironment(homeDir);
+        const originalOpen = nativeFs.openSync;
+        let initialRead = false;
+        let replaced = false;
+        try {
+            process.env.PATH = binDir;
+            process.env.FAKE_IOS_LOG = logPath;
+            const record = {
+                id: "observation-target", status: "stopped", udid: "CREATED-IOS-UDID",
+                simulatorName: `ccc-${ownerId()}-observation-target`, updatedAt: "2026-10-11T00:00:00.000Z",
+            };
+            const successor = { ...record, updatedAt: "2026-10-11T00:00:01.000Z", name: "Successor" };
+            const statePath = ownerStateFile("ios");
+            mkdirSync(dirname(statePath), { recursive: true });
+            writeFileSync(statePath, JSON.stringify({ devices: [record] }));
+            writeFileSync(join(homeDir, "fake-ios-created-name"), record.simulatorName);
+            writeFileSync(join(homeDir, "fake-ios-created-booted"), "");
+            // The first read supplies observation's expected record. Replace that exact
+            // owned file before the native repository rereads it for publication.
+            nativeFs.openSync = (path, flags, mode) => {
+                if (path === statePath && !replaced) {
+                    if (initialRead) {
+                        replaced = true;
+                        writeFileSync(statePath, JSON.stringify({ devices: [successor] }));
+                    } else initialRead = true;
+                }
+                return originalOpen(path, flags, mode);
+            };
+            syncBuiltinESMExports();
+            expect(listIosDevices()).toEqual(expect.arrayContaining([expect.objectContaining(successor)]));
+            expect(replaced).toBe(true);
+            expect(readIosDevices()).toEqual([successor]);
+        } finally {
+            nativeFs.openSync = originalOpen;
+            syncBuiltinESMExports();
+            restoreEnvironment();
+            if (previousPath === undefined) delete process.env.PATH;
+            else process.env.PATH = previousPath;
+            if (previousLog === undefined) delete process.env.FAKE_IOS_LOG;
+            else process.env.FAKE_IOS_LOG = previousLog;
+        }
     });
 
 

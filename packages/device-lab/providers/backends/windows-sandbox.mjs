@@ -1,3 +1,5 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
 import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../application/lifecycle/windows-sandbox-stop.mjs";
 import { desktopPointValid, desktopDragValid } from "../display/desktop-input.mjs";
@@ -38,16 +40,7 @@ export function windowsSandboxHelperTimeoutMs(value, fallback = WINDOWS_SANDBOX_
     return Math.min(WINDOWS_SANDBOX_HELPER_MAX_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
 }
 
-export function windowsDiscovery() {
-    const wsb = commandPath("wsb");
-    const missing = [];
-    if (!wsb) missing.push("wsb");
-    return {
-        wsb,
-        available: missing.length === 0,
-        missing,
-    };
-}
+export function windowsDiscovery() { return deviceObservation.discovery(); }
 
 function isGuid(value) {
     return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -192,54 +185,9 @@ function windowsSingletonGenerationMatches(device, claimId = device?.singletonCl
     });
 }
 
-export function windowsBackend() {
-    const discovery = windowsDiscovery();
-    return {
-        name: "windows-sandbox",
-        host: "windows-host",
-        creatable: true,
-        available: discovery.available,
-        lazy: true,
-        status: discovery.available ? "available" : "missing-prerequisites",
-        missing: discovery.missing,
-        tools: { wsb: discovery.wsb },
-        capabilities: [
-            "device_list_files",
-            "device_inventory",
-            "device_create",
-            "device_delete",
-            "device_start",
-            "device_stop",
-            "device_status",
-            "device_exec",
-            "device_screenshot",
-            "device_click",
-            "device_double_click",
-            "device_key",
-            "device_type",
-            "device_scroll",
-            "device_cursor_position",
-            "device_window_list",
-            "device_drag",
-            "device_focus_window",
-            "device_accessibility_snapshot",
-            "device_record_video_start",
-            "device_record_video_stop",
-            "device_record_video_status",
-            "device_upload",
-            "device_download",
-        ],
-    };
-}
+export function windowsBackend() { return deviceObservation.backend(); }
 
-function windowsInventoryDevice(device) {
-    return withTargetStatus({
-        ...device,
-        ownerId: ownerId(),
-        helper: windowsHelperMetadata(device),
-        configPath: wsbConfigPath(device),
-    });
-}
+
 
 function windowsDeviceId(name) {
     return `windows-${slug(name)}`;
@@ -1607,33 +1555,12 @@ function windowsSandboxLifecyclePorts() {
     };
 }
 
-export function listWindowsDevices() {
-    return readWindowsDevices().map((device) => withTargetStatus({ ...device, ownerId: ownerId() }));
-}
+export function listWindowsDevices() { return deviceObservation.owned(); }
 
 async function handleWindowsToolUnlocked(name, args) {
     switch (name) {
-        case "device_inventory": {
-            const { backend = "windows-sandbox" } = args;
-            if (backend !== "windows-sandbox") return undefined;
-            const discovery = windowsDiscovery();
-            return jsonResult({
-                ownerId: ownerId(),
-                backend,
-                devices: readWindowsDevices().map(windowsInventoryDevice),
-                discovery,
-                hostSandboxes: {
-                    provider: "wsb",
-                    available: discovery.available,
-                    command: discovery.wsb,
-                    missing: discovery.missing,
-                    lazy: true,
-                    singleton: true,
-                    lock: readWindowsSingletonLock(),
-                    note: "Windows Sandbox does not expose a stable all-sandbox inventory through the baseline wsb CLI; owner definitions are listed without starting sandboxes.",
-                },
-            });
-        }
+        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
+
 
         case "device_create": {
             const outcome = createWindowsSandboxCreate({
@@ -1968,3 +1895,30 @@ export async function handleWindowsTool(name, args) {
         return textResult(false, `Windows Sandbox device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+const deviceObservation = createDeviceObservation({ kind: "windows-sandbox", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: [
+        "device_list_files",
+        "device_inventory",
+        "device_create",
+        "device_delete",
+        "device_start",
+        "device_stop",
+        "device_status",
+        "device_exec",
+        "device_screenshot",
+        "device_click",
+        "device_double_click",
+        "device_key",
+        "device_type",
+        "device_scroll",
+        "device_cursor_position",
+        "device_window_list",
+        "device_drag",
+        "device_focus_window",
+        "device_accessibility_snapshot",
+        "device_record_video_start",
+        "device_record_video_stop",
+        "device_record_video_status",
+        "device_upload",
+        "device_download",
+    ], executable: name => commandPath(name), records: () => readWindowsDevices(), helperMetadata: device => windowsHelperMetadata(device), configPath: device => wsbConfigPath(device), singleton: () => readWindowsSingletonLock() });

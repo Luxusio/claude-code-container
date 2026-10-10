@@ -1,3 +1,5 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
 import { createHash, randomUUID } from "crypto";
@@ -11,7 +13,7 @@ import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.m
 import { inspectProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwnedRuntimeProcess, terminateOwnedRuntimeProcess, waitForProcessIdentity } from "../state/process-identity.mjs";
 import { appiumGenerationMatches, transitionAppiumGeneration } from "../state/runtime-generation.mjs";
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
-import { withTargetStatus, withTargetStatuses } from "../status.mjs";
+import { withTargetStatus } from "../status.mjs";
 import { fetchIosAppiumJson, iosAppiumDiscovery, iosDiscovery, normalizeIosOrientation } from "./ios-simulator.mjs";
 
 const physicalStop = createPhysicalStopApplication({
@@ -40,31 +42,9 @@ const IOS_REAL_CAPABILITIES = [
     "mobile_stop_app",
 ];
 
-export function iosRealBackend(discovery = iosRealDiscovery()) {
-    return {
-        name: "ios-device",
-        host: "macos-host-usb-xcode",
-        creatable: false,
-        attachable: true,
-        available: discovery.available,
-        lazy: true,
-        status: discovery.available ? "available" : "missing-prerequisites",
-        missing: discovery.missing,
-        tools: { xcrun: discovery.xcrun, xcodebuild: discovery.xcodebuild },
-        capabilities: IOS_REAL_CAPABILITIES,
-    };
-}
+export function iosRealBackend(discovery = iosRealDiscovery()) { return deviceObservation.backend(discovery); }
 
-export function iosRealDiscovery(ios = iosDiscovery()) {
-    const xcodebuild = commandPath("xcodebuild");
-    const missing = [...ios.missing];
-    return {
-        xcrun: ios.xcrun,
-        xcodebuild,
-        available: missing.length === 0,
-        missing,
-    };
-}
+export function iosRealDiscovery(ios = iosDiscovery()) { return deviceObservation.discovery(ios); }
 
 function now() {
     return new Date().toISOString();
@@ -472,24 +452,12 @@ function requireBundleIdArg(bundleId, toolName) {
     return null;
 }
 
-export function listIosRealDevices() {
-    return withTargetStatuses(readIosRealDevices().map((device) => ({ ...device, ownerId: ownerId() })));
-}
+export function listIosRealDevices() { return deviceObservation.owned(); }
 
 async function handleIosRealToolUnlocked(name, args) {
     switch (name) {
-        case "device_inventory": {
-            const { backend = "ios-device" } = args;
-            if (backend !== "ios-device") return undefined;
-            const discovery = iosRealDiscovery();
-            return jsonResult({
-                backend,
-                ownerId: ownerId(),
-                devices: listIosRealDevices(),
-                hostDevices: hostIosDevices(discovery),
-                discovery,
-            });
-        }
+        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
+
 
         case "device_wireless": {
             const { backend = "ios-device", action = "status", udid } = args;
@@ -998,3 +966,5 @@ export async function handleIosRealTool(name, args) {
         return textResult(false, `iOS physical device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+const deviceObservation = createDeviceObservation({ kind: "ios-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: IOS_REAL_CAPABILITIES, simulatorPrerequisites: () => iosDiscovery(), executable: name => commandPath(name), records: () => readIosRealDevices(), hostResult: xcrun => { const result = run(xcrun, ["xctrace", "list", "devices"]); return { ...result, devices: result.status === 0 ? parseXctraceDevices(result.stdout) : [] }; } });

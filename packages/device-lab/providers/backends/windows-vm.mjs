@@ -1,3 +1,6 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
+import { ownerId } from "../context.mjs";
 import { commandPath } from "../commands.mjs";
 import { readWindowsVmDevices } from "../state/windows-vm-state.mjs";
 
@@ -29,29 +32,8 @@ const CAPABILITIES = [
     "device_snapshot_delete",
 ];
 
-export function windowsVmBackend() {
-    const hostSupported = process.platform === "win32";
-    const powershell = hostSupported
-        ? commandPath("powershell.exe") || commandPath("pwsh") || commandPath("powershell")
-        : null;
-    const missing = [
-        ...(hostSupported ? [] : ["windows-host"]),
-        ...(hostSupported && !powershell ? ["powershell"] : []),
-    ];
-    return {
-        name: "windows-vm",
-        host: "windows-host",
-        provider: "hyper-v",
-        creatable: true,
-        available: missing.length === 0,
-        lazy: true,
-        status: missing.length === 0 ? "available" : "missing-prerequisites",
-        missing,
-        tools: { powershell },
-        capabilities: CAPABILITIES,
-    };
-}
+export function windowsVmBackend() { return deviceObservation.backend(); }
 
-export function listWindowsVmDevices() {
-    return readWindowsVmDevices();
-}
+export function listWindowsVmDevices() { return deviceObservation.owned(); }
+
+const deviceObservation = createDeviceObservation({ kind: "windows-vm", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: CAPABILITIES, platform: process.platform, executable: name => commandPath(name), records: () => readWindowsVmDevices() });

@@ -4,9 +4,9 @@ import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { handleMacosTool } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
+import { handleMacosTool, listMacosDevices } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
 import { withOwnerDeviceOperation } from "@ccc/device-lab/providers/state/device-store.mjs";
-import { updateMacosDevice } from "@ccc/device-lab/providers/state/macos-state.mjs";
+import { updateMacosDevice, writeMacosDevices } from "@ccc/device-lab/providers/state/macos-state.mjs";
 import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 
 describe("macOS VM backend with fake Tart provider", () => {
@@ -22,6 +22,32 @@ describe("macOS VM backend with fake Tart provider", () => {
 
     afterAll(() => {
         cleanupFakeMacosMcpContext(context);
+    });
+
+    it("lists empty and identity-only owner records without probing native providers", () => {
+        const record = { id: "identity-only", name: "Metadata Only", status: "stopped", provider: "tart" };
+        const originalSpawn = childProcess.spawnSync;
+        let probeAttempted = false;
+        const refuseProbe: typeof childProcess.spawnSync = () => {
+            probeAttempted = true;
+            throw new Error("unexpected provider probe");
+        };
+        try {
+            childProcess.spawnSync = refuseProbe;
+            syncBuiltinESMExports();
+            expect(listMacosDevices()).toEqual([]);
+            childProcess.spawnSync = originalSpawn;
+            syncBuiltinESMExports();
+            writeMacosDevices([record]);
+            childProcess.spawnSync = refuseProbe;
+            syncBuiltinESMExports();
+            expect(listMacosDevices({ identityOnly: true })).toEqual([record]);
+            expect(probeAttempted).toBe(false);
+        } finally {
+            childProcess.spawnSync = originalSpawn;
+            syncBuiltinESMExports();
+            writeMacosDevices([]);
+        }
     });
 
     function macosStatePath() {

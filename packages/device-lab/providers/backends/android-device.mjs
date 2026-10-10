@@ -1,3 +1,5 @@
+import { createDeviceObservation } from "../application/device-observation.mjs";
+import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
 import { createAndroidWirelessApplication } from "../application/android-wireless.mjs";
 import { androidWifiSerial, androidWifiTransport, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
@@ -18,7 +20,7 @@ import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.m
 import { inspectProcessIdentity, readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 import { claimRecordingFinalization, recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
-import { withTargetStatus, withTargetStatuses } from "../status.mjs";
+import { withTargetStatus } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
 
 // Native leaf steps retain timeout-runner selection before argument coercion.
@@ -77,21 +79,7 @@ const ANDROID_REAL_DEVICE_ID_TOOLS = new Set(ANDROID_REAL_CAPABILITIES.filter((n
     "device_wireless",
 ].includes(name)));
 
-export function androidRealBackend(discovery = androidDiscovery()) {
-    const missing = discovery.adb ? [] : ["adb"];
-    return {
-        name: "android-device",
-        host: "host-usb-adb",
-        creatable: false,
-        attachable: true,
-        available: missing.length === 0,
-        lazy: true,
-        status: missing.length === 0 ? "available" : "missing-prerequisites",
-        missing,
-        tools: { adb: discovery.adb },
-        capabilities: ANDROID_REAL_CAPABILITIES,
-    };
-}
+export function androidRealBackend(discovery = androidDiscovery()) { return deviceObservation.backend(discovery); }
 
 function now() {
     return new Date().toISOString();
@@ -317,9 +305,7 @@ function stopVolatileProcesses(device, adb) {
     return physicalStop.cleanup(device, adb);
 }
 
-export function listAndroidRealDevices() {
-    return withTargetStatuses(readAndroidRealDevices().map((device) => ({ ...device, ownerId: ownerId() })));
-}
+export function listAndroidRealDevices() { return deviceObservation.owned(); }
 
 async function handleAndroidRealToolUnlocked(name, args) {
     if (!backendHintAllows(args, "android-device")) return undefined;
@@ -327,18 +313,8 @@ async function handleAndroidRealToolUnlocked(name, args) {
         return textResult(false, JSON.stringify({ ok: false, error: "device-not-found", backend: "android-device", deviceId: args.deviceId }, null, 2));
     }
     switch (name) {
-        case "device_inventory": {
-            const { backend = "android-device" } = args;
-            if (backend !== "android-device") return undefined;
-            const discovery = androidDiscovery();
-            return jsonResult({
-                backend,
-                ownerId: ownerId(),
-                devices: listAndroidRealDevices(),
-                hostDevices: hostAndroidDevices(discovery),
-                discovery: { adb: discovery.adb, available: Boolean(discovery.adb), missing: discovery.adb ? [] : ["adb"] },
-            });
-        }
+        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
+
 
         case "device_wireless": {
             return androidWireless.handle(args);
@@ -954,3 +930,5 @@ export async function handleAndroidRealTool(name, args) {
         return textResult(false, `Android physical device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+const deviceObservation = createDeviceObservation({ kind: "android-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: ANDROID_REAL_CAPABILITIES, androidPrerequisites: () => androidDiscovery(), records: () => readAndroidRealDevices(), hostResult: adb => androidWirelessDeviceList(run(adb, ["devices", "-l"])) });
