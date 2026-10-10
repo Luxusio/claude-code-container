@@ -1,3 +1,9 @@
+import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, planBrokerIosCreateCommand, planBrokerIosExistingCommand, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
+import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, planBrokerMacosCreateCommand, planBrokerMacosExistingCommand, rollbackBrokerMacosCreate, waitForBrokerMacosBoot } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
+import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
+import { brokerMacosReplacement, brokerMacosUniqueFields } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import type { BrokerIosSimulatorLifecyclePorts } from "./device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
+import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord, planBrokerAndroidCreateCommand, planBrokerAndroidExistingCommand } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidEmulatorLifecyclePorts } from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import { createBrokerWindowsSandboxCreate } from "./device-lab/application/lifecycle/windows-sandbox-create.js";
@@ -5641,30 +5647,12 @@ function writeBrokerWindowsConfig(ownerId: string, deviceId: string, create: Rec
 
 function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): unknown {
     if (parsed.backend === "android-emulator") return createBrokerAndroidRecord(ownerId, parsed, { timestamp: () => new Date().toISOString(), avdHome: () => androidAvdHome() });
+    if (parsed.backend === "ios-simulator") return createBrokerIosRecord(ownerId, parsed, { timestamp: () => new Date().toISOString() });
+    if (parsed.backend === "macos-vm") return createBrokerMacosRecord(ownerId, parsed, { timestamp: () => new Date().toISOString() });
     const create = parsed.create || {};
     const now = new Date().toISOString();
     const name = String(create.name || parsed.deviceId);
-    if (parsed.backend === "ios-simulator") {
-        return {
-            id: parsed.deviceId,
-            name,
-            backend: parsed.backend,
-            kind: "mobile",
-            platform: "ios",
-            ownerId,
-            simulatorName: create.simulatorName || `ccc-${ownerId}-${brokerSlug(name)}`,
-            ...(typeof create.deviceType === "string" ? { deviceType: create.deviceType } : {}),
-            ...(typeof create.runtime === "string" ? { runtime: create.runtime } : {}),
-            ...(typeof create.udid === "string" ? { udid: create.udid } : {}),
-            createSimulator: create.createSimulator === true,
-            recording: null,
-            status: "stopped",
-            creatable: true,
-            createdAt: now,
-            updatedAt: now,
-            authority: "host-broker",
-        };
-    }
+
     if (parsed.backend === "windows-sandbox") {
         const configPath = brokerWindowsConfigPath(ownerId, parsed.deviceId);
         return brokerWindowsSandboxRecord(ownerId, parsed.deviceId, name, create, configPath, now);
@@ -5731,31 +5719,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
             authority: "host-broker",
         };
     }
-    if (parsed.backend === "macos-vm") {
-        const ssh = macosBrokerSshConfig(create);
-        return {
-            id: parsed.deviceId,
-            name,
-            backend: parsed.backend,
-            kind: "desktop",
-            platform: "macos",
-            ownerId,
-            provider: create.provider === "auto" || !create.provider ? "tart" : create.provider,
-            providerInstance: typeof create.providerInstance === "string" && create.providerInstance
-                ? create.providerInstance
-                : `ccc-${ownerId}-${brokerSlug(parsed.deviceId)}`,
-            ...(typeof create.image === "string" ? { image: create.image } : {}),
-            ...(typeof create.headless === "boolean" ? { headless: create.headless } : {}),
-            ...(typeof create.cpus === "number" ? { cpus: create.cpus } : {}),
-            ...(ssh ? { ssh } : {}),
-            recording: null,
-            status: "stopped",
-            creatable: true,
-            createdAt: now,
-            updatedAt: now,
-            authority: "host-broker",
-        };
-    }
+
     return {
         id: parsed.deviceId,
         name,
@@ -5770,8 +5734,8 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
 
 function createOwnerDeviceUniqueFields(parsed: CommandParamSuccess): Array<string | string[]> {
     if (parsed.backend === "android-emulator") return ["id", "avdName", "port"];
-    if (parsed.backend === "ios-simulator") return ["id", "udid", "simulatorName"];
-    if (parsed.backend === "macos-vm") return ["id", ["provider", "providerInstance"]];
+    if (parsed.backend === "ios-simulator") return brokerIosUniqueFields();
+    if (parsed.backend === "macos-vm") return brokerMacosUniqueFields();
     if (isHyperVBackend(parsed.backend)) return ["id", "vmId", "vmName", "diskPath"];
     return ["id"];
 }
@@ -5789,16 +5753,7 @@ async function rollbackProviderCreateAfterConflict(
     if (!isHyperVBackend(parsed.backend) && (!providerCommand || providerCommand.mode === "noop")) {
         return { attempted: false, ok: true, reason: "no-provider-resource-created" };
     }
-    if (parsed.backend === "ios-simulator") {
-        if (!providerCommand) return { attempted: false, ok: false, reason: "created-simulator-provider-command-missing" };
-        if (existing?.udid === device.udid) return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
-        const udid = typeof device.udid === "string" ? device.udid : "";
-        if (!udid) return { attempted: false, ok: false, reason: "created-simulator-udid-missing" };
-        const executable = typeof providerCommand.executable === "string" ? providerCommand.executable : "";
-        if (!executable) return { attempted: false, ok: false, reason: "created-simulator-provider-command-missing" };
-        const result = normalized.commandRunner(iosSimulatorDeleteCommand(executable, udid), { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-        return { attempted: true, ok: commandSucceeded(result), result };
-    }
+    if (parsed.backend === "ios-simulator") return rollbackBrokerIosCreate(brokerIosLifecyclePorts(normalized), device, existing, providerCommand);
     if (isHyperVBackend(parsed.backend)) {
         if (existing?.vmId === device.vmId || existing?.vmName === device.vmName || existing?.diskPath === device.diskPath) {
             return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
@@ -5901,19 +5856,7 @@ async function rollbackProviderCreateAfterConflict(
             };
         }
     }
-    if (parsed.backend === "macos-vm") {
-        if (!providerCommand) return { attempted: false, ok: false, reason: "created-macos-provider-command-missing" };
-        if (existing?.provider === device.provider && existing?.providerInstance === device.providerInstance) {
-            return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
-        }
-        const result = normalized.commandRunner({
-            mode: "exec",
-            provider: providerCommand.provider,
-            executable: providerCommand.executable,
-            args: ["delete", String(device.providerInstance)],
-        }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-        return { attempted: true, ok: commandSucceeded(result), result };
-    }
+    if (parsed.backend === "macos-vm") return rollbackBrokerMacosCreate(brokerMacosLifecyclePorts(normalized), device, existing, providerCommand);
     return { attempted: false, ok: true, reason: "create-does-not-provision-a-provider-resource" };
 }
 
@@ -6130,27 +6073,6 @@ function resolveAndroidEmulatorCreatePortForInvoke(
     });
 }
 
-function usesDefaultBrokerTartMacosCredentials(create: Record<string, unknown>) {
-    const provider = create.provider === "auto" || !create.provider ? "tart" : String(create.provider);
-    if (provider !== "tart") return false;
-    const image = typeof create.image === "string" ? create.image : "";
-    return image === "ccc-macos-base" ||
-        /^ghcr\.io\/cirruslabs\/macos-[^:]+(?:[:@].*)?$/.test(image) ||
-        /^macos-[^-]+-base$/.test(image);
-}
-
-function macosBrokerSshConfig(create: Record<string, unknown>) {
-    const hasExplicitSsh = Boolean(create.sshHost || create.sshUser || create.sshKeyPath || create.sshPassword);
-    const useDefaultPassword = !hasExplicitSsh && usesDefaultBrokerTartMacosCredentials(create);
-    if (!hasExplicitSsh && !useDefaultPassword) return null;
-    return {
-        host: typeof create.sshHost === "string" ? create.sshHost : null,
-        port: typeof create.sshPort === "number" ? create.sshPort : 22,
-        user: typeof create.sshUser === "string" ? create.sshUser : (useDefaultPassword ? "admin" : null),
-        keyPath: typeof create.sshKeyPath === "string" ? create.sshKeyPath : null,
-        password: typeof create.sshPassword === "string" ? create.sshPassword : (useDefaultPassword ? "admin" : null),
-    };
-}
 
 function physicalLeaseLocksDir(backend: string) {
     return join(brokerRoot(), "physical-leases", backend, "locks");
@@ -9885,13 +9807,7 @@ async function runTypedHyperVCreate(
 function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions): ProviderCommand | { error: string; missing: string[] } {
     const create = parsed.create || {};
     if (parsed.backend === "android-emulator" && create.createAvd === true) return planBrokerAndroidCreateCommand(ownerId, parsed, { ownedAvdName: (name, owner) => ownedAndroidAvdName(name, owner), executable: name => executableFor(name, normalized) }, create);
-    if (parsed.backend === "ios-simulator" && create.createSimulator === true) {
-        const name = String(create.name || parsed.deviceId);
-        const simulatorName = typeof create.simulatorName === "string" && create.simulatorName
-            ? create.simulatorName
-            : `${brokerIosSimulatorPrefix(ownerId)}${brokerSlug(name)}`;
-        return iosSimulatorCreateCommand({ simulatorName, ownerPrefix: brokerIosSimulatorPrefix(ownerId), deviceType: create.deviceType, runtime: create.runtime, executable: executableFor("xcrun", normalized) });
-    }
+    if (parsed.backend === "ios-simulator" && create.createSimulator === true) return planBrokerIosCreateCommand(ownerId, parsed, { executable: name => executableFor(name, normalized), createCommand: input => iosSimulatorCreateCommand({ ...input, executable: input.executable as string }) }, create);
     if (isHyperVBackend(parsed.backend)) {
         const linuxGuest = parsed.backend === "linux-vm";
         const image = typeof create.image === "string" && create.image ? create.image : null;
@@ -9959,19 +9875,7 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
             return { error: error instanceof Error ? error.message : "invalid-hyper-v-create-options", missing: [] };
         }
     }
-    if (parsed.backend === "macos-vm") {
-        const provider = create.provider === "auto" || !create.provider ? "tart" : String(create.provider);
-        if (!DEVICE_BROKER_MACOS_PROVIDERS.has(provider)) {
-            return { error: "unsupported-provider-command", missing: ["provider"] };
-        }
-        if (provider !== "tart") return { mode: "noop", provider: "host-broker-state", reason: "device_create writes owner-scoped broker metadata" };
-        const image = typeof create.image === "string" && create.image ? create.image : null;
-        if (!image) return { mode: "noop", provider: "host-broker-state", reason: "macOS VM device_create without image writes owner-scoped broker metadata" };
-        const target = typeof create.providerInstance === "string" && create.providerInstance
-            ? create.providerInstance
-            : `ccc-${ownerId}-${brokerSlug(parsed.deviceId)}`;
-        return { mode: "exec", provider: "tart", executable: executableFor("tart", normalized), args: ["clone", image, target] };
-    }
+    if (parsed.backend === "macos-vm") return planBrokerMacosCreateCommand(ownerId, parsed, { executable: name => executableFor(name, normalized) }, create);
     return { mode: "noop", provider: "host-broker-state", reason: "device_create writes owner-scoped broker metadata" };
 }
 
@@ -10037,16 +9941,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         return { mode: "noop", provider: "android-device", reason: "physical Android stop/delete does not power off or disconnect the real device" };
     }
 
-    if (parsed.backend === "ios-simulator") {
-        const ownedTarget = resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized);
-        if (!ownedTarget.ok) return { error: ownedTarget.error, missing: ownedTarget.missing };
-        const target = ownedTarget.target;
-        const xcrun = executableFor("xcrun", normalized);
-        if (parsed.command === "device_status") return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "list", "devices", target] };
-        if (parsed.command === "device_start") return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "boot", target] };
-        if (parsed.command === "device_stop") return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "shutdown", target] };
-        return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "delete", target] };
-    }
+    if (parsed.backend === "ios-simulator") return planBrokerIosExistingCommand(ownerId, parsed, device, { verifyOwnedTarget: (owner, record) => resolveBrokerOwnedIosSimulatorTarget(owner, record, normalized), executable: name => executableFor(name, normalized) });
 
     if (parsed.backend === "ios-device") {
         const udid = field(device, "udid");
@@ -10150,30 +10045,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         }
     }
 
-    if (parsed.backend === "macos-vm") {
-        const provider = field(device, "provider") === "auto" || !field(device, "provider") ? "tart" : field(device, "provider") || "tart";
-        if (!DEVICE_BROKER_MACOS_PROVIDERS.has(provider)) {
-            return { error: "unsupported-provider-command", missing: ["provider"] };
-        }
-        const instance = field(device, "providerInstance");
-        if (parsed.command === "device_delete" && !instance && !shouldStopOwnerDevice(parsed.stateKey, (device as { status?: unknown })?.status)) {
-            return { mode: "noop", provider: "host-broker-state", reason: "Stopped macOS VM delete without providerInstance deletes only owner broker metadata" };
-        }
-        if (!instance) return { error: "missing-provider-metadata", missing: ["providerInstance"] };
-        const executable = executableFor(provider, normalized);
-        if (parsed.command === "device_status") return { mode: "exec", provider, executable, args: provider === "tart" ? ["get", instance] : ["status", instance] };
-        if (parsed.command === "device_start") {
-            if (provider === "tart") {
-                const headless = typeof parsed.headless === "boolean"
-                    ? parsed.headless
-                    : booleanField(device, "headless") === true;
-                return { mode: "detached", provider, executable, args: ["run", ...(headless ? ["--no-graphics"] : []), instance] };
-            }
-            return { mode: "exec", provider, executable, args: ["start", instance] };
-        }
-        if (parsed.command === "device_stop") return { mode: "exec", provider, executable, args: ["stop", instance] };
-        return { mode: "exec", provider, executable, args: ["delete", instance] };
-    }
+    if (parsed.backend === "macos-vm") return planBrokerMacosExistingCommand(ownerId, parsed, device, { executable: name => executableFor(name, normalized) });
 
     return { error: "unsupported-provider-command", missing: [] };
 }
@@ -11917,67 +11789,18 @@ function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized
 }
 
 function waitForBrokerMacosVmBoot(parsed: CommandParamSuccess, device: unknown, command: ProviderCommand, normalized: NormalizedBrokerOptions): MacosVmBootRegistration {
-    if (parsed.backend !== "macos-vm" || parsed.command !== "device_start" || parsed.waitForBoot !== true) {
-        return { ok: true, ready: false, skipped: true };
-    }
-    if (command.provider !== "tart" || !command.executable) {
-        return { ok: true, ready: false, skipped: true };
-    }
-    const instance = field(device, "providerInstance");
-    if (!instance) {
-        return { ok: false, error: {
-            mode: "exec",
-            provider: command.provider,
-            executable: command.executable,
-            args: ["ip"],
-            status: null,
-            error: "missing-provider-metadata: providerInstance",
-        } };
-    }
-    const timeout = Number.isFinite(parsed.bootTimeoutMs)
-        ? Math.min(600000, Math.max(1000, Number(parsed.bootTimeoutMs)))
-        : 300000;
-    const deadline = Date.now() + timeout;
-    const attempts: ProviderCommandResult[] = [];
-    const ipAttempts = [
-        ["ip", instance],
-        ["ip", "--resolver=arp", instance],
-    ];
-    while (Date.now() < deadline) {
-        for (const args of ipAttempts) {
-            const result = normalized.commandRunner({
-                mode: "exec",
-                provider: "tart",
-                executable: command.executable,
-                args,
-            }, {
-                timeoutMs: Math.min(normalized.commandTimeoutMs, Math.max(1000, deadline - Date.now())),
-                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-            });
-            attempts.push(result);
-            const address = String(result.stdout || "").trim();
-            if (commandSucceeded(result) && address) {
-                return { ok: true, ready: true, sshHost: address, result, attempts: attempts.slice(-4) };
-            }
-        }
-        sleepSync(Math.min(5000, Math.max(0, deadline - Date.now())));
-    }
-    const last = attempts.at(-1);
-    return { ok: false, error: {
-        mode: "exec",
-        provider: "tart",
-        executable: command.executable,
-        args: ["ip", instance],
-        status: last?.status ?? null,
-        signal: last?.signal,
-        stdout: last?.stdout,
-        stderr: last?.stderr,
-        error: `Timed out waiting for Tart IP for ${instance}`,
-    }, attempts: attempts.slice(-8) };
+    return waitForBrokerMacosBoot(parsed, device, command, brokerMacosLifecyclePorts(normalized));
 }
 
 function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, providerCommand?: ProviderCommand, macosBoot?: MacosVmBootRegistration | null, windowsMinimizeWatchdog?: ProviderCommandResult | null, windowsMinimizeConfirmation?: ProviderCommandResult | null, execution?: ProviderCommandResult, hyperVGuestReady?: ReturnType<typeof parseHyperVGuestReadyObservation> | null) {
     if (parsed.command === "device_status") return { found: true, matched: true, device };
+    if (parsed.backend === "ios-simulator" || parsed.backend === "macos-vm") {
+        const kind = parsed.command === "device_start" || parsed.command === "device_reboot" ? "start" : parsed.command === "device_delete" ? "delete" : "stop";
+        return transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, device, candidate => {
+            const replacement = parsed.backend === "ios-simulator" ? brokerIosReplacement(candidate, { kind }) : brokerMacosReplacement(candidate, { kind, boot: macosBoot || null });
+            return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
+        });
+    }
     if (parsed.command === "device_delete") {
         return transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, device, () => null);
     }
@@ -12028,22 +11851,6 @@ function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, 
                     cancelPath: brokerWindowsHelperPaths(ownerId, parsed.deviceId).minimizeWatchdogCancelPath,
                     startedAt: new Date().toISOString(),
                 },
-            } : {}),
-            ...(parsed.backend === "macos-vm" && parsed.command === "device_start" && macosBoot?.ok ? {
-                bootReady: macosBoot.ready,
-                lastBootCheck: {
-                    ready: macosBoot.ready,
-                    skipped: macosBoot.skipped === true,
-                    provider: "tart",
-                    ip: macosBoot.sshHost || null,
-                    result: macosBoot.result || null,
-                },
-                ...(macosBoot.sshHost ? {
-                    ssh: {
-                        ...((candidate as { ssh?: object }).ssh || {}),
-                        host: macosBoot.sshHost,
-                    },
-                } : {}),
             } : {}),
             updatedAt: new Date().toISOString(),
         };
@@ -12279,6 +12086,52 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
     };
 }
 
+function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts {
+    return {
+        execute: (command, options) => normalized.commandRunner(command, options),
+        executable: name => executableFor(name, normalized),
+        timestamp: () => new Date().toISOString(),
+        createCommand: input => iosSimulatorCreateCommand({ ...input, executable: input.executable as string }),
+        createdUdid: stdout => iosSimulatorCreatedUdid(stdout),
+        deleteCommand: (executable, udid) => iosSimulatorDeleteCommand(executable, udid),
+        verifyOwnedTarget: (ownerId, device) => resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized),
+        claimDefinition: (ownerId, parsed, device) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        cleanupAuxiliary: (ownerId, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expected),
+        publish: (ownerId, stateKey, deviceId, expected, change) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, candidate => {
+            const replacement = brokerIosReplacement(candidate, change);
+            return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
+        }),
+        redactDevice: device => redactBrokerDeviceSecrets(device),
+        stateErrorCode: error => ownerDeviceStateErrorCode(error),
+        stateFailure: (error, parsed) => ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey }),
+        failureDetail: result => providerFailureDetail(result),
+        get commandTimeoutMs() { return normalized.commandTimeoutMs; },
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    };
+}
+
+function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts {
+    return {
+        execute: (command, options) => normalized.commandRunner(command, options),
+        executable: name => executableFor(name, normalized),
+        timestamp: () => new Date().toISOString(),
+        now: () => Date.now(),
+        sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
+        claimDefinition: (ownerId, parsed, device) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        cleanupAuxiliary: (ownerId, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expected),
+        publish: (ownerId, stateKey, deviceId, expected, change) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, candidate => {
+            const replacement = brokerMacosReplacement(candidate, change);
+            return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
+        }),
+        redactDevice: device => redactBrokerDeviceSecrets(device),
+        stateErrorCode: error => ownerDeviceStateErrorCode(error),
+        stateFailure: (error, parsed) => ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey }),
+        failureDetail: result => providerFailureDetail(result),
+        get commandTimeoutMs() { return normalized.commandTimeoutMs; },
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    };
+}
+
 async function lifecycleCommandInvokeUnlocked(
     ownerId: string,
     params: unknown,
@@ -12338,6 +12191,14 @@ async function lifecycleCommandInvokeUnlocked(
     if (parsed.backend === "android-emulator") {
         const lifecycle = createBrokerAndroidEmulatorLifecycle(brokerAndroidLifecyclePorts(normalized));
         const input = { ownerId, parsed, plan: payload.result, expectedDevice, createAvdRoot: androidCreateAvdRoot };
+        if (parsed.command === "device_create") return lifecycle.create(input);
+        if (parsed.command === "device_start") return lifecycle.start(input);
+        if (parsed.command === "device_stop") return lifecycle.stop(input);
+        if (parsed.command === "device_delete") return lifecycle.delete(input);
+    }
+    if (parsed.backend === "ios-simulator" || parsed.backend === "macos-vm") {
+        const lifecycle = parsed.backend === "ios-simulator" ? createBrokerIosSimulatorLifecycle(brokerIosLifecyclePorts(normalized)) : createBrokerMacosVmLifecycle(brokerMacosLifecyclePorts(normalized));
+        const input = { ownerId, parsed, plan: payload.result, expectedDevice };
         if (parsed.command === "device_create") return lifecycle.create(input);
         if (parsed.command === "device_start") return lifecycle.start(input);
         if (parsed.command === "device_stop") return lifecycle.stop(input);
@@ -12444,16 +12305,7 @@ async function lifecycleCommandInvokeUnlocked(
             }
         }
         let persistedParsed = parsed;
-        if (parsed.backend === "ios-simulator" && parsed.create?.createSimulator === true && execution.mode !== "noop") {
-            const udid = iosSimulatorCreatedUdid(execution.stdout);
-            if (!udid) {
-                return {
-                    status: 502,
-                    payload: { ok: false, error: "ios-simulator-create-invalid-udid", ownerId, deviceId: parsed.deviceId },
-                };
-            }
-            persistedParsed = { ...parsed, create: { ...(parsed.create || {}), udid } };
-        }
+
         if (parsed.backend === "linux-vm" && execution.mode !== "noop") {
             const observation = parseHyperVVmObservation(execution.stdout || "");
             const expectedVmName = hyperVVmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
