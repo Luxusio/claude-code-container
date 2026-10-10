@@ -4,10 +4,11 @@ import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contra
 import { createHash, createHmac } from "crypto";
 import { spawn } from "child_process";
 import { EventEmitter } from "events";
+import * as nativeFs from "fs";
 import { chmodSync, existsSync, linkSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { homedir, tmpdir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { pathToFileURL } from "url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -63,6 +64,8 @@ function fakeBrokerPortProcess(pid: number, commandLine: string | null) {
         processStartToken,
     };
 }
+
+vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
 
 describe("device-lab host broker daemon", () => {
     let originalHomeRestore: (() => void) | undefined;
@@ -273,6 +276,14 @@ describe("device-lab host broker daemon", () => {
 
         expect(registerDeviceBrokerOwner(projectMountPath, undefined, identity.ownerId).hostProjectPath).toBe(hostProjectPath);
         expect(JSON.parse(readFileSync(registrationFile, "utf-8")).hostProjectPath).toBe(hostProjectPath);
+    });
+
+    it("refuses a mismatched registration identity before publishing registration or auth", () => {
+        const cwd = "/project/broker-owner-registration-mismatch";
+        const ownerId = deviceLabOwnerId(cwd);
+        expect(() => registerDeviceBrokerOwner(cwd, undefined, "ffffffffffffffff")).toThrow("device-broker-owner-registration-mismatch");
+        expect(existsSync(deviceBrokerOwnerRegistrationFile(ownerId))).toBe(false);
+        expect(existsSync(deviceBrokerAuthSecretFile(ownerId))).toBe(false);
     });
 
     it("bounds chunked host-broker control responses", async () => {
@@ -516,6 +527,29 @@ describe("device-lab host broker daemon", () => {
         }));
         expect(repaired.secret).not.toBe("a".repeat(64));
         expect(existsSync(`${secretFile}.lock`)).toBe(false);
+    });
+
+    it("retains quarantined invalid auth evidence and the primary publication fault", () => {
+        const ownerId = "0a0b0c0d0e0f1112", file = deviceBrokerAuthSecretFile(ownerId);
+        const invalid = JSON.stringify({ ownerId: "ffffffffffffffff", secret: "a".repeat(64), version: 1 });
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, invalid);
+        const fault = Object.assign(new Error("auth publication failed"), { code: "EIO" });
+        const nativeRename = nativeFs.renameSync;
+        vi.spyOn(nativeFs, "renameSync").mockImplementation((source, destination) => {
+            if (String(destination) === file && String(source).endsWith(".tmp")) throw fault;
+            return nativeRename(source, destination);
+        });
+        let caught: unknown;
+        try { deviceBrokerOwnerToken(ownerId); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(existsSync(file)).toBe(false);
+        expect(existsSync(`${file}.lock`)).toBe(false);
+        const entries = readdirSync(dirname(file));
+        const quarantines = entries.filter(name => name.startsWith(`${ownerId}.json.`) && name.endsWith(".invalid"));
+        expect(quarantines).toHaveLength(1);
+        expect(readFileSync(join(dirname(file), quarantines[0]), "utf8")).toBe(invalid);
+        expect(entries.some(name => name.endsWith(".tmp"))).toBe(false);
     });
 
     it("replaces oversized auth metadata instead of trusting its valid-looking secret", () => {

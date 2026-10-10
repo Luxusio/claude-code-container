@@ -1,0 +1,61 @@
+import { describe, expect, it } from "vitest";
+import { createBrokerOwnerApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner.js";
+import { createBrokerPhysicalLeasesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-leases.js";
+import type { BrokerOwnerRegistration, BrokerOwnerResult } from "../../../packages/device-lab/src/device-lab/domain/broker-owner.js";
+import { validateLeaseParams, type LeaseRpcResult, type LeaseWaitBudget } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-leases.js";
+import type { BrokerOwnerPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner.js";
+import type { BrokerPhysicalLeasePorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-leases.js";
+
+function ownerContracts(ports: BrokerOwnerPorts) {
+    const app = createBrokerOwnerApplication(ports);
+    const registration: BrokerOwnerRegistration = app.register("/host/project", "work");
+    const resolved: BrokerOwnerResult = app.resolve({ projectMountPath: "/project/project", profile: "work" });
+    const secret: string = app.secret(registration.ownerId);
+    const { identity, ...withoutIdentity } = ports;
+    // @ts-expect-error canonical owner identity authority is required
+    createBrokerOwnerApplication(withoutIdentity);
+    const { withAuthLock, ...withoutAuthLock } = ports;
+    // @ts-expect-error credential mutation requires a native scoped lock
+    createBrokerOwnerApplication(withoutAuthLock);
+    const { publishSecret, ...withoutPublication } = ports;
+    // @ts-expect-error secret publication authority is required
+    createBrokerOwnerApplication(withoutPublication);
+    // @ts-expect-error registration publication must settle synchronously
+    createBrokerOwnerApplication({ ...ports, writeRegistration: async () => undefined });
+    // @ts-expect-error credential publication cannot defer settlement
+    createBrokerOwnerApplication({ ...ports, publishSecret: async () => undefined });
+    // @ts-expect-error registration completes synchronously
+    const asynchronous: Promise<unknown> = app.register("/host/project");
+    void [registration, resolved, secret, identity, withAuthLock, publishSecret, asynchronous];
+}
+function leaseContracts(ports: BrokerPhysicalLeasePorts, budget: LeaseWaitBudget) {
+    const app = createBrokerPhysicalLeasesApplication(ports);
+    const request = { backend: "android-device", hardwareId: "phone", deviceId: "device" };
+    const claim: LeaseRpcResult = app.claim("owner", request);
+    const heartbeat: LeaseRpcResult = app.heartbeat("owner", request, budget);
+    const released: LeaseRpcResult = app.release("owner", request);
+    const pruned: LeaseRpcResult = app.prune("owner", { backend: "android-device" });
+    const { withHardwareLock, ...withoutLock } = ports;
+    // @ts-expect-error each hardware mutation requires its native lock
+    createBrokerPhysicalLeasesApplication(withoutLock);
+    const { read, ...withoutRead } = ports;
+    // @ts-expect-error guarded current-record reread is required
+    createBrokerPhysicalLeasesApplication(withoutRead);
+    const { remove, ...withoutRemoval } = ports;
+    // @ts-expect-error native lease removal authority is required
+    createBrokerPhysicalLeasesApplication(withoutRemoval);
+    // @ts-expect-error guarded reads must settle synchronously
+    createBrokerPhysicalLeasesApplication({ ...ports, read: async () => null });
+    // @ts-expect-error lease removal cannot defer settlement
+    createBrokerPhysicalLeasesApplication({ ...ports, remove: async () => undefined });
+    // @ts-expect-error lease claim completes synchronously
+    const asynchronous: Promise<unknown> = app.claim("owner", request);
+    void [claim, heartbeat, released, pruned, withHardwareLock, read, remove, asynchronous];
+}
+void [ownerContracts, leaseContracts];
+
+describe("broker owner and lease type consumers", () => {
+    it("rejects a lease duration shorter than the physical ownership minimum", () => {
+        expect(validateLeaseParams({ backend: "android-device", hardwareId: "phone", ttlMs: 1 }, "claim")).toEqual({ ok: false, status: 400, error: "invalid-lease-ttl-ms" });
+    });
+});

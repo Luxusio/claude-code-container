@@ -1,5 +1,6 @@
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
+import * as nativeFs from "fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
@@ -7,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeviceBrokerServer, DEVICE_BROKER_PHYSICAL_LEASE_DIRECTORY_ENTRY_LIMIT, deviceBrokerOwnerToken, registerDeviceBrokerOwner } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { close, listen } from "./helpers/host-broker-test-fixture.js";
+
+vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
 
 describe("device-lab host broker physical leases", () => {
     let originalHomeRestore: (() => void) | undefined;
@@ -417,4 +420,94 @@ describe("device-lab host broker physical leases", () => {
             await close(server);
         }
     });
+    it("refreshes heartbeat expiry and replaces an expired claim without admitting its stale generation", async () => {
+        const cwd = "/project/broker-lease-expiry-generation", ownerId = deviceLabOwnerId(cwd);
+        const hardwareId = "EXPIRY-GENERATION", backend = "android-device";
+        const file = join(homedir(), ".ccc/devices/physical-leases", backend, "locks", `${hardwareId}.json`);
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        try {
+            const baseUrl = await listen(server), endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
+            const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+            const rpc = (method: string, params: Record<string, unknown>) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method, params: { backend, hardwareId, ...params } }) });
+            const claimed = await rpc("broker.lease.claim", { deviceId: "phone", claimNonce: "first-operation", ttlMs: 30000 });
+            expect(claimed.status).toBe(200);
+            const first = (await claimed.json()).result.lease as { claimId: string; heartbeatAt: string; expiresAt: string };
+            const heartbeat = await rpc("broker.lease.heartbeat", { deviceId: "phone", claimId: first.claimId, claimNonce: "first-operation", ttlMs: 60000 });
+            expect(heartbeat.status).toBe(200);
+            const refreshed = (await heartbeat.json()).result.lease;
+            expect(refreshed.claimId).toBe(first.claimId);
+            expect(Date.parse(refreshed.expiresAt) - Date.parse(refreshed.heartbeatAt)).toBe(60000);
+            writeFileSync(file, JSON.stringify({ ...refreshed, heartbeatAt: "2000-01-01T00:00:00.000Z", expiresAt: "2000-01-01T00:01:00.000Z" }));
+            const replaced = await rpc("broker.lease.claim", { deviceId: "replacement", claimNonce: "second-operation", ttlMs: 30000 });
+            expect(replaced.status).toBe(200);
+            const replacement = (await replaced.json()).result;
+            expect(replacement).toMatchObject({ created: true, lease: { deviceId: "replacement", claimNonce: "second-operation" } });
+            expect(replacement.lease.claimId).not.toBe(first.claimId);
+            const before = readFileSync(file, "utf8");
+            const stale = await rpc("broker.lease.heartbeat", { deviceId: "replacement", claimId: first.claimId });
+            expect(stale.status).toBe(409);
+            expect(await stale.json()).toMatchObject({ ok: false, error: "physical-lease-claim-mismatch" });
+            expect(readFileSync(file, "utf8")).toBe(before);
+        } finally { await close(server); }
+    });
+
+    it("rereads a same-hardware successor after acquiring the real mutation lock", async () => {
+        const cwd = "/project/broker-lease-locked-successor", ownerId = deviceLabOwnerId(cwd), backend = "android-device", hardwareId = "LOCKED-SUCCESSOR";
+        const locks = join(homedir(), ".ccc/devices/physical-leases", backend, "locks");
+        const file = join(locks, `${hardwareId}.json`), mutationLock = join(locks, `${hardwareId}.mutation.lock`);
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        try {
+            const baseUrl = await listen(server), endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
+            const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+            const rpc = (method: string, params: Record<string, unknown>) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method, params: { backend, hardwareId, ...params } }) });
+            expect((await rpc("broker.lease.claim", { deviceId: "phone" })).status).toBe(200);
+            const previous = JSON.parse(readFileSync(file, "utf8"));
+            const successor = { ...previous, claimId: "abcdef0123456789abcdef0123456789", claimNonce: "successor-operation" };
+            let replaced = false;
+            const nativeOpen = nativeFs.openSync;
+            vi.spyOn(nativeFs, "openSync").mockImplementation((path, flags, mode) => {
+                const descriptor = nativeOpen(path, flags, mode);
+                if (String(path) === mutationLock && flags === "wx") {
+                    writeFileSync(file, JSON.stringify(successor));
+                    replaced = true;
+                }
+                return descriptor;
+            });
+            const response = await rpc("broker.lease.release", { deviceId: "phone", claimId: previous.claimId });
+            expect(response.status).toBe(409);
+            expect(await response.json()).toMatchObject({ ok: false, error: "physical-lease-claim-mismatch" });
+            expect(replaced).toBe(true);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(successor);
+            expect(existsSync(mutationLock)).toBe(false);
+        } finally { vi.restoreAllMocks(); await close(server); }
+    });
+
+    it("counts only successful expired lease removals and preserves partial prune progress", async () => {
+        const cwd = "/project/broker-lease-prune-partial", ownerId = deviceLabOwnerId(cwd), backend = "android-device";
+        const locks = join(homedir(), ".ccc/devices/physical-leases", backend, "locks");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        try {
+            const baseUrl = await listen(server), endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
+            const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+            const rpc = (method: string, params: Record<string, unknown>) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method, params: { backend, ...params } }) });
+            for (const hardwareId of ["PRUNE-SUCCESS", "PRUNE-DENIED"]) {
+                expect((await rpc("broker.lease.claim", { hardwareId, deviceId: "phone" })).status).toBe(200);
+                const file = join(locks, `${hardwareId}.json`);
+                const lease = JSON.parse(readFileSync(file, "utf8"));
+                writeFileSync(file, JSON.stringify({ ...lease, heartbeatAt: "2000-01-01T00:00:00.000Z", expiresAt: "2000-01-01T00:01:00.000Z" }));
+            }
+            const deniedFile = join(locks, "PRUNE-DENIED.json"), deniedBefore = readFileSync(deniedFile, "utf8"), fault = Object.assign(new Error("lease removal denied"), { code: "EPERM" });
+            const nativeRemove = nativeFs.unlinkSync;
+            vi.spyOn(nativeFs, "unlinkSync").mockImplementation(file => { if (String(file) === deniedFile) throw fault; return nativeRemove(file); });
+            const pruned = await rpc("broker.lease.prune", {});
+            expect(pruned.status).toBe(200);
+            expect(await pruned.json()).toMatchObject({ ok: true, result: { pruned: [{ hardwareId: "PRUNE-SUCCESS", expired: true }] } });
+            expect(existsSync(join(locks, "PRUNE-SUCCESS.json"))).toBe(false);
+            expect(readFileSync(deniedFile, "utf8")).toBe(deniedBefore);
+            const released = await rpc("broker.lease.release", { hardwareId: "PRUNE-DENIED", deviceId: "phone" });
+            expect(released.status).toBe(500);
+            expect(readFileSync(deniedFile, "utf8")).toBe(deniedBefore);
+        } finally { vi.restoreAllMocks(); await close(server); }
+    });
+
 });

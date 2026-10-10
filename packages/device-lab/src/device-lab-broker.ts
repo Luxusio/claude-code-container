@@ -1,3 +1,8 @@
+import { createBrokerOwnerApplication } from "./device-lab/application/broker-owner.js";
+import type { BrokerOwnerRegistration as DeviceBrokerOwnerRegistration } from "./device-lab/domain/broker-owner.js";
+import type { BrokerAuthQuarantine } from "./device-lab/ports/broker-owner.js";
+import { createBrokerPhysicalLeasesApplication } from "./device-lab/application/broker-physical-leases.js";
+import { validateLeaseParams, leaseParamError, type LeaseParamSuccess } from "./device-lab/domain/broker-physical-leases.js";
 import { createBrokerWindowsSandboxLifecycle, planBrokerWindowsSandboxCommand } from "./device-lab/application/lifecycle/windows-sandbox-lifecycle.js";
 import { brokerWindowsSandboxReplacement } from "./device-lab/domain/lifecycle/windows-sandbox-lifecycle.js";
 import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/lifecycle/windows-sandbox-lifecycle.js";
@@ -244,8 +249,6 @@ const DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS = 200;
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
 const DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS = 3000;
 const DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS = 60 * 60 * 1000;
-const DEVICE_BROKER_PHYSICAL_LEASE_MIN_TTL_MS = 30 * 1000;
-const DEVICE_BROKER_PHYSICAL_LEASE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 const DEVICE_BROKER_PHYSICAL_LEASE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const DEVICE_BROKER_AUTH_LOCK_WAIT_MS = 5000;
 const DEVICE_BROKER_AUTH_LOCK_STALE_MS = 30000;
@@ -682,18 +685,6 @@ type NormalizedBrokerOptions = {
     portProcessResolver: BrokerPortProcessResolver;
     strictAppiumPortOwnership: boolean;
 };
-type LeaseParamError = { ok: false; status: number; error: string; allowed?: string[] };
-type LeaseParamSuccess = {
-    ok: true;
-    backend: string;
-    hardwareId: string;
-    deviceId: string | null;
-    connection: string;
-    transport: object;
-    ttlMs: number;
-    claimId: string | null;
-    claimNonce: string | null;
-};
 type CommandParamError = { ok: false; status: number; error: string; allowed?: string[]; detail?: string };
 type CommandParamSuccess = {
     ok: true;
@@ -1125,16 +1116,6 @@ function deviceBrokerOwnerId(cwd: string, profile?: string): string {
     return canonicalDeviceLabOwnerId(cwd || "/project", profile);
 }
 
-type DeviceBrokerOwnerRegistration = {
-    version: 1;
-    ownerId: string;
-    ownerBasis: string;
-    projectMountPath: string;
-    hostProjectPath: string;
-    profile: string | null;
-    registeredAt: string;
-};
-
 function deviceBrokerOwnerRegistrationDirectoryChain(): string[] {
     const root = brokerRoot();
     return [root, join(root, "broker"), join(root, "broker", "owners")];
@@ -1201,27 +1182,7 @@ export function deviceBrokerHostProjectMountPath(hostProjectPath: string): strin
 }
 
 function validateDeviceBrokerOwnerRegistration(value: unknown, expectedOwnerId: string): DeviceBrokerOwnerRegistration {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid-owner-registration");
-    const registration = value as Record<string, unknown>;
-    const profile = registration.profile === null ? undefined : registration.profile;
-    if (registration.version !== 1
-        || registration.ownerId !== expectedOwnerId
-        || typeof registration.ownerBasis !== "string"
-        || typeof registration.projectMountPath !== "string"
-        || typeof registration.hostProjectPath !== "string"
-        || (profile !== undefined && typeof profile !== "string")
-        || typeof registration.registeredAt !== "string"
-        || deviceBrokerHostProjectMountPath(registration.hostProjectPath) === null) {
-        throw new Error("invalid-owner-registration");
-    }
-    const identity = deviceLabOwnerFromProjectMountPath(registration.projectMountPath, profile as string | undefined);
-    if (!identity
-        || identity.ownerId !== expectedOwnerId
-        || identity.ownerBasis !== registration.ownerBasis
-        || deviceBrokerHostProjectMountPath(registration.hostProjectPath) !== registration.projectMountPath) {
-        throw new Error("invalid-owner-registration");
-    }
-    return registration as DeviceBrokerOwnerRegistration;
+    return brokerOwners.validateRegistration(value, expectedOwnerId);
 }
 
 function readDeviceBrokerOwnerRegistration(ownerId: string): DeviceBrokerOwnerRegistration | null {
@@ -1235,32 +1196,7 @@ function readDeviceBrokerOwnerRegistration(ownerId: string): DeviceBrokerOwnerRe
 }
 
 export function registerDeviceBrokerOwner(cwd: string, profile?: string, expectedOwnerId?: string): DeviceBrokerOwnerRegistration {
-    const hostProjectPath = resolve(cwd);
-    const projectMountPath = deviceLabProjectMountPath(hostProjectPath);
-    const identity = deviceLabOwnerFromProjectMountPath(projectMountPath, profile);
-    if (!identity || (expectedOwnerId !== undefined && identity.ownerId !== expectedOwnerId)) {
-        throw new Error("device-broker-owner-registration-mismatch");
-    }
-    ensureDeviceBrokerOwnerRegistrationDirectory();
-    const file = deviceBrokerOwnerRegistrationFile(identity.ownerId);
-    const registration: DeviceBrokerOwnerRegistration = {
-        version: 1,
-        ownerId: identity.ownerId,
-        ownerBasis: identity.ownerBasis,
-        projectMountPath: identity.projectMountPath,
-        hostProjectPath,
-        profile: identity.profile ?? null,
-        registeredAt: new Date().toISOString(),
-    };
-    return withSharedMutationLock(`${file}.lock`, () => {
-        const existing = readDeviceBrokerOwnerRegistration(identity.ownerId);
-        if (existing
-            && existing.ownerBasis === registration.ownerBasis
-            && existing.projectMountPath === registration.projectMountPath
-            && existing.profile === registration.profile) return existing;
-        writeJsonFileAtomically(file, registration);
-        return registration;
-    }, { waitMs: DEVICE_BROKER_AUTH_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_AUTH_LOCK_STALE_MS });
+    return brokerOwners.register(cwd, profile, expectedOwnerId);
 }
 
 export function deviceBrokerOwnerToken(ownerId: string): string {
@@ -1417,6 +1353,7 @@ function createHostBrokerLogFile(): { path: string; descriptor: number } {
 }
 
 function removeAbandonedDeviceBrokerAuthArtifacts(file: string): void {
+    if (!inspectDeviceBrokerAuthDirectory()) return;
     const prefix = `${basename(file)}.`;
     let directory: ReturnType<typeof opendirSync> | null = null;
     try {
@@ -1427,7 +1364,12 @@ function removeAbandonedDeviceBrokerAuthArtifacts(file: string): void {
             if (!entry) break;
             entryCount += 1;
             if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.startsWith(prefix) || !/\.(?:tmp|invalid)$/.test(entry.name)) continue;
-            rmSync(join(dirname(file), entry.name), { force: true });
+            const artifact = join(dirname(file), entry.name);
+            const current = lstatSync(artifact);
+            if ((!current.isFile() && !current.isSymbolicLink())
+                || (typeof process.getuid === "function" && current.uid !== process.getuid())) continue;
+            // unlink removes this bounded non-directory entry without following it.
+            unlinkSync(artifact);
         }
     } catch {
         // Auth provisioning can continue when stale-artifact cleanup is unavailable.
@@ -1438,15 +1380,32 @@ function removeAbandonedDeviceBrokerAuthArtifacts(file: string): void {
     }
 }
 
-function quarantineInvalidDeviceBrokerAuthFile(file: string): string | null {
+function quarantineInvalidDeviceBrokerAuthFile(file: string): BrokerAuthQuarantine | null {
     const quarantined = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.invalid`;
-    try {
-        renameSync(file, quarantined);
-        return quarantined;
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw error;
-    }
+    if (!inspectDeviceBrokerAuthDirectory()) throw new Error("device-broker-auth-quarantine-invalid");
+    let before: {dev: number; ino: number; uid: number};
+    try { before = lstatSync(file); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    if (typeof process.getuid === "function" && before.uid !== process.getuid()) throw new Error("device-broker-auth-quarantine-invalid");
+    try { renameSync(file, quarantined); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    const moved = lstatSync(quarantined);
+    if (before.dev !== moved.dev || before.ino !== moved.ino || before.uid !== moved.uid) throw new Error("device-broker-auth-quarantine-changed");
+    return {path: quarantined, dev: moved.dev, ino: moved.ino, uid: moved.uid, nlink: moved.nlink,
+        kind: moved.isFile() ? "file" : moved.isSymbolicLink() ? "symlink" : "other"};
+}
+
+function removeDeviceBrokerAuthQuarantine(quarantine: BrokerAuthQuarantine): undefined {
+    const directory = join(brokerRoot(), "broker", "auth");
+    if (!inspectDeviceBrokerAuthDirectory() || dirname(quarantine.path) !== directory
+        || !/^[a-f0-9]{16}\.json\.[0-9]+\.[a-f0-9]{16}\.invalid$/.test(basename(quarantine.path))) throw new Error("device-broker-auth-quarantine-invalid");
+    const current = lstatSync(quarantine.path);
+    const kind = current.isFile() ? "file" : current.isSymbolicLink() ? "symlink" : "other";
+    if (quarantine.kind === "other" || current.dev !== quarantine.dev || current.ino !== quarantine.ino
+        || current.uid !== quarantine.uid || current.nlink !== quarantine.nlink || kind !== quarantine.kind
+        || (typeof process.getuid === "function" && current.uid !== process.getuid())) throw new Error("device-broker-auth-quarantine-changed");
+    unlinkSync(quarantine.path);
+    return undefined;
 }
 
 export function deviceBrokerAuthSecretFile(ownerId: string): string {
@@ -1454,42 +1413,26 @@ export function deviceBrokerAuthSecretFile(ownerId: string): string {
     return join(brokerRoot(), "broker", "auth", `${ownerId}.json`);
 }
 
-export function deviceBrokerOwnerSecret(ownerId: string): string {
-    const file = deviceBrokerAuthSecretFile(ownerId);
-    if (inspectDeviceBrokerAuthDirectory()) {
-        const existing = readDeviceBrokerOwnerSecret(ownerId);
-        if (existing) return existing;
-    }
+export function deviceBrokerOwnerSecret(ownerId: string): string { return brokerOwners.secret(ownerId); }
 
-    const lockFile = `${file}.lock`;
-    ensureDeviceBrokerAuthDirectory();
-    try {
-        return withSharedMutationLock(lockFile, () => {
-            const concurrent = readDeviceBrokerOwnerSecret(ownerId);
-            if (concurrent) return concurrent;
-            removeAbandonedDeviceBrokerAuthArtifacts(file);
-            const quarantined = quarantineInvalidDeviceBrokerAuthFile(file);
-
-            try {
-                const secret = randomBytes(32).toString("hex");
-                writeJsonFileAtomically(file, {
-                    ownerId,
-                    secret,
-                    createdAt: new Date().toISOString(),
-                    version: 1,
-                });
-                return secret;
-            } finally {
-                if (quarantined) rmSync(quarantined, { recursive: true, force: true });
-            }
-        }, { waitMs: DEVICE_BROKER_AUTH_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_AUTH_LOCK_STALE_MS });
-    } catch (error) {
-        if ((error as Error & { code?: string }).code === "shared-mutation-lock-timeout") {
-            throw new Error("device-broker-auth-lock-timeout");
-        }
-        throw error;
-    }
-}
+const brokerOwners = createBrokerOwnerApplication({
+    resolveHostPath: cwd => resolve(cwd), projectMountPath: host => deviceLabProjectMountPath(host),
+    identity: (mount, profile) => deviceLabOwnerFromProjectMountPath(mount, profile),
+    hostProjectMountPath: host => deviceBrokerHostProjectMountPath(host),
+    prepareRegistrations: () => { ensureDeviceBrokerOwnerRegistrationDirectory(); return undefined; },
+    registrationFile: owner => deviceBrokerOwnerRegistrationFile(owner), readRegistration: owner => readDeviceBrokerOwnerRegistration(owner),
+    writeRegistration: (file, registration) => { writeJsonFileAtomically(file, registration); return undefined; },
+    withRegistrationLock: (file, operation) => withSharedMutationLock(`${file}.lock`, operation, {waitMs: DEVICE_BROKER_AUTH_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_AUTH_LOCK_STALE_MS}),
+    timestamp: () => new Date().toISOString(), authFile: owner => deviceBrokerAuthSecretFile(owner),
+    inspectAuthDirectory: () => inspectDeviceBrokerAuthDirectory(),
+    prepareAuthDirectory: () => { ensureDeviceBrokerAuthDirectory(); return undefined; },
+    readSecret: owner => readDeviceBrokerOwnerSecret(owner),
+    withAuthLock: (file, operation) => withSharedMutationLock(`${file}.lock`, operation, {waitMs: DEVICE_BROKER_AUTH_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_AUTH_LOCK_STALE_MS}),
+    removeAbandonedAuthArtifacts: file => { removeAbandonedDeviceBrokerAuthArtifacts(file); return undefined; },
+    quarantineAuth: file => quarantineInvalidDeviceBrokerAuthFile(file), newSecret: () => randomBytes(32).toString("hex"),
+    publishSecret: (file, record) => { writeJsonFileAtomically(file, record); return undefined; },
+    removeQuarantine: quarantine => removeDeviceBrokerAuthQuarantine(quarantine),
+});
 
 function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBrokerOptions {
     const cwd = options.cwd || process.cwd();
@@ -6089,67 +6032,6 @@ function physicalLeaseMutationLockFile(backend: string, hardwareId: string) {
     return join(physicalLeaseLocksDir(backend), `${encodeURIComponent(hardwareId)}.mutation.lock`);
 }
 
-function normalizedLeaseTtlMs(value: unknown) {
-    if (value === undefined || value === null) return DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS;
-    if (typeof value !== "number" || !Number.isInteger(value) || value < DEVICE_BROKER_PHYSICAL_LEASE_MIN_TTL_MS || value > DEVICE_BROKER_PHYSICAL_LEASE_MAX_TTL_MS) {
-        return null;
-    }
-    return value;
-}
-
-function validateLeaseParams(params: unknown, action: "claim" | "list" | "release" | "heartbeat" | "prune"): LeaseParamError | LeaseParamSuccess {
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-        return { ok: false, status: 400, error: "invalid-lease-params" };
-    }
-    const input = params as Record<string, unknown>;
-    const backend = typeof input.backend === "string" ? input.backend : "";
-    if (!DEVICE_BROKER_PHYSICAL_BACKENDS.has(backend)) {
-        return { ok: false, status: 400, error: "invalid-lease-backend", allowed: [...DEVICE_BROKER_PHYSICAL_BACKENDS] };
-    }
-    if (input.all === true) {
-        return { ok: false, status: 403, error: "all-owner-lease-list-requires-admin" };
-    }
-    const hardwareId = typeof input.hardwareId === "string" ? input.hardwareId.trim() : "";
-    if (action !== "list" && action !== "prune" && (!hardwareId || hardwareId.length > 256 || /[\u0000-\u001f]/.test(hardwareId))) {
-        return { ok: false, status: 400, error: "invalid-hardware-id" };
-    }
-    const deviceId = typeof input.deviceId === "string" ? input.deviceId.trim() : null;
-    if (deviceId !== null && (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId))) {
-        return { ok: false, status: 400, error: "invalid-device-id" };
-    }
-    const connection = typeof input.connection === "string" ? input.connection : "unknown";
-    if (!["usb", "wifi", "unknown"].includes(connection)) {
-        return { ok: false, status: 400, error: "invalid-connection" };
-    }
-    const transport = input.transport && typeof input.transport === "object" && !Array.isArray(input.transport)
-        ? input.transport
-        : {};
-    const ttlMs = normalizedLeaseTtlMs(input.ttlMs);
-    if (ttlMs === null) {
-        return { ok: false, status: 400, error: "invalid-lease-ttl-ms" };
-    }
-    const claimId = typeof input.claimId === "string" ? input.claimId.trim() : null;
-    const claimNonce = typeof input.claimNonce === "string" ? input.claimNonce.trim() : null;
-    if (claimId !== null && (!claimId || claimId.length > 128 || /[^a-zA-Z0-9._:-]/.test(claimId))) {
-        return { ok: false, status: 400, error: "invalid-lease-claim-id" };
-    }
-    if (claimNonce !== null && (!claimNonce || claimNonce.length > 128 || /[^a-zA-Z0-9._:-]/.test(claimNonce))) {
-        return { ok: false, status: 400, error: "invalid-lease-claim-nonce" };
-    }
-    return { ok: true, backend, hardwareId, deviceId, connection, transport, ttlMs, claimId, claimNonce };
-}
-
-function leaseParamError(parsed: LeaseParamError) {
-    return {
-        status: parsed.status,
-        payload: {
-            ok: false,
-            error: parsed.error,
-            ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
-        },
-    };
-}
-
 function readLeaseFile(file: string, backend?: string, hardwareId?: string) {
     return readPhysicalLeaseStateFile(file, backend, hardwareId);
 }
@@ -6225,15 +6107,6 @@ function refreshPhysicalDeviceLeaseForOperation(ownerId: string, match: DeviceTo
     };
 }
 
-function withLeaseExpiry(lease: Record<string, unknown>, ttlMs = leaseTtlMs(lease), now = new Date().toISOString()) {
-    return {
-        ...lease,
-        ttlMs,
-        heartbeatAt: now,
-        updatedAt: now,
-        expiresAt: leaseExpiryFrom(now, ttlMs),
-    };
-}
 
 function writeLeaseFile(file: string, lease: Record<string, unknown>) {
     validatePhysicalLease(lease);
@@ -6385,176 +6258,25 @@ const observePhysicalLeases = createLeaseList<string, PhysicalLeaseDirectoryScan
     },
 );
 
-function createPhysicalLease(ownerId: string, parsed: LeaseParamSuccess, now: string) {
-    return withLeaseExpiry({
-        backend: parsed.backend,
-        hardwareId: parsed.hardwareId,
-        ownerId,
-        deviceId: parsed.deviceId,
-        connection: parsed.connection,
-        transport: parsed.transport,
-        claimId: randomBytes(16).toString("hex"),
-        ...(parsed.claimNonce ? { claimNonce: parsed.claimNonce } : {}),
-        claimedAt: now,
-    }, parsed.ttlMs, now);
-}
-
-function claimPhysicalLease(ownerId: string, params: unknown): BrokerRpcResult {
-    const parsed = validateLeaseParams(params, "claim");
-    if (!parsed.ok) return leaseParamError(parsed);
-    const directory = ensurePhysicalLeaseDirectory(parsed.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
-    const file = physicalLeaseLockFile(parsed.backend, parsed.hardwareId);
-    return withSharedMutationLock(physicalLeaseMutationLockFile(parsed.backend, parsed.hardwareId), () => {
-        const now = new Date().toISOString();
-        const existing = readLeaseFile(file, parsed.backend, parsed.hardwareId);
-        if (existing && !leaseExpired(existing) && existing.ownerId === ownerId) {
-            if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
-                return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", conflict: existing } };
-            }
-            if (parsed.claimNonce && existing.claimNonce !== parsed.claimNonce) {
-                return { status: 409, payload: { ok: false, error: "physical-lease-operation-conflict", conflict: existing } };
-            }
-            const refreshed = withLeaseExpiry(existing, parsed.ttlMs, now);
-            writeLeaseFile(file, refreshed);
-            return { status: 200, payload: { ok: true, result: { lease: refreshed, created: false, reused: true, heartbeat: true } } };
-        }
-        if (existing && !leaseExpired(existing)) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "physical-lease-conflict",
-                    conflict: existing,
-                },
-            };
-        }
-        const lease = createPhysicalLease(ownerId, parsed, now);
-        writeLeaseFile(file, lease);
-        return { status: 200, payload: { ok: true, result: { lease, created: true } } };
-    });
-}
-
-function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: AppiumRequestBudget) {
-    const parsed = validateLeaseParams(params, "heartbeat");
-    if (!parsed.ok) return leaseParamError(parsed);
-    const directory = inspectPhysicalLeaseDirectory(parsed.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
-    if (!directory.exists) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
-    const file = physicalLeaseLockFile(parsed.backend, parsed.hardwareId);
-    return withSharedMutationLock(physicalLeaseMutationLockFile(parsed.backend, parsed.hardwareId), () => {
-        const existing = readLeaseFile(file, parsed.backend, parsed.hardwareId);
-        if (!existing) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
-        if (existing.ownerId !== ownerId) {
-            if (leaseExpired(existing)) {
-                try { unlinkSync(file); } catch { /* ignore */ }
-                return { status: 404, payload: { ok: false, error: "physical-lease-expired", pruned: true, lease: existing } };
-            }
-            return { status: 403, payload: { ok: false, error: "physical-lease-owned-by-another-owner", conflict: existing } };
-        }
-        if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
-            return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", lease: existing } };
-        }
-        if (parsed.claimId && existing.claimId !== parsed.claimId) {
-            return { status: 409, payload: { ok: false, error: "physical-lease-claim-mismatch", lease: existing } };
-        }
-        if (parsed.claimNonce && existing.claimNonce !== parsed.claimNonce) {
-            return { status: 409, payload: { ok: false, error: "physical-lease-operation-mismatch", lease: existing } };
-        }
-        if (leaseExpired(existing)) {
-            try { unlinkSync(file); } catch { /* ignore */ }
-            return { status: 404, payload: { ok: false, error: "physical-lease-expired", pruned: true, lease: existing } };
-        }
-        const refreshed = withLeaseExpiry(existing, parsed.ttlMs);
-        writeLeaseFile(file, refreshed);
-        return { status: 200, payload: { ok: true, result: { lease: refreshed, heartbeat: true } } };
-    }, { waitBudget });
-}
-
-function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess, existing: Record<string, unknown> | null): BrokerRpcResult | null {
-    if (!existing) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
-    if (existing.ownerId !== ownerId) {
-        return { status: 403, payload: { ok: false, error: "physical-lease-owned-by-another-owner", conflict: existing } };
-    }
-    if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
-        return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", lease: existing } };
-    }
-    if (parsed.claimId && existing.claimId !== parsed.claimId) {
-        return { status: 409, payload: { ok: false, error: "physical-lease-claim-mismatch", lease: existing } };
-    }
-    if (parsed.claimNonce && existing.claimNonce !== parsed.claimNonce) {
-        return { status: 409, payload: { ok: false, error: "physical-lease-operation-mismatch", lease: existing } };
-    }
-    return null;
-}
-
-function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): BrokerRpcResult {
-    unlinkSync(file);
-    stopBrokerPhysicalLeaseHeartbeat(ownerId, parsed.backend, parsed.hardwareId, parsed.deviceId || undefined);
-    return { status: 200, payload: { ok: true, result: { released: true, lease: existing } } };
-}
-
-function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>) {
-    if (existsSync(file)) {
-        return { attempted: true, ok: false, error: "physical-lease-rollback-path-occupied", lease: readLeaseFile(file, parsed.backend, parsed.hardwareId) };
-    }
-    try {
-        const restored: Record<string, unknown> = withLeaseExpiry(existing);
-        writeLeaseFile(file, restored);
-        const deviceId = typeof restored.deviceId === "string" ? restored.deviceId : parsed.deviceId;
-        const heartbeat = deviceId
-            ? startBrokerPhysicalLeaseHeartbeat(ownerId, parsed.backend, parsed.hardwareId, deviceId, {
-                ttlMs: leaseTtlMs(restored),
-                claimId: typeof restored.claimId === "string" ? restored.claimId : undefined,
-                claimNonce: typeof restored.claimNonce === "string" ? restored.claimNonce : undefined,
-            })
-            : null;
-        return { attempted: true, ok: true, lease: restored, heartbeat };
-    } catch (error) {
-        return {
-            attempted: true,
-            ok: false,
-            error: "physical-lease-rollback-write-failed",
-            detail: error instanceof Error ? error.message : String(error),
-        };
-    }
-}
-
-function releasePhysicalBrokerLease(ownerId: string, params: unknown) {
-    const parsed = validateLeaseParams(params, "release");
-    if (!parsed.ok) return leaseParamError(parsed);
-    const directory = inspectPhysicalLeaseDirectory(parsed.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
-    if (!directory.exists) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
-    const file = physicalLeaseLockFile(parsed.backend, parsed.hardwareId);
-    return withSharedMutationLock(physicalLeaseMutationLockFile(parsed.backend, parsed.hardwareId), () => {
-        const existing = readLeaseFile(file, parsed.backend, parsed.hardwareId);
-        const conflict = physicalLeaseReleaseConflict(ownerId, parsed, existing);
-        if (conflict) return conflict;
-        return completePhysicalBrokerLeaseRelease(ownerId, parsed, file, existing!);
-    });
-}
-
-function prunePhysicalBrokerLeases(ownerId: string, params: unknown) {
-    const parsed = validateLeaseParams(params, "prune");
-    if (!parsed.ok) return leaseParamError(parsed);
-    const pruned: Array<Record<string, unknown>> = [];
-    const scan = scanPhysicalLeaseDirectory(parsed.backend);
-    if (!scan.ok) return { status: scan.status, payload: scan.payload };
-    for (const { file, hardwareId } of scan.entries) {
-        withSharedMutationLock(physicalLeaseMutationLockFile(parsed.backend, hardwareId), () => {
-            const lease = readLeaseFile(file, parsed.backend, hardwareId);
-            if (!lease || lease.ownerId !== ownerId || !leaseExpired(lease)) return;
-            try {
-                unlinkSync(file);
-                pruned.push({ ...lease, expired: true, expiresAt: leaseExpiresAt(lease) });
-            } catch {
-                // A later prune can retry.
-            }
-        });
-    }
-    return { status: 200, payload: { ok: true, result: { ownerId, backend: parsed.backend, pruned } } };
-}
+const brokerPhysicalLeases = createBrokerPhysicalLeasesApplication({
+    parse: value => Date.parse(value()), epoch: () => new Date(0).toISOString(), expiryFrom: (updatedAt, ttlMs) => leaseExpiryFrom(updatedAt, ttlMs),
+    prepareDirectory: backend => ensurePhysicalLeaseDirectory(backend), inspectDirectory: backend => inspectPhysicalLeaseDirectory(backend),
+    scan: backend => scanPhysicalLeaseDirectory(backend), leaseFile: (backend, hardwareId) => physicalLeaseLockFile(backend, hardwareId),
+    withHardwareLock: (backend, hardwareId, operation, waitBudget) => withSharedMutationLock(physicalLeaseMutationLockFile(backend, hardwareId), operation, {waitBudget}),
+    read: (file, backend, hardwareId) => readLeaseFile(file, backend, hardwareId),
+    write: (file, lease) => { writeLeaseFile(file, lease); return undefined; },
+    remove: file => { unlinkSync(file); return undefined; }, fileExists: file => existsSync(file),
+    timestamp: () => new Date().toISOString(), nowMs: () => Date.now(), newClaimId: () => randomBytes(16).toString("hex"),
+    stopHeartbeat: (owner, backend, hardwareId, deviceId) => stopBrokerPhysicalLeaseHeartbeat(owner, backend, hardwareId, deviceId),
+    startHeartbeat: (owner, backend, hardwareId, deviceId, options) => startBrokerPhysicalLeaseHeartbeat(owner, backend, hardwareId, deviceId, options),
+});
+function claimPhysicalLease(ownerId: string, params: unknown): BrokerRpcResult { return brokerPhysicalLeases.claim(ownerId, params); }
+function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: AppiumRequestBudget) { return brokerPhysicalLeases.heartbeat(ownerId, params, waitBudget); }
+function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess, existing: Record<string, unknown> | null): BrokerRpcResult | null { return brokerPhysicalLeases.releaseConflict(ownerId, parsed, existing); }
+function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): BrokerRpcResult { return brokerPhysicalLeases.completeRelease(ownerId, parsed, file, existing); }
+function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>) { return brokerPhysicalLeases.restoreReleased(ownerId, parsed, file, existing); }
+function releasePhysicalBrokerLease(ownerId: string, params: unknown) { return brokerPhysicalLeases.release(ownerId, params); }
+function prunePhysicalBrokerLeases(ownerId: string, params: unknown) { return brokerPhysicalLeases.prune(ownerId, params); }
 
 function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
     const parsed = validateLeaseParams(params, "list");
@@ -15337,53 +15059,8 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     writeJson(res, body.status, { ok: false, error: body.error }, body.error === "request-body-timeout" ? { connection: "close" } : {});
                     return;
                 }
-                const requestPayload = body.body as { projectMountPath?: unknown; profile?: unknown };
-                const requestedProjectMountPath = typeof requestPayload.projectMountPath === "string" ? requestPayload.projectMountPath : "";
-                const requestedProfile = requestPayload.profile === null || requestPayload.profile === undefined
-                    ? undefined
-                    : typeof requestPayload.profile === "string" ? requestPayload.profile : null;
-                const resolvedOwner = requestedProfile === null
-                    ? null
-                    : deviceLabOwnerFromProjectMountPath(requestedProjectMountPath, requestedProfile);
-                if (!resolvedOwner) {
-                    writeJson(res, 400, {
-                        ok: false,
-                        error: "invalid-project-owner-request",
-                        projectMountPath: requestedProjectMountPath,
-                        profile: requestPayload.profile ?? null,
-                    });
-                    return;
-                }
-                const resolvedOwnerId = resolvedOwner.ownerId;
-                let registration: DeviceBrokerOwnerRegistration | null;
-                try {
-                    registration = readDeviceBrokerOwnerRegistration(resolvedOwnerId);
-                } catch {
-                    writeJson(res, 409, { ok: false, error: "project-owner-registration-invalid" });
-                    return;
-                }
-                if (!registration
-                    || registration.ownerBasis !== resolvedOwner.ownerBasis
-                    || registration.projectMountPath !== resolvedOwner.projectMountPath
-                    || registration.profile !== (resolvedOwner.profile ?? null)) {
-                    writeJson(res, 404, { ok: false, error: "project-owner-unavailable" });
-                    return;
-                }
-                try {
-                    deviceBrokerOwnerSecret(resolvedOwnerId);
-                } catch {
-                    writeJson(res, 503, { ok: false, error: "owner-auth-provisioning-failed" });
-                    return;
-                }
-                writeJson(res, 200, {
-                    ok: true,
-                    result: {
-                        ownerId: resolvedOwnerId,
-                        ownerBasis: resolvedOwner.ownerBasis,
-                        projectMountPath: resolvedOwner.projectMountPath,
-                        profile: resolvedOwner.profile ?? null,
-                    },
-                });
+                const result = brokerOwners.resolve(body.body);
+                writeJson(res, result.status, result.payload);
                 return;
             }
             const ownerRpcMatch = /^\/v1\/owners\/([^/]+)\/rpc$/.exec(url.pathname);
