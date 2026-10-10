@@ -5,8 +5,8 @@ Updated: 2026\-10\-10. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **83/218 (38.1%)**.
-Integrated source: **83/218 (38.1%)**; historical baseline: **31**. Candidates: **0**; partial: **20**; TODO: **115**.
+Implemented including unmerged candidates: **98/218 (45.0%)**.
+Integrated source: **98/218 (45.0%)**; historical baseline: **31**. Candidates: **0**; partial: **19**; TODO: **101**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -42,6 +42,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | services\-clean\-harness\-integration | 10 | 0 | `ed8dda6c` | independent code/security/docs actual PASS; genuine build/BOTH42 each/full portable QA actual PASS; hook records absent, no formal close | accepted @ ed8dda6c |
 | provider\-workspace\-followup\-integration | 11 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
 | admin\-qemu\-integration | 4 | 0 | `b855553f` | Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS\. Local75byte delivery b855 verified; empty hook receipts parked, no formal close\. | accepted @ b855553f |
+| qemu\-admin\-lifecycle\-integration | 15 | 0 | `d24e5ca1` | Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS\. Relevant unchanged tests carry\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ d24e5ca1 |
 
 ## 0.2 Active next plans
 
@@ -58,6 +59,9 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | state\-access | OP\-state\-storage | Partial state\-read/native\-adapter binding accepted; broader atomic/CAS/repository storage remains incomplete; no whole credit\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | runtime\-capabilities | OP\-runtime\-capabilities | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
 | mcp\-forward | OP\-mcp\-forward | Whole operation source and both shipping forms passed combined portable QA\. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified\. |
+| container\-exec | OP\-container\-exec | Source implementation and independent reviews complete; normal accepted\-parent reconciliation and one shared current QA pending\. No completion credit yet\. |
+| broker\-supervision | OP\-broker\-supervision | Source implementation and independent reviews complete; normal accepted\-parent reconciliation and one shared current QA pending\. No completion credit yet\. |
+| hyperv\-image\-preparation | OP\-hyperv\-image\-import, OP\-hyperv\-image\-acquire | Source implementation and independent reviews complete; normal accepted\-parent reconciliation and one shared current QA pending\. No completion credit yet\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -108,16 +112,16 @@ No separately counted product operations. This packet's foundation/structural ac
 - [ ] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 
-## 7. M06 — Images/network/admin (2/14 implemented)
+## 7. M06 — Images/network/admin (5/14 implemented)
 
-- [ ] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **TODO**; src/device\-lab\-admin\.ts.
-- [ ] `OP-device-admin-prune` — Prune stale Device Lab records. **TODO**; src/device\-lab\-admin\.ts.
+- [x] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-device-admin-prune` — Prune stale Device Lab records. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [ ] `OP-device-admin-diagnostics` — Diagnose and smoke Device Lab. **TODO**; src/device\-lab\-admin\.ts.
 - [ ] `OP-device-admin-setup` — Set up Hyper\-V host fabric. **TODO**; src/device\-lab\-admin\.ts.
 - [ ] `OP-broker-owner-cleanup` — Broker owner cleanup. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
 - [ ] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/image\-store\.ts.
 - [ ] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
-- [ ] `OP-qemu-image-import` — Qemu image import. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
+- [x] `OP-qemu-image-import` — Qemu image import. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-inventory` — Read host admin current\-owner and explicit all\-project device inventory. **integrated**; admin\-qemu\-integration @ b855553f.
 - [ ] `OP-hyperv-fabric-ensure` — Ensure and recover shared Hyper\-V host fabric. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
 - [ ] `OP-hyperv-fabric-release` — Release exact allocation and recover owned Hyper\-V host fabric cleanup. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
@@ -154,24 +158,24 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **integrated**; broker\-observations @ 3f020650.
 
-## 9. M08 — Provider capabilities (6/76 implemented)
+## 9. M08 — Provider capabilities (18/76 implemented)
 
 - [x] `OP-android-emulator-create` — android\-emulator create. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-emulator-start` — android\-emulator start. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-emulator-stop` — android\-emulator stop. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-emulator-delete` — android\-emulator delete. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
-- [ ] `OP-ios-simulator-create` — ios\-simulator create. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
-- [ ] `OP-ios-simulator-start` — ios\-simulator start. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
-- [ ] `OP-ios-simulator-stop` — ios\-simulator stop. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
-- [ ] `OP-ios-simulator-delete` — ios\-simulator delete. **TODO**; packages/device\-lab/providers/backends/ios\-simulator\.mjs.
-- [ ] `OP-macos-vm-create` — macos\-vm create. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-vm-start` — macos\-vm start. **partial**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-vm-stop` — macos\-vm stop. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-macos-vm-delete` — macos\-vm delete. **TODO**; packages/device\-lab/providers/backends/macos\-vm\.mjs.
-- [ ] `OP-container-qemu-create` — container\-qemu create. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-container-qemu-start` — container\-qemu start. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-container-qemu-stop` — container\-qemu stop. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
-- [ ] `OP-container-qemu-delete` — container\-qemu delete. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
+- [x] `OP-ios-simulator-create` — ios\-simulator create. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-ios-simulator-start` — ios\-simulator start. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-ios-simulator-stop` — ios\-simulator stop. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-ios-simulator-delete` — ios\-simulator delete. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-macos-vm-create` — macos\-vm create. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-macos-vm-start` — macos\-vm start. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-macos-vm-stop` — macos\-vm stop. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-macos-vm-delete` — macos\-vm delete. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-container-qemu-create` — container\-qemu create. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-container-qemu-start` — container\-qemu start. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-container-qemu-stop` — container\-qemu stop. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
+- [x] `OP-container-qemu-delete` — container\-qemu delete. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [ ] `OP-qemu-session-open` — Qemu session open. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
 - [ ] `OP-qemu-workspace-sync` — Qemu workspace sync. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.
 - [ ] `OP-qemu-artifact-export` — Qemu artifact export. **TODO**; packages/device\-lab/providers/backends/linux\-vm\.mjs.

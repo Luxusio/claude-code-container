@@ -347,6 +347,35 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "b855553fb7122234176c33f774e766af5824a4c4"
+    },
+    {
+      "id": "qemu-admin-lifecycle-integration",
+      "branch": "refactor/architecture-qemu-admin-lifecycle-integration-20261010",
+      "commit": "d24e5ca1aeb194b01cd640ef18a2e50b70f5679a",
+      "taskId": "TASK__architecture-qemu-admin-lifecycle-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-ios-simulator-create",
+        "OP-ios-simulator-start",
+        "OP-ios-simulator-stop",
+        "OP-ios-simulator-delete",
+        "OP-macos-vm-create",
+        "OP-macos-vm-start",
+        "OP-macos-vm-stop",
+        "OP-macos-vm-delete",
+        "OP-container-qemu-create",
+        "OP-container-qemu-start",
+        "OP-container-qemu-stop",
+        "OP-container-qemu-delete",
+        "OP-qemu-image-import",
+        "OP-device-admin-prune",
+        "OP-device-admin-cleanup"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS. Relevant unchanged tests carry. Verified local source delivery; empty automatic receipts parked, no formal close.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "d24e5ca1aeb194b01cd640ef18a2e50b70f5679a"
     }
   ],
   "planningLanes": [
@@ -440,6 +469,31 @@
         "OP-mcp-forward"
       ],
       "status": "Whole operation source and both shipping forms passed combined portable QA. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified."
+    },
+    {
+      "id": "container-exec",
+      "taskId": "TASK__architecture-container-exec",
+      "coveredOperationIds": [
+        "OP-container-exec"
+      ],
+      "status": "Source implementation and independent reviews complete; normal accepted-parent reconciliation and one shared current QA pending. No completion credit yet."
+    },
+    {
+      "id": "broker-supervision",
+      "taskId": "TASK__architecture-broker-supervision",
+      "coveredOperationIds": [
+        "OP-broker-supervision"
+      ],
+      "status": "Source implementation and independent reviews complete; normal accepted-parent reconciliation and one shared current QA pending. No completion credit yet."
+    },
+    {
+      "id": "hyperv-image-preparation",
+      "taskId": "TASK__architecture-hyperv-image-preparation",
+      "coveredOperationIds": [
+        "OP-hyperv-image-import",
+        "OP-hyperv-image-acquire"
+      ],
+      "status": "Source implementation and independent reviews complete; normal accepted-parent reconciliation and one shared current QA pending. No completion credit yet."
     }
   ]
 }
