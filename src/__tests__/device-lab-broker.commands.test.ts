@@ -5697,6 +5697,7 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
         const binDir = join(fixtureHome!, "android-bin");
         const logPath = join(fixtureHome!, "android-sdk.log");
         const guestUpload = join(fixtureHome!, "guest-upload.txt");
+        const clipboardPath = join(fixtureHome!, "android-clipboard.txt");
         mkdirSync(project);
         mkdirSync(binDir);
         writeFileSync(logPath, "");
@@ -5706,7 +5707,16 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             const observeUpload = tool === "adb"
                 ? `if (process.argv.length === 7 && process.argv[2] === '-s' && process.argv[3] === 'emulator-5580' && process.argv[4] === 'push' && process.argv[6] === '/sdcard/broker-upload.txt') require('node:fs').copyFileSync(process.argv[5], ${JSON.stringify(guestUpload)});\n`
                 : "";
-            writeFileSync(program, `#!${process.execPath}\nconst tool = ${JSON.stringify(tool)};\n${observeUpload}${fakeAndroidProviderScript}`);
+            const clipboardLeaf = tool === "adb" ? `
+if (process.argv[2] === '-s' && process.argv[4] === 'shell' && process.argv[5] === 'cmd' && process.argv[6] === 'clipboard') {
+    require('node:fs').appendFileSync(${JSON.stringify(logPath)}, 'adb ' + process.argv.slice(2).join(' ') + '\\n');
+    if (process.argv[7] === 'set') require('node:fs').writeFileSync(${JSON.stringify(clipboardPath)}, process.argv[8]);
+    else if (process.argv[7] === 'get') process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(clipboardPath)}));
+    else process.exit(2);
+    process.exit(0);
+}
+` : "";
+            writeFileSync(program, `#!${process.execPath}\nconst tool = ${JSON.stringify(tool)};\n${observeUpload}${clipboardLeaf}${fakeAndroidProviderScript}`);
             chmodSync(program, 0o755);
         }
         const preload = join(fixtureHome!, "android-node-routing.cjs");
@@ -5805,6 +5815,36 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             expect(appLog).toContain(`adb -s ${serial} shell pm grant com.example.Broker android.permission.CAMERA\n`);
             expect(appLog).toContain(`adb -s ${serial} shell pm revoke com.example.Broker android.permission.CAMERA\n`);
             expect(appLog).toContain(`adb -s ${serial} uninstall com.example.Broker\n`);
+
+            const clipboardText = "한글 'broker clipboard'\nsecond line\n";
+            const environmentRequests: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+                ["mobile_set_clipboard", { text: clipboardText }, { clipboard: { set: true }, provider: "adb", status: 0 }],
+                ["mobile_get_clipboard", {}, { text: clipboardText, provider: "adb", status: 0 }],
+            ];
+            if (!physical) environmentRequests.push(
+                ["mobile_set_location", { latitude: 35.1, longitude: 129.2, altitude: 10 }, { location: { latitude: 35.1, longitude: 129.2, altitude: 10 }, provider: "adb-emulator", status: 0 }],
+                ["mobile_set_battery", { level: 42, charging: false, confirmDestructive: true }, { battery: { level: 42, status: null, charging: false }, provider: "adb" }],
+                ["mobile_set_network", { wifi: false, data: true, confirmDestructive: true }, { network: { airplaneMode: null, wifi: false, data: true }, provider: "adb" }],
+                ["mobile_toggle_airplane_mode", { enabled: false, confirmDestructive: true }, { airplaneMode: false, method: "connectivity-shell", provider: "adb", status: 0 }],
+            );
+            for (const [tool, args, expected] of environmentRequests) {
+                const response = await invoke(tool, args);
+                expect(response.status).toBe(200);
+                const body = await response.json() as { result: { provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body.result.provider).toBe("device-lab-backend-child");
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject(expected);
+            }
+            expect(readFileSync(clipboardPath, "utf8")).toBe(clipboardText);
+            const environmentLog = readFileSync(logPath, "utf8");
+            expect(environmentLog).toContain(`adb -s ${serial} shell cmd clipboard get\n`);
+            if (!physical) {
+                expect(environmentLog).toContain("adb -s emulator-5580 emu geo fix 129.2 35.1 10\n");
+                expect(environmentLog).toContain("adb -s emulator-5580 shell dumpsys battery set ac 0\n");
+                expect(environmentLog).toContain("adb -s emulator-5580 shell svc wifi disable\n");
+                expect(environmentLog).toContain("adb -s emulator-5580 shell svc data enable\n");
+                expect(environmentLog).toContain("adb -s emulator-5580 shell cmd connectivity airplane-mode disable\n");
+            }
 
             const localPath = join(project, physical ? "download.txt" : "upload.txt");
             writeFileSync(localPath, physical ? "previous destination" : "broker upload bytes\n");
@@ -6005,12 +6045,21 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             const containerRoot = join(context.homeDir, "ios-app-container");
             const stageParent = join(context.homeDir, "transfer-stages");
             const stageLog = join(context.homeDir, "transfer-stages.jsonl");
+            const clipboardPath = join(context.homeDir, "ios-clipboard.txt");
             mkdirSync(project);
             mkdirSync(stageParent);
             writeFileSync(stageLog, "");
             const preload = join(context.homeDir, "broker-ios-node-routing.cjs");
             // The SDK leaf observes already allocated stages; native file operations stay intact.
             writeFileSync(preload, nodeProviderFixturePreloadSource(context.binDir) + `
+if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
+    && process.argv[2] === 'simctl' && process.argv[4] === 'CREATED-IOS-UDID'
+    && (process.argv[3] === 'pbcopy' || process.argv[3] === 'pbpaste')) {
+    fs.appendFileSync(${JSON.stringify(context.logPath)}, 'xcrun ' + process.argv.slice(2).join(' ') + '\\n');
+    if (process.argv[3] === 'pbcopy') fs.writeFileSync(${JSON.stringify(clipboardPath)}, fs.readFileSync(0));
+    else process.stdout.write(fs.readFileSync(${JSON.stringify(clipboardPath)}));
+    process.exit(0);
+}
 if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
     && process.argv.length === 7 && process.argv[2] === 'simctl' && process.argv[3] === 'get_app_container'
     && process.argv[4] === 'CREATED-IOS-UDID' && process.argv[5] === 'com.example.Test' && process.argv[6] === 'data') {
@@ -6072,6 +6121,28 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
             const sdkLog = readFileSync(context.logPath, "utf8");
             expect(sdkLog).toContain("xcrun simctl list devices -j\n");
             expect(sdkLog).toContain("xcrun simctl get_app_container CREATED-IOS-UDID com.example.Test data\n");
+
+            const clipboardText = "한글 'simulator clipboard'\nsecond line\n";
+            for (const [tool, args, expected] of [
+                ["mobile_set_location", { latitude: 35.1, longitude: 129.2 }, { location: { latitude: 35.1, longitude: 129.2 }, provider: "simctl" }],
+                ["mobile_set_clipboard", { text: clipboardText }, { clipboard: { set: true }, provider: "simctl" }],
+                ["mobile_get_clipboard", {}, { text: clipboardText, provider: "simctl", status: 0 }],
+            ] as const) {
+                const response = await fetch(endpoint, {
+                    method: "POST", headers,
+                    body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "ios-simulator", deviceId, ...args } }),
+                });
+                expect(response.status).toBe(200);
+                const body = await response.json() as { result: { provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body.result.provider).toBe("device-lab-backend-child");
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject(expected);
+            }
+            expect(readFileSync(clipboardPath, "utf8")).toBe(clipboardText);
+            const environmentLog = readFileSync(context.logPath, "utf8");
+            expect(environmentLog).toContain("xcrun simctl location CREATED-IOS-UDID set 35.1,129.2\n");
+            expect(environmentLog).toContain("xcrun simctl pbcopy CREATED-IOS-UDID\n");
+            expect(environmentLog).toContain("xcrun simctl pbpaste CREATED-IOS-UDID\n");
 
             const appPath = join(project, "Test.app");
             mkdirSync(appPath);

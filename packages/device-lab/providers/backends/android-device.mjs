@@ -1,3 +1,4 @@
+import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
@@ -381,6 +382,29 @@ const androidAppManagementPorts = {
     },
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
+
+/** @type {import('../ports/mobile-environment.mjs').AndroidPhysicalEnvironmentPorts} */
+const androidEnvironmentPorts = {
+    variant: "physical",
+    target(deviceId) {
+        const target = ensureAdbDevice(deviceId);
+        if (target.unknown) return { kind: "unknown" };
+        if (target.error) return { kind: "refused", message: target.error };
+        return { kind: "ready", target };
+    },
+    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    device: deviceId => findAndroidRealDevice(deviceId),
+};
+const androidEnvironment = createAndroidEnvironment(androidEnvironmentPorts);
+
+/** @param {import('../ports/mobile-environment.mjs').EnvironmentOutcome|undefined} outcome */
+function presentAndroidEnvironmentOutcome(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "text") return textResult(false, outcome.message);
+    if (outcome.kind === "command-failure") return fail(outcome.command);
+    return undefined;
+}
 
 /** @param {import('../ports/mobile-app-management.mjs').AndroidAppOutcome | undefined} outcome */
 function presentAndroidAppOutcome(outcome) {
@@ -797,29 +821,10 @@ async function handleAndroidRealToolUnlocked(name, args) {
         case "mobile_set_location":
         case "mobile_set_battery":
         case "mobile_set_network":
-        case "mobile_toggle_airplane_mode": {
-            const { deviceId } = args;
-            const device = findAndroidRealDevice(deviceId);
-            if (!device) return undefined;
-            return textResult(false, `Android real devices do not support ${name} safely through the base ADB layer; use an emulator or a dedicated device-farm controller.`);
-        }
-
-        case "mobile_set_clipboard": {
-            const { deviceId, text } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "cmd", "clipboard", "set", String(text)], { clipboard: { set: true }, provider: "adb" });
-        }
-
-        case "mobile_get_clipboard": {
-            const { deviceId } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const r = runAdbDeviceCommand(target.device, target.adb, ["shell", "cmd", "clipboard", "get"]);
-            return r.ok ? jsonResult({ text: r.stdout, stderr: r.stderr, status: r.status, provider: "adb" }) : fail(r.result);
-        }
+        case "mobile_toggle_airplane_mode":
+        case "mobile_set_clipboard":
+        case "mobile_get_clipboard":
+            return presentAndroidEnvironmentOutcome(androidEnvironment.request(name, args));
 
         case "mobile_wait_for_text": {
             const { deviceId, text, timeoutMs, intervalMs } = args;

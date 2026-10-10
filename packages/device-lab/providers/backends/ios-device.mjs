@@ -1,6 +1,7 @@
 import { createIosWirelessApplication } from "../application/ios-wireless.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createIosAppManagement } from "../application/ios-app-management.mjs";
+import { createIosEnvironment } from "../application/ios-environment.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
@@ -411,6 +412,10 @@ function guardIosRealObservation(deviceId, attachment, session, budget) {
 export function listIosRealDevices() { return deviceObservation.owned(); }
 
 async function handleIosRealToolUnlocked(name, args) {
+    const environment = iosEnvironment.request(name, args);
+    if (environment?.kind === "json") return jsonResult(environment.payload);
+    if (environment?.kind === "text") return textResult(false, environment.message);
+    if (environment?.kind === "command-failure") return fail(environment.command);
     const outcome = await appManagement.request(name, args);
     if (outcome?.kind === "json") return jsonResult(outcome.payload);
     if (outcome?.kind === "text") return textResult(false, outcome.message);
@@ -706,12 +711,6 @@ async function handleIosRealToolUnlocked(name, args) {
         case "mobile_forward":
         case "mobile_recents":
         case "mobile_power":
-        case "mobile_set_location":
-        case "mobile_set_battery":
-        case "mobile_set_network":
-        case "mobile_toggle_airplane_mode":
-        case "mobile_set_clipboard":
-        case "mobile_get_clipboard":
         {
             const { deviceId } = args;
             const device = findIosRealDevice(deviceId);
@@ -749,6 +748,11 @@ export async function handleIosRealTool(name, args) {
 }
 
 const deviceObservation = createDeviceObservation({ kind: "ios-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: IOS_REAL_CAPABILITIES, simulatorPrerequisites: () => iosDiscovery(), executable: name => commandPath(name), records: () => readIosRealDevices(), hostResult: xcrun => { const result = run(xcrun, ["xctrace", "list", "devices"]); return { ...result, devices: result.status === 0 ? parseXctraceDevices(result.stdout) : [] }; } });
+
+const iosEnvironment = createIosEnvironment({
+    variant: "physical",
+    device: id => findIosRealDevice(id),
+});
 
 const appManagement = createIosAppManagement({
     variant: "physical",

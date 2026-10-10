@@ -1,6 +1,7 @@
 import { iosControlOrientation, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createIosAppManagement } from "../application/ios-app-management.mjs";
+import { createIosEnvironment } from "../application/ios-environment.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
@@ -707,6 +708,11 @@ const iosSimulatorLifecycle = createIosSimulatorLifecycle({
 });
 
 async function handleIosToolUnlocked(name, args) {
+    const environment = iosEnvironment.request(name, args);
+    if (environment?.kind === "json") return jsonResult(environment.payload);
+    if (environment?.kind === "text") return textResult(false, environment.message);
+    if (environment?.kind === "command-failure") return fail(environment.command);
+    if (environment?.kind === "missing-prerequisites") return missingPrereqResult(environment.discovery);
     if (name !== "device_reset" || !args.eraseSimulator) {
         const outcome = await appManagement.request(name, args);
         if (outcome?.kind === "json") return jsonResult(outcome.payload);
@@ -1006,45 +1012,6 @@ async function handleIosToolUnlocked(name, args) {
             });
         }
 
-        case "mobile_set_location": {
-            const { deviceId, latitude, longitude } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "location", ownedTarget.target, "set", `${latitude},${longitude}`]);
-            return r.status === 0 ? jsonResult({ location: { latitude, longitude }, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
-        }
-
-        case "mobile_set_clipboard": {
-            const { deviceId, text } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = runWithInput(discovery.xcrun, ["simctl", "pbcopy", ownedTarget.target], String(text));
-            return r.status === 0 ? jsonResult({ clipboard: { set: true }, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
-        }
-
-        case "mobile_get_clipboard": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "pbpaste", ownedTarget.target]);
-            return r.status === 0 ? jsonResult({ text: r.stdout, stderr: r.stderr, status: r.status, provider: "simctl" }) : fail(r);
-        }
-
         case "mobile_wait_for_app": {
             const { deviceId, bundleId, timeoutMs, intervalMs } = args;
             const device = findIosDevice(deviceId);
@@ -1112,10 +1079,7 @@ async function handleIosToolUnlocked(name, args) {
         case "mobile_back":
         case "mobile_forward":
         case "mobile_recents":
-        case "mobile_power":
-        case "mobile_set_battery":
-        case "mobile_set_network":
-        case "mobile_toggle_airplane_mode": {
+        case "mobile_power": {
             const { deviceId } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
@@ -1228,6 +1192,23 @@ function controlTransferResult(result) {
     }
     throw new Error("Invalid native iOS transfer result");
 }
+
+const iosEnvironment = createIosEnvironment({
+    variant: "simulator",
+    device: id => findIosDevice(id),
+    discovery: () => {
+        const facts = iosDiscovery();
+        return facts.available && facts.xcrun
+            ? { available: true, xcrun: facts.xcrun, missing: facts.missing }
+            : { available: false, xcrun: facts.xcrun, missing: facts.missing };
+    },
+    ownedTarget: (xcrun, device) => {
+        const observed = resolveOwnedSimulatorTarget(xcrun, device);
+        return observed.error ? { ok: false, message: observed.error } : { ok: true, target: observed.target };
+    },
+    execute: (xcrun, args) => run(xcrun, args),
+    executeWithInput: (xcrun, args, input) => runWithInput(xcrun, args, input),
+});
 
 const appManagement = createIosAppManagement({
     variant: "simulator",

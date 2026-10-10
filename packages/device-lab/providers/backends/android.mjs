@@ -1,3 +1,4 @@
+import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
@@ -415,16 +416,6 @@ function adbJsonResult(device, adb, args, payload, options = {}) {
     return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
 }
 
-function setAndroidAirplaneMode(target, enabled) {
-    const modern = runAdbDeviceCommand(target.device, target.adb, ["shell", "cmd", "connectivity", "airplane-mode", enabled ? "enable" : "disable"]);
-    if (modern.ok) return jsonResult({ airplaneMode: enabled, provider: "adb", method: "connectivity-shell", stdout: modern.stdout, stderr: modern.stderr, status: modern.status });
-    const put = runAdbDeviceCommand(target.device, target.adb, ["shell", "settings", "put", "global", "airplane_mode_on", enabled ? "1" : "0"]);
-    if (!put.ok) return jsonResult({ ok: false, error: "android-network-command-failed", detail: "airplaneMode.setting", status: put.result.status, stderr: put.result.stderr });
-    const broadcast = runAdbDeviceCommand(target.device, target.adb, ["shell", "am", "broadcast", "-a", "android.intent.action.AIRPLANE_MODE", "--ez", "state", enabled ? "true" : "false"]);
-    if (!broadcast.ok) return jsonResult({ ok: false, error: "android-network-command-failed", detail: "airplaneMode.broadcast", applied: ["airplaneMode.setting"], status: broadcast.result.status, stderr: broadcast.result.stderr });
-    return jsonResult({ airplaneMode: enabled, provider: "adb", method: "legacy-broadcast", stdout: broadcast.stdout, stderr: broadcast.stderr, status: broadcast.status });
-}
-
 function adbTargetResult(target) {
     if (target.unknown) return undefined;
     if (target.error) return textResult(false, target.error);
@@ -788,6 +779,30 @@ const androidAppManagementPorts = {
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
 
+/** @type {import('../ports/mobile-environment.mjs').AndroidEmulatorEnvironmentPorts} */
+const androidEnvironmentPorts = {
+    variant: "emulator",
+    target(deviceId) {
+        const target = ensureAdbDevice(deviceId);
+        if (target.unknown) return { kind: "unknown" };
+        if (target.error) return { kind: "refused", message: target.error };
+        return { kind: "ready", target };
+    },
+    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    serial: target => androidSerial(target.device),
+    executeEmulator: (target, serial, args) => run(target.adb, ["-s", serial, ...args]),
+};
+const androidEnvironment = createAndroidEnvironment(androidEnvironmentPorts);
+
+/** @param {import('../ports/mobile-environment.mjs').EnvironmentOutcome|undefined} outcome */
+function presentAndroidEnvironmentOutcome(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "text") return textResult(false, outcome.message);
+    if (outcome.kind === "command-failure") return fail(outcome.command);
+    return undefined;
+}
+
 /** @param {import('../ports/mobile-app-management.mjs').AndroidAppOutcome | undefined} outcome */
 function presentAndroidAppOutcome(outcome) {
     if (!outcome) return undefined;
@@ -1063,87 +1078,13 @@ async function handleAndroidToolUnlocked(name, args) {
         case "mobile_rotate_right":
             return presentAndroidControlOutcome(androidControlTransfer.request(name, args));
 
-        case "mobile_set_location": {
-            const { deviceId, latitude, longitude, altitude } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const serial = androidSerial(target.device);
-            if (!serial) return textResult(false, "Android location requires an emulator serial or port");
-            const geoArgs = ["-s", serial, "emu", "geo", "fix", String(longitude), String(latitude)];
-            if (altitude !== undefined) geoArgs.push(String(altitude));
-            const r = run(target.adb, geoArgs);
-            return r.status === 0 ? jsonResult({ location: { latitude, longitude, altitude: altitude ?? null }, provider: "adb-emulator", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
-
-        case "mobile_set_battery": {
-            const { deviceId, level, charging, status } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const commands = [];
-            if (level !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "level", String(level)]);
-            if (status !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "status", String(status)]);
-            if (charging !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "ac", charging ? "1" : "0"]);
-            if (commands.length === 0) return textResult(false, "Android battery control requires level, status, or charging");
-            const results = [];
-            for (const command of commands) {
-                const r = runAdbDeviceCommand(target.device, target.adb, command);
-                if (!r.ok) return fail(r.result);
-                results.push({ stdout: r.stdout, stderr: r.stderr, status: r.status });
-            }
-            return jsonResult({ battery: { level: level ?? null, status: status ?? null, charging: charging ?? null }, results, provider: "adb" });
-        }
-
-        case "mobile_set_network": {
-            const { deviceId, wifi, data, airplaneMode } = args;
-            const fields = ["airplaneMode", "wifi", "data"];
-            if (!fields.some(key => args[key] !== undefined) || fields.some(key => args[key] !== undefined && typeof args[key] !== "boolean")) {
-                return textResult(false, "Android network control requires boolean wifi, data or airplaneMode");
-            }
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (airplaneMode !== undefined) {
-                const result = setAndroidAirplaneMode(target, airplaneMode);
-                if (result.isError) return result;
-            }
-            const commands = [];
-            if (wifi !== undefined) commands.push(["wifi", ["shell", "svc", "wifi", wifi ? "enable" : "disable"]]);
-            if (data !== undefined) commands.push(["data", ["shell", "svc", "data", data ? "enable" : "disable"]]);
-            const applied = airplaneMode === undefined ? [] : ["airplaneMode"];
-            for (const [setting, command] of commands) {
-                const r = runAdbDeviceCommand(target.device, target.adb, command);
-                if (!r.ok) return jsonResult({ ok: false, error: "android-network-command-failed", detail: setting, applied, status: r.result.status, stderr: r.result.stderr, stdout: r.result.stdout });
-                applied.push(setting);
-            }
-            return jsonResult({ network: { wifi: wifi ?? null, data: data ?? null, airplaneMode: airplaneMode ?? null }, provider: "adb" });
-        }
-
-        case "mobile_toggle_airplane_mode": {
-            const { deviceId, enabled } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return setAndroidAirplaneMode(target, enabled);
-        }
-
-        case "mobile_set_clipboard": {
-            const { deviceId, text } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, ["shell", "cmd", "clipboard", "set", String(text)], { clipboard: { set: true }, provider: "adb" });
-        }
-
-        case "mobile_get_clipboard": {
-            const { deviceId } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const r = runAdbDeviceCommand(target.device, target.adb, ["shell", "cmd", "clipboard", "get"]);
-            return r.ok ? jsonResult({ text: r.stdout, stderr: r.stderr, status: r.status, provider: "adb" }) : fail(r.result);
-        }
+        case "mobile_set_location":
+        case "mobile_set_battery":
+        case "mobile_set_network":
+        case "mobile_toggle_airplane_mode":
+        case "mobile_set_clipboard":
+        case "mobile_get_clipboard":
+            return presentAndroidEnvironmentOutcome(androidEnvironment.request(name, args));
 
         case "mobile_wait_for_text": {
             const { deviceId, text, timeoutMs, intervalMs } = args;
