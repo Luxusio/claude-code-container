@@ -1,29 +1,9 @@
-# iOS Simulator direct lifecycle
+# iOS Simulator lifecycle
 
-The public direct MCP dispatch calls `handleIosTool`. Its canonical owner/device
-operation lock, missing-device admission and lock-timeout translation remain in
-the facade. The four direct create/start/stop/delete branches call the explicit
-`createIosSimulatorLifecycle` application. Every other provider tool and public
-export retains its existing native path.
+The public direct MCP dispatch calls `handleIosTool`. Owner/device locks, missing-device admission and timeout translation remain in the native facade. Create, start, stop and delete call the lifecycle application; other tools retain their native routes.
 
-The application owns definition-only versus simctl provisioning, ordered
-simulator identity observations, lifecycle claims and conditional publication,
-boot/bootstatus decisions, recording and Appium settlement order, compensation,
-stage-recovery reporting and deletion. Domain rules retain claim status and
-simctl tolerated-state diagnostics. Required ports expose record reads, native
-owner-name checks, raw inventory/commands, clock/runtime IDs, verified process
-observations/signals/waits, Appium session deletion and termination, guarded
-stage discard and result presentation. Construction performs no observation.
+The application owns provisioning, lifecycle claims, boot decisions, recording/Appium settlement, compensation and conditional publication. Domain rules describe claim status and simctl diagnostics. Required semantic ports expose records, owner/name checks, commands, clocks, verified process observations/signals/waits and Appium cleanup.
 
-Canonical repository, name/UDID, lock, process identity, runtime generation,
-recording/Appium and local-stage authorities remain native. Existing helpers
-used by other tools remain unchanged. Conditional record publication does not
-establish stronger process-generation or byte-identical ABA protection; failed
-cleanup retains the original partial-effect and explicit-recovery behavior.
+Repository/CAS, exact UDID, locks, process identity, runtime generation and file guards remain native authorities. Complete-record comparison does not prove byte-identical ABA protection. Cleanup failures retain retryable metadata and report partial effects.
 
-The paired tests must compare immutable original controls, actual complete
-facade bindings and strict source/emission ports, including raw faults, getters,
-receivers, native denial counts and owned actor settlement. Native macOS/provider
-acceptance is unverified. Authenticated broker lifecycle policy and BOTH shipped
-payload proofs belong to the later integration task. This provider extraction
-alone receives no whole-operation credit and claims no executed QA.
+Current domain/fake-port, real SDK/MCP, authenticated broker, required-port and native ownership tests verify behavior. Genuine build and ordinary actual package smoke verify emitted code and distribution startup. No archived implementation, getter/receiver fidelity or separate permission framework is required. Portable tests do not certify real macOS or simulators.

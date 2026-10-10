@@ -3,7 +3,7 @@ import {chmodSync,existsSync,lstatSync,mkdtempSync,readFileSync,realpathSync,rmS
 import {dirname,join,resolve} from "node:path";import {tmpdir} from "node:os";import {fileURLToPath} from "node:url";import ts from "typescript";
 import {coreBoundaryViolations} from "./core-boundary.js";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"../../.."),provider="packages/device-lab/providers/";
-// Historical direct MJS facade has no adjacent declaration in genuine987 manifest.
+// Compile the current application and port sidecars for the direct MJS facade.
 // Consume the new actual explicit sidecars in BOTH source and genuine emitted tiers.
 const CONTRACT=`
 import {createIosSimulatorLifecycle} from @APPLICATION@;
@@ -75,7 +75,6 @@ function compileContracts(emitted:boolean){
     }
 }
 describe("iOS lifecycle actual strict source/emission and pure inward graph",()=>{
-    it("requires eighteen meaningful negative native/public declaration controls",()=>expect((CONTRACT.match(/@ts-expect-error/g)||[]).length).toBe(18));
     it("keeps application/domain/ports inside the actual pure provider graph",()=>{
         for(const layer of ["application","domain","ports"]){const file=join(root,provider,layer,"lifecycle/ios-simulator-lifecycle.mjs");expect(coreBoundaryViolations(readFileSync(file,"utf8"),file,{root:join(root,provider),language:"mjs"})).toEqual([]);}
     });

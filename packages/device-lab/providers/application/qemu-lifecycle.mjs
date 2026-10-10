@@ -15,7 +15,15 @@ function create(args = {}) {
     if (!name) return { ok: false, error: "missing-lab-name" };
     if (!validQemuLabId(labId)) return { ok: false, error: "invalid-lab-id" };
     const labDir = ports.labDirectory(ctx, labId);
-    if (ports.metadataExists(ctx, labId) && args.force !== true) return { ok: false, error: "lab-already-exists", labId };
+    if (ports.metadataExists(ctx, labId)) {
+        if (args.force !== true) return { ok: false, error: "lab-already-exists", labId };
+        const existing = ports.readLab(ctx, labId);
+        if (!existing.ok) return existing;
+        if (existing.lab.runtimeState === "running" || existing.lab.runtime) {
+            const observed = ports.inspectRuntime(existing.lab.runtime);
+            if (observed.status !== "exited") return { ok: false, error: "lab-runtime-active-or-unverified", labId, reason: observed.status };
+        }
+    }
     if (args.baseImageId && args.sourceImage) return { ok: false, error: "ambiguous-source-image" };
     const baseImage = args.baseImageId ? ports.resolveBaseImage(ctx, String(args.baseImageId)) : null;
     if (baseImage && !baseImage.ok) return baseImage;
@@ -131,22 +139,30 @@ function stop(args = {}) {
     const ctx = ports.scope();
     const loaded = ports.readLab(ctx, String(args.labId || ""));
     if (!loaded.ok) return loaded;
-    const pid = loaded.lab.runtime?.pid;
-    if (loaded.lab.runtimeState !== "running" || !pid) {
+    const runtime = loaded.lab.runtime;
+    if (loaded.lab.runtimeState !== "running" && !runtime) {
         return { ok: true, ownerId: ctx.owner, lab: publicLab(loaded.lab), stopped: false };
     }
-    if (ports.legacyKillAvailable()) {
-        try {
-            ports.legacyKill(pid);
-        } catch (error) {
-            const failure = /** @type {{code?:unknown,message?:unknown}} */ (error);
-            if (failure?.code !== "ESRCH") return { ok: false, error: "lab-stop-failed", message: failure.message };
+    const observed = ports.inspectRuntime(runtime);
+    if (observed.status !== "match" && observed.status !== "exited") {
+        return { ok: false, error: "lab-stop-process-identity-unverified", reason: observed.status, labId: loaded.lab.id };
+    }
+    if (observed.status === "match") {
+        if (ports.legacyKillAvailable()) {
+            try {
+                ports.legacyKill(runtime?.pid);
+            } catch (error) {
+                const failure = /** @type {{code?:unknown,message?:unknown}} */ (error);
+                if (failure?.code !== "ESRCH") return { ok: false, error: "lab-stop-failed", message: failure.message };
+            }
+        } else {
+            const signaled = ports.signalRuntime(/** @type {import('../domain/qemu-lifecycle.mjs').QemuRuntime} */ (runtime), args.force ? "SIGKILL" : "SIGTERM");
+            if (!signaled.signaled && signaled.reason !== "runtime-process-exited") {
+                return { ok: false, error: "lab-stop-process-identity-unverified", reason: signaled.reason, labId: loaded.lab.id };
+            }
         }
-    } else {
-        const signaled = ports.signalRuntime(/** @type {import('../domain/qemu-lifecycle.mjs').QemuRuntime} */ (loaded.lab.runtime), args.force ? "SIGKILL" : "SIGTERM");
-        if (!signaled.signaled && signaled.reason !== "runtime-process-exited") {
-            return { ok: false, error: "lab-stop-process-identity-unverified", reason: signaled.reason, labId: loaded.lab.id };
-        }
+        const exited = ports.waitRuntimeExit(/** @type {import('../domain/qemu-lifecycle.mjs').QemuRuntime} */ (runtime), qemuCommandTimeout(args.timeoutMs, 1000));
+        if (!exited.exited) return { ok: false, error: "lab-stop-runtime-not-exited", reason: exited.reason, labId: loaded.lab.id };
     }
     const lab = { ...loaded.lab, runtimeState: "stopped", updatedAt: ports.clock(), runtime: null };
     ports.writeLab(ctx, lab);
@@ -158,9 +174,9 @@ function deleteLab(args = {}) {
     const ctx = ports.scope();
     const loaded = ports.readLab(ctx, String(args.labId || ""));
     if (!loaded.ok) return loaded;
-    if (loaded.lab.runtimeState === "running") {
+    if (loaded.lab.runtimeState === "running" || loaded.lab.runtime) {
         if (args.force !== true) return { ok: false, error: "lab-running", labId: loaded.lab.id };
-        const stopped = stop({ labId: loaded.lab.id, force: true });
+        const stopped = stop({ labId: loaded.lab.id, force: true, timeoutMs: args.timeoutMs });
         if (!stopped.ok) return { ok: false, error: "lab-delete-stop-failed", labId: loaded.lab.id, stop: stopped };
     }
     ports.removeLabDirectory(ctx, loaded.lab.id);

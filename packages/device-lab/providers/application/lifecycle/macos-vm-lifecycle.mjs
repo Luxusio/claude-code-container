@@ -1,4 +1,5 @@
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances, macosSshConfig } from "../../domain/lifecycle/macos-vm-lifecycle.mjs";
+import { recordingGenerationMatches } from "../../domain/runtime-generation.mjs";
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice} MacosVmDevice */
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleInput} MacosVmLifecycleInput */
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleClaim} MacosVmLifecycleClaim */
@@ -504,6 +505,35 @@ export function createMacosVmLifecycleApplication(ports) {
         return (0, ports.jsonResult)({ device: (0, ports.publicDevice)(updated), helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
     }
 
+    /** @param {MacosVmDevice} device */
+    async function stopRecording(device) {
+        const recording = device.recording;
+        if (!recording) return { ok: true };
+        const signal = (0, ports.signalRecording)(recording, "SIGINT");
+        if (!signal.signaled && signal.exited !== true) return { ok: false, reason: signal.reason || "runtime-process-signal-refused" };
+        if (signal.signaled && recording.active) {
+            const bridge = (0, ports.sshBridge)(device, "device_record_video_stop");
+            if (!bridge.error) {
+                (0, ports.helperCommand)((/** @type {{ssh: string}} */ (bridge.discovery)).ssh, [...(0, ports.sshBaseArgs)(device), /** @type {string} */ (bridge.target), `pkill -INT -f ${(0, ports.shellQuote)(`screencapture.*${recording.remotePath}`)} || true`], undefined, (0, ports.sshCommandOptions)(device));
+            }
+        }
+        const exited = await (0, ports.waitRecordingExit)(recording, 1000);
+        return exited === true ? { ok: true } : { ok: false, reason: "runtime-process-exit-unconfirmed" };
+    }
+
+    /** @param {string | undefined} deviceId
+     * @param {MacosVmLifecycleClaim} lifecycle
+     * @param {MacosVmDevice} device
+     * @param {Partial<MacosVmDevice>} updates
+     * @param {string | undefined} reason */
+    function recordingCleanupIncomplete(deviceId, lifecycle, device, updates, reason) {
+        const restored = abortMacosLifecycle(deviceId, lifecycle, device, updates);
+        if (!restored.matched) return macosLifecycleConflict(deviceId, "recording-cleanup", restored);
+        return (0, ports.textResult)(false, JSON.stringify({
+            ok: false, error: "macos-recording-cleanup-incomplete", deviceId, reason,
+        }));
+    }
+
     /** @param {MacosVmLifecycleInput} args */
     async function stop(args) {
         const { deviceId } = args;
@@ -528,18 +558,19 @@ export function createMacosVmLifecycleApplication(ports) {
             }
         }
 
-        const recorderSignal = (0, ports.signalRecording)(device.recording, "SIGINT");
-        if (device.recording?.active) {
-            const bridge = (0, ports.sshBridge)(device, "device_record_video_stop");
-            if (!bridge.error) {
-                (0, ports.helperCommand)((/** @type {{ssh: string}} */ (bridge.discovery)).ssh, [...(0, ports.sshBaseArgs)(device), /** @type {string} */ (bridge.target), `pkill -INT -f ${(0, ports.shellQuote)(`screencapture.*${device.recording.remotePath}`)} || true`], undefined, (0, ports.sshCommandOptions)(device));
-            }
-        }
-        if (recorderSignal.signaled) {
-            await (0, ports.waitRecordingExit)((/** @type {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmRuntime} */ (device.recording)).pid, 1000);
+        const recordingCleanup = await stopRecording(device);
+        if (!recordingCleanup.ok) {
+            return recordingCleanupIncomplete(deviceId, claim.lifecycle, device, {
+                status: "stopped", runtime: null, bootReady: false, lastBootCheck: null,
+            }, recordingCleanup.reason);
         }
         const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
         if (!current) return macosLifecycleConflict(deviceId, "stop", { found: Boolean((0, ports.find)(deviceId)), matched: false });
+        if (!recordingGenerationMatches(device.recording, current.recording)) {
+            return recordingCleanupIncomplete(deviceId, claim.lifecycle, device, {
+                status: "stopped", runtime: null, bootReady: false, lastBootCheck: null,
+            }, "recording-generation-changed");
+        }
         const stopped = macosLifecycleReplacement(current, null, {
             status: "stopped",
             runtime: null,
@@ -581,17 +612,24 @@ export function createMacosVmLifecycleApplication(ports) {
                     return (0, ports.fail)(stop);
                 }
                 forcedStopPlan = plan;
-                const recorderSignal = (0, ports.signalRecording)(device.recording, "SIGINT");
-                if (recorderSignal.signaled) await (0, ports.waitRecordingExit)((/** @type {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmRuntime} */ (device.recording)).pid, 1000);
                 forcedStopUpdates = {
                     status: "stopped",
                     runtime: null,
                     bootReady: false,
                     lastBootCheck: null,
-                    recording: null,
                 };
             }
         }
+        const recordingCleanup = await stopRecording(device);
+        if (!recordingCleanup.ok) {
+            return recordingCleanupIncomplete(deviceId, claim.lifecycle, device, forcedStopUpdates, recordingCleanup.reason);
+        }
+        const recordingOwner = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
+        if (!recordingOwner) return macosLifecycleConflict(deviceId, "delete-recording-cleanup", { found: Boolean((0, ports.find)(deviceId)), matched: false });
+        if (!recordingGenerationMatches(device.recording, recordingOwner.recording)) {
+            return recordingCleanupIncomplete(deviceId, claim.lifecycle, device, forcedStopUpdates, "recording-generation-changed");
+        }
+        if (forcedStopPlan) forcedStopUpdates = { ...forcedStopUpdates, recording: null };
         /** @type {Array<{kind: string, id?: string, instance: string}>} */
         const managedInstances = [
             ...snapshotProviderInstances(device),

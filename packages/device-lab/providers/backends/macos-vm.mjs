@@ -92,7 +92,7 @@ const macosVmLifecycle = createMacosVmLifecycleApplication({
     get waitGuestHelper() { return waitForMacosGuestHelper; },
     get provisionHelper() { return provisionMacosGuestHelper; },
     get signalRecording() { return signalOwnedRuntimeProcess; },
-    get waitRecordingExit() { return waitForProcessExit; },
+    get waitRecordingExit() { return waitForOwnedRecordingExit; },
     get sshBridge() { return sshBridge; },
     get sshBaseArgs() { return sshBaseArgs; },
     get shellQuote() { return shellQuote; },
@@ -760,6 +760,24 @@ async function waitForProcessExit(pid, timeoutMs = 3000) {
         await sleep(50);
     }
     return !processIsAlive(pid);
+}
+
+/** @param {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmRuntime} recording
+ * @param {number} timeoutMs */
+async function waitForOwnedRecordingExit(recording, timeoutMs) {
+    if (!recording.runtimeId || !recording.processIdentity
+        || typeof recording.pid !== "number" || !Number.isInteger(recording.pid) || recording.pid <= 0) return false;
+    const identity = recording.processIdentity;
+    if (identity.pid !== recording.pid || typeof identity.startToken !== "string" || !identity.startToken
+        || typeof identity.commandHash !== "string" || !/^[a-f0-9]{64}$/i.test(identity.commandHash)) return false;
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    do {
+        const observation = inspectProcessIdentity(identity, recording.pid);
+        if (observation.status === "exited") return true;
+        if (observation.status !== "match" || Date.now() >= deadline) return false;
+        await sleep(Math.min(50, Math.max(0, deadline - Date.now())));
+    } while (Date.now() <= deadline);
+    return false;
 }
 
 async function terminateStartedRecorder(child) {

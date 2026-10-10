@@ -15,6 +15,7 @@ export interface MacosVmLifecycleClaim {
 }
 export interface MacosVmRuntime {
     runtimeId?: string; providerPid?: number | null; pid?: number; active?: boolean;
+    processIdentity?: {pid: number; startToken: string; commandHash: string};
     remotePath?: string; [key: string]: unknown;
 }
 export interface MacosVmSnapshot {
@@ -59,7 +60,7 @@ export interface MacosVmProvision {
     ok: boolean; error?: string; command?: MacosVmCommandResult; provisioning?: unknown;
     [key: string]: unknown;
 }
-export interface MacosVmSignal { signaled: boolean; [key: string]: unknown }
+export interface MacosVmSignal { signaled: boolean; exited?: boolean; reason?: string; [key: string]: unknown }
 export interface MacosVmRollback { ok: boolean; attempted?: boolean; [key: string]: unknown }
 
 /** Required native leaves; no callback may perform an entire lifecycle. */
@@ -86,7 +87,7 @@ export interface MacosVmLifecyclePorts<Result, Child extends MacosVmProcessHandl
     waitGuestHelper(device: MacosVmDevice, deadlineAt: number): Promise<MacosVmProvision>;
     provisionHelper(device: MacosVmDevice): MacosVmProvision;
     signalRecording(recording: MacosVmRuntime | null | undefined, signal: string): MacosVmSignal;
-    waitRecordingExit(pid: number | undefined, timeoutMs: number): Promise<boolean>;
+    waitRecordingExit(recording: MacosVmRuntime, timeoutMs: number): Promise<boolean>;
     sshBridge(device: MacosVmDevice, toolName: string): {error: Result; discovery?: undefined; target?: undefined} | {error?: undefined; discovery: {ssh: string}; target: string};
     sshBaseArgs(device: MacosVmDevice): string[];
     shellQuote(text: string): string;

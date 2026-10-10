@@ -24,7 +24,11 @@ const allLeavesRequired:[OptionalKeys<typeof ports>]extends[never]?true:false=tr
 const app=createMacosVmLifecycleApplication(ports);
 const synchronousCreate:Result|undefined=app.create({backend:"other"});
 const synchronousImage:Result|undefined=app.createImage({backend:"other"});
-function positiveAsyncContract(){const asynchronousStart:Promise<Result|undefined>=app.start({deviceId:"missing"});void asynchronousStart;}
+function positiveAsyncContract(){
+    const asynchronousStart:Promise<Result|undefined>=app.start({deviceId:"missing"});
+    const recordingExit:Promise<boolean>=ports.waitRecordingExit({runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)}},1000);
+    void asynchronousStart;void recordingExit;
+}
 void synchronousCreate;void synchronousImage;void positiveAsyncContract;
 function negativeContracts(){
     const {parseLifecycleClaimedAt,...missingParse}=ports;void parseLifecycleClaimedAt;
@@ -73,6 +77,10 @@ function negativeContracts(){
     const weakSignal:typeof ports={...ports,signalRecording:()=>false};
     // @ts-expect-error recorder exit is awaited
     const syncExit:typeof ports={...ports,waitRecordingExit:()=>true};
+    // @ts-expect-error recorder exit observation requires the complete runtime generation, not a PID
+    ports.waitRecordingExit(17,1000);
+    // @ts-expect-error a PID-only native adapter cannot implement generation-aware exit observation
+    const pidOnlyExit:typeof ports={...ports,waitRecordingExit:async(_pid:number)=>true};
     // @ts-expect-error mutable device identity is still a string
     const malformedDevice:MacosVmDevice={id:3};
     // @ts-expect-error start is asynchronous, even on an early refusal
@@ -80,7 +88,7 @@ function negativeContracts(){
     // @ts-expect-error create stays synchronous
     const promisedCreate:Promise<Result|undefined>=app.create({backend:"other"});
     void asyncRead;void asyncFind;void asyncClaim;void asyncTransition;void malformedTransition;void asyncKey;
-    void asyncCommand;void malformedCommand;void asyncSpawn;void missingUnref;void syncWait;void syncBoot;
+    void asyncCommand;void malformedCommand;void asyncSpawn;void missingUnref;void syncWait;void syncBoot;void pidOnlyExit;
     void syncHelper;void asyncProvision;void weakSignal;void syncExit;void malformedDevice;void synchronousStart;void promisedCreate;
 }
 void negativeContracts;

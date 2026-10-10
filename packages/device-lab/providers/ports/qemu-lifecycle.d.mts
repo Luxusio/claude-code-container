@@ -38,6 +38,8 @@ export interface QemuLifecyclePorts {
     launchRunner(): (command:string|null,args:string[],options:{cwd:string;env:Record<string,string|undefined>})=>QemuExecution|null|undefined;
     clock(): unknown;
     runtimeId(): string;
+    inspectRuntime(runtime:QemuRuntime|null|undefined): {status:"match"|"mismatch"|"exited"|"unavailable"};
+    waitRuntimeExit(runtime:QemuRuntime,timeoutMs:number): {exited:boolean;reason?:string};
     legacyKillAvailable(): boolean;
     legacyKill(pid:unknown): undefined;
     signalRuntime(runtime:QemuRuntime,signal:string): {signaled:boolean;reason?:string};

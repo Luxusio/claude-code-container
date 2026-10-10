@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import * as nativeFs from "fs";
 import { describe, expect, it, vi } from "vitest";
 import {
     inspectProcessIdentity,
@@ -10,6 +12,8 @@ import {
     waitForProcessIdentity,
 } from "@ccc/device-lab/providers/state/process-identity.mjs";
 
+vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
+
 describe("device runtime process identity", () => {
     it("reads the current process with a stable start token and hashed command", () => {
         const first = readProcessIdentity(process.pid);
@@ -19,6 +23,57 @@ describe("device runtime process identity", () => {
         expect(first?.commandHash).toMatch(/^[a-f0-9]{64}$/);
         expect(first).not.toHaveProperty("commandLine");
         expect(processIdentityMatches(first, second)).toBe(true);
+    });
+
+    it.skipIf(process.platform !== "linux")("recognizes only the saved birth of an unreaped same-parent Linux child", async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+        const closed = new Promise<void>((resolve, reject) => { child.once("close", () => resolve());child.once("error", reject); });
+        let identity: ReturnType<typeof readProcessIdentity>;
+        let joinTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            identity = await waitForProcessIdentity(child.pid, 2000);
+            expect(identity).toBeTruthy();
+            expect(signalOwnedRuntimeProcess({ runtimeId: "owned-test-child", pid: child.pid, processIdentity: identity }, "SIGKILL").signaled).toBe(true);
+            const waiter = new Int32Array(new SharedArrayBuffer(4)), deadline = performance.now() + 2000;
+            let dead = false;
+            do {
+                const stat = nativeFs.readFileSync(`/proc/${child.pid}/stat`, "utf8");
+                const state = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[0];
+                if (state === "Z" || state === "X") { dead = true;break; }
+                Atomics.wait(waiter, 0, 0, 10);
+            } while (performance.now() < deadline);
+            expect(dead).toBe(true);
+            expect(inspectProcessIdentity(identity, child.pid)).toEqual({ status: "exited", current: null, liveness: "exited" });
+            expect(inspectProcessIdentity({ ...identity, startToken: "linux:0" }, child.pid).status).toBe("mismatch");
+            expect(inspectProcessIdentity({ ...identity, pid: process.pid }, child.pid).status).toBe("unavailable");
+            expect(inspectProcessIdentity(null, child.pid).status).toBe("unavailable");
+            expect(inspectProcessIdentity({ ...identity, startToken: undefined }, child.pid).status).toBe("unavailable");
+            expect(inspectProcessIdentity({ ...identity, commandHash: undefined }, child.pid).status).toBe("unavailable");
+            expect(inspectProcessIdentity(identity, child.pid, { readIdentity: () => null, probeLiveness: () => "alive" }).status).toBe("unavailable");
+            expect(inspectProcessIdentity(identity, child.pid, { readIdentity: () => null }).status).toBe("unavailable");
+            expect(inspectProcessIdentity(identity, child.pid, { probeLiveness: () => "alive" }).status).toBe("unavailable");
+        } finally {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            try { await Promise.race([closed, new Promise<never>((_resolve, reject) => { joinTimer = setTimeout(() => reject(new Error("owned child join timed out")), 2000); })]); }
+            finally { if (joinTimer) clearTimeout(joinTimer); }
+        }
+    });
+
+    it.skipIf(process.platform !== "linux")("recognizes native dead-state X only with a complete matching Linux birth", () => {
+        const identity = readProcessIdentity(process.pid)!;
+        const path = `/proc/${process.pid}/stat`, originalRead = nativeFs.readFileSync;
+        const stat = originalRead(path, "utf8"), close = stat.lastIndexOf(")"), fields = stat.slice(close + 1).trim().split(/\s+/);
+        fields[0] = "X";
+        const read = vi.spyOn(nativeFs, "readFileSync").mockImplementation(((file: Parameters<typeof originalRead>[0], options?: unknown) => {
+            if (file === path) return stat.slice(0, close + 1) + " " + fields.join(" ");
+            if (file === `/proc/${process.pid}/cmdline`) return Buffer.alloc(0);
+            return originalRead(file, options as any);
+        }) as typeof originalRead);
+        try {
+            expect(inspectProcessIdentity(identity, process.pid).status).toBe("exited");
+            expect(inspectProcessIdentity({ ...identity, startToken: "linux:0" }, process.pid).status).toBe("mismatch");
+            expect(inspectProcessIdentity({ ...identity, commandHash: undefined }, process.pid).status).toBe("unavailable");
+        } finally { read.mockRestore(); }
     });
 
     it("does not signal a reused pid whose process identity changed", () => {

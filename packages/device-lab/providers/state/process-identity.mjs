@@ -168,6 +168,25 @@ function probeProcessLiveness(pid) {
     }
 }
 
+// An unreaped Linux child has exited even though kill(pid, 0) still succeeds.
+// Its empty cmdline cannot supply a full identity, so retain the saved birth check.
+function linuxExitedProcessObservation(expected, pid) {
+    if (!expected || expected.pid !== pid || !validPid(expected.pid)
+        || typeof expected.startToken !== "string" || !/^linux:[0-9]+$/.test(expected.startToken)
+        || typeof expected.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(expected.commandHash)) return null;
+    try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+        const close = stat.lastIndexOf(")");
+        if (close < 0 || Number(stat.slice(0, stat.indexOf(" "))) !== pid) return null;
+        const fields = stat.slice(close + 1).trim().split(/\s+/);
+        if ((fields[0] !== "Z" && fields[0] !== "X") || !/^[0-9]+$/.test(fields[19] || "")) return null;
+        const exited = expected.startToken === `linux:${fields[19]}`;
+        return { status: exited ? "exited" : "mismatch", current: null, liveness: exited ? "exited" : "alive" };
+    } catch {
+        return null;
+    }
+}
+
 export function inspectProcessIdentity(expected, pid, options = {}) {
     if (!validPid(pid)) return { status: "unavailable", current: null, liveness: "unknown" };
     const current = (options.readIdentity || readProcessIdentity)(pid);
@@ -177,6 +196,10 @@ export function inspectProcessIdentity(expected, pid, options = {}) {
             current,
             liveness: "alive",
         };
+    }
+    if (process.platform === "linux" && !options.readIdentity && !options.probeLiveness) {
+        const exited = linuxExitedProcessObservation(expected, pid);
+        if (exited) return exited;
     }
     const liveness = (options.probeLiveness || probeProcessLiveness)(pid);
     return { status: liveness === "exited" ? "exited" : "unavailable", current: null, liveness };

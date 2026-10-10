@@ -21,7 +21,7 @@ function nativeLeaves(initial?:MacosVmDevice){
         spawn(){trace.push("spawn");return child;},async waitProviderStart(value){expect(value).toBe(child);trace.push("wait-start");return null;},
         async waitBoot(){trace.push("boot");return {ready:true,ip:"192.0.2.4"};},
         async waitGuestHelper(){trace.push("guest-helper");return {ok:true};},provisionHelper(){trace.push("provision");return {ok:true,skipped:true};},
-        signalRecording(){trace.push("recording-signal");return {signaled:false};},async waitRecordingExit(){trace.push("recording-wait");return true;},
+        signalRecording(){trace.push("recording-signal");return {signaled:false,exited:true};},async waitRecordingExit(){trace.push("recording-wait");return true;},
         sshBridge:()=>({discovery:{ssh:"ssh"},target:"host"}),sshBaseArgs:()=>[],shellQuote:value=>"'"+value+"'",sshCommandOptions:()=>({}),
         helperCommand:()=>({status:0,stdout:"",stderr:""}),textResult:(ok,value)=>({ok,value}),jsonResult:value=>({ok:true,value}),fail:value=>({ok:false,value}),
     };
@@ -60,10 +60,79 @@ describe("macOS independent inward policy controls",()=>{
         expect(result?.ok).toBe(false);expect(f.read()?.lifecycle?.runtimeId).toBe("successor");expect(f.trace).not.toContain("stop ccc-owner-unit");
     });
     it("stop clears runtime and recording only after the native stop result",async()=>{
-        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",runtime:{providerPid:71},recording:{pid:17,active:false}});
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",runtime:{providerPid:71},recording:{runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)},active:false}});
         const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
         expect(result?.ok).toBe(true);expect(f.trace.indexOf("stop ccc-owner-unit")).toBeLessThan(f.trace.indexOf("recording-signal"));
         expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording:null,bootReady:false});
+    });
+    it("refused recorder signaling retains identity and recovery metadata after provider stop",async()=>{
+        const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"},active:true,remotePath:"/video"};
+        const recovery={candidateProviderInstance:"recovery"};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",runtime:{providerPid:71},recording,restoreRecovery:recovery});
+        f.ports.signalRecording=()=>({signaled:false,reason:"runtime-process-identity-mismatch"});
+        f.ports.helperCommand=()=>{throw Error("remote cleanup must not run after identity refusal");};
+        const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
+        expect(result?.ok).toBe(false);expect(JSON.parse(String(result?.value))).toMatchObject({error:"macos-recording-cleanup-incomplete",reason:"runtime-process-identity-mismatch"});
+        expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording,restoreRecovery:recovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");expect(f.trace).not.toContain("recording-wait");
+    });
+    it("unconfirmed recorder exit reports partial stop without discarding its generation",async()=>{
+        const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"},active:true};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async(runtime,timeout)=>{expect(runtime).toMatchObject(recording);expect(timeout).toBe(1000);return false;};
+        const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
+        expect(result?.ok).toBe(false);expect(f.read()).toMatchObject({status:"stopped",recording});expect(f.read()).not.toHaveProperty("lifecycle");
+    });
+    it("confirmed recorder exit allows stop to clear recording metadata",async()=>{
+        const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"},active:true};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async(runtime)=>{expect(runtime).toMatchObject(recording);return true;};
+        const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
+        expect(result?.ok).toBe(true);expect(f.read()).toMatchObject({status:"stopped",recording:null});
+    });
+    it.each(["refused","unconfirmed"])("forced delete stops before resource deletion when recording cleanup is %s",async mode=>{
+        const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"}};
+        const snapshots=[{id:"snapshot",provider:"tart",providerInstance:"snap"}],restoreRecovery={candidateProviderInstance:"recovery"};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",providerResourceManaged:true,recording,snapshots,restoreRecovery});
+        f.ports.signalRecording=()=>({signaled:mode==="unconfirmed",reason:"runtime-process-identity-unavailable"});
+        f.ports.waitRecordingExit=async()=>false;
+        const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit",force:true});
+        expect(result?.ok).toBe(false);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);
+        expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording,snapshots,restoreRecovery});expect(f.read()).not.toHaveProperty("lifecycle");
+    });
+    it("already-stopped devices retain unverified recordings instead of deleting resources",async()=>{
+        const recording={pid:17,active:false};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",providerResourceManaged:true,recording});
+        f.ports.signalRecording=()=>({signaled:false,reason:"runtime-process-identity-missing"});
+        const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit"});
+        expect(result?.ok).toBe(false);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);expect(f.read()?.recording).toEqual(recording);
+    });
+    it("forced delete removes managed resources only after confirmed recorder exit",async()=>{
+        const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)}};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",providerResourceManaged:true,recording});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async(runtime)=>{expect(runtime).toMatchObject(recording);f.trace.push("recording-exited");return true;};
+        const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit",force:true});
+        expect(result?.ok).toBe(true);expect(f.read()).toBeUndefined();
+        expect(f.trace.indexOf("delete ccc-owner-unit")).toBeGreaterThan(f.trace.indexOf("recording-exited"));
+    });
+    it("a recording successor survives completed cleanup and blocks forced resource deletion",async()=>{
+        const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"}};
+        const successor={runtimeId:"successor",pid:18,processIdentity:{pid:18,startToken:"new-birth",commandHash:"new-command"}};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",providerResourceManaged:true,recording});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async()=>{f.replace({...f.read()!,recording:successor});return true;};
+        const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit",force:true});
+        expect(result?.ok).toBe(false);expect(f.read()?.recording).toEqual(successor);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);
+    });
+    it("cleanup refusal cannot restore state over a different lifecycle owner",async()=>{
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording:{runtimeId:"recorder",pid:17}});
+        const successor={id:"unit",status:"running",lifecycle:{runtimeId:"successor",operation:"start",claimedAt:"now"}};
+        f.ports.signalRecording=()=>{f.replace(successor);return {signaled:false,reason:"runtime-process-identity-missing"};};
+        const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
+        expect(result?.ok).toBe(false);expect(JSON.parse(String(result?.value)).error).toBe("owner-device-state-conflict");expect(f.read()).toEqual(successor);
     });
     it.each(["boot-failure","helper-failure"])("publishes truthful started partial fields on %s",async mode=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",ssh:{user:"user",host:null}});

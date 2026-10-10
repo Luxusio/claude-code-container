@@ -12,7 +12,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { ownerId as canonicalOwnerId } from "../context.mjs";
 import { textResult } from "../responses.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
-import { readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
+import { readProcessIdentity, inspectProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 
 export const DEFAULT_LAB_STATE_DIR = join(homedir(), ".ccc/labs");
 export const PROVIDER_NAME = "container-qemu";
@@ -816,6 +816,28 @@ function validateLabDiskPath(lab) {
 
 
 
+/** @param {import('../domain/qemu-lifecycle.mjs').QemuRuntime|null|undefined} runtime
+ * @returns {{status:"match"|"mismatch"|"exited"|"unavailable"}} */
+function inspectQemuRuntime(runtime) {
+    if (!runtime?.runtimeId || !runtime.processIdentity || typeof runtime.pid !== "number" || !Number.isInteger(runtime.pid) || runtime.pid <= 0) return { status: "unavailable" };
+    const observed = inspectProcessIdentity(runtime.processIdentity, runtime.pid);
+    return { status: observed.status === "match" ? "match" : observed.status === "mismatch" ? "mismatch" : observed.status === "exited" ? "exited" : "unavailable" };
+}
+
+const qemuExitWaiter = new Int32Array(new SharedArrayBuffer(4));
+/** @param {import('../domain/qemu-lifecycle.mjs').QemuRuntime} runtime @param {number} timeoutMs */
+function waitQemuRuntimeExit(runtime, timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    do {
+        const observed = inspectQemuRuntime(runtime);
+        if (observed.status === "exited") return { exited: true };
+        if (observed.status !== "match") return { exited: false, reason: observed.status };
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) return { exited: false, reason: "runtime-process-still-running" };
+        Atomics.wait(qemuExitWaiter, 0, 0, Math.min(25, remaining));
+    } while (true);
+}
+
 function qemuLifecycleApplication(options = {}) {
     return createQemuLifecycleApplication({
         providerName: PROVIDER_NAME,
@@ -838,6 +860,8 @@ function qemuLifecycleApplication(options = {}) {
         launchRunner: () => options.commandRunner || defaultCommandRunner,
         clock: () => nowIso(options),
         runtimeId: () => randomUUID(),
+        inspectRuntime: (runtime) => inspectQemuRuntime(runtime),
+        waitRuntimeExit: (runtime, timeoutMs) => waitQemuRuntimeExit(runtime, timeoutMs),
         legacyKillAvailable: () => typeof options.killProcess === "function",
         legacyKill: (pid) => { options.killProcess(pid); },
         signalRuntime: (runtime, signal) => signalOwnedRuntimeProcess(runtime, signal),

@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import * as nativeFs from "fs";
+import * as runtimeIdentity from "../../packages/device-lab/providers/state/process-identity.mjs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
@@ -49,9 +51,34 @@ function requiredSynchronousLifecyclePorts(ports: QemuLifecyclePorts) {
     createQemuLifecycleApplication({ ...ports, launchRunner: () => async () => ({ ok: true }) });
     // @ts-expect-error provision leaves are required and synchronous
     createQemuLifecycleApplication({ ...ports, bindProvisionLeaves: async () => ({}) });
-    return removeLabDirectory;
+    const { inspectRuntime, ...withoutInspection } = ports;
+    // @ts-expect-error owned runtime inspection is required
+    createQemuLifecycleApplication(withoutInspection);
+    const { waitRuntimeExit, ...withoutExitWait } = ports;
+    // @ts-expect-error confirmed exit is required
+    createQemuLifecycleApplication(withoutExitWait);
+    // @ts-expect-error inspection must settle synchronously
+    createQemuLifecycleApplication({ ...ports, inspectRuntime: async () => ({ status: "exited" as const }) });
+    // @ts-expect-error exit wait must settle synchronously
+    createQemuLifecycleApplication({ ...ports, waitRuntimeExit: async () => ({ exited: true }) });
+    return { removeLabDirectory, inspectRuntime, waitRuntimeExit };
 }
 void requiredSynchronousLifecyclePorts;
+
+vi.mock("../../packages/device-lab/providers/state/process-identity.mjs", async original => ({
+    ...await original<typeof import("../../packages/device-lab/providers/state/process-identity.mjs")>(),
+}));
+
+// Ordinary provider fixtures report one owned generation and its confirmed exit.
+function runtimeExitFixture(pid: number) {
+    let exited = false;
+    const inspect = runtimeIdentity.inspectProcessIdentity;
+    vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation((expected, observedPid, options) => {
+        if (observedPid !== pid) return inspect(expected, observedPid, options);
+        return { status: exited ? "exited" : "match", current: null, liveness: exited ? "exited" : "alive" };
+    });
+    return { exit: () => { exited = true; } };
+}
 
 describe("device-lab Linux VM container-QEMU provider", () => {
     const roots: string[] = [];
@@ -106,16 +133,18 @@ describe("device-lab Linux VM container-QEMU provider", () => {
     });
 
     afterEach(() => {
+        vi.restoreAllMocks();
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     });
 
     it("keeps legacy stop ESRCH handling and failed forced-delete residue", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "stop-fault", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Stop Fault" }, { env, stateRoot: root });
-        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242 }) });
+        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
         const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
         const trace: unknown[] = [], fault = Object.assign(new Error("raw legacy stop"), { code: "EPERM" });
-        const killProcess = function (this: unknown, pid: number) { trace.push([this, pid]); throw fault; };
+        const runtime = runtimeExitFixture(4242);
+        const killProcess = (pid: number) => { trace.push(pid); throw fault; };
         const options = { env, stateRoot: root, killProcess };
         expect(deleteLab({ labId: created.lab.id, force: "true" }, options)).toEqual({ ok: false, error: "lab-running", labId: created.lab.id });
         expect(trace).toEqual([]);
@@ -123,10 +152,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ok: false, error: "lab-delete-stop-failed", labId: created.lab.id,
             stop: { ok: false, error: "lab-stop-failed", message: "raw legacy stop" },
         });
-        expect(trace).toEqual([[options, 4242]]);
+        expect(trace).toEqual([4242]);
         expect(readFileSync(file, "utf8")).toBe(before);
         const exited = Object.assign(new Error("already exited"), { code: "ESRCH" });
-        expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { throw exited; } })).toEqual(
+        expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { runtime.exit(); throw exited; } })).toEqual(
             expect.objectContaining({ ok: true, stopped: true, lab: expect.objectContaining({ runtimeState: "stopped", runtime: null }) }),
         );
         expect(stopLab({ labId: created.lab.id }, { env, stateRoot: root, killProcess: () => { throw new Error("must not signal twice"); } }).stopped).toBe(false);
@@ -137,7 +166,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
     it("publishes stopped state before a raw application removal fault", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "remove-fault" };
         const created = createLab({ name: "Remove Fault" }, { env, stateRoot: root });
-        const lab = { ...created.lab, runtimeState: "running", runtime: { pid: 4242 } };
+        const lab = { ...created.lab, runtimeState: "running", runtime: { pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } } };
         const scope = { env, stateRoot: root, owner: ownerId(env), ownerRoot: join(root, "owners", ownerId(env)) };
         const trace: unknown[] = [], fault = new Error("raw removal fault");
         const unexpected = (): never => { throw new Error("unreached leaf"); };
@@ -145,6 +174,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         const ports: QemuLifecyclePorts = {
             providerName: "container-qemu", scope: () => scope,
             readLab: () => { trace.push("read"); return { ok: true, lab: retained }; },
+            inspectRuntime: () => ({ status: "match" }),
+            waitRuntimeExit: () => { trace.push("exit-confirmed"); return { exited: true }; },
             legacyKillAvailable: () => true,
             legacyKill: (pid) => { trace.push(["kill", pid]); return undefined; },
             clock: () => { trace.push("clock"); return "stopped-time"; },
@@ -161,32 +192,35 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         let caught: unknown;
         try { application.delete({ labId: lab.id, force: true }); } catch (error) { caught = error; }
         expect(caught).toBe(fault);
-        expect(trace).toEqual(["read", "read", ["kill", 4242], "clock", "publish", "remove"]);
+        expect(trace.filter(row => Array.isArray(row) ? row[0] === "kill" : ["exit-confirmed", "publish", "remove"].includes(String(row))))
+            .toEqual([["kill", 4242], "exit-confirmed", "publish", "remove"]);
         expect(retained).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null, updatedAt: "stopped-time" }));
         expect(existsSync(created.lab.paths.labDir)).toBe(true);
     });
 
-    it("only strict create force overwrites a running definition without stopping its old process", () => {
+    it("rejects strict force create when running metadata has no verified exit", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "create-force", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Original", labId: "same" }, { env, stateRoot: root });
-        startLab({ labId: "same" }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242 }) });
+        startLab({ labId: "same" }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
         const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), trace: unknown[] = [];
         const options = { env, stateRoot: root, killProcess: (pid: number) => { trace.push(pid); } };
         for (const force of [undefined, "true", 1]) {
             expect(createLab({ name: "Replacement", labId: "same", force }, options)).toEqual({ ok: false, error: "lab-already-exists", labId: "same" });
             expect(readFileSync(file, "utf8")).toBe(before);
         }
+        runtimeExitFixture(4242);
         const overwritten = createLab({ name: "Replacement", labId: "same", force: true }, options);
-        expect(overwritten).toEqual(expect.objectContaining({ ok: true, lab: expect.objectContaining({ name: "Replacement", runtimeState: "stopped", runtime: null }) }));
-        expect(JSON.parse(readFileSync(file, "utf8")).name).toBe("Replacement");
+        expect(overwritten).toEqual(expect.objectContaining({ ok: false, error: "lab-runtime-active-or-unverified", labId: "same" }));
+        expect(readFileSync(file, "utf8")).toBe(before);
         expect(trace).toEqual([]);
     });
 
     it("retains native stopped metadata when forced delete removal throws the identical fault", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "native-remove", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Native Remove" }, { env, stateRoot: root });
-        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242 }) });
+        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
         const file = join(created.lab.paths.labDir, "lab.json"), fault = new Error("native removal fault"), trace: unknown[] = [];
+        const runtime = runtimeExitFixture(4242);
         const originalRemove = nativeFs.rmSync;
         const removal = vi.spyOn(nativeFs, "rmSync").mockImplementation((path, options) => {
             if (path === created.lab.paths.labDir) {
@@ -197,12 +231,81 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         });
         let caught: unknown;
         try {
-            deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root, killProcess: (pid: number) => { trace.push(["kill", pid]); } });
+            deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root, killProcess: (pid: number) => { trace.push(["kill", pid]); runtime.exit(); } });
         } catch (error) { caught = error; } finally { removal.mockRestore(); }
         expect(caught).toBe(fault);
         expect(trace).toEqual([["kill", 4242], ["remove", "stopped"]]);
         expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
         expect(existsSync(created.lab.paths.labDir)).toBe(true);
+    });
+
+    it.skipIf(process.platform !== "linux")("stops its same-parent native child synchronously before deleting owned storage", async () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "native-child-stop", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Native Child Stop" }, { env, stateRoot: root });
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+        const closed = new Promise<void>((resolve, reject) => { child.once("close", () => resolve());child.once("error", reject); });
+        let joinTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const identity = await runtimeIdentity.waitForProcessIdentity(child.pid, 2000);
+            expect(identity).toBeTruthy();
+            expect(startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+                commandRunner: () => ({ ok: true, pid: child.pid, processIdentity: identity }) }).ok).toBe(true);
+            expect(stopLab({ labId: created.lab.id, timeoutMs: 2000 }, { env, stateRoot: root })).toEqual(expect.objectContaining({ ok: true, stopped: true, lab: expect.objectContaining({ runtimeState: "stopped", runtime: null }) }));
+            expect(JSON.parse(readFileSync(join(created.lab.paths.labDir, "lab.json"), "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
+            expect(deleteLab({ labId: created.lab.id }, { env, stateRoot: root }).deleted).toBe(true);
+            expect(existsSync(created.lab.paths.labDir)).toBe(false);
+        } finally {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            try { await Promise.race([closed, new Promise<never>((_resolve, reject) => { joinTimer = setTimeout(() => reject(new Error("owned QEMU test child join timed out")), 2000); })]); }
+            finally { if (joinTimer) clearTimeout(joinTimer); }
+        }
+    });
+
+    it("preserves a live owned runtime after a signal timeout and refuses forced storage removal", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "live-runtime", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Live Runtime" }, { env, stateRoot: root });
+        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: process.pid, processIdentity: runtimeIdentity.readProcessIdentity(process.pid) }) });
+        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8"), signals: number[] = [];
+        const options = { env, stateRoot: root, killProcess: (pid: number) => { signals.push(pid); } };
+        expect(stopLab({ labId: created.lab.id, timeoutMs: 1 }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-runtime-not-exited" }));
+        expect(readFileSync(file, "utf8")).toBe(before);
+        expect(deleteLab({ labId: created.lab.id, force: true, timeoutMs: 1 }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-delete-stop-failed" }));
+        expect(readFileSync(file, "utf8")).toBe(before);expect(existsSync(created.lab.paths.labDir)).toBe(true);
+        expect(createLab({ name: "Replacement", labId: created.lab.id, force: true }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-runtime-active-or-unverified" }));
+        expect(readFileSync(file, "utf8")).toBe(before);expect(signals).toEqual([process.pid, process.pid]);
+        const falseExit = Object.assign(new Error("false exit assertion"), { code: "ESRCH" });
+        expect(stopLab({ labId: created.lab.id, timeoutMs: 1 }, { env, stateRoot: root, killProcess: () => { throw falseExit; } })).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-runtime-not-exited" }));
+        expect(readFileSync(file, "utf8")).toBe(before);
+    });
+
+    it("refuses reused and unverified native process generations before a kill override or overwrite", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "reused-runtime" };
+        const created = createLab({ name: "Reused Runtime" }, { env, stateRoot: root });
+        const file = join(created.lab.paths.labDir, "lab.json"), stopped = JSON.parse(readFileSync(file, "utf8"));
+        for (const processIdentity of [null, { ...runtimeIdentity.readProcessIdentity(process.pid), startToken: "wrong-birth" }]) {
+            writeFileSync(file, JSON.stringify({ ...stopped, runtimeState: "running", runtime: { runtimeId: "owned", pid: process.pid, processIdentity } }));
+            const before = readFileSync(file, "utf8"), kill = vi.fn();
+            const options = { env, stateRoot: root, killProcess: kill };
+            expect(stopLab({ labId: created.lab.id }, options)).toEqual(expect.objectContaining({ ok: false, error: "lab-stop-process-identity-unverified" }));
+            expect(deleteLab({ labId: created.lab.id, force: true }, options).ok).toBe(false);
+            expect(createLab({ name: "Replacement", labId: created.lab.id, force: true }, options).ok).toBe(false);
+            expect(kill).not.toHaveBeenCalled();expect(readFileSync(file, "utf8")).toBe(before);
+        }
+    });
+
+    it("waits for a delayed native exit before publishing stopped metadata", () => {
+        const root = tempRoot(), env = { CCC_PROFILE: "delayed-runtime", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Delayed Runtime" }, { env, stateRoot: root });
+        startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
+        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
+        let signaled = false, polls = 0;
+        vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation(() => {
+            if (signaled) { polls++;expect(readFileSync(file, "utf8")).toBe(before); }
+            return { status: signaled && polls >= 3 ? "exited" : "match", current: null, liveness: signaled && polls >= 3 ? "exited" : "alive" };
+        });
+        expect(stopLab({ labId: created.lab.id, timeoutMs: 1000 }, { env, stateRoot: root, killProcess: () => { signaled = true; } })).toEqual(expect.objectContaining({ ok: true, stopped: true }));
+        expect(polls).toBe(3);expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
     });
 
     it("reports unsupported outside the lab-runner profile without requiring user configuration", () => {
@@ -325,13 +428,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         const options = { env, stateRoot: root, now: "fixed-time" };
         const first = importImage({ name: "Base", sourcePath: "incoming/disk.qcow2", copy: 0 }, options);
         expect(first.image.copied).toBe(true);
-        const trace: string[] = [];
-        const refused = importImage({
-            name: "Base", force: "true",
-            get sourcePath() { trace.push("source"); throw new Error("source must stay lazy"); },
-        }, options);
+        const refused = importImage({ name: "Base", force: "true", sourcePath: "incoming/disk.raw" }, options);
         expect(refused).toEqual({ ok: false, error: "base-image-already-exists", imageId: "base" });
-        expect(trace).toEqual([]);
         const replaced = importImage({ name: "Base", sourcePath: "incoming/disk.raw", force: true }, options);
         expect(replaced.image).toEqual(expect.objectContaining({ copied: true, format: "raw", sizeBytes: 9, createdAt: "fixed-time", updatedAt: "fixed-time" }));
         expect(readFileSync(first.image.path, "utf8")).toBe("old-image");
@@ -567,7 +665,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                     writeFileSync(args[args.length - 1], "overlay");
                     return { ok: true, command, args };
                 }
-                return { ok: true, pid: 4242, command, args };
+                return { ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" }, command, args };
             },
         });
         expect(started.ok).toBe(true);
@@ -575,9 +673,9 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(started.lab.runtime.pid).toBe(4242);
         const reused = startLab({ labId: "ready-vm" }, {
             env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
-            get commandRunner() { throw new Error("running reuse must not select a launcher"); },
+            commandRunner: () => { throw new Error("running reuse must not launch"); },
         });
-        expect(reused).toEqual(expect.objectContaining({ ok: true, reused: true, lab: expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 4242 }) }) }));
+        expect(reused).toEqual(expect.objectContaining({ ok: true, reused: true, lab: expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) }) }));
         expect(JSON.stringify(started)).not.toContain("qemu-monitor.sock");
         expect(started.materialized).toEqual(expect.objectContaining({ ok: true, materialized: true }));
         expect(calls).toHaveLength(2);
@@ -591,10 +689,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }));
 
         const killed: number[] = [];
+        const runtime = runtimeExitFixture(4242);
         const stopped = stopLab({ labId: "ready-vm" }, {
             env,
             stateRoot: root,
-            killProcess: (pid: number) => { killed.push(pid); },
+            killProcess: (pid: number) => { killed.push(pid); runtime.exit(); },
         });
         expect(stopped.ok).toBe(true);
         expect(killed).toEqual([4242]);
@@ -2362,7 +2461,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             stateRoot: root,
             qemuPath: "/usr/bin/qemu-system-x86_64",
             kvmAvailable: true,
-            commandRunner: () => ({ ok: true, pid: 6666 }),
+            commandRunner: () => ({ ok: true, pid: 6666, processIdentity: { pid: 6666, startToken: "fixture-birth", commandHash: "fixture-command" } }),
         });
         expect(started.ok).toBe(true);
         const ready = probeReadiness({ labId: "readiness-stop-vm" }, {
@@ -2373,10 +2472,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         });
         expect(ready.target).toEqual(expect.objectContaining({ readiness: "ready" }));
 
+        const runtime = runtimeExitFixture(6666);
         const stopped = stopLab({ labId: "readiness-stop-vm" }, {
             env,
             stateRoot: root,
-            killProcess: () => {},
+            killProcess: () => { runtime.exit(); },
         });
         expect(stopped.ok).toBe(true);
         expect(stopped.lab.readiness.latest).toBeNull();
@@ -2415,19 +2515,20 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             stateRoot: root,
             qemuPath: "/usr/bin/qemu-system-x86_64",
             kvmAvailable: true,
-            commandRunner: () => ({ ok: true, pid: 1111 }),
+            commandRunner: () => ({ ok: true, pid: 1111, processIdentity: { pid: 1111, startToken: "fixture-birth", commandHash: "fixture-command" } }),
             now: "2026-06-16T02:00:00.000Z",
         });
         expect(started.ok).toBe(true);
 
         const killed: number[] = [];
         const starts: number[] = [];
+        const runtime = runtimeExitFixture(1111);
         const rebooted = rebootLab({ labId: "reboot-vm" }, {
             env,
             stateRoot: root,
             qemuPath: "/usr/bin/qemu-system-x86_64",
             kvmAvailable: true,
-            killProcess: (pid: number) => { killed.push(pid); },
+            killProcess: (pid: number) => { killed.push(pid); runtime.exit(); },
             commandRunner: () => {
                 starts.push(1);
                 return { ok: true, pid: 2222 };

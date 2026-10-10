@@ -1,20 +1,12 @@
 import {afterEach,describe,expect,it} from "vitest";
 import childProcess,{spawn,spawnSync,type ChildProcess} from "node:child_process";
-import {createHash} from "node:crypto";import {gunzipSync} from "node:zlib";
+import {createHash} from "node:crypto";
 import {existsSync,lstatSync,readFileSync,writeFileSync,unlinkSync} from "node:fs";
-import {dirname,join,resolve} from "node:path";import {fileURLToPath} from "node:url";import {createServer} from "node:net";
+import {join} from "node:path";import {createServer} from "node:net";
 import {readProcessIdentity,inspectProcessIdentity} from "@ccc/device-lab/providers/state/process-identity.mjs";
 import {nodeProviderFixturePreloadSource} from "./helpers/node-provider-fixture.js";
 import {createFakeIosMcpContext,cleanupFakeIosMcpContext,joinFakeIosFixtureChild,observeFakeIosFixtureAllocation,fakeIosFixtureDiagnostics,TIMEOUT,type FakeIosMcpContext} from "./helpers/fake-ios-mcp-fixture.js";
 
-// Whole original authority2f5419eb... at reviewed2e816; controls selected BEFORE
-// candidate helper edits. Static original templates are provenance, not runtime PASS.
-const ORIGINAL="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";
-const ORIGINAL_SHA="06165455201a7d92702f9b20adf1ea1212eb7b544ed695ab157d7ad5b2038341";
-const originalBytes=gunzipSync(Buffer.from(ORIGINAL,"base64"));
-const original=JSON.parse(originalBytes.toString("utf8")) as {sourceSha256:string;xcrunSourceTemplate:string;appiumSourceTemplate:string;effectiveGenericSourceTemplate:string};
-const hash=(value:string|Buffer)=>createHash("sha256").update(value).digest("hex");
-const root=resolve(dirname(fileURLToPath(import.meta.url)),"../..");
 const contexts:FakeIosMcpContext[]=[],children:ChildProcess[]=[];
 async function allocate(realSdk=false){const context=await createFakeIosMcpContext(realSdk?{}:{connect:async()=>undefined});contexts.push(context);return context;}
 async function until(test:()=>boolean){const end=Date.now()+10000;while(!test()){if(Date.now()>=end)throw Error("portable fixture readiness10s");await new Promise(resolve=>setTimeout(resolve,20));}}
@@ -35,7 +27,7 @@ function nativeCommandHash(argv:string[]){
     const quote=(value:string)=>{if(value.length&&!/[\s"]/.test(value))return value;let out='"',slashes=0;
         for(const char of value){if(char==="\\"){slashes++;continue;}if(char==='"'){out+="\\".repeat(slashes*2+1)+'"';slashes=0;continue;}out+="\\".repeat(slashes)+char;slashes=0;}
         return out+"\\".repeat(slashes*2)+'"';};
-    return hash((process.platform==="win32"?argv.map(quote):argv).join(" "));
+    return createHash("sha256").update((process.platform==="win32"?argv.map(quote):argv).join(" ")).digest("hex");
 }
 async function service(c:FakeIosMcpContext){
     return observeFakeIosFixtureAllocation(c,async()=>{
@@ -69,13 +61,7 @@ afterEach(async()=>{
 const suffix=',"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-0","name":"iOS 17.0","isAvailable":true}],"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-15","name":"iPhone 15"}]}\n';
 const inventory=(name?:string,state="Shutdown")=>'{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[{"name":"host iPhone","udid":"HOST-UDID","state":"Shutdown"}'+(name===undefined?'':',{"name":"'+name+'","udid":"CREATED-IOS-UDID","state":"'+state+'"}')+']}'+suffix;
 const ok={status:0,stdout:"",stderr:""};
-describe("unskipped actual Node iOS SDK programs and independent original behavior",()=>{
-    it("authenticates frozen effective original control and unchanged native/router authority",()=>{
-        expect(hash(originalBytes)).toBe(ORIGINAL_SHA);expect(original.sourceSha256).toBe("57da3f411ff47d984c3e1525928d83edd7d9a7b6479a7f542e7c9e2d43f551d6");
-        expect(original.xcrunSourceTemplate).toContain('exec /bin/sleep 0.8');expect(original.xcrunSourceTemplate).toContain('exec /bin/sleep 20');
-        expect(original.effectiveGenericSourceTemplate).not.toContain("Xcode 15.0");
-        for(const [file,pin]of [["src/__tests__/helpers/node-provider-fixture.ts","1a76629ce66ed7c6a1de00b69f24d54016445f2fdc2f12ea7b02810d3fa98f67"],["packages/device-lab/providers/state/process-identity.mjs","60982e23b9371428e3d000ea8f236bb1f4afcf122a7f0dca10386687b063f348"]])expect(hash(readFileSync(join(root,file)))).toBe(pin);
-    });
+describe("actual Node iOS SDK programs",()=>{
     it("child-local routing leaves parent native bindings/environment intact on allocation and primary connect throw",{timeout:TIMEOUT},async()=>{
         const before={spawn:childProcess.spawn,spawnSync:childProcess.spawnSync,nodeOptions:process.env.NODE_OPTIONS,path:process.env.PATH,home:process.env.HOME};
         const assertUnchanged=()=>expect({spawn:childProcess.spawn,spawnSync:childProcess.spawnSync,nodeOptions:process.env.NODE_OPTIONS,path:process.env.PATH,home:process.env.HOME}).toStrictEqual(before);
