@@ -130,6 +130,8 @@ export function createHyperVStopDeleteApplication(ports: HyperVStopDeletePorts) 
         return { ok: true, reconciled: true };
     }
     async function invoke(ownerId: string, parsed: HyperVStopDeleteRequest, deadlineAt = Number.POSITIVE_INFINITY, cleanupDeadlineAt = deadlineAt): Promise<HyperVStopDeleteResponse> {
+        if (parsed.dryRun)
+            return execute(ownerId, parsed, deadlineAt, cleanupDeadlineAt);
         ports.assertDeadline(deadlineAt);
         const { backend, stateKey, deviceId } = parsed;
         if (!parsed.dryRun) {

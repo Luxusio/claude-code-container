@@ -1719,6 +1719,27 @@ describe("device-lab host broker lifecycle commands", () => {
 
             const operationPath = join(deviceRoot, "operation.json");
             mkdirSync(dirname(diskPath), { recursive: true });
+            writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_delete", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            const previewArtifact = join(deviceRoot, "dry-run-artifact.txt");
+            writeFileSync(previewArtifact, "owned artifact");
+            const previewOwnerPath = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+            const previewNetworkPath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+            const previewOwnerBytes = readFileSync(previewOwnerPath);
+            const previewNetworkBytes = readFileSync(previewNetworkPath);
+            const previewJournalBytes = readFileSync(operationPath);
+            const previewDiskBytes = readFileSync(diskPath);
+            const previewVmState = vmState;
+            expect(vmExists).toBe(true);
+            const pendingDeletePreview = await invoke({ backend: "windows-vm", command: "device_stop", deviceId, incarnationId, dryRun: true });
+            expect(pendingDeletePreview.status, JSON.stringify(await pendingDeletePreview.clone().json())).toBe(200);
+            expect(await pendingDeletePreview.json()).toMatchObject({ ok: true, result: { invoked: false, dryRun: true, execution: { mode: "dry-run", mutatesHost: false } } });
+            expect(vmExists).toBe(true);
+            expect(vmState).toBe(previewVmState);
+            expect(readFileSync(diskPath)).toEqual(previewDiskBytes);
+            expect(readFileSync(previewArtifact, "utf8")).toBe("owned artifact");
+            expect(readFileSync(previewNetworkPath)).toEqual(previewNetworkBytes);
+            expect(readFileSync(operationPath)).toEqual(previewJournalBytes);
+            expect(readFileSync(previewOwnerPath)).toEqual(previewOwnerBytes);
             writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_stop", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
             const callsBeforeStaleLifecycle = commandRunner.mock.calls.length;
             const staleLifecycleWithJournal = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId: "f".repeat(32) });

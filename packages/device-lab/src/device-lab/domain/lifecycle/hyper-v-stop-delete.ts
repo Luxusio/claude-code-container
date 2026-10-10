@@ -28,7 +28,7 @@ export interface HyperVCommandDescriptor {
     args?: string[];
     input?: string;
 }
-export interface HyperVCommandExecution {
+export type HyperVCommandExecution = {
     mode: string;
     provider: string;
     status?: number | null;
@@ -36,7 +36,7 @@ export interface HyperVCommandExecution {
     stderr?: string;
     error?: string;
     timedOut?: boolean;
-}
+};
 export interface HyperVTerminalObservation {
     vmId: string;
     vmName: string;
