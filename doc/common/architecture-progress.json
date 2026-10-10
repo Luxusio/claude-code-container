@@ -540,7 +540,19 @@
         "OP-broker-physical-stop",
         "OP-broker-owner-cleanup"
       ],
-      "partialOperationIds": [
+      "partialOperationIds": [],
+      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified. These twelve bindings were partial at624c; their remaining supported bindings close in device-interaction-integration atb4b8 and count once there.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "624c26f3685874e98367252be75d5fb9522d61e6"
+    },
+    {
+      "id": "device-interaction-integration",
+      "branch": "refactor/architecture-device-interaction-integration-20261011",
+      "commit": "b4b8e748776c1c53eca5fbe77b6e42ca363812d9",
+      "taskId": "TASK__architecture-device-interaction-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
         "OP-apple-trust-diagnostic",
         "OP-device-click",
         "OP-device-drag",
@@ -552,12 +564,14 @@
         "OP-device-focus-window",
         "OP-device-window-list",
         "OP-device-upload",
-        "OP-device-download"
+        "OP-device-download",
+        "OP-device-orientation"
       ],
-      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified.",
+      "partialOperationIds": [],
+      "codeReview": "Actual independent composed DEEP Code/Security/Docs PASS after both hunters; genuine complete current production build68.656s, eighteen affected WHOLE files403cases0skip85.296s, lint, seven semantic package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Current strict/native body and consumed graph checks qualified unchanged inputs. All-binding audit includes actual Appium pointer/reverse-orientation recipes, default authenticated Android emulator/physical orientation and Apple USB/WiFi/unknown UDID, Windows/Linux Hyper-V controls/transfers. Source29/emitted1207/fixeddeps7551/18links/2locks authenticated; generated Vitest cache only delta. Actual normal local FF delivery b4b8 preserves all97 user paths and diff bytes. No whole legacy-native-JS acceptance, native-host certification or formal hook close claimed.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "624c26f3685874e98367252be75d5fb9522d61e6"
+      "acceptedIntegrationCommit": "b4b8e748776c1c53eca5fbe77b6e42ca363812d9"
     }
   ],
   "planningLanes": [
@@ -723,7 +737,7 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "Android emulator/physical source accepted in5122 after actual independent review and joint QA. Nine mobile whole operations count once in mobile-control-transfer; shared desktop/transfer IDs remain incomplete and Android orientation remains native. Formal close/native host certification unverified."
+      "status": "Accepted Android input/transfer contribution5122 and orientation contributionfb219 in reviewed current b4b8 delivery. Nine mobile operations count in mobile-control-transfer; global control/transfer and orientation count once in device-interaction-integration after current all-binding/public QA. Native/formal certification unverified."
     },
     {
       "id": "ios-control-transfer",
@@ -742,7 +756,7 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "Simulator/physical control and simulator transfer source accepted in5122 after actual independent review and joint QA. Nine shared mobile whole operations count once; physical iOS transfer stays unsupported. Orientation and desktop/transfer require remaining other bindings; formal/native acceptance unverified."
+      "status": "Accepted simulator/physical input and simulator transfer5122 contribution; supported global controls/transfers and orientation count once in device-interaction-integration atb4b8 after current all-binding/public QA. Physical iOS transfer remains unsupported; native/formal certification unverified."
     },
     {
       "id": "hyper-v-snapshot-workflows",
@@ -763,7 +777,7 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "QEMU source contribution reviewed, jointly verified and locally delivered at624c. Current destination materialization and thrown-exception partial effects retained. Upload/download counted only as partial in device-transfers-physical-integration until remaining supported Hyper-V/global bindings close; no duplicate whole credit. Native/formal certification unverified."
+      "status": "QEMU inward guest transfer contribution624c and actual current artifact/exception guards retained. Remaining Hyper-V/global supported bindings close atb4b8; upload/download counted once in device-interaction-integration. Native/formal certification unverified."
     },
     {
       "id": "desktop-control-transfer",
@@ -781,25 +795,41 @@
         "OP-device-upload",
         "OP-device-download"
       ],
-      "status": "X11/Windows Sandbox/macOS inward source contributions and authentic default Windows/macOS broker child witnesses reviewed, jointly verified and locally delivered at624c. Eleven global operations counted once as partial in device-transfers-physical-integration; required supported Hyper-V bindings remain outside this cutover. Native/formal certification unverified."
+      "status": "Accepted X11/Windows Sandbox/macOS inward source624c plus reviewed current Hyper-V Windows/Linux contributionb4b8 complete eleven supported global bindings. Count once in device-interaction-integration after current genuine public/native-transport QA and local delivery. Native/formal certification unverified."
     },
     {
       "id": "apple-wireless-completion",
       "taskId": "TASK__architecture-ios-wireless",
-      "coveredOperationIds": ["OP-apple-trust-diagnostic"],
-      "status": "Broker Apple trust policy delivered at624c, but required BIND-broker-ios-device-device_wireless still reaches native public provider policy. GAP-authority-apple-trust-diagnostic remains open with this explicit partial disposition. A disjoint iOS provider wireless completion task is admitted from624c; zero whole credit until its actual reviews, QA and delivery."
+      "coveredOperationIds": [
+        "OP-apple-trust-diagnostic"
+      ],
+      "status": "Accepted broker Apple trust624c plus current inward public iOS wireless b4b8 closes required BIND-broker-ios-device-device_wireless. Current authenticated DEFAULT child USB/WiFi/unknown-UDID status and provider/MCP refusal proofs PASS; literal udid forwarding fix included with pre-edit REQ. One whole OP-apple-trust-diagnostic counted in device-interaction-integration. Native/formal certification unverified."
     },
     {
       "id": "android-orientation",
       "taskId": "TASK__architecture-android-orientation",
-      "coveredOperationIds": ["OP-device-orientation"],
-      "status": "Eleven-path candidate a7fc independently reviewed; actual strict consumed/native-body checks and thirteen ordinary core/graph cases PASS. Current production build, public binding QA, all-binding accounting and accepted-parent delivery remain pending; no operation credit."
+      "coveredOperationIds": [
+        "OP-device-orientation"
+      ],
+      "status": "Orientation source fb219, accepted b4b8 after actual independent reviews/current joint QA; all27 literal bindings include Android12+iOS12+Appiumrecipes3 and real native broker/MCP paths. Whole OP-device-orientation counted once in device-interaction-integration. Native/formal certification unverified."
     },
     {
       "id": "hyper-v-desktop-transfer",
       "taskId": "TASK__architecture-hyper-v-desktop-transfer",
-      "coveredOperationIds": ["OP-device-click", "OP-device-drag", "OP-device-key", "OP-device-type", "OP-device-scroll", "OP-device-cursor-move", "OP-device-cursor-query", "OP-device-focus-window", "OP-device-window-list", "OP-device-upload", "OP-device-download"],
-      "status": "Independent source-backed planning GO; isolated task admitted from0dc with native broker/domain/ports/application and pure-policy compatibility relocation. Source author running, ordinary test author STOP; current reviews, accepted-parent reconciliation and actual QA/delivery pending. No additional credit."
+      "coveredOperationIds": [
+        "OP-device-click",
+        "OP-device-drag",
+        "OP-device-key",
+        "OP-device-type",
+        "OP-device-scroll",
+        "OP-device-cursor-move",
+        "OP-device-cursor-query",
+        "OP-device-focus-window",
+        "OP-device-window-list",
+        "OP-device-upload",
+        "OP-device-download"
+      ],
+      "status": "Four source/correction commits composed through13e217 thenb4b8; concrete DTO/inward focus, readonly carrier and type-only client labels reviewed. Genuine current build/public Windows/Linux controls/transfers QA and accepted-parent local delivery PASS. Eleven global operations count once in device-interaction-integration with accepted other providers; native/formal certification unverified."
     }
   ]
 }
