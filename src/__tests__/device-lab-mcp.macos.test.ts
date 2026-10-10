@@ -8,6 +8,9 @@ import { handleMacosTool, listMacosDevices } from "@ccc/device-lab/providers/bac
 import { withOwnerDeviceOperation } from "@ccc/device-lab/providers/state/device-store.mjs";
 import { updateMacosDevice, writeMacosDevices } from "@ccc/device-lab/providers/state/macos-state.mjs";
 import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
+import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, expectedDeviceLabMcpOwnerBasis, type DeviceLabMcpTestContext } from "./helpers/device-lab-mcp-fixture.js";
+import { nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
+import { createHash } from "node:crypto";
 
 describe("macOS VM backend with fake Tart provider", () => {
     let context: FakeMacosMcpContext;
@@ -54,6 +57,108 @@ describe("macOS VM backend with fake Tart provider", () => {
         const ownersRoot = join(homeDir, ".ccc", "devices", "owners");
         return join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");
     }
+
+    it("runs the public image and snapshot journey through the real stdio server", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
+        let wire: DeviceLabMcpTestContext | undefined;
+        let wireLog = "";
+        const env: Record<string, string> = {};
+        try {
+            wire = await createDeviceLabMcpTestContext({ env, setupHome: privateHome => {
+                const binDir = join(privateHome, "bin");
+                const tart = join(binDir, "tart");
+                writeFileSync(tart, readFileSync(join(context.binDir, "tart"), "utf8"));
+                chmodSync(tart, 0o755);
+                wireLog = join(privateHome, "fake-tart.log");
+                writeFileSync(wireLog, "");
+                const preload = join(privateHome, "macos-native-fixture.cjs");
+                // Model Tart's supported host observation, while retaining actual Node subprocesses.
+                writeFileSync(preload, nodeProviderFixturePreloadSource(binDir)
+                    + "Object.defineProperty(process, 'platform', {value:'darwin'});\n");
+                env.NODE_OPTIONS = `--require=${JSON.stringify(join(privateHome, "isolate-broker-auth.cjs"))} --require=${JSON.stringify(preload)}`;
+                env.FAKE_TART_LOG = wireLog;
+            } });
+            const ownerId = createHash("sha256").update(expectedDeviceLabMcpOwnerBasis(process.cwd())).digest("hex").slice(0, 16);
+            const statePath = join(wire.homeDir, ".ccc/devices/owners", ownerId, "macos", "devices.json");
+            type Device = { deviceId: string; ownerId: string; providerInstance: string };
+            const imageResult = await wire.client.callTool({ name: "create_macos_vm", arguments: {
+                name: "Wire Image", deviceId: "wire-image", image: "ghcr.io/example/macos-base:latest", provider: "tart",
+            } });
+            expect(imageResult.isError).not.toBe(true);
+            const image = JSON.parse((imageResult.content as Array<{ text: string }>)[0].text) as { device: Device };
+            expect(image).toMatchObject({ operation: "base-image-create", device: {
+                deviceId: "wire-image", ownerId, provider: "tart", providerResourceManaged: true, status: "stopped",
+            } });
+            const cloneResult = await wire.client.callTool({ name: "create_macos_vm", arguments: {
+                name: "Wire Copy", deviceId: "wire-copy", sourceDeviceId: "wire-image",
+            } });
+            expect(cloneResult.isError).not.toBe(true);
+            const clone = JSON.parse((cloneResult.content as Array<{ text: string }>)[0].text) as { device: Device };
+            expect(clone).toMatchObject({ operation: "base-image-clone", device: {
+                deviceId: "wire-copy", ownerId, provider: "tart", providerResourceManaged: true, status: "stopped",
+                clonedFrom: { deviceId: "wire-image", providerInstance: image.device.providerInstance },
+            } });
+            const snapshotResult = await wire.client.callTool({ name: "snapshot", arguments: {
+                action: "create", deviceId: "wire-copy", snapshotName: "Wire Snapshot",
+            } });
+            expect(snapshotResult.isError).not.toBe(true);
+            const snapshot = JSON.parse((snapshotResult.content as Array<{ text: string }>)[0].text) as {
+                snapshot: { id: string; name: string; providerInstance: string };
+            };
+            expect(snapshot).toMatchObject({ device: { deviceId: "wire-copy", ownerId, status: "stopped" },
+                snapshot: { id: "snapshot-wire-snapshot", name: "Wire Snapshot", provider: "tart" } });
+            type StoredDevice = { id: string; ownerId: string; providerInstance: string; lifecycle?: unknown; snapshots?: unknown[] };
+            const createdState = JSON.parse(readFileSync(statePath, "utf8")) as { devices: StoredDevice[] };
+            expect(createdState.devices.find(device => device.id === "wire-copy")).toMatchObject({
+                ownerId, providerInstance: clone.device.providerInstance, snapshots: [snapshot.snapshot],
+            });
+            expect(createdState.devices.find(device => device.id === "wire-image")).not.toHaveProperty("lifecycle");
+
+            const beforeList = readFileSync(statePath, "utf8"), beforeListLog = readFileSync(wireLog, "utf8");
+            const listResult = await wire.client.callTool({ name: "snapshot", arguments: { action: "list", deviceId: "wire-copy" } });
+            expect(listResult.isError).toBe(true);
+            expect(JSON.parse((listResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                ok: false, error: "device-tool-unsupported", deviceId: "wire-copy", backend: "macos-vm",
+            });
+            expect(readFileSync(statePath, "utf8")).toBe(beforeList);
+            expect(readFileSync(wireLog, "utf8")).toBe(beforeListLog);
+
+            const restoreResult = await wire.client.callTool({ name: "snapshot", arguments: {
+                action: "restore", deviceId: "wire-copy", snapshotId: snapshot.snapshot.id, confirmDestructive: true,
+            } });
+            expect(restoreResult.isError).not.toBe(true);
+            expect(JSON.parse((restoreResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                device: { deviceId: "wire-copy", ownerId, status: "stopped", restoreRecovery: null,
+                    restoredFrom: { id: snapshot.snapshot.id, name: "Wire Snapshot", providerInstance: snapshot.snapshot.providerInstance } },
+            });
+            const deleteResult = await wire.client.callTool({ name: "snapshot", arguments: {
+                action: "delete", deviceId: "wire-copy", snapshotName: "Wire Snapshot", confirmDestructive: true,
+            } });
+            expect(deleteResult.isError).not.toBe(true);
+            expect(JSON.parse((deleteResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                deleted: snapshot.snapshot.id, device: { deviceId: "wire-copy", ownerId, snapshots: [] },
+            });
+            const finalState = JSON.parse(readFileSync(statePath, "utf8")) as { devices: StoredDevice[] };
+            expect(finalState.devices.map(device => device.id).sort()).toEqual(["wire-copy", "wire-image"]);
+            expect(finalState.devices.find(device => device.id === "wire-copy")).toMatchObject({
+                ownerId, providerInstance: clone.device.providerInstance, status: "stopped", snapshots: [], restoreRecovery: null,
+            });
+            expect(finalState.devices.every(device => !device.lifecycle)).toBe(true);
+            const log = readFileSync(wireLog, "utf8");
+            expect(log).toContain(`tart clone ghcr.io/example/macos-base:latest ${image.device.providerInstance}\n`);
+            expect(log).toContain(`tart clone ${image.device.providerInstance} ${clone.device.providerInstance}\n`);
+            expect(log).toContain(`tart clone ${clone.device.providerInstance} ${snapshot.snapshot.providerInstance}\n`);
+            const candidatePrefix = `tart clone ${snapshot.snapshot.providerInstance} `;
+            const candidate = log.split("\n").find(line => line.startsWith(candidatePrefix))?.slice(candidatePrefix.length);
+            expect(candidate).toContain(`${clone.device.providerInstance}-restore-${snapshot.snapshot.id}-`);
+            expect(log).toContain(`tart delete ${clone.device.providerInstance}\n`);
+            expect(log).toContain(`tart clone ${candidate} ${clone.device.providerInstance}\n`);
+            expect(log).toContain(`tart delete ${candidate}\n`);
+            expect(log).toContain(`tart delete ${snapshot.snapshot.providerInstance}\n`);
+            expect(log).not.toContain(`tart delete ${image.device.providerInstance}\n`);
+        } finally {
+            await cleanupDeviceLabMcpTestContext(wire);
+        }
+    });
 
     function armMacosReplacement(command: string, deviceId: string) {
         const statePath = macosStatePath();
@@ -412,7 +517,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             + `if (args[0] === "run" && args[1] === "--help") { console.log("Usage: tart run [--with-softnet]"); process.exit(0); }\n`
             + `if (args[0] === "clone") {\n`
             + `  if (!fs.existsSync(resource(args[1])) || fs.existsSync(resource(args[2]))) process.exit(7);\n`
-            + `  fs.writeFileSync(resource(args[2]), args[1]);\n`
+            + `  fs.copyFileSync(resource(args[1]), resource(args[2]));\n`
             + `  process.exit(0);\n`
             + `}\n`
             + `if (args[0] === "delete") {\n`
@@ -471,6 +576,7 @@ describe("macOS VM backend with fake Tart provider", () => {
                 snapshotName: "Crash Point",
             });
             expect(snapshot?.isError).not.toBe(true);
+            writeFileSync(join(resourceDir, encodeURIComponent(primary)), "changed after snapshot");
 
             const interrupted = await handleMacosTool("device_snapshot_restore", {
                 deviceId,
@@ -486,6 +592,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect(interruptedDevice?.lifecycle).toBeUndefined();
             expect(existsSync(join(resourceDir, encodeURIComponent(primary)))).toBe(false);
             expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(true);
+            expect(readFileSync(join(resourceDir, encodeURIComponent(candidate!)), "utf-8")).toBe("primary");
 
             const interruptedCleanup = await handleMacosTool("device_snapshot_restore", {
                 deviceId,
@@ -494,6 +601,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect(interruptedCleanup?.isError).toBe(true);
             expect(existsSync(join(resourceDir, encodeURIComponent(primary)))).toBe(true);
             expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(true);
+            expect(readFileSync(join(resourceDir, encodeURIComponent(primary)), "utf-8")).toBe("primary");
             const activatedState = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as {
                 devices: Array<{ id: string; restoreRecovery?: { phase: string } }>;
             };
@@ -506,6 +614,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect(resumed?.isError).not.toBe(true);
             expect(existsSync(join(resourceDir, encodeURIComponent(primary)))).toBe(true);
             expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(false);
+            expect(readFileSync(join(resourceDir, encodeURIComponent(primary)), "utf-8")).toBe("primary");
             const resumedPayload = JSON.parse(((resumed?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
                 device: { restoreRecovery: unknown; restoredFrom: { name: string } };
             };

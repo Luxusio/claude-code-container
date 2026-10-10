@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
+import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
+import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
 import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
-type Result={ok:boolean;value:unknown};
+type Result={ok:boolean;value:unknown;content?:{text?:string}[]};
 function nativeLeaves(initial?:MacosVmDevice){
     let current=initial;const trace:string[]=[],fault={native:"raw claim failure"};
     const child={pid:71,unref(){expect(this).toBe(child);trace.push("unref");}};
@@ -148,6 +150,60 @@ describe("macOS independent inward policy controls",()=>{
         const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit"});
         expect(result?.ok).toBe(false);expect(f.trace.filter(value=>value.startsWith("delete"))).toEqual(["delete snap","delete ccc-owner-unit"]);
         expect(f.read()?.snapshots).toEqual([]);expect(f.read()?.status).toBe("stopped");
+    });
+});
+
+describe("macOS image and snapshot publication",()=>{
+    it("releases the source before destination publication and compensates a publication exception",async()=>{
+        const source:MacosVmDevice={id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit"};
+        const f=nativeLeaves(source);
+        const resources=new Set(["ccc-owner-unit"]);
+        const command=(_command:string|null,args:(string|undefined)[])=>{
+            if(args[0]==="clone"&&args[2]!==undefined)resources.add(args[2]);
+            if(args[0]==="delete"&&args[1]!==undefined)resources.delete(args[1]);
+            return {status:0,stdout:"",stderr:""};
+        };
+        f.ports.providerCommand=command;
+        f.ports.claim=destination=>{
+            expect(destination).toMatchObject({id:"copy",providerInstance:"ccc-owner-copy",providerResourceManaged:true,
+                clonedFrom:{deviceId:"unit",providerInstance:"ccc-owner-unit"}});
+            expect(f.read()).toMatchObject({id:"unit",status:"stopped",providerInstance:"ccc-owner-unit"});
+            expect(f.read()).not.toHaveProperty("lifecycle");
+            throw f.fault;
+        };
+        const imagePorts:MacosImageSnapshotsPorts<Result>={...f.ports,snapshotId:()=>"snapshot-before",
+            providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true,
+            providerPlan:device=>({...f.ports.providerPlan(device),providerInstance:device.providerInstance||`ccc-owner-${device.id}`})};
+        const app=createMacosImageSnapshots(imagePorts,createMacosVmLifecycleApplication(f.ports));
+        await expect(app.clone({name:"Copy",deviceId:"copy",sourceDeviceId:"unit"})).rejects.toBe(f.fault);
+        expect(resources).toEqual(new Set(["ccc-owner-unit"]));
+        expect(f.read()).not.toHaveProperty("lifecycle");
+    });
+
+    it("retains a failed candidate cleanup as recovery metadata after successful activation",async()=>{
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",
+            snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
+        const resources=new Set(["ccc-owner-unit","owned-snapshot"]);
+        const command=(_command:string|null,args:(string|undefined)[])=>{
+            if(args[0]==="clone"&&args[2]!==undefined)resources.add(args[2]);
+            if(args[0]==="delete"&&args[1]!==undefined){
+                if(args[1].includes("-restore-"))return {status:9,stdout:"",stderr:"candidate cleanup denied"};
+                resources.delete(args[1]);
+            }
+            return {status:0,stdout:"restored",stderr:""};
+        };
+        f.ports.providerCommand=command;
+        const imagePorts:MacosImageSnapshotsPorts<Result>={...f.ports,snapshotId:()=>"snapshot-before",
+            providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true};
+        const app=createMacosImageSnapshots(imagePorts,createMacosVmLifecycleApplication(f.ports));
+        const result=await app.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
+        expect(result?.ok).toBe(true);
+        expect(f.read()).toMatchObject({status:"stopped",restoredFrom:{id:"snapshot-before",name:"Before"},
+            restoreRecovery:{snapshotId:"snapshot-before",snapshotName:"Before",error:"candidate cleanup denied"}});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        const candidate=f.read()?.restoreRecovery?.candidateProviderInstance;
+        expect(candidate).toContain("-restore-");
+        expect(resources).toEqual(new Set(["ccc-owner-unit","owned-snapshot",candidate]));
     });
 });
 

@@ -15,7 +15,7 @@ export interface MacosVmLifecycle<Result> {
     transitionCurrent(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, updater: (current: MacosVmDevice) => MacosVmDevice): MacosVmTransition | {matched: false; found: boolean};
     rollbackStarted(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, plan: MacosVmProviderPlan): MacosVmRollback;
     rollbackCreated(deviceId: string | undefined, plan: MacosVmProviderPlan, instance: string): MacosVmRollback;
-    clone(plan: MacosVmProviderPlan, source: string, target: string): {result: MacosVmCommandResult; cleanup: MacosVmCommandResult | null};
+    clone(plan: MacosVmProviderPlan, source: string | undefined, target: string): {result: MacosVmCommandResult; cleanup: MacosVmCommandResult | null};
     cloneFailure(result: MacosVmCommandResult, cleanup: MacosVmCommandResult | null, target: string): Result;
 }
 export function createMacosVmLifecycleApplication<Result, Child extends MacosVmProcessHandle = MacosVmProcessHandle>(ports: MacosVmLifecyclePorts<Result, Child>): MacosVmLifecycle<Result>;

@@ -77,7 +77,7 @@ export interface MacosVmLifecyclePorts<Result, Child extends MacosVmProcessHandl
     providerPlan(device: MacosVmDevice): MacosVmProviderPlan;
     tartPlan(device: MacosVmDevice, toolName: string): {plan: MacosVmProviderPlan; error?: undefined} | {error: Result; plan?: undefined};
     publicDevice(device: MacosVmDevice): unknown;
-    providerCommand(command: string | null, args: string[], kind: string): MacosVmCommandResult;
+    providerCommand(command: string | null, args: (string | undefined)[], kind: string): MacosVmCommandResult;
     commandTimedOut(result: MacosVmCommandResult): boolean;
     tartStartArgs(instance: string, device: MacosVmDevice): string[];
     supportsFeature(command: string, feature: string): boolean;

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
+import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
+import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
 import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
 // These are strict source AND genuine-emission consumer controls. Vitest alone
 // does not check their directives; QA must use skipLibCheck=false on both.
-type Result={ok:boolean;value:unknown};
+type Result={ok:boolean;value:unknown;content?:{text?:string}[]};
 const device:MacosVmDevice={id:"unit",status:"stopped",extra:{raw:true}};
 const child={pid:71,unref(){return undefined;}};
 const plan={available:true,missing:[],selectedProvider:"tart",providerCommand:"tart",providerInstance:"instance",startCommand:{command:"tart",args:["run","instance"]},stopCommand:{command:"tart",args:["stop","instance"]}};
@@ -92,6 +94,33 @@ function negativeContracts(){
     void syncHelper;void asyncProvision;void weakSignal;void syncExit;void malformedDevice;void synchronousStart;void promisedCreate;
 }
 void negativeContracts;
+const imagePorts:MacosImageSnapshotsPorts<Result>={...ports,snapshotId:()=>"snapshot-before",
+    providerCommand:()=>({status:0,stdout:"",stderr:""}),publicDevice:value=>value,waitRecordingExit:async()=>true};
+const imageApp=createMacosImageSnapshots(imagePorts,app);
+function imageContracts(){
+    const cloned:Promise<Result|undefined>=imageApp.clone({sourceDeviceId:"unit",deviceId:"copy"});
+    const snapshot:Promise<Result|undefined>=imageApp.createSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const restored:Promise<Result|undefined>=imageApp.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const deleted:Promise<Result|undefined>=imageApp.deleteSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const {claim,...missingClaim}=imagePorts;void claim;
+    // @ts-expect-error destination publication is a required native capability
+    createMacosImageSnapshots(missingClaim,app);
+    const {transition,...missingTransition}=imagePorts;void transition;
+    // @ts-expect-error snapshot and source publication require complete-record CAS
+    createMacosImageSnapshots(missingTransition,app);
+    // @ts-expect-error reused lifecycle policy must be explicitly composed
+    createMacosImageSnapshots(imagePorts);
+    // @ts-expect-error clone and delete commands remain synchronous observations
+    const deferredCommand:typeof imagePorts={...imagePorts,providerCommand:async()=>({status:0,stdout:"",stderr:""})};
+    // @ts-expect-error source/current inventory cannot be an unawaited Promise
+    const deferredFind:typeof imagePorts={...imagePorts,find:async()=>device};
+    // @ts-expect-error candidate publication must immediately report its CAS outcome
+    const deferredTransition:typeof imagePorts={...imagePorts,transition:async()=>({matched:true,found:true,device})};
+    // @ts-expect-error recording settlement is awaited rather than inferred from a synchronous flag
+    const unawaitedRecording:typeof imagePorts={...imagePorts,waitRecordingExit:()=>true};
+    void cloned;void snapshot;void restored;void deleted;void deferredCommand;void deferredFind;void deferredTransition;void unawaitedRecording;
+}
+void imageContracts;
 describe("macOS strict required native contracts",()=>{
     it("retains mutable raw records and pure factory construction",()=>{
         device.extra={changed:true};expect(device.extra).toEqual({changed:true});

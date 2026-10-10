@@ -1,3 +1,4 @@
+import { defineMacosImageDevice } from "../../domain/macos-image-snapshots.mjs";
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances, macosSshConfig } from "../../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { recordingGenerationMatches } from "../../domain/runtime-generation.mjs";
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice} MacosVmDevice */
@@ -194,7 +195,7 @@ export function createMacosVmLifecycleApplication(ports) {
     }
 
     /** @param {MacosVmProviderPlan} plan
-     * @param {string} source
+     * @param {string | undefined} source
      * @param {string} target */
     function runTartClone(plan, source, target) {
         const result = (0, ports.providerCommand)(plan.providerCommand, ["clone", source, target], "clone");
@@ -235,28 +236,12 @@ export function createMacosVmLifecycleApplication(ports) {
 
     /** @param {{id: string, name?: string, provider: string, image: string, memoryMb: number, cpus: number, ssh: import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmSsh | null, extra?: Partial<MacosVmDevice>}} options */
     function macosDeviceDefinition({ id, name, provider, image, memoryMb, cpus, ssh, extra = {} }) {
-        return {
-            id,
-            name,
-            backend: "macos-vm",
-            kind: "desktop",
-            platform: "macos",
+        return defineMacosImageDevice({ id, name, provider, image, memoryMb, cpus, ssh, extra }, {
             ownerId: (0, ports.owner)(),
-            provider,
-            image,
-            memoryMb,
-            cpus,
-            providerInstance: `ccc-${(0, ports.owner)()}-${id}`,
-            ssh,
             helper: (0, ports.helperMetadata)({ id, ssh }),
-            status: "stopped",
-            creatable: true,
-            snapshots: [],
-            recording: null,
-            ...extra,
             createdAt: (0, ports.timestamp)(),
             updatedAt: (0, ports.timestamp)(),
-        };
+        });
     }
 
     /** @param {MacosVmLifecycleInput} args */

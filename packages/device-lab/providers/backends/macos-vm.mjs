@@ -1,3 +1,5 @@
+import { macosImageProviderRefusal } from "../domain/macos-image-snapshots.mjs";
+import { createMacosImageSnapshots } from "../application/macos-image-snapshots.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { observationMacosHelper, observationMacosStartArgs } from "../domain/device-observation.mjs";
@@ -307,84 +309,31 @@ function helperRequiredResult(device, toolName) {
     return textResult(false, `macOS VM ${toolName} requires SSH bridge metadata. Configure sshUser plus sshHost, or start a Tart VM with waitForBoot so the host can be inferred from tart ip. Optional fields: sshPort, sshKeyPath, sshPassword. Workspace: ${macosWorkspaceDir(device)}`);
 }
 
-function unsupportedProviderResult(deviceOrProvider, toolName) {
-    const provider = typeof deviceOrProvider === "string" ? deviceOrProvider : deviceOrProvider.provider || "auto";
-    return textResult(false, `macOS VM ${toolName} is not supported for provider ${provider}; Tart is currently required for image and snapshot operations.`);
-}
+
 
 function tartProviderPlan(device, toolName) {
     const plan = macosProviderPlan(device);
-    if (!plan.available) return { error: textResult(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`) };
-    if (plan.selectedProvider !== "tart") return { error: unsupportedProviderResult({ ...device, provider: plan.selectedProvider || device.provider }, toolName) };
-    return { plan };
+    const refusal = macosImageProviderRefusal(plan, device, toolName);
+    return refusal ? { error: textResult(false, refusal) } : { plan };
 }
 
-function usesDefaultTartMacosCredentials({ provider, image }) {
-    const selectedProvider = !provider || provider === "auto" ? "tart" : provider;
-    if (selectedProvider !== "tart") return false;
-    const value = String(image || "");
-    return value === "ccc-macos-base" ||
-        /^ghcr\.io\/cirruslabs\/macos-[^:]+(?:[:@].*)?$/.test(value) ||
-        /^macos-[^-]+-base$/.test(value);
-}
 
-function macosSshConfig({ sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword, provider, image }) {
-    const useDefaultPassword = usesDefaultTartMacosCredentials({ provider, image }) && !sshHost && !sshUser && !sshKeyPath && !sshPassword;
-    return sshHost || sshUser || sshKeyPath || sshPassword || useDefaultPassword ? {
-        host: sshHost || null,
-        port: sshPort,
-        user: sshUser || (useDefaultPassword ? "admin" : null),
-        keyPath: sshKeyPath || null,
-        password: sshPassword || (useDefaultPassword ? "admin" : null),
-    } : null;
-}
+
+
 
 function validateMacosSshKeyPath(sshKeyPath) {
     return validateLocalReferencePath(sshKeyPath, { label: "ssh-key-path" });
 }
 
-function macosDeviceDefinition({ id, name, provider, image, memoryMb, cpus, ssh, extra = {} }) {
-    return {
-        id,
-        name,
-        backend: "macos-vm",
-        kind: "desktop",
-        platform: "macos",
-        ownerId: ownerId(),
-        provider,
-        image,
-        memoryMb,
-        cpus,
-        providerInstance: `ccc-${ownerId()}-${id}`,
-        ssh,
-        helper: macosHelperMetadata({ id, ssh }),
-        status: "stopped",
-        creatable: true,
-        snapshots: [],
-        recording: null,
-        ...extra,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-    };
-}
 
-function findSnapshot(device, snapshotName, snapshotId) {
-    const snapshots = Array.isArray(device.snapshots) ? device.snapshots : [];
-    const wantedId = snapshotId || (snapshotName ? macosSnapshotId(snapshotName) : null);
-    return snapshots.find((snapshot) => snapshot.id === wantedId || snapshot.name === snapshotName);
-}
 
-function macosLifecycleConflict(deviceId, operation, transition, rollback = null) {
-    return macosVmLifecycle.conflict(deviceId, operation, transition, rollback);
-}
 
-function macosLifecycleReplacement(device, lifecycle, updates = {}) {
-    return macosVmLifecycle.replacement(device, lifecycle, updates);
-}
 
-function claimMacosLifecycle(deviceId, device, operation, updates = {}) {
-    return macosVmLifecycle.claimLifecycle(deviceId, device, operation, updates);
-}
+
+
+
+
+
 
 function macosLifecycleClaimTtlMs() {
     const parsed = Number(process.env.CCC_MACOS_VM_LIFECYCLE_CLAIM_TTL_MS || MACOS_LIFECYCLE_CLAIM_TTL_MS);
@@ -396,41 +345,29 @@ function recoverStaleMacosLifecycle(deviceId) {
     return macosVmLifecycle.recoverStale(deviceId);
 }
 
-function currentMacosLifecycleDevice(deviceId, lifecycle) {
-    return macosVmLifecycle.currentLifecycleDevice(deviceId, lifecycle);
-}
-
-function abortMacosLifecycle(deviceId, lifecycle, original, updates = {}) {
-    return macosVmLifecycle.abortLifecycle(deviceId, lifecycle, original, updates);
-}
-
-function transitionCurrentMacosLifecycle(deviceId, lifecycle, updater) {
-    return macosVmLifecycle.transitionCurrent(deviceId, lifecycle, updater);
-}
-
 function rollbackStartedMacosVm(deviceId, lifecycle, plan) {
     return macosVmLifecycle.rollbackStarted(deviceId, lifecycle, plan);
 }
 
 
-function rollbackCreatedMacosResource(deviceId, plan, instance) {
-    return macosVmLifecycle.rollbackCreated(deviceId, plan, instance);
-}
 
 
 
 
-function tartDeleteInstance(plan, instance) {
-    return runProviderCommand(plan.providerCommand, ["delete", instance], "delete");
-}
 
-function runTartClone(plan, source, target) {
-    return macosVmLifecycle.clone(plan, source, target);
-}
 
-function tartCloneFailure(result, cleanup, target) {
-    return macosVmLifecycle.cloneFailure(result, cleanup, target);
-}
+
+
+
+
+
+
+
+
+
+
+
+
 
 function sshDiscovery() {
     const ssh = commandPath("ssh");
@@ -1065,146 +1002,7 @@ async function handleMacosToolUnlocked(name, args) {
 
         case "device_base_image_create": return macosVmLifecycle.createImage(args);
 
-        case "device_base_image_clone": {
-            const { backend = "macos-vm", name: deviceName, deviceId, sourceDeviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword, force = false } = args;
-            if (backend !== "macos-vm") return undefined;
-            if (!sourceDeviceId && !sourceImage) return textResult(false, `${name} requires sourceDeviceId or sourceImage`);
-
-            const sourceDevice = sourceDeviceId ? findMacosDevice(sourceDeviceId) : null;
-            if (sourceDeviceId && !sourceDevice) return textResult(false, `Unknown source macOS device: ${sourceDeviceId}`);
-            if (sourceDevice?.lifecycle) {
-                return textResult(false, `Refusing to clone ${sourceDeviceId} while lifecycle operation ${sourceDevice.lifecycle.operation || "unknown"} is active`);
-            }
-            if (sourceDevice && sourceDevice.status !== "stopped" && !force) {
-                return textResult(false, `Refusing to clone ${sourceDeviceId} while status is ${sourceDevice.status}; stop it first or pass force=true.`);
-            }
-            const sourceProvider = sourceDevice?.provider || provider;
-            const sourceRef = sourceDevice?.providerInstance || sourceImage;
-            const id = deviceId || macosDeviceId(deviceName);
-            const devices = readMacosDevices();
-            if (devices.some((device) => device.id === id)) {
-                return textResult(false, `Device already exists for this owner: ${id}`);
-            }
-            const sshKeyPolicy = validateMacosSshKeyPath(sshKeyPath);
-            if (!sshKeyPolicy.ok) return textResult(false, sshKeyPolicy.message);
-
-            const ssh = macosSshConfig({ sshHost, sshPort, sshUser, sshKeyPath: sshKeyPolicy.path, sshPassword, provider: sourceProvider, image: sourceImage || sourceDevice?.image || sourceRef });
-            const device = macosDeviceDefinition({
-                id,
-                name: deviceName,
-                provider: sourceProvider,
-                image: sourceImage || sourceDevice?.image || sourceRef,
-                memoryMb: sourceDevice?.memoryMb || memoryMb,
-                cpus: sourceDevice?.cpus || cpus,
-                ssh,
-                extra: {
-                    clonedFrom: sourceDeviceId ? { deviceId: sourceDeviceId, providerInstance: sourceRef } : { image: sourceImage },
-                    provisioning: "image-cloned",
-                },
-            });
-            const tart = tartProviderPlan(device, name);
-            if (tart.error) return tart.error;
-            let sourceClaim = null;
-            let sourceCompletionUpdates = {};
-            if (sourceDevice) {
-                sourceClaim = claimMacosLifecycle(sourceDevice.id, sourceDevice, sourceDevice.status !== "stopped" ? "clone-source-stop" : "clone-source");
-                if (!sourceClaim.transition.matched) return macosLifecycleConflict(sourceDevice.id, "clone-source-claim", sourceClaim.transition);
-            }
-            if (sourceDevice && sourceDevice.status !== "stopped" && force) {
-                const sourcePlan = tartProviderPlan(sourceDevice, name);
-                if (sourcePlan.error) {
-                    abortMacosLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
-                    return sourcePlan.error;
-                }
-                if (!sourcePlan.plan.stopCommand) {
-                    abortMacosLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
-                    return textResult(false, `macOS VM stop is unavailable for clone source ${sourceDevice.id}`);
-                }
-                if (sourcePlan.plan.stopCommand) {
-                    const stop = runProviderCommand(sourcePlan.plan.stopCommand.command, sourcePlan.plan.stopCommand.args, "stop");
-                    if (stop.status !== 0) {
-                        abortMacosLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
-                        return fail(stop);
-                    }
-                    const recorderSignal = signalOwnedRuntimeProcess(sourceDevice.recording, "SIGINT");
-                    if (recorderSignal.signaled) await waitForProcessExit(sourceDevice.recording.pid, 1000);
-                    sourceCompletionUpdates = {
-                        status: "stopped",
-                        runtime: null,
-                        bootReady: false,
-                        lastBootCheck: null,
-                        recording: null,
-                    };
-                }
-            }
-            const target = tart.plan.providerInstance;
-            const clone = runTartClone(tart.plan, sourceRef, target);
-            const r = clone.result;
-            if (r.status !== 0) {
-                if (sourceClaim) abortMacosLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice, sourceCompletionUpdates);
-                return tartCloneFailure(r, clone.cleanup, target);
-            }
-
-            if (sourceClaim) {
-                const currentSource = currentMacosLifecycleDevice(sourceDevice.id, sourceClaim.lifecycle);
-                if (!currentSource) {
-                    const rollback = tartDeleteInstance(tart.plan, target);
-                    return macosLifecycleConflict(sourceDevice.id, "clone-source-complete", { found: Boolean(findMacosDevice(sourceDevice.id)), matched: false }, {
-                        ok: rollback.status === 0,
-                        target,
-                        status: rollback.status,
-                        stdout: rollback.stdout,
-                        stderr: rollback.stderr,
-                    });
-                }
-                const completedSource = macosLifecycleReplacement(currentSource, null, sourceCompletionUpdates);
-                const sourceTransition = transitionMacosDevice(sourceDevice.id, currentSource, completedSource);
-                if (!sourceTransition.matched) {
-                    const rollback = tartDeleteInstance(tart.plan, target);
-                    return macosLifecycleConflict(sourceDevice.id, "clone-source-complete", sourceTransition, {
-                        ok: rollback.status === 0,
-                        target,
-                        status: rollback.status,
-                        stdout: rollback.stdout,
-                        stderr: rollback.stderr,
-                    });
-                }
-            }
-
-            const cloned = {
-                ...device,
-                provider: tart.plan.selectedProvider,
-                providerInstance: target,
-                providerResourceManaged: true,
-                clonedAt: new Date().toISOString(),
-            };
-            let claim;
-            try {
-                claim = claimMacosDevice(cloned);
-            } catch (error) {
-                const rollback = runProviderCommand(tart.plan.providerCommand, ["delete", target], "delete");
-                if (rollback.status !== 0) {
-                    return textResult(false, `Owner device state update failed; macOS VM rollback failed: ${rollback.stderr || rollback.stdout}`);
-                }
-                throw error;
-            }
-            if (!claim.ok) {
-                if (claim.existing?.provider !== cloned.provider || claim.existing?.providerInstance !== target) {
-                    const rollback = runProviderCommand(tart.plan.providerCommand, ["delete", target], "delete");
-                    if (rollback.status !== 0) {
-                        return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); macOS VM rollback failed: ${rollback.stderr || rollback.stdout}`);
-                    }
-                }
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${typeof claim.value === "object" ? JSON.stringify(claim.value) : claim.value})`);
-            }
-            return jsonResult({
-                operation: "base-image-clone",
-                device: deviceWithPlan(cloned),
-                stdout: r.stdout,
-                stderr: r.stderr,
-                status: r.status,
-            });
-        }
+        case "device_base_image_clone": return macosImages.clone(args);
 
         case "device_create": return macosVmLifecycle.create(args);
 
@@ -1218,277 +1016,9 @@ async function handleMacosToolUnlocked(name, args) {
             return jsonResult({ device: deviceWithPlan(device, discovery), backend: macosBackend(discovery) });
         }
 
-        case "device_snapshot_create": {
-            const { deviceId, snapshotName, force = false } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return textResult(false, `Unknown macOS device: ${deviceId}`);
-            if (!snapshotName) return textResult(false, "device_snapshot_create requires snapshotName");
-            if (device.status !== "stopped" && !force) {
-                return textResult(false, `Refusing to snapshot ${deviceId} while status is ${device.status}; stop it first or pass force=true.`);
-            }
-            const snapshotId = macosSnapshotId(snapshotName);
-            if ((device.snapshots || []).some((snapshot) => snapshot.id === snapshotId || snapshot.name === snapshotName)) {
-                return textResult(false, `Snapshot already exists for ${deviceId}: ${snapshotName}`);
-            }
-            const tart = tartProviderPlan(device, name);
-            if (tart.error) return tart.error;
-            if (force && device.status !== "stopped" && !tart.plan.stopCommand) {
-                return textResult(false, `macOS VM stop is unavailable for snapshot source ${deviceId}`);
-            }
-            const claim = claimMacosLifecycle(deviceId, device, "snapshot-create");
-            if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "snapshot-create-claim", claim.transition);
-            let completionUpdates = {};
-            if (force && device.status !== "stopped" && tart.plan.stopCommand) {
-                const stop = runProviderCommand(tart.plan.stopCommand.command, tart.plan.stopCommand.args, "stop");
-                if (stop.status !== 0) {
-                    abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                    return fail(stop);
-                }
-                const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-                if (recorderSignal.signaled) await waitForProcessExit(device.recording.pid, 1000);
-                completionUpdates = {
-                    status: "stopped",
-                    runtime: null,
-                    bootReady: false,
-                    lastBootCheck: null,
-                    recording: null,
-                };
-            }
-            const snapshotInstance = `${tart.plan.providerInstance}-${snapshotId}`;
-            const clone = runTartClone(tart.plan, tart.plan.providerInstance, snapshotInstance);
-            const r = clone.result;
-            if (r.status !== 0) {
-                abortMacosLifecycle(deviceId, claim.lifecycle, device, completionUpdates);
-                return tartCloneFailure(r, clone.cleanup, snapshotInstance);
-            }
-            const snapshot = {
-                id: snapshotId,
-                name: snapshotName,
-                provider: tart.plan.selectedProvider,
-                providerInstance: snapshotInstance,
-                sourceProviderInstance: tart.plan.providerInstance,
-                createdAt: new Date().toISOString(),
-            };
-            const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) {
-                const rollback = rollbackCreatedMacosResource(deviceId, tart.plan, snapshotInstance);
-                return macosLifecycleConflict(deviceId, "snapshot-create", { found: Boolean(findMacosDevice(deviceId)), matched: false }, rollback);
-            }
-            const completed = macosLifecycleReplacement(current, null, {
-                ...completionUpdates,
-                provider: tart.plan.selectedProvider,
-                providerInstance: tart.plan.providerInstance,
-                status: "stopped",
-                snapshots: [...(current.snapshots || []), snapshot],
-            });
-            const transition = transitionMacosDevice(deviceId, current, completed);
-            if (!transition.matched) {
-                const rollback = rollbackCreatedMacosResource(deviceId, tart.plan, snapshotInstance);
-                return macosLifecycleConflict(deviceId, "snapshot-create", transition, rollback);
-            }
-            return jsonResult({ device: deviceWithPlan(transition.device), snapshot, stdout: r.stdout, stderr: r.stderr, status: r.status });
-        }
-
-        case "device_snapshot_restore": {
-            const { deviceId, snapshotName, snapshotId, force = false } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return textResult(false, `Unknown macOS device: ${deviceId}`);
-            const snapshot = findSnapshot(device, snapshotName, snapshotId);
-            if (!snapshot) return textResult(false, `Unknown snapshot for ${deviceId}: ${snapshotName || snapshotId || "<missing>"}`);
-            if (device.status !== "stopped" && !force) {
-                return textResult(false, `Refusing to restore ${deviceId} while status is ${device.status}; stop it first or pass force=true.`);
-            }
-            const tart = tartProviderPlan(device, name);
-            if (tart.error) return tart.error;
-            if (force && device.status !== "stopped" && !tart.plan.stopCommand) {
-                return textResult(false, `macOS VM stop is unavailable for snapshot restore ${deviceId}`);
-            }
-            const claim = claimMacosLifecycle(deviceId, device, "snapshot-restore");
-            if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "snapshot-restore-claim", claim.transition);
-            let completionUpdates = {};
-            if (force && device.status !== "stopped" && tart.plan.stopCommand) {
-                const stop = runProviderCommand(tart.plan.stopCommand.command, tart.plan.stopCommand.args, "stop");
-                if (stop.status !== 0) {
-                    abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                    return fail(stop);
-                }
-                const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-                if (recorderSignal.signaled) await waitForProcessExit(device.recording.pid, 1000);
-                completionUpdates = {
-                    status: "stopped",
-                    runtime: null,
-                    bootReady: false,
-                    lastBootCheck: null,
-                    recording: null,
-                };
-            }
-            const pendingRecovery = device.restoreRecovery;
-            const resumesPendingCandidate = pendingRecovery?.candidateProviderInstance
-                && pendingRecovery.snapshotId === snapshot.id
-                && pendingRecovery.snapshotName === snapshot.name;
-            const restoreCandidate = resumesPendingCandidate
-                ? pendingRecovery.candidateProviderInstance
-                : `${tart.plan.providerInstance}-restore-${snapshot.id}-${randomUUID()}`;
-            let restore = { status: 0, stdout: "", stderr: "" };
-            if (!resumesPendingCandidate) {
-                const clone = runTartClone(tart.plan, snapshot.providerInstance, restoreCandidate);
-                restore = clone.result;
-                if (restore.status !== 0) {
-                    abortMacosLifecycle(deviceId, claim.lifecycle, device, completionUpdates);
-                    return tartCloneFailure(restore, clone.cleanup, restoreCandidate);
-                }
-                const recovery = {
-                    snapshotId: snapshot.id,
-                    snapshotName: snapshot.name,
-                    candidateProviderInstance: restoreCandidate,
-                    supersededCandidateProviderInstances: pendingRecovery?.candidateProviderInstance
-                        ? [pendingRecovery.candidateProviderInstance, ...(pendingRecovery.supersededCandidateProviderInstances || [])]
-                        : [],
-                    phase: "prepared",
-                    preparedAt: new Date().toISOString(),
-                };
-                const registered = transitionCurrentMacosLifecycle(deviceId, claim.lifecycle, (current) => macosLifecycleReplacement(current, claim.lifecycle, {
-                    ...completionUpdates,
-                    restoreRecovery: recovery,
-                }));
-                if (!registered.matched) {
-                    const rollback = rollbackCreatedMacosResource(deviceId, tart.plan, restoreCandidate);
-                    return macosLifecycleConflict(deviceId, "snapshot-restore-candidate", registered, rollback);
-                }
-            }
-            let activate = { status: 0, stdout: "", stderr: "" };
-            if (pendingRecovery?.phase !== "activated" || !resumesPendingCandidate) {
-                const remove = runProviderCommand(tart.plan.providerCommand, ["delete", tart.plan.providerInstance], "delete");
-                if (!currentMacosLifecycleDevice(deviceId, claim.lifecycle)) {
-                    return macosLifecycleConflict(deviceId, "snapshot-restore-primary", { found: Boolean(findMacosDevice(deviceId)), matched: false }, {
-                        ok: false,
-                        attempted: false,
-                        reason: "restore-candidate-preserved",
-                        candidateProviderInstance: restoreCandidate,
-                    });
-                }
-                const activationClone = runTartClone(tart.plan, restoreCandidate, tart.plan.providerInstance);
-                activate = activationClone.result;
-                if (activate.status !== 0) {
-                    const recovery = {
-                        ...(currentMacosLifecycleDevice(deviceId, claim.lifecycle)?.restoreRecovery || {}),
-                        snapshotId: snapshot.id,
-                        snapshotName: snapshot.name,
-                        candidateProviderInstance: restoreCandidate,
-                        failedAt: new Date().toISOString(),
-                        error: remove.status !== 0
-                            ? `primary delete: ${remove.stderr || remove.stdout || `exit ${remove.status}`}; activation: ${activate.stderr || activate.stdout || `exit ${activate.status}`}`
-                            : activate.stderr || activate.stdout || `exit ${activate.status}`,
-                    };
-                    const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-                    if (!current) {
-                        return macosLifecycleConflict(deviceId, "snapshot-restore-recovery", { found: Boolean(findMacosDevice(deviceId)), matched: false }, {
-                            ok: false,
-                            attempted: false,
-                            reason: "restore-candidate-preserved",
-                            candidateProviderInstance: restoreCandidate,
-                        });
-                    }
-                    const failed = macosLifecycleReplacement(current, null, {
-                        ...completionUpdates,
-                        status: "stopped",
-                        restoreRecovery: recovery,
-                    });
-                    const transition = transitionMacosDevice(deviceId, current, failed);
-                    if (!transition.matched) {
-                        return macosLifecycleConflict(deviceId, "snapshot-restore-recovery", transition, {
-                            ok: false,
-                            attempted: false,
-                            reason: "restore-candidate-preserved",
-                            candidateProviderInstance: restoreCandidate,
-                        });
-                    }
-                    if (activationClone.cleanup) {
-                        return textResult(false, `${(tartCloneFailure(activate, activationClone.cleanup, tart.plan.providerInstance).content || [])[0]?.text || `Error: ${recovery.error}`}. Restore candidate preserved: ${restoreCandidate}`);
-                    }
-                    return textResult(false, `Error: ${recovery.error}. Restore candidate preserved: ${restoreCandidate}`);
-                }
-                const activated = transitionCurrentMacosLifecycle(deviceId, claim.lifecycle, (current) => macosLifecycleReplacement(current, claim.lifecycle, {
-                    ...completionUpdates,
-                    status: "stopped",
-                    restoreRecovery: {
-                        ...current.restoreRecovery,
-                        phase: "activated",
-                        activatedAt: new Date().toISOString(),
-                    },
-                }));
-                if (!activated.matched) {
-                    return macosLifecycleConflict(deviceId, "snapshot-restore-activate", activated, {
-                        ok: false,
-                        attempted: false,
-                        reason: "restore-candidate-preserved",
-                        candidateProviderInstance: restoreCandidate,
-                    });
-                }
-            }
-            const trackedRecovery = currentMacosLifecycleDevice(deviceId, claim.lifecycle)?.restoreRecovery;
-            const cleanupResults = [restoreCandidate, ...(trackedRecovery?.supersededCandidateProviderInstances || [])]
-                .map((instance) => ({ instance, result: tartDeleteInstance(tart.plan, instance) }));
-            const failedCleanups = cleanupResults.filter(({ result }) => result.status !== 0);
-            const cleanup = failedCleanups[0]?.result || cleanupResults[0].result;
-            const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return macosLifecycleConflict(deviceId, "snapshot-restore", { found: Boolean(findMacosDevice(deviceId)), matched: false }, failedCleanups.length === 0 ? null : {
-                ok: false,
-                attempted: true,
-                reason: "restore-candidate-cleanup-failed",
-                candidateProviderInstance: failedCleanups[0].instance,
-                status: cleanup.status,
-            });
-            const completed = macosLifecycleReplacement(current, null, {
-                ...completionUpdates,
-                provider: tart.plan.selectedProvider,
-                providerInstance: tart.plan.providerInstance,
-                status: "stopped",
-                restoreRecovery: failedCleanups.length === 0 ? null : {
-                    snapshotId: snapshot.id,
-                    snapshotName: snapshot.name,
-                    candidateProviderInstance: failedCleanups[0].instance,
-                    supersededCandidateProviderInstances: failedCleanups.slice(1).map(({ instance }) => instance),
-                    failedAt: new Date().toISOString(),
-                    error: cleanup.stderr || cleanup.stdout || `cleanup exit ${cleanup.status}`,
-                },
-                restoredFrom: { id: snapshot.id, name: snapshot.name, providerInstance: snapshot.providerInstance, restoredAt: new Date().toISOString() },
-            });
-            const transition = transitionMacosDevice(deviceId, current, completed);
-            if (!transition.matched) return macosLifecycleConflict(deviceId, "snapshot-restore", transition, failedCleanups.length === 0 ? null : {
-                ok: false,
-                attempted: true,
-                reason: "restore-candidate-cleanup-failed",
-                candidateProviderInstance: failedCleanups[0].instance,
-                status: cleanup.status,
-            });
-            return jsonResult({ device: deviceWithPlan(transition.device), snapshot, stdout: activate.stdout, stderr: activate.stderr, status: activate.status });
-        }
-
-        case "device_snapshot_delete": {
-            const { deviceId, snapshotName, snapshotId } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return textResult(false, `Unknown macOS device: ${deviceId}`);
-            const snapshot = findSnapshot(device, snapshotName, snapshotId);
-            if (!snapshot) return textResult(false, `Unknown snapshot for ${deviceId}: ${snapshotName || snapshotId || "<missing>"}`);
-            const tart = tartProviderPlan(device, name);
-            if (tart.error) return tart.error;
-            const claim = claimMacosLifecycle(deviceId, device, "snapshot-delete");
-            if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "snapshot-delete-claim", claim.transition);
-            const r = runProviderCommand(tart.plan.providerCommand, ["delete", snapshot.providerInstance], "delete");
-            if (r.status !== 0) {
-                abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                return fail(r);
-            }
-            const current = currentMacosLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return macosLifecycleConflict(deviceId, "snapshot-delete", { found: Boolean(findMacosDevice(deviceId)), matched: false });
-            const completed = macosLifecycleReplacement(current, null, {
-                snapshots: (current.snapshots || []).filter((candidate) => candidate.id !== snapshot.id),
-            });
-            const transition = transitionMacosDevice(deviceId, current, completed);
-            if (!transition.matched) return macosLifecycleConflict(deviceId, "snapshot-delete", transition);
-            return jsonResult({ device: deviceWithPlan(transition.device), deleted: snapshot.id, stdout: r.stdout, stderr: r.stderr, status: r.status });
-        }
+        case "device_snapshot_create": return macosImages.createSnapshot(args);
+        case "device_snapshot_restore": return macosImages.restoreSnapshot(args);
+        case "device_snapshot_delete": return macosImages.deleteSnapshot(args);
 
         case "device_start": return macosVmLifecycle.start(args);
 
@@ -1760,3 +1290,25 @@ const deviceObservation = createDeviceObservation({ kind: "macos-vm", ownerId: (
         "device_upload",
         "device_download",
     ], platform: () => process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device) });
+
+const macosImages = createMacosImageSnapshots({
+    read: () => readMacosDevices(),
+    find: id => findMacosDevice(id),
+    claim: device => claimMacosDevice(device),
+    transition: (id, expected, replacement) => transitionMacosDevice(id, expected, replacement),
+    owner: () => ownerId(),
+    deviceId: name => macosDeviceId(name),
+    snapshotId: name => macosSnapshotId(name),
+    timestamp: () => new Date().toISOString(),
+    runtimeId: () => randomUUID(),
+    validateSshKey: path => validateMacosSshKeyPath(path),
+    helperMetadata: device => macosHelperMetadata(device),
+    providerPlan: device => macosProviderPlan(device),
+    providerCommand: (command, args, kind) => runProviderCommand(command, args, kind),
+    publicDevice: device => deviceWithPlan(device),
+    signalRecording: (recording, signal) => signalOwnedRuntimeProcess(recording, signal),
+    waitRecordingExit: (recording, timeoutMs) => waitForProcessExit(recording?.pid, timeoutMs),
+    textResult: (ok, message) => textResult(ok, message),
+    jsonResult: value => jsonResult(value),
+    fail: command => fail(command),
+}, macosVmLifecycle);
