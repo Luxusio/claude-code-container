@@ -9,8 +9,8 @@ const root=path.resolve(path.dirname(url.fileURLToPath(import.meta.url)),"../../
 // Root authenticated this final reviewed source during the exact serial replay.
 // ORIGINAL_BINDINGS below remains the immutable pre-extraction witness.
 const CURRENT_BROKER_AUTHORITY=Object.freeze({
-    reviewedSourceCommit:"826ba9c3cc9d96a08c2ccfe222446e1a34485253",
-    sha256:"d4a0d26a185e29c4e55f3e53fa2b9b4fcc549a86096c7caaac69f2e4a3b78c7c",
+    reviewedSourceCommit:"2b7045a2d0d9925ed4b237a0ef698e9cb8640367",
+    sha256:"ac8ec6344c5e254e20bc0b27f9246d164d0faced31519ae24299bba6e05a4a40",
 });
 // Read-only real server/broker/native inputs frozen before candidate source.
 // Each runtime uses the real server dispatch and actual authenticated broker
