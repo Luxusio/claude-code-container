@@ -326,6 +326,9 @@ describe("device-lab MCP broker routing", () => {
         mkdirSync(authRoot, { recursive: true });
         writeFileSync(authFile, JSON.stringify({ ownerId: brokerOwnerId(), secret: "b".repeat(64), version: 1 }), { mode: 0o600 });
         const invocations: Array<Record<string, unknown>> = [];
+        let brokerBackends: Array<{ stateKey?: string; devices: Array<{ id: string; backend?: string }> }> = [
+            { stateKey: "windows-vm", devices: [{ id: deviceId, backend: "windows-vm" }] },
+        ];
         const server = createServer(async (req, res) => {
             res.setHeader("content-type", "application/json");
             if (req.url === "/health" || req.url === "/status") {
@@ -337,7 +340,7 @@ describe("device-lab MCP broker routing", () => {
             for await (const chunk of req) rawBody += chunk;
             const body = JSON.parse(rawBody || "{}") as { method?: string; params?: Record<string, unknown> };
             if (body.method === "broker.inventory") {
-                res.end(JSON.stringify({ ok: true, result: { backends: [{ stateKey: "windows-vm", devices: [{ id: deviceId, backend: "windows-vm" }] }] } }));
+                res.end(JSON.stringify({ ok: true, result: { backends: brokerBackends } }));
                 return;
             }
             if (body.method === "broker.command.invoke") {
@@ -365,6 +368,21 @@ describe("device-lab MCP broker routing", () => {
             });
             expect(invocations).toEqual([]);
             expect(JSON.parse(readFileSync(labFile, "utf8"))).toEqual(localLab);
+
+            for (const unattributed of [
+                { devices: [{ id: deviceId }] },
+                { stateKey: "unknown-backend", devices: [{ id: deviceId }] },
+            ]) {
+                brokerBackends = [unattributed];
+                const refused = await client.callTool({ name: "delete", arguments: route });
+                expect(refused.isError).toBe(true);
+                expect(JSON.parse((refused.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                    ok: false, error: "broker-inventory-invalid",
+                });
+                expect(invocations).toEqual([]);
+                expect(JSON.parse(readFileSync(labFile, "utf8"))).toEqual(localLab);
+            }
+            brokerBackends = [{ stateKey: "windows-vm", devices: [{ id: deviceId, backend: "windows-vm" }] }];
 
             const localWindows = { id: deviceId, backend: "windows-sandbox", status: "stopped", configPath: join(windowsRoot, "owned-collision.wsb") };
             mkdirSync(windowsRoot, { recursive: true });

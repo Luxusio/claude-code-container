@@ -1414,6 +1414,12 @@ export function createDeviceRequest(ports) {
                 if (inventory.result.backends.some(entry => !Array.isArray(entry.devices))) {
                     return ports.jsonResult({ ok: false, error: "broker-inventory-invalid", routedBy });
                 }
+                const unattributedTarget = inventory.result.backends.some(entry =>
+                    Array.isArray(entry.devices) && entry.devices.some(device => device?.id === args.deviceId)
+                    && !LIFECYCLE_STATE_BACKENDS.has(entry.stateKey || ""));
+                if (unattributedTarget) {
+                    return ports.jsonResult({ ok: false, error: "broker-inventory-invalid", deviceId: args.deviceId, routedBy });
+                }
                 const brokerTarget = inferBrokerInventoryLifecycleBackend(inventory, args.deviceId);
                 if (brokerTarget.ok || brokerTarget.error === "ambiguous-device-backend") {
                     return ports.jsonResult({
