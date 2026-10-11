@@ -3169,8 +3169,11 @@ describe("device-lab MCP broker routing", () => {
                 source: "host-broker-provider-discovery",
                 routedBy: "device-backends-broker",
                 backends: [expect.objectContaining({ name: "windows-sandbox", lazy: true })],
-                hostBackends: { startsDevices: false },
+                hostBackends: { startsDevices: false, backends: [expect.objectContaining({ name: "windows-sandbox" })] },
             });
+            const selectedDiscovery = JSON.parse(((discovery.content as Array<{ text?: string }>)[0].text ?? "{}"));
+            expect(selectedDiscovery.backends.map((backend: { name: string }) => backend.name)).toEqual(["windows-sandbox"]);
+            expect(selectedDiscovery.hostBackends.backends.map((backend: { name: string }) => backend.name)).toEqual(["windows-sandbox"]);
 
             const inventory = await client.callTool({
                 name: "devices",

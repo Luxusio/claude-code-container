@@ -1,3 +1,4 @@
+import { presentBrokerTool, imageResult } from "./device-request-presenter.mjs";
 import { availableDevices } from "./available-devices.mjs";
 import { cropScreenshotResult } from "./screenshot-region.mjs";
 import { finishStartReadiness, startBootTimeoutMs } from "./start-readiness.mjs";
@@ -79,6 +80,8 @@ const deviceRequest = createDeviceRequest({
     evaluateDestructivePolicy,
     flowJsonResult,
     jsonResult,
+    presentBrokerTool: (receipt, value) => presentBrokerTool(receipt, value, jsonResult),
+    imageResult,
     textResult,
     compactToolValue,
     OWNER_DEVICE_ID_PATTERN,

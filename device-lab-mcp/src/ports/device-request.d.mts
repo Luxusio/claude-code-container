@@ -1,16 +1,14 @@
 import type { DeviceArguments } from '../domain/device-request.mjs';
 export type { DeviceArguments };
-export interface DeviceContent { type: string; text?: string; data?: string; mimeType?: string; [key: string]: unknown }
-export interface DeviceResult { content: DeviceContent[]; isError?: boolean; [key: string]: unknown }
 export interface DeviceRecord { id: string; backend?: string; [key: string]: unknown }
 export interface BrokerBackendObservation { name?: string; host?: string; provider?: string; stateKey?: string; devices?: DeviceRecord[]; error?: string; [key: string]: unknown }
 export interface BackendDescription extends BrokerBackendObservation { name: string }
 export interface DisplayTarget extends DeviceRecord { available: boolean; capabilities: unknown }
-export interface BrokerPayload { backends?: BrokerBackendObservation[]; devices?: DeviceRecord[]; mcpResult?: DeviceResult; response?: { body?: AppiumBody }; [key: string]: unknown }
+export interface BrokerPayload { backends?: BrokerBackendObservation[]; devices?: DeviceRecord[]; response?: { body?: AppiumBody }; [key: string]: unknown }
 export interface AppiumBody { value?: unknown; screenshot?: string; bundleId?: string; bundleID?: string; [key: string]: unknown }
 export interface BrokerResult { ok: boolean; result?: BrokerPayload; body?: BrokerPayload; selected?: {host: string; port: number}; [key: string]: unknown }
 export type BackendInference = {ok: true; backend: string; error?: undefined; matches?: string[]}|{ok:false; backend?: undefined; error: string; matches?: string[]};
-export type PhysicalInference = {ok:true; backend:string; inventory:BrokerResult|null; response?:undefined; handled?:undefined}|{ok:false; backend?:undefined; inventory?:undefined; response:DeviceResult; handled:true};
+export type PhysicalInference<Result> = {ok:true; backend:string; inventory:BrokerResult|null; response?:undefined; handled?:undefined}|{ok:false; backend?:undefined; inventory?:undefined; response:Result; handled:true};
 export interface MobileRequestItem {method: string; path: string; body: Record<string,unknown>; error?:undefined}
 export interface MobileRequestSuccess {requests?:MobileRequestItem[]; method?:string; path?:string; body?:Record<string,unknown>; error?:undefined}
 export type MobileRequest = {error:string; requests?:undefined; method?:undefined; path?:undefined; body?:undefined}|MobileRequestSuccess;
@@ -18,24 +16,23 @@ export interface DeviceRequest {publicName:string; operation:string; arguments:D
 export interface DeviceRequestOptions { detail?: boolean; toolName?: string; toolAllowed?: (name: string) => boolean }
 export interface DestructiveDecision { ok: boolean; [key: string]: unknown }
 export interface WaitBudget { timeoutMs: number; remaining(): number; requestTimeout(maximum: number): number; pause(): Promise<void> }
-export interface FlowSummary { isError: boolean; error?: string; contentIndex?: number; contentCount?: number; content?: unknown[] }
-export interface DeviceFlowPorts {
+export interface DeviceFlowPorts<Result> {
  toolInputError(name: string, args: unknown): string|null;
  flowOperationAllowed(name: string, args?: unknown): boolean;
  toolOperation(name: string, args: unknown): string;
  flowStepArguments(tool: string, flowArgs: DeviceArguments, stepArgs: DeviceArguments): DeviceArguments;
  normalizePublicToolArgs(name: string, args: unknown): DeviceArguments;
  withBrokerOperation<T>(operation: () => Promise<T>): Promise<T>;
- dispatchTool(name: string, args: DeviceArguments, options?: DeviceRequestOptions): Promise<DeviceResult>;
+ dispatchTool(name: string, args: DeviceArguments, options?: DeviceRequestOptions): Promise<Result>;
  evaluateDestructivePolicy(name: string, args: unknown): DestructiveDecision;
- policyDeniedResult(policy: DestructiveDecision): DeviceResult;
- actionResult(publicName: string, operation: string, result: DeviceResult, options: DeviceRequestOptions): DeviceResult;
- unexpectedError(message: string): DeviceResult;
- textFailure(message: string): DeviceResult;
- renderFlow(value: unknown, options: {toolName: string; detail: boolean}): DeviceResult;
+ policyDeniedResult(policy: DestructiveDecision): Result;
+ actionResult(publicName: string, operation: string, result: Result, options: DeviceRequestOptions): Result;
+ unexpectedError(message: string): Result;
+ textFailure(message: string): Result;
+ renderFlow(value: unknown, options: {toolName: string; detail: boolean}): Result;
 }
-export type ProviderRequest = (name: string, args: DeviceArguments) => DeviceResult|null|undefined|Promise<DeviceResult|null|undefined>;
-export interface DeviceRequestPorts {
+export type ProviderRequest<Result> = (name: string, args: DeviceArguments) => Result|null|undefined|Promise<Result|null|undefined>;
+export interface DeviceRequestPorts<Result> {
  OWNER_DEVICE_ID_PATTERN: RegExp;
  OPERATION_TOOLS: readonly {name: string; inputSchema?: {required?: readonly string[]}}[];
  DEVICE_FLOW_TOOL_NAMES: readonly string[];
@@ -64,15 +61,15 @@ export interface DeviceRequestPorts {
  linuxVmBackend(): BackendDescription;
  windowsBackend(): BackendDescription;
  windowsVmBackend(): BackendDescription;
- handleAndroidTool: ProviderRequest;
- handleAndroidRealTool: ProviderRequest;
- handleIosTool: ProviderRequest;
- handleIosRealTool: ProviderRequest;
- handleMacosTool: ProviderRequest;
- handleLinuxVmManagementTool: ProviderRequest;
- handleLinuxVmTool: ProviderRequest;
- handleWindowsTool: ProviderRequest;
- handleDisplayTool: ProviderRequest;
+ handleAndroidTool: ProviderRequest<Result>;
+ handleAndroidRealTool: ProviderRequest<Result>;
+ handleIosTool: ProviderRequest<Result>;
+ handleIosRealTool: ProviderRequest<Result>;
+ handleMacosTool: ProviderRequest<Result>;
+ handleLinuxVmManagementTool: ProviderRequest<Result>;
+ handleLinuxVmTool: ProviderRequest<Result>;
+ handleWindowsTool: ProviderRequest<Result>;
+ handleDisplayTool: ProviderRequest<Result>;
  brokerStatus(args: DeviceArguments): Promise<BrokerResult>;
  brokerCommand(args: DeviceArguments): Promise<BrokerResult>;
  brokerDeviceTool(args: DeviceArguments): Promise<BrokerResult>;
@@ -89,17 +86,19 @@ export interface DeviceRequestPorts {
  flowOperationAllowed(name: string, args?: unknown): boolean;
  flowStepArguments(tool: string, flowArgs: DeviceArguments, stepArgs: DeviceArguments): DeviceArguments;
  evaluateDestructivePolicy(name: string, args: unknown): DestructiveDecision;
- jsonResult(value: unknown): DeviceResult;
- textResult(ok: boolean, text: string): DeviceResult;
- flowJsonResult(value: unknown, options: {detail: boolean}): DeviceResult;
+ presentBrokerTool(receipt: BrokerResult, selectedFallbackValue: unknown): Result;
+ imageResult(image: {data: string; mimeType: "image/png"}): Result;
+ jsonResult(value: unknown): Result;
+ textResult(ok: boolean, text: string): Result;
+ flowJsonResult(value: unknown, options: {detail: boolean}): Result;
  compactToolValue(toolName: string, value: unknown): unknown;
- actionResult(publicName: string, operation: string, result: DeviceResult, options: DeviceRequestOptions): DeviceResult;
+ actionResult(publicName: string, operation: string, result: Result, options: DeviceRequestOptions): Result;
  buildListFilesCommand(backend: string, args: DeviceArguments): string;
- listFilesFromExecResult(result: DeviceResult, args: DeviceArguments): DeviceResult;
- availableDevices(dispatch: (backend: string) => Promise<DeviceResult>, options: DeviceRequestOptions): Promise<DeviceResult>;
+ listFilesFromExecResult(result: Result, args: DeviceArguments): Result;
+ availableDevices(dispatch: (backend: string) => Promise<Result>, options: DeviceRequestOptions): Promise<Result>;
  startBootTimeoutMs(args: DeviceArguments): number;
- finishStartReadiness(result: DeviceResult, args: DeviceArguments, startedAt: number, dispatch: (name: string, args: DeviceArguments) => Promise<DeviceResult>): Promise<DeviceResult>;
- cropScreenshotResult(result: DeviceResult, region: unknown): DeviceResult|Promise<DeviceResult>;
+ finishStartReadiness(result: Result, args: DeviceArguments, startedAt: number, dispatch: (name: string, args: DeviceArguments) => Promise<Result>): Promise<Result>;
+ cropScreenshotResult(result: Result, region: unknown): Result|Promise<Result>;
  createWaitBudget(timeoutMs?: number, intervalMs?: number): WaitBudget;
- runDeviceFlow(args: DeviceArguments, options: DeviceRequestOptions, ports: DeviceFlowPorts): Promise<DeviceResult>;
+ runDeviceFlow(args: DeviceArguments, options: DeviceRequestOptions, ports: DeviceFlowPorts<Result>): Promise<Result>;
 }

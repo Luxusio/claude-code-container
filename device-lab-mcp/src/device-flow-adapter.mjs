@@ -1,6 +1,6 @@
 import { runDeviceFlow } from '@ccc/device-lab/providers/application/device-flow.mjs';
-/** @param {import('./ports/device-request.mjs').DeviceResult} result
- * @returns {import('@ccc/device-lab/providers/domain/device-flow.mjs').FlowObservation<import('./ports/device-request.mjs').DeviceResult>} */
+/** @param {import('./device-request-presenter.mjs').NativeDeviceResult} result
+ * @returns {import('@ccc/device-lab/providers/domain/device-flow.mjs').FlowObservation<import('./device-request-presenter.mjs').NativeDeviceResult>} */
 export function decodeFlowResult(result) {
     /** @type {import('@ccc/device-lab/providers/domain/device-flow.mjs').FlowFacts[]} */
     const values = [];
@@ -23,8 +23,8 @@ export function decodeFlowResult(result) {
 /** Native output codec: semantic classification stays in the shared application.
  * @param {import('./ports/device-request.mjs').DeviceArguments} args
  * @param {import('./ports/device-request.mjs').DeviceRequestOptions} options
- * @param {import('./ports/device-request.mjs').DeviceFlowPorts} ports
- * @returns {Promise<import('./ports/device-request.mjs').DeviceResult>} */
+ * @param {import('./ports/device-request.mjs').DeviceFlowPorts<import('./device-request-presenter.mjs').NativeDeviceResult>} ports
+ * @returns {Promise<import('./device-request-presenter.mjs').NativeDeviceResult>} */
 export async function runMcpDeviceFlow(args, options, ports) {
     const { toolName = 'device_run_flow', toolAllowed = () => false, detail } = options;
     const outcome = await runDeviceFlow(args, { toolName, toolAllowed }, {
@@ -39,7 +39,7 @@ export async function runMcpDeviceFlow(args, options, ports) {
         dispatchFailure: error => decodeFlowResult(ports.unexpectedError(`Unexpected error: ${error && typeof error === 'object' && 'message' in error ? error.message : undefined}`)),
     });
     if (outcome.kind === 'invalid') return ports.textFailure(outcome.message);
-    /** @type {import('./ports/device-request.mjs').DeviceContent[]} */
+    /** @type {import('./device-request-presenter.mjs').NativeDeviceContent[]} */
     const attachments = [];
     const results = outcome.results.map(step => {
         /** @type {{index:number,label:string,tool?:string,isError:boolean,error?:string,contentIndex?:number,contentCount?:number,content?:unknown[]}} */

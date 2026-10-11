@@ -305,3 +305,20 @@ export function isCursorMove(name, args = {}) {
 export function requestErrorMessage(error) {
  return error !== null && (typeof error === "object" || typeof error === "function") ? Reflect.get(error, "message") : undefined;
 }
+
+/** @typedef {{name?:string}} CatalogBackend */
+/** @typedef {{ownerId:string,broker:unknown,source:string,routedBy?:string,ok?:boolean,error?:string,backends:CatalogBackend[],localBackends?:CatalogBackend[],hostBackends?:{backends?:CatalogBackend[]},brokerBackendsError?:unknown}} BackendCatalogValue */
+/** @typedef {{kind:'direct'|'broker',value:BackendCatalogValue}|{kind:'broker-discovery-failed'|'discovery-unavailable'|'broker-unavailable',value:BackendCatalogValue}} BackendCatalogOutcome */
+/** Select facts before native presentation; failure diagnostics stay unfiltered.
+ * @param {BackendCatalogOutcome} catalog @param {string|undefined} backend */
+export function selectBackendCatalog(catalog, backend) {
+    const value = catalog.value;
+    if (!backend || (catalog.kind !== 'direct' && catalog.kind !== 'broker')) return value;
+    return {
+        ...value,
+        backends: value.backends.filter(item => item.name === backend),
+        ...(value.localBackends ? {localBackends:value.localBackends.filter(item => item.name === backend)} : {}),
+        ...(value.hostBackends ? {hostBackends:{...value.hostBackends,
+            ...(Array.isArray(value.hostBackends.backends) ? {backends:value.hostBackends.backends.filter(item => item.name === backend)} : {})}} : {}),
+    };
+}

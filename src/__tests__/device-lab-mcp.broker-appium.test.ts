@@ -659,6 +659,9 @@ describe("device-lab MCP broker Appium routing", () => {
             const screenshot = await client.callTool({ name: "screenshot", arguments: baseArgs });
             expect(screenshot.isError, JSON.stringify(screenshot)).not.toBe(true);
             expect(screenshot.content).toEqual([{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
+            // Public screenshot selects the native device-tool envelope, not the private Appium mobile_screenshot branch.
+            expect(deviceCalls).toContainEqual(expect.objectContaining({ tool: "device_screenshot", deviceId: "ios-sim-broker-apps" }));
+            expect(fakeAppium.requests.some(request => request.url?.endsWith("/screenshot"))).toBe(false);
 
             for (const [name, args] of [
                 ["open_url", { url: "https://example.test" }],

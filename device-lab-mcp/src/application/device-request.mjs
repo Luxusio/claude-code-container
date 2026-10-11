@@ -1,5 +1,4 @@
 /** @typedef {import("../ports/device-request.mjs").DeviceArguments} Args */
-/** @typedef {import("../ports/device-request.mjs").DeviceResult} Result */
 /** @typedef {import("../ports/device-request.mjs").BrokerResult} BrokerResult */
 /** @typedef {import("../ports/device-request.mjs").DeviceRequestOptions} Options */
 import {
@@ -43,9 +42,11 @@ import {
     wantsCurrentDisplayDevice,
     HYPER_V_LINUX_TOOLS,
     isCursorMove,
-    requestErrorMessage
+    requestErrorMessage,
+    selectBackendCatalog
 } from "../domain/device-request.mjs";
-/** @param {import("../ports/device-request.mjs").DeviceRequestPorts} ports */
+/** @template Result
+ * @param {import("../ports/device-request.mjs").DeviceRequestPorts<Result>} ports */
 export function createDeviceRequest(ports) {
     /** @param {Args} args */
     function brokerLifecycleExecutionTimeout(args) {
@@ -184,7 +185,7 @@ export function createDeviceRequest(ports) {
         };
     }
 
-    /** @param {Args} [args] @param {Options} [options] @returns {Promise<Result>} */
+    /** @param {Args} [args] @param {Options} [options] @returns {Promise<import("../domain/device-request.mjs").BackendCatalogOutcome>} */
     async function handleDeviceBackends(args = {}, options = {}) {
         const { detail = false } = options;
         const brokerOptOut = optsOutOfImplicitBroker(args);
@@ -193,12 +194,12 @@ export function createDeviceRequest(ports) {
         const explicitBroker = wantsBrokerBackends(args);
         if (brokerOptOut) {
             const broker = await ports.brokerStatus({ ...args, autolaunch: false, probe: false });
-            return ports.jsonResult({
+            return { kind: "direct", value: {
                 ownerId: ports.ownerId(),
                 broker,
                 source: "direct-provider",
                 backends: directBackends,
-            });
+            } };
         }
         const implicitProbe = explicitBroker || brokerOptOut ? null : ports.implicitBrokerProbeOptions(args || {});
         const probe = explicitBroker ? { ...args, probe: true } : implicitProbe;
@@ -207,7 +208,7 @@ export function createDeviceRequest(ports) {
             const brokerBackends = await ports.brokerRpc({ ...args, ...probe, ...brokerDiscoveryExecutionTimeout(args), method: "broker.backends" });
             if (brokerBackends.ok && Array.isArray(brokerBackends.result?.backends)) {
                 const brokerBackendNames = new Set(brokerBackends.result.backends.map((backend) => backend?.name).filter(Boolean));
-                return ports.jsonResult({
+                return { kind: "broker", value: {
                     ownerId: ports.ownerId(),
                     broker,
                     source: "host-broker-provider-discovery",
@@ -218,9 +219,9 @@ export function createDeviceRequest(ports) {
                     ],
                     hostBackends: brokerBackends.result,
                     ...(detail ? { localBackends: directBackends } : {}),
-                });
+                } };
             }
-            return ports.jsonResult({
+            return { kind: "broker-discovery-failed", value: {
                 ok: false,
                 ownerId: ports.ownerId(),
                 broker,
@@ -229,9 +230,9 @@ export function createDeviceRequest(ports) {
                 backends: containerBackends,
                 brokerBackendsError: brokerBackends,
                 ...(detail ? { localBackends: directBackends } : {}),
-            });
+            } };
         }
-        return ports.jsonResult({
+        return { kind: broker.available ? "discovery-unavailable" : "broker-unavailable", value: {
             ok: false,
             error: broker.available ? "broker-provider-discovery-unavailable" : "broker-unavailable",
             ownerId: ports.ownerId(),
@@ -240,7 +241,7 @@ export function createDeviceRequest(ports) {
             routedBy: "device-backends-broker",
             backends: containerBackends,
             ...(detail ? { localBackends: directBackends } : {}),
-        });
+        } };
     }
 
     /** @param {string|undefined} deviceId @returns {import("../ports/device-request.mjs").BackendInference} */
@@ -760,7 +761,7 @@ export function createDeviceRequest(ports) {
         return { rpcTimeoutMs: DEFAULT_BROKER_PHYSICAL_RPC_TIMEOUT_MS };
     }
 
-    /** @param {string} name @param {Args} args @param {Args|null} probe @param {string} routedBy @returns {Promise<import("../ports/device-request.mjs").PhysicalInference>} */
+    /** @param {string} name @param {Args} args @param {Args|null} probe @param {string} routedBy @returns {Promise<import("../ports/device-request.mjs").PhysicalInference<Result>>} */
     async function inferBrokerPhysicalBackend(name, args, probe, routedBy) {
         const requestedBackend = typeof args?.backend === "string" && args.backend ? args.backend : "";
         if (requestedBackend) {
@@ -849,8 +850,7 @@ export function createDeviceRequest(ports) {
             ...brokerDeviceToolExecutionTimeout(name, args),
             tool: name,
         });
-        if (result.ok && result.result?.mcpResult?.content) return result.result.mcpResult;
-        return ports.jsonResult({ ...result, routedBy: BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker" : "device-readonly-broker" });
+        return ports.presentBrokerTool(result, { ...result, routedBy: BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker" : "device-readonly-broker" });
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
@@ -921,13 +921,12 @@ export function createDeviceRequest(ports) {
             tool: composedListing ? "device_exec" : common.name,
             ...(composedListing ? { command: listingCommand } : {}),
         });
-        if (composedListing) return ports.listFilesFromExecResult(result.ok && result.result?.mcpResult?.content ? result.result.mcpResult : ports.jsonResult(result), args);
-        if (result.ok && result.result?.mcpResult?.content) return result.result.mcpResult;
+        if (composedListing) return ports.listFilesFromExecResult(ports.presentBrokerTool(result, result), args);
         const routedBy = BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker-implicit" : "device-readonly-broker-implicit";
         if (result.ok && BROKER_RECORDING_DEVICE_TOOLS.has(name) && result.result && typeof result.result === "object") {
-            return ports.jsonResult({ ...result.result, routedBy });
+            return ports.presentBrokerTool(result, { ...result.result, routedBy });
         }
-        return ports.jsonResult({ ...result, routedBy });
+        return ports.presentBrokerTool(result, { ...result, routedBy });
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
@@ -986,8 +985,7 @@ export function createDeviceRequest(ports) {
             backend: inventoryBackend.backend,
             tool: name,
         });
-        if (result.ok && result.result?.mcpResult?.content) return result.result.mcpResult;
-        return ports.jsonResult({ ...result, routedBy: "mobile-device-broker-implicit" });
+        return ports.presentBrokerTool(result, { ...result, routedBy: "mobile-device-broker-implicit" });
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result>} */
@@ -1029,8 +1027,7 @@ export function createDeviceRequest(ports) {
                 backend: resolvedBackend,
                 tool: name,
             });
-            if (result.ok && result.result?.mcpResult?.content) return result.result.mcpResult;
-            return ports.jsonResult({ ...result, routedBy: "mobile-device-broker" });
+            return ports.presentBrokerTool(result, { ...result, routedBy: "mobile-device-broker" });
         }
         if (name === "mobile_session_status") {
             const result = await ports.brokerAppium({
@@ -1150,7 +1147,7 @@ export function createDeviceRequest(ports) {
         if (name === "mobile_screenshot") {
             const value = request?.result?.response?.body?.value ?? request?.result?.response?.body?.screenshot;
             if (!value) return ports.textResult(false, "Appium did not return screenshot data");
-            return { content: [{ type: "image", data: String(value), mimeType: "image/png" }] };
+            return ports.imageResult({ data: String(value), mimeType: "image/png" });
         }
         const appId = appIdForBackend(args, resolvedBackend);
         return ports.jsonResult(brokerMobilePayload(name, resolvedBackend, completedRequest, {
@@ -1266,18 +1263,8 @@ export function createDeviceRequest(ports) {
 
     /** @param {Args} args @param {boolean} detail @returns {Promise<Result>} */
     async function handleFilteredBackends(args, detail) {
-        const result = await handleDeviceBackends(args, { detail });
-        if (!args.backend || result.isError) return result;
-        return { ...result, content: result.content.map(item => {
-            if (item.type !== "text") return item;
-            if (typeof item.text !== "string") throw new Error("device-result-text-invalid");
-            const value = JSON.parse(item.text);
-            for (const key of ["backends", "localBackends"]) {
-                if (Array.isArray(value[key])) value[key] = value[key].filter(backend => backend.name === args.backend);
-            }
-            if (Array.isArray(value.hostBackends?.backends)) value.hostBackends.backends = value.hostBackends.backends.filter(/** @param {{name?: unknown}} backend */ backend => backend.name === args.backend);
-            return { ...item, text: JSON.stringify(value) };
-        }) };
+        const catalog = await handleDeviceBackends(args, { detail });
+        return ports.jsonResult(selectBackendCatalog(catalog, args.backend));
     }
 
     /** @param {string} name @param {Args} rawArgs @param {Options} [options] @returns {Promise<Result>} */
