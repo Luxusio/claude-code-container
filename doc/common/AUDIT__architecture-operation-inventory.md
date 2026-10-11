@@ -118,7 +118,9 @@ After each cutover, update the affected stable IDs, bindings, supporting source
 and evidence, then recompute this audit. New or changed operation boundaries
 require an explicit retirement/replacement mapping. Refresh the baseline and
 its tracked source universe when evaluating later code. The initial
-`src/__tests__/architecture/migration-ledger.ts` remains a historical snapshot.
+`src/__tests__/architecture/migration-ledger.ts` is historical Git provenance,
+not a current validation input. Its redundant runtime metatests were removed;
+current accounting uses this inventory and the WBS.
 
 Hosted CI, workflow reruns and CI-triggering pushes require explicit user
 authorization. This accounting task uses local static inspection and does not

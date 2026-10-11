@@ -129,10 +129,13 @@ operation alone does not complete M11.
 
 Follow the [target architecture](ADR__ccc-target-architecture.md),
 [contracts](SPEC__ccc-architecture-contracts.md) and
-[work packets](PLAN__ccc-architecture-migration.md). The checked
-[migration ledger](../../src/__tests__/architecture/migration-ledger.ts) maps
-M00–M14 to source/export/test anchors and native lanes. It records source,
-artifact and native provenance separately; it is not a completion certificate.
+[work packets](PLAN__ccc-architecture-migration.md). The current
+[operation inventory](architecture-operation-inventory.json) records source,
+artifact and native provenance separately; the
+[WBS](GUIDE__architecture-work-breakdown.md) reports accepted progress.
+Historical migration-ledger snapshots remain available in Git. Static contract
+consumers run through the normal strict typecheck; they do not run a separate
+compiler for each feature or certify completion from historical ledger values.
 
 ## Current enforced boundary
 
