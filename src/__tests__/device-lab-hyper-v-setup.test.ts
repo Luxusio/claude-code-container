@@ -16,18 +16,68 @@ import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { createDeviceAdminSetup } from "../application/device-admin-setup.js";
 import type { DeviceAdminSetupPorts } from "../ports/device-admin-setup.js";
 
-function setupCapabilityContracts(ports: DeviceAdminSetupPorts): void {
-    createDeviceAdminSetup(ports);
-    const { withMutationLock: _lock, ...withoutLock } = ports;
-    // @ts-expect-error Confirmed setup must hold the native host mutation lock.
-    createDeviceAdminSetup(withoutLock);
-    // @ts-expect-error Acceptance must be published before the success response is formatted.
-    const asynchronousAcceptance: DeviceAdminSetupPorts["acceptEvaluationLicense"] = async () => ({ sourceTrustId: "not-published" });
-    // @ts-expect-error Directory admission must finish before entering the native lock.
-    const asynchronousDirectory: DeviceAdminSetupPorts["createDirectory"] = async () => undefined;
-    void [_lock, asynchronousAcceptance, asynchronousDirectory];
-}
-void setupCapabilityContracts;
+describe("semantic setup effect ordering", () => {
+    function setupTrace() {
+        const events: unknown[][] = [];
+        let now = 1_000;
+        let locked = false;
+        const receipt = { marker: "published" };
+        const ports: DeviceAdminSetupPorts<typeof receipt> = {
+            prepareContext: confirm => { events.push(["context", confirm]); return { ok: true }; },
+            prepareMutation: () => { events.push(["mutation-admission"]); return { ok: true }; },
+            now: () => now,
+            readEvaluationReceipt: () => { events.push(["receipt-read"]); return null; },
+            diagnose: timeout => { events.push(["diagnose", timeout]); return { state: "failed" }; },
+            linuxImage: () => { throw new Error("unexpected image inspection"); },
+            enableFeature: timeout => {
+                events.push(["feature", timeout, locked]);
+                now += 600_000;
+                return { state: "available", value: {
+                    ok: true, featureName: "Microsoft-Hyper-V-All", beforeState: "Disabled",
+                    afterState: "Enabled", changed: true, rebootRequired: false,
+                } };
+            },
+            withMutationLock: async (operation, options) => {
+                events.push(["lock", options]); locked = true;
+                try { return await operation(); }
+                finally { locked = false; events.push(["unlock"]); }
+            },
+            ensureHostNetwork: async deadline => {
+                events.push(["fabric", deadline, locked]);
+                return { ok: true, switchName: "CCC Device Lab", gateway: "172.29.0.1" };
+            },
+            mutationFailure: () => ({ marker: "failure" }),
+            acceptEvaluationLicense: () => { events.push(["accept", locked]); return receipt; },
+        };
+        return { ports, events, receipt };
+    }
+
+    it("uses separate feature and fresh fabric budgets while holding the 10/20-minute lock", async () => {
+        const { ports, events, receipt } = setupTrace();
+        const result = await createDeviceAdminSetup(ports).setup(true, { acceptWindowsEvaluationLicense: true });
+        expect(events).toEqual([
+            ["context", true], ["receipt-read"], ["mutation-admission"], ["lock", { waitMs: 600_000, staleMs: 1_200_000 }],
+            ["feature", 900_000, true], ["fabric", 1_501_000, true], ["unlock"], ["accept", false],
+        ]);
+        expect(result.ok).toBe(true);
+        if (result.ok && result.mode === "confirmed") expect(result.receipt).toBe(receipt);
+    });
+
+    it.each([false, true])("propagates the original initial receipt exception before effects (confirm=%s)", async confirm => {
+        const { ports, events } = setupTrace();
+        const failure = new Error("initial-receipt-read");
+        ports.readEvaluationReceipt = () => { events.push(["receipt-read"]); throw failure; };
+        await expect(createDeviceAdminSetup(ports).setup(confirm)).rejects.toBe(failure);
+        expect(events).toEqual([["context", confirm], ["receipt-read"]]);
+    });
+
+    it("keeps diagnostic work at 30 seconds without entering the mutation lock", async () => {
+        const { ports, events } = setupTrace();
+        const result = await createDeviceAdminSetup(ports).setup(false);
+        expect(result.ok).toBe(false);
+        expect(events).toEqual([["context", false], ["receipt-read"], ["diagnose", 30_000]]);
+    });
+});
 
 describe("Hyper-V host setup CLI", () => {
     const roots: string[] = [];

@@ -1,6 +1,6 @@
-import type { CleanupBackend, CleanupRecord, CleanupCommandResult } from "../domain/device-admin-cleanup.js";
+import type { CleanupBackend, CleanupRecord } from "../domain/device-admin-cleanup.js";
 import { macosManagedProviderResources } from "../domain/device-admin-prune.js";
-import { physicalLeaseMatchesOwnerDevice, macosDeleteArgs, macosDeleteFailure } from "../domain/device-admin-delete.js";
+import { physicalLeaseMatchesOwnerDevice } from "../domain/device-admin-delete.js";
 import type { DeviceAdminDeleteResult } from "../domain/device-admin-delete.js";
 import type { DeviceAdminDeletePorts, DeviceAdminPhysicalTransitionPorts, DeviceAdminLeaseScope } from "../ports/device-admin-delete.js";
 
@@ -48,7 +48,7 @@ export function createDeviceAdminPhysicalTransition<Backend extends CleanupBacke
     return { transitionPhysicalRecord };
 }
 
-export function createDeviceAdminDelete<Backend extends CleanupBackend>(ports: DeviceAdminDeletePorts<Backend>) {
+export function createDeviceAdminDelete<Backend extends CleanupBackend, Evidence = unknown>(ports: DeviceAdminDeletePorts<Backend, Evidence>) {
     function releaseLease(owner: string, backend: Backend, device: CleanupRecord): undefined {
         const hardwareId = ports.hardwareId(backend, device);
         if (!hardwareId) return undefined;
@@ -70,26 +70,26 @@ export function createDeviceAdminDelete<Backend extends CleanupBackend>(ports: D
             return undefined;
         });
     }
-    function deleteDevice(owner: string, backend: Backend, deviceId: string, expected: CleanupRecord, timeoutMs?: number): DeviceAdminDeleteResult {
+    function deleteDevice(owner: string, backend: Backend, deviceId: string, expected: CleanupRecord, timeoutMs?: number): DeviceAdminDeleteResult<Evidence> {
         return ports.withRecordLock(owner, backend.stateKey, deviceId, () => {
             const current = ports.readDevices(owner, backend.stateKey).find(candidate => candidate.id === deviceId);
-            if (!current || !ports.sameRecord(current, expected)) return { ok: false, reason: "owner-device-state-conflict", commands: [] };
-            if (current.status !== "stopped" && current.status !== "detached") return { ok: false, reason: `device-status-${current.status || "unknown"}`, commands: [] };
-            const commands: CleanupCommandResult[] = [];
+            if (!current || !ports.sameRecord(current, expected)) return { ok: false, reason: "owner-device-state-conflict", evidence: [] };
+            if (current.status !== "stopped" && current.status !== "detached") return { ok: false, reason: `device-status-${current.status || "unknown"}`, evidence: [] };
+            const evidence: Evidence[] = [];
+            let failed = false;
             if (backend.stateKey === "macos") for (const resource of macosManagedProviderResources(current)) {
-                const args = macosDeleteArgs(resource.provider, resource.instance);
-                if (!args) { commands.push(macosDeleteFailure(resource.provider, resource.instance, `unsupported macOS VM provider: ${resource.provider}`)); continue; }
-                const command = ports.commandPath(resource.provider);
-                if (!command) { commands.push(macosDeleteFailure(resource.provider, resource.instance, "command not found")); continue; }
-                const result = ports.runCommand(command, args, timeoutMs);
-                if (result) commands.push(result);
+                const result = ports.deleteManagedResource(resource.provider, resource.instance, timeoutMs);
+                if (result.state !== "no-result") {
+                    evidence.push(result.evidence);
+                    if (result.state === "failure") failed = true;
+                }
             }
-            if (commands.some(command => command.status !== 0)) return { ok: false, reason: "provider-delete-failed", commands };
+            if (failed) return { ok: false, reason: "provider-delete-failed", evidence };
             try { releaseLease(owner, backend, current); }
-            catch { return { ok: false, reason: "physical-lease-release-failed", commands }; }
+            catch { return { ok: false, reason: "physical-lease-release-failed", evidence }; }
             ports.releaseWindowsClaim(owner, backend, current);
-            if (!ports.transitionRecord(owner, backend, current, null).matched) return { ok: false, reason: "owner-device-state-conflict", commands };
-            return { ok: true, commands };
+            if (!ports.transitionRecord(owner, backend, current, null).matched) return { ok: false, reason: "owner-device-state-conflict", evidence };
+            return { ok: true, evidence };
         });
     }
     return { deleteDevice };

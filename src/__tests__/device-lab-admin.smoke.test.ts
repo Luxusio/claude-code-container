@@ -1,30 +1,17 @@
 import * as childProcess from "child_process";
+import * as nativeFs from "fs";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     devicesCli,
     formatDevicesSmoke,
 } from "../device-lab-admin.js";
 import { createDeviceLabAdminTestFixture } from "./helpers/device-lab-admin-fixture.js";
-import { createDeviceAdminDiagnostics } from "../application/device-admin-diagnostics.js";
-import type { DeviceAdminDiagnosticsInventory, DeviceAdminDiagnosticsPorts } from "../ports/device-admin-diagnostics.js";
-
-function diagnosticsCapabilityContracts(
-    ports: DeviceAdminDiagnosticsPorts,
-    inventory: DeviceAdminDiagnosticsInventory<DeviceAdminDiagnosticsPorts["backends"][number]>,
-): void {
-    createDeviceAdminDiagnostics(ports, inventory);
-    const { readPhysicalLease: _lease, ...withoutLeaseRead } = ports;
-    // @ts-expect-error Physical bench ownership cannot be diagnosed without lease evidence.
-    createDeviceAdminDiagnostics(withoutLeaseRead, inventory);
-    // @ts-expect-error Synchronous diagnostics must receive a settled command result.
-    const asynchronousCommand: DeviceAdminDiagnosticsPorts["runCommand"] = async () => null;
-    void [_lease, asynchronousCommand];
-}
-void diagnosticsCapabilityContracts;
 
 vi.mock("child_process", async (importOriginal) => ({ ...await importOriginal<typeof import("child_process")>() }));
+vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
 
 describe("device-lab admin smoke diagnostics", () => {
     const fixture = createDeviceLabAdminTestFixture();
@@ -72,6 +59,78 @@ describe("device-lab admin smoke diagnostics", () => {
         expect(smoke).toContain("device-lab-mcp-installed: PASS - installed MCP advertised surface dispatches current-display aliases");
         expect(smoke).toContain(`${process.execPath} ${scriptPath} ${serverPath} -> 0`);
         expect(smoke).toContain("Startup policy: lazy; smoke checks do not start devices");
+    });
+
+    it.each([123, 20_000])("runs ordinary probes before installed smoke with a separate minimum budget (%s)", timeout => {
+        fixture.setupFixture("/project/admin-installed-order-test");
+        const binDir = join(fixture.homeDir, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        fixture.writeNodeTool(binDir, "adb", "console.log('ok');");
+        const server = join(fixture.homeDir, "server.mjs");
+        const script = join(fixture.homeDir, "installed.ts");
+        writeFileSync(server, "export {};");
+        writeFileSync(script, "console.log('PASS');");
+        const effects: string[] = [];
+        const routedSpawn = vi.mocked(childProcess.spawnSync).getMockImplementation()!;
+        vi.mocked(childProcess.spawnSync).mockImplementation(((command: string, args: string[] = [], options: childProcess.SpawnSyncOptions = {}) => {
+            if (command === join(binDir, "adb.mjs") || (command === process.execPath && args[0] === script)) {
+                effects.push(command === process.execPath ? "installed" : `adb ${args.join(" ")}`);
+                expect(options.timeout).toBe(command === process.execPath ? Math.max(timeout, 15_000) : timeout);
+                return { status: 0, signal: null, pid: 0, stdout: "ok\n", stderr: "", output: [null, "ok\n", ""] };
+            }
+            return routedSpawn(command, args, options);
+        }) as typeof childProcess.spawnSync);
+        const output = formatDevicesSmoke("/project/admin-installed-order-test", timeout, undefined, {
+            mcpSurface: true, mcpServerPath: server, mcpSmokeScriptPath: script,
+        });
+        expect(effects).toEqual(["adb devices -l", "installed"]);
+        expect(output.indexOf("device-lab-mcp-installed: PASS")).toBeLessThan(output.indexOf("android-emulator: SKIP"));
+    });
+
+    it.each(["package", "opt-dist", "opt-source", "configured", "explicit"])("selects the %s installed server without touching system files", selection => {
+        fixture.setupFixture("/project/admin-installed-path-test");
+        const packageServer = resolve(dirname(fileURLToPath(import.meta.url)), "../..", "dist", "device-lab-mcp", "server.mjs");
+        const optDist = "/opt/ccc/dist/device-lab-mcp/server.mjs";
+        const optSource = "/opt/ccc/device-lab-mcp/server.mjs";
+        const configured = join(fixture.homeDir, "configured.mjs");
+        const explicit = join(fixture.homeDir, "explicit.mjs");
+        const script = join(fixture.homeDir, "smoke.ts");
+        writeFileSync(script, "console.log('PASS');");
+        process.env.CCC_REAL_DEVICE_LAB_MCP_SERVER = ["configured", "explicit"].includes(selection) ? configured : "";
+        const selected = { package: packageServer, "opt-dist": optDist, "opt-source": optSource, configured, explicit }[selection]!;
+        const exists = nativeFs.existsSync;
+        vi.spyOn(nativeFs, "existsSync").mockImplementation(path => {
+            if ([packageServer, optDist, optSource, configured, explicit].includes(String(path))) return String(path) === selected;
+            return exists(path);
+        });
+        const routedSpawn = childProcess.spawnSync;
+        vi.spyOn(childProcess, "spawnSync").mockImplementation(((command: string, args: string[] = [], options: childProcess.SpawnSyncOptions = {}) => {
+            if (command === process.execPath && args[0] === script) return { status: 0, signal: null, pid: 0, stdout: "PASS", stderr: "", output: [null, "PASS", ""] };
+            return routedSpawn(command, args, options);
+        }) as typeof childProcess.spawnSync);
+        const output = formatDevicesSmoke("/project/admin-installed-path-test", 5000, undefined, {
+            mcpSurface: true, mcpSmokeScriptPath: script, ...(selection === "explicit" ? { mcpServerPath: explicit } : {}),
+        });
+        expect(childProcess.spawnSync).toHaveBeenCalledWith(process.execPath, [script, selected], expect.objectContaining({ timeout: 15_000 }));
+        expect(output).toContain("device-lab-mcp-installed: PASS");
+    });
+
+    it("uses the package smoke script fallback with an explicit server", () => {
+        fixture.setupFixture("/project/admin-installed-script-default-test");
+        const server = join(fixture.homeDir, "server.mjs");
+        writeFileSync(server, "export {};");
+        const script = resolve(dirname(fileURLToPath(import.meta.url)), "../..", "scripts", "real-tests", "installed-mcp-smoke.ts");
+        const exists = nativeFs.existsSync;
+        vi.spyOn(nativeFs, "existsSync").mockImplementation(path => String(path) === script || exists(path));
+        const routedSpawn = childProcess.spawnSync;
+        vi.spyOn(childProcess, "spawnSync").mockImplementation(((command: string, args: string[] = [], options: childProcess.SpawnSyncOptions = {}) => {
+            if (command === process.execPath && args[0] === script) return { status: 0, signal: null, pid: 0, stdout: "PASS", stderr: "", output: [null, "PASS", ""] };
+            return routedSpawn(command, args, options);
+        }) as typeof childProcess.spawnSync);
+        const output = formatDevicesSmoke("/project/admin-installed-script-default-test", 5000, undefined, { mcpSurface: true, mcpServerPath: server });
+        expect(childProcess.spawnSync).toHaveBeenCalledWith(process.execPath, [script, server], expect.objectContaining({ timeout: 15_000 }));
+        expect(output).toContain("device-lab-mcp-installed: PASS");
     });
 
     it("reports stale installed MCP surface failures in smoke output", () => {

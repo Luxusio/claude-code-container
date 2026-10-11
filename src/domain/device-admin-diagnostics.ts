@@ -1,4 +1,3 @@
-export type CommandResult = { command: string; status: number | null; stderr?: string; stdout?: string };
 export type QemuImgSignatureStatus = "Valid" | "NotSigned" | "HashMismatch" | "NotTrusted" | "UnknownError"
     | "NotSupportedFileFormat" | "Incompatible" | "signer-mismatch" | "check-failed";
 export type HyperVReadiness = {
@@ -11,41 +10,6 @@ export type LinuxImageCache =
     | { state: "valid"; source: "owner" | "global"; code?: undefined }
     | { state: "acquisition-required"; source?: undefined; code?: undefined }
     | { state: "conflict"; source?: undefined; code: "hyper-v-base-image-profile-conflict" | "hyper-v-base-image-unmanaged-existing" | "hyper-v-base-image-artifact-owner-unknown" };
-export type ProviderCommand = { executable: string; args: string[]; input?: string };
-export type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
-export type SmokeMode = "prerequisite" | "real-provider";
-export type SmokeOptions = { mode?: SmokeMode };
-export type SmokeFormatOptions = SmokeOptions & { mcpSurface?: boolean; mcpServerPath?: string; mcpSmokeScriptPath?: string };
-export type ParsedSmokeArgs = { ok: true; mode: SmokeMode; timeoutMs: number } | { ok: false; message: string };
-export type BenchDeviceStatus = "healthy" | "lease-ok" | "missing-hardware-id" | "missing-lease" | "expired-lease" | "foreign-lease" | "device-mismatch" | "inventory-missing";
-export type BenchDeviceCheck = {
-    deviceId: string;
-    name: string;
-    status: BenchDeviceStatus;
-    detail: string;
-    hardwareId: string | null;
-    inventoryState: "present" | "missing" | "unknown";
-    expiresAt?: string;
-};
-export type BenchBackendHealth = {
-    backend: "android-device" | "ios-device";
-    status: "PASS" | "SKIP" | "FAIL";
-    detail: string;
-    command: { command: string; status: number | null } | null;
-    devices: BenchDeviceCheck[];
-};
-export type DeviceLabBenchHealth = { ownerId: string; backends: BenchBackendHealth[] };
-export type DeviceLabWiringDiagnostic = {
-    stateRoot: string;
-    stateExists: boolean;
-    context: "container" | "host";
-    environmentRequired: boolean;
-    ownerResolution: "host-broker-resolve";
-    incomplete: boolean;
-};
-
-
-
 export type HyperVLinuxImageReadinessInput = Pick<HyperVReadiness, "linuxImageMissing" | "qemuImgSignatureStatus"> | null;
 
 export type HyperVLinuxImageReadiness = {
@@ -58,94 +22,13 @@ export type HyperVLinuxImageReadiness = {
     imageAcquisition: { available: boolean; missing: string[] } | null;
 };
 
-export function pushDeviceLabWiringDiagnostic(lines: string[], diagnostic: DeviceLabWiringDiagnostic, includeState = true): void {
-    if (includeState) {
-        lines.push(
-            `state: ${diagnostic.stateRoot}`,
-            `stateExists: ${diagnostic.stateExists}`,
-            `ownerResolution: ${diagnostic.ownerResolution}`,
-            `environmentRequired: ${diagnostic.environmentRequired}`,
-        );
-    }
-    if (diagnostic.incomplete) {
-        lines.push(
-            "",
-            "warning: device-lab container wiring is incomplete; the host-backed device state mount is unavailable from this container.",
-            "remedy: restart or recreate ccc from the host so the project container has /home/ccc/.ccc/devices mounted.",
-        );
-    }
-}
-
-export function missingPrerequisiteFromCommandFailure(result: CommandResult): string | null {
-    const output = `${result.stderr || ""}\n${result.stdout || ""}`;
-    const command = result.command;
-    if (/\bemulator\b/.test(command) && /\s-list-avds\b/.test(command) && /ETIMEDOUT|timed out|Timeout/i.test(output)) {
-        return "emulator inventory timed out";
-    }
-    if (!/xcrun|xcodebuild/.test(command)) return null;
-    if (/unable to find utility "simctl"|not a developer tool/i.test(output) && /\bsimctl\b/.test(command)) return "missing simctl";
-    if (/unable to find utility "xctrace"|not a developer tool/i.test(output) && /\bxctrace\b/.test(command)) return "missing xctrace";
-    if (/xcode-select: error|No developer tools were found|not a developer tool/i.test(output)) return "missing Xcode developer tools";
-    return null;
-}
-
-export function smokeDetail(mode: SmokeMode, normal: string, realProvider: string): string {
-    return mode === "real-provider" ? realProvider : normal;
-}
-
-export function smokePathCheck(command: string): CommandResult {
-    return {
-        command: `${command} path-check`,
-        status: 0,
-        stdout: "",
-        stderr: "",
-    };
-}
-
-export function compactSmokeOutput(output: string): string {
-    return output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .slice(0, 6)
-        .join(" | ");
-}
-
-export function inventoryContains(command: CommandResult | null, hardwareId: string): "present" | "missing" | "unknown" {
-    if (!command || command.status !== 0) return "unknown";
-    const output = `${command.stdout || ""}\n${command.stderr || ""}`;
-    const tokens: string[] = output.match(/[A-Za-z0-9._:-]+/g) || [];
-    return tokens.includes(hardwareId) ? "present" : "missing";
-}
-
-export function admitDeviceAdminSmokeArgs(args: string[]): ParsedSmokeArgs {
-    let mode: SmokeMode = "prerequisite";
-    let timeoutMs = 5000;
-    for (let i = 0; i < args.length; i += 1) {
-        const arg = args[i];
-        if (arg === "--real-provider" || arg === "--real-lab") {
-            mode = "real-provider";
-            continue;
-        }
-        if (arg === "--timeout-ms") {
-            const value = args[i + 1];
-            i += 1;
-            const parsed = Number(value);
-            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 600000) {
-                return { ok: false, message: "Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]" };
-            }
-            timeoutMs = parsed;
-            continue;
-        }
-        if (arg.startsWith("--timeout-ms=")) {
-            const parsed = Number(arg.slice("--timeout-ms=".length));
-            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 600000) {
-                return { ok: false, message: "Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]" };
-            }
-            timeoutMs = parsed;
-            continue;
-        }
-        return { ok: false, message: "Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]" };
-    }
-    return { ok: true, mode, timeoutMs };
-}
+export type SmokeMode = "prerequisite" | "real-provider";
+export type SmokeOptions = { mode?: SmokeMode; mcpSurface?: boolean };
+export type DiagnosticProbeReason = "command-failed" | "prerequisite-missing" | "installed-server-missing" | "installed-script-missing";
+export type DiagnosticProbe<Evidence> = { state: "available" | "missing" | "failed" | "invalid"; reason?: DiagnosticProbeReason; evidence?: Evidence; tokens?: readonly string[]; readiness?: HyperVReadiness };
+export type DiagnosticAvailability = { adb: boolean; emulator: boolean; xcrun: boolean; wsb: boolean; powershell: boolean; ssh: boolean; scp: boolean; tart: boolean; vz: boolean; utmctl: boolean; windowsHost: boolean };
+export type DiagnosticReason = "missing-tools" | "probe-failed" | "prerequisite-missing" | "optional-inventory-unavailable" | "responded" | "not-windows" | "invalid-readiness" | "hyper-v-unavailable" | "linux-image" | "macos-responded" | "macos-real-responded" | "missing-bridge" | "installed-server-missing" | "installed-script-missing";
+export type DiagnosticRow<Evidence> = { backend: string; status: "PASS" | "SKIP" | "FAIL"; reason: DiagnosticReason; missing?: readonly string[]; evidence: Evidence[] };
+export type BenchDeviceStatus = "healthy" | "lease-ok" | "missing-hardware-id" | "missing-lease" | "expired-lease" | "foreign-lease" | "device-mismatch" | "inventory-missing";
+export type BenchDeviceCheck = { deviceId: string; name: string; status: BenchDeviceStatus; hardwareId: string | null; inventoryState: "present" | "missing" | "unknown"; expiresAt?: string };
+export type BenchHealth<Evidence> = { ownerId: string; backends: { backend: "android-device" | "ios-device"; status: "PASS" | "SKIP" | "FAIL"; reason: "missing-tools" | "probe-failed" | "responded"; evidence?: Evidence; devices: BenchDeviceCheck[] }[] };

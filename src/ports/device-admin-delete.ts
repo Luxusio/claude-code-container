@@ -1,5 +1,5 @@
-import type { CleanupBackend, CleanupCommandResult, CleanupRecord } from "../domain/device-admin-cleanup.js";
-import type { PhysicalDeleteLease, DeviceAdminDeleteResult } from "../domain/device-admin-delete.js";
+import type { CleanupBackend, CleanupRecord } from "../domain/device-admin-cleanup.js";
+import type { PhysicalDeleteLease, DeviceAdminDeleteResult, ManagedResourceDeletion } from "../domain/device-admin-delete.js";
 
 /** Lazy observations and individual effects inside native hardware then aggregate locks. */
 export interface DeviceAdminLeaseScope {
@@ -16,11 +16,10 @@ export interface DeviceAdminPhysicalTransitionPorts<Backend extends CleanupBacke
     missingLease(error: unknown): boolean;
     transitionRecord(ownerId: string, backend: Backend, expected: CleanupRecord, replacement: CleanupRecord | null): { matched: boolean };
 }
-export interface DeviceAdminDeletePorts<Backend extends CleanupBackend> extends DeviceAdminPhysicalTransitionPorts<Backend> {
-    withRecordLock(ownerId: string, stateKey: string, deviceId: string, operation: () => DeviceAdminDeleteResult): DeviceAdminDeleteResult;
+export interface DeviceAdminDeletePorts<Backend extends CleanupBackend, Evidence = unknown> extends DeviceAdminPhysicalTransitionPorts<Backend> {
+    withRecordLock(ownerId: string, stateKey: string, deviceId: string, operation: () => DeviceAdminDeleteResult<Evidence>): DeviceAdminDeleteResult<Evidence>;
     readDevices(ownerId: string, stateKey: string): CleanupRecord[];
     sameRecord(current: CleanupRecord, expected: CleanupRecord): boolean;
-    commandPath(command: string): string | null;
-    runCommand(command: string, args: string[], timeoutMs?: number): CleanupCommandResult | null;
+    deleteManagedResource(provider: string, instance: string, timeoutMs?: number): ManagedResourceDeletion<Evidence>;
     releaseWindowsClaim(ownerId: string, backend: Backend, device: CleanupRecord): undefined;
 }

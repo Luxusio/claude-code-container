@@ -20,12 +20,102 @@ import { isDeepStrictEqual } from "util";
 import * as ownerState from "@ccc/device-lab/device-lab-owner-state.js";
 import * as sharedState from "@ccc/device-lab/device-lab-shared-state.js";
 import * as session from "../session.js";
+import * as nativeCleanup from "../device-lab-cleanup.js";
 import { getProjectId } from "../utils.js";
 import { createDeviceAdminCleanup, createDeviceAdminAllProjectCleanup } from "../application/device-admin-cleanup.js";
 import type { DeviceAdminCleanupPorts, DeviceAdminAllProjectCleanupPorts } from "../ports/device-admin-cleanup.js";
 import type { CleanupBackend, CleanupRecord, CleanupCommandResult } from "../domain/device-admin-cleanup.js";
+import { createDeviceAdminDelete } from "../application/device-admin-delete.js";
+import type { DeviceAdminDeletePorts } from "../ports/device-admin-delete.js";
+
+describe("semantic device deletion authority", () => {
+    function deletionTrace(outcome: "success" | "failure" | "no-result" = "success", matched = true) {
+        const trace: unknown[][] = [];
+        const record: CleanupRecord = {
+            id: "owned", status: "stopped", providerResourceManaged: true, provider: "tart", providerInstance: "main",
+            snapshots: [{ id: "a", provider: "tart", providerInstance: "repeat" }, { id: "b", provider: "tart", providerInstance: "repeat" }],
+            restoreRecovery: { provider: "tart", candidateProviderInstance: "later" },
+        };
+        const lease = { ownerId: "owner", deviceId: "owned", hardwareId: "hardware" };
+        const receipts: { identity: string; attempt: number }[] = [];
+        const ports: DeviceAdminDeletePorts<CleanupBackend, (typeof receipts)[number]> = {
+            withRecordLock: (_owner, _backend, _id, operation) => { trace.push(["record-lock"]); return operation(); },
+            readDevices: () => { trace.push(["fresh-read"]); return [record]; },
+            sameRecord: (current, expected) => { trace.push(["compare"]); return isDeepStrictEqual(current, expected); },
+            hardwareId: () => "hardware",
+            withLeaseLock: (_owner, _backend, _record, _hardware, operation) => {
+                trace.push(["lease-lock"]);
+                return operation({
+                    readLease: () => { trace.push(["lease-read"]); return lease; },
+                    readAggregate: () => { trace.push(["aggregate-read"]); return [lease]; },
+                    writeAggregate: next => { trace.push(["aggregate-write", next]); return undefined; },
+                    writeLease: () => { throw new Error("unexpected compensation"); },
+                    removeLease: () => { trace.push(["lease-remove"]); return undefined; },
+                });
+            },
+            sameAggregate: isDeepStrictEqual,
+            missingLease: () => false,
+            deleteManagedResource: (provider, instance, timeout) => {
+                trace.push(["delete", provider, instance, timeout]);
+                if (outcome === "no-result") return { state: "no-result" };
+                const evidence = { identity: instance, attempt: receipts.length };
+                receipts.push(evidence);
+                return { state: outcome === "failure" && instance === "repeat" ? "failure" : "success", evidence };
+            },
+            releaseWindowsClaim: () => { trace.push(["windows-claim"]); return undefined; },
+            transitionRecord: () => { trace.push(["cas"]); return { matched }; },
+        };
+        return { policy: createDeviceAdminDelete(ports), ports, record, trace, receipts };
+    }
+
+    it.each([true, false])("releases the matching lease, then Windows claim, then performs final CAS (matched=%s)", matched => {
+        const { policy, record, trace, receipts } = deletionTrace("success", matched);
+        const result = policy.deleteDevice("owner", { stateKey: "macos", name: "macos-vm" }, "owned", record, 1234);
+        expect(trace).toEqual([
+            ["record-lock"], ["fresh-read"], ["compare"],
+            ["delete", "tart", "repeat", 1234], ["delete", "tart", "repeat", 1234],
+            ["delete", "tart", "later", 1234], ["delete", "tart", "main", 1234],
+            ["lease-lock"], ["lease-read"], ["aggregate-read"], ["aggregate-write", []], ["lease-remove"], ["windows-claim"], ["cas"],
+        ]);
+        expect(result).toEqual(matched ? { ok: true, evidence: receipts } : { ok: false, reason: "owner-device-state-conflict", evidence: receipts });
+        result.evidence.forEach((evidence, index) => expect(evidence).toBe(receipts[index]));
+    });
+
+    it("attempts later and repeated resources after failure, retains evidence, and refuses before authority effects", () => {
+        const { policy, record, trace, receipts } = deletionTrace("failure");
+        const result = policy.deleteDevice("owner", { stateKey: "macos", name: "macos-vm" }, "owned", record);
+        expect(trace).toEqual([
+            ["record-lock"], ["fresh-read"], ["compare"], ["delete", "tart", "repeat", undefined],
+            ["delete", "tart", "repeat", undefined], ["delete", "tart", "later", undefined], ["delete", "tart", "main", undefined],
+        ]);
+        expect(result).toEqual({ ok: false, reason: "provider-delete-failed", evidence: receipts });
+        expect(receipts.map(receipt => receipt.identity)).toEqual(["repeat", "repeat", "later", "main"]);
+    });
+
+    it("continues after native no-result without inventing receipt evidence", () => {
+        const { policy, record, trace } = deletionTrace("no-result");
+        const result = policy.deleteDevice("owner", { stateKey: "macos", name: "macos-vm" }, "owned", record);
+        expect(result).toEqual({ ok: true, evidence: [] });
+        expect(trace.filter(event => event[0] === "delete")).toHaveLength(4);
+        expect(trace.slice(-3)).toEqual([["lease-remove"], ["windows-claim"], ["cas"]]);
+    });
+
+    it("preserves a Windows claim exception after provider deletion and prevents CAS", () => {
+        const { ports, record, trace } = deletionTrace();
+        const failure = new Error("claim-release");
+        ports.releaseWindowsClaim = () => { trace.push(["windows-claim"]); throw failure; };
+        let caught: unknown;
+        try { createDeviceAdminDelete(ports).deleteDevice("owner", { stateKey: "macos", name: "macos-vm" }, "owned", record); }
+        catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(trace.filter(event => event[0] === "delete")).toHaveLength(4);
+        expect(trace.at(-1)).toEqual(["windows-claim"]);
+        expect(trace.some(event => event[0] === "cas")).toBe(false);
+    });
+});
 
 vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
+vi.mock("../device-lab-cleanup.js", async original => ({ ...await original<typeof import("../device-lab-cleanup.js")>() }));
 vi.mock("@ccc/device-lab/device-lab-owner-state.js", async original => ({
     ...await original<typeof import("@ccc/device-lab/device-lab-owner-state.js")>(),
 }));
@@ -1846,6 +1936,61 @@ describe("device-lab admin cleanup and stop commands", () => {
         expect(result.text).toContain("failed: macos-stopped");
         expect(result.text).toContain("-> 7");
         expect(fixture.readDeviceIds(macosFile)).toEqual(["macos-owned:running", "macos-stopped:stopped"]);
+    });
+
+    it("omits a native null deletion result without fabricating a command receipt", () => {
+        const cwd = "/project/admin-delete-macos-null-result-test";
+        const { macosFile } = fixture.setupFixture(cwd);
+        const devices = fixture.readDevices(macosFile);
+        Object.assign(devices.find(device => device.id === "macos-stopped")!, { providerResourceManaged: true });
+        writeFileSync(macosFile, JSON.stringify({ devices }));
+        const binDir = join(fixture.homeDir, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        fixture.writeNodeTool(binDir, "tart", "throw new Error('native result replaced at the leaf');");
+        const deletion = vi.spyOn(nativeCleanup, "runCommand").mockReturnValue(null);
+
+        const result = deleteOwnerDevice("macos-stopped", cwd);
+
+        expect(deletion).toHaveBeenCalledWith(join(binDir, "tart.mjs"), ["delete", "ccc-mac-stopped"], undefined);
+        expect(result.ok).toBe(true);
+        expect(result.text).not.toContain("command:");
+        expect(result.text).not.toContain("-> 0");
+        expect(result.text).not.toContain("-> unknown");
+        expect(fixture.readDeviceIds(macosFile)).toEqual(["macos-owned:running"]);
+    });
+
+    it("attempts every managed macOS resource in order, including repeats after a failure, and retains every receipt", () => {
+        const cwd = "/project/admin-delete-macos-all-attempts-test";
+        const { macosFile } = fixture.setupFixture(cwd);
+        const devices = fixture.readDevices(macosFile);
+        Object.assign(devices.find(device => device.id === "macos-stopped")!, {
+            providerResourceManaged: true,
+            snapshots: [
+                { id: "first", provider: "tart", providerInstance: "repeated" },
+                { id: "second", provider: "tart", providerInstance: "repeated" },
+            ],
+            restoreRecovery: { provider: "tart", candidateProviderInstance: "later" },
+        });
+        const original = JSON.stringify({ devices });
+        writeFileSync(macosFile, original);
+        const binDir = join(fixture.homeDir, "bin");
+        const logPath = join(fixture.homeDir, "all-attempts.log");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        fixture.writeNodeTool(binDir, "tart", `appendFileSync(${JSON.stringify(logPath)}, args.join(' ') + '\\n'); if (args[1] === 'repeated') process.exit(7);`);
+
+        const result = deleteOwnerDevice("macos-stopped", cwd);
+
+        expect(result.ok).toBe(false);
+        expect(readFileSync(logPath, "utf8").trim().split("\n")).toEqual([
+            "delete repeated", "delete repeated", "delete later", "delete ccc-mac-stopped",
+        ]);
+        expect(result.text.match(/command: .*delete repeated -> 7/g)).toHaveLength(2);
+        expect(result.text).toContain("delete later -> 0");
+        expect(result.text).toContain("delete ccc-mac-stopped -> 0");
+        expect(result.text).toContain("reason: provider-delete-failed");
+        expect(readFileSync(macosFile, "utf8")).toBe(original);
     });
 
     it.each(["unsupported-provider", "tart"])("retains managed macOS metadata when %s cannot delete its resource", provider => {

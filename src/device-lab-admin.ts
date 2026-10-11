@@ -2,11 +2,43 @@ import { createDeviceAdminDelete } from "./application/device-admin-delete.js";
 import type { DeviceAdminDeletePorts } from "./ports/device-admin-delete.js";
 import { createDeviceAdminDiagnostics } from "./application/device-admin-diagnostics.js";
 import { createDeviceAdminSetup } from "./application/device-admin-setup.js";
-import { admitDeviceAdminSmokeArgs, pushDeviceLabWiringDiagnostic, type SmokeOptions, type SmokeFormatOptions, type DeviceLabBenchHealth } from "./domain/device-admin-diagnostics.js";
-import { admitDeviceAdminSetupArgs } from "./domain/device-admin-setup.js";
-export type { DeviceLabBenchHealth } from "./domain/device-admin-diagnostics.js";
-export type { HyperVSetupHostResult } from "./domain/device-admin-setup.js";
-import type { HyperVSetupHostResult } from "./domain/device-admin-setup.js";
+import type { DiagnosticProbe, DiagnosticRow } from "./domain/device-admin-diagnostics.js";
+import type { DeviceAdminDiagnosticsPorts } from "./ports/device-admin-diagnostics.js";
+import type { SetupResult } from "./domain/device-admin-setup.js";
+import type { DeviceAdminSetupPorts } from "./ports/device-admin-setup.js";
+export type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
+export type SmokeMode = "prerequisite" | "real-provider";
+export type SmokeOptions = { mode?: SmokeMode };
+export type SmokeFormatOptions = SmokeOptions & { mcpSurface?: boolean; mcpServerPath?: string; mcpSmokeScriptPath?: string };
+export type ParsedSmokeArgs = { ok: true; mode: SmokeMode; timeoutMs: number } | { ok: false; message: string };
+export type BenchDeviceStatus = "healthy" | "lease-ok" | "missing-hardware-id" | "missing-lease" | "expired-lease" | "foreign-lease" | "device-mismatch" | "inventory-missing";
+export type BenchDeviceCheck = {
+    deviceId: string;
+    name: string;
+    status: BenchDeviceStatus;
+    detail: string;
+    hardwareId: string | null;
+    inventoryState: "present" | "missing" | "unknown";
+    expiresAt?: string;
+};
+export type BenchBackendHealth = {
+    backend: "android-device" | "ios-device";
+    status: "PASS" | "SKIP" | "FAIL";
+    detail: string;
+    command: { command: string; status: number | null } | null;
+    devices: BenchDeviceCheck[];
+};
+export type DeviceLabBenchHealth = { ownerId: string; backends: BenchBackendHealth[] };
+export type DeviceLabWiringDiagnostic = {
+    stateRoot: string;
+    stateExists: boolean;
+    context: "container" | "host";
+    environmentRequired: boolean;
+    ownerResolution: "host-broker-resolve";
+    incomplete: boolean;
+};
+
+export type HyperVSetupHostResult = { ok: boolean; text: string };
 import { createDeviceAdminAllProjectCleanup } from "./application/device-admin-cleanup.js";
 import { createDeviceAdminPrune } from "./application/device-admin-prune.js";
 import { admitDeviceAdminInventoryCommand } from "./domain/device-admin-inventory.js";
@@ -576,13 +608,21 @@ function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBro
     return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}`;
 }
 
-const deviceAdminDeleteNativePorts: DeviceAdminDeletePorts<Backend> = {
+const deviceAdminDeleteNativePorts: DeviceAdminDeletePorts<Backend, CommandResult> = {
     ...deviceAdminPhysicalTransitionNativePorts,
     withRecordLock: withAdminOwnerDeviceOperation,
     readDevices,
     sameRecord: isDeepStrictEqual,
-    commandPath,
-    runCommand,
+    deleteManagedResource(provider, instance, timeoutMs) {
+        const failure = (stderr: string) => ({ state: "failure" as const,
+            evidence: { command: `${provider} delete ${instance}`, status: null, stdout: "", stderr } });
+        if (!["tart", "vz", "utmctl"].includes(provider)) return failure(`unsupported macOS VM provider: ${provider}`);
+        const executable = commandPath(provider);
+        if (!executable) return failure("command not found");
+        const result = runCommand(executable, ["delete", instance], timeoutMs);
+        if (!result) return { state: "no-result" };
+        return { state: result.status === 0 ? "success" : "failure", evidence: result };
+    },
     releaseWindowsClaim: (ownerId, backend, device) => { releaseWindowsSandboxLockForOwner(ownerId, backend, device); return undefined; },
 };
 const deviceAdminDelete = createDeviceAdminDelete(deviceAdminDeleteNativePorts);
@@ -641,7 +681,7 @@ export function deleteOwnerDevice(deviceId: string, cwd = process.cwd(), profile
             return { ok: false, text: `Refusing to delete ${deviceId} while status is ${deletion.reason.slice("device-status-".length)}; run 'ccc devices stop ${deviceId}' first.\n` };
         }
         const lines = [`failed: ${deviceId}`, `backend: ${match.backend.name}`, `owner: ${ownerId}`, `reason: ${deletion.reason}`];
-        for (const result of deletion.commands) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
+        for (const result of deletion.evidence) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
         return { ok: false, text: `${lines.join("\n")}\n` };
     }
     const lines = [
@@ -649,7 +689,7 @@ export function deleteOwnerDevice(deviceId: string, cwd = process.cwd(), profile
         `backend: ${match.backend.name}`,
         `owner: ${ownerId}`,
     ];
-    for (const result of deletion.commands) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
+    for (const result of deletion.evidence) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
     return { ok: true, text: `${lines.join("\n")}\n` };
 }
 
@@ -694,57 +734,525 @@ export function formatDevicesAllProjectsList(): string {
     return deviceAdminInventory.formatAllProjectsList();
 }
 
-const deviceAdminDiagnostics = createDeviceAdminDiagnostics({
-    backends: DEVICE_BACKENDS, resolveOwnerId: deviceLabOwnerId,
-    readDevices, commandPath, hardwareIdForPhysicalDevice, readPhysicalLease: readPhysicalLeaseLock,
-    platform: () => process.platform, environment: (name) => process.env[name], now: () => Date.now(),
-    homeDirectory: homedir, packageRoot, joinPath: join, exists: existsSync, runCommand,
-    readinessCommand: hyperVReadinessCommand, parseReadiness: parseHyperVReadiness,
-    inspectLinuxImageCache: inspectHyperVUbuntuImageCache, linuxImageSmokeResult: hyperVLinuxSmokeImageResult,
-    runNode(script, server, timeoutMs) {
-        const result = spawnSync(process.execPath, [script, server], {
-            encoding: "utf-8", env: process.env, timeout: timeoutMs, windowsHide: true,
-        });
-        return { command: [process.execPath, script, server].join(" "), status: result.status,
-            stdout: result.stdout || "", stderr: result.stderr || result.error?.message || "" };
-    },
-}, deviceAdminInventory);
+
+type DiagnosticEvidence = { commands?: CommandResult[]; detail?: string };
+function pushDeviceLabWiringDiagnostic(lines: string[], diagnostic: DeviceLabWiringDiagnostic, includeState = true): void {
+    if (includeState) {
+        lines.push(
+            `state: ${diagnostic.stateRoot}`,
+            `stateExists: ${diagnostic.stateExists}`,
+            `ownerResolution: ${diagnostic.ownerResolution}`,
+            `environmentRequired: ${diagnostic.environmentRequired}`,
+        );
+    }
+    if (diagnostic.incomplete) {
+        lines.push(
+            "",
+            "warning: device-lab container wiring is incomplete; the host-backed device state mount is unavailable from this container.",
+            "remedy: restart or recreate ccc from the host so the project container has /home/ccc/.ccc/devices mounted.",
+        );
+    }
+}
+
+function missingPrerequisiteFromCommandFailure(result: CommandResult): string | null {
+    const output = `${result.stderr || ""}\n${result.stdout || ""}`;
+    const command = result.command;
+    if (/\bemulator\b/.test(command) && /\s-list-avds\b/.test(command) && /ETIMEDOUT|timed out|Timeout/i.test(output)) {
+        return "emulator inventory timed out";
+    }
+    if (!/xcrun|xcodebuild/.test(command)) return null;
+    if (/unable to find utility "simctl"|not a developer tool/i.test(output) && /\bsimctl\b/.test(command)) return "missing simctl";
+    if (/unable to find utility "xctrace"|not a developer tool/i.test(output) && /\bxctrace\b/.test(command)) return "missing xctrace";
+    if (/xcode-select: error|No developer tools were found|not a developer tool/i.test(output)) return "missing Xcode developer tools";
+    return null;
+}
+
+function smokePathCheck(command: string): CommandResult {
+    return {
+        command: `${command} path-check`,
+        status: 0,
+        stdout: "",
+        stderr: "",
+    };
+}
+
+function compactSmokeOutput(output: string): string {
+    return output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 6)
+        .join(" | ");
+}
+
+function admitDeviceAdminSmokeArgs(args: string[]): ParsedSmokeArgs {
+    let mode: SmokeMode = "prerequisite";
+    let timeoutMs = 5000;
+    for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i];
+        if (arg === "--real-provider" || arg === "--real-lab") {
+            mode = "real-provider";
+            continue;
+        }
+        if (arg === "--timeout-ms") {
+            const value = args[i + 1];
+            i += 1;
+            const parsed = Number(value);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 600000) {
+                return { ok: false, message: "Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]" };
+            }
+            timeoutMs = parsed;
+            continue;
+        }
+        if (arg.startsWith("--timeout-ms=")) {
+            const parsed = Number(arg.slice("--timeout-ms=".length));
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 600000) {
+                return { ok: false, message: "Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]" };
+            }
+            timeoutMs = parsed;
+            continue;
+        }
+        return { ok: false, message: "Usage: ccc devices smoke [--real-provider|--real-lab] [--timeout-ms 1..600000]" };
+    }
+    return { ok: true, mode, timeoutMs };
+}
+
+const OPT_DIST_DEVICE_LAB_MCP_SERVER = "/opt/ccc/dist/device-lab-mcp/server.mjs";
+const OPT_SOURCE_DEVICE_LAB_MCP_SERVER = "/opt/ccc/device-lab-mcp/server.mjs";
+function runInstalledMcpSmoke(script: string, server: string, timeoutMs: number): CommandResult {
+    const result = spawnSync(process.execPath, [script, server], {
+        encoding: "utf-8", env: process.env, timeout: timeoutMs, windowsHide: true,
+    });
+    return { command: [process.execPath, script, server].join(" "), status: result.status,
+        stdout: result.stdout || "", stderr: result.stderr || result.error?.message || "" };
+}
+function installedMcpSmokeScriptPath(options: SmokeFormatOptions): string {
+    return options.mcpSmokeScriptPath || join(packageRoot(), "scripts", "real-tests", "installed-mcp-smoke.ts");
+}
+
+function installedDeviceLabMcpServerPath(options: SmokeFormatOptions): string {
+    if (options.mcpServerPath) return options.mcpServerPath;
+    const configuredServer = process.env.CCC_REAL_DEVICE_LAB_MCP_SERVER;
+    if (configuredServer) return configuredServer;
+    const packageDist = join(packageRoot(), "dist", "device-lab-mcp", "server.mjs");
+    if (existsSync(packageDist)) return packageDist;
+    if (existsSync(OPT_DIST_DEVICE_LAB_MCP_SERVER)) return OPT_DIST_DEVICE_LAB_MCP_SERVER;
+    return OPT_SOURCE_DEVICE_LAB_MCP_SERVER;
+}
+
+function installedMcpSurfaceSmoke(timeoutMs: number, options: SmokeFormatOptions = {}): SmokeResult {
+    const serverPath = installedDeviceLabMcpServerPath(options);
+    const scriptPath = installedMcpSmokeScriptPath(options);
+    if (!existsSync(serverPath)) {
+        return { backend: "device-lab-mcp-installed", status: "SKIP", detail: `installed MCP server not found: ${serverPath}` };
+    }
+    if (!existsSync(scriptPath)) {
+        return { backend: "device-lab-mcp-installed", status: "SKIP", detail: `installed MCP smoke script not found: ${scriptPath}` };
+    }
+    const command = runInstalledMcpSmoke(scriptPath, serverPath, Math.max(timeoutMs, 15000));
+    if (command.status === 0) {
+        return {
+            backend: "device-lab-mcp-installed",
+            status: "PASS",
+            detail: "installed MCP advertised surface dispatches current-display aliases",
+            commands: [command],
+        };
+    }
+    const detail = compactSmokeOutput(`${command.stderr || ""}\n${command.stdout || ""}`) || `command exited ${command.status ?? "unknown"}`;
+    return {
+        backend: "device-lab-mcp-installed",
+        status: "FAIL",
+        detail,
+        commands: [command],
+    };
+}
+
+
+function deviceLabWiringDiagnostic(_cwd = process.cwd(), _profile?: string): DeviceLabWiringDiagnostic {
+    const stateRoot = join(homedir(), ".ccc/devices");
+    const stateExists = existsSync(stateRoot);
+    return { stateRoot, stateExists, context: process.env.container === "docker" ? "container" : "host",
+        environmentRequired: false, ownerResolution: "host-broker-resolve", incomplete: !stateExists };
+}
+function deviceAdminDiagnosticsNative(options: SmokeFormatOptions = {}): DeviceAdminDiagnosticsPorts<Backend, DiagnosticEvidence> {
+    function execute(executable: string, args: string[], timeoutMs: number): CommandResult {
+        return runCommand(executable, args, timeoutMs) || { command: [executable, ...args].join(" "), status: null, stderr: "command not found" };
+    }
+    function probe(tool: string, args: string[], timeoutMs: number): DiagnosticProbe<DiagnosticEvidence> {
+        const executable = commandPath(tool);
+        if (!executable) return { state: "missing" };
+        const command = execute(executable, args, timeoutMs);
+        const missing = command.status !== 0 ? missingPrerequisiteFromCommandFailure(command) : null;
+        const detail = command.status === 0 ? undefined : missing
+            ? `${missing} (${command.stderr || command.stdout || `command exited ${command.status}`})`
+            : command.stderr || command.stdout || `command exited ${command.status}`;
+        return { state: command.status === 0 ? "available" : missing ? "missing" : "failed",
+            reason: missing ? "prerequisite-missing" : command.status === 0 ? undefined : "command-failed",
+            evidence: { commands: [command], detail },
+            tokens: command.status === 0 ? (`${command.stdout || ""}\n${command.stderr || ""}`.match(/[A-Za-z0-9._:-]+/g) || []) : undefined };
+    }
+    return {
+        backends: DEVICE_BACKENDS, resolveOwnerId: deviceLabOwnerId, readDevices, hardwareIdForPhysicalDevice,
+        readPhysicalLease: readPhysicalLeaseLock, now: () => Date.now(),
+        availability() {
+            const tools = Object.fromEntries(DEVICE_BACKENDS.flatMap(backend => backend.tools.map(tool => [tool, Boolean(commandPath(tool))])));
+            return { adb: Boolean(tools.adb), emulator: Boolean(tools.emulator), xcrun: Boolean(tools.xcrun),
+                wsb: Boolean(tools.wsb), powershell: Boolean(tools["powershell.exe"]),
+                tart: Boolean(tools.tart), vz: Boolean(tools.vz), utmctl: Boolean(tools.utmctl),
+                ssh: Boolean(commandPath("ssh")), scp: Boolean(commandPath("scp")), windowsHost: process.platform === "win32" };
+        },
+        physicalTargets: () => ({
+            ios: Boolean((process.env.CCC_REAL_IOS_DEVICE_UDID || "").trim()),
+            android: Boolean((process.env.CCC_REAL_ANDROID_DEVICE_SERIAL || process.env.CCC_REAL_ANDROID_SERIAL || "").trim()),
+        }),
+        probeAndroidVersion: timeout => probe("adb", ["version"], timeout),
+        probeAndroidEmulatorInventory: timeout => probe("emulator", ["-list-avds"], timeout),
+        probeAndroidPhysicalInventory: timeout => probe("adb", ["devices", "-l"], timeout),
+        probeIosSimulatorInventory: timeout => probe("xcrun", ["simctl", "list", "-j"], timeout),
+        probeIosPhysicalInventory: timeout => probe("xcrun", ["xctrace", "list", "devices"], timeout),
+        probeWindowsSandbox: timeout => probe("wsb", ["--help"], timeout),
+        probeMacosVersion: (provider, timeout) => probe(provider, ["--version"], timeout),
+        probeSsh: timeout => probe("ssh", ["-V"], timeout),
+        probeScp() {
+            const executable = commandPath("scp");
+            return executable ? { state: "available", evidence: { commands: [smokePathCheck(executable)] } } : { state: "missing" };
+        },
+        probeHyperV(timeoutMs) {
+            const executable = commandPath("powershell.exe");
+            if (!executable) return { state: "missing" };
+            const plan = hyperVReadinessCommand(executable);
+            const command = execute(plan.executable, plan.args, timeoutMs);
+            const evidence = { commands: [command], detail: command.status === 0 ? undefined
+                : compactSmokeOutput(String(command.stderr || command.stdout || "")) || `command exited ${command.status}` };
+            if (command.status !== 0) return { state: "failed", evidence };
+            const readiness = parseHyperVReadiness(command.stdout || "");
+            return readiness ? { state: "available", readiness, evidence } : { state: "invalid", evidence: { ...evidence, detail: "invalid Hyper-V readiness response" } };
+        },
+        probeInstalledSurface(timeoutMs) {
+            const result = installedMcpSurfaceSmoke(timeoutMs, options);
+            return { state: result.status === "PASS" ? "available" : result.status === "SKIP" ? "missing" : "failed",
+                reason: result.status === "SKIP" ? result.detail.startsWith("installed MCP server") ? "installed-server-missing" : "installed-script-missing" : undefined,
+                evidence: { commands: result.commands, detail: result.detail } };
+        },
+        linuxImage(ownerId, readiness) {
+            const result = hyperVLinuxSmokeImageResult(readiness, inspectHyperVUbuntuImageCache(join(homedir(), ".ccc/device-broker-private"), ownerId));
+            return { available: result.status === "PASS", evidence: { detail: result.detail } };
+        },
+    };
+}
+function renderDiagnosticRow(result: DiagnosticRow<DiagnosticEvidence>, mode: SmokeMode): SmokeResult {
+    const commands = result.evidence.flatMap(evidence => evidence.commands || []);
+    const failureDetail = result.evidence.find(evidence => evidence.detail)?.detail;
+    const responded: Record<string, [string, string]> = {
+        "android-emulator": ["adb and emulator responded", "real provider adb/emulator readiness responded; no emulator started"],
+        "android-device": ["adb physical-device inventory responded", "real provider adb physical-device inventory responded; no device claimed"],
+        "ios-simulator": ["xcrun simctl inventory responded", "real provider simctl inventory responded; no simulator booted"],
+        "ios-device": ["xcrun xctrace physical-device inventory responded", "real provider xctrace physical-device inventory responded; no device claimed"],
+        "windows-sandbox": ["wsb CLI responded", "real provider Windows Sandbox CLI responded; no sandbox started"],
+        "windows-vm": ["Hyper-V module, hypervisor, and VMMS service are ready; no VM started", "Hyper-V module, hypervisor, and VMMS service are ready; no VM started"],
+    };
+    let detail: string;
+    switch (result.reason) {
+    case "missing-tools": case "missing-bridge": detail = `missing ${result.missing!.map(name => result.backend === "linux-vm" && name === "powershell" ? "powershell.exe" : name).join(", ")}`; break;
+    case "not-windows": detail = "not a Windows host"; break;
+    case "hyper-v-unavailable": detail = `missing ${result.missing?.join(", ") || "Hyper-V prerequisites"}`; break;
+    case "invalid-readiness": detail = "invalid Hyper-V readiness response"; break;
+    case "macos-responded": detail = "macOS VM provider responded"; break;
+    case "macos-real-responded": detail = "real provider macOS VM CLI and SSH bridge responded; SCP bridge tool found; no VM started"; break;
+    case "optional-inventory-unavailable": detail = `physical-device inventory unavailable without an explicit leased device target (${failureDetail})`; break;
+    case "responded": detail = failureDetail || responded[result.backend]?.[mode === "real-provider" ? 1 : 0] || ""; break;
+    default: detail = failureDetail || ""; break;
+    }
+    return { backend: result.backend, status: result.status, detail, ...(commands.length ? { commands } : {}) };
+}
 export function deviceLabSmoke(cwd = process.cwd(), timeoutMs = 5000, profile?: string, options: SmokeOptions = {}) {
-    return deviceAdminDiagnostics.smoke(cwd, timeoutMs, profile, options);
+    const smoke = createDeviceAdminDiagnostics(deviceAdminDiagnosticsNative()).smoke(cwd, timeoutMs, profile, options);
+    return { ...smoke, results: smoke.results.map(result => renderDiagnosticRow(result, smoke.mode)) };
 }
 export function deviceLabBenchHealth(cwd = process.cwd(), profile?: string, timeoutMs = 5000): DeviceLabBenchHealth {
-    return deviceAdminDiagnostics.benchHealth(cwd, profile, timeoutMs);
+    const bench = createDeviceAdminDiagnostics(deviceAdminDiagnosticsNative()).benchHealth(cwd, profile, timeoutMs);
+    const deviceDetail: Record<BenchDeviceStatus, string> = {
+        "missing-hardware-id": "attached physical device record has no serial/UDID", "missing-lease": "physical lease lock is missing",
+        "foreign-lease": "lease belongs to another owner", "device-mismatch": "lease is bound to a different device id",
+        "expired-lease": "", "inventory-missing": "host inventory did not list the attached hardware id",
+        "lease-ok": "lease is current; inventory unavailable", healthy: "lease is current and host inventory lists the device",
+    };
+    return { ownerId: bench.ownerId, backends: bench.backends.map(backend => {
+        const command = backend.evidence?.commands?.[0];
+        const detail = backend.reason === "missing-tools" ? `missing ${backend.backend === "android-device" ? "adb" : "xcrun"}`
+            : backend.reason === "probe-failed" ? `inventory command failed with status ${command?.status ?? "unknown"}`
+            : backend.backend === "android-device" ? "adb physical-device inventory responded" : "xcrun physical-device inventory responded";
+        return { backend: backend.backend, status: backend.status, detail,
+            command: command ? { command: command.command, status: command.status } : null,
+            devices: backend.devices.map(device => ({ ...device, detail: device.status === "expired-lease" ? `lease expired at ${device.expiresAt}` : deviceDetail[device.status] })) };
+    }) };
 }
 export function formatDevicesDoctor(cwd = process.cwd(), profile?: string): string {
-    return deviceAdminDiagnostics.formatDoctor(cwd, profile);
+    const snapshot = deviceAdminInventory.snapshot(cwd, profile);
+    const bench = deviceLabBenchHealth(cwd, profile);
+    const wiring = deviceLabWiringDiagnostic();
+    const lines = [
+        "=== CCC Devices Doctor ===",
+        "",
+        `owner: ${snapshot.ownerId}`,
+    ];
+    pushDeviceLabWiringDiagnostic(lines, wiring);
+    lines.push(
+        "",
+        "Device-lab MCP: managed by CCC when containers are started",
+        "Startup policy: lazy; these diagnostics do not start devices",
+        "",
+    );
+    for (const backend of snapshot.backends) {
+        if (backend.available) {
+            lines.push(`${backend.name}: ok`);
+        } else {
+            lines.push(`${backend.name}: missing ${backend.missing.join(", ")}`);
+        }
+    }
+    lines.push("");
+    lines.push("Lab bench health:");
+    for (const backend of bench.backends) {
+        lines.push(`${backend.backend}: ${backend.status} - ${backend.detail}`);
+        if (backend.devices.length === 0) {
+            lines.push("  (no current-owner attached physical devices)");
+            continue;
+        }
+        for (const device of backend.devices) {
+            const hardware = device.hardwareId ? ` hardware=${device.hardwareId}` : "";
+            lines.push(`  ${device.deviceId}: ${device.status}${hardware} inventory=${device.inventoryState} - ${device.detail}`);
+        }
+    }
+    return `${lines.join("\n")}\n`;
 }
+
 export function formatDevicesSmoke(cwd = process.cwd(), timeoutMs = 5000, profile?: string, options: SmokeFormatOptions = {}): string {
-    return deviceAdminDiagnostics.formatSmoke(cwd, timeoutMs, profile, options);
+    const semantic = createDeviceAdminDiagnostics(deviceAdminDiagnosticsNative(options)).smoke(cwd, timeoutMs, profile, options);
+    const smoke = { ...semantic, results: semantic.results.map(result => renderDiagnosticRow(result, semantic.mode)) };
+    const wiring = deviceLabWiringDiagnostic();
+    const results = smoke.results;
+    const lines = [
+        "=== CCC Devices Smoke ===",
+        "",
+        `owner: ${smoke.ownerId}`,
+    ];
+    pushDeviceLabWiringDiagnostic(lines, wiring);
+    lines.push("Startup policy: lazy; smoke checks do not start devices", "");
+    if (smoke.mode === "real-provider") {
+        const startupIndex = lines.findIndex((line) => line === "Startup policy: lazy; smoke checks do not start devices");
+        lines.splice(startupIndex, 0, "mode: real-provider (explicit opt-in)", "Real provider policy: bounded readiness/inventory commands only; no devices are created, started, stopped, or deleted");
+    }
+    for (const result of results) {
+        lines.push(`${result.backend}: ${result.status} - ${result.detail}`);
+        for (const command of result.commands || []) {
+            lines.push(`  ${command.command} -> ${command.status ?? "unknown"}`);
+        }
+    }
+    return `${lines.join("\n")}\n`;
 }
-function deviceLabWiringDiagnostic(_cwd = process.cwd(), _profile?: string) {
-    return deviceAdminDiagnostics.wiringDiagnostic();
+
+type SetupEvidence = { execution?: CommandResult | null; detail?: string; receipt?: ReturnType<typeof readHyperVWindowsEvaluationReceipt> };
+function admitDeviceAdminSetupArgs(args: string[]): { ok: true; confirm: boolean; acceptWindowsEvaluationLicense: boolean } | { ok: false; message: string } {
+    const setupArgs = args.slice(2);
+    const allowed = new Set(["--confirm", "--accept-windows-evaluation-license"]);
+    if (args[1] !== "hyper-v" || setupArgs.some((arg) => !allowed.has(arg))
+        || new Set(setupArgs).size !== setupArgs.length
+        || (setupArgs.includes("--accept-windows-evaluation-license") && !setupArgs.includes("--confirm"))) {
+        return { ok: false, message: "Usage: ccc devices setup hyper-v [--confirm [--accept-windows-evaluation-license]]" };
+    }
+    return { ok: true, confirm: setupArgs.includes("--confirm"), acceptWindowsEvaluationLicense: setupArgs.includes("--accept-windows-evaluation-license") };
+}
+
+function hyperVSetupFailureDetail(execution: CommandResult | null | undefined): string {
+    const output = `${execution?.stderr || ""}\n${execution?.stdout || ""}`;
+    const compact = output.replace(/_x[0-9a-f]{4}_/gi, "").replace(/\s+/g, "");
+    const allowedCodes = [
+        "hyper-v-setup-elevation-failed",
+        "hyper-v-setup-pipe-handshake-timeout",
+        "hyper-v-setup-pipe-client-mismatch",
+        "hyper-v-setup-child-timeout",
+        "hyper-v-setup-result-invalid",
+        "hyper-v-setup-enable-failed",
+        "hyper-v-setup-elevated-operation-failed",
+        "hyper-v-setup-command-timeout",
+        "hyper-v-setup-user-sid-invalid",
+        "hyper-v-setup-pipe-name-invalid",
+    ];
+    for (const code of allowedCodes) {
+        const pattern = new RegExp(`(^|[^a-z0-9-])${code}(?=$|[^a-z0-9-])`);
+        if (pattern.test(output) || pattern.test(compact)) return code;
+    }
+    if (execution?.status === null && /ETIMEDOUT|timed out|timeout/i.test(output)) return "hyper-v-setup-command-timeout";
+    return execution?.status === 0 ? "hyper-v-setup-result-invalid" : "hyper-v-setup-host-operation-failed";
+}
+
+function renderHyperVSetup(result: SetupResult<SetupEvidence>): HyperVSetupHostResult {
+    if (!result.ok) {
+        if (result.reason === "not-windows") return { ok: false, text: "CCC Hyper-V setup is only available on a Windows host." };
+        if (result.reason === "powershell-missing") return { ok: false, text: "CCC Hyper-V setup failed: PowerShell was not found." };
+        const detail = result.reason === "network-invalid" ? "hyper-v-setup-network-result-invalid"
+            : result.evidence?.detail || hyperVSetupFailureDetail(result.evidence?.execution);
+        return { ok: false, text: `CCC Hyper-V setup ${result.reason === "diagnostic-failed" ? "diagnostic " : ""}failed: ${detail}` };
+    }
+    if (result.mode === "diagnostic") {
+        const { readiness, linuxImage, licenseAccepted } = result;
+        const actions: string[] = [];
+        if (!readiness.moduleAvailable || !readiness.hypervisorPresent) {
+            actions.push("action: verify that the Windows edition supports Hyper-V and firmware virtualization is enabled, then run 'ccc devices setup hyper-v --confirm'");
+        }
+        if (!readiness.vmmsRunning) {
+            actions.push("action: start the Hyper-V Virtual Machine Management (vmms) service, then rerun this diagnostic");
+        }
+        if (readiness.rebootPending) {
+            actions.push("action: reboot Windows manually, then rerun this diagnostic");
+        }
+        if (readiness.managementAccess === false) {
+            actions.push(readiness.sessionRefreshRequired
+                ? "action: sign out of Windows and sign in once to activate Hyper-V Administrators membership, then rerun this diagnostic"
+                : "action: grant the current user Hyper-V management access with 'ccc devices setup hyper-v --confirm', then rerun this diagnostic");
+        }
+        const qemuImgMissing = readiness.linuxImageMissing || [];
+        const qemuImgRemedy = qemuImgMissing.includes("hyper-v-qemu-img-unavailable")
+            ? "install the Android SDK Emulator package from Google so %LOCALAPPDATA%\\Android\\Sdk\\emulator\\qemu-img.exe is available for Hyper-V Linux images at that exact path, with no junction or symbolic link in any path component"
+            : qemuImgMissing.includes("hyper-v-qemu-img-untrusted")
+                ? `reinstall or update the Android Emulator through the Android SDK Manager until %LOCALAPPDATA%\\Android\\Sdk\\emulator\\qemu-img.exe has a Valid Google LLC signature (signature status: ${readiness.qemuImgSignatureStatus ?? "unknown"}); never substitute a qemu-img from another source`
+                : null;
+        const linuxImageActions: string[] = [];
+        if (linuxImage.baseImage.state === "conflict") {
+            // Partial and acquire-work artifacts also exist while a create is still acquiring the image.
+            const acquisitionMayBeRunning = linuxImage.blockers.includes("hyper-v-base-image-artifact-owner-unknown")
+                ? "; a Hyper-V Linux VM create that is still acquiring the image also leaves these artifacts, so first let any such create finish and rerun this diagnostic"
+                : "";
+            linuxImageActions.push(`action: resolve ${linuxImage.blockers.join(", ")} in the ubuntu-lts base image cache under %USERPROFILE%\\.ccc\\device-broker-private\\images\\hyper-v\\ubuntu-lts before creating a Hyper-V Linux VM; CCC does not repair or replace it automatically${acquisitionMayBeRunning}`);
+        }
+        if (qemuImgRemedy) {
+            linuxImageActions.push(linuxImage.baseImage.state === "valid"
+                ? `advisory: qemu-img is not needed until the ubuntu-lts image must be re-acquired; before then, ${qemuImgRemedy}`
+                : `action: ${qemuImgRemedy}`);
+        }
+        return {
+            ok: true,
+            text: [
+                "=== CCC Hyper-V Setup ===",
+                "",
+                "mode: diagnostic",
+                `available: ${readiness.available}`,
+                `moduleAvailable: ${readiness.moduleAvailable}`,
+                `hypervisorPresent: ${readiness.hypervisorPresent}`,
+                `vmmsRunning: ${readiness.vmmsRunning}`,
+                `hyperVAdministratorsMember: ${readiness.hyperVAdministratorsMember ?? "unknown"}`,
+                `managementAccess: ${readiness.managementAccess ?? "unknown"}`,
+                `sessionRefreshRequired: ${readiness.sessionRefreshRequired ?? false}`,
+                `rebootPending: ${readiness.rebootPending}`,
+                `missing: ${readiness.missing.join(", ")}`,
+                `qemuImgAvailable: ${readiness.qemuImgAvailable ?? false}`,
+                `qemuImgTrusted: ${readiness.qemuImgTrusted ?? false}`,
+                `qemuImgSignatureStatus: ${readiness.qemuImgSignatureStatus ?? "unknown"}`,
+                `linuxImageMissing: ${(readiness.linuxImageMissing || []).join(", ")}`,
+                `linuxBaseImage: ${linuxImage.baseImage.state}${linuxImage.baseImage.source ? ` (${linuxImage.baseImage.source})` : ""}`,
+                `windowsEvaluationLicenseAccepted: ${licenseAccepted}`,
+                ...(!licenseAccepted ? ["action: accept the Windows Server evaluation terms once with 'ccc devices setup hyper-v --confirm --accept-windows-evaluation-license'"] : []),
+                ...linuxImageActions,
+                ...actions,
+            ].join("\n"),
+        };
+
+    }
+    const { observation, network } = result;
+    const receipt = result.receipt?.receipt;
+    return {
+        ok: true,
+        text: [
+            "=== CCC Hyper-V Setup ===",
+            "",
+            "mode: confirmed",
+            `feature: ${observation.featureName}`,
+            `beforeState: ${observation.beforeState}`,
+            `afterState: ${observation.afterState}`,
+            `changed: ${observation.changed}`,
+            `hyperVAdministratorsMember: ${observation.hyperVAdministratorsMember ?? "unknown"}`,
+            `membershipChanged: ${observation.membershipChanged ?? false}`,
+            `managementAccess: ${observation.managementAccess ?? "unknown"}`,
+            `sessionRefreshRequired: ${observation.sessionRefreshRequired ?? false}`,
+            `rebootRequired: ${observation.rebootRequired}`,
+            "networkPrepared: true",
+            `networkSwitch: ${network.switchName}`,
+            `networkGateway: ${network.gateway}`,
+            `windowsEvaluationLicenseAccepted: ${Boolean(receipt)}`,
+            ...(receipt ? [`windowsEvaluationLicense: ${HYPER_V_WINDOWS_EVALUATION_LICENSE_URL}`] : []),
+            ...(receipt ? [`windowsEvaluationImageSourceTrust: ${receipt.sourceTrustId}`] : []),
+            ...(observation.rebootRequired
+                ? ["action: reboot Windows manually, then run 'ccc devices smoke --real-provider'"]
+                : observation.sessionRefreshRequired
+                    ? ["action: sign out of Windows and sign in once to activate Hyper-V Administrators membership, then run 'ccc devices smoke --real-provider'"]
+                    : ["action: run 'ccc devices smoke --real-provider'"]),
+            "hostRebooted: false",
+        ].join("\n"),
+    };
 }
 export async function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOptions = {}): Promise<HyperVSetupHostResult> {
-    const application = createDeviceAdminSetup({
-        platform: () => options.platform || process.platform, homeDirectory: homedir, now: () => Date.now(),
-        joinPath: join, resolvePath: resolve, parentDirectory: dirname, commandPath,
-        canonicalPowerShell: canonicalWindowsPowerShellPath,
-        assertPlainDirectory(path, label) { assertPlainDirectoryPath(path, label); return undefined; },
-        createDirectory(path) { mkdirSync(path, { recursive: true }); return undefined; },
-        runCommand: (command, args, timeoutMs, input) => (options.commandRunner || runCommand)(command, args, timeoutMs, input),
-        readinessCommand: hyperVReadinessCommand, setupCommand: hyperVSetupCommand,
-        parseReadiness: parseHyperVReadiness, parseSetupObservation: parseHyperVSetupObservation,
-        inspectLinuxImageCache: inspectHyperVUbuntuImageCache, linuxImageBlockers: hyperVLinuxImageBlockers,
-        withMutationLock: withSharedMutationLockAsync,
-        ensureHostNetwork: (deadlineAt) => (options.ensureHostNetwork || ensureHyperVHostNetworkForSetup)({}, deadlineAt),
-        readEvaluationReceipt: readHyperVWindowsEvaluationReceipt, acceptEvaluationLicense: acceptHyperVWindowsEvaluationLicense,
-        evaluationLicenseUrl: HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
-    });
-    return application.setup(confirm, {
-        powershell: options.powershell, injectedPowerShell: Boolean(options.commandRunner), systemRoot: options.systemRoot,
-        stateRoot: options.stateRoot, mutationLockFile: options.mutationLockFile,
+    let powershell: string;
+    let setupRoot: string;
+    let mutationLockFile: string;
+    const runner = options.commandRunner || runCommand;
+    const native: DeviceAdminSetupPorts<SetupEvidence> = {
+        prepareContext(confirmed) {
+            if ((options.platform || process.platform) !== "win32") return { ok: false, reason: "not-windows" };
+            const injectedPowerShell = options.commandRunner && options.powershell !== undefined ? options.powershell : undefined;
+            const executable = confirmed
+                ? injectedPowerShell ?? canonicalWindowsPowerShellPath(options.commandRunner ? options.systemRoot : undefined)
+                : options.powershell === undefined
+                    ? commandPath("powershell.exe") || commandPath("pwsh") || commandPath("powershell")
+                    : options.powershell;
+            if (!executable) return { ok: false, reason: "powershell-missing" };
+            powershell = executable;
+            setupRoot = resolve(options.stateRoot || join(homedir(), ".ccc/device-broker-private/setup"));
+            try { assertPlainDirectoryPath(setupRoot, "hyper-v-setup-root"); }
+            catch (error) { return { ok: false, reason: "root-invalid", evidence: { detail: error instanceof Error ? error.message : String(error) } }; }
+            return { ok: true };
+        },
+        prepareMutation() {
+            mkdirSync(setupRoot, { recursive: true });
+            try { assertPlainDirectoryPath(setupRoot, "hyper-v-setup-root"); }
+            catch (error) { return { ok: false, reason: "root-invalid", evidence: { detail: error instanceof Error ? error.message : String(error) } }; }
+            mutationLockFile = resolve(options.mutationLockFile || (options.stateRoot
+                ? join(setupRoot, "host-locks", "hyper-v.mutation.lock")
+                : join(homedir(), ".ccc/devices/host-locks/hyper-v.mutation.lock")));
+            return { ok: true };
+        },
+        now: () => Date.now(),
+        diagnose(timeoutMs) {
+            const command = hyperVReadinessCommand(powershell);
+            const execution = runner(command.executable, command.args, timeoutMs);
+            const readiness = execution?.status === 0 ? parseHyperVReadiness(execution.stdout || "") : null;
+            return readiness ? { state: "available", value: readiness, evidence: { execution } } : { state: "failed", evidence: { execution } };
+        },
+        linuxImage: (ownerId, readiness) => hyperVLinuxImageBlockers(readiness, inspectHyperVUbuntuImageCache(dirname(setupRoot), ownerId)),
+        enableFeature(timeoutMs) {
+            const command = hyperVSetupCommand(powershell);
+            const execution = runner(command.executable, command.args, timeoutMs, command.input);
+            const observation = execution?.status === 0 ? parseHyperVSetupObservation(execution.stdout || "") : null;
+            return observation ? { state: "available", value: observation, evidence: { execution } } : { state: "failed", evidence: { execution } };
+        },
+        withMutationLock(operation, lockOptions) {
+            mkdirSync(dirname(mutationLockFile), { recursive: true });
+            assertPlainDirectoryPath(dirname(mutationLockFile), "hyper-v-setup-mutation-lock-root");
+            return withSharedMutationLockAsync(mutationLockFile, operation, lockOptions);
+        },
+        ensureHostNetwork: async (deadlineAt) => {
+            const network = await (options.ensureHostNetwork || ensureHyperVHostNetworkForSetup)({}, deadlineAt);
+            return network.ok ? network : { ok: false, evidence: { detail: network.detail || network.error } };
+        },
+        mutationFailure(error) {
+            return { detail: (error as Error & { code?: string }).code === "shared-mutation-lock-timeout"
+                ? "hyper-v-setup-lock-timeout" : error instanceof Error ? error.message : String(error) };
+        },
+        readEvaluationReceipt() { const receipt = readHyperVWindowsEvaluationReceipt(setupRoot); return receipt ? { receipt } : null; },
+        acceptEvaluationLicense() { return { receipt: acceptHyperVWindowsEvaluationLicense(setupRoot) }; },
+    };
+    return renderHyperVSetup(await createDeviceAdminSetup(native).setup(confirm, {
         acceptWindowsEvaluationLicense: options.acceptWindowsEvaluationLicense, ownerId: options.ownerId,
-    });
+    }));
 }
 
 export function formatDevicesBackends(cwd = process.cwd(), profile?: string): string {

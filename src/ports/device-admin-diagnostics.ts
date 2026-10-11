@@ -1,30 +1,30 @@
 import type { DeviceAdminBackendSnapshot } from "./device-admin-inventory.js";
 import type { DeviceAdminBackend } from "../domain/device-admin-inventory.js";
-import type { CommandResult, HyperVReadiness, HyperVLinuxImageReadinessInput, LinuxImageCache, ProviderCommand } from "../domain/device-admin-diagnostics.js";
+import type { DiagnosticAvailability, DiagnosticProbe, HyperVReadiness } from "../domain/device-admin-diagnostics.js";
 export type DiagnosticDeviceRecord = Record<string, unknown> & { id?: string; status?: string };
 export type DiagnosticLease = { ownerId?: string; deviceId?: string; expiresAt?: string };
-export type DeviceAdminDiagnosticsPorts<Backend extends DeviceAdminBackend = DeviceAdminBackend> = {
+export type DeviceAdminDiagnosticsPorts<Backend extends DeviceAdminBackend = DeviceAdminBackend, Evidence = unknown> = {
     backends: readonly Backend[];
     resolveOwnerId(cwd: string, profile?: string): string;
     readDevices(ownerId: string, stateKey: string): DiagnosticDeviceRecord[];
-    commandPath(tool: string): string | null;
     hardwareIdForPhysicalDevice(backend: Backend, device: DiagnosticDeviceRecord): string | null;
     readPhysicalLease(stateKey: string, hardwareId: string): DiagnosticLease | null;
-    platform(): string;
-    environment(name: "container" | "CCC_REAL_IOS_DEVICE_UDID" | "CCC_REAL_ANDROID_DEVICE_SERIAL" | "CCC_REAL_ANDROID_SERIAL" | "CCC_REAL_DEVICE_LAB_MCP_SERVER"): string | undefined;
     now(): number;
-    homeDirectory(): string;
-    packageRoot(): string;
-    joinPath(...parts: string[]): string;
-    exists(path: string): boolean;
-    runCommand(command: string, args: string[], timeoutMs: number): CommandResult | null;
-    runNode(script: string, server: string, timeoutMs: number): CommandResult;
-    readinessCommand(executable: string): ProviderCommand;
-    parseReadiness(stdout: string): HyperVReadiness | null;
-    inspectLinuxImageCache(privateRoot: string, ownerId: string): LinuxImageCache;
-    linuxImageSmokeResult(readiness: HyperVLinuxImageReadinessInput, cache: LinuxImageCache): { status: "PASS" | "SKIP"; detail: string };
+    availability(): DiagnosticAvailability;
+    physicalTargets(): { android: boolean; ios: boolean };
+    probeAndroidVersion(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeAndroidEmulatorInventory(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeAndroidPhysicalInventory(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeIosSimulatorInventory(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeIosPhysicalInventory(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeWindowsSandbox(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeMacosVersion(provider: "tart" | "vz" | "utmctl", timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeSsh(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeScp(): DiagnosticProbe<Evidence>;
+    probeHyperV(timeoutMs: number): DiagnosticProbe<Evidence>;
+    probeInstalledSurface(timeoutMs: number): DiagnosticProbe<Evidence>;
+    linuxImage(ownerId: string, readiness: HyperVReadiness): { available: boolean; evidence: Evidence };
 };
-
 export type DeviceAdminDiagnosticsInventory<Backend extends DeviceAdminBackend> = {
     snapshot(cwd: string, profile?: string): { ownerId: string; backends: DeviceAdminBackendSnapshot<Backend>[] };
 };
