@@ -1485,7 +1485,11 @@
     {
       "id": "broker-remaining-semantic-results-structural",
       "coveredOperationIds": [],
-      "status": "Implementation pending. Complete bounded owning-family audits identify owner resolution/device status, broker recording and Appium semantic results plus finite native launch/install/recording effects. Existing semantic observations are reused; status recovery depends on Hyper-V repair. No source acceptance or new operation credit; exhaustive/native/formal certification unverified."
+      "status": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
+      "taskId": "TASK__architecture-broker-remaining-result-boundaries",
+      "acceptedIntegrationCommit": "0cebcfe028aa6a6a15f8afa020e436daef83616a",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-remaining-0ceb-3hu7nfyo/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json"
     },
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
@@ -1508,6 +1512,82 @@
       "sourceCommit": "187743c2dfd1ddf66e161d134f61b482a54d6baa",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/shared-android-cleanup-1877-42owkwhx/final-result.json",
       "deliveryEvidence": "/tmp/ccc-shared-android-cleanup-main-delivery-result-20261011.json"
+    },
+    {
+      "id": "mobile-environment-native-boundaries-structural",
+      "coveredOperationIds": [],
+      "taskId": "TASK__architecture-mobile-environment-native-boundaries",
+      "status": "Source-confirmed at0cebcfe0; implementation queued. Android/iOS environment domain builders construct ADB/simctl arrays and inward applications forward them to generic execution ports. Move finite native framing outward while retaining validation, fallback ordering and partial-effect policy. Original SPEC adapter-only NativeProcess obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "sourceTrace": {
+        "owningPaths": [
+          "packages/device-lab/providers/domain/mobile-environment.mjs",
+          "packages/device-lab/providers/application/android-environment.mjs",
+          "packages/device-lab/providers/application/ios-environment.mjs",
+          "packages/device-lab/providers/ports/mobile-environment.d.mts"
+        ],
+        "nativeConsumers": [
+          "packages/device-lab/providers/backends/android.mjs",
+          "packages/device-lab/providers/backends/android-device.mjs",
+          "packages/device-lab/providers/backends/ios-simulator.mjs",
+          "packages/device-lab/providers/backends/ios-device.mjs"
+        ]
+      }
+    },
+    {
+      "id": "android-app-native-boundaries-structural",
+      "coveredOperationIds": [],
+      "taskId": "TASK__architecture-android-app-native-boundaries",
+      "status": "Source-confirmed at0cebcfe0; implementation queued. androidAppPlan builds install/launch/uninstall/permission shell arguments; createAndroidAppManagement forwards plan.args to execute for both Android variants. Replace that builder-runner seam with finite semantic native effects. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "sourceTrace": {
+        "owningPaths": [
+          "packages/device-lab/providers/domain/mobile-app-management.mjs",
+          "packages/device-lab/providers/application/android-app-management.mjs",
+          "packages/device-lab/providers/ports/mobile-app-management.d.mts"
+        ],
+        "nativeConsumers": [
+          "packages/device-lab/providers/backends/android.mjs",
+          "packages/device-lab/providers/backends/android-device.mjs"
+        ]
+      }
+    },
+    {
+      "id": "admin-native-boundaries-structural",
+      "coveredOperationIds": [],
+      "taskId": "TASK__architecture-admin-native-boundaries",
+      "status": "Source-confirmed at0cebcfe0; implementation queued. Admin diagnostics/setup carry executable/argv recipes into generic runners, macOS deletion builds provider argv inward, and setup returns terminal text. Move finite effects/framing and presentation to native composition; retain locks, expected records and lease/publication policy. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "sourceTrace": {
+        "owningPaths": [
+          "src/application/device-admin-diagnostics.ts",
+          "src/ports/device-admin-diagnostics.ts",
+          "src/application/device-admin-setup.ts",
+          "src/domain/device-admin-setup.ts",
+          "src/ports/device-admin-setup.ts",
+          "src/application/device-admin-delete.ts",
+          "src/domain/device-admin-delete.ts",
+          "src/ports/device-admin-delete.ts"
+        ],
+        "nativeConsumers": [
+          "src/device-lab-admin.ts"
+        ]
+      }
+    },
+    {
+      "id": "container-native-recipe-boundaries-structural",
+      "coveredOperationIds": [],
+      "taskId": "TASK__architecture-container-native-recipe-boundaries",
+      "status": "Source-confirmed at0cebcfe0; implementation queued. Container launch/create and exec applications assemble Docker/Podman run/exec flags and pass arrays to native runtime runners. Separate semantic intent from adapter-owned flags/framing without changing runtime/session/credential authority. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "sourceTrace": {
+        "owningPaths": [
+          "src/application/container-launch-arguments.ts",
+          "src/application/container-create-lifecycle.ts",
+          "src/ports/container-create-lifecycle.ts",
+          "src/application/container-exec.ts",
+          "src/ports/container-exec.ts"
+        ],
+        "nativeConsumers": [
+          "src/docker.ts"
+        ]
+      }
     }
   ],
   "currentSourceQualificationAudit": {
