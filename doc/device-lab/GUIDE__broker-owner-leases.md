@@ -2,6 +2,8 @@
 
 `createBrokerOwnerApplication` owns registration eligibility, equivalent locked reuse, canonical mount/profile resolution, and secret reuse or repair. Public registration/secret exports and the bounded HTTP resolve route use this same application. Canonical identity derivation remains shared with the existing owner identity module.
 
+Owner resolution returns resolved identity or specific request, registration, availability and credential-provisioning refusals. The native broker converter supplies the existing HTTP status and response envelope; the application does not classify a rendered response. Registration and secret publication remain synchronous and keep their existing lock and quarantine authorities.
+
 Required native capabilities retain guarded descriptor reads, directory checks and modes, scoped mutation locks, bounded randomness, and atomic file publication. Invalid auth material is quarantined before replacement. Successful publication permits identity- and ownership-checked cleanup of a non-directory quarantine entry; failed publication retains that evidence and propagates the primary publication error. A cleanup refusal does not prove the entry disappeared. This is not automatic restoration of invalid credentials.
 
 `createBrokerPhysicalLeasesApplication` owns claim conflict and expiry decisions, locked rereads, heartbeat refresh, exact owner/device/claim admission, release, and incremental prune. It reuses the existing lease date and bounded scan/list applications. Native file guards and per-hardware mutation locks remain at the boundary. Shared cleanup callers use the same release and existing lease-restoration policy; restoration refuses an occupied destination.

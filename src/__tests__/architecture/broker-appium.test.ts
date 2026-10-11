@@ -18,13 +18,12 @@ function fixture() {
         id: "pixel", backend: "android-emulator", status: "running", name: "Pixel",
         avdName: "Pixel_API", port: 5580, appium: null,
     };
-    const ports: BrokerAppiumPorts = {
-        commandTimeoutMs: 5000, commandOutputLimit: 65536, platform: "linux",
+    const ports: BrokerAppiumPorts<{ token: string }> = {
+        commandTimeoutMs: 5000,
         usesDefaultCommandRunner: false, strictAppiumPortOwnership: true,
-        injectedExecutable: "/controlled/appium", nodeExecutable: "/controlled/node",
         readDevices: () => [device],
-        stateFailure: () => ({ status: 409, payload: { ok: false, error: "state-read-failed" } }),
-        notFound: () => ({ status: 404, payload: { ok: false, error: "device-not-found" } }),
+        stateFailure: () => ({ kind: "refused", reason: "state-read-failed", error: "state-read-failed" }),
+        notFound: () => ({ kind: "refused", reason: "missing", error: "device-not-found" }),
         publish: (_owner, _state, _id, _expected, replacement) => {
             device.appium = replacement;
             return { found: true, matched: true, currentAppium: replacement, device };
@@ -33,12 +32,13 @@ function fixture() {
         heartbeat: unexpected,
         isLockTimeout: () => false, lockFailure: unexpected,
         isProcessIdentityCurrent: () => false,
-        verifyListener: () => ({ ok: true, serverUrl: serverMetadata.serverUrl, port: 4723 }),
+        verifyListener: () => ({ ok: true, serverUrl: serverMetadata.serverUrl, port: 4723, receipt: {} }),
         terminateRuntime: unexpected, terminatePortListener: unexpected,
         portListener: unexpected, portSeed: unexpected, resolveIosTarget: unexpected,
-        http: unexpected, execute: unexpected, launch: unexpected,
-        commandEnvironment: unexpected, providerExecutable: unexpected, resolveExecutable: unexpected,
-        runtimePaths: unexpected, readManifest: unexpected, stateErrorCode: () => null,
+        http: unexpected, launchServer: unexpected, installRuntime: unexpected,
+        captureRuntime: unexpected, runtimeReceipt: unexpected, installAvailable: unexpected,
+        instrumentationAvailable: unexpected, resetInstrumentation: unexpected, instrumentationReceipt: unexpected,
+        readManifest: unexpected, stateErrorCode: () => null,
         ensureRuntimeDirectory: unexpected, inspectRuntimeDirectory: unexpected,
         inspectNodeModules: unexpected, entryIsValid: unexpected, readMarker: unexpected,
         writeManifest: unexpected, removeMarker: unexpected, writeMarker: unexpected,
@@ -56,7 +56,7 @@ describe("broker Appium application policies", () => {
         ports.withDeviceOperation = unexpected;
         const app = createBrokerAppiumApplication(ports);
         expect(await app.start(owner, { backend: "windows-sandbox", deviceId: "pixel" })).toMatchObject({
-            status: 400, payload: { ok: false, error: "invalid-appium-backend" },
+            kind: "refused", reason: "invalid", error: "invalid-appium-backend",
         });
     });
 
@@ -64,9 +64,9 @@ describe("broker Appium application policies", () => {
         const { ports, device } = fixture();
         const app = createBrokerAppiumApplication(ports);
         const recorded = await app.record(owner, { ...target, serverUrl: "http://127.0.0.1:4810", sessionId: "manual-session" });
-        expect(recorded).toMatchObject({ status: 200, payload: { ok: true } });
+        expect(recorded).toMatchObject({ kind: "metadata-recorded" });
         expect(device.appium).toMatchObject({ serverUrl: "http://127.0.0.1:4810", sessionId: "manual-session" });
-        expect(await app.clear(owner, target)).toMatchObject({ status: 200, payload: { ok: true, result: { cleared: true } } });
+        expect(await app.clear(owner, target)).toMatchObject({ kind: "metadata-cleared", cleared: true });
         expect(device.appium).toBeNull();
     });
 
@@ -81,8 +81,8 @@ describe("broker Appium application policies", () => {
         };
         ports.publish = unexpected;
         const app = createBrokerAppiumApplication(ports);
-        expect(await app.record(owner, { ...target, sessionId: "replacement" })).toMatchObject({ status: 409, payload: { error: "appium-runtime-active" } });
-        expect(await app.clear(owner, target)).toMatchObject({ status: 409, payload: { error: "appium-runtime-active" } });
+        expect(await app.record(owner, { ...target, sessionId: "replacement" })).toMatchObject({ kind: "refused", reason: "conflict", error: "appium-runtime-active" });
+        expect(await app.clear(owner, target)).toMatchObject({ kind: "refused", reason: "conflict", error: "appium-runtime-active" });
         expect(device.appium).toEqual(serverMetadata);
     });
 
@@ -98,10 +98,10 @@ describe("broker Appium application policies", () => {
     it("aborts forced server replacement when the old owned process cannot be stopped", async () => {
         const { ports, device } = fixture();
         device.appium = serverMetadata;
-        ports.terminateRuntime = async () => ({ ok: false, error: "runtime-process-identity-mismatch" });
+        ports.terminateRuntime = async () => ({ ok: false, error: "runtime-process-identity-mismatch", receipt: {} });
         const app = createBrokerAppiumApplication(ports);
         expect(await app.start(owner, { ...target, force: true })).toMatchObject({
-            status: 502, payload: { error: "appium-existing-process-stop-failed" },
+            kind: "refused", reason: "provider-failed", error: "appium-existing-process-stop-failed",
         });
         expect(device.appium).toEqual(serverMetadata);
     });
@@ -117,7 +117,7 @@ describe("broker Appium application policies", () => {
             return { ok: false, status: 500, body: { value: { error: "delete failed" } } };
         };
         const app = createBrokerAppiumApplication(ports);
-        expect(await app.deleteSession(owner, target)).toMatchObject({ status: 502, payload: { error: "appium-session-delete-failed" } });
+        expect(await app.deleteSession(owner, target)).toMatchObject({ kind: "session-delete-failed", error: "appium-session-delete-failed" });
         expect(device.appium).toEqual(previous);
     });
 
@@ -126,7 +126,7 @@ describe("broker Appium application policies", () => {
         device.appium = { ...serverMetadata, sessionId: "session-one", sessionCapabilities: { platformName: "Android" } };
         ports.http = async () => ({ ok: true, status: 200, body: { value: null } });
         const app = createBrokerAppiumApplication(ports);
-        expect(await app.deleteSession(owner, target)).toMatchObject({ status: 200, payload: { ok: true, result: { deleted: true } } });
+        expect(await app.deleteSession(owner, target)).toMatchObject({ kind: "session-deleted", deleted: true });
         expect(device.appium).toEqual({ ...serverMetadata, updatedAt: "2026-10-10T00:00:00.000Z" });
     });
 
@@ -141,7 +141,7 @@ describe("broker Appium application policies", () => {
         };
         const app = createBrokerAppiumApplication(ports);
         expect(await app.request(owner, { ...target, method: "GET", path: "/source", requestTimeoutMs: 10 })).toEqual({
-            status: 504, payload: { ok: false, error: "appium-request-timeout" },
+            kind: "refused", reason: "deadline", error: "appium-request-timeout",
         });
     });
 
@@ -167,7 +167,7 @@ describe("broker Appium application policies", () => {
             return { found: true, matched: false, currentAppium: successor, device };
         };
         const app = createBrokerAppiumApplication(ports);
-        expect(await app.ensureSession(owner, target)).toMatchObject({ status: 409, payload: { error: "appium-runtime-state-conflict" } });
+        expect(await app.ensureSession(owner, target)).toMatchObject({ kind: "refused", reason: "conflict", error: "appium-runtime-state-conflict" });
         expect(compensated).toBe(true);
         expect(device.appium).toEqual(successor);
     });

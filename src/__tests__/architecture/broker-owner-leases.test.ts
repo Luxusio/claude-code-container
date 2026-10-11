@@ -79,15 +79,15 @@ describe("broker owner registration and resolution", () => {
         const f = ownerFixture();
         const registration = f.app.register("/host/project", "work", otherOwner);
         expect(f.app.validateRegistration(registration, otherOwner)).toBe(registration);
-        expect(f.app.resolve({ projectMountPath: "/project/fixture", profile: "work" })).toMatchObject({ status: 200, payload: { ok: true, result: { ownerId: otherOwner, projectMountPath: "/project/fixture", profile: "work" } } });
+        expect(f.app.resolve({ projectMountPath: "/project/fixture", profile: "work" })).toMatchObject({ kind: "resolved", identity: { ownerId: otherOwner, projectMountPath: "/project/fixture", profile: "work" } });
         expect(f.secret()).toBe("a".repeat(64));
     });
     it("refuses an unregistered or inconsistent owner scope without provisioning a credential", () => {
         const f = ownerFixture();
-        expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toMatchObject({ status: 404, payload: { ok: false, error: "project-owner-unavailable" } });
+        expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toMatchObject({ kind: "unavailable" });
         f.app.register("/host/project");
         f.setRegistration({ ...f.read()!, ownerBasis: "foreign-basis" });
-        expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toMatchObject({ status: 404, payload: { ok: false, error: "project-owner-unavailable" } });
+        expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toMatchObject({ kind: "unavailable" });
         expect(f.secret()).toBeNull();
     });
     it("cleans quarantine after successful publication and reuses the published credential", () => {

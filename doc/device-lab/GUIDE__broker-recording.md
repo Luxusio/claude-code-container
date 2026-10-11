@@ -1,6 +1,6 @@
 # Broker recording
 
-Authenticated `broker.device.tool.invoke` routes recording start, stop, and status through one broker recording application. The application owns support decisions, command planning, runtime metadata, publication conflicts, finalization, and public errors. Native ports retain owner lookup, physical-lease heartbeat, process identity, signaling, bounded command execution, private output paths, and atomic state mutation. Device operation locks remain in the broker binding.
+Authenticated `broker.device.tool.invoke` routes recording start, stop, and status through one broker recording application. The application owns support decisions, runtime metadata, publication conflicts and finalization. It returns semantic observations, started/stopped facts, refusals and partial effects; the native broker converter supplies the existing public responses. Required native leaves separately launch Android/iOS recording, stop Android recording, pull its artifact and remove its remote file. Process recipes, private output paths, process identity, signaling and atomic state mutation remain native. Device operation locks remain in the broker binding.
 
 Broker-managed recording uses Android screenrecord or an owned iOS simulator. Android defaults to 180 seconds. Windows Sandbox and macOS recording continue through their existing backend guest-helper routes; physical iOS recording remains unsupported through this broker path. Recording does not start a device or create an Appium session.
 

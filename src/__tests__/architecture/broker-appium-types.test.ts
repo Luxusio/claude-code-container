@@ -3,7 +3,7 @@ import { createBrokerAppiumApplication } from "../../../packages/device-lab/src/
 import { validateAppiumRequestParams, type BrokerAppiumResponse } from "../../../packages/device-lab/src/device-lab/domain/broker-appium.js";
 import type { BrokerAppiumPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-appium.js";
 
-function appiumCapabilityContracts(ports: BrokerAppiumPorts): void {
+function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): void {
     const app = createBrokerAppiumApplication(ports);
     const params = { backend: "android-emulator", deviceId: "pixel" };
     const responses: Promise<BrokerAppiumResponse>[] = [
@@ -26,23 +26,32 @@ function appiumCapabilityContracts(ports: BrokerAppiumPorts): void {
     // @ts-expect-error Manifest publication must settle before npm execution or runtime reuse.
     createBrokerAppiumApplication({ ...ports, writeManifest: async () => undefined });
     // @ts-expect-error Synchronous installation commands require a concrete completed execution.
-    createBrokerAppiumApplication({ ...ports, execute: async () => ({ status: 0 }) });
+    createBrokerAppiumApplication({ ...ports, installRuntime: async () => ({ status: 0, receipt: {} }) });
+    const { launchServer, ...withoutLaunch } = ports;
+    // @ts-expect-error Server launch is a required finite native effect.
+    createBrokerAppiumApplication(withoutLaunch);
+    // @ts-expect-error Instrumentation reset settles each effect before the next step.
+    createBrokerAppiumApplication({ ...ports, resetInstrumentation: async () => ({ status: 0, receipt: {} }) });
+    // @ts-expect-error The core cannot construct an arbitrary native process recipe.
+    ports.execute({ executable: "appium", args: [] });
+    // @ts-expect-error CCC HTTP payloads are rendered outside the application.
+    const payload = (awaited: BrokerAppiumResponse) => awaited.payload;
     // @ts-expect-error Operation locks and cleanup settle before the response is available.
     const synchronous: BrokerAppiumResponse = app.stop("owner", params);
-    void [responses, _publish, _deviceLock, _installLock, synchronous];
+    void [responses, _publish, _deviceLock, _installLock, synchronous, launchServer, payload];
 }
 void appiumCapabilityContracts;
 
 describe("Appium request contracts", () => {
     it("rejects upstream DELETE commands while session deletion remains a separate broker operation", () => {
         expect(validateAppiumRequestParams({ backend: "android-emulator", deviceId: "pixel", method: "DELETE", path: "/source" })).toEqual({
-            ok: false, status: 400, error: "invalid-appium-request-method", allowed: ["GET", "POST"],
+            ok: false, reason: "invalid", error: "invalid-appium-request-method", allowed: ["GET", "POST"],
         });
     });
 
     it("rejects a path escaping the broker-owned WebDriver session", () => {
         expect(validateAppiumRequestParams({ backend: "android-emulator", deviceId: "pixel", method: "GET", path: "/../source" })).toEqual({
-            ok: false, status: 400, error: "invalid-appium-request-path",
+            ok: false, reason: "invalid", error: "invalid-appium-request-path",
         });
     });
 });

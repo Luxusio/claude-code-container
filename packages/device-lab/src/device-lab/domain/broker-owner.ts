@@ -5,7 +5,12 @@ export interface BrokerOwnerRegistration {
     version: 1; ownerId: string; ownerBasis: string; projectMountPath: string;
     hostProjectPath: string; profile?: string | null; registeredAt: string;
 }
-export interface BrokerOwnerResult { status: number; payload: unknown }
+export type BrokerOwnerResolution =
+    | {kind: "resolved"; identity: BrokerOwnerIdentity}
+    | {kind: "invalid-request"; projectMountPath: string; profile: unknown}
+    | {kind: "registration-invalid"}
+    | {kind: "unavailable"}
+    | {kind: "auth-provisioning-failed"};
 export function equivalentOwnerRegistration(registration: BrokerOwnerRegistration, identity: BrokerOwnerIdentity): boolean {
     return registration.ownerBasis === identity.ownerBasis
         && registration.projectMountPath === identity.projectMountPath

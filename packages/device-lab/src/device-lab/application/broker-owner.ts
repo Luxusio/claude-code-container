@@ -1,4 +1,4 @@
-import { equivalentOwnerRegistration, ownerRegistrationRecord, type BrokerOwnerRegistration, type BrokerOwnerResult } from "../domain/broker-owner.js";
+import { equivalentOwnerRegistration, ownerRegistrationRecord, type BrokerOwnerRegistration, type BrokerOwnerResolution } from "../domain/broker-owner.js";
 import type { BrokerOwnerPorts } from "../ports/broker-owner.js";
 
 export function createBrokerOwnerApplication(ports: BrokerOwnerPorts) {
@@ -51,19 +51,19 @@ export function createBrokerOwnerApplication(ports: BrokerOwnerPorts) {
             throw error;
         }
     }
-    function resolve(request: unknown): BrokerOwnerResult {
+    function resolve(request: unknown): BrokerOwnerResolution {
         const input = request as {projectMountPath?: unknown; profile?: unknown};
         const projectMountPath = typeof input.projectMountPath === "string" ? input.projectMountPath : "";
         const profile = input.profile === null || input.profile === undefined ? undefined : typeof input.profile === "string" ? input.profile : null;
         const identity = profile === null ? null : ports.identity(projectMountPath, profile);
-        if (!identity) return { status: 400, payload: {ok: false, error: "invalid-project-owner-request", projectMountPath, profile: input.profile ?? null} };
+        if (!identity) return {kind: "invalid-request", projectMountPath, profile: input.profile ?? null};
         let registration: BrokerOwnerRegistration | null;
         try { registration = ports.readRegistration(identity.ownerId); }
-        catch { return {status: 409, payload: {ok: false, error: "project-owner-registration-invalid"}}; }
-        if (!registration || !equivalentOwnerRegistration(registration, identity)) return {status: 404, payload: {ok: false, error: "project-owner-unavailable"}};
+        catch { return {kind: "registration-invalid"}; }
+        if (!registration || !equivalentOwnerRegistration(registration, identity)) return {kind: "unavailable"};
         try { secret(identity.ownerId); }
-        catch { return {status: 503, payload: {ok: false, error: "owner-auth-provisioning-failed"}}; }
-        return {status: 200, payload: {ok: true, result: {ownerId: identity.ownerId, ownerBasis: identity.ownerBasis, projectMountPath: identity.projectMountPath, profile: identity.profile ?? null}}};
+        catch { return {kind: "auth-provisioning-failed"}; }
+        return {kind: "resolved", identity};
     }
     return { register, resolve, secret, validateRegistration };
 }

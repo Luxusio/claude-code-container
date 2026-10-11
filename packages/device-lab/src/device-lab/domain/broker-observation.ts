@@ -149,42 +149,47 @@ export interface DeviceStatusRequest {
     dryRun: boolean;
     expectedIncarnationId?: string;
 }
-export type DeviceStatusResponse = { status: number; payload: unknown };
-export type DeviceStatusCommand = {
-    mode: "exec" | "detached" | "noop";
-    provider: string;
-    executable?: string;
-    args?: string[];
-    input?: string;
-    reason?: string;
-    env?: Record<string, string | undefined>;
-    cwd?: string;
-};
-export type DeviceStatusExecution = {
-    mode: string; provider: string; executable?: string; args?: string[]; input?: string;
+/** Native execution receipts are carried outward without interpreting their process recipe. */
+export type DeviceStatusExecution<Receipt> = {
+    mode: string; provider: string; receipt?: Receipt;
     status?: number | null; signal?: string | null; stdout?: string; stderr?: string; error?: string;
     timedOut?: boolean; outputLimitExceeded?: boolean;
 };
-export interface DeviceStatusPlan {
-    device?: unknown;
-    providerCommand?: DeviceStatusCommand | { error: string; missing: string[] } | null;
+export interface DeviceStatusPlan<Connection> {
+    ownerId: string; backend: string; stateKey?: string; command: string; deviceId: string;
+    device?: unknown; force?: boolean; create?: unknown; idempotent?: boolean;
+    availability: {kind: "available"; connection: Connection; mode: string; provider: string}
+        | {kind: "unavailable"; error: string; missing: string[]}
+        | {kind: "not-required"};
 }
+export type DeviceStatusFailureReason = "invalid" | "missing" | "conflict" | "unsupported" | "provider-unavailable" | "state-write-failed" | "provider-failed" | "deadline";
+export type DeviceStatusRefusal<Connection> = {
+    kind: "refused"; reason: DeviceStatusFailureReason; error: string;
+    ownerId?: string; backend?: string; stateKey?: string; deviceId?: string;
+    detail?: string; missing?: string[]; allowed?: string | string[]; conflicts?: string[]; remedy?: string;
+    plan?: DeviceStatusPlan<Connection>; leaseFailure?: import("./broker-physical-leases.js").LeaseFailure;
+};
+export type DeviceStatusOutcome<Connection, Receipt> = DeviceStatusRefusal<Connection>
+    | {kind: "preview"; plan: DeviceStatusPlan<Connection>}
+    | {kind: "observed"; plan: DeviceStatusPlan<Connection>; device: unknown; execution: DeviceStatusExecution<Receipt>}
+    | {kind: "provider-failed"; error: "provider-command-failed"; plan: DeviceStatusPlan<Connection>; device: unknown; execution: DeviceStatusExecution<Receipt>; diagnostic?: string};
+export type DeviceStatusPreparation<Connection> = {kind: "prepared"; plan: DeviceStatusPlan<Connection>} | DeviceStatusRefusal<Connection>;
+export type DeviceStatusPhysicalAdmission = {kind: "admitted"} | {kind: "refused"; failure?: import("./broker-physical-leases.js").LeaseFailure};
 export interface DeviceStatusVmObservation {
     vmId: string; vmName: string; state: string; status: string;
     snapshots?: { snapshotId: string; snapshotName: string; snapshotType?: string }[];
     uptimeMs?: number; diskPath?: string;
 }
-export type DeviceStatusReconciliation = { ok: true; reconciled?: boolean } | { ok: false; status: number; error: string; detail?: string };
 export function deviceStatusRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 export function deviceStatusHyperV(backend: string): boolean {
     return backend === "windows-vm" || backend === "linux-vm";
 }
-export function deviceStatusStoppedAndroid(request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution): boolean {
+export function deviceStatusStoppedAndroid(request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution<unknown>): boolean {
     return request.backend === "android-emulator" && deviceStatusRecord(device) && device.status === "stopped" && execution.provider === "adb";
 }
-export function projectDeviceStatus(ownerId: string, request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution,
+export function projectDeviceStatus(ownerId: string, request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution<unknown>,
     observation: DeviceStatusVmObservation | null, succeeded: boolean, timestamp: () => string): unknown {
     if (!deviceStatusRecord(device)) return device;
     if (deviceStatusHyperV(request.backend)) {

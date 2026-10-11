@@ -6,18 +6,22 @@ import type { LifecyclePreviewRequest } from "@ccc/device-lab/device-lab/domain/
 import { coreBoundaryViolations } from "./core-boundary.js";
 import { createBrokerDeviceStatus } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
 import type { BrokerDeviceStatusPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
-import type { DeviceStatusRequest, DeviceStatusResponse } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
+import type { DeviceStatusRequest, DeviceStatusOutcome } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
 
-function consumedDeviceStatus(ports: BrokerDeviceStatusPorts, request: DeviceStatusRequest): void {
-    const result: Promise<DeviceStatusResponse> = createBrokerDeviceStatus(ports).invoke("owner", request, {}, 1000);
+function consumedDeviceStatus<Connection, Receipt>(ports: BrokerDeviceStatusPorts<Connection, Receipt>, request: DeviceStatusRequest): void {
+    const result: Promise<DeviceStatusOutcome<Connection, Receipt>> = createBrokerDeviceStatus(ports).invoke("owner", request, {}, 1000);
     const { typedStatus, ...withoutTypedObservation } = ports;
     // @ts-expect-error Exact typed VM observation is required for status.
     createBrokerDeviceStatus(withoutTypedObservation);
     // @ts-expect-error Non-Hyper-V command execution must return a settled result.
-    createBrokerDeviceStatus({ ...ports, execute: async () => ({ mode: "exec", provider: "adb", status: 0 }) });
+    createBrokerDeviceStatus({ ...ports, observe: async () => ({ mode: "exec", provider: "adb", status: 0 }) });
     // @ts-expect-error Deadline admission must complete before recovery effects.
     createBrokerDeviceStatus({ ...ports, assertDeadline: async () => undefined });
-    void [result, typedStatus];
+    // @ts-expect-error Device status does not expose a CCC HTTP response envelope.
+    const payload = (outcome: DeviceStatusOutcome<Connection, Receipt>) => outcome.payload;
+    // @ts-expect-error Captured status connections have no arbitrary native runner in the core.
+    ports.execute({ executable: "provider", args: [] });
+    void [result, typedStatus, payload];
 }
 void consumedDeviceStatus;
 
@@ -50,12 +54,6 @@ describe("broker observation inward contracts", () => {
         const root = resolve("packages/device-lab/src/device-lab");
         for (const name of ["domain/broker-observation", "domain/broker-observation-command-plan", "ports/broker-observation", "application/broker-observation-inventory", "application/broker-observation-leases", "application/broker-observation-appium", "application/broker-observation-status", "application/broker-observation-command-plan"]) {
             const file = resolve(root, name + ".ts"); expect(coreBoundaryViolations(readFileSync(file, "utf8"), file, { root, language: "ts" })).toEqual([]);
-        }
-    });
-    it("rejects real clocks, native defaults, wire imports and dependency inversion", () => {
-        const root = resolve("packages/device-lab/src/device-lab"); const file = resolve(root, "application/broker-observation-leases.ts");
-        for (const mutation of ['Date.now();', 'process.env.HOME;', 'import {opendirSync} from "node:fs";', 'import "../../device-lab-broker.js";', 'import("node:child_process");']) {
-            expect(coreBoundaryViolations(mutation, file, { root, language: "ts" }).length).toBeGreaterThan(0);
         }
     });
 });

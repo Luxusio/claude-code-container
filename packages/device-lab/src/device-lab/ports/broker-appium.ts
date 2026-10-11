@@ -1,43 +1,26 @@
-import type { BrokerAppiumResponse, BrokerAppiumBudget } from "../domain/broker-appium.js";
+import type { BrokerAppiumBudget } from "../domain/broker-appium.js";
 
-export type BrokerAppiumCommand = {
-    mode: "exec" | "detached"; provider: string; executable: string; args: string[];
-    env?: Record<string, string | undefined>; cwd?: string;
-};
-export type BrokerAppiumExecution = {
-    status?: number | null; error?: string; pid?: number; processIdentity?: unknown;
-    [field: string]: unknown;
-};
-export type BrokerAppiumHttpResponse = { ok: boolean; status: number | null; body: unknown };
-export type BrokerAppiumVerification =
-    | { ok: true; serverUrl: string; port?: number; [field: string]: unknown }
-    | { ok: false; error: string; [field: string]: unknown };
-export type BrokerAppiumTermination = { ok: boolean; error?: string; stale?: boolean; [field: string]: unknown };
+import type {BrokerAppiumExecution, BrokerAppiumHttpResponse, BrokerAppiumVerification, BrokerAppiumTermination, BrokerAppiumRefusal} from "../domain/broker-appium.js";
+export type {BrokerAppiumExecution, BrokerAppiumHttpResponse, BrokerAppiumVerification, BrokerAppiumTermination} from "../domain/broker-appium.js";
 export type BrokerAppiumTransition = {
     found: boolean; matched: boolean; currentAppium: unknown; device: Record<string, unknown> | null;
 };
-export type BrokerAppiumRuntimePaths = {
-    packageRoot: string; sourcePackage: string; sourceLock: string;
-    runtimeRoot: string; executable: string; entry: string; markerFile: string;
-};
+export type BrokerAppiumInstrumentationStep = "force-stop-server" | "force-stop-test" | "uninstall-server" | "uninstall-test" | "uninstall-settings";
+export type BrokerAppiumRuntimeCapture<Runtime> = {kind: "injected" | "managed"; handle: Runtime};
 
 /** Native capabilities; callbacks delimit locks, never replace an Appium operation. */
-export interface BrokerAppiumPorts {
+export interface BrokerAppiumPorts<Runtime> {
     commandTimeoutMs: number;
-    commandOutputLimit: number;
-    platform: string;
     usesDefaultCommandRunner: boolean;
     strictAppiumPortOwnership: boolean;
-    injectedExecutable: string | undefined;
-    nodeExecutable: string;
     readDevices(ownerId: string, stateKey: string): unknown[];
-    stateFailure(error: unknown, target: { backend: string; stateKey: string }): BrokerAppiumResponse;
-    notFound(ownerId: string, backend: string, deviceId: string): BrokerAppiumResponse;
+    stateFailure(error: unknown, target: { backend: string; stateKey: string }): BrokerAppiumRefusal;
+    notFound(ownerId: string, backend: string, deviceId: string): BrokerAppiumRefusal;
     publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replacement: Record<string, unknown> | null): BrokerAppiumTransition;
     withDeviceOperation<T>(ownerId: string, stateKey: string, deviceId: string, operation: () => T | Promise<T>, budget?: BrokerAppiumBudget): Promise<T>;
-    heartbeat(ownerId: string, target: { backend: string; stateKey: string; device: Record<string, unknown> }, deviceId: string, budget?: BrokerAppiumBudget): BrokerAppiumResponse | null;
+    heartbeat(ownerId: string, target: { backend: string; stateKey: string; device: Record<string, unknown> }, deviceId: string, budget?: BrokerAppiumBudget): BrokerAppiumRefusal | null;
     isLockTimeout(error: unknown): boolean;
-    lockFailure(ownerId: string, backend: string, deviceId: string, error: unknown): BrokerAppiumResponse;
+    lockFailure(ownerId: string, backend: string, deviceId: string, error: unknown): BrokerAppiumRefusal;
     isProcessIdentityCurrent(identity: unknown, pid: number): boolean;
     verifyListener(appium: unknown): BrokerAppiumVerification;
     terminateRuntime(appium: unknown): Promise<BrokerAppiumTermination>;
@@ -46,22 +29,24 @@ export interface BrokerAppiumPorts {
     portSeed(ownerId: string, backend: string, deviceId: string): number;
     resolveIosTarget(ownerId: string, device: unknown): { ok: true; target: string } | { ok: false; error: string; missing?: unknown };
     http(url: string, options: { method?: string; body?: unknown; timeoutMs?: number }): Promise<BrokerAppiumHttpResponse>;
-    execute(command: BrokerAppiumCommand, budget: { timeoutMs: number; outputLimit: number }): BrokerAppiumExecution;
-    launch(command: BrokerAppiumCommand): Promise<BrokerAppiumExecution>;
-    commandEnvironment(backend: string): Record<string, string | undefined> | undefined;
-    providerExecutable(name: string): string | null;
-    resolveExecutable(name: string): string | null;
-    runtimePaths(): BrokerAppiumRuntimePaths;
-    readManifest(path: string, kind: "package" | "lock"): string | null;
+    captureRuntime(): BrokerAppiumRuntimeCapture<Runtime>;
+    runtimeReceipt(runtime: Runtime): unknown;
+    launchServer(runtime: Runtime, request: {backend: string; port: number; timeoutMs: number}): Promise<BrokerAppiumExecution>;
+    installAvailable(runtime: Runtime): boolean;
+    installRuntime(runtime: Runtime, timeoutMs: number): BrokerAppiumExecution;
+    instrumentationAvailable(): boolean;
+    resetInstrumentation(serial: string, step: BrokerAppiumInstrumentationStep): BrokerAppiumExecution;
+    instrumentationReceipt(serial: string): unknown;
+    readManifest(runtime: Runtime, kind: "package" | "lock"): string | null;
     stateErrorCode(error: unknown): string | null;
-    ensureRuntimeDirectory(): undefined;
-    inspectRuntimeDirectory(): boolean;
-    inspectNodeModules(): boolean;
-    entryIsValid(entry: string): boolean;
-    readMarker(path: string): unknown;
-    writeManifest(kind: "package" | "lock", text: string): undefined;
-    removeMarker(path: string): undefined;
-    writeMarker(path: string, marker: { manifestHash: string; installedAt: string; packageRoot: string }): undefined;
+    ensureRuntimeDirectory(runtime: Runtime): undefined;
+    inspectRuntimeDirectory(runtime: Runtime): boolean;
+    inspectNodeModules(runtime: Runtime): boolean;
+    entryIsValid(runtime: Runtime): boolean;
+    readMarker(runtime: Runtime): unknown;
+    writeManifest(runtime: Runtime, kind: "package" | "lock", text: string): undefined;
+    removeMarker(runtime: Runtime): undefined;
+    writeMarker(runtime: Runtime, marker: {manifestHash: string; installedAt: string}): undefined;
     manifestDigest(packageText: string, lockText: string): string;
     withInstallLock<T>(operation: () => T, options: { waitMs: number; staleMs: number }): T;
     timestamp(): string;

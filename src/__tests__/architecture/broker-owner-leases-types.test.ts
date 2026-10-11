@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerOwnerApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner.js";
 import { createBrokerPhysicalLeasesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-leases.js";
-import type { BrokerOwnerRegistration, BrokerOwnerResult } from "../../../packages/device-lab/src/device-lab/domain/broker-owner.js";
+import type { BrokerOwnerRegistration, BrokerOwnerResolution } from "../../../packages/device-lab/src/device-lab/domain/broker-owner.js";
 import { validateLeaseParams, type ClaimOutcome, type HeartbeatOutcome, type ReleaseOutcome, type PruneOutcome, type LeaseWaitBudget } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-leases.js";
 import type { BrokerOwnerPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner.js";
 import type { BrokerPhysicalLeasePorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-leases.js";
@@ -9,7 +9,7 @@ import type { BrokerPhysicalLeasePorts } from "../../../packages/device-lab/src/
 function ownerContracts(ports: BrokerOwnerPorts) {
     const app = createBrokerOwnerApplication(ports);
     const registration: BrokerOwnerRegistration = app.register("/host/project", "work");
-    const resolved: BrokerOwnerResult = app.resolve({ projectMountPath: "/project/project", profile: "work" });
+    const resolved: BrokerOwnerResolution = app.resolve({ projectMountPath: "/project/project", profile: "work" });
     const secret: string = app.secret(registration.ownerId);
     const { identity, ...withoutIdentity } = ports;
     // @ts-expect-error canonical owner identity authority is required

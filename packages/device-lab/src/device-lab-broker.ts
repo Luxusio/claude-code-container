@@ -1,3 +1,8 @@
+import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
+import type {BrokerRecordingRefusal, BrokerRecordingRequest, BrokerRecordingTarget} from "./device-lab/domain/broker-recording.js";
+import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
+import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
+import type {DeviceStatusPreparation, DeviceStatusPhysicalAdmission} from "./device-lab/domain/broker-observation.js";
 import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVReplay, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
@@ -21,7 +26,7 @@ import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyp
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
 import { isSnapshotTool } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerRecordingApplication } from "./device-lab/application/broker-recording.js";
-import type { BrokerAppiumVerification } from "./device-lab/ports/broker-appium.js";
+type BrokerAppiumVerification = {ok: true; serverUrl: string; port?: number; [field: string]: unknown} | {ok: false; error: string; [field: string]: unknown};
 import { createBrokerAppiumApplication } from "./device-lab/application/broker-appium.js";
 import { validateAppiumParams, appiumParamError, brokerOwnedAppiumPid, brokerOwnedAppiumEndpoint, brokerOwnedAppiumPort, brokerOwnedAppiumRuntime } from "./device-lab/domain/broker-appium.js";
 import { createBrokerOwnerApplication } from "./device-lab/application/broker-owner.js";
@@ -3493,32 +3498,45 @@ function findOwnerDeviceForTool(ownerId: string, parsed: { stateKey: string | nu
     return matches[0];
 }
 
+function recordingNativeTarget(ownerId: string, request: BrokerRecordingRequest): BrokerRecordingTarget | BrokerRecordingRefusal {
+    const keys = request.stateKey ? [request.stateKey] : DEVICE_BROKER_BACKEND_STATE_KEYS;
+    const matches: BrokerRecordingTarget[] = [];
+    for (const stateKey of keys) {
+        const found = readOwnerDevices(ownerId, stateKey).find(device => cleanupRecord(device) && device.id === request.deviceId);
+        if (cleanupRecord(found))
+            matches.push({ stateKey, backend: backendForStateKey(stateKey), device: found });
+    }
+    if (!matches.length)
+        return { kind: "refused", reason: "missing", error: "owner-device-not-found", deviceId: request.deviceId, backend: request.backend };
+    if (matches.length > 1)
+        return { kind: "refused", reason: "conflict", error: "ambiguous-device-backend", deviceId: request.deviceId, matches: matches.map(match => match.backend) };
+    return matches[0];
+}
+
 function brokerRecordingApplication(normalized: NormalizedBrokerOptions) {
+    const observed = (receipt: ProviderCommandResult) => ({ status: receipt.status, error: receipt.error, pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt) });
+    const launch = async (command: ProviderCommand, label: string) => observed(normalized.usesDefaultCommandRunner
+        ? await startDetachedProviderCommand(command, normalized, label)
+        : normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
+    const adbEffect = (serial: string, args: string[]) => observed(normalized.commandRunner({ mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, ...args] }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
     return createBrokerRecordingApplication({
-        findTarget: findOwnerDeviceForTool,
-        heartbeat: refreshPhysicalDeviceLeaseForOperation,
-        observeProcess: inspectDeviceRuntimeProcessIdentity,
-        publish: transitionOwnerRecordingRuntime,
-        executable: name => executableFor(name, normalized),
-        resolveIosTarget: (ownerId, device) => resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized),
-        localPath: ownerRecordingLocalPath,
-        prepareOutput: path => { mkdirSync(dirname(path), { recursive: true }); return undefined; },
-        launch: (command, label) => normalized.usesDefaultCommandRunner
-            ? startDetachedProviderCommand(command, normalized, label)
-            : Promise.resolve(normalized.commandRunner(command, {
-                timeoutMs: normalized.commandTimeoutMs,
-                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-            })),
-        execute: command => normalized.commandRunner(command, {
-            timeoutMs: normalized.commandTimeoutMs,
-            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        }),
-        signal: (recording, signal) => signalBrokerOwnedRecording(recording, normalized, signal),
-        waitForExit: (pid, timeoutMs) => normalized.usesDefaultCommandRunner
-            ? waitForProcessExit(pid, timeoutMs)
-            : Promise.resolve(true),
-        timestamp: () => new Date().toISOString(),
-        runtimeId: () => randomBytes(16).toString("hex"),
+        findTarget: recordingNativeTarget,
+        heartbeat: (owner, target, id) => {
+            const admission = nativePhysicalAdmission(owner, target, id);
+            return admission.kind === "admitted" ? null : { kind: "refused", reason: "conflict", error: "physical-device-not-attached", ownerId: owner, backend: target.backend, deviceId: id,
+                ...(admission.failure ? { leaseError: admission.failure.error } : {}), remedy: "attach the physical device before using host-backed device tools" };
+        },
+        observeProcess: (identity, pid) => inspectDeviceRuntimeProcessIdentity(identity, pid), publish: transitionOwnerRecordingRuntime,
+        resolveIosTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized), localPath: ownerRecordingLocalPath,
+        prepareOutput: path => { mkdirSync(dirname(path), {recursive: true}); return undefined; },
+        launchAndroidRecording: (serial, remote, limit, _local, label) => launch({ mode: "detached", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, "shell", "screenrecord", "--time-limit", String(limit), remote] }, label),
+        launchIosRecording: (udid, local, label) => launch({ mode: "detached", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["simctl", "io", udid, "recordVideo", local] }, label),
+        stopAndroidRecording: serial => adbEffect(serial, ["shell", "pkill", "-2", "screenrecord"]),
+        pullAndroidRecording: (serial, remote, local) => adbEffect(serial, ["pull", remote, local]),
+        removeAndroidRecording: (serial, remote) => adbEffect(serial, ["shell", "rm", "-f", remote]),
+        signal: (recording, signal) => { const receipt = signalBrokerOwnedRecording(recording, normalized, signal); return {attempted: receipt.attempted, ok: receipt.ok, ...("stale" in receipt ? {stale: receipt.stale === true} : {}), receipt: new NativeRecordingSignalReceipt(receipt)}; },
+        waitForExit: (pid, timeout) => normalized.usesDefaultCommandRunner ? waitForProcessExit(pid, timeout) : Promise.resolve(true),
+        timestamp: () => new Date().toISOString(), runtimeId: () => randomBytes(16).toString("hex"),
     });
 }
 
@@ -4013,11 +4031,11 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
             // The out-of-process backend owns this same cross-process lock.
             return await invokeBackendDeviceTool(ownerId, parsed, normalized);
         }
-        if (parsed.tool === "device_record_video_status") return brokerRecordingApplication(normalized).status(ownerId, parsed);
+        if (parsed.tool === "device_record_video_status") return renderBrokerRecording(brokerRecordingApplication(normalized).status(ownerId, parsed));
         try {
             return await withOwnerDeviceOperation(ownerId, match.stateKey, String(parsed.deviceId), () => parsed.tool === "device_record_video_start"
-                ? brokerRecordingApplication(normalized).start(ownerId, parsed)
-                : brokerRecordingApplication(normalized).stop(ownerId, parsed));
+                ? brokerRecordingApplication(normalized).start(ownerId, parsed).then(renderBrokerRecording)
+                : brokerRecordingApplication(normalized).stop(ownerId, parsed).then(renderBrokerRecording));
         } catch (error) {
             if (!isDeviceOperationLockTimeout(error)) throw error;
             return deviceOperationLockFailure(ownerId, match.backend || match.stateKey, String(parsed.deviceId), error);
@@ -8501,59 +8519,74 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
     };
 }
 
+function nativePhysicalAdmission(ownerId: string, match: DeviceToolMatch, deviceId: string, budget?: AppiumRequestBudget): DeviceStatusPhysicalAdmission {
+    if (!DEVICE_BROKER_PHYSICAL_BACKENDS.has(match.stateKey))
+        return { kind: "admitted" };
+    const hardwareId = match.stateKey === "android-device" ? field(match.device, "serial") : field(match.device, "udid");
+    const claimId = field(match.device, "leaseClaimId");
+    const claimNonce = field(match.device, "leaseClaimNonce");
+    if (!hardwareId || !claimId || !claimNonce)
+        return { kind: "refused" };
+    const outcome = brokerPhysicalLeases.heartbeat(ownerId, { backend: match.stateKey, hardwareId, deviceId, claimId, claimNonce }, budget);
+    return outcome.kind === "renewed" ? { kind: "admitted" } : { kind: "refused", failure: outcome };
+}
+
+function nativeStatusPreview(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions): DeviceStatusPreparation<NativeStatusConnection> {
+    const parsed = validateCommandParams(params);
+    if (!parsed.ok)
+        return { kind: "refused", reason: "invalid", error: parsed.error, ...(parsed.allowed ? { allowed: parsed.allowed } : {}), ...(parsed.detail ? { detail: parsed.detail } : {}) };
+    const observation = observeLifecyclePreview(ownerId, parsed, normalized, false);
+    const base = { ownerId, backend: parsed.backend, deviceId: parsed.deviceId };
+    switch (observation.kind) {
+        case "state-failed": return { kind: "refused", ...nativeHyperVStateFailure(observation.error, parsed) };
+        case "allocation-failed": return { kind: "refused", reason: observation.evidence.error === "invalid-android-emulator-port" ? "invalid" : observation.evidence.error === "android-emulator-port-inventory-unavailable" ? "provider-unavailable" : "conflict", ...base, error: observation.evidence.error, detail: observation.evidence.detail, allowed: observation.evidence.allowed };
+        case "incarnation-required": return { kind: "refused", reason: "conflict", ...base, error: "hyper-v-incarnation-required" };
+        case "incarnation-conflict": return { kind: "refused", reason: "conflict", ...base, error: "hyper-v-incarnation-conflict" };
+        case "configuration-conflict": return { kind: "refused", reason: "conflict", ...base, error: "hyper-v-create-configuration-conflict", conflicts: observation.conflicts };
+        case "already-exists": return { kind: "refused", reason: "conflict", ...base, error: "owner-device-already-exists" };
+        case "not-found": return { kind: "refused", reason: "missing", ...base, error: "owner-device-not-found" };
+        case "not-attached": return { kind: "refused", reason: "conflict", ...base, error: "physical-device-not-attached", remedy: "attach the physical device before starting it" };
+        case "equivalent-create":
+        case "missing-delete": return { kind: "prepared", plan: { ...observation.value, idempotent: true, availability: { kind: "not-required" } } };
+        case "create":
+        case "existing": {
+            const { providerPlan, providerAvailable: _available, ...facts } = observation.value;
+            if (!providerPlan)
+                return { kind: "prepared", plan: { ...facts, availability: { kind: "not-required" } } };
+            if ("error" in providerPlan)
+                return { kind: "prepared", plan: { ...facts, availability: { kind: "unavailable", error: providerPlan.error, missing: providerPlan.missing } } };
+            if (providerPlan.mode !== "exec" && providerPlan.mode !== "detached" && providerPlan.mode !== "noop")
+                return { kind: "prepared", plan: { ...facts, availability: { kind: "unavailable", error: "missing-provider-command", missing: [] } } };
+            return { kind: "prepared", plan: { ...facts, availability: { kind: "available", mode: providerPlan.mode, provider: providerPlan.provider,
+                        connection: { command: { ...providerPlan, mode: providerPlan.mode } } } } };
+        }
+    }
+}
+
 function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
-    return createBrokerDeviceStatus({
-        preview: (owner, _request, params) => {
-            const planned = lifecycleCommandPlanning(owner, params, normalized, false);
-            if (planned.response.status !== 200 || !planned.result) return { ok: false, response: planned.response };
-            const result = planned.result;
-            const command = result.providerCommand;
-            if (command && !("error" in command) && command.mode !== "exec" && command.mode !== "detached" && command.mode !== "noop") {
-                return { ok: true, plan: { ...result, providerCommand: { error: "missing-provider-command", missing: [] } } };
-            }
-            const providerCommand: ProviderCommand | { error: string; missing: string[] } | null = command && !("error" in command)
-                ? { ...command, mode: command.mode === "exec" ? "exec" : command.mode === "detached" ? "detached" : "noop" }
-                : command;
-            return { ok: true, plan: { ...result, providerCommand } };
-        },
-        refreshPhysicalLease: (owner, request, device) => refreshPhysicalDeviceLeaseForOperation(owner, {
-            stateKey: request.stateKey, backend: request.backend, device,
-        }, request.deviceId),
-        execute: command => normalized.commandRunner(command, {
-            timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        }),
-        executeHyperV: (command, deadline) => hyperVProviderCommandRunner(normalized, command, {
-            timeoutMs: hyperVRemainingTimeout(deadline, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        }),
-        typedStatus: (identity, deadline) => hyperVTypedStatusExecution(normalized, identity, deadline, 120000),
-        succeeded: execution => commandSucceeded(execution),
-        parseVm: stdout => parseHyperVVmObservation(stdout),
-        incarnation: device => hyperVDeviceIncarnationId(device),
-        validIncarnation: value => validHyperVIncarnationId(value),
-        deadlineExpired: deadline => hyperVOperationDeadlineExpired(deadline),
+    const observed = (receipt: ProviderCommandResult) => ({mode: receipt.mode, provider: receipt.provider, status: receipt.status,
+        signal: receipt.signal, stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error,
+        timedOut: receipt.timedOut, outputLimitExceeded: receipt.outputLimitExceeded, receipt});
+    return createBrokerDeviceStatus<NativeStatusConnection, ProviderCommandResult>({
+        preview: (owner, _request, params) => nativeStatusPreview(owner, params, normalized),
+        refreshPhysicalLease: (owner, request, device) => nativePhysicalAdmission(owner, { stateKey: request.stateKey, backend: request.backend, device }, request.deviceId),
+        observe: connection => { const receipt = normalized.commandRunner(connection.command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt); },
+        observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt); },
+        typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000); return observed(receipt); },
+        succeeded: execution => commandSucceeded(execution), parseVm: parseHyperVVmObservation,
+        incarnation: hyperVDeviceIncarnationId, validIncarnation: validHyperVIncarnationId,
+        deadlineExpired: hyperVOperationDeadlineExpired,
         assertDeadline: deadline => { assertHyperVOperationDeadline(deadline); return undefined; },
-        timestamp: () => new Date().toISOString(),
-        redactPlan: plan => redactHyperVResultSecrets(plan),
-        redactDevice: (device, hyperV) => hyperV ? redactHyperVDeviceSecrets(device) : redactBrokerDeviceSecrets(device),
-        redactExecution: (execution, fallback) => redactProviderCommandInput(execution, true, fallback),
-        failureDetail: execution => providerFailureDetail(execution),
-        diagnosticCode: (execution, fallback) => hyperVProviderDiagnosticCode(execution, fallback),
+        timestamp: () => new Date().toISOString(), diagnosticCode: (execution, fallback) => hyperVProviderDiagnosticCode(execution.receipt ?? execution, fallback),
         operationPending: (owner, backend, id) => existsSync(hyperVOperationJournalPath(owner, backend, id)),
         snapshotPending: (owner, backend, id) => existsSync(hyperVSnapshotJournalPath(owner, backend, id)),
-        readDevices: (owner, state) => readOwnerDevices(owner, state),
-        readOperationJournal: (owner, backend, id) => readHyperVOperationJournal(owner, backend, id),
-        readSnapshotJournal: (owner, backend, id) => readHyperVSnapshotJournal(owner, backend, id),
-        reconcileOperation: (owner, backend, id, deadline, preserveNetwork) => reconcileHyperVOperation(owner, backend, id, normalized, deadline, preserveNetwork),
-        repairSnapshots: (owner, backend, id, device, executable) => reconcileHyperVSnapshotJournal(owner, backend, id, device, executable, normalized),
-        executable: name => providerExecutable(name, normalized),
-        stateErrorCode: error => ownerDeviceStateErrorCode(error),
-        stateFailure: (error, request) => ownerDeviceStateFailure(error, { backend: request.backend, stateKey: request.stateKey }),
-        errorCode: (error, fallback) => hyperVBoundedErrorCode(error, fallback),
-        withHostLock: (deadline, operation) => withSharedMutationLockAsync(brokerHyperVMutationLockPath(), operation, {
-            waitMs: hyperVRemainingTimeout(deadline, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS),
-            staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS,
-        }),
-        lockTimedOut: error => isDeviceOperationLockTimeout(error),
+        readDevices: readOwnerDevices, readOperationJournal: readHyperVOperationJournal, readSnapshotJournal: readHyperVSnapshotJournal,
+        reconcileOperation: (owner, backend, id, deadline, preserveNetwork) => brokerHyperVStopDeleteApplication(normalized).reconcile(owner, backend, id, deadline, preserveNetwork),
+        repairSnapshots: (owner, backend, id, device, connection) => observeHyperVSnapshotJournal(owner, backend, id, device, connection.command.executable || "powershell.exe", normalized),
+        recoveryConnection: () => { const native = nativeHyperVConnection(normalized, "powershell"); return native ? { command: { mode: "exec", provider: "hyper-v", executable: native.executable, args: [] } } : null; },
+        stateErrorCode: ownerDeviceStateErrorCode, stateFailure: nativeHyperVStateFailure, errorCode: hyperVBoundedErrorCode,
+        withHostLock: (deadline, operation) => withSharedMutationLockAsync(brokerHyperVMutationLockPath(), operation, { waitMs: hyperVRemainingTimeout(deadline, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS), staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS }),
+        lockTimedOut: isDeviceOperationLockTimeout,
     });
 }
 
@@ -8561,7 +8594,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
     const parsed = validateCommandParams(params);
     if (!parsed.ok)
         return commandParamError(parsed);
-    if (parsed.command === "device_status") return brokerDeviceStatusApplication(normalized).execute(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt);
+    if (parsed.command === "device_status") return renderBrokerDeviceStatus(await brokerDeviceStatusApplication(normalized).execute(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), redactBrokerDeviceSecrets, providerFailureDetail);
     if (isHyperVBackend(parsed.backend) && (parsed.command === "device_stop" || parsed.command === "device_delete")) {
         return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId, { ...parsed, command: parsed.command }, hyperVDeadlineAt, hyperVCleanupDeadlineAt));
     }
@@ -9093,7 +9126,7 @@ async function lifecycleHyperVCommandInvokeLocked(ownerId:string,params:unknown,
     if(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot")return renderHyperVCreateStart(await brokerHyperVCreateStartApplication(normalized).invoke(ownerId,params,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));
     assertHyperVOperationDeadline(deadlineAt);
     if(parsed.command==="device_stop"||parsed.command==="device_delete"){if(!parsed.dryRun)forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId,parsed.backend,parsed.deviceId));return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));}
-    if (parsed.command === "device_status") return brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, deadlineAt);
+    if (parsed.command === "device_status") return renderBrokerDeviceStatus(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, deadlineAt), redactBrokerDeviceSecrets, providerFailureDetail);
     return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt);
 }
 
@@ -9114,7 +9147,7 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
     }
     try {
         return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, async () => {
-            if (parsed.command === "device_status") return brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt);
+            if (parsed.command === "device_status") return renderBrokerDeviceStatus(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), redactBrokerDeviceSecrets, providerFailureDetail);
             if (isHyperVBackend(parsed.backend)) {
                 try {
                     return await withSharedMutationLockAsync(
@@ -9233,7 +9266,7 @@ function ownerDeviceNotFound(ownerId: string, backend: string, deviceId: string)
 
 function appiumSessionStatus(ownerId: string, params: unknown) {
     const parsed = validateAppiumParams(params, "status");
-    if (!parsed.ok) return appiumParamError(parsed);
+    if (!parsed.ok) return renderBrokerAppium(appiumParamError(parsed));
     const observation = observeAppium.status(ownerId, parsed);
     if (observation.kind === "read-failed") return ownerDeviceStateFailure(observation.error, { backend: parsed.backend, stateKey: parsed.stateKey });
     if (observation.kind === "not-found") return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
@@ -9242,7 +9275,10 @@ function appiumSessionStatus(ownerId: string, params: unknown) {
 
 function appiumSessionList(ownerId: string, params: unknown) {
     const parsed = validateAppiumListParams(params);
-    if (!parsed.ok) return appiumParamError(parsed);
+    if (!parsed.ok) {
+        const {status, ...payload} = parsed;
+        return {status, payload};
+    }
     const observation = observeAppium.list(ownerId, parsed);
     if (observation.kind === "read-failed") return ownerDeviceStateFailure(observation.error, { backend: parsed.backend, stateKey: parsed.stateKey });
     const { sessions, ...value } = observation.value;
@@ -9263,64 +9299,87 @@ function transitionOwnerAppiumRuntime(
 
 type AppiumRequestBudget = { remaining(): number };
 
+type NativeAppiumRuntime = {
+    kind: "injected" | "managed";
+    packageRoot: string;
+    runtimeRoot: string;
+    sourcePackage: string;
+    sourceLock: string;
+    executable: string;
+    entry: string;
+    markerFile: string;
+    installExecutable: string;
+};
+function nativeAppiumStateFailure(error: unknown, target: {
+    backend: string;
+    stateKey: string;
+}): BrokerAppiumRefusal {
+    const code = ownerDeviceStateErrorCode(error);
+    if (!code)
+        throw error;
+    return { kind: "refused", reason: "state-read-failed", error: code, ...target };
+}
 function brokerAppiumApplication(normalized: NormalizedBrokerOptions) {
-    return createBrokerAppiumApplication({
-        commandTimeoutMs: normalized.commandTimeoutMs,
-        commandOutputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        platform: normalized.platform,
-        usesDefaultCommandRunner: normalized.usesDefaultCommandRunner,
+    const observation = (receipt: ProviderCommandResult) => ({ status: receipt.status, error: receipt.error, pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt) });
+    return createBrokerAppiumApplication<NativeAppiumRuntime>({
+        commandTimeoutMs: normalized.commandTimeoutMs, usesDefaultCommandRunner: normalized.usesDefaultCommandRunner,
         strictAppiumPortOwnership: normalized.strictAppiumPortOwnership,
-        injectedExecutable: normalized.providerPaths.appium,
-        nodeExecutable: process.execPath,
-        readDevices: readOwnerDevices,
-        stateFailure: ownerDeviceStateFailure,
-        notFound: ownerDeviceNotFound,
-        publish: transitionOwnerAppiumRuntime,
-        withDeviceOperation: withOwnerDeviceOperation,
-        heartbeat: refreshPhysicalDeviceLeaseForOperation,
+        readDevices: readOwnerDevices, stateFailure: nativeAppiumStateFailure,
+        notFound: (ownerId, backend, deviceId) => ({ kind: "refused", reason: "missing", error: "owner-device-not-found", ownerId, backend, deviceId }),
+        publish: transitionOwnerAppiumRuntime, withDeviceOperation: withOwnerDeviceOperation,
+        heartbeat: (owner, target, id, budget) => { const admission = nativePhysicalAdmission(owner, target, id, budget); return admission.kind === "admitted" ? null : { kind: "refused", reason: "conflict", error: "physical-device-not-attached", ownerId: owner, backend: target.backend, deviceId: id, ...(admission.failure ? { leaseError: admission.failure.error } : {}), remedy: "attach the physical device before using host-backed device tools" }; },
         isLockTimeout: isDeviceOperationLockTimeout,
-        lockFailure: deviceOperationLockFailure,
+        lockFailure: (ownerId, backend, deviceId, _error) => ({ kind: "refused", reason: "conflict", error: "device-operation-lock-failed", ownerId, backend, deviceId, detail: "device-operation-lock-failed" }),
         isProcessIdentityCurrent: (identity, pid) => inspectDeviceRuntimeProcessIdentity(identity, pid).status === "match",
-        verifyListener: (appium) => verifyBrokerOwnedAppiumListener(appium, normalized),
-        terminateRuntime: (appium) => terminateBrokerOwnedAppiumAndWait(appium, normalized),
-        terminatePortListener: (port) => terminateManagedAppiumPortListener(port, normalized),
-        portListener: (port) => normalized.portProcessResolver(port, normalized.platform),
+        verifyListener: appium => { const receipt = verifyBrokerOwnedAppiumListener(appium, normalized); return receipt.ok ? {ok: true, serverUrl: receipt.serverUrl, ...(typeof receipt.port === "number" ? {port: receipt.port} : {}), receipt: new NativeAppiumVerificationReceipt(receipt)} : {ok: false, error: receipt.error, receipt: new NativeAppiumVerificationReceipt(receipt)}; },
+        terminateRuntime: async (appium) => { const receipt = await terminateBrokerOwnedAppiumAndWait(appium, normalized); return {ok: receipt.ok, ...("error" in receipt && typeof receipt.error === "string" ? {error: receipt.error} : {}), ...("stale" in receipt ? {stale: receipt.stale === true} : {}), ...("attempted" in receipt ? {attempted: receipt.attempted === true} : {}), receipt: new NativeAppiumTerminationReceipt(receipt)}; },
+        terminatePortListener: port => { const receipt = terminateManagedAppiumPortListener(port, normalized); return {ok: receipt.ok, ...("error" in receipt && typeof receipt.error === "string" ? {error: receipt.error} : {}), ...("stale" in receipt ? {stale: receipt.stale === true} : {}), ...("attempted" in receipt ? {attempted: receipt.attempted === true} : {}), receipt: new NativeAppiumTerminationReceipt(receipt)}; },
+        portListener: port => normalized.portProcessResolver(port, normalized.platform),
         portSeed: (ownerId, backend, deviceId) => createHash("sha256").update(`${ownerId}:${backend}:${deviceId}:appium`).digest().readUInt16BE(0),
-        resolveIosTarget: (ownerId, device) => resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized),
-        http: fetchAppiumJson,
-        execute: normalized.commandRunner,
-        launch: (command) => startDetachedProviderCommand(command, normalized, "Appium server"),
-        commandEnvironment: (backend) => appiumCommandEnv(backend, normalized),
-        providerExecutable: (name) => providerExecutable(name, normalized),
-        resolveExecutable: resolveExecutablePath,
-        runtimePaths: () => {
+        resolveIosTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized), http: fetchAppiumJson,
+        captureRuntime: () => {
             const packageRoot = packageRootForBroker();
             const runtimeRoot = brokerAppiumRuntimeRoot();
-            return { packageRoot, runtimeRoot,
-                sourcePackage: join(packageRoot, "appium-runtime", "package.json"),
-                sourceLock: join(packageRoot, "appium-runtime", "package-lock.json"),
-                executable: brokerAppiumRuntimeExecutable(normalized),
-                entry: brokerAppiumRuntimeEntry(), markerFile: join(runtimeRoot, ".ccc-runtime.json") };
+            const kind = normalized.providerPaths.appium ? "injected" : "managed";
+            return { kind, handle: { kind, packageRoot, runtimeRoot, installExecutable: "", sourcePackage: join(packageRoot, "appium-runtime", "package.json"), sourceLock: join(packageRoot, "appium-runtime", "package-lock.json"),
+                    executable: normalized.providerPaths.appium || brokerAppiumRuntimeExecutable(normalized), entry: brokerAppiumRuntimeEntry(), markerFile: join(runtimeRoot, ".ccc-runtime.json") } };
         },
-        readManifest: (path, kind) => {
-            const packageRoot = packageRootForBroker();
-            assertDeviceLabPathWithinRoot(packageRoot, path, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock");
-            return readDeviceLabTextFile(path, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock",
-                kind === "package" ? DEVICE_BROKER_APPIUM_PACKAGE_MANIFEST_LIMIT_BYTES : DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES);
+        runtimeReceipt: runtime => new NativeAppiumRuntimeReceipt(runtime),
+        launchServer: async (runtime, request) => {
+            const args = ["server", "--port", String(request.port), "--base-path", "/"];
+            if (request.backend.startsWith("android"))
+                args.push("--allow-insecure", "uiautomator2:adb_shell");
+            const command: ProviderCommand = { mode: "detached", provider: "appium", executable: runtime.kind === "injected" ? runtime.executable : process.execPath,
+                args: runtime.kind === "injected" ? args : [runtime.entry, ...args], env: appiumCommandEnv(request.backend, normalized), cwd: runtime.runtimeRoot };
+            return observation(normalized.usesDefaultCommandRunner ? await startDetachedProviderCommand(command, normalized, "Appium server")
+                : normalized.commandRunner(command, { timeoutMs: request.timeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
         },
-        stateErrorCode: (error) => deviceLabStateFileErrorCode(error) || null,
-        ensureRuntimeDirectory: () => { ensureBrokerAppiumRuntimeDirectory(); return undefined; },
-        inspectRuntimeDirectory: inspectBrokerAppiumRuntimeDirectory,
-        inspectNodeModules: inspectBrokerAppiumNodeModulesDirectory,
-        entryIsValid: brokerAppiumRuntimeEntryIsValid,
-        readMarker: (path) => readDeviceLabStateFile(path, (value) => value, "appium-runtime-marker", DEVICE_BROKER_APPIUM_RUNTIME_MARKER_LIMIT_BYTES),
-        writeManifest: (kind, text) => { writeFileAtomically(join(brokerAppiumRuntimeRoot(), kind === "package" ? "package.json" : "package-lock.json"), text); return undefined; },
-        removeMarker: (path) => { unlinkSync(path); return undefined; },
-        writeMarker: (path, marker) => { writeJsonFileAtomically(path, marker); return undefined; },
+        installAvailable: runtime => { runtime.installExecutable = resolveExecutablePath(normalized.platform === "win32" ? "npm.cmd" : "npm") || resolveExecutablePath("npm") || ""; return Boolean(runtime.installExecutable); },
+        installRuntime: (runtime, timeoutMs) => observation(normalized.commandRunner({ mode: "exec", provider: "npm-appium-runtime",
+            executable: runtime.installExecutable,
+            args: ["ci", "--prefix", runtime.runtimeRoot, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"] }, { timeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT })),
+        instrumentationAvailable: () => Boolean(providerExecutable("adb", normalized)),
+        resetInstrumentation: (serial, step) => {
+            const commands: Record<BrokerAppiumInstrumentationStep, string[]> = { "force-stop-server": ["shell", "am", "force-stop", "io.appium.uiautomator2.server"], "force-stop-test": ["shell", "am", "force-stop", "io.appium.uiautomator2.server.test"], "uninstall-server": ["uninstall", "io.appium.uiautomator2.server"], "uninstall-test": ["uninstall", "io.appium.uiautomator2.server.test"], "uninstall-settings": ["uninstall", "io.appium.settings"] };
+            return observation(normalized.commandRunner({ mode: "exec", provider: "adb-appium-recovery", executable: providerExecutable("adb", normalized) || "adb", args: ["-s", serial, ...commands[step]] }, { timeoutMs: 30000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
+        },
+        instrumentationReceipt: serial => new NativeAppiumInstrumentationReceipt({ adb: providerExecutable("adb", normalized), serial }),
+        readManifest: (runtime, kind) => {
+            const file = kind === "package" ? runtime.sourcePackage : runtime.sourceLock;
+            assertDeviceLabPathWithinRoot(runtime.packageRoot, file, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock");
+            return readDeviceLabTextFile(file, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock", kind === "package" ? DEVICE_BROKER_APPIUM_PACKAGE_MANIFEST_LIMIT_BYTES : DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES);
+        },
+        stateErrorCode: error => deviceLabStateFileErrorCode(error) || null,
+        ensureRuntimeDirectory: _runtime => { ensureBrokerAppiumRuntimeDirectory(); return undefined; },
+        inspectRuntimeDirectory: _runtime => inspectBrokerAppiumRuntimeDirectory(), inspectNodeModules: _runtime => inspectBrokerAppiumNodeModulesDirectory(),
+        entryIsValid: runtime => brokerAppiumRuntimeEntryIsValid(runtime.entry),
+        readMarker: runtime => readDeviceLabStateFile(runtime.markerFile, value => value, "appium-runtime-marker", DEVICE_BROKER_APPIUM_RUNTIME_MARKER_LIMIT_BYTES),
+        writeManifest: (runtime, kind, text) => { writeFileAtomically(join(runtime.runtimeRoot, kind === "package" ? "package.json" : "package-lock.json"), text); return undefined; },
+        removeMarker: runtime => { unlinkSync(runtime.markerFile); return undefined; },
+        writeMarker: (runtime, marker) => { writeJsonFileAtomically(runtime.markerFile, { ...marker, packageRoot: runtime.packageRoot }); return undefined; },
         manifestDigest: (packageText, lockText) => createHash("sha256").update(packageText).update(lockText).digest("hex"),
         withInstallLock: (operation, options) => withSharedMutationLock(brokerAppiumRuntimeInstallLockFile(), operation, options),
-        timestamp: () => new Date().toISOString(), now: Date.now, monotonicNow: () => performance.now(),
-        runtimeId: () => randomBytes(16).toString("hex"), sleep,
+        timestamp: () => new Date().toISOString(), now: Date.now, monotonicNow: () => performance.now(), runtimeId: () => randomBytes(16).toString("hex"), sleep,
     });
 }
 
@@ -9390,13 +9449,13 @@ async function handleBrokerRpcUnsafe(ownerId: string, body: unknown, normalized:
     if (method === "broker.device.tool.invoke") return invokeDeviceTool(ownerId, rpc.params, normalized);
     if (method === "broker.appium.status") return appiumSessionStatus(ownerId, rpc.params);
     if (method === "broker.appium.list") return appiumSessionList(ownerId, rpc.params);
-    if (method === "broker.appium.record") return brokerAppiumApplication(normalized).record(ownerId, rpc.params);
-    if (method === "broker.appium.clear") return brokerAppiumApplication(normalized).clear(ownerId, rpc.params);
-    if (method === "broker.appium.start") return brokerAppiumApplication(normalized).start(ownerId, rpc.params);
-    if (method === "broker.appium.stop") return brokerAppiumApplication(normalized).stop(ownerId, rpc.params);
-    if (method === "broker.appium.session.ensure") return brokerAppiumApplication(normalized).ensureSession(ownerId, rpc.params);
-    if (method === "broker.appium.session.delete") return brokerAppiumApplication(normalized).deleteSession(ownerId, rpc.params);
-    if (method === "broker.appium.request") return brokerAppiumApplication(normalized).request(ownerId, rpc.params);
+    if (method === "broker.appium.record") return renderBrokerAppium(await brokerAppiumApplication(normalized).record(ownerId, rpc.params));
+    if (method === "broker.appium.clear") return renderBrokerAppium(await brokerAppiumApplication(normalized).clear(ownerId, rpc.params));
+    if (method === "broker.appium.start") return renderBrokerAppium(await brokerAppiumApplication(normalized).start(ownerId, rpc.params));
+    if (method === "broker.appium.stop") return renderBrokerAppium(await brokerAppiumApplication(normalized).stop(ownerId, rpc.params));
+    if (method === "broker.appium.session.ensure") return renderBrokerAppium(await brokerAppiumApplication(normalized).ensureSession(ownerId, rpc.params));
+    if (method === "broker.appium.session.delete") return renderBrokerAppium(await brokerAppiumApplication(normalized).deleteSession(ownerId, rpc.params));
+    if (method === "broker.appium.request") return renderBrokerAppium(await brokerAppiumApplication(normalized).request(ownerId, rpc.params));
     return { status: 404, payload: { ok: false, error: "unknown-method", method } };
 }
 
@@ -9542,7 +9601,7 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     writeJson(res, body.status, { ok: false, error: body.error }, body.error === "request-body-timeout" ? { connection: "close" } : {});
                     return;
                 }
-                const result = brokerOwners.resolve(body.body);
+                const result = renderBrokerOwnerResolution(brokerOwners.resolve(body.body));
                 writeJson(res, result.status, result.payload);
                 return;
             }

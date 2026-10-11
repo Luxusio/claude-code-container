@@ -26,9 +26,11 @@ function fixture() {
             device.recording = replacement;
             return { found: true, matched: true, currentRecording: replacement, device };
         },
-        executable: () => "/controlled/adb", resolveIosTarget: unexpected,
+        resolveIosTarget: unexpected,
         localPath: () => "/private/new.mp4", prepareOutput: () => undefined,
-        launch: unexpected, execute: unexpected, signal: unexpected, waitForExit: unexpected,
+        launchAndroidRecording: unexpected, launchIosRecording: unexpected,
+        stopAndroidRecording: unexpected, pullAndroidRecording: unexpected, removeAndroidRecording: unexpected,
+        signal: unexpected, waitForExit: unexpected,
         timestamp: () => "2026-10-11T00:00:00.000Z", runtimeId: () => "new-runtime",
     };
     return { ports, device };
@@ -41,7 +43,7 @@ describe("broker recording current policies", () => {
         ports.observeProcess = () => ({ status: "unavailable" });
         ports.publish = unexpected;
         expect(createBrokerRecordingApplication(ports).status(owner, request("device_record_video_status"))).toMatchObject({
-            status: 200, payload: { ok: true, result: { recording: activeRecording, supported: true, provider: "adb-screenrecord", startsDevices: false } },
+            kind: "observed", recording: activeRecording, supported: true, provider: "adb-screenrecord",
         });
         expect(device.recording).toEqual(activeRecording);
     });
@@ -58,7 +60,7 @@ describe("broker recording current policies", () => {
             return { found: true, matched: true, currentRecording: activeRecording, device };
         };
         expect(createBrokerRecordingApplication(ports).status(owner, request("device_record_video_status"))).toMatchObject({
-            status: 200, payload: { ok: true, result: { recording: null } },
+            kind: "observed", recording: null,
         });
         expect(device.recording).toBeNull();
     });
@@ -74,19 +76,19 @@ describe("broker recording current policies", () => {
             device.recording = successor;
             return { found: true, matched: false, currentRecording: successor, device: null };
         };
-        expect(createBrokerRecordingApplication(ports).status(owner, request("device_record_video_status"))).toMatchObject({ status: 200 });
+        expect(createBrokerRecordingApplication(ports).status(owner, request("device_record_video_status"))).toMatchObject({ kind: "observed" });
         expect(device.recording).toEqual(successor);
     });
 
     it("publishes a successful Android launch with defaults and its actual process identity", async () => {
         const { ports, device } = fixture();
         const identity = { incarnation: "new-process" };
-        ports.launch = async command => {
-            expect(command).toEqual({ mode: "detached", provider: "adb", executable: "/controlled/adb",
-                args: ["-s", "emulator-5580", "shell", "screenrecord", "--time-limit", "180", "/sdcard/ccc-pixel-recording.mp4"] });
-            return { status: 0, pid: 34567, processIdentity: identity };
+        ports.launchAndroidRecording = async (serial, remotePath, timeLimitSec, localPath) => {
+            expect({ serial, remotePath, timeLimitSec, localPath }).toEqual({ serial: "emulator-5580",
+                remotePath: "/sdcard/ccc-pixel-recording.mp4", timeLimitSec: 180, localPath: "/private/new.mp4" });
+            return { status: 0, pid: 34567, processIdentity: identity, receipt: { launch: "controlled" } };
         };
-        expect(await createBrokerRecordingApplication(ports).start(owner, request("device_record_video_start"))).toMatchObject({ status: 200, payload: { ok: true } });
+        expect(await createBrokerRecordingApplication(ports).start(owner, request("device_record_video_start"))).toMatchObject({ kind: "started" });
         expect(device.recording).toMatchObject({
             active: true, runtimeId: "new-runtime", pid: 34567, processIdentity: identity,
             localPath: "/private/new.mp4", remotePath: "/sdcard/ccc-pixel-recording.mp4", timeLimitSec: 180,
@@ -95,11 +97,11 @@ describe("broker recording current policies", () => {
 
     it("does not publish a recording after launch failure", async () => {
         const { ports, device } = fixture();
-        const execution = { status: 17, error: "provider launch denied" };
-        ports.launch = async () => execution;
+        const execution = { status: 17, error: "provider launch denied", receipt: { launch: "denied" } };
+        ports.launchAndroidRecording = async () => execution;
         ports.publish = unexpected;
         expect(await createBrokerRecordingApplication(ports).start(owner, request("device_record_video_start"))).toMatchObject({
-            status: 502, payload: { ok: false, error: "recording-start-failed", execution },
+            kind: "refused", reason: "provider-failed", error: "recording-start-failed", execution,
         });
         expect(device.recording).toBeNull();
     });
@@ -107,8 +109,8 @@ describe("broker recording current policies", () => {
     it("reports failed rollback truthfully without overwriting a publication successor", async () => {
         const { ports, device } = fixture();
         const successor = { ...activeRecording, runtimeId: "successor-runtime" };
-        const rollback = { attempted: false, ok: false, reason: "runtime-process-identity-unavailable" };
-        ports.launch = async () => ({ status: 0, pid: 34567, processIdentity: { incarnation: "new-process" } });
+        const rollback = { attempted: false, ok: false, receipt: { reason: "runtime-process-identity-unavailable" } };
+        ports.launchAndroidRecording = async () => ({ status: 0, pid: 34567, processIdentity: { incarnation: "new-process" }, receipt: {} });
         ports.publish = () => {
             device.recording = successor;
             return { found: true, matched: false, currentRecording: successor, device: null };
@@ -119,7 +121,7 @@ describe("broker recording current policies", () => {
             return rollback;
         };
         expect(await createBrokerRecordingApplication(ports).start(owner, request("device_record_video_start"))).toMatchObject({
-            status: 409, payload: { ok: false, error: "recording-runtime-state-conflict", currentRecording: successor, rollback },
+            kind: "refused", reason: "conflict", error: "recording-runtime-state-conflict", currentRecording: successor, rollback,
         });
         expect(device.recording).toEqual(successor);
     });
@@ -127,15 +129,15 @@ describe("broker recording current policies", () => {
     it("retains active metadata and skips artifact copy when exit remains unconfirmed", async () => {
         const { ports, device } = fixture();
         device.recording = activeRecording;
-        ports.signal = () => ({ attempted: true, ok: true });
-        ports.execute = command => {
-            expect(command.args).toEqual(["-s", "emulator-5580", "shell", "pkill", "-2", "screenrecord"]);
-            return { status: 0 };
+        ports.signal = () => ({ attempted: true, ok: true, receipt: {} });
+        ports.stopAndroidRecording = serial => {
+            expect(serial).toBe("emulator-5580");
+            return { status: 0, receipt: {} };
         };
         ports.waitForExit = async () => false;
         ports.publish = unexpected;
         expect(await createBrokerRecordingApplication(ports).stop(owner, request("device_record_video_stop"))).toMatchObject({
-            status: 502, payload: { ok: false, error: "recording-process-still-running", recording: activeRecording, startsDevices: false },
+            kind: "uncertain", reason: "provider-failed", error: "recording-process-still-running", recording: activeRecording,
         });
         expect(device.recording).toEqual(activeRecording);
     });

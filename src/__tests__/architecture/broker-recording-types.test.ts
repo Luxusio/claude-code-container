@@ -11,8 +11,17 @@ function recordingCapabilityContracts(ports: BrokerRecordingPorts, request: Brok
     // @ts-expect-error Recording state changes require the native expected-record publication authority.
     createBrokerRecordingApplication(withoutPublication);
     // @ts-expect-error Signaling must return its actual synchronous ownership/termination admission result.
-    createBrokerRecordingApplication({ ...ports, signal: async () => ({ attempted: true, ok: true }) });
-    void [status, mutations, _publish];
+    createBrokerRecordingApplication({ ...ports, signal: async () => ({ attempted: true, ok: true, receipt: {} }) });
+    const { launchAndroidRecording, ...withoutAndroidLaunch } = ports;
+    // @ts-expect-error Android launch is a required finite native effect.
+    createBrokerRecordingApplication(withoutAndroidLaunch);
+    // @ts-expect-error Artifact pull must settle before publication.
+    createBrokerRecordingApplication({ ...ports, pullAndroidRecording: async () => ({ status: 0, receipt: {} }) });
+    // @ts-expect-error Recording outcomes do not expose CCC HTTP response status.
+    status.status;
+    // @ts-expect-error The recording core has no arbitrary native process runner.
+    ports.execute({ executable: "provider", args: [] });
+    void [status, mutations, _publish, launchAndroidRecording];
 }
 void recordingCapabilityContracts;
 
