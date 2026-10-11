@@ -5,6 +5,9 @@ import { validateLocalInputPath, validateLocalOutputPath } from "./policy/files.
 import { copyFileAtomically } from "./state/shared-mutation-lock.mjs";
 
 /**
+ * @typedef {{label?:string,limitBytes?:number}} TransferOptions
+ * @typedef {{label?:string,stageParent?:string,stagePrefix?:string}} OutputStageOptions
+ * @typedef {TransferOptions & {minBytes?:number}} CommitOptions
  * @typedef {{ok:false,error:string,message:string}} TransferFailure
  * @typedef {import("./policy/files.mjs").FilePolicyFailure | TransferFailure} NativeTransferFailure
  * @typedef {{ok:true,path:string,stagedPath:string,cleanup:()=>void}} NativeTransferStage
@@ -17,12 +20,17 @@ import { copyFileAtomically } from "./state/shared-mutation-lock.mjs";
 const DEVICE_UPLOAD_LIMIT_BYTES = 16 * 1024 * 1024;
 const DEVICE_DOWNLOAD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
 
-/** @returns {TransferFailure} */
+/** @param {unknown} error @param {string} fallback @returns {TransferFailure} */
 function transferFailure(error, fallback) {
-    const detail = error?.code || error?.message || fallback;
+    let detail = fallback;
+    if (error !== null && (typeof error === "object" || typeof error === "function")) {
+        if ("code" in error && typeof error.code === "string" && error.code) detail = error.code;
+        else if ("message" in error && typeof error.message === "string" && error.message) detail = error.message;
+    }
     return { ok: false, error: detail, message: detail };
 }
 
+/** @param {string} root */
 function cleanupTempRoot(root) {
     try {
         rmSync(root, { recursive: true, force: true });
@@ -31,7 +39,7 @@ function cleanupTempRoot(root) {
     }
 }
 
-/** @returns {InputStageResult} */
+/** @param {unknown} value @param {TransferOptions} [options] @returns {InputStageResult} */
 export function stageLocalInputFile(value, options = {}) {
     const label = options.label || "upload-local-path";
     const limitBytes = options.limitBytes ?? DEVICE_UPLOAD_LIMIT_BYTES;
@@ -72,7 +80,7 @@ export function stageLocalInputFile(value, options = {}) {
     }
 }
 
-/** @returns {TransferCopyResult} */
+/** @param {Pick<NativeTransferStage,"stagedPath">} stage @param {string} destination @param {TransferOptions} [options] @returns {TransferCopyResult} */
 export function copyStagedInputFile(stage, destination, options = {}) {
     const label = options.label || "upload-local-path";
     const limitBytes = options.limitBytes ?? DEVICE_UPLOAD_LIMIT_BYTES;
@@ -84,7 +92,7 @@ export function copyStagedInputFile(stage, destination, options = {}) {
     }
 }
 
-/** @returns {OutputStageResult} */
+/** @param {unknown} value @param {OutputStageOptions} [options] @returns {OutputStageResult} */
 export function createLocalOutputStage(value, options = {}) {
     const label = options.label || "download-local-path";
     const policy = validateLocalOutputPath(value, { label });
@@ -107,7 +115,7 @@ export function createLocalOutputStage(value, options = {}) {
     };
 }
 
-/** @returns {OutputStageResult} */
+/** @param {unknown} value @param {unknown} stagedPath @param {OutputStageOptions} [options] @returns {OutputStageResult} */
 export function restoreLocalOutputStage(value, stagedPath, options = {}) {
     const label = options.label || "download-local-path";
     const policy = validateLocalOutputPath(value, { label });
@@ -131,7 +139,7 @@ export function restoreLocalOutputStage(value, stagedPath, options = {}) {
     };
 }
 
-/** @returns {{ok:true}|TransferFailure} */
+/** @param {unknown} stagedPath @param {OutputStageOptions} [options] @returns {{ok:true}|TransferFailure} */
 export function discardLocalOutputStage(stagedPath, options = {}) {
     const label = options.label || "download-local-path";
     if (typeof stagedPath !== "string" || stagedPath.length === 0) {
@@ -148,7 +156,7 @@ export function discardLocalOutputStage(stagedPath, options = {}) {
     return { ok: true };
 }
 
-/** @returns {TransferCopyResult} */
+/** @param {Pick<NativeTransferStage,"path"|"stagedPath">} stage @param {CommitOptions} [options] @returns {TransferCopyResult} */
 export function commitLocalOutputStage(stage, options = {}) {
     const label = options.label || "download-local-path";
     const limitBytes = options.limitBytes ?? DEVICE_DOWNLOAD_LIMIT_BYTES;
@@ -176,7 +184,7 @@ export function commitLocalOutputStage(stage, options = {}) {
     }
 }
 
-/** @returns {TransferCopyResult} */
+/** @param {string} source @param {Pick<NativeTransferStage,"stagedPath">} stage @param {TransferOptions} [options] @returns {TransferCopyResult} */
 export function populateLocalOutputStage(source, stage, options = {}) {
     const label = options.label || "download-remote-path";
     const limitBytes = options.limitBytes ?? DEVICE_DOWNLOAD_LIMIT_BYTES;

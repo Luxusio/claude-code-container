@@ -8,7 +8,19 @@ import { basename, dirname, isAbsolute, join, parse, posix, relative, resolve, s
  * @typedef {{ok:true,path:string} | FilePolicyFailure} LocalPathResult
  * @typedef {{ok:true,path:string,size:number} | FilePolicyFailure} LocalInputPathResult
  * @typedef {{ok:true,path:string|null} | FilePolicyFailure} LocalReferencePathResult
+ * @typedef {{label?:string,maxFileBytes?:number,rejectSecretName?:boolean,rejectSecretContent?:boolean}} LocalFileOptions
+ * @typedef {{label?:string,platform?:string,maxLength?:number,requireAbsolute?:boolean,transport?:string}} GuestPathOptions
  */
+
+/** Observe a property without claiming an unknown thrown value is a Node errno.
+ * @param {unknown} error @param {'code'|'message'} field @returns {unknown} */
+function errorProperty(error, field) {
+    if (error !== null && (typeof error === "object" || typeof error === "function")) {
+        if (field === "code" && "code" in error) return error.code;
+        if (field === "message" && "message" in error) return error.message;
+    }
+    return undefined;
+}
 
 const DEFAULT_LOCAL_FILE_POLICY = {
     maxFileBytes: 16 * 1024 * 1024,
@@ -28,27 +40,27 @@ function fail(error, path, extra = {}) {
     return { ok: false, error, path, message: `${error}: ${path}`, ...extra };
 }
 
-/** @returns {LocalPathResult} */
+/** @param {unknown} value @param {string} label @returns {LocalPathResult} */
 function boundedPath(value, label) {
     if (typeof value !== "string" || value.length === 0) return fail(`missing-${label}`, "");
     if (/[\u0000-\u001f]/.test(value)) return fail(`invalid-${label}`, value);
     return { ok: true, path: resolve(value) };
 }
 
-/** @returns {FilePolicyGuardResult} */
+/** @param {string} path @param {string} label @returns {FilePolicyGuardResult} */
 function rejectSecretName(path, label) {
     const name = basename(path);
     if (SECRET_FILE_RE.test(name)) return fail(`${label}-secret-looking-file`, path);
     return { ok: true };
 }
 
-/** @returns {FilePolicyGuardResult} */
+/** @param {string} path @param {string} label @returns {FilePolicyGuardResult} */
 function rejectSecretContent(path, label) {
     let text;
     try {
         text = readFileSync(path, "utf8");
     } catch (error) {
-        return fail(`${label}-content-scan-failed`, path, { detail: error.message });
+        return fail(`${label}-content-scan-failed`, path, { detail: errorProperty(error, "message") });
     }
     for (const pattern of SECRET_CONTENT_PATTERNS) {
         if (pattern.re.test(text)) {
@@ -58,7 +70,7 @@ function rejectSecretContent(path, label) {
     return { ok: true };
 }
 
-/** @returns {FilePolicyGuardResult} */
+/** @param {string} path @param {string} label @returns {FilePolicyGuardResult} */
 function rejectSymlinkAncestors(path, label) {
     const resolved = resolve(path);
     const parent = dirname(resolved);
@@ -73,14 +85,14 @@ function rejectSymlinkAncestors(path, label) {
                 return fail(`${label}-symlink-ancestor-rejected`, path, { ancestorPath: current });
             }
         } catch (error) {
-            if (error?.code === "ENOENT") return { ok: true };
-            return fail(`${label}-ancestor-stat-failed`, path, { ancestorPath: current, detail: error.message });
+            if (errorProperty(error, "code") === "ENOENT") return { ok: true };
+            return fail(`${label}-ancestor-stat-failed`, path, { ancestorPath: current, detail: errorProperty(error, "message") });
         }
     }
     return { ok: true };
 }
 
-/** @returns {FilePolicyGuardResult} */
+/** @param {string} value @param {string} label @returns {FilePolicyGuardResult} */
 function rejectRawSymlinkPrefixes(value, label) {
     const absoluteRaw = isAbsolute(value) ? value : `${process.cwd()}${sep}${value}`;
     const { root } = parse(absoluteRaw);
@@ -100,14 +112,14 @@ function rejectRawSymlinkPrefixes(value, label) {
                 return fail(`${label}-${suffix}`, value, { symlinkPath: current, ancestorPath: current });
             }
         } catch (error) {
-            if (error?.code === "ENOENT") return { ok: true };
-            return fail(`${label}-raw-prefix-stat-failed`, value, { prefixPath: current, detail: error.message });
+            if (errorProperty(error, "code") === "ENOENT") return { ok: true };
+            return fail(`${label}-raw-prefix-stat-failed`, value, { prefixPath: current, detail: errorProperty(error, "message") });
         }
     }
     return { ok: true };
 }
 
-/** @returns {LocalInputPathResult} */
+/** @param {unknown} value @param {LocalFileOptions} [options] @returns {LocalInputPathResult} */
 export function validateLocalInputPath(value, options = {}) {
     const label = options.label || "local-input-path";
     const parsed = boundedPath(value, label);
@@ -115,7 +127,7 @@ export function validateLocalInputPath(value, options = {}) {
     /** @type {FilePolicyGuardResult} */
     const secret = options.rejectSecretName === false ? { ok: true } : rejectSecretName(parsed.path, label);
     if (!secret.ok) return secret;
-    const rawPrefixes = rejectRawSymlinkPrefixes(value, label);
+    const rawPrefixes = typeof value === "string" ? rejectRawSymlinkPrefixes(value, label) : parsed;
     if (!rawPrefixes.ok) return rawPrefixes;
     const ancestors = rejectSymlinkAncestors(parsed.path, label);
     if (!ancestors.ok) return ancestors;
@@ -123,8 +135,8 @@ export function validateLocalInputPath(value, options = {}) {
     try {
         stat = lstatSync(parsed.path);
     } catch (error) {
-        if (error?.code === "ENOENT") return fail(`${label}-does-not-exist`, parsed.path);
-        return fail(`${label}-stat-failed`, parsed.path, { detail: error.message });
+        if (errorProperty(error, "code") === "ENOENT") return fail(`${label}-does-not-exist`, parsed.path);
+        return fail(`${label}-stat-failed`, parsed.path, { detail: errorProperty(error, "message") });
     }
     if (stat.isSymbolicLink()) return fail(`${label}-symlink-rejected`, parsed.path);
     if (!stat.isFile()) return fail(`${label}-not-a-file`, parsed.path);
@@ -139,7 +151,7 @@ export function validateLocalInputPath(value, options = {}) {
     return { ok: true, path: parsed.path, size: stat.size };
 }
 
-/** @returns {LocalPathResult} */
+/** @param {unknown} value @param {LocalFileOptions} [options] @returns {LocalPathResult} */
 export function validateLocalOutputPath(value, options = {}) {
     const label = options.label || "local-output-path";
     const parsed = boundedPath(value, label);
@@ -147,7 +159,7 @@ export function validateLocalOutputPath(value, options = {}) {
     /** @type {FilePolicyGuardResult} */
     const secret = options.rejectSecretName === false ? { ok: true } : rejectSecretName(parsed.path, label);
     if (!secret.ok) return secret;
-    const rawPrefixes = rejectRawSymlinkPrefixes(value, label);
+    const rawPrefixes = typeof value === "string" ? rejectRawSymlinkPrefixes(value, label) : parsed;
     if (!rawPrefixes.ok) return rawPrefixes;
     const ancestors = rejectSymlinkAncestors(parsed.path, label);
     if (!ancestors.ok) return ancestors;
@@ -156,18 +168,18 @@ export function validateLocalOutputPath(value, options = {}) {
         if (stat.isSymbolicLink()) return fail(`${label}-symlink-rejected`, parsed.path);
         if (!stat.isFile()) return fail(`${label}-not-a-file`, parsed.path);
     } catch (error) {
-        if (error?.code !== "ENOENT") return fail(`${label}-stat-failed`, parsed.path, { detail: error.message });
+        if (errorProperty(error, "code") !== "ENOENT") return fail(`${label}-stat-failed`, parsed.path, { detail: errorProperty(error, "message") });
     }
     return { ok: true, path: parsed.path };
 }
 
-/** @returns {LocalReferencePathResult} */
+/** @param {unknown} value @param {LocalFileOptions} [options] @returns {LocalReferencePathResult} */
 export function validateLocalReferencePath(value, options = {}) {
     if (value === undefined || value === null || value === "") return { ok: true, path: null };
     const label = options.label || "local-reference-path";
     const parsed = boundedPath(value, label);
     if (!parsed.ok) return parsed;
-    const rawPrefixes = rejectRawSymlinkPrefixes(value, label);
+    const rawPrefixes = typeof value === "string" ? rejectRawSymlinkPrefixes(value, label) : parsed;
     if (!rawPrefixes.ok) return rawPrefixes;
     const ancestors = rejectSymlinkAncestors(parsed.path, label);
     if (!ancestors.ok) return ancestors;
@@ -176,20 +188,23 @@ export function validateLocalReferencePath(value, options = {}) {
         if (stat.isSymbolicLink()) return fail(`${label}-symlink-rejected`, parsed.path);
         if (!stat.isFile()) return fail(`${label}-not-a-file`, parsed.path);
     } catch (error) {
-        if (error?.code !== "ENOENT") return fail(`${label}-stat-failed`, parsed.path, { detail: error.message });
+        if (errorProperty(error, "code") !== "ENOENT") return fail(`${label}-stat-failed`, parsed.path, { detail: errorProperty(error, "message") });
     }
     return { ok: true, path: parsed.path };
 }
 
+/** @param {string} value @param {string} platform */
 function pathSegments(value, platform) {
     const normalized = platform === "windows" ? String(value).replace(/\//g, "\\") : String(value);
     return normalized.split(platform === "windows" ? /\\+/ : /\/+/).filter(Boolean);
 }
 
+/** @param {string} value @param {string} platform */
 function hasTraversal(value, platform) {
     return pathSegments(value, platform).some((segment) => segment === "..");
 }
 
+/** @param {string} value @param {string} platform */
 function isGuestAbsolute(value, platform) {
     if (platform === "windows") {
         return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value);
@@ -197,12 +212,13 @@ function isGuestAbsolute(value, platform) {
     return posix.isAbsolute(value);
 }
 
+/** @param {string} value @param {string} platform */
 function normalizeGuestPath(value, platform) {
     if (platform === "windows") return win32.normalize(String(value).replace(/\//g, "\\"));
     return posix.normalize(String(value));
 }
 
-/** @returns {FilePolicyGuardResult} */
+/** @param {string} path @param {string} label @returns {FilePolicyGuardResult} */
 function rejectScpUnsafe(path, label) {
     if (/[\s'"`$;&|<>(){}[\]*?!]/.test(path) || path.includes(":")) {
         return fail(`${label}-scp-unsafe-path`, path);
@@ -210,7 +226,7 @@ function rejectScpUnsafe(path, label) {
     return { ok: true };
 }
 
-/** @returns {LocalPathResult} */
+/** @param {unknown} value @param {GuestPathOptions} [options] @returns {LocalPathResult} */
 export function validateGuestPath(value, options = {}) {
     const label = options.label || "guest-path";
     const platform = options.platform === "windows" ? "windows" : "posix";
