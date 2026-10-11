@@ -500,9 +500,7 @@
         "OP-broker-owner-register",
         "OP-broker-owner-resolve"
       ],
-      "partialOperationIds": [
-        "OP-lease-heartbeat"
-      ],
+      "partialOperationIds": [],
       "codeReview": "Historical accepted contribution and twelve-operation retraction retained. Requalified operations are counted only in the new accepted source-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
@@ -517,17 +515,16 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs and affected correction reviews PASS. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded. Actual local source delivery at cbea preserves all97 user changes. Formal hook records and native-host certification remain unverified.",
       "currentQualificationAudit": {
-        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "sourceCommit": "26bbbd564e7370f022abf081219004f51a5bd994",
         "date": "2026-10-11",
         "status": "independently-source-reconciled",
         "requalifiedOperationIds": [
           "OP-lease-claim",
           "OP-lease-prune",
-          "OP-lease-release"
-        ],
-        "remainingPartialOperationIds": [
+          "OP-lease-release",
           "OP-lease-heartbeat"
-        ]
+        ],
+        "remainingPartialOperationIds": []
       },
       "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
@@ -539,6 +536,19 @@
           "OP-lease-release"
         ],
         "status": "candidate-reconciled-awaiting-independent-current-review"
+      },
+      "historicalCurrentQualificationAuditBeforeManagedHeartbeatAcceptance": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "date": "2026-10-11",
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
+          "OP-lease-claim",
+          "OP-lease-prune",
+          "OP-lease-release"
+        ],
+        "remainingPartialOperationIds": [
+          "OP-lease-heartbeat"
+        ]
       }
     },
     {
@@ -1022,6 +1032,23 @@
       "acceptedIntegrationCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/core-enforcement-cf7d-rk9rwo1j/final-result.json",
       "deliveryEvidence": "/tmp/ccc-core-main-delivery-result-20261011.json"
+    },
+    {
+      "id": "broker-managed-heartbeat-source-closure",
+      "branch": "refactor/architecture-broker-managed-heartbeat-20261011",
+      "commit": "26bbbd564e7370f022abf081219004f51a5bd994",
+      "taskId": "TASK__architecture-broker-managed-heartbeat",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-lease-heartbeat"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual full/affected Code, Security and Guide PASS; original whole-binding audit qualifies direct heartbeat plus RPC and managed renewal. Current strong compiler, genuine complete build, 11 whole files/597 cases, graph, lint, package7, actual npm/materialized Unix startup, compiled CLI and protected main FF PASS. Native/formal/exhaustive acceptance remains unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "26bbbd564e7370f022abf081219004f51a5bd994",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-heartbeat-26bb-f2cis_xv/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-broker-heartbeat-main-delivery-result-20261011.json"
     }
   ],
   "planningLanes": [
@@ -1379,6 +1406,53 @@
     }
   ],
   "currentSourceQualificationAudit": {
+    "sourceCommit": "26bbbd564e7370f022abf081219004f51a5bd994",
+    "acceptedSourceCommits": [
+      "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+      "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+      "26bbbd564e7370f022abf081219004f51a5bd994"
+    ],
+    "acceptedOperationIds": [
+      "OP-lease-claim",
+      "OP-lease-prune",
+      "OP-lease-release",
+      "OP-device-admin-cleanup",
+      "OP-physical-stop",
+      "OP-device-flow",
+      "OP-lease-heartbeat"
+    ],
+    "confirmedPartialOperationIds": [
+      "OP-physical-attach",
+      "OP-physical-detach",
+      "OP-recording-start",
+      "OP-recording-finalize",
+      "OP-recording-status"
+    ],
+    "boundedReferenceCorrections": 9,
+    "sourceUniverseCertified": false,
+    "scope": "Seven existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Five remain partial: direct attachment/detachment and recording. Historical twelve-operation retraction and six-credit qualification retained; no exhaustive/native/formal certification."
+  },
+  "historicalSourceQualificationAuditBeforeSixOperationAcceptance": {
+    "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+    "confirmedPartialOperationIds": [
+      "OP-lease-claim",
+      "OP-lease-heartbeat",
+      "OP-lease-prune",
+      "OP-lease-release",
+      "OP-physical-attach",
+      "OP-physical-detach",
+      "OP-recording-start",
+      "OP-recording-finalize",
+      "OP-recording-status",
+      "OP-device-admin-cleanup",
+      "OP-physical-stop",
+      "OP-device-flow"
+    ],
+    "boundedReferenceCorrections": 9,
+    "sourceUniverseCertified": false,
+    "scope": "Actual independent original-scope audit and affected planning review; twelve concrete existing operation gaps, not exhaustive remaining-work certification."
+  },
+  "historicalSourceQualificationAuditBeforeManagedHeartbeatAcceptance": {
     "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
     "acceptedSourceCommits": [
       "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
@@ -1403,25 +1477,5 @@
     "boundedReferenceCorrections": 9,
     "sourceUniverseCertified": false,
     "scope": "Six existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Six remain partial: broker managed heartbeat, direct attachment/detachment and recording. Historical twelve-operation retraction retained; no exhaustive/native/formal certification."
-  },
-  "historicalSourceQualificationAuditBeforeSixOperationAcceptance": {
-    "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
-    "confirmedPartialOperationIds": [
-      "OP-lease-claim",
-      "OP-lease-heartbeat",
-      "OP-lease-prune",
-      "OP-lease-release",
-      "OP-physical-attach",
-      "OP-physical-detach",
-      "OP-recording-start",
-      "OP-recording-finalize",
-      "OP-recording-status",
-      "OP-device-admin-cleanup",
-      "OP-physical-stop",
-      "OP-device-flow"
-    ],
-    "boundedReferenceCorrections": 9,
-    "sourceUniverseCertified": false,
-    "scope": "Actual independent original-scope audit and affected planning review; twelve concrete existing operation gaps, not exhaustive remaining-work certification."
   }
 }

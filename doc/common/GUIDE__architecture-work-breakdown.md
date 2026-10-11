@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **212/218 (97.2%)**.
-Integrated source: **212/218 (97.2%)**; historical baseline: **31**. Candidates: **0**; partial: **6**; TODO: **0**.
+Implemented including unmerged candidates: **213/218 (97.7%)**.
+Integrated source: **213/218 (97.7%)**; historical baseline: **31**. Candidates: **0**; partial: **5**; TODO: **0**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -45,7 +45,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | qemu\-admin\-lifecycle\-integration | 14 | 0 | `d24e5ca1` | Historical accepted contribution and twelve\-operation retraction retained\. Requalified operations are counted only in the new accepted source\-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified\. | accepted @ d24e5ca1 |
 | exec\-broker\-image\-integration | 4 | 0 | `acefb933` | Actual independent source/composed and affected Code/Security/Guide PASS\. Required JS and image\-test strict checks, genuine current production build, 17 affected files with 587 passing cases, lint, seven package cases, actual npm/Unix startup smoke and compiled CLI PASS\. Test\-only fixes carried unchanged successful production checks\. Verified local source delivery; empty automatic receipts parked, no formal close\. | accepted @ acefb933 |
 | sandbox\-request\-admin\-integration | 6 | 0 | `d0bb62a9` | Actual independent source/composed and affected Code/Security/Docs PASS; strict consumed JS/TS contracts including five negative controls, current genuine build, 21 required files with 867 passing current cases using qualified unchanged results, lint, seven actual package cases, npm/Unix startup smoke and compiled CLI PASS\. Verified local source delivery and all97preserved user changes\. Empty automatic receipt stream parked after one verification; no formal close or native\-host certification\. | accepted @ d0bb62a9 |
-| broker\-owner\-leases | 2 | 1 | `cbea3003` | Historical accepted contribution and twelve\-operation retraction retained\. Requalified operations are counted only in the new accepted source\-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified\. | accepted @ cbea3003 |
+| broker\-owner\-leases | 2 | 0 | `cbea3003` | Historical accepted contribution and twelve\-operation retraction retained\. Requalified operations are counted only in the new accepted source\-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified\. | accepted @ cbea3003 |
 | broker\-appium\-workflows | 7 | 0 | `58b7d1e9` | Actual independent source/composed/affected Code, Security and Docs PASS\. Current consumed strict contracts and seven negative controls, genuine complete build, 402 fresh regression cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS\. Qualified unchanged graph/architecture evidence carries; removed verifier metatests excluded\. Source locally delivered at58b7d1e9 with all97 tracked user paths and diff bytes preserved\. Formal hook attestation and native Appium/device certification remain unverified\. | accepted @ 58b7d1e9 |
 | device\-observation | 3 | 0 | `b669bf6c` | Actual independent source/composed/affected Code, Security and Docs PASS\. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed\. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording\-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS\. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes\. Unrelated legacy native\-JS strict diagnostics are not accepted; formal hook attestation and native\-host certification remain unverified\. | accepted @ b669bf6c |
 | broker\-recording | 0 | 3 | `b669bf6c` | Accepted source/review/QA remains a bounded contribution\. Final supported\-binding audit at59c019 withholds whole credit for OP\-recording\-start, OP\-recording\-finalize, OP\-recording\-status: required direct workflow or shared\-result contract remains unfinished\. Native/formal and exhaustive scope unverified\. | accepted @ b669bf6c |
@@ -67,6 +67,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | clipboard\-x11\-source\-closure | 1 | 0 | `9a921ca1` | Whole source policy binding9a921 qualified by676 real cases/genuine build/shipping/protected FF\. Additional accepted4ad7 three\-recipe asset fix actual Docker builds/ccc permission/syntax inspections/npmUnix/protected FF PASS; native Podman/formal/exhaustive acceptance unverified\. | accepted @ 9a921ca1 |
 | direct\-leases\-admin\-source\-closure | 4 | 0 | `bb502909` | Independent Code/Security/Guide and required\-binding review PASS; current strong compiler, genuine build, 15 whole files/296 cases, package7, npm/materialized Unix startup and protected main delivery qualified\. Initial CLI happy\-path observation timed out; subsequent private local nonGit profile\-list completed exit0\. No universal CLI success or native/formal claim\. | accepted @ bb502909 |
 | shared\-results\-core\-enforcement\-source\-closure | 2 | 0 | `cf7d7836` | Independent Code/Security/Guide and required\-binding review PASS; current strong compiler, genuine build, five\-root graph, 16 whole files/696 cases, package7, npm/materialized Unix startup, compiled CLI and protected main delivery qualified\. Final current source matches accepted revision; initial null source pins for deleted device\-flow/physical\-stop type tests are intentional absence sentinels, matching the QA checkout and accepted source\. Native/formal/exhaustive acceptance unverified\. | accepted @ cf7d7836 |
+| broker\-managed\-heartbeat\-source\-closure | 1 | 0 | `26bbbd56` | Actual full/affected Code, Security and Guide PASS; original whole\-binding audit qualifies direct heartbeat plus RPC and managed renewal\. Current strong compiler, genuine complete build, 11 whole files/597 cases, graph, lint, package7, actual npm/materialized Unix startup, compiled CLI and protected main FF PASS\. Native/formal/exhaustive acceptance remains unverified\. | accepted @ 26bbbd56 |
 
 ## 0.2 Active next plans
 
@@ -172,10 +173,10 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 
-## 8. M07 — Physical/recording/Appium (20/26 implemented)
+## 8. M07 — Physical/recording/Appium (21/26 implemented)
 
 - [x] `OP-lease-claim` — Lease claim. **integrated**; direct\-leases\-admin\-source\-closure @ bb502909.
-- [ ] `OP-lease-heartbeat` — Lease heartbeat. **partial**; broker\-owner\-leases @ cbea3003.
+- [x] `OP-lease-heartbeat` — Lease heartbeat. **integrated**; broker\-managed\-heartbeat\-source\-closure @ 26bbbd56.
 - [x] `OP-lease-prune` — Lease prune. **integrated**; direct\-leases\-admin\-source\-closure @ bb502909.
 - [x] `OP-lease-release` — Lease release. **integrated**; direct\-leases\-admin\-source\-closure @ bb502909.
 - [ ] `OP-physical-attach` — Physical attach. **partial**; device\-transfers\-physical\-integration @ 624c26f3.
@@ -417,7 +418,7 @@ The following locally reconciled gaps still await independent inventory acceptan
 | GAP\-source\-legacy\-admin\-delete | bounded\-source\-resolved | Complete retained exported synchronous admin deletion binding without erasing its provider/lease/CAS guards\. |
 | GAP\-source\-shared\-result\-separation | bounded\-source\-resolved | Return semantic shared application outcomes and translate MCP content/isError envelopes in presentation/composition\. |
 | GAP\-source\-core\-enforcement | bounded\-source\-resolved | Cover MCP/installer migrated core roots in the real dependency graph and include actual checked\-MJS composition consumers; zero\-operation obligation\. |
-| GAP\-source\-broker\-managed\-heartbeat | open\-confirmed\-source\-gap | Broker\-managed heartbeat registry, identity key, TTL/default interval, replacement and timer cancellation policy remains a separate unaccepted source binding of existing OP\-lease\-heartbeat\. |
+| GAP\-source\-broker\-managed\-heartbeat | independently\-source\-reconciled | Broker\-managed heartbeat registry, identity key, TTL/default interval, replacement and timer cancellation policy remains a separate unaccepted source binding of existing OP\-lease\-heartbeat\. |
 
 ## 18. Excluded scope
 
