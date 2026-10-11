@@ -7,6 +7,32 @@ import { createLocalOutputStage, restoreLocalOutputStage, populateLocalOutputSta
 import { createDirectRecordingApplication } from '../application/direct-recording.mjs';
 /** @typedef {import('../ports/direct-recording.mjs').DirectRecordingNative} Native
  * @typedef {import('../ports/direct-recording.mjs').RecordingNativeProcess} ProcessNative */
+/** Native POSIX command encoding, never an application decision. @param {string} value */
+function shellQuote(value) { return "'" + value.replace(/'/g, "'\\''") + "'"; }
+/** @param {import('../domain/direct-recording.mjs').AdbRecordingTarget|import('../domain/direct-recording.mjs').SimulatorRecordingTarget|import('../domain/direct-recording.mjs').MacosRecordingTarget} target
+ * @param {{remotePath:string,outputPath:string}} paths @param {number|null} timeLimitSec
+ * @returns {import('../domain/direct-recording.mjs').RecordingCommand} */
+function recorderCommand(target, paths, timeLimitSec) {
+    if (target.kind === 'adb') return { executable: target.executable, args: [...target.prefix, 'shell', 'screenrecord', '--time-limit', String(timeLimitSec), paths.remotePath] };
+    if (target.kind === 'simulator') return { executable: target.executable, args: ['simctl', 'io', target.target, 'recordVideo', paths.outputPath] };
+    const limit = timeLimitSec ? `sleep ${Number(timeLimitSec)}; pkill -INT -f ${shellQuote(`screencapture.*${paths.remotePath}`)}` : 'wait';
+    return { executable: target.executable, args: [...target.prefix, target.target, [`rm -f ${shellQuote(paths.remotePath)}`, `(screencapture -v ${shellQuote(paths.remotePath)} &)`, limit].join('; ')], env: target.env };
+}
+/** @param {(command:import('../domain/direct-recording.mjs').RecordingCommand)=>import('../domain/direct-recording.mjs').RecordingCommandResult} runCommand
+ * @returns {import('../ports/direct-recording.mjs').RecordingRemoteEffects} */
+function remoteEffects(runCommand) {
+    return {
+        fallbackStop: (target, remote, timeoutMs) => runCommand(target.kind === 'adb'
+            ? { executable: target.executable, args: [...target.prefix, 'shell', 'pkill', '-2', 'screenrecord'] }
+            : { executable: target.executable, args: [...target.prefix, target.target, `pkill -INT -f ${shellQuote(`screencapture.*${remote}`)} || true`], env: target.env, timeoutMs }),
+        copyRecording: (target, remote, stagedPath, timeoutMs) => runCommand(target.kind === 'adb'
+            ? { executable: target.executable, args: [...target.prefix, 'pull', remote, stagedPath], timeoutMs }
+            : { executable: target.scp, args: [...target.scpPrefix, `${target.target}:${remote}`, stagedPath], env: target.env, timeoutMs }),
+        removeRecording: (target, remote, timeoutMs) => runCommand(target.kind === 'adb'
+            ? { executable: target.executable, args: [...target.prefix, 'shell', 'rm', '-f', remote], timeoutMs }
+            : { executable: target.executable, args: [...target.prefix, target.target, `rm -f ${shellQuote(remote)}`], env: target.env, timeoutMs }),
+    };
+}
 /** @param {unknown} pid */
 function alive(pid) {
     if (typeof pid !== 'number' || !pid) return false;
@@ -37,7 +63,8 @@ function common(native) {
 /** @param {ProcessNative} native @returns {import('../ports/direct-recording.mjs').RecordingProcessPorts & Pick<import('../ports/direct-recording.mjs').SimulatorRecordingPorts,'restoreStage'|'populateStage'>} */
 function processBindings(native) {
     return {
-        spawn(command, exited) {
+        spawnRecorder(target, paths, timeLimitSec, exited) {
+            const command = recorderCommand(target, paths, timeLimitSec);
             const child = spawn(command.executable, command.args, { detached: true, stdio: 'ignore', env: { ...process.env, ...command.env }, windowsHide: true });
             child.once('exit', exited);
             return {
@@ -107,7 +134,7 @@ export function createDirectRecording(native) {
         /** @type {import('../ports/direct-recording.mjs').MacosRecordingPorts} */
         const ports = { ...base, ...processPorts, kind: native.kind,
             target: (device, operation) => native.resolveTarget(device, operation),
-            execute: command => native.runCommand(command),
+            ...remoteEffects(command => native.runCommand(command)),
             prepareWorkspace: device => native.ensureWorkspace(device),
         };
         return createDirectRecordingApplication(ports);
@@ -115,7 +142,7 @@ export function createDirectRecording(native) {
     /** @type {import('../ports/direct-recording.mjs').AndroidRecordingPorts} */
     const ports = { ...base, ...processPorts, kind: native.kind,
         target: (device, operation) => native.resolveTarget(device, operation),
-        execute: command => native.runCommand(command),
+        ...remoteEffects(command => native.runCommand(command)),
         prepareOutput: (device, path) => { mkdirSync(native.recordingDirectory(device), { recursive: true }); mkdirSync(dirname(path), { recursive: true }); return undefined; },
     };
     return createDirectRecordingApplication(ports);

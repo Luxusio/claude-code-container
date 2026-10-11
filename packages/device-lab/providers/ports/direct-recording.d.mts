@@ -1,4 +1,4 @@
-import type { RecordingRecord, RecordingArguments, RecordingOutcome, RecordingVariant, RecordingCommand, RecordingCommandResult, RecordingIdentity, RecordingSignal, RecordingPath, RecordingStage, RecordingStageResult, RecordingFileResult, RecordingHelperResult, RecordingRefusal, AdbRecordingAdmission, SimulatorRecordingAdmission, MacosRecordingAdmission } from '../domain/direct-recording.mjs';
+import type { RecordingRecord, RecordingArguments, RecordingOutcome, RecordingCommand, RecordingCommandResult, RecordingIdentity, RecordingSignal, RecordingPath, RecordingStage, RecordingStageResult, RecordingFileResult, RecordingHelperResult, RecordingRefusal, AdbRecordingAdmission, SimulatorRecordingAdmission, MacosRecordingAdmission, AdbRecordingTarget, SimulatorRecordingTarget, MacosRecordingTarget } from '../domain/direct-recording.mjs';
 export interface RecordingCommonPorts {
     findDevice(id:string):RecordingRecord|null|undefined;
     updateDevice(id:unknown, update:(device:RecordingRecord)=>RecordingRecord):RecordingRecord|null;
@@ -15,7 +15,7 @@ export interface RecorderHandle {
     unref():undefined;
 }
 export interface RecordingProcessPorts {
-    spawn(command:RecordingCommand, exited:()=>undefined):RecorderHandle;
+    spawnRecorder(target:AdbRecordingTarget|SimulatorRecordingTarget|MacosRecordingTarget, paths:{remotePath:string,outputPath:string}, timeLimitSec:number|null, exited:()=>undefined):RecorderHandle;
     readIdentity(pid:number|undefined):RecordingIdentity|null;
     observe(identity:unknown,pid:unknown):{status:'match'|'mismatch'|'exited'|'unavailable'};
     alive(pid:unknown):boolean;
@@ -25,10 +25,14 @@ export interface RecordingProcessPorts {
     commitStage(stage:RecordingStage):RecordingFileResult;
     disposeStage(stage:RecordingStage):undefined;
 }
-export interface AndroidRecordingPorts extends RecordingCommonPorts, RecordingProcessPorts {
+export interface RecordingRemoteEffects {
+    fallbackStop(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,timeoutMs?:number):RecordingCommandResult;
+    copyRecording(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,stagedPath:string,timeoutMs?:number):RecordingCommandResult;
+    removeRecording(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,timeoutMs?:number):RecordingCommandResult;
+}
+export interface AndroidRecordingPorts extends RecordingCommonPorts, RecordingProcessPorts, RecordingRemoteEffects {
     kind:'android-emulator'|'android-device';
     target(device:RecordingRecord,operation:string):AdbRecordingAdmission|RecordingRefusal;
-    execute(command:RecordingCommand):RecordingCommandResult;
 }
 export interface SimulatorRecordingPorts extends RecordingCommonPorts, RecordingProcessPorts {
     kind:'ios-simulator';
@@ -36,10 +40,9 @@ export interface SimulatorRecordingPorts extends RecordingCommonPorts, Recording
     populateStage(source:string,stage:RecordingStage):RecordingFileResult;
     target(device:RecordingRecord,operation:string):SimulatorRecordingAdmission|RecordingRefusal;
 }
-export interface MacosRecordingPorts extends RecordingCommonPorts, RecordingProcessPorts {
+export interface MacosRecordingPorts extends RecordingCommonPorts, RecordingProcessPorts, RecordingRemoteEffects {
     kind:'macos-vm';
     target(device:RecordingRecord,operation:string):MacosRecordingAdmission|RecordingRefusal;
-    execute(command:RecordingCommand):RecordingCommandResult;
     prepareWorkspace(device:RecordingRecord):undefined;
 }
 export interface SandboxRecordingPorts extends RecordingCommonPorts {
@@ -65,7 +68,7 @@ export interface RecordingNativeProcess extends RecordingNativeCommon {
     recordingDirectory(device:RecordingRecord):string;
 }
 export type DirectRecordingNative =
-    (RecordingNativeProcess & {kind:'android-emulator'|'android-device';resolveTarget:AndroidRecordingPorts['target'];runCommand:AndroidRecordingPorts['execute']}) |
+    (RecordingNativeProcess & {kind:'android-emulator'|'android-device';resolveTarget:AndroidRecordingPorts['target'];runCommand:(command:RecordingCommand)=>RecordingCommandResult}) |
     (RecordingNativeProcess & {kind:'ios-simulator';resolveTarget:SimulatorRecordingPorts['target']}) |
-    (RecordingNativeProcess & {kind:'macos-vm';resolveTarget:MacosRecordingPorts['target'];runCommand:MacosRecordingPorts['execute'];ensureWorkspace:MacosRecordingPorts['prepareWorkspace']}) |
+    (RecordingNativeProcess & {kind:'macos-vm';resolveTarget:MacosRecordingPorts['target'];runCommand:(command:RecordingCommand)=>RecordingCommandResult;ensureWorkspace:MacosRecordingPorts['prepareWorkspace']}) |
     (RecordingNativeCommon & {kind:'windows-sandbox';helperRequest:SandboxRecordingPorts['helper'];verifiedArchivePath:SandboxRecordingPorts['archivePath'];copyFile:SandboxRecordingPorts['copyArchive']});

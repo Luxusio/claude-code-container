@@ -1,6 +1,6 @@
 import { createRuntimeGenerationTransitions } from './runtime-generation.mjs';
 import { recordingGenerationMatches } from '../domain/runtime-generation.mjs';
-import { recordingOf, recordingString, recordingLabel, recordingProvider, recordingShellQuote, recordingInputError } from '../domain/direct-recording.mjs';
+import { recordingOf, recordingString, recordingLabel, recordingProvider, recordingInputError } from '../domain/direct-recording.mjs';
 /** @typedef {import('../domain/direct-recording.mjs').RecordingRecord} Record
  * @typedef {import('../domain/direct-recording.mjs').RecordingArguments} Args
  * @typedef {import('../domain/direct-recording.mjs').RecordingOutcome} Outcome
@@ -100,17 +100,9 @@ export function createDirectRecordingApplication(ports) {
         }
         const remote = args.remotePath || (ports.kind === 'macos-vm' ? `/tmp/ccc-${device.id}-recording.mov` : `/sdcard/ccc-${device.id}-recording.mp4`);
         const timeLimitSec = ports.kind === 'android-emulator' || ports.kind === 'android-device' ? args.timeLimitSec ?? 180 : args.timeLimitSec || null;
-        /** @type {import('../domain/direct-recording.mjs').RecordingCommand} */
-        let command;
-        if (target.kind === 'adb') command = { executable: target.executable, args: [...target.prefix, 'shell', 'screenrecord', '--time-limit', String(timeLimitSec), remote] };
-        else if (target.kind === 'simulator') command = { executable: target.executable, args: ['simctl', 'io', target.target, 'recordVideo', stage?.stagedPath || policy.path] };
-        else {
-            const limit = args.timeLimitSec ? `sleep ${Number(args.timeLimitSec)}; pkill -INT -f ${recordingShellQuote(`screencapture.*${remote}`)}` : 'wait';
-            command = { executable: target.executable, args: [...target.prefix, target.target, [`rm -f ${recordingShellQuote(remote)}`, `(screencapture -v ${recordingShellQuote(remote)} &)`, limit].join('; ')], env: target.env };
-        }
         /** @type {Record|null} */ let recording = null;
         let didExit = false;
-        const child = ports.spawn(command, () => { didExit = true; if (recording) exited(args.deviceId, recording); return undefined; });
+        const child = ports.spawnRecorder(target, { remotePath: remote, outputPath: stage?.stagedPath || policy.path }, timeLimitSec, () => { didExit = true; if (recording) exited(args.deviceId, recording); return undefined; });
         const runtimeId = ports.runtimeId();
         const ready = await child.startup(150);
         const processLabel = ports.kind === 'ios-simulator' ? `${label} recordVideo` : ports.kind === 'macos-vm' ? `${label} screencapture` : `${label} screenrecord`;
@@ -201,11 +193,8 @@ export function createDirectRecordingApplication(ports) {
         if (previous.active) {
             const signal = ports.signal(previous);
             if (ports.kind === 'ios-simulator' && !signal.signaled && signal.reason !== 'runtime-process-exited') return failure(`${label} recording process could not be safely stopped for ${args.deviceId} (${signal.reason || 'unknown'}); state remains active.`);
-            if (ports.kind !== 'ios-simulator' && target) {
-                const remote = String(previous.remotePath);
-                const command = target.kind === 'adb' ? { executable: target.executable, args: [...target.prefix, 'shell', 'pkill', '-2', 'screenrecord'] }
-                    : target.kind === 'ssh' ? { executable: target.executable, args: [...target.prefix, target.target, `pkill -INT -f ${recordingShellQuote(`screencapture.*${remote}`)} || true`], env: target.env, timeoutMs: args.helperTimeoutMs } : null;
-                if (command) ports.execute(command);
+            if (ports.kind !== 'ios-simulator' && target && target.kind !== 'simulator') {
+                ports.fallbackStop(target, String(previous.remotePath), ports.kind === 'macos-vm' ? args.helperTimeoutMs : undefined);
             }
             if (signal.signaled && !await ports.waitExit(previous.pid, 3000)) return failure(`${label} recording did not exit within 3000ms for ${args.deviceId}; state remains active.`);
         }
@@ -219,18 +208,15 @@ export function createDirectRecordingApplication(ports) {
         const stage = created.stage;
         try {
             const remote = String(pending.remotePath);
-            const command = target?.kind === 'adb' ? { executable: target.executable, args: [...target.prefix, 'pull', remote, stage.stagedPath], timeoutMs: 300000 }
-                : target?.kind === 'ssh' ? { executable: target.scp, args: [...target.scpPrefix, `${target.target}:${remote}`, stage.stagedPath], env: target.env, timeoutMs: args.helperTimeoutMs } : null;
-            if (!command) return failure(`${label} recording target unavailable`);
-            const copied = ports.execute(command);
+            if (!target || target.kind === 'simulator') return failure(`${label} recording target unavailable`);
+            const transferTimeout = ports.kind === 'macos-vm' ? args.helperTimeoutMs : 300000;
+            const copied = ports.copyRecording(target, remote, stage.stagedPath, transferTimeout);
             if (copied.status !== 0) return failure(`Error: ${copied.stderr || copied.stdout || `exit ${copied.status}`}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const committed = ports.commitStage(stage);
             if (!committed.ok) return failure(`${committed.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const cleared = generation.transitionRecordingGeneration(args.deviceId, pending, null, ports.timestamp());
             if (!cleared.committed) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state and remote artifact were preserved.`);
-            const remove = target?.kind === 'adb' ? { executable: target.executable, args: [...target.prefix, 'shell', 'rm', '-f', remote], timeoutMs: 300000 }
-                : target?.kind === 'ssh' ? { executable: target.executable, args: [...target.prefix, target.target, `rm -f ${recordingShellQuote(remote)}`], env: target.env, timeoutMs: args.helperTimeoutMs } : null;
-            if (remove) ports.execute(remove);
+            ports.removeRecording(target, remote, transferTimeout);
             return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: policy.path, stoppedAt: ports.timestamp() }, ...(ports.kind === 'android-device' ? {} : { device: cleared.device }), stdout: copied.stdout, stderr: copied.stderr, ...(ports.kind === 'macos-vm' ? {} : { status: copied.status }) } };
         } finally { ports.disposeStage(stage); }
     }

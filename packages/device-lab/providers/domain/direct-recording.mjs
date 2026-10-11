@@ -34,8 +34,6 @@ export function recordingLabel(kind) {
 export function recordingProvider(kind) {
     return kind === 'ios-simulator' ? 'simctl-recordVideo' : kind === 'macos-vm' ? 'ssh-screencapture-video' : kind === 'windows-sandbox' ? 'windows-helper-frame-archive' : 'adb-screenrecord';
 }
-/** @param {string} value */
-export function recordingShellQuote(value) { return `'${value.replace(/'/g, `'\\''`)}'`; }
 /** @param {RecordingRecord} record @param {string} field @returns {string|null} */
 export function recordingString(record, field) { const value = record[field]; return typeof value === 'string' && value ? value : null; }
 

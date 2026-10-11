@@ -17,7 +17,7 @@ export function consumeRecordingConstructors(native: DirectRecordingNative, port
     };
     const missingCommandReceipt: AndroidRecordingPorts = { ...android,
         // @ts-expect-error Individual command effect requires a concrete status/stdout/stderr receipt.
-        execute: () => undefined,
+        copyRecording: () => undefined,
     };
     return { application, semantic, missing, deferredRead, deferredPublication, missingCommandReceipt };
 }
