@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { pathToFileURL } from "url";
@@ -167,5 +167,27 @@ describe("device-lab state crash recovery", () => {
         writeJsonFileAtomically(stateFile, { devices: [{ id: "target", generation: 1 }] });
 
         expect(readFileSync(liveTemporaryFile, "utf8")).toBe("live");
+    });
+
+    it("preserves recent, malformed, and unrelated temporary files during publication", async () => {
+        for (const implementation of implementations) {
+            const api = await implementation.load();
+            const root = mkdtempSync(join(tmpdir(), "ccc-state-retained-temp-"));
+            roots.push(root);
+            const stateFile = join(root, "devices.json");
+            api.writeJsonFileAtomically(stateFile, { devices: [] });
+            const recent = `${stateFile}.2147483647.0123456789abcdef.tmp`;
+            const malformed = `${stateFile}.2147483647.not-a-token.tmp`;
+            const unrelated = join(root, "other.json.2147483647.0123456789abcdef.tmp");
+            for (const path of [recent, malformed, unrelated]) writeFileSync(path, "retain these bytes");
+            const future = new Date(Date.now() + 60_000);
+            utimesSync(recent, future, future);
+            const old = new Date(Date.now() - 60_000);
+            utimesSync(malformed, old, old);
+            utimesSync(unrelated, old, old);
+            api.writeJsonFileAtomically(stateFile, { devices: [{ id: "target", generation: 1 }] });
+            expect(readState(stateFile).devices).toEqual([{ id: "target", generation: 1 }]);
+            for (const path of [recent, malformed, unrelated]) expect(readFileSync(path, "utf8")).toBe("retain these bytes");
+        }
     });
 });

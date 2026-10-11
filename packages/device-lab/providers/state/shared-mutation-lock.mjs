@@ -1,31 +1,14 @@
 import { randomUUID } from "crypto";
+import { createStateFilePublication } from "../application/state-file-publication.mjs";
+import { createSharedMutationLock } from "../application/shared-mutation-lock.mjs";
 import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
 import { inspectProcessIdentity, processIdentityMatches, readProcessIdentity, readProcessIdentityAsync } from "./process-identity.mjs";
 import { DeviceLabStateFileError, readDeviceLabStateFile, withDeviceLabReadableFile } from "./state-file.mjs";
 
-const DEFAULT_WAIT_MS = 5000;
-const DEFAULT_STALE_MS = 30000;
-const POLL_MS = 10;
-const MALFORMED_STALE_MS = 1000;
-const ATOMIC_RENAME_WAIT_MS = 2000;
-const ABANDONED_ATOMIC_TEMP_MIN_AGE_MS = 100;
 const SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES = 16 * 1024;
-const PROCESS_IDENTITY_OBSERVATION_CACHE_MS = 1000;
-const PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS = 30 * 1000;
-const PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT = 128;
-const PROCESS_IDENTITY_OBSERVATION_CONCURRENCY = 4;
-const PROCESS_IDENTITY_RETRY_MS = 60 * 1000;
-const PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
-let ownLockProcessIdentity;
-let ownLockProcessIdentityRetryAt = 0;
-let ownLockProcessIdentityPromise = null;
-const cachedLockProcessObservations = new Map();
-const pendingLockProcessObservations = new Map();
-const processIdentityObservationWaiters = [];
-let activeProcessIdentityObservations = 0;
 
 function sameDirectory(left, right) {
     if (!left.isDirectory() || !right.isDirectory() || left.isSymbolicLink() || right.isSymbolicLink()) return false;
@@ -113,155 +96,28 @@ function sleep(ms) {
 }
 
 function renameReplacingFileSync(source, destination, validateDirectories = () => {}) {
-    const deadline = Date.now() + ATOMIC_RENAME_WAIT_MS;
-    while (true) {
-        try {
-            validateDirectories();
-            renameSync(source, destination);
-            validateDirectories();
-            return;
-        } catch (error) {
-            if (!["EACCES", "EBUSY", "EEXIST", "EPERM"].includes(error?.code) || Date.now() >= deadline) throw error;
-            sleepSync(POLL_MS);
-        }
-    }
+    publication.rename(source, destination, () => { validateDirectories(); return undefined; });
 }
 
-function removeAbandonedAtomicTemporaryFiles(file, validateDirectories = () => {}) {
-    const directory = dirname(file);
-    const base = basename(file);
-    const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^${escapedBase}\\.(\\d+)\\.(?:[a-f0-9]{16}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\\.tmp$`, "i");
-    let entries;
-    try {
-        validateDirectories();
-        entries = readdirSync(directory);
-    } catch {
-        return;
-    }
-    for (const entry of entries) {
-        const match = entry.match(pattern);
-        if (!match || processIsAlive(Number(match[1]))) continue;
-        const candidate = join(directory, entry);
-        try {
-            validateDirectories();
-            const stats = lstatSync(candidate);
-            if (!stats.isFile() || stats.isSymbolicLink() || Date.now() - stats.mtimeMs < ABANDONED_ATOMIC_TEMP_MIN_AGE_MS) continue;
-            validateDirectories();
-            rmSync(candidate, { force: true });
-            validateDirectories();
-        } catch {
-            // A concurrent writer may already have removed or replaced the candidate.
-        }
-    }
-}
 
 export function writeFileAtomically(file, value) {
-    const directories = secureStateParentDirectory(file);
-    const validateDirectories = () => assertStateDirectoriesUnchanged(directories);
-    removeAbandonedAtomicTemporaryFiles(file, validateDirectories);
-    validateDirectories();
-    const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-        writeFileSync(temporaryFile, value, { flag: "wx", mode: 0o600 });
-        validateDirectories();
-        renameReplacingFileSync(temporaryFile, file, validateDirectories);
-    } finally {
-        validateDirectories();
-        rmSync(temporaryFile, { force: true });
-        validateDirectories();
-    }
+    publication.write(file, value);
 }
 
 export function writeJsonFileAtomically(file, value) {
-    writeFileAtomically(file, JSON.stringify(value, null, 2));
+    publication.writeJson(file, value);
 }
 
 export function copyFileAtomically(source, destination, options) {
-    const prefix = options?.prefix || "device-lab-copy";
-    const limitBytes = options?.limitBytes;
-    if (!Number.isSafeInteger(limitBytes) || limitBytes < 0) throw new TypeError("limitBytes must be a non-negative safe integer");
-    const directories = secureStateParentDirectory(destination);
-    const validateDirectories = () => assertStateDirectoriesUnchanged(directories);
-    validateDirectories();
-    const temporaryFile = `${destination}.${process.pid}.${randomUUID()}.tmp`;
-    let output = null;
-    try {
-        const copied = withDeviceLabReadableFile(source, prefix, limitBytes, (input) => {
-            validateDirectories();
-            output = openSync(temporaryFile, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
-            const buffer = Buffer.allocUnsafe(64 * 1024);
-            let total = 0;
-            while (true) {
-                const count = readSync(input, buffer, 0, buffer.length, null);
-                if (count === 0) break;
-                if (total + count > limitBytes) throw new DeviceLabStateFileError(`${prefix}-file-too-large`);
-                let written = 0;
-                while (written < count) {
-                    const size = writeSync(output, buffer, written, count - written);
-                    if (size <= 0) throw new Error(`${prefix}-write-failed`);
-                    written += size;
-                }
-                total += count;
-            }
-            try { fchmodSync(output, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
-            closeSync(output);
-            output = null;
-            return total;
-        });
-        if (copied === null) throw new DeviceLabStateFileError(`${prefix}-file-missing`);
-        validateDirectories();
-        renameReplacingFileSync(temporaryFile, destination, validateDirectories);
-        try { chmodSync(destination, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
-        return copied;
-    } finally {
-        if (output !== null) closeSync(output);
-        validateDirectories();
-        rmSync(temporaryFile, { force: true });
-        validateDirectories();
-    }
+    return publication.copy(source, destination, options);
 }
 
 function readLock(file) {
-    try {
-        return readDeviceLabStateFile(file, (value) => {
-            if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid-shared-mutation-lock");
-            if (!validLockToken(value.token)
-                || !Number.isInteger(value.pid) || value.pid <= 0
-                || typeof value.host !== "string" || value.host.length < 1 || value.host.length > 255
-                || (value.bootId !== undefined && (typeof value.bootId !== "string" || value.bootId.length > 512))
-                || (value.createdAt !== undefined && (typeof value.createdAt !== "string" || value.createdAt.length > 64))
-                || (value.processIdentityStatus !== undefined && !["recorded", "unavailable"].includes(value.processIdentityStatus))
-                || (value.processIdentity !== undefined && !validLockProcessIdentity(value.processIdentity, value.pid))
-                || (value.processIdentityStatus === "recorded" && value.processIdentity === undefined)
-                || (value.processIdentity !== undefined && value.processIdentityStatus === "unavailable")) {
-                throw new Error("invalid-shared-mutation-lock");
-            }
-            return value;
-        }, "shared-mutation-lock", SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES);
-    } catch {
-        return null;
-    }
+    return locks.readLock(file);
 }
 
-function validLockToken(value) {
-    return typeof value === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(value);
-}
 
-function validLockProcessIdentity(value, pid) {
-    return Boolean(value && typeof value === "object" && !Array.isArray(value)
-        && value.pid === pid
-        && typeof value.startToken === "string" && value.startToken.length >= 1 && value.startToken.length <= 512
-        && typeof value.commandHash === "string" && /^[a-f0-9]{64}$/i.test(value.commandHash));
-}
 
-function fileAgeMs(file) {
-    try {
-        return Math.max(0, Date.now() - lstatSync(file).mtimeMs);
-    } catch {
-        return 0;
-    }
-}
 
 function processIsAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -281,169 +137,16 @@ function currentBootId() {
     }
 }
 
-function sameBootIdentity(left, right) {
-    if (left === right) return true;
-    const leftMatch = typeof left === "string" ? left.match(/^(.*):(\d+)$/) : null;
-    const rightMatch = typeof right === "string" ? right.match(/^(.*):(\d+)$/) : null;
-    return Boolean(leftMatch && rightMatch
-        && leftMatch[1] === rightMatch[1]
-        && Math.abs(Number(leftMatch[2]) - Number(rightMatch[2])) <= 5);
-}
 
-function currentLockProcessIdentity() {
-    // Keep synchronous broker paths free of PowerShell/CIM process probes.
-    // Async provider locks collect the same identity without blocking Node.
-    if (process.platform === "win32") return null;
-    if (ownLockProcessIdentity === undefined
-        || (ownLockProcessIdentity === null && Date.now() >= ownLockProcessIdentityRetryAt)) {
-        ownLockProcessIdentity = readProcessIdentity(process.pid);
-        ownLockProcessIdentityRetryAt = ownLockProcessIdentity ? 0 : Date.now() + PROCESS_IDENTITY_RETRY_MS;
-    }
-    return ownLockProcessIdentity;
-}
 
-async function currentLockProcessIdentityAsync() {
-    if (ownLockProcessIdentity) return ownLockProcessIdentity;
-    if (ownLockProcessIdentity === null && Date.now() < ownLockProcessIdentityRetryAt) return null;
-    if (!ownLockProcessIdentityPromise) {
-        ownLockProcessIdentityPromise = withProcessIdentityObservationSlot(
-            () => readProcessIdentityAsync(process.pid),
-        ).then((identity) => {
-            ownLockProcessIdentity = identity;
-            ownLockProcessIdentityRetryAt = identity ? 0 : Date.now() + PROCESS_IDENTITY_RETRY_MS;
-            return identity;
-        }).finally(() => {
-            ownLockProcessIdentityPromise = null;
-        });
-    }
-    return ownLockProcessIdentityPromise;
-}
 
-function lockRecord(token) {
-    const processIdentity = currentLockProcessIdentity();
-    return {
-        token,
-        pid: process.pid,
-        host: hostname(),
-        bootId: currentBootId(),
-        createdAt: new Date().toISOString(),
-        processIdentityStatus: processIdentity ? "recorded" : "unavailable",
-        ...(processIdentity ? { processIdentity } : {}),
-    };
-}
 
-async function lockRecordAsync(token) {
-    const processIdentity = await currentLockProcessIdentityAsync();
-    return {
-        token,
-        pid: process.pid,
-        host: hostname(),
-        bootId: currentBootId(),
-        createdAt: new Date().toISOString(),
-        processIdentityStatus: processIdentity ? "recorded" : "unavailable",
-        ...(processIdentity ? { processIdentity } : {}),
-    };
-}
 
-function lockProcessObservationStatus(lock) {
-    const key = JSON.stringify([lock.pid, lock.processIdentity]);
-    const now = Date.now();
-    const cached = cachedLockProcessObservations.get(key);
-    if (cached && now - cached.checkedAt < PROCESS_IDENTITY_OBSERVATION_CACHE_MS) {
-        return cached.status;
-    }
-    const status = inspectProcessIdentity(lock.processIdentity, lock.pid).status;
-    cacheLockProcessObservation(key, status);
-    return status;
-}
 
-function cacheLockProcessObservation(key, status) {
-    cachedLockProcessObservations.delete(key);
-    cachedLockProcessObservations.set(key, { checkedAt: Date.now(), status });
-    while (cachedLockProcessObservations.size > PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT) {
-        const oldest = cachedLockProcessObservations.keys().next().value;
-        if (oldest === undefined) break;
-        cachedLockProcessObservations.delete(oldest);
-    }
-}
 
-async function withProcessIdentityObservationSlot(operation) {
-    if (activeProcessIdentityObservations < PROCESS_IDENTITY_OBSERVATION_CONCURRENCY) {
-        activeProcessIdentityObservations += 1;
-    } else {
-        await new Promise((resolve) => processIdentityObservationWaiters.push(resolve));
-    }
-    try {
-        return await operation();
-    } finally {
-        const next = processIdentityObservationWaiters.shift();
-        if (next) next();
-        else activeProcessIdentityObservations -= 1;
-    }
-}
 
-async function lockProcessObservationStatusAsync(lock) {
-    const key = JSON.stringify([lock.pid, lock.processIdentity]);
-    const now = Date.now();
-    const cached = cachedLockProcessObservations.get(key);
-    const cacheMs = cached?.status === "unavailable"
-        ? PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS
-        : PROCESS_IDENTITY_OBSERVATION_CACHE_MS;
-    if (cached && now - cached.checkedAt < cacheMs) {
-        return cached.status;
-    }
-    const pending = pendingLockProcessObservations.get(key);
-    if (pending) return pending;
-    if (pendingLockProcessObservations.size >= PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT) {
-        cacheLockProcessObservation(key, "unavailable");
-        return "unavailable";
-    }
-    const promise = (async () => {
-        const current = await withProcessIdentityObservationSlot(() => readProcessIdentityAsync(lock.pid));
-        const status = current
-            ? (processIdentityMatches(lock.processIdentity, current) ? "match" : "mismatch")
-            : (processIsAlive(lock.pid) ? "unavailable" : "exited");
-        cacheLockProcessObservation(key, status);
-        return status;
-    })().finally(() => {
-        if (pendingLockProcessObservations.get(key) === promise) pendingLockProcessObservations.delete(key);
-    });
-    pendingLockProcessObservations.set(key, promise);
-    return promise;
-}
 
-function lockIsStale(file, lock, staleMs) {
-    const ageMs = fileAgeMs(file);
-    if (ageMs < 100) return false;
-    if (!lock) return ageMs >= Math.min(staleMs, MALFORMED_STALE_MS);
-    if (lock.bootId && !sameBootIdentity(lock.bootId, currentBootId())) return true;
-    if (lock.host === hostname() && Number.isInteger(lock.pid)) {
-        if (!processIsAlive(lock.pid)) return true;
-        if (lock.processIdentity) {
-            if (process.platform === "win32") return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
-            const status = lockProcessObservationStatus(lock);
-            return status === "mismatch" || status === "exited";
-        }
-        return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
-    }
-    return ageMs >= staleMs;
-}
 
-async function lockIsStaleAsync(file, lock, staleMs) {
-    const ageMs = fileAgeMs(file);
-    if (ageMs < 100) return false;
-    if (!lock) return ageMs >= Math.min(staleMs, MALFORMED_STALE_MS);
-    if (lock.bootId && !sameBootIdentity(lock.bootId, currentBootId())) return true;
-    if (lock.host === hostname() && Number.isInteger(lock.pid)) {
-        if (!processIsAlive(lock.pid)) return true;
-        if (lock.processIdentity) {
-            const status = await lockProcessObservationStatusAsync(lock);
-            return status === "mismatch" || status === "exited";
-        }
-        return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
-    }
-    return ageMs >= staleMs;
-}
 
 function restoreMovedLockIfPathEmpty(moved, file) {
     try {
@@ -492,124 +195,84 @@ function moveMalformedLock(file, token, validateDirectories = () => {}) {
     return false;
 }
 
-function boundedLockWait(file, waitMs, waitBudget) {
-    if (!waitBudget) return null;
-    const deadline = performance.now() + waitMs;
-    const remaining = () => Math.min(deadline - performance.now(), waitBudget.remaining());
-    return {
-        remaining,
-        check() {
-            if (remaining() > 0) return;
-            const error = new Error(`Timed out acquiring shared mutation lock: ${file}`);
-            error.code = "shared-mutation-lock-timeout";
-            throw error;
-        },
-    };
+
+/** @typedef {{path:string,output:number|null}} AtomicStage */
+/** @param {unknown} error */
+function nativeErrorCode(error) {
+    return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
+/** @type {import('../ports/state-file-publication.mjs').StateFilePublicationPorts<ReturnType<typeof secureStateParentDirectory>,AtomicStage>} */
+const publicationPorts = {
+    variant: "provider",
+    capture: file => secureStateParentDirectory(file),
+    check: fence => { assertStateDirectoriesUnchanged(fence); return undefined; },
+    basename,
+    stage: file => ({ path: `${file}.${process.pid}.${randomUUID()}.tmp`, output: null }),
+    entries: (file, fence) => { assertStateDirectoriesUnchanged(fence); return readdirSync(dirname(file)); },
+    temporaryFacts: (file, entry, fence) => { assertStateDirectoriesUnchanged(fence); const stats = lstatSync(join(dirname(file), entry)); return { ordinary: stats.isFile(), linked: stats.isSymbolicLink(), mtimeMs: stats.mtimeMs }; },
+    removeTemporary: (file, entry, fence) => { assertStateDirectoriesUnchanged(fence); rmSync(join(dirname(file), entry), { force: true }); assertStateDirectoriesUnchanged(fence); return undefined; },
+    alive: processIsAlive,
+    writeStage: (stage, value) => { writeFileSync(stage.path, value, { flag: "wx", mode: 0o600 }); return undefined; },
+    renameAttempt: (source, destination) => { renameSync(source, destination); return undefined; },
+    removeStage: stage => { rmSync(stage.path, { force: true }); return undefined; },
+    chmodTarget: file => { chmodSync(file, 0o600); return undefined; },
+    withSource: (source, prefix, limit, operation, stage, fence) => withDeviceLabReadableFile(source, prefix, limit, input => operation({
+        openOutput: () => {
+            assertStateDirectoriesUnchanged(fence);
+            const descriptor = openSync(stage.path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+            stage.output = descriptor;
+            const buffer = Buffer.allocUnsafe(64 * 1024);
+            return {
+                read: () => readSync(input, buffer, 0, buffer.length, null),
+                write: (offset, length) => writeSync(descriptor, buffer, offset, length),
+                permissions: () => { fchmodSync(descriptor, 0o600); return undefined; },
+                close: () => { closeSync(descriptor); stage.output = null; return undefined; },
+            };
+        },
+    })),
+    closeOutput: stage => { if (stage.output !== null) closeSync(stage.output); return undefined; },
+    now: Date.now,
+    pauseSync: ms => { sleepSync(ms); return undefined; },
+    errorCode: nativeErrorCode,
+    stateError: code => new DeviceLabStateFileError(code),
+};
+const publication = createStateFilePublication(publicationPorts);
+/** @type {import('../ports/shared-mutation-lock.mjs').SharedMutationLockPorts<ReturnType<typeof secureStateParentDirectory>>} */
+const lockPorts = {
+    variant: "provider",
+    capture: file => secureStateParentDirectory(file),
+    check: fence => { assertStateDirectoriesUnchanged(fence); return undefined; },
+    token: () => randomUUID(),
+    pid: () => process.pid,
+    host: hostname,
+    boot: currentBootId,
+    platform: () => process.platform,
+    timestamp: () => new Date().toISOString(),
+    now: Date.now,
+    monotonic: () => performance.now(),
+    pauseSync: ms => { sleepSync(ms); return undefined; },
+    pause: ms => sleep(ms).then(() => undefined),
+    openClaim: file => openSync(file, "wx", 0o600),
+    writeClaim: (descriptor, text) => { writeFileSync(descriptor, text); return undefined; },
+    closeClaim: descriptor => { closeSync(descriptor); return undefined; },
+    readRaw: file => ({ kind: "value", value: readDeviceLabStateFile(file, value => value, "shared-mutation-lock", SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES) }),
+    mtime: file => { try { return lstatSync(file).mtimeMs; } catch { return null; } },
+    alive: processIsAlive,
+    identitySync: readProcessIdentity,
+    identityAsync: readProcessIdentityAsync,
+    observe: (identity, pid) => inspectProcessIdentity(identity, pid).status,
+    matches: processIdentityMatches,
+    moveQualified: (file, token, suffix, fence) => moveIfTokenMatches(file, token, suffix, () => assertStateDirectoriesUnchanged(fence)),
+    moveMalformed: (file, token, fence) => moveMalformedLock(file, token, () => assertStateDirectoriesUnchanged(fence)),
+    errorCode: nativeErrorCode,
+    timeout: file => Object.assign(new Error(`Timed out acquiring shared mutation lock: ${file}`), { code: "shared-mutation-lock-timeout" }),
+};
+const locks = createSharedMutationLock(lockPorts);
 
 export function withSharedMutationLock(file, operation, options = {}) {
-    const waitMs = options.waitMs ?? DEFAULT_WAIT_MS;
-    const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
-    const deadline = Date.now() + waitMs;
-    const boundedWait = boundedLockWait(file, waitMs, options.waitBudget);
-    boundedWait?.check();
-    const token = randomUUID();
-    const directories = secureStateParentDirectory(file);
-    const validateDirectories = () => assertStateDirectoriesUnchanged(directories);
-
-    while (true) {
-        boundedWait?.check();
-        try {
-            validateDirectories();
-            const fd = openSync(file, "wx", 0o600);
-            try {
-                writeFileSync(fd, JSON.stringify(lockRecord(token)));
-            } finally {
-                closeSync(fd);
-            }
-            validateDirectories();
-            break;
-        } catch (error) {
-            if (error?.code !== "EEXIST") throw error;
-            const existing = readLock(file);
-            if (existing?.token && lockIsStale(file, existing, staleMs)) {
-                if (moveIfTokenMatches(file, existing.token, "stale", validateDirectories)) continue;
-            }
-            if (!existing && lockIsStale(file, existing, staleMs)) {
-                if (moveMalformedLock(file, token, validateDirectories)) continue;
-            }
-            if (Date.now() >= deadline) {
-                const error = new Error(`Timed out acquiring shared mutation lock: ${file}`);
-                error.code = "shared-mutation-lock-timeout";
-                throw error;
-            }
-            boundedWait?.check();
-            sleepSync(boundedWait ? Math.min(POLL_MS, boundedWait.remaining()) : POLL_MS);
-        }
-    }
-
-    try {
-        validateDirectories();
-        boundedWait?.check();
-        return operation();
-    } finally {
-        validateDirectories();
-        moveIfTokenMatches(file, token, "release", validateDirectories);
-        validateDirectories();
-    }
+    return locks.withLock(file, operation, options);
 }
 
 export async function withSharedMutationLockAsync(file, operation, options = {}) {
-    const waitMs = options.waitMs ?? DEFAULT_WAIT_MS;
-    const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
-    const deadline = Date.now() + waitMs;
-    const boundedWait = boundedLockWait(file, waitMs, options.waitBudget);
-    boundedWait?.check();
-    const token = randomUUID();
-    const directories = secureStateParentDirectory(file);
-    const validateDirectories = () => assertStateDirectoriesUnchanged(directories);
-    // Bounded callers avoid starting asynchronous process-identity probes whose
-    // own queue and timeout would outlive the observation allowance.
-    const record = boundedWait ? lockRecord(token) : await lockRecordAsync(token);
-
-    while (true) {
-        boundedWait?.check();
-        try {
-            validateDirectories();
-            const fd = openSync(file, "wx", 0o600);
-            try {
-                writeFileSync(fd, JSON.stringify(record));
-            } finally {
-                closeSync(fd);
-            }
-            validateDirectories();
-            break;
-        } catch (error) {
-            if (error?.code !== "EEXIST") throw error;
-            const existing = readLock(file);
-            if (existing?.token && (boundedWait ? lockIsStale(file, existing, staleMs) : await lockIsStaleAsync(file, existing, staleMs))) {
-                if (moveIfTokenMatches(file, existing.token, "stale", validateDirectories)) continue;
-            }
-            if (!existing && (boundedWait ? lockIsStale(file, existing, staleMs) : await lockIsStaleAsync(file, existing, staleMs))) {
-                if (moveMalformedLock(file, token, validateDirectories)) continue;
-            }
-            if (Date.now() >= deadline) {
-                const error = new Error(`Timed out acquiring shared mutation lock: ${file}`);
-                error.code = "shared-mutation-lock-timeout";
-                throw error;
-            }
-            boundedWait?.check();
-            await sleep(boundedWait ? Math.min(POLL_MS, boundedWait.remaining()) : POLL_MS);
-        }
-    }
-
-    try {
-        validateDirectories();
-        boundedWait?.check();
-        return await operation();
-    } finally {
-        validateDirectories();
-        moveIfTokenMatches(file, token, "release", validateDirectories);
-        validateDirectories();
-    }
+    return locks.withLockAsync(file, operation, options);
 }

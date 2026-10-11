@@ -573,6 +573,130 @@ describe("device-lab shared mutation lock", () => {
         expect(existsSync(file)).toBe(false);
     });
 
+    it.each(["transient", "permanent", "nonretryable", "stage-write"] as const)("preserves atomic publication outcomes after a %s failure", async failure => {
+        for (const implementation of ["host", "provider"] as const) {
+            const destination = lockPath();
+            writeFileSync(destination, "original bytes");
+            const fault = Object.assign(new Error("atomic publication denied"), { code: failure === "nonretryable" || failure === "stage-write" ? "EIO" : "EBUSY" });
+            let now = Date.now();
+            let transientPending = true;
+            const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+            vi.resetModules();
+            vi.doMock("fs", async importOriginal => {
+                const actual = await importOriginal<typeof import("fs")>();
+                return { ...actual, writeFileSync(path: import("fs").PathOrFileDescriptor, value: string | NodeJS.ArrayBufferView, options?: import("fs").WriteFileOptions) {
+                    if (failure === "stage-write" && typeof path === "string" && path.startsWith(`${destination}.`) && path.endsWith(".tmp")) {
+                        actual.writeFileSync(path, "partial stage bytes", options);
+                        throw fault;
+                    }
+                    actual.writeFileSync(path, value, options);
+                }, renameSync(source: string, target: string) {
+                    if (target === destination && source.endsWith(".tmp")) {
+                        if (failure === "permanent") { now += 3000; throw fault; }
+                        if (failure === "nonretryable") throw fault;
+                        if (transientPending) { transientPending = false; throw fault; }
+                    }
+                    actual.renameSync(source, target);
+                } };
+            });
+            try {
+                const api = implementation === "host"
+                    ? await import("@ccc/device-lab/device-lab-shared-state.js?rename-fault")
+                    : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?rename-fault");
+                if (failure === "transient") {
+                    api.writeFileAtomically(destination, "published bytes");
+                    expect(readFileSync(destination, "utf8")).toBe("published bytes");
+                } else {
+                    let observed: unknown;
+                    try { api.writeFileAtomically(destination, "unpublished bytes"); } catch (error) { observed = error; }
+                    expect(observed).toBe(fault);
+                    expect(readFileSync(destination, "utf8")).toBe("original bytes");
+                }
+                expect(readdirSync(dirname(destination))).toEqual(["state.mutation.lock"]);
+            } finally {
+                vi.doUnmock("fs");
+                vi.resetModules();
+                clock.mockRestore();
+            }
+        }
+    });
+
+    it("copies exact bounded bytes and preserves the previous destination when the source exceeds the limit", () => {
+        const bytes = Buffer.from("é🐋\0binary", "utf8");
+        for (const copy of [copyHostFileAtomically, copyNestedFileAtomically]) {
+            const destination = lockPath();
+            const source = join(dirname(destination), "source.bin");
+            writeFileSync(source, bytes);
+            writeFileSync(destination, "original bytes");
+            expect(copy(source, destination, { prefix: "bounded-copy", limitBytes: bytes.length })).toBe(bytes.length);
+            expect(readFileSync(destination)).toEqual(bytes);
+            writeFileSync(destination, "preserved after limit refusal");
+            expect(() => copy(source, destination, { prefix: "bounded-copy", limitBytes: bytes.length - 1 })).toThrow("bounded-copy-file-too-large");
+            expect(readFileSync(destination, "utf8")).toBe("preserved after limit refusal");
+            expect(readdirSync(dirname(destination)).sort()).toEqual(["source.bin", "state.mutation.lock"]);
+        }
+    });
+
+    it.each(["short", "zero", "write-failure", "cleanup-failure"] as const)("preserves streamed-copy publication and owned-stage outcomes after %s writes", async outcome => {
+        for (const implementation of ["host", "provider"] as const) {
+            const destination = lockPath();
+            const source = join(dirname(destination), "source.bin");
+            const bytes = Buffer.from("copy bytes");
+            writeFileSync(source, bytes);
+            writeFileSync(destination, "original bytes");
+            const writeFailure = new Error("native output write failed");
+            const cleanupFailure = new Error("owned stage removal failed");
+            let stage: string | undefined;
+            let output: number | undefined;
+            let partialWritten = false;
+            vi.resetModules();
+            vi.doMock("fs", async importOriginal => {
+                const actual = await importOriginal<typeof import("fs")>();
+                return {
+                    ...actual,
+                    openSync(path: import("fs").PathLike, flags: string | number, mode?: import("fs").Mode) {
+                        const descriptor = actual.openSync(path, flags, mode);
+                        if (typeof path === "string" && path.startsWith(`${destination}.`) && path.endsWith(".tmp")) { stage = path; output = descriptor; }
+                        return descriptor;
+                    },
+                    writeSync(descriptor: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null) {
+                        if (descriptor !== output) return actual.writeSync(descriptor, buffer, offset, length, position);
+                        expect(readFileSync(destination, "utf8")).toBe("original bytes");
+                        if (outcome === "zero") return 0;
+                        if (outcome !== "short" && partialWritten) throw writeFailure;
+                        partialWritten = true;
+                        return actual.writeSync(descriptor, buffer, offset, Math.min(2, length), position);
+                    },
+                    rmSync(path: import("fs").PathLike, options?: import("fs").RmOptions) {
+                        if (outcome === "cleanup-failure" && path === stage) throw cleanupFailure;
+                        actual.rmSync(path, options);
+                    },
+                };
+            });
+            try {
+                const api = implementation === "host"
+                    ? await import("@ccc/device-lab/device-lab-shared-state.js?copy-progress")
+                    : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?copy-progress");
+                if (outcome === "short") {
+                    expect(api.copyFileAtomically(source, destination, { prefix: "progress-copy", limitBytes: bytes.length })).toBe(bytes.length);
+                    expect(readFileSync(destination)).toEqual(bytes);
+                } else {
+                    let observed: unknown;
+                    try { api.copyFileAtomically(source, destination, { prefix: "progress-copy", limitBytes: bytes.length }); } catch (error) { observed = error; }
+                    if (outcome === "zero") expect(observed).toMatchObject({ message: "progress-copy-write-failed" });
+                    else expect(observed).toBe(outcome === "cleanup-failure" ? cleanupFailure : writeFailure);
+                    expect(readFileSync(destination, "utf8")).toBe("original bytes");
+                }
+                if (!stage) throw new Error("Copy did not allocate its native output stage");
+                expect(existsSync(stage)).toBe(outcome === "cleanup-failure");
+            } finally {
+                vi.doUnmock("fs");
+                vi.resetModules();
+                if (stage) rmSync(stage, { force: true });
+            }
+        }
+    });
+
     it.runIf(process.platform !== "win32")("atomically replaces a linked copy destination without modifying its target", () => {
         for (const copy of [copyHostFileAtomically, copyNestedFileAtomically]) {
             const file = lockPath();
