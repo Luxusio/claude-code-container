@@ -132,15 +132,14 @@
   },
   "closure": {
     "exhaustive": false,
-    "status": "bounded-source-acceptance-five-operation-gaps-remain",
+    "status": "bounded-source-acceptance-three-operation-gaps-remain",
     "blockingGapIds": [
-      "GAP-source-direct-physical-attachment",
       "GAP-source-direct-recording"
     ],
     "totals": null,
     "sourceScopeClosed": false,
     "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
-    "reason": "Nine bounded reference corrections remain accepted. Sources bb502909, cf7d7836 and 26bbbd56 independently reviewed, genuinely checked and protected-delivered seven formerly partial existing operations. Direct lease, managed renewal, legacy admin deletion, shared semantic results and five-root enforcement findings have bounded source dispositions; direct attachment and recording gaps remain open. Historical twelve-operation retractions and six-credit qualification retained. Exhaustive source universe, native and formal acceptance remain unverified."
+    "reason": "Nine bounded reference corrections and prior seven accepted operation qualifications remain unchanged. Accepted b14321e7 source, complete required-binding review, genuine QA267 and protected main delivery qualify physical attach/detach; direct attachment gap is bounded source-resolved. Only known recording start/finalize/status source gaps remain. Historical twelve-operation retractions and all prior source qualifications retained. Exhaustive source universe, native, reliability and formal acceptance remain unverified."
   },
   "provenance": {
     "historicalLedger": {
@@ -27004,15 +27003,25 @@
       "bindingIds": [
         "BIND-physical-attach-broker-physical-attach"
       ],
-      "sourceImplementationRemainingWork": [
-        "Android/iOS direct device_attach still own discovery/selection, claim, publication and compensation sequencing."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent complete required-binding review accepts inward direct Android/iOS attach/detach through checked native producers and existing inward broker bindings. Current genuine QA267 and protected main delivery qualify this existing operation; native/formal/exhaustive certification remains unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "sourceManifest": "/tmp/ccc-direct-attachment-source-20261011.json",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-attachment-b143-8slxw5be/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-attachment-main-delivery-result-20261011.json"
+      },
+      "historicalWholeOperationQualificationBeforeAttachmentAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Android/iOS direct device_attach still own discovery/selection, claim, publication and compensation sequencing.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeAttachmentAcceptance": [
+        "Android/iOS direct device_attach still own discovery/selection, claim, publication and compensation sequencing."
+      ]
     },
     {
       "id": "OP-physical-detach",
@@ -27356,15 +27365,25 @@
       "bindingIds": [
         "BIND-physical-detach-broker-physical-detach"
       ],
-      "sourceImplementationRemainingWork": [
-        "Android/iOS direct device_detach still own lifecycle admission, auxiliary cleanup, CAS/lease removal and rollback sequencing."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent complete required-binding review accepts inward direct Android/iOS attach/detach through checked native producers and existing inward broker bindings. Current genuine QA267 and protected main delivery qualify this existing operation; native/formal/exhaustive certification remains unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "sourceManifest": "/tmp/ccc-direct-attachment-source-20261011.json",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-attachment-b143-8slxw5be/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-attachment-main-delivery-result-20261011.json"
+      },
+      "historicalWholeOperationQualificationBeforeAttachmentAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Android/iOS direct device_detach still own lifecycle admission, auxiliary cleanup, CAS/lease removal and rollback sequencing.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeAttachmentAcceptance": [
+        "Android/iOS direct device_detach still own lifecycle admission, auxiliary cleanup, CAS/lease removal and rollback sequencing."
+      ]
     },
     {
       "id": "OP-apple-trust-diagnostic",
@@ -184833,7 +184852,7 @@
       "id": "GAP-source-direct-physical-attachment",
       "kind": "source-implementation",
       "reason": "Complete both direct Android/iOS attachment workflows; broker-only extraction cannot close the supported direct bindings.",
-      "remediationStatus": "open-confirmed-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [
         "OP-physical-attach",
         "OP-physical-detach"
@@ -184846,7 +184865,16 @@
         }
       ],
       "followupTaskId": "TASK__architecture-direct-physical-attachment",
-      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification.",
+      "historicalRemediationStatusBeforeAttachmentAcceptance": "open-confirmed-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+        "status": "independently-source-reconciled",
+        "scope": "Recorded direct Android/iOS physical attachment and detachment policies now reach createPhysicalAttachmentApplication; all existing required direct/broker bindings independently accepted. Native admission, operation locks, processes, leases and CAS authority retained. Only this bounded source gap is resolved; native/formal and exhaustive source certification remain unverified.",
+        "sourceManifest": "/tmp/ccc-direct-attachment-source-20261011.json",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-attachment-b143-8slxw5be/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-attachment-main-delivery-result-20261011.json"
+      }
     },
     {
       "id": "GAP-source-direct-recording",

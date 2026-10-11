@@ -684,11 +684,8 @@
         "OP-broker-physical-stop",
         "OP-broker-owner-cleanup"
       ],
-      "partialOperationIds": [
-        "OP-physical-attach",
-        "OP-physical-detach"
-      ],
-      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-physical-attach, OP-physical-detach: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "partialOperationIds": [],
+      "codeReview": "Historical accepted broker contribution and twelve-operation retraction retained. Physical attach/detach are counted only in the accepted direct-physical-attachment-source-closure lane after all required direct/broker bindings qualified; native/formal and exhaustive acceptance remain unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "624c26f3685874e98367252be75d5fb9522d61e6",
@@ -700,13 +697,14 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified. These twelve bindings were partial at624c; their remaining supported bindings close in device-interaction-integration atb4b8 and count once there.",
       "currentQualificationAudit": {
-        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
         "date": "2026-10-11",
-        "retractedWholeOperationIds": [
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
           "OP-physical-attach",
           "OP-physical-detach"
         ],
-        "status": "independently-source-reconciled-confirmed-partial"
+        "remainingPartialOperationIds": []
       },
       "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
@@ -716,7 +714,17 @@
           "OP-physical-detach"
         ],
         "status": "candidate-reconciled-awaiting-independent-current-review"
-      }
+      },
+      "historicalCurrentQualificationAuditBeforeAttachmentAcceptance": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-physical-attach",
+          "OP-physical-detach"
+        ],
+        "status": "independently-source-reconciled-confirmed-partial"
+      },
+      "historicalCodeReviewBeforeAttachmentAcceptance": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-physical-attach, OP-physical-detach: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified."
     },
     {
       "id": "device-interaction-integration",
@@ -1049,6 +1057,25 @@
       "acceptedIntegrationCommit": "26bbbd564e7370f022abf081219004f51a5bd994",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-heartbeat-26bb-f2cis_xv/final-result.json",
       "deliveryEvidence": "/tmp/ccc-broker-heartbeat-main-delivery-result-20261011.json"
+    },
+    {
+      "id": "direct-physical-attachment-source-closure",
+      "branch": "refactor/architecture-direct-physical-attachment-20261011",
+      "commit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+      "taskId": "TASK__architecture-direct-physical-attachment",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-physical-attach",
+        "OP-physical-detach"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent Code DEEP/Security/Guide and complete required-binding review PASS. Accepted source has current strict implementation/native producer contracts and graph, genuine build/1313 emits, 11 whole files/267 cases/0 skips, lint, package7, actual npm/materialized Unix exports/assets/MCP startup and compiled CLI 0/0/0/1 PASS. Protected main delivery preserves all97 original user changes. Source-only producer checking does not certify every legacy helper body or native hosts; formal/exhaustive acceptance remains unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+      "sourceManifest": "/tmp/ccc-direct-attachment-source-20261011.json",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-attachment-b143-8slxw5be/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-direct-attachment-main-delivery-result-20261011.json"
     }
   ],
   "planningLanes": [
@@ -1406,11 +1433,12 @@
     }
   ],
   "currentSourceQualificationAudit": {
-    "sourceCommit": "26bbbd564e7370f022abf081219004f51a5bd994",
+    "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
     "acceptedSourceCommits": [
       "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
       "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
-      "26bbbd564e7370f022abf081219004f51a5bd994"
+      "26bbbd564e7370f022abf081219004f51a5bd994",
+      "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d"
     ],
     "acceptedOperationIds": [
       "OP-lease-claim",
@@ -1419,18 +1447,18 @@
       "OP-device-admin-cleanup",
       "OP-physical-stop",
       "OP-device-flow",
-      "OP-lease-heartbeat"
+      "OP-lease-heartbeat",
+      "OP-physical-attach",
+      "OP-physical-detach"
     ],
     "confirmedPartialOperationIds": [
-      "OP-physical-attach",
-      "OP-physical-detach",
       "OP-recording-start",
       "OP-recording-finalize",
       "OP-recording-status"
     ],
     "boundedReferenceCorrections": 9,
     "sourceUniverseCertified": false,
-    "scope": "Seven existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Five remain partial: direct attachment/detachment and recording. Historical twelve-operation retraction and six-credit qualification retained; no exhaustive/native/formal certification."
+    "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "historicalSourceQualificationAuditBeforeSixOperationAcceptance": {
     "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
@@ -1477,5 +1505,32 @@
     "boundedReferenceCorrections": 9,
     "sourceUniverseCertified": false,
     "scope": "Six existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Six remain partial: broker managed heartbeat, direct attachment/detachment and recording. Historical twelve-operation retraction retained; no exhaustive/native/formal certification."
+  },
+  "historicalSourceQualificationAuditBeforeAttachmentAcceptance": {
+    "sourceCommit": "26bbbd564e7370f022abf081219004f51a5bd994",
+    "acceptedSourceCommits": [
+      "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+      "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+      "26bbbd564e7370f022abf081219004f51a5bd994"
+    ],
+    "acceptedOperationIds": [
+      "OP-lease-claim",
+      "OP-lease-prune",
+      "OP-lease-release",
+      "OP-device-admin-cleanup",
+      "OP-physical-stop",
+      "OP-device-flow",
+      "OP-lease-heartbeat"
+    ],
+    "confirmedPartialOperationIds": [
+      "OP-physical-attach",
+      "OP-physical-detach",
+      "OP-recording-start",
+      "OP-recording-finalize",
+      "OP-recording-status"
+    ],
+    "boundedReferenceCorrections": 9,
+    "sourceUniverseCertified": false,
+    "scope": "Seven existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Five remain partial: direct attachment/detachment and recording. Historical twelve-operation retraction and six-credit qualification retained; no exhaustive/native/formal certification."
   }
 }

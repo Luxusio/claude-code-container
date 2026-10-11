@@ -1,11 +1,11 @@
 # Architecture operation inventory
 
 Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
-Current source qualified: `26bbbd564e7370f022abf081219004f51a5bd994`.
+Current source qualified: `b14321e7b1b126e2bfc5a2766fca9b0b93d5259d`.
 Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-Status: **nine bounded reference corrections and seven subsequent operation
+Status: **nine bounded reference corrections and nine subsequent operation
 completions are independently source-qualified; confirmed source work remains**.
 The original review reasons, source observations and twelve-operation retraction
 remain recorded as history. Accepted broker contributions alone did not complete
@@ -13,11 +13,12 @@ the supported direct bindings or shared presentation contracts.
 
 The supported Codex/Claude scope contains 218 existing operations, with one
 retained OpenCode operation excluded. The current progress overlay qualifies
-**213/218 source operations (97.7%)**, with **five partial**, no unmerged candidates
+**215/218 source operations (98.6%)**, with **three partial**, no unmerged candidates
 and no additional operation IDs. Source `bb502909` closes direct lease
 claim/prune/release and legacy admin cleanup; `cf7d7836` closes semantic physical
-stop and device flow; `26bbbd56` closes managed heartbeat. Independent reviews,
-final functional QA and protected local delivery qualify these seven credits. Historical accepted contributions and
+stop and device flow; `26bbbd56` closes managed heartbeat; `b14321e7` closes
+direct physical attach and detach. Independent reviews, final functional QA and
+protected local delivery qualify these nine credits. Historical accepted contributions and
 retractions are retained separately.
 
 This is a provisional code count, not full architecture acceptance. These bounded
@@ -28,23 +29,26 @@ separate from source accounting.
 
 | Confirmed remaining source work | Existing operations | Current scope |
 | --- | ---: | --- |
-| Direct physical attachment | 2 | Android/iOS attach and detach sequencing, publication and compensation |
 | Provider recording | 3 | Start, finalization and status in Android, iOS Simulator, macOS and Sandbox; broker desktop routes reach these children |
 
 The direct lease and managed renewal policies, legacy synchronous admin deletion, shared physical-stop
-and flow result separation, and five-root graph/compiler enforcement findings
-have bounded source dispositions at the accepted revisions. Enforcement is a
-zero-operation obligation and grants no additional count. Two confirmed source
-gaps remain open: direct attachment and provider recording.
-Their closure does not establish exhaustive inventory or native acceptance.
+and flow result separation, direct physical attachment, and five-root graph/compiler
+enforcement findings have bounded source dispositions at the accepted revisions.
+Enforcement is a zero-operation obligation and grants no additional count. One
+confirmed source gap remains open: provider recording. Its closure does not
+establish exhaustive inventory or native acceptance.
 
 Source20 final QA records 15 whole files and 296 cases; its original CLI
 observation timeouts remain preserved alongside the successful private non-Git
 project command. Source26 final QA records 16 whole files and 696 cases; its two
 removed runtime-compiler suites are authenticated by intentional null absence
 sentinels. Managed-heartbeat QA records 11 whole files and 597 cases, genuine build,
-package/shipping checks and compiled CLI success. All three accepted source
-deliveries preserve all 97 original user files,
+package/shipping checks and compiled CLI success. Attachment QA records 11
+whole files and 267 cases, actual producer/body checking, genuine complete build,
+package/shipping and compiled CLI success. Its 13 input pins and exact supported
+Android/iOS and broker bindings qualify two existing operations; they do not
+certify every legacy helper body or real host. All four accepted source deliveries
+preserve all 97 original user files,
 status and index. Missing automatic receipt records are retained as formal parks,
 without a fabricated task close.
 
