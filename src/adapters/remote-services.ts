@@ -279,7 +279,7 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         collectCurrentForwardedEnv: () => collectForwardedEnv(process.env),
         startInteractiveSession: request => {
             const claudeArgs = request.arguments.length > 0 ? request.arguments.map(shellEscapeArg).join(" ") : "--dangerously-skip-permissions";
-            const envFlags = [`-e ${shellEscapeArg(`${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`)}`, ...request.environment.map(([key, value]) => `-e ${shellEscapeArg(`${key}=${value}`)`)];
+            const envFlags = [`-e ${shellEscapeArg(`${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`)}`, ...request.environment.map(([key, value]) => "-e " + shellEscapeArg(key + "=" + value))];
             const program = `cd ${shellEscapeArg(`/project/${request.projectId}`)} && mise trust . 2>/dev/null; mise install -y || true; exec claude ${claudeArgs}`;
             const encodedProgram = Buffer.from(program, "utf8").toString("base64");
             const decoder = `printf %s ${shellEscapeArg(encodedProgram)} | base64 -d | sh`;
