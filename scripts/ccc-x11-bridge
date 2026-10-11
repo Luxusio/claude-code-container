@@ -7,13 +7,19 @@
 : "${REAL_XCLIP:=/usr/bin/xclip}"
 : "${CCC_CLIPBOARD_PORT_FILE:=/run/ccc/clipboard.port}"
 BRIDGE_SCRIPT=$(readlink -f "${BASH_SOURCE[0]}")
+BRIDGE_POLICY="$(dirname "$BRIDGE_SCRIPT")/lib/clipboard-x11-sync.sh"
+if [ ! -r "$BRIDGE_POLICY" ]; then
+    BRIDGE_POLICY=/usr/local/lib/ccc/clipboard-x11-sync.sh
+fi
+if [ ! -r "$BRIDGE_POLICY" ]; then
+    return 1 2>/dev/null || exit 1
+fi
+source "$BRIDGE_POLICY" || { return 1 2>/dev/null || exit 1; }
 
 bridge_init() {
     umask 077
     bridge_tmp=$(mktemp -d "${TMPDIR:-/tmp}/ccc-clipboard.XXXXXXXX") || return 1
-    initialized=0
-    last_host_sig=""
-    last_local_sig=""
+    clipboard_x11_sync_init
     export DISPLAY="$DISPLAY_N"
 }
 
@@ -77,61 +83,31 @@ bridge_read_host() {
 bridge_apply_host() {
     timeout -k 1 2 "$REAL_XCLIP" -selection clipboard -target "$host_mode" -in \
         < "$host_file" >/dev/null 2>&1 || return 1
-    last_host_sig=$host_sig
-    if [ "$host_mode" = UTF8_STRING ]; then
-        last_local_sig=$host_sig
-    else
-        last_local_sig=unavailable
-    fi
+
+}
+
+bridge_local_signature() {
+    printf 'txt:%s' "$(bridge_signature "$bridge_tmp/local")"
+}
+
+bridge_upload_local() {
+    local status
+    status=$(curl -fs --connect-timeout 2 --max-time 10 \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: text/plain;charset=utf-8' \
+        --data-binary @"$bridge_tmp/local" -o /dev/null -w '%{http_code}' \
+        "$url/clipboard/text") || return 1
+    case "$status" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
 bridge_cycle() {
-    local local_result=0 local_sig status
     url=${CCC_CLIPBOARD_URL:-}
     token=${CCC_CLIPBOARD_TOKEN:-}
     if [ -f "$CCC_CLIPBOARD_PORT_FILE" ]; then
         token=$(cut -d: -f2- "$CCC_CLIPBOARD_PORT_FILE")
     fi
     [ -n "$url" ] || return 1
-
-    if [ "$initialized" = 0 ]; then
-        # A restarted container must not publish its stale X11 selection.
-        bridge_read_host && bridge_apply_host || return 1
-        initialized=1
-        return 0
-    fi
-
-    bridge_read_local || local_result=$?
-    [ "$local_result" != 2 ] || return 1
-    if [ "$local_result" = 0 ]; then
-        local_sig="txt:$(bridge_signature "$bridge_tmp/local")"
-        if [ "$local_sig" != "$last_local_sig" ]; then
-            status=$(curl -fs --connect-timeout 2 --max-time 10 \
-                -H "Authorization: Bearer $token" \
-                -H 'Content-Type: text/plain;charset=utf-8' \
-                --data-binary @"$bridge_tmp/local" -o /dev/null -w '%{http_code}' \
-                "$url/clipboard/text") || return 1
-            case "$status" in 2??) ;; *) return 1 ;; esac
-            # Advance both baselines; do not echo this upload into X11.
-            last_local_sig=$local_sig
-            last_host_sig=$local_sig
-            return 0
-        fi
-    fi
-
-    bridge_read_host || return 1
-    if [ "$host_sig" != "$last_host_sig" ]; then
-        # Host polling can take seconds. Keep a local copy made during that
-        # request for publication on the next cycle instead of overwriting it.
-        local_result=0
-        bridge_read_local || local_result=$?
-        [ "$local_result" != 2 ] || return 1
-        if [ "$local_result" = 0 ]; then
-            local_sig="txt:$(bridge_signature "$bridge_tmp/local")"
-            [ "$local_sig" = "$last_local_sig" ] || return 1
-        fi
-        bridge_apply_host || return 1
-    fi
+    clipboard_x11_sync_cycle
 }
 
 sync_loop() {
@@ -176,7 +152,7 @@ bridge_main() {
     # Serialize startup/replacement, but release before spawning child owners.
     exec 9>"$LOCK_DIR/startup.lock" || return 1
     flock -w 10 9 || return 1
-    generation=$(sha256sum < "$BRIDGE_SCRIPT" | cut -d' ' -f1)
+    generation="$(bridge_signature "$BRIDGE_SCRIPT"):$(bridge_signature "$BRIDGE_POLICY")"
     if [ -f "$LOCK_DIR/running" ]; then
         mapfile -t state < "$LOCK_DIR/running"
         pid=${state[0]:-}

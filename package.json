@@ -26,6 +26,7 @@
     "scripts/ccc-entrypoint.sh",
     "scripts/clipboard-shims/",
     "scripts/ccc-x11-bridge",
+    "scripts/lib/clipboard-x11-sync.sh",
     "scripts/clipboard-helper-darwin.m",
     "README.md",
     "doc/hyper-v-windows/GUIDE__typed-library-support.md",

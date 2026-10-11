@@ -1635,19 +1635,18 @@ describe("docker.ts module exports", () => {
             const cpCalls = spawnSyncMock.mock.calls.filter(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "cp"
             );
-            expect(cpCalls).toHaveLength(6);
             const shims = cpCalls.map((c: unknown[]) => (c[1] as string[])[2]);
             expect(shims).toContain("ccc-test-abc123:/usr/local/bin/xclip");
             expect(shims).toContain("ccc-test-abc123:/usr/local/bin/wl-paste");
             expect(shims).toContain("ccc-test-abc123:/usr/local/bin/pbpaste");
             expect(shims).toEqual(expect.arrayContaining([expect.stringMatching(/^ccc-test-abc123:\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/)]));
+            expect(shims).toEqual(expect.arrayContaining([expect.stringMatching(/^ccc-test-abc123:\/usr\/local\/lib\/ccc\/clipboard-x11-sync\.sh\.[a-f0-9]+\.new$/)]));
 
             // Should also chmod +x all copied shims
             const chmodCalls = spawnSyncMock.mock.calls.filter(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "exec" && (c[1] as string[]).includes("chmod")
             );
-            expect(chmodCalls).toHaveLength(1);
-            const chmodArgs = chmodCalls[0][1] as string[];
+            const chmodArgs = chmodCalls.find(call => (call[1] as string[]).includes("+x"))![1] as string[];
             expect(chmodArgs).toContain("+x");
             expect(chmodArgs).toContain("/usr/local/bin/xclip");
             expect(chmodArgs).toContain("/usr/local/bin/pbpaste");
@@ -1691,6 +1690,16 @@ describe("docker.ts module exports", () => {
             const bridgeSource = join("/fake", "scripts", "ccc-x11-bridge");
             const bridgeCopy = calls.find(args => args[0] === "cp" && args[1] === bridgeSource);
             expect(bridgeCopy).toEqual(["cp", bridgeSource, expect.stringMatching(/^ccc-test-abc123:\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/)]);
+            const policySource = join("/fake", "scripts", "lib", "clipboard-x11-sync.sh");
+            const policyCopy = calls.find(args => args[0] === "cp" && args[1] === policySource)!;
+            expect(policyCopy).toEqual(["cp", policySource, expect.stringMatching(/^ccc-test-abc123:\/usr\/local\/lib\/ccc\/clipboard-x11-sync\.sh\.[a-f0-9]+\.new$/)]);
+            const bridgeStage = bridgeCopy![2].slice("ccc-test-abc123:".length);
+            const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
+            expect(calls).toContainEqual(expect.arrayContaining(["sed", "-i", bridgeStage, policyStage]));
+            const policyPublish = calls.findIndex(args => args[4] === "mv" && args.at(-1) === "/usr/local/lib/ccc/clipboard-x11-sync.sh");
+            const bridgePublish = calls.findIndex(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge");
+            expect(policyPublish).toBeGreaterThanOrEqual(0);
+            expect(bridgePublish).toBeGreaterThan(policyPublish);
             const execText = calls.filter(args => args[0] === "exec").map(args => args.join(" ")).join("\n");
             expect(execText).toContain("sed");
             expect(execText).toMatch(/\\r|\r/);
@@ -1707,21 +1716,30 @@ describe("docker.ts module exports", () => {
             const execCalls = spawnSyncMock.mock.calls.map(call => call[1] as string[]).filter(args => args[0] === "exec");
             expect(execCalls.length).toBeGreaterThan(0);
             for (const args of execCalls) expect(args.slice(0, 4)).toEqual(["exec", "-u", "root", "ccc-test-abc123"]);
-            const provision = execCalls.find(args => args[4] === "install");
+            const provision = execCalls.find(args => args[4] === "install" && args.at(-1) === "/run/ccc-x11-bridge");
             expect(provision).toBeDefined();
             expect(provision).toEqual(expect.arrayContaining(["-d", "-o", "ccc", "-g", "/run/ccc-x11-bridge"]));
             expect(provision![provision!.indexOf("-o") + 1]).toBe("ccc");
             expect(provision![provision!.indexOf("-g") + 1]).toBe("ccc");
             expect(provision!.includes("-m700") || provision![provision!.indexOf("-m") + 1] === "700").toBe(true);
+            expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "install", "-d", "-m", "755", "-o", "root", "-g", "root", "/usr/local/lib/ccc"]);
+            const policyCopy = spawnSyncMock.mock.calls.map(call => call[1] as string[])
+                .find(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "lib", "clipboard-x11-sync.sh"))!;
+            const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
+            expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "chown", "root:root", policyStage]);
+            expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "chmod", "644", policyStage]);
             // Provisioning installs permissions; the long-running bridge is not launched as root here.
             expect(execCalls.some(args => args[4] === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
 
-        it.each(["sed", "chmod", "install", "mv"])("cleans the unique staged bridge when %s fails", failingCommand => {
+        it.each(["sed", "chmod", "install", "mv"])("preserves the old bridge and cleans both stages when %s fails", failingCommand => {
             mockExistsSync.mockReturnValue(true);
             spawnSyncMock.mockImplementation((_executable, rawArgs) => {
                 const args = rawArgs as string[];
-                return makeResult(args[0] === "exec" && args.includes(failingCommand) ? 1 : 0);
+                const failed = args[0] === "exec" && args[4] === failingCommand
+                    && (failingCommand !== "install" || args.at(-1) === "/run/ccc-x11-bridge")
+                    && (failingCommand !== "mv" || args.at(-1) === "/usr/local/lib/ccc/clipboard-x11-sync.sh");
+                return makeResult(failed ? 1 : 0);
             });
 
             syncClipboardShims("ccc-test-abc123", "/fake/dist");
@@ -1730,8 +1748,38 @@ describe("docker.ts module exports", () => {
             const copy = calls.find(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "ccc-x11-bridge"))!;
             expect(copy).toBeDefined();
             const stage = copy[2].slice("ccc-test-abc123:".length);
-            expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f", stage]);
-            if (failingCommand !== "mv") expect(calls.some(args => args[0] === "exec" && args.includes("mv"))).toBe(false);
+            const policyCopy = calls.find(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "lib", "clipboard-x11-sync.sh"))!;
+            const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
+            expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f", stage, policyStage]);
+            expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
+        });
+
+        it("keeps the installed bridge when its required policy source is missing", () => {
+            mockExistsSync.mockImplementation((path: string) => path !== join("/fake", "scripts", "lib", "clipboard-x11-sync.sh"));
+            spawnSyncMock.mockReturnValue(makeResult(0));
+            syncClipboardShims("ccc-test-abc123", "/fake/dist");
+            const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+            expect(calls.some(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "ccc-x11-bridge"))).toBe(false);
+            expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
+        });
+
+        it.each(["copy", "permissions"])("does not replace the bridge after policy %s failure", phase => {
+            mockExistsSync.mockReturnValue(true);
+            const policySource = join("/fake", "scripts", "lib", "clipboard-x11-sync.sh");
+            spawnSyncMock.mockImplementation((_executable, rawArgs) => {
+                const args = rawArgs as string[];
+                const failed = phase === "copy"
+                    ? args[0] === "cp" && args[1] === policySource
+                    : args[4] === "chmod" && args[5] === "644";
+                return makeResult(failed ? 1 : 0);
+            });
+            syncClipboardShims("ccc-test-abc123", "/fake/dist");
+            const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+            const policyCopy = calls.find(args => args[0] === "cp" && args[1] === policySource)!;
+            const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
+            expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f",
+                expect.stringMatching(/^\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/), policyStage]);
+            expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
     });
 

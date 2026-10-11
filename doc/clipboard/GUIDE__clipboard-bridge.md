@@ -96,3 +96,26 @@ owners during rollback.
 Known ceiling: interactive Windows/macOS Clipboard and application-specific
 pasteboard formats remain unverified by portable Linux fixtures. Execute native
 acceptance on those hosts before claiming it.
+
+## Container X11 synchronization
+
+`scripts/lib/clipboard-x11-sync.sh` owns host startup adoption, local-change
+priority, failed-upload retry, host-poll race protection and successful-selection
+baselines. It calls the bridge's finite read-local, read-host, signature, upload
+and apply leaves. Clipboard bytes stay in private native files; the application
+never puts them in shell variables or handles tokens, commands or processes.
+
+`scripts/ccc-x11-bridge` retains text-target/size admission, token refresh,
+bounded curl/xclip calls, Xvfb and identity-qualified singleton replacement.
+It sources the repository sibling policy or the installed
+`/usr/local/lib/ccc/clipboard-x11-sync.sh` before replacement authority, and
+both assets participate in the generation fingerprint. Missing policy fails
+startup. Both Docker images and the npm package ship the policy; installed
+scripts are normalized to LF.
+
+Refreshing an existing container stages both files, normalizes them, and
+publishes the root-owned, ccc-readable policy before renaming the bridge.
+Policy installation failure leaves the old bridge in place; owned stages are
+removed on every exit. Deploy or roll back the two assets together. The real
+isolated X11 tests cover bytes, retries, races and process ownership; portable
+X11 evidence does not certify a native macOS pasteboard.

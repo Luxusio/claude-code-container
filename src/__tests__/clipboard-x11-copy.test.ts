@@ -8,6 +8,7 @@ import { createInterface } from "readline";
 import { once } from "events";
 
 const script = resolve("scripts/ccc-x11-bridge");
+const policy = resolve("scripts/lib/clipboard-x11-sync.sh");
 const available = existsSync("/usr/bin/Xvfb") && existsSync("/usr/bin/xclip");
 let dir: string;
 let display: string;
@@ -159,6 +160,22 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         expect(await read()).toEqual(Buffer.alloc(0));
     });
 
+    it("never posts stale local text while the initial host read fails", async () => {
+        const stale = Buffer.from("stale local before startup\n");
+        await own(stale);
+        failHostReads = true;
+        await startControl();
+        await cycle();
+        await cycle();
+        expect(posts).toEqual([]);
+        expect(await read()).toEqual(stale);
+        failHostReads = false;
+        await cycle();
+        expect(await read()).toEqual(hostText);
+        await cycle();
+        expect(posts).toEqual([]);
+    });
+
     it("retains failed local copies for retry even when host changes", async () => {
         await startControl();
         await cycle();
@@ -275,6 +292,9 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
     it("keeps one bridge, replaces changed code, and never kills an unrelated lock PID", async () => {
         const privateScript = join(dir, "ccc-x11-bridge");
         writeFileSync(privateScript, readFileSync(script), { mode: 0o700 });
+        const privatePolicy = join(dir, "lib", "clipboard-x11-sync.sh");
+        mkdirSync(join(dir, "lib"), { mode: 0o700 });
+        writeFileSync(privatePolicy, readFileSync(policy), { mode: 0o600 });
         const state = join(dir, "state");
         mkdirSync(state, { mode: 0o700 });
         const unrelated = spawn("sleep", ["60"], { stdio: "ignore" });
@@ -304,16 +324,26 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         expect(unrelated.exitCode).toBeNull();
         expect(unrelated.signalCode).toBeNull();
         expect(procs[0].exitCode).toBeNull(); // The pre-existing isolated X server survives replacement.
+        writeFileSync(`${privatePolicy}.new`, `${readFileSync(policy, "utf8")}\n# deployed policy revision\n`, { mode: 0o600 });
+        renameSync(`${privatePolicy}.new`, privatePolicy);
+        const policyReplacement = launch();
+        await waitFor(() => existsSync(lock) && readFileSync(lock, "utf8").split("\n")[0] === String(policyReplacement.pid), 8000);
+        await waitFor(() => replacement.exitCode !== null || replacement.signalCode !== null);
+        expect(unrelated.exitCode).toBeNull();
+        expect(unrelated.signalCode).toBeNull();
+        expect(procs[0].exitCode).toBeNull();
         env.CCC_CLIPBOARD_URL = `${env.CCC_CLIPBOARD_URL}/changed`;
         const movedEndpoint = launch();
         await waitFor(() => existsSync(lock) && readFileSync(lock, "utf8").split("\n")[0] === String(movedEndpoint.pid), 8000);
-        await waitFor(() => replacement.exitCode !== null || replacement.signalCode !== null);
+        await waitFor(() => policyReplacement.exitCode !== null || policyReplacement.signalCode !== null);
         expect(unrelated.signalCode).toBeNull();
-    }, 15000);
+    }, 25000);
 });
 
 it("includes the bridge in the published package files", () => {
     const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
     expect(pkg.files).toContain("scripts/ccc-x11-bridge");
+    expect(pkg.files).toContain("scripts/lib/clipboard-x11-sync.sh");
+    expect(readFileSync(policy).length).toBeGreaterThan(0);
     expect(readFileSync(script, "utf8")).toMatch(/^#!\/bin\/bash/);
 });
