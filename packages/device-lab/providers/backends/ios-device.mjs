@@ -1,3 +1,4 @@
+import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
 import { createIosWirelessApplication } from "../application/ios-wireless.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createIosAppManagement } from "../application/ios-app-management.mjs";
@@ -10,7 +11,7 @@ import { createHash, randomUUID } from "crypto";
 import { spawn } from "child_process";
 import { commandPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
-import { fail, jsonResult, textResult } from "../responses.mjs";
+import { fail, jsonResult, textResult, truncateDiagnosticText } from "../responses.mjs";
 import { claimIosRealDevice, findIosRealDevice, readIosRealDevices, transitionIosRealDevice, updateIosRealDevice } from "../state/ios-device-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -136,26 +137,6 @@ function hostIosDevices(discovery = iosRealDiscovery()) {
     return { available: true, missing: [], devices: parseXctraceDevices(r.stdout) };
 }
 
-function unsupported(tool) {
-    return textResult(false, `iOS real devices do not support ${tool} through base simctl; use Appium/XCUITest or Xcode device tooling where available.`);
-}
-
-function unsupportedRealControl(tool) {
-    return textResult(false, `iOS real devices do not support ${tool} through CCC because the action is unavailable or unsafe for physical devices.`);
-}
-
-function appiumStatus(device, ios) {
-    const discovery = iosAppiumDiscovery(ios);
-    return {
-        deviceId: device.id,
-        appium: discovery,
-        session: device.appium || null,
-        automationName: "XCUITest",
-        lazy: true,
-        physical: true,
-    };
-}
-
 async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -190,202 +171,9 @@ async function terminateOwnedAppiumProcess(appium, label, timeoutMs = 1000) {
     return terminateOwnedRuntimeProcess({ ...appium, pid: appium?.serverPid }, label, { timeoutMs });
 }
 
-async function waitForAppium(url) {
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-        try {
-            await fetchIosAppiumJson(`${url}/status`, { method: "GET", timeoutMs: 1000 });
-            return true;
-        } catch {
-            await sleep(250);
-        }
-    }
-    return false;
-}
+async function stopOwnedAppium(appium, label) { return observationAccess.stopOwnedAppium(appium, label); }
 
-async function appiumServerReady(appium) {
-    if (!appium?.serverUrl) return false;
-    try {
-        await fetchIosAppiumJson(`${appium.serverUrl}/status`, { method: "GET" });
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function appiumSessionReady(appium, serverReady) {
-    if (!appium?.sessionId || !serverReady) return false;
-    try {
-        await fetchIosAppiumJson(`${appium.serverUrl}/session/${appium.sessionId}`, { method: "GET" });
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function deleteAppiumSession(appium) {
-    if (!appium?.serverUrl || !appium?.sessionId) return;
-    try {
-        await fetchIosAppiumJson(`${appium.serverUrl}/session/${appium.sessionId}`, { method: "DELETE" });
-    } catch {
-        /* best effort cleanup */
-    }
-}
-
-async function stopOwnedAppium(appium, label) {
-    const ownsProcess = Boolean(appium?.runtimeId
-        && appium.processOwner === "device-lab-mcp"
-        && appium.startedBy === "direct-provider"
-        && appium.serverPid
-        && appium.processIdentity);
-    if (!ownsProcess) {
-        await deleteAppiumSession(appium);
-        return { exited: true, signaled: false, reason: "appium-process-identity-missing" };
-    }
-    const runtime = { ...appium, pid: appium.serverPid };
-    const observation = inspectProcessIdentity(runtime.processIdentity, runtime.pid);
-    if (observation.status === "exited") return { exited: true, signaled: false, reason: "runtime-process-exited" };
-    if (observation.status !== "match") {
-        const reason = observation.status === "mismatch"
-            ? "runtime-process-identity-mismatch"
-            : "runtime-process-identity-unavailable";
-        return { exited: false, signaled: false, reason, error: `${label} process identity could not be verified: ${reason}` };
-    }
-    await deleteAppiumSession(appium);
-    return terminateOwnedAppiumProcess(runtime, label);
-}
-
-async function ensureIosRealAppiumSession(deviceId) {
-    let device = findIosRealDevice(deviceId);
-    if (!device) return { unknown: true };
-    const lease = refreshIosRealDeviceLease(device);
-    if (!lease.ok) return { error: lease.error };
-
-    const discovery = iosAppiumDiscovery();
-    if (!discovery.available) {
-        return { error: `iOS real-device Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}` };
-    }
-
-    const port = device.appiumPort || appiumPortForDevice(device.id);
-    const serverUrl = `http://127.0.0.1:${port}`;
-
-    const serverReady = await appiumServerReady(device.appium);
-    if (await appiumSessionReady(device.appium, serverReady)) {
-        return { device, serverUrl: device.appium.serverUrl, sessionId: device.appium.sessionId };
-    }
-
-    const staleAppium = device.appium ?? null;
-    const ownedServer = Boolean(staleAppium?.runtimeId
-        && staleAppium.processOwner === "device-lab-mcp"
-        && staleAppium.startedBy === "direct-provider"
-        && staleAppium.serverPid
-        && staleAppium.processIdentity);
-    const reusableServer = serverReady && !ownedServer;
-    if (ownedServer) {
-        const stopped = await stopOwnedAppium(staleAppium, "iOS physical stale Appium");
-        if (!stopped.exited) return { error: stopped.error };
-    }
-    const stale = transitionAppiumGeneration(updateIosRealDevice, deviceId, staleAppium, null, now());
-    if (!stale.committed && stale.device?.appium != null) {
-        return { error: "iOS physical Appium state changed while reconciling a stale session" };
-    }
-    device = stale.device;
-
-    const runtimeId = randomUUID();
-    const child = reusableServer ? null : spawn(discovery.appium, ["server", "--port", String(port), "--base-path", "/"], {
-        detached: true,
-        stdio: "ignore",
-        env: process.env,
-        windowsHide: true,
-    });
-    const processIdentity = child?.pid ? await waitForProcessIdentity(child.pid, 1000) : null;
-    if (child?.pid && !processIdentity) {
-        try { child.kill("SIGTERM"); } catch { /* startup child already exited */ }
-        return { error: `iOS physical Appium process identity could not be established on ${serverUrl}` };
-    }
-    let startupRuntime = child?.pid ? { runtimeId, serverPid: child.pid, pid: child.pid, processIdentity } : null;
-    let appium = null;
-    if (child) {
-        child.once("exit", () => {
-            if (appium) transitionAppiumGeneration(updateIosRealDevice, deviceId, appium, null, now());
-        });
-        child.unref();
-    }
-
-    const ready = (reusableServer && staleAppium.serverUrl === serverUrl) || await waitForAppium(serverUrl);
-    if (startupRuntime) startupRuntime = refreshOwnedRuntimeProcessIdentity(startupRuntime);
-    if (!ready) {
-        if (child?.pid) await terminateOwnedAppiumProcess(startupRuntime, "iOS physical Appium startup");
-        return { error: `Appium server did not become ready on ${serverUrl}` };
-    }
-
-    let response;
-    try {
-        response = await fetchIosAppiumJson(`${serverUrl}/session`, {
-            method: "POST",
-            body: JSON.stringify({
-                capabilities: {
-                    alwaysMatch: {
-                        platformName: "iOS",
-                        "appium:automationName": "XCUITest",
-                        "appium:deviceName": device.name || device.id,
-                        "appium:udid": device.udid,
-                        "appium:realDevice": true,
-                    },
-                },
-            }),
-        });
-    } catch (error) {
-        if (child?.pid) await terminateOwnedAppiumProcess(startupRuntime, "iOS physical Appium startup");
-        return { error: `Appium session creation failed: ${error.message}` };
-    }
-    const sessionId = response?.value?.sessionId || response?.sessionId;
-    if (!sessionId) {
-        if (child?.pid) await terminateOwnedAppiumProcess(startupRuntime, "iOS physical Appium startup");
-        return { error: "Appium did not return a session id" };
-    }
-
-    appium = {
-        runtimeId,
-        authority: "direct-provider",
-        processOwner: child ? "device-lab-mcp" : "external",
-        startedBy: child ? "direct-provider" : "existing-server",
-        serverUrl,
-        serverPid: child?.pid ?? null,
-        processIdentity: startupRuntime?.processIdentity ?? null,
-        sessionId,
-        automationName: "XCUITest",
-        physical: true,
-        updatedAt: now(),
-    };
-    const committed = transitionAppiumGeneration(updateIosRealDevice, deviceId, null, appium, now());
-    if (!committed.committed) {
-        await deleteAppiumSession(appium);
-        if (child?.pid) await terminateOwnedAppiumProcess(startupRuntime, "iOS physical Appium superseded startup");
-        return { error: "iOS physical Appium state changed before the new session was committed" };
-    }
-    const updated = updateIosRealDevice(deviceId, (item) => item.appium?.runtimeId === runtimeId
-        ? { ...item, appiumPort: port, updatedAt: now() }
-        : item);
-    if (child?.pid && !processIsAlive(child.pid)) {
-        transitionAppiumGeneration(updateIosRealDevice, deviceId, appium, null, now());
-        return { error: "iOS physical Appium exited before the new session became usable" };
-    }
-
-    return { device: updated, serverUrl, sessionId };
-}
-
-async function iosRealAppiumSessionOrResult(deviceId) {
-    let session;
-    try {
-        session = await withOwnerDeviceOperation("ios-device", deviceId, () => ensureIosRealAppiumSession(deviceId));
-    } catch (error) {
-        if (error?.code !== "shared-mutation-lock-timeout") throw error;
-        return { result: textResult(false, `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}`) };
-    }
-    if (session.unknown) return { unknown: true };
-    if (session.error) return { result: textResult(false, session.error) };
-    return { session };
-}
+async function ensureIosRealAppiumSession(deviceId) { return observationAccess.ensureSession(deviceId); }
 
 function currentIosRealObservationDevice(deviceId, attachment, session) {
     const current = findIosRealDevice(deviceId);
@@ -408,7 +196,6 @@ function guardIosRealObservation(deviceId, attachment, session, budget) {
     currentIosRealObservationDevice(deviceId, attachment, session);
 }
 
-
 export function listIosRealDevices() { return deviceObservation.owned(); }
 
 async function handleIosRealToolUnlocked(name, args) {
@@ -420,9 +207,10 @@ async function handleIosRealToolUnlocked(name, args) {
     if (outcome?.kind === "json") return jsonResult(outcome.payload);
     if (outcome?.kind === "text") return textResult(false, outcome.message);
     if (outcome?.kind === "command-failure") return fail(outcome.command);
+    const access = await observationAccess.request(name, args);
+    if (access !== undefined) return access;
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
-
 
         case "device_wireless": {
             const outcome = iosWireless.request(args);
@@ -556,69 +344,16 @@ async function handleIosRealToolUnlocked(name, args) {
             return physicalStop.stop(deviceId);
         }
 
-        case "device_status": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const discovery = iosRealDiscovery();
-            const host = discovery.xcrun ? hostIosDevices(discovery).devices.find((item) => item.udid === device.udid) || null : null;
-            return jsonResult({ device: withTargetStatus(device), backend: iosRealBackend(discovery), hostDevice: host, appium: appiumStatus(device, discovery) });
-        }
 
-        case "mobile_session_status": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            return jsonResult({ deviceId, ...appiumStatus(device) });
-        }
 
-        case "device_exec": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            return unsupported(name);
-        }
 
-        case "mobile_dump_ui": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const session = await ensureIosRealAppiumSession(deviceId);
-            if (session.unknown) return undefined;
-            if (session.error) return textResult(false, session.error);
-            let source;
-            try {
-                source = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
-            } catch (error) {
-                return textResult(false, `Appium source request failed: ${error.message}`);
-            }
-            return jsonResult({
-                provider: "appium-xcuitest",
-                physical: true,
-                source: source?.value ?? source?.source ?? source,
-                sessionId: session.sessionId,
-                serverUrl: session.serverUrl,
-            });
-        }
 
-        case "device_screenshot":
-        case "mobile_screenshot": {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            const session = await ensureIosRealAppiumSession(deviceId);
-            if (session.unknown) return undefined;
-            if (session.error) return textResult(false, session.error);
-            let screenshot;
-            try {
-                screenshot = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/screenshot`, { method: "GET" });
-            } catch (error) {
-                return textResult(false, `Appium screenshot request failed: ${error.message}`);
-            }
-            const data = screenshot?.value || screenshot?.screenshot;
-            if (!data) return textResult(false, "Appium did not return screenshot data");
-            return { content: [{ type: "image", data, mimeType: "image/png" }] };
-        }
+
+
+
+
+
+
 
         case "mobile_tap":
         case "mobile_double_tap":
@@ -635,88 +370,14 @@ async function handleIosRealToolUnlocked(name, args) {
         case "mobile_set_orientation":
             return controlTransfer.handle(name, args);
 
-        case "mobile_wait_for_text": {
-            const { deviceId, text, timeoutMs, intervalMs } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            if (!text) return textResult(false, "iOS real-device wait-for-text requires text");
-            const resolved = await iosRealAppiumSessionOrResult(deviceId);
-            if (resolved.unknown) return undefined;
-            if (resolved.result) return resolved.result;
-            const { session } = resolved;
-            const budget = createWaitBudget(timeoutMs, intervalMs);
-            let lastSource = "";
-            let observed = false;
-            while (budget.remaining() > 0) {
-                try {
-                    guardIosRealObservation(deviceId, device, session, budget);
-                    const allowance = budget.requestTimeout(5000);
-                    if (!allowance) throw new Error("Appium observation budget exhausted before request");
-                    const response = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/source`, {
-                        method: "GET", timeoutMs: allowance,
-                    });
-                    currentIosRealObservationDevice(deviceId, device, session);
-                    if (budget.remaining() <= 0) throw new Error("Appium observation timed out");
-                    observed = true;
-                    lastSource = String((response?.value ?? response?.source ?? response) || "");
-                    if (lastSource.includes(text)) return jsonResult({ found: true, text, source: lastSource, provider: "appium-xcuitest", physical: true });
-                } catch (error) {
-                    return textResult(false, `Appium source request failed: ${error.message}`);
-                }
-                await budget.pause();
-            }
-            if (!observed) return textResult(false, "Appium observation budget exhausted before request");
-            return jsonResult({ found: false, text, source: lastSource, timeoutMs: budget.timeoutMs, provider: "appium-xcuitest", physical: true });
-        }
 
-        case "mobile_wait_for_app": {
-            const { deviceId, bundleId, timeoutMs = 10000, intervalMs = 500 } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            if (!bundleId) return textResult(false, "iOS real-device wait-for-app requires bundleId");
-            const resolved = await iosRealAppiumSessionOrResult(deviceId);
-            if (resolved.unknown) return undefined;
-            if (resolved.result) return resolved.result;
-            const { session } = resolved;
-            const budget = createWaitBudget(timeoutMs, intervalMs);
-            let lastActiveApp = null;
-            let observed = false;
-            while (budget.remaining() > 0) {
-                try {
-                    guardIosRealObservation(deviceId, device, session, budget);
-                    const allowance = budget.requestTimeout(5000);
-                    if (!allowance) throw new Error("Appium observation budget exhausted before request");
-                    const response = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/execute/sync`, {
-                        method: "POST",
-                        timeoutMs: allowance,
-                        body: JSON.stringify({ script: "mobile: activeAppInfo", args: [] }),
-                    });
-                    currentIosRealObservationDevice(deviceId, device, session);
-                    if (budget.remaining() <= 0) throw new Error("Appium observation timed out");
-                    observed = true;
-                    lastActiveApp = response?.value ?? response;
-                    if (lastActiveApp?.bundleId === bundleId || lastActiveApp?.bundleID === bundleId) {
-                        return jsonResult({ found: true, bundleId, activeApp: lastActiveApp, provider: "appium-xcuitest", physical: true });
-                    }
-                } catch (error) {
-                    return textResult(false, `iOS real-device Appium active app request failed: ${error.message}`);
-                }
-                await budget.pause();
-            }
-            if (!observed) return textResult(false, "Appium observation budget exhausted before request");
-            return jsonResult({ found: false, bundleId, activeApp: lastActiveApp, timeoutMs: budget.timeoutMs, provider: "appium-xcuitest", physical: true });
-        }
 
-        case "mobile_back":
-        case "mobile_forward":
-        case "mobile_recents":
-        case "mobile_power":
-        {
-            const { deviceId } = args;
-            const device = findIosRealDevice(deviceId);
-            if (!device) return undefined;
-            return unsupportedRealControl(name);
-        }
+
+
+
+
+
+
 
         default:
             return undefined;
@@ -797,3 +458,54 @@ const iosWireless = createIosWirelessApplication({
     discover: () => iosRealDiscovery(),
     listDevices: discovery => hostIosDevices(discovery),
 });
+
+/** @param {string|null} executable @param {number} port
+ * @returns {import('../ports/ios-observation-access.mjs').IosAccessChild} */
+function spawnObservationAppium(executable, port) {
+    const child = spawn(executable, ["server", "--port", String(port), "--base-path", "/"], {
+        detached: true, stdio: "ignore", env: process.env, windowsHide: true,
+    });
+    return {
+        pid: child.pid,
+        onExit: operation => { child.once("exit", operation); return undefined; },
+        unref: () => { child.unref(); return undefined; },
+        abortStartup: () => { child.kill("SIGTERM"); return undefined; },
+    };
+}
+
+/** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../ports/ios-observation-access.mjs').IosAccessNativeResult>} */
+const observationPorts = {
+    kind: "physical",
+    findDevice: id => findIosRealDevice(id),
+    discovery: () => iosRealDiscovery(),
+    appiumDiscovery: discovery => iosAppiumDiscovery(discovery),
+    backend: discovery => iosRealBackend(discovery),
+    targetStatus: device => withTargetStatus(device),
+    withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios-device", id, operation),
+    waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+    requestHttp: (url, options) => fetchIosAppiumJson(url, options),
+    spawnServer: spawnObservationAppium,
+    inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
+    waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
+    refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
+    terminateRuntime: (runtime, label) => terminateOwnedAppiumProcess(runtime, label),
+    isAlive: pid => processIsAlive(pid),
+    publishAppium: (id, expected, replacement, timestamp) => transitionAppiumGeneration(updateIosRealDevice, id, expected, replacement, timestamp),
+    updateAppiumPort: (id, runtimeId, port, timestamp) => updateIosRealDevice(id, item => item.appium?.runtimeId === runtimeId
+        ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
+    timestamp: () => now(),
+    runtimeId: () => randomUUID(),
+    portForDevice: id => appiumPortForDevice(id),
+    pause: milliseconds => sleep(milliseconds),
+    diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
+    jsonResult: value => jsonResult(value),
+    textResult: (ok, message) => textResult(ok, message),
+    commandFailure: command => fail(command),
+    imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
+    hostDevices: discovery => hostIosDevices(discovery).devices,
+    refreshLease: (device, budget) => refreshIosRealDeviceLease(device, budget),
+    guardObservation: (id, original, session, budget) => { guardIosRealObservation(id, original, session, budget); return undefined; },
+    checkObservation: (id, original, session) => { currentIosRealObservationDevice(id, original, session); return undefined; },
+};
+
+const observationAccess = createIosObservationAccess(observationPorts);

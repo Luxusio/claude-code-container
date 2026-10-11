@@ -428,6 +428,15 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             deviceId: ownedDeviceId, path: "Documents", appId: "com.example.Test", limit: 1,
         } });
         expect(parseToolJson(limitedFiles)).toMatchObject({ entries: [expect.any(Object)], truncated: true });
+        const nonDirectoryListing = await client.callTool({ name: "list_files", arguments: {
+            deviceId: ownedDeviceId, path: "Documents/uploaded.txt", appId: "com.example.Test",
+        } });
+        expect(nonDirectoryListing.isError).toBe(true);
+        expect(parseToolJson(nonDirectoryListing)).toMatchObject({
+            ok: false, error: "list-files-container-read-failed", detail: "list-files-container-changed",
+        });
+        expect(parseToolJson(nonDirectoryListing)).not.toHaveProperty("entries");
+        expect(readFileSync(join(iosContainerRoot, "Documents/uploaded.txt"), "utf8")).toBe("ios upload content");
         for (const [invalid, expectedError] of [
             [{ path: "Documents" }, "list-files-bundle-id-required"],
             [{ path: "../", appId: "com.example.Test" }, "list-files-container-escape"],
@@ -995,6 +1004,38 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         expect(log).toContain("appium-command-body /session/IOS-SESSION-1/orientation");
         expect(log).toContain('"appium:automationName":"XCUITest"');
         expect(log).not.toContain("Android backend missing prerequisites");
+    });
+
+    it("does not publish a stopped definition when native simulator erase fails", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "devices", arguments: { view: "available", backend: "ios-simulator" } });
+        const owner = String(parseToolJson(inventory).ownerId);
+        const deviceId = "ios-erase-failure";
+        const created = await client.callTool({ name: "create_ios_simulator", arguments: {
+            deviceId, name: "Erase failure", simulatorName: `ccc-${owner}-erase-failure`,
+            deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+            runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+        } });
+        expect(created.isError, JSON.stringify(created)).not.toBe(true);
+        expect((await client.callTool({ name: "start", arguments: { deviceId, bootTimeoutMs: 1000 } })).isError).not.toBe(true);
+        const statePath = iosStatePath();
+        const before = readFileSync(statePath, "utf8");
+        const executable = join(binDir, "xcrun");
+        const original = readFileSync(executable, "utf8");
+        const headerEnd = original.indexOf("\n") + 1;
+        // Keep the fixture's actual inventory and target selection; only the
+        // selected native erase command fails after ownership admission.
+        writeFileSync(executable, original.slice(0, headerEnd)
+            + "if (process.argv[2] === 'simctl' && process.argv[3] === 'erase') { process.stderr.write('erase refused\\n'); process.exit(7); }\n"
+            + original.slice(headerEnd));
+        try {
+            const reset = await client.callTool({ name: "reset", arguments: { deviceId, confirmDestructive: true } });
+            expect(reset.isError).toBe(true);
+            expect((reset.content as Array<{ text?: string }>)[0]?.text).toContain("erase refused");
+            expect(readFileSync(statePath, "utf8")).toBe(before);
+            expect(existsSync(join(homeDir, "fake-ios-created-booted"))).toBe(true);
+        } finally {
+            writeFileSync(executable, original);
+        }
     });
 
     it("rolls back a boot superseded by a same-id state generation", { timeout: TIMEOUT }, async () => {

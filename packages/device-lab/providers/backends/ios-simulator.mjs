@@ -1,3 +1,4 @@
+import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
 import { iosControlOrientation, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
 import { createIosAppManagement } from "../application/ios-app-management.mjs";
@@ -5,7 +6,7 @@ import { createIosEnvironment } from "../application/ios-environment.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
-import { listContainedDirectory, validateListFilesArgs, LIST_FILES_DEFAULT_LIMIT } from "../file-listing.mjs";
+import { listContainedDirectory, validateListFilesArgs } from "../file-listing.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
 import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
@@ -86,22 +87,8 @@ function missingPrereqResult(discovery) {
     return textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
 }
 
-function unsupportedMobileResult(tool) {
-    return textResult(false, `iOS Simulator does not support ${tool} through base simctl; use Appium/XCUITest support when available.`);
-}
-
 function unsupportedIosResult(tool, reason) {
     return textResult(false, `iOS Simulator ${tool} is not supported through base simctl in this slice: ${reason}`);
-}
-
-function iosAppiumStatus(device) {
-    return {
-        deviceId: device.id,
-        appium: iosAppiumDiscovery(),
-        session: device.appium || null,
-        automationName: "XCUITest",
-        lazy: true,
-    };
 }
 
 function missingIosAppiumResult(discovery) {
@@ -150,57 +137,9 @@ async function terminateOwnedAppiumProcess(appium, label, timeoutMs = 1000) {
     return terminateOwnedRuntimeProcess({ ...appium, pid: appium?.serverPid }, label, { timeoutMs });
 }
 
-async function appiumServerReady(appium) {
-    if (!appium?.serverUrl) return false;
-    try {
-        await fetchIosAppiumJson(`${appium.serverUrl}/status`, { method: "GET" });
-        return true;
-    } catch {
-        return false;
-    }
-}
+async function deleteAppiumSession(appium) { return observationAccess.deleteSession(appium); }
 
-async function appiumSessionReady(appium, serverReady) {
-    if (!appium?.sessionId || !serverReady) return false;
-    try {
-        await fetchIosAppiumJson(`${appium.serverUrl}/session/${appium.sessionId}`, { method: "GET" });
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function deleteAppiumSession(appium) {
-    if (!appium?.serverUrl || !appium?.sessionId) return;
-    try {
-        await fetchIosAppiumJson(`${appium.serverUrl}/session/${appium.sessionId}`, { method: "DELETE" });
-    } catch {
-        /* best effort cleanup */
-    }
-}
-
-async function stopOwnedAppium(appium, label) {
-    const ownsProcess = Boolean(appium?.runtimeId
-        && appium.processOwner === "device-lab-mcp"
-        && appium.startedBy === "direct-provider"
-        && appium.serverPid
-        && appium.processIdentity);
-    if (!ownsProcess) {
-        await deleteAppiumSession(appium);
-        return { exited: true, signaled: false, reason: "appium-process-identity-missing" };
-    }
-    const runtime = { ...appium, pid: appium.serverPid };
-    const observation = inspectProcessIdentity(runtime.processIdentity, runtime.pid);
-    if (observation.status === "exited") return { exited: true, signaled: false, reason: "runtime-process-exited" };
-    if (observation.status !== "match") {
-        const reason = observation.status === "mismatch"
-            ? "runtime-process-identity-mismatch"
-            : "runtime-process-identity-unavailable";
-        return { exited: false, signaled: false, reason, error: `${label} process identity could not be verified: ${reason}` };
-    }
-    await deleteAppiumSession(appium);
-    return terminateOwnedAppiumProcess(runtime, label);
-}
+async function stopOwnedAppium(appium, label) { return observationAccess.stopOwnedAppium(appium, label); }
 
 function reconcileIosRecording(device) {
     if (!device?.recording?.active || !device.recording.pid) return device;
@@ -315,222 +254,9 @@ export async function fetchIosAppiumJson(url, options = {}) {
     }
 }
 
-async function waitForAppium(url) {
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-        try {
-            await fetchIosAppiumJson(`${url}/status`, { method: "GET", timeoutMs: 1000 });
-            return true;
-        } catch {
-            await sleep(250);
-        }
-    }
-    return false;
-}
+export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) { return observationAccess.waitForApp(xcrun, target, bundleId, timeoutMs, intervalMs); }
 
-export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) {
-    const budget = createWaitBudget(timeoutMs, intervalMs);
-    let last = null;
-    let observation = null;
-    const executableHint = String(bundleId).split(".").filter(Boolean).at(-1) || String(bundleId);
-    while (budget.remaining() > 0) {
-        // Only the latest sweep can establish that the app is absent.
-        observation = null;
-        for (const args of [
-            ["simctl", "spawn", target, "pgrep", "-f", bundleId],
-            ["simctl", "spawn", target, "pgrep", "-i", "-f", executableHint],
-        ]) {
-            const allowance = budget.requestTimeout();
-            if (!allowance) break;
-            const r = run(xcrun, args, { timeout: allowance });
-            last = r;
-            const clean = !r.error && !r.signal && (r.status === 0
-                || (r.status === 1 && !r.stdout && !r.stderr));
-            if (clean) observation = r;
-            if (clean && r.status === 0 && r.stdout.trim()) {
-                return { running: true, pid: r.stdout.trim(), stdout: r.stdout, stderr: r.stderr, status: r.status };
-            }
-        }
-        for (const domain of ["user/501", "gui/501", "system"]) {
-            const allowance = budget.requestTimeout();
-            if (!allowance) break;
-            const launchctl = run(xcrun, ["simctl", "spawn", target, "launchctl", "print", domain], { timeout: allowance });
-            last = launchctl;
-            const clean = !launchctl.error && !launchctl.signal && launchctl.status === 0;
-            if (clean) observation = launchctl;
-            if (clean && String(launchctl.stdout || "").toLowerCase().includes(String(bundleId).toLowerCase())) {
-                return {
-                    running: true,
-                    pid: null,
-                    stdout: "",
-                    stderr: launchctl.stderr,
-                    status: launchctl.status,
-                    observedBy: `launchctl-${domain}`,
-                };
-            }
-        }
-        await budget.pause();
-    }
-    if (!observation) {
-        const cause = last ? [
-            last.error?.code,
-            last.error?.message,
-            last.signal ? `signal ${last.signal}` : "",
-            last.status != null ? `exit ${last.status}` : "",
-            last.stderr || last.stdout,
-        ].filter(Boolean).join(": ") : "No simulator app observation completed";
-        return { error: {
-            stderr: truncateDiagnosticText(`Unable to observe iOS Simulator app: ${cause || "command failed"}`, 4096),
-            status: last?.status ?? null,
-        } };
-    }
-    return {
-        running: false,
-        timeoutMs: budget.timeoutMs,
-        stdout: String(observation.stdout || "").slice(-512),
-        stderr: String(observation.stderr || "").slice(-512),
-        status: 0,
-        nativeStatus: observation.status,
-        observedBy: "pgrep-and-launchctl",
-    };
-}
-
-async function ensureIosAppiumSession(deviceId) {
-    let device = findIosDevice(deviceId);
-    if (!device) return { unknown: true };
-
-    const discovery = iosAppiumDiscovery();
-    if (!discovery.available) {
-        return { error: `iOS Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}` };
-    }
-    const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-    if (ownedTarget.error) return { error: ownedTarget.error };
-
-    const port = device.appiumPort || appiumPortForIosDevice(device.id);
-    const serverUrl = `http://127.0.0.1:${port}`;
-
-    const serverReady = await appiumServerReady(device.appium);
-    if (await appiumSessionReady(device.appium, serverReady)) {
-        return { device, serverUrl: device.appium.serverUrl, sessionId: device.appium.sessionId };
-    }
-
-    const staleAppium = device.appium ?? null;
-    const ownedServer = Boolean(staleAppium?.runtimeId
-        && staleAppium.processOwner === "device-lab-mcp"
-        && staleAppium.startedBy === "direct-provider"
-        && staleAppium.serverPid
-        && staleAppium.processIdentity);
-    const reusableServer = serverReady && !ownedServer;
-    if (ownedServer) {
-        const stopped = await stopOwnedAppium(staleAppium, "iOS Simulator stale Appium");
-        if (!stopped.exited) return { error: stopped.error };
-    }
-    const stale = transitionAppiumGeneration(updateIosDevice, deviceId, staleAppium, null, now());
-    if (!stale.committed && stale.device?.appium != null) {
-        return { error: "iOS Simulator Appium state changed while reconciling a stale session" };
-    }
-    device = stale.device;
-
-    const runtimeId = randomUUID();
-    const child = reusableServer ? null : spawn(discovery.appium, ["server", "--port", String(port), "--base-path", "/"], {
-        detached: true,
-        stdio: "ignore",
-        env: process.env,
-        windowsHide: true,
-    });
-    const processIdentity = child?.pid ? await waitForProcessIdentity(child.pid, 1000) : null;
-    if (child?.pid && !processIdentity) {
-        try { child.kill("SIGTERM"); } catch { /* startup child already exited */ }
-        return { error: `iOS Simulator Appium process identity could not be established on ${serverUrl}` };
-    }
-    let startupRuntime = child?.pid ? { runtimeId, serverPid: child.pid, pid: child.pid, processIdentity } : null;
-    let appium = null;
-    if (child) {
-        child.once("exit", () => {
-            if (appium) transitionAppiumGeneration(updateIosDevice, deviceId, appium, null, now());
-        });
-        child.unref();
-    }
-
-    const ready = (reusableServer && staleAppium.serverUrl === serverUrl) || await waitForAppium(serverUrl);
-    if (startupRuntime) startupRuntime = refreshOwnedRuntimeProcessIdentity(startupRuntime);
-    if (!ready) {
-        if (child?.pid) {
-            const stopped = await terminateOwnedAppiumProcess(startupRuntime, "iOS Simulator Appium startup");
-            if (!stopped.exited) return { error: `${stopped.error}. Appium server did not become ready on ${serverUrl}` };
-        }
-        return { error: `Appium server did not become ready on ${serverUrl}` };
-    }
-
-    let response;
-    try {
-        response = await fetchIosAppiumJson(`${serverUrl}/session`, {
-            method: "POST",
-            body: JSON.stringify({
-                capabilities: {
-                    alwaysMatch: {
-                        platformName: "iOS",
-                        "appium:automationName": "XCUITest",
-                        "appium:deviceName": device.simulatorName || device.name || device.id,
-                        "appium:udid": ownedTarget.target,
-                    },
-                },
-            }),
-        });
-    } catch (error) {
-        if (child?.pid) {
-            await terminateOwnedAppiumProcess(startupRuntime, "iOS Simulator Appium startup");
-        }
-        return { error: `Appium session creation failed: ${error.message}` };
-    }
-    const sessionId = response?.value?.sessionId || response?.sessionId;
-    if (!sessionId) {
-        if (child?.pid) {
-            await terminateOwnedAppiumProcess(startupRuntime, "iOS Simulator Appium startup");
-        }
-        return { error: "Appium did not return a session id" };
-    }
-
-    appium = {
-        runtimeId,
-        authority: "direct-provider",
-        processOwner: child ? "device-lab-mcp" : "external",
-        startedBy: child ? "direct-provider" : "existing-server",
-        serverUrl,
-        serverPid: child?.pid ?? null,
-        processIdentity: startupRuntime?.processIdentity ?? null,
-        sessionId,
-        automationName: "XCUITest",
-        updatedAt: now(),
-    };
-    const committed = transitionAppiumGeneration(updateIosDevice, deviceId, null, appium, now());
-    if (!committed.committed) {
-        await deleteAppiumSession(appium);
-        if (child?.pid) await terminateOwnedAppiumProcess(startupRuntime, "iOS Simulator Appium superseded startup");
-        return { error: "iOS Simulator Appium state changed before the new session was committed" };
-    }
-    const updated = updateIosDevice(deviceId, (item) => item.appium?.runtimeId === runtimeId
-        ? { ...item, appiumPort: port, updatedAt: now() }
-        : item);
-    if (child?.pid && !processIsAlive(child.pid)) {
-        transitionAppiumGeneration(updateIosDevice, deviceId, appium, null, now());
-        return { error: "iOS Simulator Appium exited before the new session became usable" };
-    }
-
-    return { device: updated, serverUrl, sessionId };
-}
-
-async function iosAppiumSessionOrResult(deviceId) {
-    let session;
-    try {
-        session = await withOwnerDeviceOperation("ios", deviceId, () => ensureIosAppiumSession(deviceId));
-    } catch (error) {
-        if (error?.code !== "shared-mutation-lock-timeout") throw error;
-        return { result: textResult(false, `iOS Simulator Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}`) };
-    }
-    if (session.unknown) return { unknown: true };
-    if (session.error) return { result: textResult(false, session.error) };
-    return { session };
-}
+async function ensureIosAppiumSession(deviceId) { return observationAccess.ensureSession(deviceId); }
 
 function guardIosObservation(deviceId, original, session) {
     const current = findIosDevice(deviceId);
@@ -545,24 +271,8 @@ function guardIosObservation(deviceId, original, session) {
     }
 }
 
-async function iosAppiumSource(deviceId) {
-    const resolved = await iosAppiumSessionOrResult(deviceId);
-    if (resolved.unknown || resolved.result) return resolved;
-    const { session } = resolved;
-    try {
-        const source = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
-        return { session, source: source?.value ?? source?.source ?? source };
-    } catch (error) {
-        return { result: textResult(false, `iOS Simulator Appium source request failed: ${error.message}`) };
-    }
-}
-
 function now() {
     return new Date().toISOString();
-}
-
-function iosContainerType(value) {
-    return value || "data";
 }
 
 function resolveIosAppContainer(xcrun, target, bundleId, containerType = "data") {
@@ -667,13 +377,7 @@ function simctlJson(xcrun, args) {
     }
 }
 
-
-
-
-
 function reconcileIosDevice(device, discovery = iosDiscovery(), inventory) { return deviceObservation.reconcile(device,discovery,inventory); }
-
-
 
 export function listIosDevices({ identityOnly = false } = {}) { return deviceObservation.owned({identityOnly}); }
 
@@ -720,9 +424,10 @@ async function handleIosToolUnlocked(name, args) {
         if (outcome?.kind === "command-failure") return fail(outcome.command);
         if (name === "device_reset") return undefined;
     }
+    const access = await observationAccess.request(name, args);
+    if (access !== undefined) return access;
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
-
 
         case "device_create":
             return iosSimulatorLifecycle.create(args);
@@ -730,13 +435,7 @@ async function handleIosToolUnlocked(name, args) {
         case "device_delete":
             return iosSimulatorLifecycle.delete(args);
 
-        case "device_status": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            const discovery = iosDiscovery();
-            return jsonResult({ device: withTargetStatus(reconcileIosDevice(device, discovery)), backend: iosBackend(discovery), automation: iosAppiumStatus(device) });
-        }
+
 
         case "device_start":
             return iosSimulatorLifecycle.start(args);
@@ -744,41 +443,9 @@ async function handleIosToolUnlocked(name, args) {
         case "device_stop":
             return iosSimulatorLifecycle.stop(args);
 
-        case "device_exec": {
-            const { deviceId, command } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
 
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const r = run(discovery.xcrun, ["simctl", "spawn", ownedTarget.target, "/bin/sh", "-lc", command]);
-            return r.status === 0 ? jsonResult({ stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
 
-        case "device_screenshot": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
 
-            const discovery = iosDiscovery();
-            if (!discovery.available) {
-                return missingPrereqResult(discovery);
-            }
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-
-            const tempRoot = mkdtempSync(join(tmpdir(), "ccc-ios-screenshot-"));
-            const ssPath = join(tempRoot, "screenshot.png");
-            try {
-                const r = runWithTimeout(discovery.xcrun, ["simctl", "io", ownedTarget.target, "screenshot", ssPath], 30_000);
-                if (r.status !== 0) return fail(r);
-                return screenshotFileResult(ssPath, "ios-simulator-screenshot");
-            } finally {
-                rmSync(tempRoot, { recursive: true, force: true });
-            }
-        }
 
         case "device_record_video_status": {
             const { deviceId } = args;
@@ -927,105 +594,21 @@ async function handleIosToolUnlocked(name, args) {
             });
         }
 
-        case "device_list_files": {
-            const device = findIosDevice(args.deviceId);
-            if (!device) return undefined;
-            const error = validateListFilesArgs(args);
-            if (error) return jsonResult({ ok: false, error });
-            if (!args.bundleId) return jsonResult({ ok: false, error: "list-files-bundle-id-required", detail: "iOS Simulator listing requires bundleId to select an app container." });
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const container = resolveIosAppContainer(discovery.xcrun, ownedTarget.target, args.bundleId, iosContainerType(args.containerType));
-            if (container.error) return fail(container.error);
-            const requested = args.path.replace(/^[/\\]+/, "") || ".";
-            if (requested.split(/[/\\]/).includes("..")) return jsonResult({ ok: false, error: "list-files-container-escape" });
-            const target = requested === "." ? { path: container.containerRoot } : pathInsideContainer(container.containerRoot, requested);
-            if (target.error) return textResult(false, target.error);
-            const contained = ensureContainerPathForRead(container.containerRoot, target.path);
-            if (contained.error) return textResult(false, contained.error);
-            try { return jsonResult(listContainedDirectory(container.containerRoot, requested, args.limit ?? LIST_FILES_DEFAULT_LIMIT)); }
-            catch (error) { return jsonResult({ ok: false, error: "list-files-container-read-failed", detail: error.code || error.message }); }
-        }
+
 
         case "device_upload":
         case "device_download":
             return controlTransfer.handle(name, args);
 
-        case "device_reset": {
-            const { deviceId, eraseSimulator = false } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-
-            if (eraseSimulator) {
-                if (device.recording) {
-                    return textResult(false, `Refusing to erase ${deviceId} while a recording is active or pending finalization; stop the recording first`);
-                }
-                const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-                if (ownedTarget.error) return textResult(false, ownedTarget.error);
-                const r = run(discovery.xcrun, ["simctl", "erase", ownedTarget.target]);
-                if (r.status !== 0) return fail(r);
-                const updated = updateIosDevice(deviceId, (item) => ({
-                    ...item,
-                    status: "stopped",
-                    bootReady: false,
-                    lastReset: { eraseSimulator: true, resetAt: now(), stdout: r.stdout, stderr: r.stderr },
-                    updatedAt: now(),
-                }));
-                return jsonResult({ reset: { eraseSimulator: true }, device: updated, stdout: r.stdout, stderr: r.stderr, provider: "simctl" });
-            }
-
-            return undefined;
-        }
 
 
-        case "mobile_screenshot": {
-            const { deviceId } = args;
-            return handleIosTool("device_screenshot", { deviceId });
-        }
 
-        case "mobile_session_status": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            return jsonResult({ deviceId, ...iosAppiumStatus(device) });
-        }
 
-        case "mobile_dump_ui": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
 
-            const resolved = await iosAppiumSource(deviceId);
-            if (resolved.unknown) return undefined;
-            if (resolved.result) return resolved.result;
 
-            return jsonResult({
-                provider: "appium-xcuitest",
-                source: resolved.source,
-                sessionId: resolved.session.sessionId,
-                serverUrl: resolved.session.serverUrl,
-            });
-        }
 
-        case "mobile_wait_for_app": {
-            const { deviceId, bundleId, timeoutMs, intervalMs } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!bundleId) return textResult(false, "iOS Simulator wait-for-app requires bundleId");
 
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-            const result = await waitForIosApp(discovery.xcrun, ownedTarget.target, bundleId, timeoutMs, intervalMs);
-            if (result.error) return fail(result.error);
-            return jsonResult({ ...result, bundleId, provider: "simctl" });
-        }
+
 
         case "mobile_tap":
         case "mobile_double_tap":
@@ -1042,49 +625,12 @@ async function handleIosToolUnlocked(name, args) {
         case "mobile_set_orientation":
             return controlTransfer.handle(name, args);
 
-        case "mobile_wait_for_text": {
-            const { deviceId, text, timeoutMs, intervalMs } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!text) return textResult(false, "iOS Simulator wait-for-text requires text");
-            const resolved = await iosAppiumSessionOrResult(deviceId);
-            if (resolved.unknown) return undefined;
-            if (resolved.result) return resolved.result;
-            const { session } = resolved;
-            const budget = createWaitBudget(timeoutMs, intervalMs);
-            let lastSource = "";
-            let observed = false;
-            while (budget.remaining() > 0) {
-                try {
-                    guardIosObservation(deviceId, device, session);
-                    const allowance = budget.requestTimeout(5000);
-                    if (!allowance) throw new Error("Appium observation budget exhausted before source request");
-                    const response = await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/source`, {
-                        method: "GET", timeoutMs: allowance,
-                    });
-                    guardIosObservation(deviceId, device, session);
-                    if (budget.remaining() <= 0) throw new Error("Appium source observation timed out");
-                    observed = true;
-                    lastSource = String((response?.value ?? response?.source ?? response) || "");
-                    if (lastSource.includes(text)) return jsonResult({ found: true, text, source: lastSource, provider: "appium-xcuitest" });
-                } catch (error) {
-                    return textResult(false, `iOS Simulator Appium source request failed: ${error.message}`);
-                }
-                await budget.pause();
-            }
-            if (!observed) return textResult(false, "Appium observation budget exhausted before source request");
-            return jsonResult({ found: false, text, source: lastSource, timeoutMs: budget.timeoutMs, provider: "appium-xcuitest" });
-        }
 
-        case "mobile_back":
-        case "mobile_forward":
-        case "mobile_recents":
-        case "mobile_power": {
-            const { deviceId } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            return unsupportedMobileResult(name);
-        }
+
+
+
+
+
 
         default:
             return undefined;
@@ -1281,3 +827,67 @@ const controlTransfer = createIosControlTransfer({
     disposeStage: stage => { stage.cleanup(); },
     fail: result => fail(result),
 });
+
+/** @param {string|null} executable @param {number} port
+ * @returns {import('../ports/ios-observation-access.mjs').IosAccessChild} */
+function spawnObservationAppium(executable, port) {
+    const child = spawn(executable, ["server", "--port", String(port), "--base-path", "/"], {
+        detached: true, stdio: "ignore", env: process.env, windowsHide: true,
+    });
+    return {
+        pid: child.pid,
+        onExit: operation => { child.once("exit", operation); return undefined; },
+        unref: () => { child.unref(); return undefined; },
+        abortStartup: () => { child.kill("SIGTERM"); return undefined; },
+    };
+}
+
+/** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../ports/ios-observation-access.mjs').IosAccessNativeResult>} */
+const observationPorts = {
+    kind: "simulator",
+    findDevice: id => findIosDevice(id),
+    discovery: () => iosDiscovery(),
+    appiumDiscovery: discovery => iosAppiumDiscovery(discovery),
+    backend: discovery => iosBackend(discovery),
+    targetStatus: device => withTargetStatus(device),
+    withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios", id, operation),
+    waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+    requestHttp: (url, options) => fetchIosAppiumJson(url, options),
+    spawnServer: spawnObservationAppium,
+    inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
+    waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
+    refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
+    terminateRuntime: (runtime, label) => terminateOwnedAppiumProcess(runtime, label),
+    isAlive: pid => processIsAlive(pid),
+    publishAppium: (id, expected, replacement, timestamp) => transitionAppiumGeneration(updateIosDevice, id, expected, replacement, timestamp),
+    updateAppiumPort: (id, runtimeId, port, timestamp) => updateIosDevice(id, item => item.appium?.runtimeId === runtimeId
+        ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
+    timestamp: () => now(),
+    runtimeId: () => randomUUID(),
+    portForDevice: id => appiumPortForIosDevice(id),
+    pause: milliseconds => sleep(milliseconds),
+    diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
+    jsonResult: value => jsonResult(value),
+    textResult: (ok, message) => textResult(ok, message),
+    commandFailure: command => fail(command),
+    imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
+    verifyTarget: (xcrun, device) => resolveOwnedSimulatorTarget(xcrun, device),
+    execute: (xcrun, args, timeoutMs) => timeoutMs === undefined ? run(xcrun, args) : run(xcrun, args, { timeout: timeoutMs }),
+    missingPrerequisites: discovery => missingPrereqResult(discovery),
+    reconcileDevice: (device, discovery) => reconcileIosDevice(device, discovery),
+    appContainer: (xcrun, target, bundleId, type) => run(xcrun, ["simctl", "get_app_container", target, bundleId, type]),
+    pathInContainer: (root, requested) => pathInsideContainer(root, requested),
+    guardRead: (root, path) => ensureContainerPathForRead(root, path),
+    listArgumentError: args => validateListFilesArgs(args),
+    listDirectory: (root, requested, limit) => listContainedDirectory(root, requested, limit),
+    stageScreenshot: () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-ios-screenshot-"));
+        return { path: join(root, "screenshot.png"), dispose: () => { rmSync(root, { recursive: true, force: true }); return undefined; } };
+    },
+    readScreenshot: path => screenshotFileResult(path, "ios-simulator-screenshot"),
+    publishErased: (id, change) => updateIosDevice(id, item => ({ ...item, ...change })),
+    guardObservation: (id, original, session) => { guardIosObservation(id, original, session); return undefined; },
+    checkObservation: (id, original, session) => { guardIosObservation(id, original, session); return undefined; },
+};
+
+const observationAccess = createIosObservationAccess(observationPorts);
