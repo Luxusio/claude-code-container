@@ -6432,7 +6432,7 @@ function nativeHyperVLifecyclePlanning(ownerId: string, params: unknown, normali
         case "missing-delete": return {kind: "planned", ...observation.value, device: null, idempotent: true, availability: {kind: "not-required"}};
         default: {
             const {providerPlan, providerAvailable: _providerAvailable, ...value} = observation.value;
-            if (providerPlan === null) return {kind: "planned", ...value, availability: {kind: "not-required"}};
+            if (providerPlan == null) return {kind: "planned", ...value, availability: {kind: "not-required"}};
             if ("error" in providerPlan) return {kind: "planned", ...value, availability: {kind: "unavailable", error: providerPlan.error, missing: providerPlan.missing}};
             if (providerPlan.mode !== "exec" && providerPlan.mode !== "detached" && providerPlan.mode !== "noop") return {kind: "planned", ...value, availability: {kind: "unavailable", error: "missing-provider-command", missing: []}};
             if (providerPlan.mode === "noop") return {kind: "planned", ...value, availability: {kind: "not-required"}};
@@ -8461,7 +8461,7 @@ function lifecycleCommandPlan(ownerId:string,params:unknown,normalized?:Normaliz
 class NativeLifecyclePreviewPlan {
     constructor(private readonly command: ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | undefined, private readonly deferredHyperV = false) { }
     unwrap() {
-        return this.deferredHyperV ? { mode: "powershell", provider: "hyper-v" } : this.command;
+        return this.deferredHyperV ? { mode: "powershell" as const, provider: "hyper-v" as const } : this.command;
     }
 }
 
@@ -8652,7 +8652,7 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
         execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
         prepareCreate: input => {
             const executable = executableFor("xcrun", normalized);
-            const command = iosSimulatorCreateCommand({ ...input, executable });
+            const command: NativeLifecycleCommand = iosSimulatorCreateCommand({ ...input, executable });
             if ("error" in command)
                 return { kind: "unavailable", error: command.error, missing: command.missing };
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider: command.provider, canCompensate: Boolean(command.executable), bootEligible: false };

@@ -20,7 +20,7 @@ export function planBrokerMacosCreateCommand<Effect>(ownerId: string, parsed: Br
     if (!image) return {kind: "metadata-only", purpose: "image-unset"};
     return ports.prepareCreate({provider, image, instance: brokerMacosInstance(ownerId,parsed,create)});
 }
-export function planBrokerMacosExistingCommand<Effect>(ownerId: string, parsed: BrokerMacosLifecycleRequest, device: unknown, ports: Pick<BrokerMacosVmLifecyclePorts<Effect>, "prepareExisting">): BrokerMacosPlannedCommand<Effect> {
+export function planBrokerMacosExistingCommand<Effect>(_ownerId: string, parsed: BrokerMacosLifecycleRequest, device: unknown, ports: Pick<BrokerMacosVmLifecyclePorts<Effect>, "prepareExisting">): BrokerMacosPlannedCommand<Effect> {
     const provider = brokerMacosField(device,"provider") === "auto" || !brokerMacosField(device,"provider") ? "tart" : brokerMacosField(device,"provider") || "tart";
     if (!["tart","vz","utmctl"].includes(provider)) return {kind: "unavailable", error: "unsupported-provider-command", missing: ["provider"]};
     const instance = brokerMacosField(device,"providerInstance");
