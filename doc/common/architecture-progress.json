@@ -103,9 +103,7 @@
         "OP-broker-status",
         "OP-broker-service-status"
       ],
-      "partialOperationIds": [
-        "OP-device-session-status"
-      ],
+      "partialOperationIds": [],
       "codeReview": "code/security/qa actual PASS in recovery run; hook receipts absent, formal close parked",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
@@ -731,6 +729,26 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "fb6e1765ca5414994e8889faf120e090f69f9954"
+    },
+    {
+      "id": "desktop-qemu-device-access-integration",
+      "branch": "refactor/architecture-desktop-qemu-access-integration-20261011",
+      "commit": "56eaccbe314a98896bfd74975628fea15bafb267",
+      "taskId": "TASK__architecture-desktop-qemu-access-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-device-exec",
+        "OP-device-list-files",
+        "OP-device-reset",
+        "OP-device-screenshot",
+        "OP-device-session-status",
+        "OP-mobile-wait-app"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual full composed and affected independent Code/Security/Docs PASS. Corrected strict checks and genuine complete original build65.794s; thirteen required whole files183cases0skip, lint, seven package cases, actual npm/materialized Unix exports/assets/MCP startup and compiled CLI0/0/1 PASS. Final25Source/1275genuineartifacts/7551fixeddeps/18links/2locks authentic and owned processes joined. Normal main FF56eaccbe preserves all97 original user paths/diff bytes. Retained4cdd first strict failure. Literal whole-binding audit qualifies six unambiguous whole operations through accepted mobile/Hyper-V/request peers and current Desktop/QEMU composition; UI/accessibility and broker text-wait catalog omissions and Codex/Claude tool-scope qualification remain uncounted pending metadata repair. One formal verification zero receipts exact park, no fabricated close. Native hosts, whole legacy-JS strict and source denominator certification unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "56eaccbe314a98896bfd74975628fea15bafb267"
     }
   ],
   "planningLanes": [
@@ -1030,7 +1048,7 @@
         "OP-device-status",
         "OP-device-ui"
       ],
-      "status": "Source6/Test8/Guide1 cf63b8e2 complete with actual independent Code/Security/Docs PASS after DTO-direction correction. Fifteen current pins; runtime/compiler/build UNRUN. Reconcile accepted parent then compose with QEMU for one genuine QA cohort; no whole credits or native claims."
+      "status": "Source contribution normally composed and accepted at56eaccbe after actual full reviews/strict/genuine build13whole183cases/shipping/local delivery. Six whole operations count once in desktop-qemu-device-access-integration; UI/text-wait catalog repairs and Codex/Claude tool-scope qualification remain pending, native/formal certification unverified."
     },
     {
       "id": "qemu-guest-execution",
@@ -1039,7 +1057,14 @@
         "OP-device-exec",
         "OP-device-list-files"
       ],
-      "status": "Source4/Test4/Guide1 e7abfa63 complete and actual independent Code/Security/Docs PASS. Nine current pins; compiler/runtime/build UNRUN. Reconcile accepted parent and compose with Desktop; no whole credits or native claims."
+      "status": "Source contribution normally composed and accepted at56eaccbe after actual full reviews/strict/genuine build13whole183cases/shipping/local delivery. Six whole operations count once in desktop-qemu-device-access-integration; UI/text-wait catalog repairs and Codex/Claude tool-scope qualification remain pending, native/formal certification unverified."
+    },
+    {
+      "id": "broker-device-status",
+      "coveredOperationIds": [
+        "OP-device-status"
+      ],
+      "status": "Complete Source4/Test4/Guide1 frozena6d88b21 actual full independent Code/Security/Docs PASS. Normal accepted56eaccbe-parent reconciliation and sole current QA queued. No whole status credit, native/formal acceptance unverified."
     }
   ]
 }
