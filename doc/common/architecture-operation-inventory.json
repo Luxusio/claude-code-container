@@ -14143,9 +14143,9 @@
       "operation": "Owner repository",
       "policyOwner": "packages/device-lab/providers/application/owner-device-repository.mjs",
       "businessBoundary": "Read/write/mutate/claim/find/update/exact-record transitions of owner device repository.",
-      "completionCriteria": "Every shared adapter call delegates to the canonical six-port policy; TS broker repository remains distinct pending binding.",
+      "completionCriteria": "Every provider shared-adapter call delegates to canonical six-port repository policy; native TS broker repository decisions delegate to createBrokerOwnerRepository with finite synchronous native leaves. Qualify both actual supported bindings and current ordinary-QA evidence before whole-operation accounting.",
       "implementationStatus": "partial",
-      "statusReason": "Inward support exists but complete workflow/authority cutover is not proven.",
+      "statusReason": "Accepted provider owner-device repository and Source3e6 native broker repository decisions are inward; native file/lock/atomic publication authority remains bound through finite leaves. Whole-operation accounting pending current all-binding catalog review and actual ordinary-QA evidence qualification; no whole state-storage or native certification claim.",
       "sources": [
         {
           "path": "packages/device-lab/providers/application/owner-device-repository.mjs",
@@ -14346,6 +14346,59 @@
           "proofIds": [
             "PROOF-reconciled-source-owner-repository"
           ]
+        },
+        {
+          "id": "BIND-source-broker-owner-repository",
+          "backend": "broker-owner-state",
+          "provider": "native broker owner repository",
+          "executor": "broker native synchronous repository",
+          "route": "native broker ownerRepository composition and lifecycle/physical/snapshot/recording/Appium/cleanup publications",
+          "action": "Owner device repository publication and conditional transitions",
+          "publicContract": "owner-repository",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+            "symbol": "createBrokerOwnerRepository",
+            "line": 9,
+            "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-owner-repository"
+          ],
+          "authorityOwner": "Native broker selects owner/stateKey/device and expected incarnation/runtime record; inward repository decides uniqueness and conditional successor-preserving publication. Native leaves retain owner-file validation, deep equality, clock and atomic publication.",
+          "lockOwner": "Native synchronous owner/stateKey repository mutation lock wraps read/decision/validated atomic publish; caller operation and host locks remain with existing native authorities.",
+          "supportDisposition": "existing-source-binding",
+          "reason": "Accepted Source3e6 native broker repository cutover; whole-operation qualification pending current catalog Code/Docs and metadata QA using actual accepted ordinary-QA evidence.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "ownerRepository",
+              "line": 4044,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "transitionOwnerLifecycleDevice",
+              "line": 4064,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "claimOwnerDevice",
+              "line": 4068,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+              "symbol": "createBrokerOwnerRepository",
+              "line": 9,
+              "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
         }
       ],
       "aliases": [],
@@ -14655,7 +14708,8 @@
       ],
       "inventoryGaps": [],
       "bindingIds": [
-        "BIND-source-owner-repository"
+        "BIND-source-owner-repository",
+        "BIND-source-broker-owner-repository"
       ],
       "delegatedWorkItemIds": [],
       "inspectedComponentPaths": [
@@ -14692,6 +14746,16 @@
           ],
           "lockCategories": [],
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
+        },
+        {
+          "scope": "Accepted Source3e6 native broker repository composition and finite synchronous effect boundary; metadata qualification pending",
+          "bindingIds": [
+            "BIND-source-broker-owner-repository"
+          ],
+          "lockCategories": [
+            "owner/stateKey repository mutation lock"
+          ],
+          "exactBindingSource": "device-lab-broker.ts#ownerRepository -> createBrokerOwnerRepository; validated native read/lock/atomic publication/equality/clock leaves"
         }
       ]
     },
@@ -77599,26 +77663,26 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "invokeDeviceTool",
-              "line": 3966,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 3932,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "defaultBrokerDeviceToolRunner",
-              "line": 7283,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 7181,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "deviceLabBackendInvocation",
-              "line": 7039,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6937,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "runBrokerBackendChild",
-              "line": 7096,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6994,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/providers/backends/android.mjs",
@@ -77729,26 +77793,26 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "invokeDeviceTool",
-              "line": 3966,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 3932,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "defaultBrokerDeviceToolRunner",
-              "line": 7283,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 7181,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "deviceLabBackendInvocation",
-              "line": 7039,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6937,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "runBrokerBackendChild",
-              "line": 7096,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6994,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/providers/backends/android-device.mjs",
@@ -77859,26 +77923,26 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "invokeDeviceTool",
-              "line": 3966,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 3932,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "defaultBrokerDeviceToolRunner",
-              "line": 7283,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 7181,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "deviceLabBackendInvocation",
-              "line": 7039,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6937,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "runBrokerBackendChild",
-              "line": 7096,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6994,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
@@ -77989,26 +78053,26 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "invokeDeviceTool",
-              "line": 3966,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 3932,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "defaultBrokerDeviceToolRunner",
-              "line": 7283,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 7181,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "deviceLabBackendInvocation",
-              "line": 7039,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6937,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "runBrokerBackendChild",
-              "line": 7096,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 6994,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/providers/backends/ios-device.mjs",
@@ -78318,14 +78382,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78391,14 +78455,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78464,14 +78528,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78537,14 +78601,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78610,14 +78674,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78685,14 +78749,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78758,14 +78822,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -78833,14 +78897,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "lifecycleCommandInvoke",
-              "line": 9070,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8968,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerDeviceStatusApplication",
-              "line": 8473,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 8371,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -81963,14 +82027,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "invokeDeviceTool",
-              "line": 3966,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 3932,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "defaultBrokerDeviceToolRunner",
-              "line": 7283,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 7181,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
@@ -82058,14 +82122,14 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "invokeDeviceTool",
-              "line": 3966,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 3932,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "defaultBrokerDeviceToolRunner",
-              "line": 7283,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 7181,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -85543,8 +85607,8 @@
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
               "symbol": "brokerAppiumApplication",
-              "line": 9250,
-              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+              "line": 9133,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
             },
             {
               "path": "device-lab-mcp/src/application/device-request.mjs",
@@ -123354,14 +123418,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -126605,14 +126669,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -129856,14 +129920,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -132657,14 +132721,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -134849,14 +134913,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -135645,14 +135709,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "invokeDeviceTool",
-          "line": 3966,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 3932,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "defaultBrokerDeviceToolRunner",
-          "line": 7283,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 7181,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
@@ -136931,14 +136995,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -137751,14 +137815,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "invokeDeviceTool",
-          "line": 3966,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 3932,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "defaultBrokerDeviceToolRunner",
-          "line": 7283,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 7181,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/providers/backends/macos-vm.mjs",
@@ -138576,14 +138640,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -140049,14 +140113,14 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "lifecycleCommandInvoke",
-          "line": 9070,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8968,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerDeviceStatusApplication",
-          "line": 8473,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 8371,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
@@ -182168,26 +182232,26 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "invokeDeviceTool",
-          "line": 3966,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 3932,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "defaultBrokerDeviceToolRunner",
-          "line": 7283,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 7181,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "deviceLabBackendInvocation",
-          "line": 7039,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6937,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "runBrokerBackendChild",
-          "line": 7096,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6994,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/providers/backends/android.mjs",
@@ -182298,26 +182362,26 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "invokeDeviceTool",
-          "line": 3966,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 3932,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "defaultBrokerDeviceToolRunner",
-          "line": 7283,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 7181,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "deviceLabBackendInvocation",
-          "line": 7039,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6937,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "runBrokerBackendChild",
-          "line": 7096,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6994,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/providers/backends/android-device.mjs",
@@ -182428,26 +182492,26 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "invokeDeviceTool",
-          "line": 3966,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 3932,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "defaultBrokerDeviceToolRunner",
-          "line": 7283,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 7181,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "deviceLabBackendInvocation",
-          "line": 7039,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6937,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "runBrokerBackendChild",
-          "line": 7096,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6994,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
@@ -182558,26 +182622,26 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "invokeDeviceTool",
-          "line": 3966,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 3932,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "defaultBrokerDeviceToolRunner",
-          "line": 7283,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 7181,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "deviceLabBackendInvocation",
-          "line": 7039,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6937,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "runBrokerBackendChild",
-          "line": 7096,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 6994,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "packages/device-lab/providers/backends/ios-device.mjs",
@@ -182977,8 +183041,8 @@
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "brokerAppiumApplication",
-          "line": 9250,
-          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+          "line": 9133,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
         },
         {
           "path": "device-lab-mcp/src/application/device-request.mjs",
@@ -182991,6 +183055,59 @@
           "symbol": "createBrokerAppiumApplication",
           "line": 16,
           "gitBlob": "eac6893f518b7420be7db05ddfc6cdedc3367dca"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-source-broker-owner-repository",
+      "backend": "broker-owner-state",
+      "provider": "native broker owner repository",
+      "executor": "broker native synchronous repository",
+      "route": "native broker ownerRepository composition and lifecycle/physical/snapshot/recording/Appium/cleanup publications",
+      "action": "Owner device repository publication and conditional transitions",
+      "publicContract": "owner-repository",
+      "handler": {
+        "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+        "symbol": "createBrokerOwnerRepository",
+        "line": 9,
+        "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-owner-repository"
+      ],
+      "authorityOwner": "Native broker selects owner/stateKey/device and expected incarnation/runtime record; inward repository decides uniqueness and conditional successor-preserving publication. Native leaves retain owner-file validation, deep equality, clock and atomic publication.",
+      "lockOwner": "Native synchronous owner/stateKey repository mutation lock wraps read/decision/validated atomic publish; caller operation and host locks remain with existing native authorities.",
+      "supportDisposition": "existing-source-binding",
+      "reason": "Accepted Source3e6 native broker repository cutover; whole-operation qualification pending current catalog Code/Docs and metadata QA using actual accepted ordinary-QA evidence.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "ownerRepository",
+          "line": 4044,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "transitionOwnerLifecycleDevice",
+          "line": 4064,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "claimOwnerDevice",
+          "line": 4068,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+          "symbol": "createBrokerOwnerRepository",
+          "line": 9,
+          "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
         }
       ],
       "nativeAcceptance": "unverified",
