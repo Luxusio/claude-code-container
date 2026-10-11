@@ -1,42 +1,36 @@
-import type { RemoteActionResult, RemoteCommandResult, RemoteConfig, RemoteForwardedEnvPlan, RemoteHeartbeat, RemoteSignal, RemoteSshChannel } from "../domain/remote-services.js";
+import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteForwardedEnvPlan, RemoteHeartbeat, RemoteOperationResult, RemoteReservationResult, RemoteSignal, RemoteSshChannel, RemoteStopResult, RemoteSyncObservation, RemoteTool, RemoteToolObservation } from "../domain/remote-services.js";
 
-/** Required semantic effects; no native objects or whole-workflow callbacks. */
-export interface RemoteServicesPorts {
+/** Semantic effects; native syntax, result interpretation and presentation stay outward. */
+export interface RemoteServicesPorts<Evidence = unknown> {
     resolveProjectPath(path: string): string;
     getProjectId(path: string): string;
     getProjectHash(path: string): string;
     getMutagenSessionName(path: string): string;
     getContainerName(path: string, profile?: string): string;
-    captureHashPath(): (value: string) => string;
+    hashRemoteIdentity(value: string): string;
     newReservationToken(): string;
-    observeTool(tool: "tailscale" | "mutagen"): RemoteCommandResult;
-    observeHostReachability(host: string): RemoteCommandResult;
-    observeSync(name: string): RemoteCommandResult;
-    startSyncDaemon(): RemoteActionResult;
-    terminateSync(name: string): RemoteActionResult;
-    resumeSync(name: string): RemoteActionResult;
-    createSync(args: string[]): RemoteActionResult;
-    pauseSync(name: string): RemoteActionResult;
-    readCommonIgnoreDirs(): string[];
-    readSettings(): Record<string, unknown>;
-    captureLegacyConfigReader(hash: string): { exists(): boolean; readText(): string };
-    updateSettings(callback: (settings: Record<string, unknown>) => undefined): undefined;
+    observeTool(tool: RemoteTool): RemoteToolObservation;
+    isHostReachable(host: string): boolean;
+    remoteImagePresent(config: RemoteConfig): boolean;
+    reserveContainer(request: { config: RemoteConfig; projectPath: string; profile?: string; token: string; leaseSeconds: number }): RemoteReservationResult<Evidence>;
+    refreshReservation(request: { config: RemoteConfig; name: string; containerId: string; token: string; leaseSeconds: number }): boolean;
+    releaseReservation(request: { config: RemoteConfig; name: string; token: string }): void;
+    stopReservedContainer(request: { config: RemoteConfig; name: string; containerId: string; token: string }): RemoteStopResult<Evidence>;
+    prepareRemoteProject(request: { config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
+    observeSync(name: string, expectedContainerId?: string): RemoteSyncObservation<Evidence>;
+    createSync(request: { name: string; localPath: string; config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
+    resumeSync(name: string): RemoteOperationResult<Evidence>;
+    terminateStaleSync(name: string): RemoteOperationResult<Evidence>;
+    terminateSync(name: string): void;
+    pauseSync(name: string): void;
+    startSyncDaemon(): void;
+    readRemoteConfigs(): Record<string, unknown> | null;
+    prepareLegacyConfigReader(hash: string): { exists(): boolean; readConfig(): RemoteConfig };
+    saveRemoteConfig(hash: string, config: RemoteConfig): void;
     readUser(): string | undefined;
-    prompt(question: string, confirmation?: boolean): Promise<string>;
-    captureLog(): (message: string) => undefined;
-    captureError(): (message: string) => undefined;
-    captureProgress(): (message: string) => undefined;
-    observeRemoteImage(config: RemoteConfig): RemoteCommandResult;
-    buildContainerStartShell(path: string, profile?: string): string;
-    buildReservationShell(name: string, token: string, lease: number, command: string, pin: boolean): string;
-    buildRefreshShell(name: string, token: string, lease: number, pin: boolean, expectedId?: string): string;
-    buildReleaseShell(name: string, token: string): string;
-    buildStopShell(name: string, token: string, expectedId: string): string;
-    runReservation(config: RemoteConfig, buildBody: () => string): RemoteCommandResult;
-    prepareRemoteProject(config: RemoteConfig, id: string, projectId: string): RemoteCommandResult;
-    runRefresh(config: RemoteConfig, buildBody: () => string): RemoteCommandResult;
-    runRelease(config: RemoteConfig, buildBody: () => string): RemoteCommandResult;
-    runStop(config: RemoteConfig, buildBody: () => string): RemoteCommandResult;
+    prompt(request: { kind: "user"; defaultUser: string } | { kind: "cleanup" }): Promise<string>;
+    report(event: RemoteEvent<Evidence>): void;
+    fail(kind: RemoteFailureKind, evidence?: Evidence): never;
     createSessionLock(prefix: string): string;
     removeSessionLock(file: string): undefined;
     withLifecycleLock(prefix: string, operation: () => undefined): undefined;
@@ -47,12 +41,13 @@ export interface RemoteServicesPorts {
     resignalSelf(signal: RemoteSignal): boolean;
     exit(code: number): never;
     collectCurrentForwardedEnv(): RemoteForwardedEnvPlan;
-    readContainerEnvKey(): string;
-    readContainerEnvValue(): string;
-    encodeProgram(program: string): string;
-    startInteractiveSsh(config: RemoteConfig, command: string): RemoteSshChannel;
+    startInteractiveSession(request: { config: RemoteConfig; containerId: string; projectId: string; arguments: string[]; environment: Array<[string, string]> }): RemoteSshChannel;
     now(): number;
     sleep(milliseconds: number): Promise<void>;
 }
 
-export type RemoteSyncPorts = Pick<RemoteServicesPorts, "resolveProjectPath" | "getProjectId" | "getMutagenSessionName" | "startSyncDaemon" | "observeSync" | "terminateSync" | "resumeSync" | "createSync" | "readCommonIgnoreDirs" | "captureLog" | "captureProgress" | "now" | "sleep">;
+export type RemoteSyncPorts<Evidence = unknown> = Pick<RemoteServicesPorts<Evidence>,
+    | "resolveProjectPath" | "getProjectId" | "getMutagenSessionName"
+    | "startSyncDaemon" | "observeSync" | "terminateStaleSync" | "resumeSync" | "createSync"
+    | "report" | "fail" | "now" | "sleep"
+>;

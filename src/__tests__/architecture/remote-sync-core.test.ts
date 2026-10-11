@@ -1,36 +1,109 @@
 import { describe, expect, it } from "vitest";
 import { createRemoteSync } from "../../application/remote-sync.js";
 import type { RemoteSyncPorts } from "../../ports/remote-services.js";
+import type { RemoteObservedSync } from "../../domain/remote-services.js";
 
+const evidence = Symbol("opaque sync diagnostic");
+const config = { host: "host", user: "user", remotePath: "remote-root" };
+function observed(facts: Partial<Omit<RemoteObservedSync<symbol>, "kind" | "evidence">> = {}): RemoteObservedSync<symbol> {
+    return { kind: "observed", endpointMatches: true, paused: false, watching: true, failed: false, evidence, ...facts };
+}
 function fixture() {
     const trace: unknown[][] = []; let clock = 0;
-    const ports: RemoteSyncPorts = {
-        resolveProjectPath: path => path, getProjectId: () => "project", getMutagenSessionName: () => "sync", startSyncDaemon: () => { trace.push(["daemon"]); return { status: 1 }; }, observeSync: () => ({ status: 0, stdout: "docker://id/\nStatus: Watching for changes" }), terminateSync: name => { trace.push(["terminate", name]); return { status: 0 }; }, resumeSync: name => { trace.push(["resume", name]); return { status: 0 }; }, createSync: args => { trace.push(["create", args]); return { status: 0 }; }, readCommonIgnoreDirs: () => ["node_modules"], captureLog: () => message => { trace.push(["log", message]); return undefined; }, captureProgress: () => message => { trace.push(["progress", message]); return undefined; }, now: () => clock++, sleep: async milliseconds => { trace.push(["sleep", milliseconds]); },
+    const ports: RemoteSyncPorts<symbol> = {
+        resolveProjectPath: path => { trace.push(["resolve", path]); return "/resolved/project"; },
+        getProjectId: path => { trace.push(["project", path]); return "project-id"; },
+        getMutagenSessionName: path => { trace.push(["session", path]); return "sync"; },
+        startSyncDaemon: () => { trace.push(["daemon"]); },
+        observeSync: (name, id) => { trace.push(["observe", name, id]); return observed(); },
+        terminateStaleSync: name => { trace.push(["terminate-stale", name]); return { ok: true }; },
+        resumeSync: name => { trace.push(["resume", name]); return { ok: true }; },
+        createSync: request => { trace.push(["create", request]); return { ok: true }; },
+        report: event => { trace.push(["report", event]); },
+        fail: (kind, original) => { trace.push(["fail", kind, original]); throw Error(kind); },
+        now: () => clock,
+        sleep: async milliseconds => { trace.push(["sleep", milliseconds]); clock += milliseconds; },
     };
     return { ports, trace, sync: () => createRemoteSync(ports) };
 }
-const config = { host: "host", user: "user", remotePath: "" };
-describe("remote sync complete policy", () => {
-    it("requires every explicit dependency of the independent sync factory", () => { const { ports } = fixture(); for (const name of Object.keys(ports)) { const missing = { ...ports }; Reflect.deleteProperty(missing, name); expect(() => createRemoteSync(missing)).toThrow(`callable ${name} port`); } });
-    it("returns exact captured-ID endpoint and resumes paused sessions", async () => {
-        const { ports, trace, sync } = fixture(); ports.observeSync = () => ({ status: 0, stdout: "docker://id/\nStatus: Paused" }); expect(await sync().ensureSync("project", config, "id")).toBe("sync"); expect(trace).toContainEqual(["resume", "sync"]); expect(trace.some(row => row[0] === "create")).toBe(false);
+
+describe("remote sync semantic policy", () => {
+    it("creates an unavailable session with resolved path, config, project and exact container ID", async () => {
+        const { ports, trace, sync } = fixture(); ports.observeSync = () => ({ kind: "unavailable" });
+        expect(await sync().ensureSync("relative", config, "exact-id", "display-name")).toBe("sync");
+        expect(trace).toContainEqual(["create", { name: "sync", localPath: "/resolved/project", config, containerId: "exact-id", projectId: "project-id" }]);
+        expect(trace).toContainEqual(["report", { kind: "sync-creating", localPath: "/resolved/project", containerDisplayName: "display-name", projectId: "project-id", host: "host" }]);
+        expect(trace.findIndex(row => row[0] === "daemon")).toBeLessThan(trace.findIndex(row => row[0] === "create"));
     });
-    it("replaces stale name endpoints before creating exact-ID sync", async () => {
-        const { ports, trace, sync } = fixture(); ports.observeSync = () => ({ status: 0, stdout: "docker://old/\nStatus: Watching" }); await sync().ensureSync("project", config, "id", "name");
-        expect(trace.findIndex(row => row[0] === "terminate")).toBeLessThan(trace.findIndex(row => row[0] === "create")); expect(trace.find(row => row[0] === "create")?.[1]).toEqual(["sync", "create", "project", "user@host:docker://id/project/project", "--name", "sync", "--ignore-vcs", "--ignore=node_modules"]);
+
+    it("reuses an exact-ID session and gives paused priority over watching and failed", async () => {
+        const { ports, trace, sync } = fixture();
+        expect(await sync().ensureSync("relative", config, "exact-id")).toBe("sync");
+        expect(trace).toContainEqual(["observe", "sync", "exact-id"]);
+        expect(trace.some(row => row[0] === "create" || row[0] === "resume" || row[0] === "terminate-stale")).toBe(false);
+        trace.length = 0; const mixed = observed({ paused: true, failed: true }); ports.observeSync = () => mixed;
+        expect(await sync().ensureSync("relative", config, "exact-id")).toBe("sync");
+        expect(trace).toContainEqual(["resume", "sync"]);
+        expect(trace.some(row => row[0] === "create" || row[0] === "terminate-stale")).toBe(false);
+        trace.length = 0; const failed = observed({ watching: false, failed: true }); ports.observeSync = () => failed;
+        expect(await sync().ensureSync("relative", config, "exact-id")).toBe("sync");
+        expect(trace).toContainEqual(["report", { kind: "sync-existing", observation: failed }]);
+        expect(trace.some(row => row[0] === "fail" || row[0] === "create")).toBe(false);
     });
-    it("stale terminate error wins and create checks status only", async () => {
-        const { ports, trace, sync } = fixture(); ports.observeSync = () => ({ status: 0, stdout: "docker://old/" }); ports.terminateSync = () => ({ status: 0, error: Error("native") }); await expect(sync().ensureSync("project", config, "id")).rejects.toThrow("Failed to terminate stale sync session"); expect(trace.some(row => row[0] === "create")).toBe(false);
-        ports.terminateSync = () => ({ status: 0 }); ports.createSync = () => ({ status: 0, error: Error("ignored") }); expect(await sync().ensureSync("project", config, "id")).toBe("sync");
+
+    it("checks stale termination before creating; termination failure blocks create with opaque evidence", async () => {
+        const { ports, trace, sync } = fixture(); ports.observeSync = () => observed({ endpointMatches: false, paused: true, failed: true });
+        expect(await sync().ensureSync("relative", config, "exact-id")).toBe("sync");
+        expect(trace.findIndex(row => row[0] === "terminate-stale")).toBeLessThan(trace.findIndex(row => row[0] === "create"));
+        expect(trace.some(row => row[0] === "resume")).toBe(false);
+        trace.length = 0; ports.terminateStaleSync = name => { trace.push(["terminate-stale", name]); return { ok: false, evidence }; };
+        await expect(sync().ensureSync("relative", config, "exact-id")).rejects.toThrow("sync-terminate-failed");
+        expect(trace).toContainEqual(["fail", "sync-terminate-failed", evidence]);
+        expect(trace.some(row => row[0] === "create")).toBe(false);
     });
-    it("list error short-circuits status/stdout getters", async () => {
-        const { ports, sync } = fixture(); ports.observeSync = () => ({ error: Error("list"), get status(): never { throw Error("status"); }, get stdout(): never { throw Error("stdout"); } }); expect(await sync().ensureSync("project", config, "id")).toBe("sync");
+
+    it("forwards checked resume and create failures without interpreting evidence", async () => {
+        const { ports, trace, sync } = fixture(); ports.observeSync = () => observed({ paused: true });
+        ports.resumeSync = () => ({ ok: false, evidence });
+        await expect(sync().ensureSync("relative", config, "exact-id")).rejects.toThrow("sync-resume-failed");
+        expect(trace).toContainEqual(["fail", "sync-resume-failed", evidence]);
+        expect(trace.some(row => row[0] === "create")).toBe(false);
+        trace.length = 0; ports.observeSync = () => ({ kind: "unavailable" }); ports.createSync = () => ({ ok: false, evidence });
+        await expect(sync().ensureSync("relative", config, "exact-id")).rejects.toThrow("sync-create-failed");
+        expect(trace).toContainEqual(["fail", "sync-create-failed", evidence]);
     });
-    it("watching wins over error/halted and timeout remains wall clock based", async () => {
-        const { ports, sync, trace } = fixture(); ports.observeSync = () => ({ status: 0, stdout: "Status: Watching error halted" }); await sync().waitForSync("sync"); expect(trace).toContainEqual(["log", " done"]);
-        let clock = 0; ports.now = () => clock += 120001; await expect(sync().waitForSync("sync")).rejects.toThrow("Sync timeout - initial sync did not complete"); expect(trace).toContainEqual(["log", " timeout"]);
+
+    it("does not require success proof from void daemon startup, while thrown failure remains observable", async () => {
+        const { ports, trace, sync } = fixture(); ports.observeSync = () => ({ kind: "unavailable" });
+        expect(await sync().ensureSync("relative", config, "exact-id")).toBe("sync");
+        expect(trace.some(row => row[0] === "create")).toBe(true);
+        trace.length = 0; const fault = Error("daemon"); ports.startSyncDaemon = () => { throw fault; };
+        await expect(sync().ensureSync("relative", config, "exact-id")).rejects.toBe(fault);
+        expect(trace.some(row => row[0] === "create")).toBe(false);
     });
-    it("polls unfinished status at one-second intervals then watching", async () => {
-        const { ports, sync, trace } = fixture(); let count = 0; ports.observeSync = () => ({ status: 0, stdout: ++count === 1 ? "Status: Scanning" : "Status: Watching" }); await sync().waitForSync("sync"); expect(trace).toContainEqual(["sleep", 1000]);
+
+    it("wait prioritizes watching even for mixed failed/paused facts, otherwise forwards failure evidence", async () => {
+        const { ports, trace, sync } = fixture(); ports.observeSync = () => observed({ paused: true, failed: true });
+        await sync().waitForSync("sync"); expect(trace).toContainEqual(["report", { kind: "sync-completed" }]);
+        expect(trace.some(row => row[0] === "fail" || row[0] === "sleep")).toBe(false);
+        trace.length = 0; const failed = observed({ watching: false, failed: true }); ports.observeSync = () => failed;
+        await expect(sync().waitForSync("sync")).rejects.toThrow("sync-failed");
+        expect(trace).toContainEqual(["report", { kind: "sync-failed", observation: failed }]);
+        expect(trace).toContainEqual(["fail", "sync-failed", evidence]);
+        trace.length = 0; ports.observeSync = () => ({ kind: "unavailable" });
+        await expect(sync().waitForSync("sync")).rejects.toThrow("sync-missing");
+        expect(trace).toContainEqual(["fail", "sync-missing", undefined]);
+    });
+
+    it("sleeps one second for progress, then completes; default timeout uses elapsed wall clock", async () => {
+        const { ports, trace, sync } = fixture(); let count = 0;
+        ports.observeSync = () => observed({ watching: ++count > 1 });
+        await sync().waitForSync("sync"); expect(trace.filter(row => row[0] === "sleep")).toEqual([["sleep", 1000]]);
+        trace.length = 0; ports.observeSync = () => observed({ watching: false }); let clock = 0;
+        ports.now = () => clock; ports.sleep = async milliseconds => { trace.push(["sleep", milliseconds]); clock += 60_001; };
+        await expect(sync().waitForSync("sync")).rejects.toThrow("sync-timeout");
+        expect(trace.filter(row => row[0] === "sleep")).toEqual([["sleep", 1000], ["sleep", 1000]]);
+        expect(trace).toContainEqual(["report", { kind: "sync-timeout" }]);
+        expect(trace).toContainEqual(["fail", "sync-timeout", undefined]);
     });
 });

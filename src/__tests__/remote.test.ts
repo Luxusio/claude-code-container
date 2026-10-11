@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { hashPath } from '../utils.js'
-import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus, isValidEnvKey, shellEscapeArg, isValidHostOrUser, remoteSetup, remoteCheck, remoteTerminate, remoteExec, remoteStopShell, remoteClaudeDirScript } from '../remote.js'
+import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus, isValidEnvKey, shellEscapeArg, isValidHostOrUser, remoteSetup, remoteCheck, remoteTerminate, remoteExec, remoteClaudeDirScript } from '../remote.js'
 import * as childProcess from 'child_process'
 import * as fs from 'fs'
 import * as utils from '../utils.js'
@@ -76,28 +76,6 @@ describe('getProjectHash', () => {
   it('returns hash for project path', () => {
     const result = getProjectHash('/home/user/project')
     expect(result).toHaveLength(12)
-  })
-})
-
-describe('remote stop identity fencing', () => {
-  it('loads the start-time container ID before removing its reservation', () => {
-    const shell = remoteStopShell('ccc-project-safe', 'a'.repeat(32), 'c'.repeat(64))
-    const readAt = shell.indexOf('read -r _ccc_own_expiry _ccc_container_id')
-    const removeMarkerAt = shell.indexOf('rm -f "$_ccc_marker"')
-
-    expect(readAt).toBeGreaterThan(-1)
-    expect(readAt).toBeLessThan(removeMarkerAt)
-    expect(shell).toContain('docker stop "$_ccc_container_id"')
-    expect(shell).not.toContain('docker stop ccc-project-safe')
-    expect(shell).toContain('docker inspect --format')
-    expect(shell).toContain('"$_ccc_actual_name" = "$_ccc_expected_name"')
-    expect(shell).toContain("*[!a-fA-F0-9]*")
-  })
-
-  it('does not use the container name as a stop target', () => {
-    const shell = remoteStopShell("ccc-name'; touch /tmp/unsafe; '", 'b'.repeat(32), 'd'.repeat(64))
-    expect(shell).not.toContain(shellEscapeArg("ccc-name'; touch /tmp/unsafe; '"))
-    expect(shell).toContain('docker stop "$_ccc_container_id"')
   })
 })
 
@@ -902,7 +880,7 @@ describe('remoteTerminate', () => {
     vi.clearAllMocks()
   })
 
-  it('terminates sync session when it exists', async () => {
+  it('reports termination when the session exists even if the ignored terminate result fails', async () => {
     mockSpawnSync
       .mockReturnValueOnce({
         // getMutagenSyncStatus - session exists
@@ -912,7 +890,7 @@ describe('remoteTerminate', () => {
       })
       .mockReturnValueOnce({
         // mutagen sync terminate
-        status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
+        status: 1, stdout: '', stderr: 'returned failure', error: new Error('returned error'), pid: 0, output: [], signal: null
       })
 
     const logs: string[] = []

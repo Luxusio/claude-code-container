@@ -19,7 +19,7 @@ function fixture() {
     return { root, bin, log, env, run, reserve, sessions, marker };
 }
 
-describe.runIf(process.platform !== "win32")("retained remote shell native authority audit", () => {
+describe.runIf(process.platform !== "win32")("remote shell native authority", () => {
     it("reserves pinned ID, refreshes same ID, and refuses mismatched expected identity", () => {
         const { reserve, run, marker } = fixture(); reserve(); expect(readFileSync(marker, "utf8")).toContain(id);
         expect(run(remoteRefreshSessionShell(name, token, 300, true, id)).status).toBe(0);
@@ -43,6 +43,24 @@ describe.runIf(process.platform !== "win32")("retained remote shell native autho
     });
     it("checks actual container name before removing marker or stopping", () => {
         const f = fixture(); f.reserve(); expect(f.run(remoteStopShell(name, token, id), { MISMATCH: "1" }).status).toBe(74); expect(existsSync(f.marker)).toBe(true); expect(readFileSync(f.log, "utf8")).not.toContain(`stop ${id}`);
+    });
+    it("refuses an unowned token and treats a hostile expected name literally", () => {
+        const f = fixture(); f.reserve();
+        expect(f.run(remoteStopShell(name, "c".repeat(32), id)).status).toBe(44);
+        expect(existsSync(f.marker)).toBe(true);
+        expect(readFileSync(f.log, "utf8")).not.toContain(`stop ${id}`);
+
+        const other = fixture(); const injected = join(other.root, "injected");
+        const hostileName = `ccc-name'; touch ${injected}; '`;
+        const reserved = other.run(remoteSessionReservationShell(hostileName, token, 300, ":", true));
+        expect(reserved.status, reserved.stderr).toBe(0);
+        const hostileMarker = join(other.root, ".ccc", "remote-runtime", `sessions-${hashPath(hostileName)}`, token);
+        const refused = other.run(remoteStopShell(hostileName, token, id));
+        expect(refused.status, refused.stderr).toBe(74);
+        expect(existsSync(hostileMarker)).toBe(true);
+        expect(existsSync(injected)).toBe(false);
+        expect(readFileSync(other.log, "utf8")).toContain(`inspect --format {{.Name}} ${id}`);
+        expect(readFileSync(other.log, "utf8")).not.toContain(`stop ${id}`);
     });
     it("rejects unsafe private-root symlinks and writable root modes", () => {
         const f = fixture(); const external = mkdtempSync(join(tmpdir(), "ccc-remote-audit-outside-")); roots.push(external); symlinkSync(external, join(f.root, ".ccc"));

@@ -3,7 +3,11 @@ import { hashPath, getProjectId, IMAGE_NAME, CONTAINER_PID_LIMIT, MISE_VOLUME_NA
 import { IDENTITY_CONTRACT_VERSION } from "../container-identity.js";
 import { getContainerName } from "../docker.js";
 import { DEFAULT_PROFILE_MARKER, DEFAULT_PROFILE_NAME, normalizeProfile } from "../home-layout.js";
-import { shellEscapeArg } from "../domain/remote-services.js";
+
+/** Escape a single literal argument for interpolation inside a shell command. */
+export function shellEscapeArg(arg: string): string {
+    return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
 
 export function remoteLifecycleShell(containerName: string, body: string, lockWaitSeconds = 30): string {
     if (!Number.isFinite(lockWaitSeconds) || lockWaitSeconds <= 0 || lockWaitSeconds > 300) {

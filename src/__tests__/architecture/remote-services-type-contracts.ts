@@ -1,22 +1,30 @@
 import type { RemoteServicesPorts } from "../../ports/remote-services.js";
 import type { RemoteHeartbeat, RemoteSshChannel } from "../../domain/remote-services.js";
 import { remoteExec, remoteSetup, remoteCheck, remoteTerminate, remoteRefreshSessionShell } from "../../remote.js";
-export function remoteServiceContracts(ports: RemoteServicesPorts): void {
+
+export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void {
     const exec: (path: string, host?: string, args?: string[]) => Promise<void> = remoteExec;
     const setup: () => Promise<void> = remoteSetup;
     const check: (path: string) => Promise<void> = remoteCheck;
     const terminate: (path: string) => Promise<void> = remoteTerminate;
-    const channel: RemoteSshChannel = ports.startInteractiveSsh({ host: "host", user: "user", remotePath: "" }, "trusted-command");
+    const channel: RemoteSshChannel = ports.startInteractiveSession({ config: { host: "host", user: "user", remotePath: "" }, containerId: "a".repeat(64), projectId: "project", arguments: ["literal"], environment: [["SAFE", "value"]] });
     const heartbeat: RemoteHeartbeat = ports.startHeartbeat(() => {}, 30_000);
     const body: string = remoteRefreshSessionShell("name", "token", 300, true, "a".repeat(64));
-    // @ts-expect-error cleanup and config publication must complete synchronously
+    // @ts-expect-error local claim removal must finish before cleanup returns
     const asyncRemoval: RemoteServicesPorts["removeSessionLock"] = async () => undefined;
-    // @ts-expect-error synchronous stop critical section cannot delegate async policy
+    // @ts-expect-error synchronous cleanup lock cannot defer policy to an asynchronous callback
     ports.withLifecycleLock("prefix", async () => undefined);
-    // @ts-expect-error opaque interactive channel is not a native process/PID contract
+    // @ts-expect-error the channel exposes signal forwarding, not native process authority
     const pid: number = channel.pid;
-    const { runRelease, ...missingRelease } = ports;
-    // @ts-expect-error lease release effect cannot be omitted or defaulted
-    const incomplete: RemoteServicesPorts = missingRelease;
-    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, runRelease, incomplete];
+    const { releaseReservation, ...missingRelease } = ports;
+    // @ts-expect-error reservation lifetime requires its release capability
+    const incomplete: RemoteServicesPorts<symbol> = missingRelease;
+    const observation = ports.observeSync("session");
+    if (observation.kind === "observed") {
+        // @ts-expect-error application can forward opaque evidence but cannot read native result fields
+        const status: number = observation.evidence.status;
+        ports.report({ kind: "sync-existing", observation });
+        void status;
+    }
+    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, releaseReservation, incomplete];
 }
