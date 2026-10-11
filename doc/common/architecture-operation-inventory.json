@@ -132,14 +132,29 @@
   },
   "closure": {
     "exhaustive": false,
-    "status": "bounded-source-acceptance-three-operation-gaps-remain",
+    "status": "operation-policy-qualified-original-structural-source-gaps-open",
     "blockingGapIds": [
-      "GAP-source-direct-recording"
+      "GAP-source-mcp-request-selection",
+      "GAP-source-broker-lease-physical-cleanup-results",
+      "GAP-source-broker-remaining-semantic-results",
+      "GAP-source-hyper-v-lifecycle-results-native-recipes",
+      "GAP-source-broker-provider-lifecycle-results"
     ],
     "totals": null,
     "sourceScopeClosed": false,
     "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
-    "reason": "Nine bounded reference corrections and prior seven accepted operation qualifications remain unchanged. Accepted b14321e7 source, complete required-binding review, genuine QA267 and protected main delivery qualify physical attach/detach; direct attachment gap is bounded source-resolved. Only known recording start/finalize/status source gaps remain. Historical twelve-operation retractions and all prior source qualifications retained. Exhaustive source universe, native, reliability and formal acceptance remain unverified."
+    "reason": "Recording three operation policies accepted at6454 after final QA328 and protected delivery. Current1877 shared/Android/contract cleanup contributes zero operations with actual QA323 and protected63-pin/97-file delivery. Earlier only-recording-remaining claim is historical and superseded by known original MCP request, broker lease/physical/cleanup, remaining broker results, Hyper-V result/native-recipe and bounded provider-lifecycle structural findings. Operation-only218/218 does not mean overall migration100%; sourceScopeClosed/exhaustive/denominator certification remainfalse and native/installed-image/reliability/formal gates remain unverified.",
+    "historicalBeforeRecordingAcceptance": {
+      "exhaustive": false,
+      "status": "bounded-source-acceptance-three-operation-gaps-remain",
+      "blockingGapIds": [
+        "GAP-source-direct-recording"
+      ],
+      "totals": null,
+      "sourceScopeClosed": false,
+      "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
+      "reason": "Nine bounded reference corrections and prior seven accepted operation qualifications remain unchanged. Accepted b14321e7 source, complete required-binding review, genuine QA267 and protected main delivery qualify physical attach/detach; direct attachment gap is bounded source-resolved. Only known recording start/finalize/status source gaps remain. Historical twelve-operation retractions and all prior source qualifications retained. Exhaustive source universe, native, reliability and formal acceptance remain unverified."
+    }
   },
   "provenance": {
     "historicalLedger": {
@@ -28778,15 +28793,29 @@
       "bindingIds": [
         "BIND-recording-start-device_record_video_start"
       ],
-      "sourceImplementationRemainingWork": [
-        "Direct Android/emulator/iOS Simulator/macOS/Sandbox recording handlers still own eligibility, launch/publication and compensation; broker desktop routes reach those children."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
+        "status": "whole-source-qualified",
+        "reason": "All five supported direct recording bindings and actual default Windows/macOS broker child routes independently qualified; final QA328/genuine build/shipping and protected delivery accepted. Separate original structural semantic-result/native-process gaps, native/reliability/formal and exhaustive acceptance remain open.",
+        "historicalAcceptedContributionRetained": true,
+        "sourceManifest": "/tmp/ccc-direct-recording-source-20261011.json",
+        "historicalManifestFlagsBeforeFinalQa": {
+          "ordinaryQaUnrun": true,
+          "wholeOperationCreditApplied": false
+        },
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-recording-main-delivery-result-20261011.json"
+      },
+      "historicalWholeOperationQualificationBeforeRecordingAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct Android/emulator/iOS Simulator/macOS/Sandbox recording handlers still own eligibility, launch/publication and compensation; broker desktop routes reach those children.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeRecordingAcceptance": [
+        "Direct Android/emulator/iOS Simulator/macOS/Sandbox recording handlers still own eligibility, launch/publication and compensation; broker desktop routes reach those children."
+      ]
     },
     {
       "id": "OP-recording-finalize",
@@ -29561,15 +29590,29 @@
       "bindingIds": [
         "BIND-recording-finalize-device_record_video_stop"
       ],
-      "sourceImplementationRemainingWork": [
-        "Direct recording handlers still own generation finalization and artifact-copy/publication failure decisions across supported providers."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
+        "status": "whole-source-qualified",
+        "reason": "All five supported direct recording bindings and actual default Windows/macOS broker child routes independently qualified; final QA328/genuine build/shipping and protected delivery accepted. Separate original structural semantic-result/native-process gaps, native/reliability/formal and exhaustive acceptance remain open.",
+        "historicalAcceptedContributionRetained": true,
+        "sourceManifest": "/tmp/ccc-direct-recording-source-20261011.json",
+        "historicalManifestFlagsBeforeFinalQa": {
+          "ordinaryQaUnrun": true,
+          "wholeOperationCreditApplied": false
+        },
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-recording-main-delivery-result-20261011.json"
+      },
+      "historicalWholeOperationQualificationBeforeRecordingAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct recording handlers still own generation finalization and artifact-copy/publication failure decisions across supported providers.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeRecordingAcceptance": [
+        "Direct recording handlers still own generation finalization and artifact-copy/publication failure decisions across supported providers."
+      ]
     },
     {
       "id": "OP-recording-status",
@@ -30325,15 +30368,29 @@
       "bindingIds": [
         "BIND-recording-status-device_record_video_status"
       ],
-      "sourceImplementationRemainingWork": [
-        "Direct recording handlers still own recording liveness/current-generation status reconciliation decisions."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
+        "status": "whole-source-qualified",
+        "reason": "All five supported direct recording bindings and actual default Windows/macOS broker child routes independently qualified; final QA328/genuine build/shipping and protected delivery accepted. Separate original structural semantic-result/native-process gaps, native/reliability/formal and exhaustive acceptance remain open.",
+        "historicalAcceptedContributionRetained": true,
+        "sourceManifest": "/tmp/ccc-direct-recording-source-20261011.json",
+        "historicalManifestFlagsBeforeFinalQa": {
+          "ordinaryQaUnrun": true,
+          "wholeOperationCreditApplied": false
+        },
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-recording-main-delivery-result-20261011.json"
+      },
+      "historicalWholeOperationQualificationBeforeRecordingAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct recording handlers still own recording liveness/current-generation status reconciliation decisions.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeRecordingAcceptance": [
+        "Direct recording handlers still own recording liveness/current-generation status reconciliation decisions."
+      ]
     },
     {
       "id": "OP-appium-server-start",
@@ -184880,7 +184937,7 @@
       "id": "GAP-source-direct-recording",
       "kind": "source-implementation",
       "reason": "Complete recording policies in supported provider handlers and the broker desktop child routes that reach them.",
-      "remediationStatus": "open-confirmed-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [
         "OP-recording-start",
         "OP-recording-finalize",
@@ -184894,7 +184951,16 @@
         }
       ],
       "followupTaskId": "TASK__architecture-direct-recording",
-      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification.",
+      "historicalRemediationStatusBeforeRecordingAcceptance": "open-confirmed-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
+        "status": "independently-source-reconciled",
+        "scope": "Only the recorded direct recording-policy gap is resolved across five native providers and default Windows/macOS broker child routes. Separate broker semantic-result and native-process/source-universe gaps remain open. No native/reliability/formal certification.",
+        "sourceManifest": "/tmp/ccc-direct-recording-source-20261011.json",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-direct-recording-main-delivery-result-20261011.json"
+      }
     },
     {
       "id": "GAP-source-legacy-admin-delete",
@@ -185007,6 +185073,157 @@
         "nativeAcceptance": "unverified",
         "formalAcceptance": "unverified"
       }
+    },
+    {
+      "id": "GAP-source-mcp-request-selection",
+      "kind": "source-implementation",
+      "reason": "MCP request selection still decodes/constructs MCP content/isError and selects public presentation through required presenter capabilities. Existing five owning files and bounded native presenter decisions require semantic separation; planned MCP cohort is not accepted.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "line": 104,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "line": 647,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "device-lab-mcp/src/domain/device-request.mjs",
+          "line": 1,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "device-lab-mcp/src/ports/device-request.d.mts",
+          "line": 1,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        }
+      ],
+      "evidenceScope": "Complete current owning-body audit; pending source implementation. No whole-operation count adjustment or exhaustive universe claim. Zero additional counted operations; original SPEC boundary obligation.",
+      "followupTaskId": "TASK__architecture-mcp-result-selection"
+    },
+    {
+      "id": "GAP-source-broker-lease-physical-cleanup-results",
+      "kind": "source-implementation",
+      "reason": "Broker physical leases/devices/owner cleanup still use HTTP success and payload.result.lease to drive renewal, admission and compensation; their nine app/domain/ports files and native broker require semantic result boundaries.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-physical-leases.ts",
+          "line": 21,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-physical-devices.ts",
+          "line": 94,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-owner-cleanup.ts",
+          "line": 214,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        }
+      ],
+      "evidenceScope": "Complete current owning-family audit confirms this original structural gap; prior functional operation-policy contributions remain accepted, not overall source closure. Zero additional counted operations; original SPEC boundary obligation."
+    },
+    {
+      "id": "GAP-source-broker-remaining-semantic-results",
+      "kind": "source-implementation",
+      "reason": "Broker Appium, recording, owner resolution and device observation status retain public HTTP/core-envelope coupling; direct recording and accepted shared desktop correction do not implement these separate subfamilies.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-appium.ts",
+          "line": 48,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-recording.ts",
+          "line": 54,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-owner.ts",
+          "line": 59,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "line": 63,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        }
+      ],
+      "evidenceScope": "Complete current owning-family audit; separate original structural gate remains unimplemented. Zero additional counted operations; original SPEC boundary obligation."
+    },
+    {
+      "id": "GAP-source-hyper-v-lifecycle-results-native-recipes",
+      "kind": "source-implementation",
+      "reason": "Hyper-V create/start, stop/delete, snapshots, image preparation and network/trust families retain HTTP-driven journal/rollback decisions and builder-to-runner native process recipes. Desktop prepared-leaf correction does not close these five lifecycle families.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts",
+          "line": 441,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-stop-delete.ts",
+          "line": 149,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-snapshots.ts",
+          "line": 37,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/hyper-v-image-preparation.ts",
+          "line": 1,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/hyper-v-network-trust.ts",
+          "line": 102,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        }
+      ],
+      "evidenceScope": "Complete five-family app/domain/ports and native broker/image-store/network-adapter audit; no native execution or whole source-universe certification. Zero additional counted operations; original SPEC boundary obligation."
+    },
+    {
+      "id": "GAP-source-broker-provider-lifecycle-results",
+      "kind": "source-implementation",
+      "reason": "Broker Android/iOS/macOS/Sandbox lifecycle application and ports retain transport-shaped results. Full remaining domain and caller inspection is required before implementation; bounded domain reads cannot establish an exhaustive audit.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.ts",
+          "line": 61,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts",
+          "line": 40,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.ts",
+          "line": 1,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/lifecycle/windows-sandbox-lifecycle.ts",
+          "line": 83,
+          "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
+        }
+      ],
+      "evidenceScope": "Current application/ports findings with explicitly bounded domain reads; full domain/caller inspection remains required. Zero additional counted operations; original SPEC boundary obligation."
     }
   ],
   "distributionBoundaries": {

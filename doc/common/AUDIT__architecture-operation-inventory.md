@@ -1,63 +1,98 @@
 # Architecture operation inventory
 
 Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
-Current source qualified: `b14321e7b1b126e2bfc5a2766fca9b0b93d5259d`.
+Current recording source qualified: `6454e788ef3780cb0ccd8d54c6ece31c39ba4e17`.
+Current composed source accepted: `187743c2dfd1ddf66e161d134f61b482a54d6baa`.
 Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-Status: **nine bounded reference corrections and nine subsequent operation
-completions are independently source-qualified; confirmed source work remains**.
-The original review reasons, source observations and twelve-operation retraction
-remain recorded as history. Accepted broker contributions alone did not complete
-the supported direct bindings or shared presentation contracts.
+Status: **all 218 inventoried operation cutovers are source-qualified; the
+original architecture boundary and acceptance work is still incomplete**.
+Nine bounded reference corrections, twelve subsequent operation completions,
+the original review reasons and twelve-operation retraction remain recorded.
+The operation denominator is provisional, unweighted and not independently
+certified against the current whole production universe.
 
 The supported Codex/Claude scope contains 218 existing operations, with one
-retained OpenCode operation excluded. The current progress overlay qualifies
-**215/218 source operations (98.6%)**, with **three partial**, no unmerged candidates
-and no additional operation IDs. Source `bb502909` closes direct lease
-claim/prune/release and legacy admin cleanup; `cf7d7836` closes semantic physical
-stop and device flow; `26bbbd56` closes managed heartbeat; `b14321e7` closes
-direct physical attach and detach. Independent reviews, final functional QA and
-protected local delivery qualify these nine credits. Historical accepted contributions and
-retractions are retained separately.
+retained OpenCode operation excluded. The progress overlay qualifies
+**218/218 operation cutovers (100.0%)**, with no partial operations, unmerged
+candidates or additional operation IDs. This is not the percentage of the entire
+hexagonal migration. The remaining work below is part of its original contracts,
+rather than another set of product operations.
 
-This is a provisional code count, not full architecture acceptance. These bounded
-reviews do not certify exhaustive remaining scope. Source scope closure,
-current production-universe reconciliation and denominator certification remain
-incomplete. Native, installed-image, reliability and formal acceptance remain
-separate from source accounting.
+Source `bb502909` closes direct lease claim/prune/release and legacy admin
+cleanup; `cf7d7836` closes semantic physical stop and flow; `26bbbd56` closes
+managed heartbeat; `b14321e7` closes direct physical attachment. Source
+`6454e788` qualifies recording start, finalization and status across all five
+direct provider bindings and the default Windows/macOS broker-child routes.
+These three credits are counted once in the direct recording lane; the
+historical broker recording contribution and its earlier withheld credit remain
+recorded separately.
 
-| Confirmed remaining source work | Existing operations | Current scope |
-| --- | ---: | --- |
-| Provider recording | 3 | Start, finalization and status in Android, iOS Simulator, macOS and Sandbox; broker desktop routes reach these children |
+The earlier “only recording remains” assessment described its bounded source
+audit. Later complete owning-body reviews found the following original result
+and native-process boundary defects. Completing the direct recording workflow
+does not resolve the broker recording result contract.
 
-The direct lease and managed renewal policies, legacy synchronous admin deletion, shared physical-stop
-and flow result separation, direct physical attachment, and five-root graph/compiler
-enforcement findings have bounded source dispositions at the accepted revisions.
-Enforcement is a zero-operation obligation and grants no additional count. One
-confirmed source gap remains open: provider recording. Its closure does not
-establish exhaustive inventory or native acceptance.
+| Remaining original source obligation | Concrete current scope | State |
+| --- | --- | --- |
+| MCP request result selection | Shared request application/domain/ports, native server/flow composition and finite outward presenter | Approved prospective task; implementation and current QA pending |
+| Broker lease, physical and owner cleanup results | Nine `broker-physical-leases`, `broker-physical-devices` and `broker-owner-cleanup` application/domain/ports files plus native broker composition | Complete owning audit confirms HTTP-dependent admission/renewal and nested lease extraction; semantic repair pending |
+| Other broker semantic results | Appium, broker recording, owner resolution and device status | Complete scoped audits confirm public result coupling; separate native conversion and current qualification pending |
+| Hyper-V lifecycle results and native commands | Create/start, stop/delete, snapshots, image preparation and network/trust triplets plus their native adapters | Complete five-family audit confirms HTTP-based journal/recovery policy and command builder/runner seams; repair pending |
+| Broker provider lifecycle results | Android, iOS, macOS and Sandbox lifecycle application/ports | Confirmed coupling; remaining full domain/caller inspection is required before implementation |
 
-Source20 final QA records 15 whole files and 296 cases; its original CLI
-observation timeouts remain preserved alongside the successful private non-Git
-project command. Source26 final QA records 16 whole files and 696 cases; its two
-removed runtime-compiler suites are authenticated by intentional null absence
-sentinels. Managed-heartbeat QA records 11 whole files and 597 cases, genuine build,
-package/shipping checks and compiled CLI success. Attachment QA records 11
-whole files and 267 cases, actual producer/body checking, genuine complete build,
-package/shipping and compiled CLI success. Its 13 input pins and exact supported
-Android/iOS and broker bindings qualify two existing operations; they do not
-certify every legacy helper body or real host. All four accepted source deliveries
-preserve all 97 original user files,
-status and index. Missing automatic receipt records are retained as formal parks,
-without a fabricated task close.
+These findings add no operation IDs or count credit. Their source anchors and
+bounded inspection limits are recorded in the inventory gaps and zero-operation
+planning rows. This list does not certify exhaustive current source scope.
 
-This is an unweighted count of operation cutovers, not an estimate of remaining
-effort or overall Goal acceptance. A small installation policy and a large
-provider workflow each count once. Helpers, ports, aliases and equivalent
-transport bindings do not add work items. Each row has one counting owner even
-when its requirements span packets. Review and QA of this inventory assess the
-accounting; they do not certify native execution or the completed architecture.
+Accepted `187743c2` removes the separate shared screenshot/recovery/Hyper-V
+desktop result coupling, Android ADB recipe coupling and duplicate compiler
+metatests. These are zero-operation improvements. Hyper-V desktop preparation
+leaves do not complete the remaining Hyper-V lifecycle families.
+
+Current source-universe reconciliation, complete inward dependency and native
+composition coverage, final installed artifacts/images, reliability evidence,
+native platforms and formal acceptance remain separate original gates. Existing
+revision-bound evidence may qualify unchanged inputs; absent or indirect evidence
+does not certify a gate. Source scope closure, exhaustive inventory and
+denominator certification remain false. No overall migration percentage is
+inferred from the operation count.
+
+Earlier accepted QA remains recorded: Source20 has 15 whole files and 296 cases,
+including retained initial CLI observation timeouts; Source26 has 16 whole files
+and 696 cases, with intentional absence of the two removed compiler metatests.
+Managed heartbeat has 11 whole files and 597 cases; attachment has 11 whole files
+and 267 cases.
+
+Recording final QA has 16 whole files and 328 passing cases, actual required
+native producer bodies, a genuine complete build, package/npm/Unix/MCP checks and
+compiled CLI success. The recording manifest's pre-QA flags are historical;
+acceptance comes from final QA and protected delivery. The composed
+`187743c2` QA has 18 whole behavioral files and 323 passing cases, current
+ordinary strict compilation, qualified unchanged genuine build artifacts,
+package/npm/Unix/MCP checks and compiled CLI exit codes 0/0/0/1. Its empty
+runtime-suite failure remains preserved; the compiler-only consumer was renamed
+without changing its contents or weakening discovery configuration.
+
+Authoritative local evidence:
+
+- Recording: `/tmp/ccc-direct-recording-source-20261011.json`,
+  `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json`
+  and `/tmp/ccc-direct-recording-main-delivery-result-20261011.json`.
+- Composed source: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/shared-android-cleanup-1877-42owkwhx/final-result.json`
+  and `/tmp/ccc-shared-android-cleanup-main-delivery-result-20261011.json`.
+
+Protected deliveries preserve all 97 original user files, status and index.
+Owned QA processes were joined. Automatic review/QA records were absent after
+actual independent results and one fresh verification per source task; the
+selected formal parks remain truthful, with no fabricated task close. Portable
+fixtures and package checks do not certify real hardware or every legacy helper.
+
+Each operation has one counting owner even when its requirements span packets.
+Helpers, ports, aliases, verification tasks and equivalent transport bindings do
+not add operations. Current structural work and delivery gates must be read
+alongside the [WBS](GUIDE__architecture-work-breakdown.md).
 
 The following packet table is the **historical c284 baseline**, not current
 implementation progress. Current counts come from the accepted-source overlay

@@ -596,12 +596,8 @@
       "taskId": "TASK__architecture-broker-recording",
       "implementation": "candidate-complete",
       "wholeOperationIds": [],
-      "partialOperationIds": [
-        "OP-recording-start",
-        "OP-recording-finalize",
-        "OP-recording-status"
-      ],
-      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-recording-start, OP-recording-finalize, OP-recording-status: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "partialOperationIds": [],
+      "codeReview": "Historical broker recording contribution and twelve-operation retraction retained. Recording start/finalize/status count once in the accepted direct-recording-source-closure lane after all five direct bindings and default Windows/macOS broker child routes qualified. Separate original structural/semantic-result gates, native/formal and exhaustive acceptance remain open.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "b669bf6ce416f0cdff04589a663adfcc09728a2c",
@@ -612,14 +608,15 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent source/composed/affected Code, Security and Docs PASS. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes. Unrelated legacy native-JS strict diagnostics are not accepted; formal hook attestation and native-host certification remain unverified.",
       "currentQualificationAudit": {
-        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "sourceCommit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
         "date": "2026-10-11",
-        "retractedWholeOperationIds": [
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
           "OP-recording-start",
           "OP-recording-finalize",
           "OP-recording-status"
         ],
-        "status": "independently-source-reconciled-confirmed-partial"
+        "remainingPartialOperationIds": []
       },
       "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
@@ -630,7 +627,18 @@
           "OP-recording-status"
         ],
         "status": "candidate-reconciled-awaiting-independent-current-review"
-      }
+      },
+      "historicalCurrentQualificationAuditBeforeRecordingAcceptance": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-recording-start",
+          "OP-recording-finalize",
+          "OP-recording-status"
+        ],
+        "status": "independently-source-reconciled-confirmed-partial"
+      },
+      "historicalCodeReviewBeforeRecordingAcceptance": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-recording-start, OP-recording-finalize, OP-recording-status: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified."
     },
     {
       "id": "mobile-control-transfer",
@@ -1076,6 +1084,30 @@
       "sourceManifest": "/tmp/ccc-direct-attachment-source-20261011.json",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-attachment-b143-8slxw5be/final-result.json",
       "deliveryEvidence": "/tmp/ccc-direct-attachment-main-delivery-result-20261011.json"
+    },
+    {
+      "id": "direct-recording-source-closure",
+      "branch": "refactor/architecture-direct-recording-20261011",
+      "commit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
+      "taskId": "TASK__architecture-direct-recording",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-recording-start",
+        "OP-recording-finalize",
+        "OP-recording-status"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual independent complete/affected Code/Security/Guide and all five recording bindings/default Windows/macOS broker child routes PASS. Final ordinary QA328 cases/16 whole files/0 skips, genuine build1318 emits, package/npm materialized Unix/CLI/authentication and settled actors accepted; protected main delivery preserves97 original user changes. Operation-policy qualification does not close remaining original semantic-result/native-process/source-universe/native/reliability/formal gates.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17",
+      "sourceManifest": "/tmp/ccc-direct-recording-source-20261011.json",
+      "historicalManifestFlagsBeforeFinalQa": {
+        "ordinaryQaUnrun": true,
+        "wholeOperationCreditApplied": false
+      },
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-direct-recording-main-delivery-result-20261011.json"
     }
   ],
   "planningLanes": [
@@ -1429,16 +1461,52 @@
       "id": "final-inventory-reconciliation",
       "taskId": "TASK__architecture-final-inventory-reconciliation",
       "coveredOperationIds": [],
-      "status": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification."
+      "status": "Nine bounded reference corrections and prior accepted accounting retained. Current recording three-credit metadata reconciliation pending independent review/QA/delivery. Operation-only218/218 is not overall migration completion; known original structural source gaps and native/reliability/formal/exhaustive gates remain open.",
+      "historicalStatusBeforeRecordingAcceptance": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification."
+    },
+    {
+      "id": "mcp-request-selection-structural",
+      "coveredOperationIds": [],
+      "status": "MCP request selection still decodes/constructs MCP content/isError and selects public presentation through required presenter capabilities. Existing five owning files and bounded native presenter decisions require semantic separation; planned MCP cohort is not accepted. Complete current owning-body audit; pending source implementation. No whole-operation count adjustment or exhaustive universe claim. Source/review/QA/delivery pending; zero operation credit.",
+      "taskId": "TASK__architecture-mcp-result-selection"
+    },
+    {
+      "id": "broker-lease-physical-cleanup-results-structural",
+      "coveredOperationIds": [],
+      "status": "Broker physical leases/devices/owner cleanup still use HTTP success and payload.result.lease to drive renewal, admission and compensation; their nine app/domain/ports files and native broker require semantic result boundaries. Complete current owning-family audit confirms this original structural gap; prior functional operation-policy contributions remain accepted, not overall source closure. Source/review/QA/delivery pending; zero operation credit."
+    },
+    {
+      "id": "broker-remaining-semantic-results-structural",
+      "coveredOperationIds": [],
+      "status": "Broker Appium, recording, owner resolution and device observation status retain public HTTP/core-envelope coupling; direct recording and accepted shared desktop correction do not implement these separate subfamilies. Complete current owning-family audit; separate original structural gate remains unimplemented. Source/review/QA/delivery pending; zero operation credit."
+    },
+    {
+      "id": "hyper-v-lifecycle-results-native-recipes-structural",
+      "coveredOperationIds": [],
+      "status": "Hyper-V create/start, stop/delete, snapshots, image preparation and network/trust families retain HTTP-driven journal/rollback decisions and builder-to-runner native process recipes. Desktop prepared-leaf correction does not close these five lifecycle families. Complete five-family app/domain/ports and native broker/image-store/network-adapter audit; no native execution or whole source-universe certification. Source/review/QA/delivery pending; zero operation credit."
+    },
+    {
+      "id": "broker-provider-lifecycle-results-structural",
+      "coveredOperationIds": [],
+      "status": "Broker Android/iOS/macOS/Sandbox lifecycle application and ports retain transport-shaped results. Full remaining domain and caller inspection is required before implementation; bounded domain reads cannot establish an exhaustive audit. Current application/ports findings with explicitly bounded domain reads; full domain/caller inspection remains required. Source/review/QA/delivery pending; zero operation credit."
+    },
+    {
+      "id": "shared-android-contract-cleanup-accepted",
+      "coveredOperationIds": [],
+      "status": "Accepted187743c2 zero-operation contributions: shared result27, Android native14 plus layout and contract cleanup22; actual current QA323 and protected63-pin/97-user-file delivery accepted. These bounded changes do not resolve the separate MCP/broker/Hyper-V/provider-lifecycle structural gaps or certify exhaustive/native/reliability/formal completion.",
+      "sourceCommit": "187743c2dfd1ddf66e161d134f61b482a54d6baa",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/shared-android-cleanup-1877-42owkwhx/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-shared-android-cleanup-main-delivery-result-20261011.json"
     }
   ],
   "currentSourceQualificationAudit": {
-    "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+    "sourceCommit": "187743c2dfd1ddf66e161d134f61b482a54d6baa",
     "acceptedSourceCommits": [
       "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
       "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
       "26bbbd564e7370f022abf081219004f51a5bd994",
-      "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d"
+      "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+      "6454e788ef3780cb0ccd8d54c6ece31c39ba4e17"
     ],
     "acceptedOperationIds": [
       "OP-lease-claim",
@@ -1449,16 +1517,15 @@
       "OP-device-flow",
       "OP-lease-heartbeat",
       "OP-physical-attach",
-      "OP-physical-detach"
-    ],
-    "confirmedPartialOperationIds": [
+      "OP-physical-detach",
       "OP-recording-start",
       "OP-recording-finalize",
       "OP-recording-status"
     ],
+    "confirmedPartialOperationIds": [],
     "boundedReferenceCorrections": 9,
     "sourceUniverseCertified": false,
-    "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
+    "scope": "Twelve previously retracted existing operation policies requalified through actual required-binding review, final QA and protected delivery; recording three accepted at6454. Operation-only218/218 is not overall migration completion. Known original semantic-result/native-process structural gaps, zero-operation planning, exhaustive source universe and native/reliability/formal gates remain open."
   },
   "historicalSourceQualificationAuditBeforeSixOperationAcceptance": {
     "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
@@ -1532,5 +1599,33 @@
     "boundedReferenceCorrections": 9,
     "sourceUniverseCertified": false,
     "scope": "Seven existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Five remain partial: direct attachment/detachment and recording. Historical twelve-operation retraction and six-credit qualification retained; no exhaustive/native/formal certification."
+  },
+  "historicalSourceQualificationAuditBeforeRecordingAcceptance": {
+    "sourceCommit": "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d",
+    "acceptedSourceCommits": [
+      "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+      "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+      "26bbbd564e7370f022abf081219004f51a5bd994",
+      "b14321e7b1b126e2bfc5a2766fca9b0b93d5259d"
+    ],
+    "acceptedOperationIds": [
+      "OP-lease-claim",
+      "OP-lease-prune",
+      "OP-lease-release",
+      "OP-device-admin-cleanup",
+      "OP-physical-stop",
+      "OP-device-flow",
+      "OP-lease-heartbeat",
+      "OP-physical-attach",
+      "OP-physical-detach"
+    ],
+    "confirmedPartialOperationIds": [
+      "OP-recording-start",
+      "OP-recording-finalize",
+      "OP-recording-status"
+    ],
+    "boundedReferenceCorrections": 9,
+    "sourceUniverseCertified": false,
+    "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   }
 }
