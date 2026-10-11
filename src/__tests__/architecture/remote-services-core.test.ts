@@ -212,12 +212,14 @@ describe("whole remote semantic workflows", () => {
         expect(index(trace, "remove")).toBeLessThan(index(trace, "exit"));
     });
 
-    it("finite reservation failures preserve diagnostics and clean the local claim without inventing a reservation", async () => {
+    it("finite reservation failures preserve diagnostics and release expected-name protection before removing the claim", async () => {
         for (const reason of ["start-failed", "missing-container-id"] as const) {
             const f = fixture(); f.ports.reserveContainer = request => { f.trace.push(["reserve", request]); return { kind: "failed", reason, evidence }; };
             await expect(f.services().remoteExec("relative")).rejects.toThrow("exit:1");
             expect(f.trace).toContainEqual(["fail", reason, evidence]); expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", "claim"]]);
-            expect(f.trace.some(row => ["heartbeat", "release", "prepare", "daemon", "ssh"].includes(String(row[0])))).toBe(false);
+            expect(f.trace).toContainEqual(["release", { config, name: "expected-name", token: f.token }]);
+            expect(index(f.trace, "release")).toBeLessThan(index(f.trace, "remove"));
+            expect(f.trace.some(row => ["heartbeat", "cancel", "prepare", "daemon", "observe-sync", "ssh"].includes(String(row[0])))).toBe(false);
         }
     });
 
@@ -235,11 +237,11 @@ describe("whole remote semantic workflows", () => {
         expect(unprepared.trace).toContainEqual(["remove", "claim"]);
     });
 
-    it("close zero prompts; nonzero and null settle without cleanup prompt", async () => {
+    it("close zero and null prompt; nonzero settles without cleanup prompt", async () => {
         for (const code of [0, 7, null]) {
             const f = fixture(); f.state.closeCode = code;
-            await expect(f.services().remoteExec("relative")).rejects.toThrow("exit:" + (code ?? 1));
-            expect(f.trace.filter(row => row[0] === "prompt")).toEqual(code === 0 ? [["prompt", { kind: "cleanup" }]] : []);
+            await expect(f.services().remoteExec("relative")).rejects.toThrow("exit:" + (code ?? 0));
+            expect(f.trace.filter(row => row[0] === "prompt")).toEqual((code ?? 0) === 0 ? [["prompt", { kind: "cleanup" }]] : []);
             expect(f.trace).toContainEqual(["remove", "claim"]);
         }
     });
@@ -276,7 +278,10 @@ describe("whole remote semantic workflows", () => {
         await expect(failedStop.services().remoteExec("relative")).rejects.toThrow("exit:1");
         expect(failedStop.trace).toContainEqual(["fail", "stop-failed", evidence]);
         expect(failedStop.trace.filter(row => row[0] === "remove")).toHaveLength(2);
-        expect(failedStop.trace.some(row => row[0] === "pause" || row[0] === "release")).toBe(false);
+        expect(failedStop.trace).toContainEqual(["release", { config, name: "expected-name", token: failedStop.token }]);
+        expect(index(failedStop.trace, "cancel")).toBeLessThan(index(failedStop.trace, "release"));
+        expect(index(failedStop.trace, "release")).toBeLessThan(failedStop.trace.map(row => row[0]).lastIndexOf("remove"));
+        expect(failedStop.trace.some(row => row[0] === "pause")).toBe(false);
         const thrownPause = fixture(); thrownPause.state.stop = true; const fault = Error("pause");
         thrownPause.ports.pauseSync = name => { thrownPause.trace.push(["pause", name]); throw fault; };
         await expect(thrownPause.services().remoteExec("relative")).rejects.toThrow("exit:1");
@@ -319,7 +324,7 @@ describe("whole remote semantic workflows", () => {
         expect(remove.trace.some(row => row[0] === "exit")).toBe(false);
     });
 
-    it("failures before claim do not invent cleanup or exit; lock failure after claim removes only that claim", async () => {
+    it("failures before claim avoid cleanup and exit; lock failure releases protection before removing the claim", async () => {
         const beforeClaim = fixture(); const fault = Error("claim"); beforeClaim.ports.createSessionLock = () => { throw fault; };
         await expect(beforeClaim.services().remoteExec("relative")).rejects.toBe(fault);
         expectNoClaim(beforeClaim.trace); expect(beforeClaim.trace.some(row => row[0] === "exit" || row[0] === "cancel")).toBe(false);
@@ -328,6 +333,8 @@ describe("whole remote semantic workflows", () => {
         const lock = fixture(); lock.ports.withLifecycleLockAsync = async () => { throw fault; };
         await expect(lock.services().remoteExec("relative")).rejects.toThrow("exit:1");
         expect(lock.trace.filter(row => row[0] === "remove")).toEqual([["remove", "claim"]]);
-        expect(lock.trace.some(row => row[0] === "release" || row[0] === "cancel" || row[0] === "reserve")).toBe(false);
+        expect(lock.trace).toContainEqual(["release", { config, name: "expected-name", token: lock.token }]);
+        expect(index(lock.trace, "release")).toBeLessThan(index(lock.trace, "remove"));
+        expect(lock.trace.some(row => ["reserve", "heartbeat", "cancel", "prepare", "daemon", "observe-sync", "ssh"].includes(String(row[0])))).toBe(false);
     });
 });
