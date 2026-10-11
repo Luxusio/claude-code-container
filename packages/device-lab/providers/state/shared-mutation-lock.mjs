@@ -212,7 +212,7 @@ const publicationPorts = {
     temporaryFacts: (file, entry, fence) => { assertStateDirectoriesUnchanged(fence); const stats = lstatSync(join(dirname(file), entry)); return { ordinary: stats.isFile(), linked: stats.isSymbolicLink(), mtimeMs: stats.mtimeMs }; },
     removeTemporary: (file, entry, fence) => { assertStateDirectoriesUnchanged(fence); rmSync(join(dirname(file), entry), { force: true }); assertStateDirectoriesUnchanged(fence); return undefined; },
     alive: processIsAlive,
-    writeStage: (stage, value) => { writeFileSync(stage.path, value, { flag: "wx", mode: 0o600 }); return undefined; },
+    writeStage: (stage, value) => { writeFileSync(stage.path, typeof value === "string" ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength), { flag: "wx", mode: 0o600 }); return undefined; },
     renameAttempt: (source, destination) => { renameSync(source, destination); return undefined; },
     removeStage: stage => { rmSync(stage.path, { force: true }); return undefined; },
     chmodTarget: file => { chmodSync(file, 0o600); return undefined; },
