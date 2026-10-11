@@ -49,7 +49,7 @@ export function deviceLabVmCreationPorts(options:{client:CreateVmClient;networkC
   sameWindowsPath:(left,right)=>left!==null&&win32.normalize(left).toLowerCase()===win32.normalize(right).toLowerCase(),
   switchName:parseHyperVVirtualSwitchName,macAddress:parseHyperVMacAddress,
   getVM:selector=>client.getVM(selector),getVMHardDiskDrives:selector=>client.getVMHardDiskDrives(selector),
-  getVMSwitches:selector=>networkClient.getVMSwitches(selector),getAllVMNetworkAdapters:()=>networkClient.getAllVMNetworkAdapters(),getVMNetworkAdapters:request=>networkClient.getVMNetworkAdapters(request),
+  getVMSwitches:selector=>networkClient.getVMSwitches({kind:selector.kind,name:parseHyperVVirtualSwitchName(selector.name)}),getAllVMNetworkAdapters:()=>networkClient.getAllVMNetworkAdapters(),getVMNetworkAdapters:request=>networkClient.getVMNetworkAdapters(request),
   newVM:request=>client.newVM(request),renameVMNetworkAdapter:request=>client.renameVMNetworkAdapter(request),setVMNetworkAdapter:request=>client.setVMNetworkAdapter(request),addVMNetworkAdapter:request=>client.addVMNetworkAdapter(request),
   setVMProcessor:request=>client.setVMProcessor(request),setVMMemory:request=>client.setVMMemory(request),setVM:request=>client.setVM(request),setVMBios:request=>client.setVMBios(request),setVMFirmware:request=>client.setVMFirmware(request),
   getVMFirmware:selector=>client.getVMFirmware(selector),getVMBios:selector=>client.getVMBios(selector),

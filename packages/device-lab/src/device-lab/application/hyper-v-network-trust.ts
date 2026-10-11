@@ -153,13 +153,13 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
                     }
                     mutations += 1;
                     const execution = await client.execute(outcome);
+                    if (execution.operation !== "ensure") {
+                        throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
+                    }
                     if (execution.kind === "indeterminate") {
                         if (ports.mutationNeverStarted(execution.cause))
                             throw execution.cause;
                         return { outcome: execution, completedActions: [...completedActions] };
-                    }
-                    if (execution.operation !== "ensure") {
-                        throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
                     }
                     completedActions.push(execution);
                     transientObservations = 0;
@@ -208,13 +208,13 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
                     }
                     mutations += 1;
                     const execution = await client.execute(outcome);
+                    if (execution.operation !== "cleanup") {
+                        throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
+                    }
                     if (execution.kind === "indeterminate") {
                         if (ports.mutationNeverStarted(execution.cause))
                             throw execution.cause;
                         return { outcome: execution, completedActions: [...completedActions] };
-                    }
-                    if (execution.operation !== "cleanup") {
-                        throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-action-operation-mismatch");
                     }
                     completedActions.push(execution);
                     break;
@@ -1062,6 +1062,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 else {
                     throw new Error("hyper-v-network-intent-missing");
                 }
+                return undefined;
             },
         });
         const outcome = transaction.outcome;
@@ -1148,6 +1149,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 if (!checkpointedState)
                     throw new Error("hyper-v-network-state-missing");
                 checkpointedState = persistTypedCleanupCheckpoint(runtime, checkpointedState, action);
+                return undefined;
             },
         });
         const outcome = transaction.outcome;

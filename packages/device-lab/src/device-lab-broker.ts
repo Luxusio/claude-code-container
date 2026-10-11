@@ -142,7 +142,7 @@ import {
     restoreDeviceLabHyperVSnapshot,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxGuiTypeGuestCommand, hyperVLinuxGuiScrollGuestCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
+import { hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxGuiTypeGuestCommand, hyperVLinuxGuiScrollGuestCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "@ccc/device-lab/device-lab/providers/ios-simulator.js";
 import { DEVICE_LAB_VERSION } from "./version.js";
 
@@ -6446,7 +6446,7 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         execute:(command,timeoutMs,outputLimit)=>hyperVProviderCommandRunner(normalized,command,{timeoutMs,outputLimit}),
         remaining:hyperVRemainingTimeout,assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline);return undefined;},deadlineExpired:hyperVOperationDeadlineExpired,
         errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
-        typedErrorCode:hyperVTypedErrorCode,typedErrorOperation:hyperVTypedErrorOperation,nativeDiagnostics:hyperVTypedNativeDiagnostics,
+        typedErrorCode:hyperVTypedErrorCode,typedErrorOperation:error=>hyperVTypedErrorOperation(error)??null,nativeDiagnostics:hyperVTypedNativeDiagnostics,
         diagnosticCode:hyperVProviderDiagnosticCode,boundedErrorCode:hyperVBoundedErrorCode,
         compensationCommand:(executable,deviceRoot,diskPath,kind,path)=>hyperVCreateCompensationCommand({executable,deviceRoot,diskPath,kind,path}),
         compensationOrder:planHyperVVirtualMachineCreationCompensation,vms:(session,id)=>session.client.getVM({kind:"id",id}),disks:(session,id)=>session.client.getVMHardDiskDrives({kind:"id",id}),
@@ -8645,8 +8645,6 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
                     outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
                 });
             if (!commandSucceeded(execution)) {
-                const rollback = null;
-                const hyperVExecution = null;
                 return {
                     status: 502,
                     payload: {
@@ -8654,9 +8652,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
                         error: execution.typedCreateInvalidResult === true
                             ? "hyper-v-create-invalid-result"
                             : "provider-command-failed",
-                        detail: hyperVExecution?.diagnosticCode || providerFailureDetail(execution),
-                        // The typed primitive behind the detail, from the library's closed list.
-                                        ...(rollback ? { rollback } : {}),
+                        detail: providerFailureDetail(execution),
                         result: {
                             ...(payload.result
                                 ? {

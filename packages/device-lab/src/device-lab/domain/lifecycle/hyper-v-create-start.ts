@@ -70,7 +70,7 @@ export type VmCreationStep=HyperVCreateStep;
 export interface VmCreationObservation {vmId:string;vmName:string;state:string;generation:1|2;diskPath:string;switchName:string|null}
 export type VmObservation=HyperVVirtualMachine;
 export interface VmDiskObservation {vmId:string;path:string|null}
-export interface VmAdapterObservation {vmId:string;name:string;macAddress:string;switchId:string|null;switchName:string|null}
+export interface VmAdapterObservation {vmId:string|null;name:string;macAddress:string|null;switchId:string|null;switchName:string|null}
 
 export type HyperVCreateParameters={name?:unknown;profile?:unknown;sourceImage?:unknown;image?:unknown;baseImageSha256?:unknown;baseImageGeneration?:unknown;memoryMb?:unknown;cpus?:unknown;diskMaxBytes?:unknown;incarnationId?:unknown;networking?:unknown;switchName?:unknown;macAddress?:unknown;networkAddress?:unknown;networkGateway?:unknown;networkPrefix?:unknown;outboundPolicy?:unknown;nestedVirtualization?:unknown;vmId?:unknown;guestUsername?:unknown;guestProvisioned?:unknown;sshHostKeyFingerprint?:unknown;guestUnattendPath?:unknown};
 export type HyperVLifecycleRequest={ok:true;backend:string;stateKey:string;command:string;deviceId:string;expectedIncarnationId?:string;force:boolean;startIfStopped?:boolean;dryRun:boolean;headless?:boolean;minimized?:boolean;waitForBoot?:boolean;bootTimeoutMs?:number;deleteAvd?:boolean;deleteSimulator?:boolean;preserveNetwork?:boolean;create?:HyperVCreateParameters};
