@@ -1610,7 +1610,6 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         const observation = ports.parseVm(execution.stdout || "");
         const expectedVmId = String(hyperVCreateField(payload.result?.device, "vmId") || "").toLowerCase();
         const expectedVmName = hyperVCreateField(payload.result?.device, "vmName");
-        const expectedDiskPath = hyperVCreateField(payload.result?.device, "diskPath");
         success = Boolean(observation
             && expectedVmId
             && observation.vmId === expectedVmId
@@ -2321,6 +2320,12 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             },
         },
     };
+    }
+    async function executeParsed(owner: string, params: unknown, deadline: number, cleanupDeadline: number): Promise<HyperVLifecycleResponse> {
+        const parsed = ports.parse(params);
+        return parsed.ok
+            ? execute(owner, parsed.request, params, deadline, cleanupDeadline)
+            : parsed.response;
     }
     return { createVmFromImage, recoverCreateResidue, rollbackCreate, invoke, execute };
 }
