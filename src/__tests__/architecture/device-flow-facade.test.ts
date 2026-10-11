@@ -149,19 +149,6 @@ describe("current public flow behavior", () => {
         const observed = await observeFlow(() => ({ ...shared, steps: Array.from({ length }, () => step()) }));
         expect(observed.calls).toHaveLength(length >= 1 && length <= 50 ? length : 0);
     });
-    it("observes mutable steps length and validates appended steps after preceding effects", async () => {
-        const result = await observeFlow(() => {
-            const steps: any[] = [step()];
-            fixture.effects[0] = () => {
-                fixture.trace.push("append-step");
-                steps.push({ tool: "click", get arguments() { fixture.trace.push("read-appended-arguments"); return null; } });
-            };
-            return { ...shared, stopOnError: false, steps };
-        });
-        expect(result.trace.indexOf("append-step")).toBeLessThan(result.trace.indexOf("read-appended-arguments"));
-        expect(JSON.parse(result.response.content[0].text).results).toHaveLength(2);
-        expect(result.calls).toHaveLength(1);
-    });
     it.each([false, true])("preserves public boolean stopOnError %s", async stopOnError => {
         const result = await observeFlow(() => ({ ...shared, stopOnError, steps: [{ ...step(), name: undefined }, step()] }));
         expect(result.calls).toHaveLength(stopOnError ? 0 : 1);

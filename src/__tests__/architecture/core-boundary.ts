@@ -2,7 +2,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 
 export type CoreLayer = "domain" | "ports" | "application";
-export interface CoreBoundary { root: string; language: "mjs" | "ts"; }
+export interface CoreBoundary { root: string; language: "mjs" | "ts"; flat?: boolean; providerRoot?: string; }
 const layers: readonly CoreLayer[] = ["domain", "ports", "application"];
 const hyperVDataModules = new Set([
     "@ccc/hyper-v", "@ccc/hyper-v/index.js",
@@ -11,6 +11,11 @@ const hyperVDataModules = new Set([
 ]);
 const hyperVPurePlanningModules = new Set(["@ccc/hyper-v/lifecycle", "@ccc/hyper-v/lifecycle/index.js"]);
 const hyperVPurePlanners = new Set(["reconcileHyperVHostNetwork", "planHyperVHostNetworkCleanup"]);
+const flowPeerLayers = new Map<string, CoreLayer>([
+    ["application/device-flow.mjs", "application"],
+    ["domain/device-flow.mjs", "domain"],
+    ["ports/device-flow.mjs", "ports"],
+]);
 const runtimeNames = new Set([
     "process", "Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval",
     "setImmediate", "clearImmediate", "queueMicrotask", "fetch", "globalThis", "global",
@@ -29,6 +34,7 @@ const pureMathMembers = new Set([
 function layerOf(file: string, boundary: CoreBoundary): CoreLayer | undefined {
     const suffix = relative(resolve(boundary.root), resolve(file));
     if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return undefined;
+    if (boundary.flat) return layers.find(layer => suffix === `${layer}.mjs` || suffix === `${layer}.d.mts`);
     return layers.find(layer => suffix.startsWith(`${layer}${sep}`));
 }
 
@@ -38,7 +44,7 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
     const layer = layerOf(file, boundary);
     if (!layer) return ["source must belong to a core layer"];
     const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true,
-        boundary.language === "mjs" ? ts.ScriptKind.JS : ts.ScriptKind.TS);
+        boundary.language === "mjs" && !file.endsWith(".d.mts") ? ts.ScriptKind.JS : ts.ScriptKind.TS);
     const errors: string[] = [];
     const purePathImports = new Set<ts.ImportDeclaration>();
     const purePlanningImports = new Set<ts.ImportDeclaration>();
@@ -66,7 +72,25 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
     const checkImport = (specifier: ts.Node | undefined, typeOnly: boolean, reexport = false) => {
         if (!reexport && boundary.language === "ts" && typeOnly && specifier && ts.isStringLiteral(specifier)
             && hyperVDataModules.has(specifier.text)) return;
-        if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith(".")) {
+        if (!specifier || !ts.isStringLiteral(specifier)) {
+            errors.push("dependency must use a relative core path");
+            return;
+        }
+        // MCP composition uses only these accepted provider-core peers. Native
+        // provider files and other package imports remain outside the graph.
+        const peerSuffix = specifier.text.startsWith("@ccc/device-lab/providers/")
+            ? specifier.text.slice("@ccc/device-lab/providers/".length)
+            : boundary.providerRoot && specifier.text.startsWith(".")
+                ? relative(resolve(boundary.providerRoot), resolve(dirname(file), specifier.text)).split(sep).join("/")
+                : undefined;
+        const peerLayer = boundary.providerRoot && peerSuffix ? flowPeerLayers.get(peerSuffix) : undefined;
+        if (peerLayer) {
+            if (!(layer === "application" || peerLayer === "domain" || layer === "ports" && peerLayer === "ports" && typeOnly)) {
+                errors.push(`forbidden ${layer} dependency: ${specifier.text}`);
+            }
+            return;
+        }
+        if (!specifier.text.startsWith(".")) {
             errors.push("dependency must use a relative core path");
             return;
         }

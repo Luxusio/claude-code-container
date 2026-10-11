@@ -72,18 +72,16 @@ export function createPhysicalStopApplication(ports) {
         return { exited: false, error: `iOS physical recording did not exit within 3000ms for ${deviceId}; recording metadata and physical lease were preserved for retry.` };
     }
 
-    /** @param {string} deviceId @param {string} operation @param {{found: boolean}} transition */
+    /** @param {string} deviceId @param {string} operation @param {{found: boolean}} transition
+     * @returns {import("../ports/physical-stop.mjs").PhysicalStopOutcome} */
     function stateConflict(deviceId, operation, transition) {
-        return ports.textResult(false, JSON.stringify({
-            ok: false, error: "owner-device-state-conflict", backend: ports.backend,
-            deviceId, operation, found: transition.found,
-        }));
+        return { kind: "conflict", backend: ports.backend, deviceId, operation, found: transition.found };
     }
 
-    /** @param {string} deviceId */
+    /** @param {string} deviceId @returns {Promise<import("../ports/physical-stop.mjs").PhysicalStopOutcome>} */
     async function stop(deviceId) {
         const device = ports.find(deviceId);
-        if (!device) return undefined;
+        if (!device) return { kind: "missing" };
         const claim = claimLifecycle(deviceId, device, "stop");
         if (!claim.transition.matched) return stateConflict(deviceId, "stop-claim", claim.transition);
         const adb = ports.backend === "android-device" ? ports.discoverAdb() : undefined;
@@ -94,7 +92,7 @@ export function createPhysicalStopApplication(ports) {
                     ? { recording: { ...device.recording, active: false, endedAt: ports.now() } }
                     : {});
             } else abortLifecycle(deviceId, claim.lifecycle, device);
-            return ports.textResult(false, stopped.error);
+            return { kind: "failure", error: stopped.error };
         }
         const current = currentLifecycleDevice(deviceId, claim.lifecycle);
         if (!current) return stateConflict(deviceId, "stop", { found: Boolean(ports.find(deviceId)) });
@@ -102,7 +100,7 @@ export function createPhysicalStopApplication(ports) {
         delete updated.lifecycle;
         const transition = ports.transition(deviceId, current, updated);
         if (!transition.matched) return stateConflict(deviceId, "stop", transition);
-        return ports.jsonResult({ device: ports.withTargetStatus(updated), stopped: false, detached: false, physicalDevicePoweredOff: false });
+        return { kind: "stopped", device: updated };
     }
 
     return { stop, claimLifecycle, currentLifecycleDevice, abortLifecycle, cleanup };

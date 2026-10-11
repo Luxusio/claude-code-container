@@ -1,48 +1,11 @@
 # Ordered device-flow architecture
 
-The public `run_flow` facade delegates its complete sequential workflow to
-`packages/device-lab/providers/application/device-flow.mjs`. Domain policy in
-`domain/device-flow.mjs` owns the 50-step limit and normalized target sharing;
-`ports/device-flow.d.mts` declares the required semantic observations, scope,
-dispatch and rendering operations. The facade retains schemas, MCP codecs,
-native provider effects, broker locks and destructive admission authority.
+The shared `providers/application/device-flow.mjs` owns bounded step admission, sequential dispatch, fresh per-step broker scopes and stop-on-error. Its required ports return finite transport/tool/wait observation facts with opaque native payloads. The domain decides failure from a reported error or `ok:false`, and unmet text/app waits from `matched:false`, `found:false` or an app wait reporting `running:false`. The core returns semantic invalid/complete outcomes and never reads MCP content, renders a reply or mutates a wire result.
 
-Each step is read and validated immediately before execution. Earlier effects
-can therefore change later observations. The application creates a fresh broker
-scope for every valid step. Inside that callback, operation resolution happens
-before step-argument rereading, normalization and dispatch. Only this dispatch
-construction and execution are caught; validation, admission presentation and
-post-execution processing retain their original exception boundaries.
+The native MCP `device-flow-adapter.mjs`, composed in `server.mjs`, decodes text JSON into these finite facts. It retains the complete native result as opaque payload. After the shared core finishes, the adapter applies action and compact/detail presentation and appends native image/nontext attachments after the outer summary. Each step's attachment range refers to that final response. Presentation cannot erase the core's failed-step decision. JSON/content decoding is outside the MCP request application.
 
-The application resolves the operation again after the awaited dispatch. It
-classifies the raw result before presenting it, so compact action output cannot
-erase a provider failure. Presented native blocks remain ordered after the outer
-JSON summary, including early stop and continue-on-error flows. Labels, truthy
-or falsy `stopOnError`, own legacy `name` refusal and mutable step-array length
-retain their existing observation behavior.
+Public schemas and destructive admission remain controlling. Invalid, empty, oversized or forbidden steps are refused before dispatch. Destructive confirmation remains per-step. Each executed step uses fresh state-dependent routing, so earlier effects can change later observations. Failures retain prior native payloads; stopOnError decides whether later steps run. Native dispatch exceptions are decoded at the boundary and classified by the core.
 
-Target inheritance first requires the tool schema's `required` array to include
-`deviceId`, then requires each individual target property to exist. Only
-`deviceId` and `incarnationId` are inherited. An explicit changed `deviceId`
-suppresses the inherited target group; changing `backend` alone does not.
-Per-step destructive confirmation remains explicit.
+Target inheritance uses the existing required-deviceId schema eligibility. Only deviceId and incarnationId are shared, and an explicit different deviceId suppresses the inherited target group. Provider and broker authorization/owner/lease guards remain in their existing native compositions.
 
-The three `src/__tests__/architecture/device-flow-*.test.ts` witnesses cover
-ordered core traces, the actual frozen versus current MCP facade and required
-type/dependency contracts. The baseline is revision
-`10c8618383811ced1f24305c35f6098ab858d25d`, frozen before production edits in the
-ignored `proof/device-flow-baseline` directory with a SHA256 manifest. The facade
-witness imports frozen local schema, argument, admission and output modules,
-substitutes leaf transport/provider effects and verifies byte-identical original
-provider aliases. Integration can rematerialize the same revision if that ignored
-archive is absent. Existing canonical-flow, flow-output, flow-wait and
-broker-call-flow tests retain actual stdio, raw-error and native-output coverage.
-The architecture compiler must execute the negative type witnesses; runtime test
-transpilation alone cannot prove them.
-
-This is a source migration candidate until independent code/security review and
-focused QA pass. Package proof separately imports the new provider exports from
-an isolated assembled or packed installation. Root shipping proof separately
-runs the shipped or bundled MCP entry over actual stdio and records the combined
-integration outcome. Native and reliability acceptance remains unverified here;
-this guide does not credit those gates, all of M07 or the overall migration.
+Verification retains ordinary public flow/output/wait/stdio and current facade cases, focused semantic core cases, and a small consumed static port contract. Runtime TypeScript compiler fixtures and incidental mutable-property/order contracts are not part of this boundary. Build/shipping checks and native acceptance remain separate qualification steps; this source cut grants no operation or whole-Goal certification.

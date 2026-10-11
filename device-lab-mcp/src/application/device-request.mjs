@@ -99,42 +99,6 @@ export function createDeviceRequest(ports) {
 
     const DEVICE_FLOW_ALLOWED_TOOLS = new Set(ports.DEVICE_FLOW_TOOL_NAMES);
 
-    /** @param {import("../ports/device-request.mjs").DeviceContent} item */
-    function summarizeContentItem(item) {
-        const text = item.text || "";
-        try {
-            return { type: "json", value: JSON.parse(text) };
-        } catch {
-            return { type: "text", text };
-        }
-    }
-
-    /** @param {string} name @param {Result} result @param {import("../ports/device-request.mjs").DeviceContent[]} nativeContent */
-    function summarizeToolResult(name, result, nativeContent) {
-        const content = [];
-        // A range stays small even for many native blocks and survives diagnostic
-        // truncation of step.content. Index 0 is the outer JSON summary.
-        const contentIndex = nativeContent.length + 1;
-        for (const item of result?.content || []) {
-            if (item.type === "text") content.push(summarizeContentItem(item));
-            else nativeContent.push(item);
-        }
-        const contentCount = nativeContent.length + 1 - contentIndex;
-        const isError = Boolean(result?.isError) || content.some((item) => item.type === "json" && item.value?.ok === false);
-        const unmetWait = !isError && content.some((item) => item.type === "json" && (
-            (["mobile_wait_for_text", "mobile_wait_for_app"].includes(name) && item.value?.matched === false)
-            ||
-            (name === "mobile_wait_for_text" && item.value?.found === false)
-            || (name === "mobile_wait_for_app" && (item.value?.found === false || item.value?.running === false))
-        ));
-        return {
-            isError: isError || unmetWait,
-            ...(unmetWait ? { error: "wait-condition-not-met" } : {}),
-            ...(contentCount ? { contentIndex, contentCount } : {}),
-            ...(content.length ? { content } : {}),
-        };
-    }
-
     /** @param {import("../ports/device-request.mjs").DestructiveDecision} policy */
     function policyDeniedResult(policy) {
         return ports.textResult(false, JSON.stringify({ ok: false, policy }, null, 2));
@@ -1500,7 +1464,7 @@ export function createDeviceRequest(ports) {
 
     /** @param {Args} args @param {Options} options @returns {Promise<Result>} */
     async function handleRunFlow(args, options) {
-        return ports.runDeviceFlow(args, options, { toolInputError: ports.toolInputError, flowOperationAllowed: ports.flowOperationAllowed, toolOperation: ports.toolOperation, flowStepArguments: ports.flowStepArguments, normalizePublicToolArgs: ports.normalizePublicToolArgs, withBrokerOperation: ports.withBrokerOperation, dispatchTool, evaluateDestructivePolicy: ports.evaluateDestructivePolicy, policyDeniedResult, summarizeToolResult, actionResult: ports.actionResult,
+        return ports.runDeviceFlow(args, options, { toolInputError: ports.toolInputError, flowOperationAllowed: ports.flowOperationAllowed, toolOperation: ports.toolOperation, flowStepArguments: ports.flowStepArguments, normalizePublicToolArgs: ports.normalizePublicToolArgs, withBrokerOperation: ports.withBrokerOperation, dispatchTool, evaluateDestructivePolicy: ports.evaluateDestructivePolicy, policyDeniedResult, actionResult: ports.actionResult,
             unexpectedError: (message) => ports.textResult(false, message),
             textFailure: (message) => ports.textResult(false, message),
             renderFlow: (value, { toolName, detail }) => ports.flowJsonResult(detail ? value : ports.compactToolValue(toolName, value), { detail }),

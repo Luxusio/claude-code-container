@@ -1,81 +1,48 @@
-import { FLOW_MAX_STEPS } from "../domain/device-flow.mjs";
-
-/**
- * Read each turn immediately before its effects; property reads are part of the
- * existing contract, including repeated reads and failures outside dispatch.
- * @template Raw, Presented, Content, Policy
- * @template {{content: Content[]}} Reply
+import { FLOW_MAX_STEPS, flowFailure, isFlowArguments } from '../domain/device-flow.mjs';
+/** @template Payload
  * @param {import('../domain/device-flow.mjs').FlowArguments} args
  * @param {import('../ports/device-flow.mjs').DeviceFlowOptions} options
- * @param {import('../ports/device-flow.mjs').DeviceFlowPorts<Raw, Presented, Content, Reply, Policy>} ports
- * @returns {Promise<Reply>}
- */
-export async function runDeviceFlow(args, { toolName, toolAllowed, detail }, ports) {
-    /** @type {Content[]} */
-    const nativeContent = [];
-    /** @param {string | import('../domain/device-flow.mjs').FlowValue} value */
-    const finish = (value) => {
-        if (value && typeof value === "object" && value.ok === false) value = { error: "flow-step-failed", ...value };
-        const response = typeof value === "string"
-            ? ports.textFailure(value)
-            : ports.renderFlow(value, { toolName, detail });
-        response.content.push(...nativeContent);
-        return response;
-    };
+ * @param {import('../ports/device-flow.mjs').DeviceFlowPorts<Payload>} ports
+ * @returns {Promise<import('../domain/device-flow.mjs').FlowOutcome<Payload>>} */
+export async function runDeviceFlow(args, { toolName, toolAllowed }, ports) {
     const { steps, stopOnError = true } = args;
-    if (!Array.isArray(steps)) return finish(`${toolName} requires steps array`);
-    if (steps.length === 0) return finish(`${toolName} requires at least one step`);
-    if (steps.length > FLOW_MAX_STEPS) return finish(`${toolName} supports at most ${FLOW_MAX_STEPS} steps`);
-
-    /** @type {import('../domain/device-flow.mjs').FlowStepSummary[]} */
+    if (!Array.isArray(steps)) return { kind: 'invalid', message: `${toolName} requires steps array` };
+    if (!steps.length) return { kind: 'invalid', message: `${toolName} requires at least one step` };
+    if (steps.length > FLOW_MAX_STEPS) return { kind: 'invalid', message: `${toolName} supports at most ${FLOW_MAX_STEPS} steps` };
+    /** @type {import('../domain/device-flow.mjs').FlowStepOutcome<Payload>[]} */
     const results = [];
-    for (let index = 0; index < steps.length; index += 1) {
-        const step = steps[index] || {};
-        const tool = typeof step.tool === "string" ? step.tool : "";
-        const label = (typeof step.label === "string" && step.label) || tool || `step-${index + 1}`;
-        if (!tool || Object.hasOwn(step, "name")) {
-            const summary = { index, label, isError: true, error: "Flow step requires tool; name is not supported" };
-            results.push(summary);
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
+    for (let index = 0; index < steps.length; index++) {
+        /** @type {unknown} */ const rawStep = steps[index];
+        const step = isFlowArguments(rawStep) ? rawStep : {};
+        const tool = 'tool' in step && typeof step.tool === 'string' ? step.tool : '';
+        const label = 'label' in step && typeof step.label === 'string' && step.label || tool || `step-${index + 1}`;
+        let error = !tool || Object.hasOwn(step, 'name') ? 'Flow step requires tool; name is not supported'
+            : !toolAllowed(tool) ? `${toolName} does not allow step tool: ${tool}` : null;
+        const rawArgs = 'arguments' in step ? step.arguments : undefined;
+        /** @type {import('../domain/device-flow.mjs').FlowArguments|undefined} */
+        let stepArgs;
+        if (rawArgs !== undefined) {
+            if (!isFlowArguments(rawArgs)) error ||= 'Flow step arguments must be an object';
+            else stepArgs = rawArgs;
         }
-        if (!toolAllowed(tool)) {
-            const summary = { index, label, tool, isError: true, error: `${toolName} does not allow step tool: ${tool}` };
-            results.push(summary);
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
+        if (!error) error = ports.toolInputError(tool, stepArgs) || (!ports.flowOperationAllowed(tool, stepArgs) ? `${toolName} does not allow step action: ${tool}` : null);
+        /** @type {import('../domain/device-flow.mjs').FlowStepOutcome<Payload>} */
+        let summary;
+        if (error) {
+            if (error === `${tool} requires confirmDestructive:true`) {
+                const operation = ports.toolOperation(tool, stepArgs);
+                const observation = ports.destructiveDenial(operation, stepArgs);
+                summary = { index, label, tool, operation, payload: observation.payload, ...flowFailure(operation, observation), failed: true };
+            } else summary = { index, label, ...(tool && error !== 'Flow step requires tool; name is not supported' ? { tool } : {}), failed: true, error };
+        } else {
+            let observation;
+            try { observation = await ports.withBrokerOperation(() => ports.dispatchTool(ports.toolOperation(tool, stepArgs), ports.normalizePublicToolArgs(tool, ports.flowStepArguments(tool, args, stepArgs)))); }
+            catch (failure) { observation = ports.dispatchFailure(failure); }
+            const operation = ports.toolOperation(tool, stepArgs);
+            summary = { index, label, tool, operation, payload: observation.payload, ...flowFailure(operation, observation) };
         }
-
-        if (step.arguments !== undefined && (!step.arguments || typeof step.arguments !== "object" || Array.isArray(step.arguments))) {
-            results.push({ index, label, tool, isError: true, error: "Flow step arguments must be an object" });
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
-        }
-        const inputError = ports.toolInputError(tool, step.arguments) || (!ports.flowOperationAllowed(tool, step.arguments) ? `${toolName} does not allow step action: ${tool}` : null);
-        if (inputError) {
-            if (inputError === `${tool} requires confirmDestructive:true`) {
-                const operation = ports.toolOperation(tool, step.arguments);
-                const denied = ports.policyDeniedResult(ports.evaluateDestructivePolicy(operation, step.arguments));
-                results.push({ index, label, tool, ...ports.summarizeToolResult(operation, ports.actionResult(tool, operation, denied, { detail }), nativeContent) });
-            } else results.push({ index, label, tool, isError: true, error: inputError });
-            if (stopOnError) return finish({ ok: false, stoppedAt: index, results });
-            continue;
-        }
-        // A preceding step may have changed the broker or device state.
-        let result;
-        try {
-            result = await ports.withBrokerOperation(() => ports.dispatchTool(ports.toolOperation(tool, step.arguments), ports.normalizePublicToolArgs(tool, ports.flowStepArguments(tool, args, step.arguments)), { detail }));
-        } catch (err) {
-            result = ports.unexpectedError(`Unexpected error: ${/** @type {Error} */ (err).message}`);
-        }
-        const operation = ports.toolOperation(tool, step.arguments);
-        const classified = ports.summarizeToolResult(operation, result, []);
-        const presented = ports.actionResult(tool, operation, result, { detail });
-        const summary = { index, label, tool, ...ports.summarizeToolResult(operation, presented, nativeContent),
-            ...(classified.isError ? { isError: true } : {}) };
         results.push(summary);
-        if (summary.isError && stopOnError) return finish({ ok: false, stoppedAt: index, results });
+        if (summary.failed && stopOnError) return { kind: 'complete', ok: false, stoppedAt: index, results };
     }
-
-    return finish({ ok: results.every((result) => !result.isError), results });
+    return { kind: 'complete', ok: results.every(result => !result.failed), results };
 }

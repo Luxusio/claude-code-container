@@ -21,3 +21,14 @@ export function sharedFlowTarget(args, stepArgs, targetProperties) {
     }
     return sharedTarget;
 }
+
+/** @param {string} operation @param {import('./device-flow.mjs').FlowObservation<unknown>} observation */
+export function flowFailure(operation, observation) {
+    const failed = observation.transportFailed || observation.values.some(value => value.ok === false);
+    const wait = operation === 'mobile_wait_for_text' || operation === 'mobile_wait_for_app';
+    const unmet = !failed && wait && observation.values.some(value => value.matched === false || value.found === false || operation === 'mobile_wait_for_app' && value.running === false);
+    return { failed: failed || unmet, ...(unmet ? { error: 'wait-condition-not-met' } : {}) };
+}
+
+/** @param {unknown} value @returns {value is import('./device-flow.mjs').FlowArguments} */
+export function isFlowArguments(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }

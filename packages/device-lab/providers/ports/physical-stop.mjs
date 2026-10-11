@@ -6,18 +6,15 @@
  * @typedef {{attempted: boolean, signaled: boolean, exited?: boolean, reason?: string}} PhysicalSignalResult
  * @typedef {{status: number | null, stdout: string, stderr: string}} PhysicalCommandResult
  * @typedef {{exited: boolean, signaled?: boolean, reason?: string, error?: string, recordingStopped?: boolean}} PhysicalExitResult
- * @typedef {{content: Array<{type: string, text: string}>, isError: boolean}} PhysicalStopResponse
+ * @typedef {{kind:"missing"}|{kind:"failure",error:string|undefined}|{kind:"conflict",backend:"android-device"|"ios-device",deviceId:string,operation:string,found:boolean}|{kind:"stopped",device:PhysicalDevice}} PhysicalStopOutcome
  */
-/** Native storage and presentation remain synchronous.
+/** Native storage and identity observations remain synchronous.
  * @typedef {{
  * find: (deviceId: string) => PhysicalDevice | null,
  * transition: (deviceId: string, expected: PhysicalDevice, replacement: PhysicalDevice | null) => PhysicalTransition,
  * now: () => string,
  * runtimeId: () => string,
- * signalRecording: (recording: PhysicalRecording, signal: "SIGINT") => PhysicalSignalResult,
- * textResult: (ok: boolean, text: string | undefined) => PhysicalStopResponse,
- * jsonResult: (value: object) => PhysicalStopResponse,
- * withTargetStatus: (device: PhysicalDevice) => object
+ * signalRecording: (recording: PhysicalRecording, signal: "SIGINT") => PhysicalSignalResult
  * }} PhysicalStopCommonPorts
  */
 /** Selected ADB commands use the existing native runner's default UTF-8 result.

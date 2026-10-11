@@ -26,7 +26,7 @@ import { TOOLS as OPERATION_TOOLS } from "./operation-tools.mjs";
 import { actionResult } from "./action-output.mjs";
 import { flowStepArguments, normalizeToolArgs, normalizePublicToolArgs, toolInputError } from "./tool-arguments.mjs";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
-import { runDeviceFlow } from "@ccc/device-lab/providers/application/device-flow.mjs";
+import { runMcpDeviceFlow as runDeviceFlow } from "./device-flow-adapter.mjs";
 import { createDeviceRequest } from "./application/device-request.mjs";
 export { HYPER_V_LINUX_GUI_TIMEOUT_MS, HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS, HYPER_V_LIFECYCLE_RPC_BUFFER_MS, HYPER_V_CLEANUP_RESERVE_MS, HYPER_V_CREATE_RPC_TIMEOUT_MS, HYPER_V_HOST_LOCK_WAIT_MS, HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS, HYPER_V_MAX_BOOT_TIMEOUT_MS, MAX_DEVICE_HELPER_TIMEOUT_MS, MAX_DEVICE_OPERATION_TIMEOUT_MS, brokerDeviceToolExecutionTimeout } from "./domain/device-request.mjs";
 

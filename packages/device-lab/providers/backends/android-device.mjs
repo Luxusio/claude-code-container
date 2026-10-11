@@ -50,9 +50,6 @@ const physicalStop = createPhysicalStopApplication({
     now,
     runtimeId: randomUUID,
     signalRecording: signalOwnedRuntimeProcess,
-    textResult,
-    jsonResult,
-    withTargetStatus,
     discoverAdb: () => androidDiscovery().adb,
     // The selected native runner uses default UTF-8; retain its raw result.
     stopAdbRecording: (adb, serial) => /** @type {import("../ports/physical-stop.mjs").PhysicalCommandResult} */ (run(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"])),
@@ -609,7 +606,14 @@ async function handleAndroidRealToolUnlocked(name, args) {
 
         case "device_stop": {
             const { deviceId } = args;
-            return physicalStop.stop(deviceId);
+            const outcome = await physicalStop.stop(deviceId);
+            if (outcome.kind === "missing") return undefined;
+            if (outcome.kind === "failure") return textResult(false, outcome.error);
+            if (outcome.kind === "conflict") return textResult(false, JSON.stringify({
+                ok: false, error: "owner-device-state-conflict", backend: outcome.backend,
+                deviceId: outcome.deviceId, operation: outcome.operation, found: outcome.found,
+            }));
+            return jsonResult({ device: withTargetStatus(outcome.device), stopped: false, detached: false, physicalDevicePoweredOff: false });
         }
 
         case "device_status":

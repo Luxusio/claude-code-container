@@ -29,7 +29,6 @@ export interface DeviceFlowPorts {
  dispatchTool(name: string, args: DeviceArguments, options?: DeviceRequestOptions): Promise<DeviceResult>;
  evaluateDestructivePolicy(name: string, args: unknown): DestructiveDecision;
  policyDeniedResult(policy: DestructiveDecision): DeviceResult;
- summarizeToolResult(name: string, result: DeviceResult, nativeContent: DeviceContent[]): FlowSummary;
  actionResult(publicName: string, operation: string, result: DeviceResult, options: DeviceRequestOptions): DeviceResult;
  unexpectedError(message: string): DeviceResult;
  textFailure(message: string): DeviceResult;
