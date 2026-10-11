@@ -1,5 +1,5 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync } from "fs";
-import { validateOwnerDevicePayload } from "../domain/owner-device-payload.mjs";
+import { createOwnerStateContent } from "../application/owner-state-content.mjs";
 
 export const OWNER_DEVICE_STATE_FILE_LIMIT_BYTES = 256 * 1024;
 export const OWNER_DEVICE_ID_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,128}$/;
@@ -35,11 +35,12 @@ function readBounded(descriptor, limitBytes) {
     throw stateError("owner-devices-file-too-large");
 }
 
-function validateDevicesPayload(parsed) {
-    const result = validateOwnerDevicePayload(parsed, OWNER_DEVICE_ID_PATTERN);
-    if (result.kind === "invalid") throw stateError("owner-devices-state-invalid");
-    return result.devices;
-}
+const ownerStateContent = createOwnerStateContent({
+    idPattern: OWNER_DEVICE_ID_PATTERN,
+    byteLength: text => Buffer.byteLength(text, "utf8"),
+    isStateError: error => error instanceof OwnerDeviceStateError,
+    stateError,
+});
 
 export function readOwnerDeviceStateFile(file, limitBytes = OWNER_DEVICE_STATE_FILE_LIMIT_BYTES) {
     let descriptor = null;
@@ -50,14 +51,7 @@ export function readOwnerDeviceStateFile(file, limitBytes = OWNER_DEVICE_STATE_F
         const path = lstatSync(file);
         if (!sameOpenedFile(opened, path)) throw stateError("owner-devices-state-invalid");
         if (opened.size > limitBytes) throw stateError("owner-devices-file-too-large");
-        let parsed;
-        try {
-            parsed = JSON.parse(readBounded(descriptor, limitBytes));
-        } catch (error) {
-            if (error instanceof OwnerDeviceStateError) throw error;
-            throw stateError("owner-devices-state-invalid", error);
-        }
-        return validateDevicesPayload(parsed);
+        return ownerStateContent.read(() => readBounded(descriptor, limitBytes));
     } catch (error) {
         if (error instanceof OwnerDeviceStateError) throw error;
         if (error?.code === "ENOENT" && descriptor === null) return [];
@@ -69,8 +63,5 @@ export function readOwnerDeviceStateFile(file, limitBytes = OWNER_DEVICE_STATE_F
 }
 
 export function assertOwnerDeviceStateWritable(devices, limitBytes = OWNER_DEVICE_STATE_FILE_LIMIT_BYTES) {
-    validateDevicesPayload({ devices });
-    if (Buffer.byteLength(JSON.stringify({ devices }, null, 2), "utf8") > limitBytes) {
-        throw stateError("owner-devices-file-too-large");
-    }
+    ownerStateContent.assertWritable(devices, limitBytes);
 }

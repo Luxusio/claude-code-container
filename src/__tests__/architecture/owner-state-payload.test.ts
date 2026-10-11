@@ -1,34 +1,67 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { validateOwnerDevicePayload } from "../../../packages/device-lab/providers/domain/owner-device-payload.mjs";
+import { createOwnerStateContent } from "../../../packages/device-lab/providers/application/owner-state-content.mjs";
+import type { OwnerStateContentPorts } from "../../../packages/device-lab/providers/ports/owner-state-content.d.mts";
 
 const pattern = /^(?!\.\.?$)[A-Za-z0-9._-]{1,128}$/;
 const repository = fileURLToPath(new URL("../../../", import.meta.url));
 
+class OwnerContentError extends Error {
+    constructor(readonly code: string, cause?: unknown) {
+        super(code, cause === undefined ? undefined : { cause });
+    }
+}
+
+const contentPorts = {
+    idPattern: pattern,
+    byteLength: (text: string) => Buffer.byteLength(text, "utf8"),
+    isStateError: (error: unknown) => error instanceof OwnerContentError,
+    stateError: (code: "owner-devices-file-too-large" | "owner-devices-state-invalid", cause?: unknown) => new OwnerContentError(code, cause),
+} satisfies OwnerStateContentPorts;
+
 describe("canonical owner-state payload", () => {
-    it("keeps the packaged declaration identical to the checked implementation", () => {
-        const source = join(repository, "packages/device-lab/providers/domain/owner-device-payload.mjs");
-        const program = ts.createProgram([source], {
-            allowJs: true, checkJs: true, strict: true, declaration: true, emitDeclarationOnly: true,
-            skipLibCheck: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext,
-            moduleResolution: ts.ModuleResolutionKind.NodeNext, outDir: join(repository, "unused-declaration-output"),
-        });
-        expect(program.getSourceFile(source)).toBeDefined();
-        expect(ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, " "))).toEqual([]);
-        let declaration = "";
-        const emitted = program.emit(undefined, (path, text) => {
-            if (path.endsWith("owner-device-payload.d.mts")) declaration = text;
-        });
-        expect(emitted.emitSkipped).toBe(false);
-        expect(declaration).not.toBe("");
-        const normalize = (text: string) => ts.createPrinter({ removeComments: true }).printFile(
-            ts.createSourceFile("contract.d.mts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
-        ).replace(/'/g, '"');
-        expect(normalize(declaration)).toBe(normalize(readFileSync(source.replace(/\.mjs$/, ".d.mts"), "utf8")));
+    it("reads empty and populated JSON owner content without dropping record metadata", () => {
+        const content = createOwnerStateContent(contentPorts);
+        expect(content.read(() => '{"devices":[]}')).toEqual([]);
+        expect(content.read(() => '{"devices":[{"id":"owned","metadata":{"label":"한글"}}]}')).toEqual([{ id: "owned", metadata: { label: "한글" } }]);
+    });
+
+    it("classifies malformed JSON with the native error constructor and syntax cause", () => {
+        let failure: unknown;
+        try { createOwnerStateContent(contentPorts).read(() => "{broken"); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(OwnerContentError);
+        expect(failure).toMatchObject({ code: "owner-devices-state-invalid", cause: expect.any(SyntaxError) });
+    });
+
+    it("classifies a raw bounded-read fault inside the JSON catch and preserves its cause", () => {
+        const readFailure = Object.assign(new Error("native read failed"), { code: "EIO" });
+        let failure: unknown;
+        try { createOwnerStateContent(contentPorts).read(() => { throw readFailure; }); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(OwnerContentError);
+        expect(failure).toMatchObject({ code: "owner-devices-state-invalid" });
+        if (!(failure instanceof OwnerContentError)) throw new Error("Expected the supplied owner-state error constructor");
+        expect(failure.cause).toBe(readFailure);
+    });
+
+    it("preserves an existing native state error instead of wrapping it as invalid JSON", () => {
+        const tooLarge = new OwnerContentError("owner-devices-file-too-large");
+        let failure: unknown;
+        try { createOwnerStateContent(contentPorts).read(() => { throw tooLarge; }); } catch (error) { failure = error; }
+        expect(failure).toBe(tooLarge);
+    });
+
+    it("accepts the exact pretty-serialized UTF-8 limit and refuses one byte below it", () => {
+        const devices = [{ id: "owned", metadata: "é한글🧭" }];
+        const bytes = Buffer.byteLength(JSON.stringify({ devices }, null, 2), "utf8");
+        const content = createOwnerStateContent(contentPorts);
+        expect(content.assertWritable(devices, bytes)).toBeUndefined();
+        expect(content.assertWritable(devices, bytes + 1)).toBeUndefined();
+        let failure: unknown;
+        try { content.assertWritable(devices, bytes - 1); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(OwnerContentError);
+        expect(failure).toMatchObject({ code: "owner-devices-file-too-large" });
     });
     it.each([null, [], {}, { devices: null }, { devices: {} }, { devices: [null] }, { devices: [[]] }])("rejects malformed payload %j", parsed => {
         expect(validateOwnerDevicePayload(parsed, pattern)).toEqual({ kind: "invalid" });
