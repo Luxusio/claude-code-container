@@ -8475,7 +8475,15 @@ function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
         preview: (owner, _request, params) => {
             const planned = lifecycleCommandPlanning(owner, params, normalized, false);
             if (planned.response.status !== 200 || !planned.result) return { ok: false, response: planned.response };
-            return { ok: true, plan: planned.result };
+            const result = planned.result;
+            const command = result.providerCommand;
+            if (command && !("error" in command) && command.mode !== "exec" && command.mode !== "detached" && command.mode !== "noop") {
+                return { ok: true, plan: { ...result, providerCommand: { error: "missing-provider-command", missing: [] } } };
+            }
+            const providerCommand: ProviderCommand | { error: string; missing: string[] } | null = command && !("error" in command)
+                ? { ...command, mode: command.mode === "exec" ? "exec" : command.mode === "detached" ? "detached" : "noop" }
+                : command;
+            return { ok: true, plan: { ...result, providerCommand } };
         },
         refreshPhysicalLease: (owner, request, device) => refreshPhysicalDeviceLeaseForOperation(owner, {
             stateKey: request.stateKey, backend: request.backend, device,
