@@ -706,6 +706,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         });
         expect(session.isError).not.toBe(true);
         const sessionPayload = JSON.parse(((session.content as Array<{ text?: string }>)[0].text ?? "{}")).automation as {
+            deviceId: string;
             appium: { available: boolean; appium: string; xcuitestDriver: string; xcodebuild: string; xcrun: string; missing: string[] };
             session: unknown;
             automationName: string;
@@ -720,6 +721,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             xcrun: join(binDir, "xcrun"),
         });
         expect(sessionPayload.session).toBeNull();
+        expect(sessionPayload.deviceId).toBe(ownedDeviceId);
         expect(sessionPayload.automationName).toBe("XCUITest");
         expect(sessionPayload.lazy).toBe(true);
 

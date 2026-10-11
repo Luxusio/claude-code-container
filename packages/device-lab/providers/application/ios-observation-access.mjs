@@ -198,7 +198,7 @@ export function createIosObservationAccess(ports) {
     }
     /** @param {Device} device @param {import('../ports/ios-observation-access.mjs').IosAccessDiscovery} [discovery] */
     function automationStatus(device, discovery) {
-        return { ...(physical ? { deviceId: device.id } : {}), appium: ports.appiumDiscovery(discovery), session: device.appium || null,
+        return { deviceId: device.id, appium: ports.appiumDiscovery(discovery), session: device.appium || null,
             automationName: "XCUITest", lazy: true, ...(physical ? { physical: true } : {}) };
     }
     /** @param {string} name @param {import('../ports/ios-observation-access.mjs').IosAccessArgs} args
