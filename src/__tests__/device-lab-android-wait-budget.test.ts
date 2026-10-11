@@ -152,6 +152,44 @@ for (const [backend, handle] of [["android-emulator", handleAndroidTool], ["andr
     });
 }
 
+describe("physical access observations", () => {
+    it("reads lazy session status without refreshing the physical attachment lease", async () => {
+        const heartbeat = vi.mocked(leases.heartbeatPhysicalLease);
+        heartbeat.mockClear();
+        const run = vi.spyOn(commands, "run").mockImplementation(() => {
+            throw new Error("lazy-session-status-must-not-execute-adb");
+        });
+        const response = await handleAndroidRealTool("mobile_session_status", { backend: "android-device", deviceId: device.id });
+        expect(response?.isError).not.toBe(true);
+        expect(payload(response)).toMatchObject({ deviceId: device.id, session: null, lazy: true, automationName: "UiAutomator2" });
+        expect(heartbeat).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+    });
+
+    it("refreshes the exact physical lease before get-state and refuses the probe after lease loss", async () => {
+        let leaseRefreshed = false;
+        vi.mocked(leases.heartbeatPhysicalLease).mockImplementation(() => {
+            leaseRefreshed = true;
+            return { ok: true, lease: {} };
+        });
+        const run = vi.spyOn(commands, "run").mockImplementation((_executable, args) => {
+            expect(leaseRefreshed, "get-state must follow lease admission").toBe(true);
+            expect(args).toEqual(["-s", device.serial, "get-state"]);
+            return result("device\n");
+        });
+        const args = { backend: "android-device", deviceId: device.id };
+        expect(payload(await handleAndroidRealTool("device_status", args))).toMatchObject({
+            hostState: { stdout: "device", stderr: "", status: 0 },
+        });
+        vi.mocked(leases.heartbeatPhysicalLease).mockReturnValue({ ok: false, error: "attachment replaced" });
+        run.mockClear();
+        const refused = await handleAndroidRealTool("device_status", args);
+        expect(refused?.isError).toBe(true);
+        expect(JSON.stringify(refused)).toContain("attachment replaced");
+        expect(run).not.toHaveBeenCalled();
+    });
+});
+
 describe("physical clipboard public handler", () => {
     it.each(["", "한글 📋\nsecond line\n"])("returns exact clipboard text %j after lease validation", async (text) => {
         const run = vi.spyOn(commands, "run").mockReturnValue(result(text));

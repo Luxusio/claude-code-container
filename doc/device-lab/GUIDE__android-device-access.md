@@ -1,0 +1,15 @@
+# Android device access and waits
+
+`createAndroidDeviceAccess` owns status, session status, command execution, screenshot and UI observation decisions. Its `request(name, args)` is synchronous; `waitFor(name, args)` is asynchronous. Required emulator and physical-device ports supply finite owned records, discovery and Appium facts, guarded targets, individual text/binary/timed commands and an accepted wait budget. Native facades retain locks, ownership, physical leases, serial qualification, command limits and public result presentation.
+
+Emulator status, session, exec and screenshot use plain owned-record lookup; UI and waits use guarded target selection. Physical exec, screenshot, UI and waits use guarded selection with native prerequisite and lease authority. Physical status refreshes the exact lease first, then discovers tools and optionally observes ADB `get-state`. Physical session status is a lazy owned-record/Appium observation without a lease heartbeat. Unknown records fall through; refused guarded targets prevent effects.
+
+UI observation dumps to the device-specific remote path, reads with `exec-out`, and falls back to shell `cat` when that read fails. Dump failure prevents reads; failed reads remain command failures. The application projects the returned source and dump diagnostics rather than hiding this sequence behind a complete UI callback.
+
+Binary screenshot execution remains bounded in the native adapter. Native code converts its Buffer into finite byte-prefix, length, base64 and diagnostic facts; the domain decides the outcome. A valid PNG remains an image despite nonzero command status. Zero status retains the existing image result even without a PNG signature; otherwise the existing bounded error text is returned. This path allocates no host screenshot file and adds no file-disposal policy.
+
+`createAndroidAccessWait` is a wait-only composition shared by device access and the raw compatibility exports. `waitForAndroidText(adb, targetArgs, remotePath, text, timeoutMs, intervalMs)` and `waitForAndroidApp(adb, targetArgs, packageName, timeoutMs, intervalMs)` keep their native signatures and return the inward asynchronous result. Their native composition supplies timed commands and the existing monotonic wait budget; application code owns polling, fallback, pause admission and latest-result selection.
+
+Each command must have a positive remaining allowance. An exhausted budget starts no new dump, read, fallback or app command; the deadline returns the latest admitted result or error. Text waits retain dump/read failures and successful not-found observations. App waits distinguish clean `pidof` absence from command failure. Native errors and signals remain diagnostic failures. Physical missing-text refusal and the existing emulator behavior remain distinct; both require a package name for app waits after target selection.
+
+Reset/app management, file listing, lifecycle, environment, control/transfer and accepted public Appium routing remain in their existing inward peers. This Android seam does not establish completion of those workflows on other providers or certify native hardware execution.

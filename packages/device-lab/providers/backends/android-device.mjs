@@ -6,13 +6,14 @@ import { readPhysicalLeases as observationPhysicalLeases } from "../state/physic
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
 import { createAndroidWirelessApplication } from "../application/android-wireless.mjs";
 import { androidWifiSerial, androidWifiTransport, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
-import { waitForAndroidText, waitForAndroidApp } from "./android-wait.mjs";
+import { createAndroidDeviceAccess } from "../application/android-device-access.mjs";
+import { createWaitBudget } from "../wait-budget.mjs";
 import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { androidDiscovery, androidScreenshotResult, appiumDiscovery } from "./android.mjs";
+import { androidDiscovery, appiumDiscovery } from "./android.mjs";
 import { run, runBuffer, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
@@ -111,6 +112,7 @@ function abortAndroidRealLifecycle(deviceId, lifecycle, original) {
     return physicalStop.abortLifecycle(deviceId, lifecycle, original);
 }
 
+/** @returns {{ok:true,lease:object}|{ok:false,error:string}} */
 function refreshAndroidRealDeviceLease(device) {
     if (!device?.id || !device?.serial || !device?.leaseClaimId || !device?.leaseClaimNonce) {
         return { ok: false, error: "Android physical device lease metadata is incomplete; clear stale owner metadata and attach the device again" };
@@ -196,29 +198,6 @@ function runAdbDeviceCommand(device, adb, args, options = {}) {
 function adbJsonResult(device, adb, args, payload, options = {}) {
     const r = runAdbDeviceCommand(device, adb, args, options);
     return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
-}
-
-function appiumStatus(device, android) {
-    const discovery = appiumDiscovery(android);
-    return {
-        deviceId: device.id,
-        appium: { available: discovery.available, missing: discovery.missing, tools: { appium: discovery.appium, adb: discovery.adb } },
-        session: device.appium || null,
-        lazy: true,
-        automationName: "UiAutomator2",
-    };
-}
-
-function dumpAndroidUiWithAdb(device, adb) {
-    const remotePath = `/sdcard/window-${device.id}.xml`;
-    const dump = run(adb, adbArgsForDevice(device, ["shell", "uiautomator", "dump", remotePath]));
-    if (dump.status !== 0) return { error: dump };
-
-    let read = run(adb, adbArgsForDevice(device, ["exec-out", "cat", remotePath]));
-    if (read.status !== 0) read = run(adb, adbArgsForDevice(device, ["shell", "cat", remotePath]));
-    if (read.status !== 0) return { error: read };
-
-    return { source: read.stdout, remotePath, dump, read };
 }
 
 async function sleep(ms) {
@@ -382,6 +361,45 @@ const androidAppManagementPorts = {
     },
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
+
+/** @type {import('../ports/android-device-access.mjs').AndroidPhysicalAccessPorts<NonNullable<ReturnType<typeof findAndroidRealDevice>>, ReturnType<typeof androidDiscovery>>} */
+const androidDeviceAccessPorts = {
+    variant: "physical",
+    device: id => findAndroidRealDevice(id),
+    discovery: () => androidDiscovery(),
+    backend: discovery => androidRealBackend(discovery),
+    publicDevice: device => withTargetStatus(device),
+    appium: discovery => { const facts = appiumDiscovery(discovery); return { available: facts.available, missing: facts.missing, tools: { appium: facts.appium, adb: facts.adb } }; },
+    target(id) {
+        const selected = ensureAdbDevice(id);
+        if (selected.unknown) return { kind: "unknown" };
+        if (selected.error) return { kind: "refused", message: selected.error };
+        return { kind: "ready", target: selected };
+    },
+    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    capture: target => {
+        const result = runBuffer(target.adb, adbArgsForDevice(target.device, ["exec-out", "screencap", "-p"]), {
+            maxBuffer: ANDROID_SCREENSHOT_MAX_BUFFER_BYTES, timeout: ANDROID_SCREENSHOT_TIMEOUT_MS,
+        });
+        const stdout = Buffer.from(result.stdout || []);
+        return { status: result.status, byteLength: stdout.length, prefix: Array.from(stdout.subarray(0, 8)),
+            base64: stdout.toString("base64"), stdoutText: stdout.toString(), stderrText: result.stderr?.toString() || "" };
+    },
+    budget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+    executeTimed: (target, args, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, args), timeoutMs),
+    refreshLease: device => { const lease = refreshAndroidRealDeviceLease(device); return lease.ok ? { ok: true } : { ok: false, message: lease.error }; },
+    hostState: (device, adb) => run(adb, ["-s", device.serial, "get-state"]),
+};
+const androidDeviceAccess = createAndroidDeviceAccess(androidDeviceAccessPorts);
+
+/** @param {import('../ports/android-device-access.mjs').AndroidAccessOutcome|undefined} outcome */
+function presentAndroidAccessOutcome(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "text") return textResult(false, outcome.message);
+    if (outcome.kind === "command-failure") return fail(outcome.command);
+    return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
+}
 
 /** @type {import('../ports/mobile-environment.mjs').AndroidPhysicalEnvironmentPorts} */
 const androidEnvironmentPorts = {
@@ -594,41 +612,14 @@ async function handleAndroidRealToolUnlocked(name, args) {
             return physicalStop.stop(deviceId);
         }
 
-        case "device_status": {
-            const { deviceId } = args;
-            const device = findAndroidRealDevice(deviceId);
-            if (!device) return undefined;
-            const lease = refreshAndroidRealDeviceLease(device);
-            if (!lease.ok) return textResult(false, lease.error);
-            const discovery = androidDiscovery();
-            let hostState = null;
-            if (discovery.adb) {
-                const r = run(discovery.adb, ["-s", device.serial, "get-state"]);
-                hostState = { stdout: r.stdout.trim(), stderr: r.stderr, status: r.status };
-            }
-            return jsonResult({ device: withTargetStatus(device), backend: androidRealBackend(discovery), hostState, appium: appiumStatus(device, discovery) });
-        }
+        case "device_status":
+            return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
-        case "device_exec": {
-            const { deviceId, command } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const r = run(target.adb, adbArgsForDevice(target.device, ["shell", command]));
-            return r.status === 0 ? jsonResult({ stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
-        }
+        case "device_exec":
+            return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
-        case "device_screenshot": {
-            const { deviceId } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const r = runBuffer(target.adb, adbArgsForDevice(target.device, ["exec-out", "screencap", "-p"]), {
-                maxBuffer: ANDROID_SCREENSHOT_MAX_BUFFER_BYTES,
-                timeout: ANDROID_SCREENSHOT_TIMEOUT_MS,
-            });
-            return androidScreenshotResult(r);
-        }
+        case "device_screenshot":
+            return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
         case "device_record_video_status": {
             const { deviceId } = args;
@@ -780,22 +771,11 @@ async function handleAndroidRealToolUnlocked(name, args) {
         case "mobile_revoke_permission":
             return presentAndroidAppOutcome(androidAppManagement.request(name, args));
 
-        case "mobile_session_status": {
-            const { deviceId } = args;
-            const device = findAndroidRealDevice(deviceId);
-            if (!device) return undefined;
-            return jsonResult({ deviceId, ...appiumStatus(device) });
-        }
+        case "mobile_session_status":
+            return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
-        case "mobile_dump_ui": {
-            const { deviceId } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const dump = dumpAndroidUiWithAdb(target.device, target.adb);
-            if (dump.error) return fail(dump.error);
-            return jsonResult({ provider: "adb-uiautomator", source: dump.source, remotePath: dump.remotePath, stdout: dump.dump.stdout, stderr: dump.dump.stderr });
-        }
+        case "mobile_dump_ui":
+            return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
         case "mobile_tap":
         case "mobile_double_tap":
@@ -826,25 +806,11 @@ async function handleAndroidRealToolUnlocked(name, args) {
         case "mobile_get_clipboard":
             return presentAndroidEnvironmentOutcome(androidEnvironment.request(name, args));
 
-        case "mobile_wait_for_text": {
-            const { deviceId, text, timeoutMs, intervalMs } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (!text) return textResult(false, "Android wait-for-text requires text");
-            const result = await waitForAndroidText(target.adb, adbArgsForDevice(target.device, []), `/sdcard/window-${target.device.id}.xml`, text, timeoutMs, intervalMs);
-            return result.error ? fail(result.error) : jsonResult({ ...result, text, provider: "adb-uiautomator" });
-        }
+        case "mobile_wait_for_text":
+            return presentAndroidAccessOutcome(await androidDeviceAccess.waitFor(name, args));
 
-        case "mobile_wait_for_app": {
-            const { deviceId, packageName, timeoutMs, intervalMs } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            if (!packageName) return textResult(false, "Android wait-for-app requires packageName");
-            const result = await waitForAndroidApp(target.adb, adbArgsForDevice(target.device, []), packageName, timeoutMs, intervalMs);
-            return result.error ? fail(result.error) : jsonResult({ ...result, packageName, provider: "adb" });
-        }
+        case "mobile_wait_for_app":
+            return presentAndroidAccessOutcome(await androidDeviceAccess.waitFor(name, args));
 
         default:
             return undefined;

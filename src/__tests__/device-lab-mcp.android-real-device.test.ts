@@ -529,6 +529,10 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
             for (const request of [
                 { name: "status", arguments: { deviceId } },
                 { name: "exec", arguments: { deviceId, command: "echo fenced" } },
+                { name: "screenshot", arguments: { deviceId } },
+                { name: "ui", arguments: { deviceId } },
+                { name: "wait_for_text", arguments: { deviceId, text: "Hello", timeoutMs: 100, implicitBroker: false } },
+                { name: "wait_for_app", arguments: { deviceId, appId: "com.example.Real", timeoutMs: 100, implicitBroker: false } },
                 { name: "click", arguments: { deviceId, x: 1, y: 2 } },
                 { name: "set_orientation", arguments: { deviceId, orientation: "portrait" } },
                 { name: "upload", arguments: { deviceId, localPath: uploadPath, remotePath: "/sdcard/fenced.txt" } },
