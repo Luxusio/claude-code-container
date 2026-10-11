@@ -1,52 +1,21 @@
 # Container tool installation policy
 
-The application owns complete Claude, npm tool, bubblewrap and uv workflows.
-Nineteen required synchronous capabilities include semantic captured commands,
-reporting and catalog access; a bubblewrap session has three operations. The
-constructor observes no effects. Native composition retains unchanged public and
-private facades, command assets, registry authority, working directories, root
-privileges, stdio and timeout values. Requested-tool routing remains separate.
+The existing `src/container-setup.ts` facade composes `src/application/tooling/container-installation.ts` through the named synchronous operations in `src/ports/tooling/container-installation.ts`. The application owns the Claude, npm tool, bubblewrap and uv decisions and stops immediately after a failed stage. Native composition owns subprocess commands, protocol parsing, working directories, root privileges, stdio, timeouts and public messages. Requested-tool routing remains separately owned.
 
-Each capture selects native spawn before runtime lookup and effectful argument
-or metadata evaluation. Later stages observe fresh runtime choices for Claude,
-npm and uv. Bubblewrap resolves one runtime before its first probe and retains
-it across all commands. Logging captures the console object and log function
-before interpolation, preserving its receiver. Underlying callbacks return the
-original result objects, including changing getters and thrown values.
+Ports return finite observations and mutation outcomes. The application does not inspect stdout, stderr, process status, shell programs or cleanup patterns. Native failure evidence and the prepared Claude handle are opaque to it. The handle contains the probe program and a per-call note deduplication Set. Ordinary functions are sufficient for this trusted composition; there is no capture, getter or reflection contract.
 
-Claude prepares its opaque probe once, reports notes with one per-call Set, and
-preserves VALID/RESTORED/INSTALL and confirmation ordering. Npm retains original
-catalog find/element identity, binary fallback and metadata reads; cleanup
-pattern calculation precedes capture. READY still publishes the wrapper; MISSING
-completes cleanup, shim cleanup, installation and reshim first. Bubblewrap treats
-only missing status42 as installation, uv only status1 after its original probe
-checks. Do not unify the different timeout or status policies.
+Claude accepts a valid or restored launcher, installs only when needed, and confirms the installation with the same prepared handle. Successful initial probes publish filtered, sanitized notes before interpreting their result, including an invalid result. Failed initial probes and unusable confirmations publish no notes. A usable confirmation shares deduplication with the initial probe. Every unusable confirmation produces the distinct installation-left-no-usable-launcher failure with the last three sanitized diagnostic lines.
 
-Before implementation, independent old-source asset texts and inert emitted
-command scenarios establish golden fingerprints. Both shipped payloads execute
-actual facade scenarios and compare those fingerprints, plus strict type
-consumers. New core/native tests cover every branch, stage failure, getter order,
-metadata identity, live versus pinned runtime and callee/receiver capture. Never
-use real installation, providers, network or credential material as fixtures.
+Npm selects the configured registry definition, then observes the wrapper and cached executable. A present wrapper requires no further work. A ready cache still needs wrapper creation. Only a missing cache triggers package cleanup, shim cleanup, installation and reshim before wrapper creation. Each failed mutation prevents later effects. Native code computes package cleanup patterns and writes the wrapper.
 
-The shipped-payload checks also replace native spawn during installation metadata
-evaluation and replace the logger during message interpolation. They assert the
-previously selected function and receiver are used, then prove later captures see
-the replacement. Restore property descriptors and native bindings in `finally`.
+Failure interpretation remains operation-specific. ETIMEDOUT means timeout throughout these observations. Exit124/137 mean ordinary failure for the npm wrapper and uv probes, but timeout for the cached executable and bounded mutations. Only bubblewrap exit42 and uv exit1 represent missing dependencies. Bubblewrap selects one runtime for its probe, package-index update, installation and confirmation; other native operations resolve the selected runtime when called. Unexpected native exceptions propagate.
+
+Verification uses finite fake-port workflow cases, consumed negative type contracts, native command/output tests and public setup tests. Existing launcher-layout tests execute the actual shell assets against private filesystem fixtures. Required joined QA also builds the distribution, exercises actual shipping, and runs compiled and extracted public entries. These checks should verify behavior and authority rather than source text, arity, property descriptors or old/new invocation traces.
 
 ## Local verification and CI cost
 
-For this architecture migration, use local independent review and QA. Start or
-rerun hosted CI only when the user explicitly authorizes that execution. Before
-pushing, check whether the push would trigger CI; existing permission to commit
-or push does not override the user's restriction on CI costs. Preserve local
-commits and evidence while hosted execution is unauthorized. Historical CI
-results do not certify a newly changed candidate, and unavailable native lanes
-remain unverified.
+Use local independent review and QA for this migration. Hosted CI requires explicit user authorization; committing or pushing does not override that restriction. Preserve local commits and evidence while hosted execution is unauthorized. Historical CI results do not certify a changed candidate.
 
 ## Known ceiling
 
-This parity extraction adds no package version, retry, cleanup, cache policy,
-privilege or installer framework. Native platform, rootless/remote runtime,
-registry/network/cache permissions and races retain separate acceptance needs.
-Remaining M11 operations and M12-M14 are not completed by these workflows.
+These boundaries add no installer framework, retry, package-version, cleanup or cache policy. Controlled native mocks and shell fixtures do not certify live registry/network, platform, rootless/remote runtime or permission behavior. Requested-tool routing and the other M11–M14 obligations remain separately subject to the full architecture Goal.

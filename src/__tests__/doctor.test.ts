@@ -82,7 +82,7 @@ describe("runDoctor", () => {
         mockIsDockerRunning.mockReturnValue(true);
         mockIsImageExists.mockReturnValue(true);
         mockGetImageLabel.mockReturnValue(null);
-        mockIsContainerRunning.mockReturnValue(true);
+        mockIsContainerRunning.mockReset().mockReturnValue(true);
         mockIsContainerExists.mockReturnValue(true);
         mockGetContainerName.mockReturnValue("ccc-myproject-abc123");
         mockGetActiveSessionsForProject.mockReset().mockImplementation(() => { throw new Error("Doctor must not prune ownership receipts"); });
@@ -165,6 +165,36 @@ describe("runDoctor", () => {
             (c) => (c[1] as string[])?.includes("version"),
         );
         expect(dockerVersionCalls).toHaveLength(0);
+    });
+
+    it("propagates a lock directory read failure without pruning or deleting locks", () => {
+        const error = new Error("lock directory unreadable");
+        mockExistsSync.mockReturnValue(true);
+        mockReaddirSync.mockImplementation(() => { throw error; });
+        spawnSyncMock.mockReturnValue(makeResult(0, "ready"));
+
+        expect(() => runDoctor("/project/myproject")).toThrow(error);
+        expect(mockGetActiveSessionsForProject).not.toHaveBeenCalled();
+        expect(mockUnlinkSync).not.toHaveBeenCalled();
+    });
+
+    it("skips launcher diagnosis when a running container stops during diagnosis", () => {
+        mockIsContainerRunning.mockReturnValueOnce(true).mockReturnValueOnce(false);
+        spawnSyncMock.mockReturnValue(makeResult(0, "ready"));
+
+        expect(runDoctor("/project/myproject")).toBe(true);
+        expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Container: Running"));
+        expect(spawnSyncMock.mock.calls.some(call => (call[1] as string[])[0] === "exec")).toBe(false);
+    });
+
+    it("diagnoses the launcher when a stopped container starts during diagnosis", () => {
+        mockIsContainerRunning.mockReturnValueOnce(false).mockReturnValueOnce(true);
+        spawnSyncMock.mockReturnValue(makeResult(0, "ready"));
+
+        expect(runDoctor("/project/myproject")).toBe(true);
+        expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Container: Stopped"));
+        expect(console.log).toHaveBeenCalledWith("  ✓ Claude: ready");
+        expect(console.log).toHaveBeenCalledWith("Summary: OK with 1 warning(s)");
     });
 
     it("returns false when image is not built", () => {

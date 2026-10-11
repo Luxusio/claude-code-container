@@ -775,36 +775,73 @@ export function buildClaudeLauncherReportCommand(
     ].join("\n");
 }
 
+type ToolProcessEvidence = Pick<ReturnType<typeof spawnSync>, "status" | "error"> & {
+    stdout?: string | Buffer | null;
+    stderr?: string | Buffer | null;
+};
+interface PreparedClaudeProbe { script: string; seen: Set<string> }
+
 function nativeContainerToolInstallation() {
-    return createContainerToolInstallation<string>({
-        prepareClaudeProbe: () => buildClaudeProbeScript(CLAUDE_LAYOUT_PATHS),
-        captureClaudeProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, probeScript: string) => spawnSync(cli,
-        ["exec", containerName, "sh", "-c", boundedContainerMutation(probeScript, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
-        { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS },
-    ))(spawnSync, runtimeCli()),
-        captureClaudeInstall: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string) => spawnSync(cli,
-        [
-            "exec",
-            containerName,
-            "sh",
-            "-c",
-            boundedContainerMutation(getToolByName("claude")!.installCommand),
-        ],
-        { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
-    ))(spawnSync, runtimeCli()),
+    function failed(result: ToolProcessEvidence, exitTimeout = true) {
+        const timeout = (result.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT"
+            || (exitTimeout && (result.status === 124 || result.status === 137));
+        return { kind: "failed" as const, reason: timeout ? "timeout" as const : "failure" as const, evidence: result };
+    }
+    function effect(result: ToolProcessEvidence) {
+        return result.error || result.status !== 0 ? failed(result) : { kind: "succeeded" as const };
+    }
+    function runClaude(target: string, probe: PreparedClaudeProbe) {
+        return spawnSync(runtimeCli(),
+            ["exec", target, "sh", "-c", boundedContainerMutation(probe.script, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
+            { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS });
+    }
+    return createContainerToolInstallation<PreparedClaudeProbe, ToolProcessEvidence>({
+        prepareClaudeProbe: () => ({ script: buildClaudeProbeScript(CLAUDE_LAYOUT_PATHS), seen: new Set<string>() }),
+        probeClaude: (target, probe) => {
+            const result = runClaude(target, probe);
+            if (result.error || result.status !== 0) return failed(result);
+            reportProbeNotes(result.stderr, probe.seen);
+            const state = (result.stdout ?? "").trim();
+            if (state === "VALID") return { kind: "valid" };
+            if (state.startsWith("RESTORED")) return { kind: "restored", version: sanitizeForTerminal(state.slice("RESTORED".length).trim()) };
+            return { kind: state === "INSTALL" ? "install-needed" : "invalid" };
+        },
+        confirmClaude: (target, probe) => {
+            const result = runClaude(target, probe);
+            const state = (result.stdout ?? "").trim();
+            if (result.error || result.status !== 0 || (state !== "VALID" && !state.startsWith("RESTORED"))) {
+                return { kind: "unusable", evidence: result };
+            }
+            reportProbeNotes(result.stderr, probe.seen);
+            return { kind: "usable" };
+        },
+        installClaude: (containerName: string) => {
+            const result = spawnSync(runtimeCli(),
+                [
+                    "exec",
+                    containerName,
+                    "sh",
+                    "-c",
+                    boundedContainerMutation(getToolByName("claude")!.installCommand),
+                ],
+                { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
         getNpmTools: () => getNpmTools(),
-        captureNpmProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
-        ["exec", containerName, "sh", "-c",
-         `[ -x /home/ccc/.local/bin/${tool.cmd} ] || echo ${tool.cmd}`],
-        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-    ))(spawnSync, runtimeCli()),
-        captureNpmCachedProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli, [
-        "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-        `if [ ! -x /usr/bin/timeout ]; then echo "Tool verification requires timeout" >&2; exit 1; fi
+        probeNpmWrapper: (containerName: string, tool: NpmInstallationDefinition) => {
+            const result = spawnSync(runtimeCli(),
+                ["exec", containerName, "sh", "-c",
+                `[ -x /home/ccc/.local/bin/${tool.cmd} ] || echo ${tool.cmd}`],
+                { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+            );
+            if (result.error || result.status !== 0) return failed(result, false);
+            return { kind: (result.stdout ?? "").trim() === tool.cmd ? "missing" : "present" };
+        },
+        probeNpmCache: (containerName: string, tool: NpmInstallationDefinition) => {
+            const result = spawnSync(runtimeCli(), [
+                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+                `if [ ! -x /usr/bin/timeout ]; then echo "Tool verification requires timeout" >&2; exit 1; fi
 [ -x ~/.local/bin/mise ] || { echo "mise is unavailable for tool verification" >&2; exit 1; }
 node_installed=false
 for node_binary in "\${MISE_DATA_DIR:-$HOME/.local/share/mise}"/installs/node/22.*/bin/node; do
@@ -822,86 +859,141 @@ case "$status" in
     137) echo "Verification of persisted ${tool.cmd} was killed (exit 137)" >&2; exit "$status" ;;
     *) echo "Verification of persisted ${tool.cmd} failed (exit $status)" >&2; exit "$status" ;;
 esac`,
-    ], { encoding: "utf-8", timeout: 20_000 }))(spawnSync, runtimeCli()),
-        captureNpmCleanup: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, cleanupPattern: string) => spawnSync(cli,
-            [
-                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-                boundedShortContainerMutation(`gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPattern} 2>/dev/null`),
-            ],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-        ))(spawnSync, runtimeCli()),
-        captureNpmShimCleanup: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
-            ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation(`rm -f ~/.local/share/mise/shims/${tool.cmd}`)],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-        ))(spawnSync, runtimeCli()),
-        captureNpmInstall: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
-            [
-                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-                boundedContainerMutation(`~/.local/bin/mise exec node@22 -- npm install -g ${tool.pkg}`),
-            ],
-            { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
-        ))(spawnSync, runtimeCli()),
-        captureNpmReshim: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string) => spawnSync(cli,
-            ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation("~/.local/bin/mise reshim")],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-        ))(spawnSync, runtimeCli()),
-        captureNpmWrapper: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string, tool: NpmInstallationDefinition) => spawnSync(cli,
-        [
-            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            boundedShortContainerMutation(`if cat > /home/ccc/.local/bin/${tool.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${tool.cmd} "$@"\nWRAPPER\nthen\n    chmod +x /home/ccc/.local/bin/${tool.cmd} && exit 0\nfi\nrm -f /home/ccc/.local/bin/${tool.cmd}\nexit 1`),
-        ],
-        { stdio: "pipe", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
-    ))(spawnSync, runtimeCli()),
+            ], { encoding: "utf-8", timeout: 20_000 });
+            if (result.error || result.status !== 0) return failed(result);
+            const state = result.stdout.trim();
+            return { kind: state === "READY" ? "ready" : state === "MISSING" ? "missing" : "invalid" };
+        },
+        cleanupNpmPackage: (containerName: string, tool: NpmInstallationDefinition) => {
+            const name = tool.pkg.split("/").pop();
+            const scope = tool.pkg.includes("/") ? tool.pkg.split("/")[0] + "/" : "";
+            const cleanupPattern = `"$gdir/${scope}.${name}-"*`;
+            const result = spawnSync(runtimeCli(),
+                [
+                    "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+                    boundedShortContainerMutation(`gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPattern} 2>/dev/null`),
+                ],
+                { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
+        cleanupNpmShim: (containerName: string, tool: NpmInstallationDefinition) => {
+            const result = spawnSync(runtimeCli(),
+                ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation(`rm -f ~/.local/share/mise/shims/${tool.cmd}`)],
+                { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
+        installNpm: (containerName: string, tool: NpmInstallationDefinition) => {
+            const result = spawnSync(runtimeCli(),
+                [
+                    "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+                    boundedContainerMutation(`~/.local/bin/mise exec node@22 -- npm install -g ${tool.pkg}`),
+                ],
+                { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
+        reshimNpm: (containerName: string) => {
+            const result = spawnSync(runtimeCli(),
+                ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation("~/.local/bin/mise reshim")],
+                { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
+        writeNpmWrapper: (containerName: string, tool: NpmInstallationDefinition) => {
+            const result = spawnSync(runtimeCli(),
+                [
+                    "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+                    boundedShortContainerMutation(`if cat > /home/ccc/.local/bin/${tool.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${tool.cmd} "$@"\nWRAPPER\nthen\n    chmod +x /home/ccc/.local/bin/${tool.cmd} && exit 0\nfi\nrm -f /home/ccc/.local/bin/${tool.cmd}\nexit 1`),
+                ],
+                { stdio: "pipe", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
         createBubblewrapSession: (containerName) => {
             const cli = runtimeCli();
             return {
-                probe: () => spawnSync(cli, [
-        "exec", containerName, "timeout", "-k", "2s", "8s", "sh", "-c",
-        // Distinguish a missing dependency from runtime/probe failures. Run as
-        // the same unprivileged container user that starts Codex.
-        "command -v bwrap >/dev/null 2>&1 || exit 42; exec bwrap --version",
-    ], { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS }),
-                updatePackageIndex: () => spawnSync(cli, [
-        "exec", "-u", "root", containerName,
-        "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
-        "apt-get", "-o", "APT::Update::Error-Mode=any", "update",
-    ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS }),
-                install: () => spawnSync(cli, [
-        "exec", "-u", "root", containerName,
-        "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
-        "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "--no-install-recommends", "bubblewrap",
-    ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS }),
+                probe: () => {
+                    const result = spawnSync(cli, [
+                        "exec", containerName, "timeout", "-k", "2s", "8s", "sh", "-c",
+                        // Distinguish a missing dependency from runtime/probe failures. Run as
+                        // the same unprivileged container user that starts Codex.
+                        "command -v bwrap >/dev/null 2>&1 || exit 42; exec bwrap --version",
+                    ], { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS });
+                    if (!result.error && result.status === 42) return { kind: "missing" };
+                    return result.error || result.status !== 0 ? failed(result) : { kind: "available" };
+                },
+                updatePackageIndex: () => effect(spawnSync(cli, [
+                    "exec", "-u", "root", containerName,
+                    "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
+                    "apt-get", "-o", "APT::Update::Error-Mode=any", "update",
+                ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS })),
+                install: () => effect(spawnSync(cli, [
+                    "exec", "-u", "root", containerName,
+                    "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
+                    "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "--no-install-recommends", "bubblewrap",
+                ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS })),
             };
         },
-        captureUvProbe: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string) => spawnSync(cli,
-        ["exec", containerName, "sh", "-c",
-         "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
-        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-    ))(spawnSync, runtimeCli()),
-        captureUvInstall: () => ((spawnSync: typeof import("child_process").spawnSync, cli: string) =>
-            (containerName: string) => spawnSync(cli,
-        ["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
-         boundedContainerMutation("~/.local/bin/mise use -g uv@latest")],
-        { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
-    ))(spawnSync, runtimeCli()),
-        reportProbeNotes: (stderr, seen) => { reportProbeNotes(stderr, seen); return undefined; },
-        probeDiagnostic,
-        sanitizeForTerminal,
-        captureLog: () => {
-            const receiver = console;
-            const log = receiver.log;
-            return (message) => { log.call(receiver, message); return undefined; };
+        probeUv: (containerName: string) => {
+            const result = spawnSync(runtimeCli(),
+                ["exec", containerName, "sh", "-c",
+                "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
+                { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+            );
+            if (result.error || (result.status !== 0 && result.status !== 1)) return failed(result, false);
+            return { kind: result.status === 0 ? "available" : "missing" };
         },
-        reportUvProgress: () => { process.stderr.write("\x1b[2m▸ Installing uv (one-time, ~30-60s)...\x1b[0m\n"); return undefined; },
+        installUv: (containerName: string) => {
+            const result = spawnSync(runtimeCli(),
+                ["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
+                boundedContainerMutation("~/.local/bin/mise use -g uv@latest")],
+                { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
+            );
+            return effect(result);
+        },
+        report: event => {
+            switch (event.kind) {
+                case "claude-restored": console.log(event.version ? `Reusing claude ${event.version} from the shared volume.` : "Reusing claude from the shared volume."); break;
+                case "claude-installing": console.log("Installing claude (first run)..."); break;
+                case "npm-installing": console.log(`Installing ${event.command}...`); break;
+                case "bubblewrap-installing": console.log("Installing bubblewrap for Codex..."); break;
+                case "uv-installing": process.stderr.write("\x1b[2m▸ Installing uv (one-time, ~30-60s)...\x1b[0m\n"); break;
+            }
+            return undefined;
+        },
+        fail: (failure, evidence) => {
+            const diagnostic = probeDiagnostic(evidence?.stderr?.toString());
+            switch (failure.kind) {
+                case "claude-probe-failed": throw new Error(failure.reason === "timeout" ? "Claude readiness probe timed out" : `Claude readiness probe failed${diagnostic}`);
+                case "claude-probe-invalid": throw new Error("Claude readiness probe returned an invalid result");
+                case "claude-confirmation-failed": throw new Error(`Claude installation left no usable launcher${diagnostic}`);
+                case "npm-definition-missing": throw new Error(`Requested tool ${failure.toolName} has no npm installation definition`);
+                case "npm-wrapper-failed": throw new Error(`Container npm tool probe ${failure.reason === "timeout" ? "timed out" : "failed"}`);
+                case "npm-cache-invalid": throw new Error(`Container ${failure.command} cached executable probe returned an invalid result`);
+                case "uv-probe-failed": throw new Error(`Container uv probe ${failure.reason === "timeout" ? "timed out" : "failed"}`);
+                case "mutation-failed": {
+                    const operations = {
+                        "claude-install": "Claude installation",
+                        "npm-cache": `Container ${failure.command} cached executable probe`,
+                        "npm-cleanup": `Container ${failure.command} cleanup`,
+                        "npm-shim-cleanup": `Container ${failure.command} shim cleanup`,
+                        "npm-install": `Container ${failure.command} installation`,
+                        "npm-reshim": `Container ${failure.command} reshim`,
+                        "npm-wrapper": `Container ${failure.command} wrapper creation`,
+                        "bubblewrap-probe": "Codex bubblewrap readiness probe",
+                        "bubblewrap-update": "Codex bubblewrap package index update",
+                        "bubblewrap-install": "Codex bubblewrap installation",
+                        "bubblewrap-confirmation": "Codex bubblewrap readiness check after installation",
+                        "uv-install": "Container uv installation",
+                    };
+                    throw new Error(`${operations[failure.mutation]} ${failure.reason === "timeout" ? "timed out" : "failed"}`);
+                }
+            }
+        },
     });
 }
-
 /**
  * Ensure claude is available in the container, in the shape the native updater
  * will keep managing: launcher symlink → versions/<v> inside the shared volume.

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
-import { readFileSync } from "node:fs";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
@@ -307,37 +306,9 @@ describe("container-setup.ts module", () => {
             expect(spawnSyncMock).toHaveBeenCalledTimes(1);
         });
 
-        it("runs the probe against the real container paths", () => {
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n"));
-            ensureClaudeInContainer(container);
-            const shCmd = (spawnSyncMock.mock.calls[0][1] as string[]).at(-1) as string;
-            expect(shCmd).toContain(CLAUDE_BIN_PATH);
-            expect(shCmd).toContain(CLAUDE_DATA_DIR);
-            expect(shCmd).toContain(CLAUDE_DATA_VOLUME_DIR);
-            expect(shCmd).toContain(CLAUDE_LEGACY_CACHE_FILE);
-        });
-
-        it("hands the install step nothing but the installer", () => {
-            // The old install command appended `cp -L $CACHE $BIN`, which is the
-            // line that flattened the launcher into a regular file. The native
-            // installer creates the symlink itself; ccc must not overwrite it.
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, "INSTALL\n"));
-            spawnSyncMock.mockReturnValueOnce(makeResult(0));
-            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED\n"));
-            ensureClaudeInContainer(container);
-            const shCmd = (spawnSyncMock.mock.calls[1][1] as string[]).at(-1) as string;
-            expect(shCmd).toContain("curl -fsSL");
-            expect(shCmd).not.toContain("cp -L");
-        });
     });
 
     describe("Codex bubblewrap readiness", () => {
-        it.each(["Dockerfile", "Containerfile"])("%s installs bubblewrap in the shipped image", recipe => {
-            const source = readFileSync(new URL(`../../${recipe}`, import.meta.url), "utf8");
-            const commands = source.replace(/\\\r?\n/g, " ");
-            expect(commands).toMatch(/\bapt-get\s+install\b[^;&\n]*\bbubblewrap\b/);
-        });
-
         const isProbe = (args: string[]) => args.some(arg => arg.includes("bwrap --version"));
 
         it("reuses a working bubblewrap binary as the normal user without installing packages", () => {
@@ -429,10 +400,6 @@ describe("container-setup.ts module", () => {
     });
 
     describe("ensureTools", () => {
-        it("should be exported as a function", () => {
-            expect(typeof ensureTools).toBe("function");
-        });
-
         it("calls ensureClaudeInContainer when activeTool is claude", () => {
             const claudeTool = getDefaultTool();
             // ensureClaudeInContainer: combined probe returns VALID

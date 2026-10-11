@@ -1,101 +1,112 @@
 import { describe, expect, it } from "vitest";
 import { createContainerToolInstallation } from "../../application/tooling/container-installation.js";
-import type { ContainerToolInstallationPorts, ContainerToolProbeObservation, CachedNpmObservation, NpmInstallationDefinition } from "../../ports/tooling/container-installation.js";
+import type { ContainerToolInstallationPorts, ContainerToolFailure, ContainerToolEvent, ClaudeProbeObservation, ClaudeConfirmation, NpmWrapperObservation, NpmCacheObservation, DependencyObservation, ContainerToolEffect } from "../../ports/tooling/container-installation.js";
 import type { ToolDefinition } from "../../domain/tool-registry.js";
 
-function fixture() {
-    const events: string[] = [], calls: unknown[][] = [], sets: Set<string>[] = [];
-    const probe = Symbol("opaque probe"), tool = { cmd: "gemini", pkg: "@google/gemini-cli" };
-    const results: Record<string, ContainerToolProbeObservation[]> = {};
-    let cli = 0;
-    function command(name: string) {
-        events.push(`capture:${name}`);
-        return function(this: unknown, ...args: unknown[]) {
-            events.push(name); calls.push([name, ...args]);
-            return results[name]?.shift() ?? { status: 0, stdout: name === "claude" ? "VALID" : name === "npm" ? "gemini" : name === "cache" ? "READY" : "", stderr: "" };
-        };
-    }
-    const ports: ContainerToolInstallationPorts<symbol> = {
-        prepareClaudeProbe() { events.push("prepare"); return probe; },
-        captureClaudeProbe() { return command("claude"); }, captureClaudeInstall() { return command("claude-install"); },
-        getNpmTools() { events.push("catalog"); return [tool]; },
-        captureNpmProbe() { return command("npm"); }, captureNpmCachedProbe() { return command("cache") as (target: string, tool: NpmInstallationDefinition) => CachedNpmObservation; },
-        captureNpmCleanup() { return command("cleanup"); }, captureNpmShimCleanup() { return command("shim"); }, captureNpmInstall() { return command("npm-install"); },
-        captureNpmReshim() { return command("reshim"); }, captureNpmWrapper() { return command("wrapper"); },
-        createBubblewrapSession() {
-            events.push("bubble-session"); cli++;
-            return {
-                probe: () => { events.push("bubble"); calls.push(["bubble", cli]); return results.bubble?.shift() ?? { status: 0 }; },
-                updatePackageIndex: () => { events.push("index"); calls.push(["index", cli]); return results.index?.shift() ?? { status: 0 }; },
-                install: () => { events.push("bubble-install"); calls.push(["bubble-install", cli]); return results["bubble-install"]?.shift() ?? { status: 0 }; },
-            };
-        },
-        captureUvProbe() { return command("uv"); }, captureUvInstall() { return command("uv-install"); },
-        reportProbeNotes(_stderr, seen) { events.push("notes"); sets.push(seen); return undefined; },
-        probeDiagnostic(stderr) { events.push("diagnostic"); return stderr ? `: ${stderr}` : ""; },
-        sanitizeForTerminal(text) { events.push("sanitize"); return text; },
-        captureLog() { events.push("capture:log"); return text => { events.push("log"); calls.push(["log", text]); return undefined; }; },
-        reportUvProgress() { events.push("uv-progress"); return undefined; },
-    };
-    return { ports, app: createContainerToolInstallation(ports), events, calls, sets, probe, tool, results };
-}
 const active = { name: "gemini" } as ToolDefinition;
-function thrown(action: () => unknown) { try { action(); } catch (error) { return error; } throw new Error("Expected failure"); }
+function fixture() {
+    const calls: string[] = [], events: ContainerToolEvent[] = [], failures: [ContainerToolFailure, symbol | undefined][] = [];
+    const evidence = Symbol("evidence"), probe = Symbol("probe");
+    const state = {
+        claude: { kind: "valid" } as ClaudeProbeObservation<symbol>, confirmation: { kind: "usable" } as ClaudeConfirmation<symbol>,
+        wrapper: { kind: "missing" } as NpmWrapperObservation<symbol>, cache: { kind: "ready" } as NpmCacheObservation<symbol>,
+        bubble: [{ kind: "available" }] as DependencyObservation<symbol>[], uv: { kind: "available" } as DependencyObservation<symbol>,
+        catalog: [{ cmd: "gemini", pkg: "@google/gemini-cli" }], effects: {} as Record<string, ContainerToolEffect<symbol>>,
+    };
+    const effect = (name: string): ContainerToolEffect<symbol> => { calls.push(name); return state.effects[name] ?? { kind: "succeeded" }; };
+    const ports: ContainerToolInstallationPorts<symbol, symbol> = {
+        prepareClaudeProbe() { calls.push("prepare"); return probe; },
+        probeClaude(target, handle) { expect([target, handle]).toEqual(["target", probe]); calls.push("claude"); return state.claude; },
+        confirmClaude(target, handle) { expect([target, handle]).toEqual(["target", probe]); calls.push("confirm"); return state.confirmation; },
+        installClaude: () => effect("claude-install"), getNpmTools() { calls.push("catalog"); return state.catalog; },
+        probeNpmWrapper() { calls.push("wrapper-probe"); return state.wrapper; }, probeNpmCache() { calls.push("cache"); return state.cache; },
+        cleanupNpmPackage: () => effect("cleanup"), cleanupNpmShim: () => effect("shim"), installNpm: () => effect("npm-install"),
+        reshimNpm: () => effect("reshim"), writeNpmWrapper: () => effect("wrapper"),
+        createBubblewrapSession(target) { expect(target).toBe("target"); calls.push("session"); return {
+            probe() { calls.push("bubble-probe"); return state.bubble.shift()!; }, updatePackageIndex: () => effect("index"), install: () => effect("bubble-install"),
+        }; },
+        probeUv() { calls.push("uv-probe"); return state.uv; }, installUv: () => effect("uv-install"),
+        report(event) { events.push(event); return undefined; }, fail(failure, detail) { failures.push([failure, detail]); throw new Error("refused"); },
+    };
+    return { app: createContainerToolInstallation(ports), state, calls, events, failures, evidence };
+}
 
-describe("complete container installation policy", () => {
-    it("constructs without reading even throwing capabilities", () => {
-        const ports = new Proxy({} as ContainerToolInstallationPorts<symbol>, { get() { throw new Error("eager read"); } });
-        expect(Object.keys(createContainerToolInstallation(ports))).toEqual(["ensureClaude", "ensureNpm", "ensureCodexBubblewrap", "ensureUv"]);
+describe("finite container installation policy", () => {
+    it.each(["valid", "restored"] as const)("accepts Claude %s", kind => {
+        const f = fixture(); f.state.claude = kind === "valid" ? { kind } : { kind, version: "1.2.3" };
+        expect(f.app.ensureClaude("target")).toBeUndefined(); expect(f.calls).toEqual(["prepare", "claude"]);
+        expect(f.events).toEqual(kind === "restored" ? [{ kind: "claude-restored", version: "1.2.3" }] : []);
     });
-    it.each(["VALID", "RESTORED", "RESTORED 1.2.3"])("preserves Claude %s branch and avoids installation", stdout => {
-        const f = fixture(); f.results.claude = [{ status: 0, stdout }]; expect(f.app.ensureClaude("target")).toBeUndefined();
-        expect(f.calls.filter(([name]) => name !== "log")).toEqual([["claude", "target", f.probe]]);
-        expect(f.events).toEqual(["prepare", "capture:claude", "claude", "notes", ...(stdout.startsWith("RESTORED") ? ["sanitize", "capture:log", "log"] : [])]);
+    it("installs then confirms Claude with the same opaque probe", () => {
+        const f = fixture(); f.state.claude = { kind: "install-needed" }; f.app.ensureClaude("target");
+        expect(f.calls).toEqual(["prepare", "claude", "claude-install", "confirm"]); expect(f.events).toEqual([{ kind: "claude-installing" }]);
     });
-
-    it.each([{ status: 124 }, { status: 137 }, { status: null, error: { code: "ETIMEDOUT" } }, { status: 1 }, { status: 0, stdout: "INVALID" }])("rejects unusable Claude probe %j without install", observation => {
-        const f = fixture(); f.results.claude = [observation]; expect(() => f.app.ensureClaude("target")).toThrow(/Claude readiness probe/); expect(f.calls.map(([name]) => name)).toEqual(["claude"]);
+    it.each(["invalid", "timeout", "failure"] as const)("refuses Claude %s before installation", reason => {
+        const f = fixture(); f.state.claude = reason === "invalid" ? { kind: "invalid" } : { kind: "failed", reason, evidence: f.evidence };
+        expect(() => f.app.ensureClaude("target")).toThrow("refused"); expect(f.calls).toEqual(["prepare", "claude"]);
+        expect(f.failures).toEqual([[reason === "invalid" ? { kind: "claude-probe-invalid" } : { kind: "claude-probe-failed", reason }, reason === "invalid" ? undefined : f.evidence]]);
     });
-    it.each(["READY", "MISSING"])("preserves npm cached %s order and original metadata", state => {
-        const f = fixture(); f.results.cache = [{ status: 0, stdout: state }]; f.app.ensureNpm("target", active);
-        expect(f.calls.filter(([name]) => name !== "log").map(([name]) => name)).toEqual(["npm", "cache", ...(state === "MISSING" ? ["cleanup", "shim", "npm-install", "reshim"] : []), "wrapper"]);
-        for (const call of f.calls.filter(([name]) => ["npm", "cache", "shim", "npm-install", "wrapper"].includes(String(name)))) expect(call[2]).toBe(f.tool);
-        if (state === "MISSING") expect(f.calls.find(([name]) => name === "cleanup")).toEqual(["cleanup", "target", '"$gdir/@google/.gemini-cli-"*']);
+    it("refuses unusable confirmation with native evidence", () => {
+        const f = fixture(); f.state.claude = { kind: "install-needed" }; f.state.confirmation = { kind: "unusable", evidence: f.evidence };
+        expect(() => f.app.ensureClaude("target")).toThrow("refused"); expect(f.calls).toEqual(["prepare", "claude", "claude-install", "confirm"]);
+        expect(f.failures).toEqual([[{ kind: "claude-confirmation-failed" }, f.evidence]]);
     });
-    it("avoids cache and mutations when wrapper probe does not name missing tool", () => {
-        const f = fixture(); f.results.npm = [{ status: 0, stdout: "" }]; f.app.ensureNpm("target", active); expect(f.calls).toEqual([["npm", "target", f.tool]]);
+    it("refuses missing catalog entry before npm work", () => {
+        const f = fixture(); f.state.catalog = []; expect(() => f.app.ensureNpm("target", active)).toThrow("refused");
+        expect(f.calls).toEqual(["catalog"]); expect(f.failures).toEqual([[{ kind: "npm-definition-missing", toolName: "gemini" }, undefined]]);
     });
-
-    it("retains direct cached stdout trim and invalid cache rejection", () => {
-        const f = fixture(); f.results.cache = [{ status: 0, stdout: "INVALID" }]; expect(() => f.app.ensureNpm("target", active)).toThrow("returned an invalid result"); expect(f.events).not.toContain("capture:wrapper");
-        const g = fixture(); g.results.cache = [{ status: 0 }]; expect(() => g.app.ensureNpm("target", active)).toThrow(TypeError); expect(g.events).not.toContain("capture:wrapper");
+    it("accepts a present wrapper without cache work", () => {
+        const f = fixture(); f.state.wrapper = { kind: "present" }; f.app.ensureNpm("target", active);
+        expect(f.calls).toEqual(["catalog", "wrapper-probe"]); expect(f.events).toEqual([]);
     });
-    it.each([0, 42])("preserves bubblewrap %s with one session", status => {
-        const f = fixture(); f.results.bubble = [{ status }, { status: 0 }]; f.app.ensureCodexBubblewrap("target");
-        expect(f.calls.filter(([name]) => name !== "log")).toEqual(status === 42 ? [["bubble", 1], ["index", 1], ["bubble-install", 1], ["bubble", 1]] : [["bubble", 1]]);
+    it.each(["ready", "missing"] as const)("repairs missing wrapper with %s cache", kind => {
+        const f = fixture(); f.state.cache = { kind }; f.app.ensureNpm("target", active);
+        expect(f.calls).toEqual(["catalog", "wrapper-probe", "cache", ...(kind === "missing" ? ["cleanup", "shim", "npm-install", "reshim"] : []), "wrapper"]);
+        expect(f.events).toEqual(kind === "missing" ? [{ kind: "npm-installing", command: "gemini" }] : []);
     });
-    it.each([0, 1])("preserves uv %s branch", status => {
-        const f = fixture(); f.results.uv = [{ status }]; f.app.ensureUv("target"); expect(f.calls.map(([name]) => name)).toEqual(status ? ["uv", "uv-install"] : ["uv"]); expect(f.events.includes("uv-progress")).toBe(status === 1);
+    it("refuses invalid cache before mutations", () => {
+        const f = fixture(); f.state.cache = { kind: "invalid" }; expect(() => f.app.ensureNpm("target", active)).toThrow("refused");
+        expect(f.calls).toEqual(["catalog", "wrapper-probe", "cache"]); expect(f.failures).toEqual([[{ kind: "npm-cache-invalid", command: "gemini" }, undefined]]);
     });
-    it.each([2, 124, 137])("uv status %s is probe failure rather than error-code timeout", status => {
-        const f = fixture(); f.results.uv = [{ status }]; expect(() => f.app.ensureUv("target")).toThrow("Container uv probe failed"); expect(f.events).not.toContain("uv-progress");
+    it.each(["wrapper", "cache"] as const)("forwards %s probe failure without later work", stage => {
+        const f = fixture(); f.state[stage] = { kind: "failed", reason: "timeout", evidence: f.evidence };
+        expect(() => f.app.ensureNpm("target", active)).toThrow("refused");
+        expect(f.calls).toEqual(["catalog", "wrapper-probe", ...(stage === "cache" ? ["cache"] : [])]);
+        expect(f.failures).toEqual([[stage === "wrapper" ? { kind: "npm-wrapper-failed", reason: "timeout" } : { kind: "mutation-failed", mutation: "npm-cache", reason: "timeout", command: "gemini" }, f.evidence]]);
     });
-    it.each(["claude-install", "cache", "cleanup", "shim", "npm-install", "reshim", "wrapper", "index", "bubble-install", "uv-install"])("stops after failed mutation %s", stage => {
-        const f = fixture(); f.results.claude = [{ status: 0, stdout: "INSTALL" }]; f.results.cache = [{ status: 0, stdout: "MISSING" }]; f.results.bubble = [{ status: 42 }]; f.results.uv = [{ status: 1 }]; f.results[stage] = [{ status: 137 }];
-        const run = stage === "claude-install" ? () => f.app.ensureClaude("target") : stage.startsWith("uv") ? () => f.app.ensureUv("target") : ["index", "bubble-install"].includes(stage) ? () => f.app.ensureCodexBubblewrap("target") : () => f.app.ensureNpm("target", active);
-        expect(run).toThrow(/timed out/); expect(f.calls.at(-1)?.[0]).toBe(stage);
+    it("accepts available bubblewrap within one session", () => {
+        const f = fixture(); f.app.ensureCodexBubblewrap("target"); expect(f.calls).toEqual(["session", "bubble-probe"]); expect(f.events).toEqual([]);
     });
-    it.each(["prepareClaudeProbe", "captureClaudeProbe", "captureClaudeInstall", "getNpmTools", "captureNpmProbe", "captureNpmCachedProbe", "captureNpmCleanup", "captureNpmShimCleanup", "captureNpmInstall", "captureNpmReshim", "captureNpmWrapper", "createBubblewrapSession", "captureUvProbe", "captureUvInstall", "reportProbeNotes", "probeDiagnostic", "sanitizeForTerminal", "captureLog", "reportUvProgress"] as const)("propagates %s capability faults without later effects", name => {
-        const f = fixture(), failure = { capability: name };
-        f.results.claude = [{ status: 0, stdout: name === "sanitizeForTerminal" ? "RESTORED 1.2" : name === "probeDiagnostic" ? "" : "INSTALL" }];
-        if (name === "probeDiagnostic") f.results.claude = [{ status: 1, stderr: "reason" }];
-        f.results.cache = [{ status: 0, stdout: "MISSING" }]; f.results.uv = [{ status: 1 }];
-        Object.defineProperty(f.ports, name, { value: () => { f.events.push(`fault:${name}`); throw failure; } });
-        const run = name === "createBubblewrapSession" ? () => f.app.ensureCodexBubblewrap("target")
-            : name.startsWith("captureUv") || name === "reportUvProgress" ? () => f.app.ensureUv("target")
-            : name.startsWith("captureNpm") || name === "getNpmTools" ? () => f.app.ensureNpm("target", active)
-            : () => f.app.ensureClaude("target");
-        expect(thrown(run)).toBe(failure); expect(f.events.at(-1)).toBe(`fault:${name}`);
+    it("updates, installs and confirms missing bubblewrap within one session", () => {
+        const f = fixture(); f.state.bubble = [{ kind: "missing" }, { kind: "available" }]; f.app.ensureCodexBubblewrap("target");
+        expect(f.calls).toEqual(["session", "bubble-probe", "index", "bubble-install", "bubble-probe"]); expect(f.events).toEqual([{ kind: "bubblewrap-installing" }]);
     });
-
+    it.each(["initial", "final"] as const)("distinguishes failed %s bubblewrap observation", stage => {
+        const f = fixture(); const failed = { kind: "failed", reason: "timeout", evidence: f.evidence } as const;
+        f.state.bubble = stage === "initial" ? [failed] : [{ kind: "missing" }, failed]; expect(() => f.app.ensureCodexBubblewrap("target")).toThrow("refused");
+        expect(f.calls).toEqual(stage === "initial" ? ["session", "bubble-probe"] : ["session", "bubble-probe", "index", "bubble-install", "bubble-probe"]);
+        expect(f.failures).toEqual([[{ kind: "mutation-failed", mutation: stage === "initial" ? "bubblewrap-probe" : "bubblewrap-confirmation", reason: "timeout" }, f.evidence]]);
+    });
+    it("refuses bubblewrap still missing after installation", () => {
+        const f = fixture(); f.state.bubble = [{ kind: "missing" }, { kind: "missing" }]; expect(() => f.app.ensureCodexBubblewrap("target")).toThrow("refused");
+        expect(f.failures).toEqual([[{ kind: "mutation-failed", mutation: "bubblewrap-confirmation", reason: "failure" }, undefined]]);
+    });
+    it.each(["available", "missing"] as const)("handles uv %s", kind => {
+        const f = fixture(); f.state.uv = { kind }; f.app.ensureUv("target"); expect(f.calls).toEqual(kind === "available" ? ["uv-probe"] : ["uv-probe", "uv-install"]);
+        expect(f.events).toEqual(kind === "available" ? [] : [{ kind: "uv-installing" }]);
+    });
+    it.each(["timeout", "failure"] as const)("refuses uv %s without installation", reason => {
+        const f = fixture(); f.state.uv = { kind: "failed", reason, evidence: f.evidence }; expect(() => f.app.ensureUv("target")).toThrow("refused");
+        expect(f.calls).toEqual(["uv-probe"]); expect(f.events).toEqual([]); expect(f.failures).toEqual([[{ kind: "uv-probe-failed", reason }, f.evidence]]);
+    });
+    it.each([
+        ["claude-install", "claude-install"], ["cleanup", "npm-cleanup"], ["shim", "npm-shim-cleanup"], ["npm-install", "npm-install"],
+        ["reshim", "npm-reshim"], ["wrapper", "npm-wrapper"], ["index", "bubblewrap-update"], ["bubble-install", "bubblewrap-install"], ["uv-install", "uv-install"],
+    ] as const)("stops after failed %s mutation", (stage, mutation) => {
+        const f = fixture(); f.state.effects[stage] = { kind: "failed", reason: "failure", evidence: f.evidence };
+        f.state.claude = { kind: "install-needed" }; f.state.cache = { kind: "missing" }; f.state.bubble = [{ kind: "missing" }]; f.state.uv = { kind: "missing" };
+        const run = stage === "claude-install" ? () => f.app.ensureClaude("target") : stage === "uv-install" ? () => f.app.ensureUv("target") : stage === "index" || stage === "bubble-install" ? () => f.app.ensureCodexBubblewrap("target") : () => f.app.ensureNpm("target", active);
+        expect(run).toThrow("refused"); expect(f.calls.at(-1)).toBe(stage);
+        expect(f.failures).toEqual([[{ kind: "mutation-failed", mutation, reason: "failure", ...(!["claude-install", "index", "bubble-install", "uv-install"].includes(stage) ? { command: "gemini" } : {}) }, f.evidence]]);
+    });
 });

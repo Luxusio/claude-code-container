@@ -2,73 +2,118 @@ import { describe, expect, it } from "vitest";
 import { createDoctor } from "../../application/doctor.js";
 import type { DoctorPorts } from "../../ports/doctor.js";
 
+const request = { projectId: "project", containerName: "container" };
+const info = { runtime: "docker", version: "fallback", flavor: "native" };
 function fixture(overrides: Partial<DoctorPorts> = {}) {
-    const output: string[] = [];
-    const calls: string[] = [];
     const ports: DoctorPorts = {
-        resolveProjectPath: path => { calls.push(`resolve:${path}`); return "/project"; },
-        projectId: () => "project", containerName: () => "container",
-        runtimeInfo: () => ({ runtime: "docker", version: "fallback", flavor: "native" }),
-        daemonRunning: () => true, runtimeVersion: () => ({ status: 9, stdout: "27\n" }),
-        imageExists: () => true, imageLabel: () => null, cliVersion: "1",
+        runtimeInfo: () => info, daemonRunning: () => true, runtimeVersion: () => "27",
+        image: () => ({ kind: "local" }), cliVersion: "1",
         containerRunning: () => true, containerExists: () => false,
-        identityMiseVolumeName: () => "cache", inspectMiseVolume: () => ({ status: 0 }),
-        observeActiveSessions: () => [],
-        captureLocksDirectory: () => ({ exists: () => false, readNames: () => { throw new Error("unexpected read"); } }),
-        runtimeCli: () => "docker", claudeLauncherReport: () => ({ status: 0, stdout: "Claude\n" }),
-        capturePublication: () => { calls.push("capture"); return text => { output.push(text); return undefined; }; },
-        sanitizeForTerminal: text => { calls.push(`sanitize:${text}`); return text; },
-        ...overrides,
+        miseCache: () => ({ volumeName: "cache", exists: true }),
+        activeSessionCount: () => 0, lockNames: () => [],
+        claudeLauncherReport: () => ({ kind: "ready", description: "Claude" }), ...overrides,
     };
-    return { ports, output, calls, run: () => createDoctor(ports)("relative") };
+    return () => createDoctor(ports)(request);
 }
 
-describe("complete inward doctor", () => {
-    it("returns a synchronous boolean and publishes ordered checks", () => {
-        const f = fixture();
-        expect(f.run()).toBe(true);
-        expect(f.output).toEqual(["\n=== CCC Doctor ===\n", "  ✓ Runtime: Docker running (v27, native)",
-            "  ✓ Image: Built locally (dev)", "  ✓ Container: Running (container)",
-            "  ✓ Mise cache: Volume 'cache' exists", "  ✓ Sessions: No active sessions",
-            "  ✓ Claude: Claude", "", "Summary: All checks passed", ""]);
-        expect(f.calls.indexOf("capture")).toBeLessThan(f.calls.indexOf("sanitize:Docker running (v27, native)"));
+describe("semantic doctor diagnosis", () => {
+    it("returns ordered finite checks", () => {
+        expect(fixture()()).toEqual({ ok: true, checks: [
+            { kind: "runtime", status: "ok", info, version: "27" },
+            { kind: "image", status: "ok", image: { kind: "local" }, expectedVersion: "1" },
+            { kind: "container", status: "ok", state: "running", name: "container" },
+            { kind: "mise-cache", status: "ok", volumeName: "cache", exists: true },
+            { kind: "sessions", status: "ok", count: 0 },
+            { kind: "claude", status: "ok", launcher: { kind: "ready", description: "Claude" } },
+        ] });
     });
-    it("denies every later observation after a missing daemon", () => {
-        let denied = 0;
-        const deny = (): never => { denied++; throw new Error("denied"); };
-        const f = fixture({ daemonRunning: () => false, runtimeVersion: deny, imageExists: deny,
-            containerRunning: deny, identityMiseVolumeName: deny, observeActiveSessions: deny });
-        expect(f.run()).toBe(false);
-        expect(denied).toBe(0);
-        expect(f.output).toContain("Summary: 1 error(s), 0 warning(s)");
+    it("refuses all downstream observations after absent daemon", () => {
+        const deny = (): never => { throw new Error("downstream observation"); };
+        expect(fixture({ daemonRunning: () => false, runtimeVersion: deny, image: deny,
+            containerRunning: deny, containerExists: deny, miseCache: deny,
+            activeSessionCount: deny, lockNames: deny, claudeLauncherReport: deny })())
+            .toEqual({ ok: false, checks: [{ kind: "runtime", status: "error", info, version: null }] });
     });
-
-    it.each([null, "1", "old", ""])("preserves image label decision for %s", label => {
-        const f = fixture({ imageLabel: () => label, containerRunning: () => false });
-        expect(f.run()).toBe(true);
-        expect(f.output[2]).toBe(label === null ? "  ✓ Image: Built locally (dev)"
-            : label === "1" ? "  ✓ Image: Registry (v1)"
-                : `  ! Image: Registry (v${label} -- CLI expects v1, run 'ccc' to update)`);
+    it.each([
+        { observed: "27", fallback: "fallback", version: "27" },
+        { observed: null, fallback: "fallback", version: "fallback" },
+        { observed: null, fallback: null, version: null },
+        { observed: null, fallback: undefined, version: null },
+    ])("uses observed version then info then null: $version", ({ observed, fallback, version }) => {
+        const runtimeInfo = { ...info, version: fallback };
+        expect(fixture({ runtimeInfo: () => runtimeInfo, runtimeVersion: () => observed })().checks[0])
+            .toEqual({ kind: "runtime", status: "ok", info: runtimeInfo, version });
     });
-    it("retains missing-image build hint and continues after its error", () => {
-        const f = fixture({ imageExists: () => false, runtimeCli: () => "podman" });
-        expect(f.run()).toBe(false);
-        expect(f.output).toContain("  ✗ Image: Not found -- run 'ccc' to auto-pull, or 'podman build -t ccc .' for local build");
-        expect(f.output).toContain("  ✓ Claude: Claude");
+    it.each([
+        { image: { kind: "local" } as const, status: "ok", ok: true },
+        { image: { kind: "registry", version: "1" } as const, status: "ok", ok: true },
+        { image: { kind: "registry", version: "old" } as const, status: "warn", ok: true },
+        { image: { kind: "registry", version: "" } as const, status: "warn", ok: true },
+        { image: { kind: "missing" } as const, status: "error", ok: false },
+    ])("diagnoses image $image.kind with $status", ({ image, status, ok }) => {
+        const report = fixture({ image: () => image })();
+        expect(report.ok).toBe(ok);
+        expect(report.checks[1]).toEqual({ kind: "image", status, image, expectedVersion: "1" });
+        expect(report.checks).toContainEqual({ kind: "claude", status: "ok", launcher: { kind: "ready", description: "Claude" } });
     });
-    it("counts old, new and profile locks without pruning sessions", () => {
-        const f = fixture({ observeActiveSessions: () => ["active"],
-            captureLocksDirectory: () => ({ exists: () => true, readNames: () => [
-                "project-old.lock", "project--new.lock", "project--p--work--a.lock", "foreign--a.lock", "project.txt"] }) });
-        expect(f.run()).toBe(true);
-        expect(f.output).toContain("  ! Stale locks: 2 stale lock file(s) found");
+    it.each([
+        { running: true, exists: true, state: "running", status: "ok" },
+        { running: false, exists: true, state: "stopped", status: "warn" },
+        { running: false, exists: false, state: "missing", status: "warn" },
+    ])("diagnoses $state container", ({ running, exists, state, status }) => {
+        const report = fixture({ containerRunning: name => { expect(name).toBe("container"); return running; },
+            containerExists: name => { expect(name).toBe("container"); return exists; } })();
+        expect(report.ok).toBe(true);
+        expect(report.checks[2]).toEqual({ kind: "container", status, state, name: "container" });
     });
-
-    it("preserves native nullable runtime version fallback", () => {
-        const f = fixture({ runtimeInfo: () => ({ runtime: "docker", version: null, flavor: "native" }),
-            runtimeVersion: () => ({ status: 0, stdout: " " }) });
-        expect(f.run()).toBe(true);
-        expect(f.output).toContain("  ✓ Runtime: Docker running (vunknown, native)");
+    it.each([true, false])("diagnoses cache existence %s", exists => {
+        const report = fixture({ miseCache: () => ({ volumeName: "project-cache", exists }) })();
+        expect(report.ok).toBe(true);
+        expect(report.checks[3]).toEqual({ kind: "mise-cache", status: exists ? "ok" : "warn", volumeName: "project-cache", exists });
     });
-
+    it.each([0, 3])("reports %s active sessions", count => {
+        expect(fixture({ activeSessionCount: project => { expect(project).toBe("project"); return count; } })().checks)
+            .toContainEqual({ kind: "sessions", status: "ok", count });
+    });
+    it("counts old, new and profile current locks, excluding foreign and nonlocks", () => {
+        const report = fixture({ activeSessionCount: () => 1, lockNames: () => [
+            "project-old.lock", "project--new.lock", "project--p--work--a.lock",
+            "foreign--a.lock", "foreign-old.lock", "project.txt", "project--a.guard",
+        ] })();
+        expect(report.ok).toBe(true);
+        expect(report.checks).toContainEqual({ kind: "stale-locks", status: "warn", count: 2 });
+    });
+    it.each([0, 1, 3])("omits stale warning when active sessions cover current locks: %s", count => {
+        const report = fixture({ activeSessionCount: () => count,
+            lockNames: () => count === 0 ? [] : ["project--active.lock"] })();
+        expect(report.checks.some(check => check.kind === "stale-locks")).toBe(false);
+    });
+    it.each([
+        { launcher: { kind: "ready", description: "Claude" } as const, status: "ok" },
+        { launcher: { kind: "update-unmanaged", description: "unmanaged" } as const, status: "warn" },
+        { launcher: { kind: "missing" } as const, status: "warn" },
+    ])("diagnoses launcher $launcher.kind", ({ launcher, status }) => {
+        const report = fixture({ claudeLauncherReport: name => { expect(name).toBe("container"); return launcher; } })();
+        expect(report.ok).toBe(true);
+        expect(report.checks).toContainEqual({ kind: "claude", status, launcher });
+    });
+    it("skips launcher when a running container stops", () => {
+        const observations = [true, false];
+        const report = fixture({ containerRunning: () => observations.shift()!,
+            claudeLauncherReport: () => { throw new Error("stopped container launcher"); } })();
+        expect(report.checks[2]).toEqual({ kind: "container", status: "ok", state: "running", name: "container" });
+        expect(report.checks.some(check => check.kind === "claude")).toBe(false);
+    });
+    it("observes launcher when a stopped container starts", () => {
+        const observations = [false, true];
+        const report = fixture({ containerRunning: () => observations.shift()!, containerExists: () => true })();
+        expect(report.checks[2]).toEqual({ kind: "container", status: "warn", state: "stopped", name: "container" });
+        expect(report.checks).toContainEqual({ kind: "claude", status: "ok", launcher: { kind: "ready", description: "Claude" } });
+        expect(report.ok).toBe(true);
+    });
+    it.each(["runtimeVersion", "image", "miseCache", "lockNames", "claudeLauncherReport"] as const)
+    ("propagates unexpected exceptions from %s", leaf => {
+        const failure = new Error(`native ${leaf}`);
+        expect(fixture({ [leaf]: () => { throw failure; } })).toThrow(failure);
+    });
 });
