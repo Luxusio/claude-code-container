@@ -8455,7 +8455,7 @@
       "businessBoundary": "Initialize from host; bounded text TARGETS; image-first poll; digest baselines; re-read local before overwriting.",
       "completionCriteria": "Preserve host-first restart, oversized local refusal, concurrent local copy and no upload echo; isolate policy from curl/xclip/process effects.",
       "implementationStatus": "pending",
-      "statusReason": "Accepted Source9a921 inward host-first/digest/re-read synchronization policy and native bridge composition are source eligible; actual676 ordinary QA/build/shipping and delivery evidence require current metadata qualification. Keep X11 uncredited pending Code/Docs and ordinary evidence qualification; native/formal acceptance unverified.",
+      "statusReason": "Historical baseline implementationStatus retained. Current accepted Source9a921 inward synchronization and canonical native CCC execution binding are independently Code/Docs reviewed and ordinary676/build/shipping/delivery input-qualified; counted once in clipboard-x11-source-closure. Standalone Containerfile baked policy fix and native/formal certification remain separate delivery gates.",
       "sources": [
         {
           "path": "scripts/ccc-x11-bridge",
@@ -8760,9 +8760,7 @@
       "inspectedComponentPaths": [
         "scripts/ccc-x11-bridge"
       ],
-      "implementationRemainingWork": [
-        "GAP-authority-clipboard-x11-sync"
-      ],
+      "implementationRemainingWork": [],
       "explicitDelegateRefs": [
         {
           "kind": "canonical-operation",
@@ -14964,7 +14962,7 @@
       "businessBoundary": "Shared inward bounded-read/content/repository/publication/lock decisions across TS and provider consumers; retain native path/descriptor/process/token/namespace fences, atomic effects and caller-owned operation locks.",
       "completionCriteria": "All nine retained native roles and reached exported read/content/repository/publication/lock APIs delegate policy inward while preserving missing/corrupt/oversized behavior, successor/CAS, bounded copy, staged cleanup and process/token-fenced lock semantics.",
       "implementationStatus": "partial",
-      "statusReason": "Accepted Source13efa whole storage source is statically eligible; current171 and retained77/526 ordinary evidence require independent unchanged-input qualification. Existing storage partial credit retained pending current metadata Code/Docs and sole ordinary qualification; no whole/native/formal credit.",
+      "statusReason": "Historical baseline implementationStatus retained. Current accepted Source13efa whole-storage policy/native bindings are independently Code/Docs reviewed and ordinary171/77/526 input-qualified; counted once in state-storage-source-closure. Final metadata qualification/delivery and native/formal certification remain separate.",
       "sources": [
         {
           "path": "packages/device-lab/src/device-lab-state-file.ts",

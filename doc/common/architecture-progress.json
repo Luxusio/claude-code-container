@@ -237,10 +237,8 @@
       "taskId": "TASK__architecture-state-access",
       "implementation": "candidate-complete",
       "wholeOperationIds": [],
-      "partialOperationIds": [
-        "OP-state-storage"
-      ],
-      "codeReview": "independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending; accepted owner-state-content contribution306723dbb7d6e0674be63b4be4a1ea6e6cd5d584 actual independent reviews, genuine complete build,77 ordinary cases plus qualified graph, shipping and local FF PASS. Broader state-storage remains partial; counted once in this existing partial lane. Accepted Source13efa7eabc54832fe2cb7607120459e0c2c5e019 publication/lock and current complete storage source traces now reconciled. Current171 and earlier77/526 ordinary evidence await independent qualification; retain this single partial storage credit until conditional whole accounting.",
+      "partialOperationIds": [],
+      "codeReview": "Historical accepted bounded reader/content contribution and genuine source checks retained. Complete read/content/provider and broker repository/publication/lock source is independently qualified and counted once in state-storage-source-closure; this historical lane grants no current partial or whole credit. Native/formal certification unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "da5d7d368184aef48ae15ef357be69757688c411"
@@ -768,6 +766,36 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "3e6b9539ae01577ff1f76038f6b953b43a79fefa"
+    },
+    {
+      "id": "state-storage-source-closure",
+      "branch": "refactor/architecture-state-publication-lock-20261011",
+      "commit": "13efa7eabc54832fe2cb7607120459e0c2c5e019",
+      "taskId": "TASK__architecture-state-publication-lock",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-state-storage"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Independent current metadata Code/Docs and ordinary retained-input QA qualification PASS. Nine native roles reach inward read/content/provider and broker repository/publication/lock policies; current171 and retained77/526 genuine cases, consumed strong contracts, build/shipping, authenticated input and local accepted source delivery qualify. One existing storage binding and whole operation counted once; historical/static proof scope preserved. Final metadata QA/delivery pending, no native/formal or source-denominator certification.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "13efa7eabc54832fe2cb7607120459e0c2c5e019"
+    },
+    {
+      "id": "clipboard-x11-source-closure",
+      "branch": "refactor/architecture-x11-sync-policy-20261011",
+      "commit": "9a921ca1ff9e0a5d877a6b5e0eb780981d4570c5",
+      "taskId": "TASK__architecture-x11-sync-policy",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-clipboard-x11-sync"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Independent current metadata Code/Docs and ordinary retained-input QA qualification PASS. Inward Bash synchronization and canonical CCC policy-first native staging qualified by676 real X11/Docker/clipboard cases, genuine build/shipping and verified CRLF-preserving accepted source FF. One existing source binding and operation counted once. Standalone Containerfile baked policy acceptance, final metadata QA/delivery and native/formal/source-denominator certification remain separate.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "9a921ca1ff9e0a5d877a6b5e0eb780981d4570c5"
     }
   ],
   "planningLanes": [
@@ -836,7 +864,7 @@
       "coveredOperationIds": [
         "OP-state-storage"
       ],
-      "status": "Accepted reader/content/provider and broker repository/publication/lock source contributions retained; current complete Source13efa storage traces reconciled. Current171 and earlier77/526 ordinary evidence require independent unchanged-input qualification. Storage stays partial; whole/native/formal credit pending."
+      "status": "Current full storage source13efa and existing single binding/nine native roles/exports independently reviewed and ordinary171/77/526 current-input-qualified. One whole operation counted in state-storage-source-closure; historical contributions retained. Final metadata QA/delivery and native/formal certification remain separate."
     },
     {
       "id": "runtime-capabilities",
@@ -1104,7 +1132,7 @@
       "coveredOperationIds": [
         "OP-state-storage"
       ],
-      "status": "Current single binding/nine native roles and wildcard publication/lock APIs statically reconciled to accepted Source13efa; no new operation/binding/proof. Independent current metadata review and retained ordinary evidence qualification pending; WBS216 and existing partial storage unchanged."
+      "status": "Current full storage source13efa and existing single binding/nine native roles/exports independently reviewed and ordinary171/77/526 current-input-qualified. One whole operation counted in state-storage-source-closure; historical contributions retained. Final metadata QA/delivery and native/formal certification remain separate."
     },
     {
       "id": "clipboard-x11-sync-catalog",
@@ -1112,7 +1140,7 @@
       "coveredOperationIds": [
         "OP-clipboard-x11-sync"
       ],
-      "status": "Accepted Source9a921 inward synchronization/native bridge and actual676 ordinary QA/build69.603/shipping/local delivery recorded for qualification. Current static traces distinguish canonical CCC exec policy-first staging from Containerfile standalone missing baked asset. X11 remains uncredited; Code/Docs and retained ordinary evidence qualification pending, native/formal acceptance unverified."
+      "status": "Accepted Source9a921 current inward synchronization/canonical CCC policy-first staging independently reviewed and ordinary676/build/shipping/CRLF-preserving source delivery input-qualified. One whole operation counted in clipboard-x11-source-closure. Standalone Containerfile asset fix, final metadata QA/delivery and native/formal certification remain separate."
     }
   ]
 }
