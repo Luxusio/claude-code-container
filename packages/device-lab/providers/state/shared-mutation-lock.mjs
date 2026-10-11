@@ -10,6 +10,8 @@ import { DeviceLabStateFileError, readDeviceLabStateFile, withDeviceLabReadableF
 const SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES = 16 * 1024;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
+/** @typedef {{path:string,stats:import('fs').Stats}} DirectoryIdentity */
+/** @param {import('fs').Stats} left @param {import('fs').Stats} right @returns {boolean} */
 function sameDirectory(left, right) {
     if (!left.isDirectory() || !right.isDirectory() || left.isSymbolicLink() || right.isSymbolicLink()) return false;
     const leftHasFileId = left.dev !== 0 && left.ino !== 0;
@@ -22,6 +24,7 @@ function sameDirectory(left, right) {
     return leftHasBirthtime && rightHasBirthtime && left.birthtimeMs === right.birthtimeMs;
 }
 
+/** @param {string} file @returns {string[]} */
 function managedDirectoryComponents(file) {
     const absolute = isAbsolute(file) ? resolve(file) : resolve(process.cwd(), file);
     const parent = dirname(absolute);
@@ -44,25 +47,27 @@ function managedDirectoryComponents(file) {
     return result;
 }
 
+/** @param {string} path @returns {Error & {code:string}} */
 function invalidStateDirectory(path) {
-    const error = new Error(`Unsafe device-lab state directory: ${path}`);
-    error.code = "device-lab-state-directory-invalid";
-    return error;
+    return Object.assign(new Error(`Unsafe device-lab state directory: ${path}`), { code: "device-lab-state-directory-invalid" });
 }
 
+/** @param {readonly DirectoryIdentity[]} identities @returns {undefined} */
 function assertStateDirectoriesUnchanged(identities) {
     for (const identity of identities) {
         let current;
         try {
             current = lstatSync(identity.path);
         } catch (error) {
-            throw invalidStateDirectory(`${identity.path}: ${error?.code || "missing"}`);
+            throw invalidStateDirectory(`${identity.path}: ${nativeErrorCode(error) || "missing"}`);
         }
         if (!sameDirectory(identity.stats, current)) throw invalidStateDirectory(identity.path);
     }
 }
 
+/** @param {string} file @returns {DirectoryIdentity[]} */
 function secureStateParentDirectory(file) {
+    /** @type {DirectoryIdentity[]} */
     const identities = [];
     for (const path of managedDirectoryComponents(file)) {
         assertStateDirectoriesUnchanged(identities);
@@ -70,11 +75,11 @@ function secureStateParentDirectory(file) {
         try {
             stats = lstatSync(path);
         } catch (error) {
-            if (error?.code !== "ENOENT") throw error;
+            if (nativeErrorCode(error) !== "ENOENT") throw error;
             try {
                 mkdirSync(path, { mode: 0o700 });
             } catch (mkdirError) {
-                if (mkdirError?.code !== "EEXIST") throw mkdirError;
+                if (nativeErrorCode(mkdirError) !== "EEXIST") throw mkdirError;
             }
             stats = lstatSync(path);
         }
@@ -87,31 +92,38 @@ function secureStateParentDirectory(file) {
     return identities;
 }
 
+/** @param {number} ms @returns {undefined} */
 function sleepSync(ms) {
     Atomics.wait(sleeper, 0, 0, ms);
 }
 
+/** @param {number} ms @returns {Promise<void>} */
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** @param {string} source @param {string} destination @param {()=>undefined} [validateDirectories] @returns {undefined} */
 function renameReplacingFileSync(source, destination, validateDirectories = () => {}) {
     publication.rename(source, destination, () => { validateDirectories(); return undefined; });
 }
 
 
+/** @param {string} file @param {string|ArrayBufferView} value @returns {undefined} */
 export function writeFileAtomically(file, value) {
     publication.write(file, value);
 }
 
+/** @param {string} file @param {unknown} value @returns {undefined} */
 export function writeJsonFileAtomically(file, value) {
     publication.writeJson(file, value);
 }
 
+/** @param {string} source @param {string} destination @param {{prefix?:string,limitBytes:number}} options @returns {number} */
 export function copyFileAtomically(source, destination, options) {
     return publication.copy(source, destination, options);
 }
 
+/** @param {string} file @returns {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} */
 function readLock(file) {
     return locks.readLock(file);
 }
@@ -119,16 +131,18 @@ function readLock(file) {
 
 
 
+/** @param {number} pid @returns {boolean} */
 function processIsAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
         process.kill(pid, 0);
         return true;
     } catch (error) {
-        return error?.code === "EPERM";
+        return nativeErrorCode(error) === "EPERM";
     }
 }
 
+/** @returns {string} */
 function currentBootId() {
     try {
         return readFileSync("/proc/sys/kernel/random/boot_id", "utf-8").trim();
@@ -148,13 +162,14 @@ function currentBootId() {
 
 
 
+/** @param {string} moved @param {string} file @returns {undefined} */
 function restoreMovedLockIfPathEmpty(moved, file) {
     try {
         linkSync(moved, file);
         rmSync(moved, { force: true });
         return;
     } catch (error) {
-        if (error?.code === "EEXIST") return;
+        if (nativeErrorCode(error) === "EEXIST") return;
     }
     try {
         copyFileSync(moved, file, fsConstants.COPYFILE_EXCL);
@@ -164,6 +179,7 @@ function restoreMovedLockIfPathEmpty(moved, file) {
     }
 }
 
+/** @param {string} file @param {string} expectedToken @param {'stale'|'release'} suffix @param {()=>undefined} [validateDirectories] @returns {boolean} */
 function moveIfTokenMatches(file, expectedToken, suffix, validateDirectories = () => {}) {
     const moved = `${file}.${randomUUID()}.${suffix}`;
     try {
@@ -180,6 +196,7 @@ function moveIfTokenMatches(file, expectedToken, suffix, validateDirectories = (
     return false;
 }
 
+/** @param {string} file @param {string} token @param {()=>undefined} [validateDirectories] @returns {boolean} */
 function moveMalformedLock(file, token, validateDirectories = () => {}) {
     const moved = `${file}.${token}.malformed`;
     try {
@@ -197,7 +214,7 @@ function moveMalformedLock(file, token, validateDirectories = () => {}) {
 
 
 /** @typedef {{path:string,output:number|null}} AtomicStage */
-/** @param {unknown} error */
+/** @param {unknown} error @returns {string|undefined} */
 function nativeErrorCode(error) {
     return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
@@ -269,10 +286,24 @@ const lockPorts = {
 };
 const locks = createSharedMutationLock(lockPorts);
 
+/**
+ * @template T
+ * @param {string} file
+ * @param {()=>T} operation
+ * @param {import('../ports/shared-mutation-lock.mjs').MutationLockOptions} [options]
+ * @returns {T}
+ */
 export function withSharedMutationLock(file, operation, options = {}) {
     return locks.withLock(file, operation, options);
 }
 
+/**
+ * @template T
+ * @param {string} file
+ * @param {()=>T|Promise<T>} operation
+ * @param {Omit<import('../ports/shared-mutation-lock.mjs').MutationLockOptions,'reclaimStale'>} [options]
+ * @returns {Promise<T>}
+ */
 export async function withSharedMutationLockAsync(file, operation, options = {}) {
     return locks.withLockAsync(file, operation, options);
 }
