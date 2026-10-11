@@ -77525,7 +77525,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects the exact recorded target. Owned emulator record, native discovery and lazy automation metadata; no physical hardware lease admission.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -77578,7 +77578,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned emulator record, native discovery and lazy automation metadata; no physical hardware lease admission.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -77655,7 +77655,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects the exact recorded target. Owned physical Android record; hardware lease refresh precedes selected-serial adb get-state and native discovery.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -77708,7 +77708,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned physical Android record; hardware lease refresh precedes selected-serial adb get-state and native discovery.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -77785,7 +77785,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects the exact recorded target. Owned simulator record, native discovery reconciliation and lazy automation metadata; no physical hardware lease admission.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -77838,7 +77838,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned simulator record, native discovery reconciliation and lazy automation metadata; no physical hardware lease admission.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -77915,8 +77915,8 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
-          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "authorityOwner": "Current native provider owner selects the exact recorded target. Owned physical iOS record, host-device discovery and lazy automation metadata; no hardware lease admission or refresh.",
+          "lockOwner": "Read-only physical iOS status bypasses provider mutation-operation lock; it reads owned record and host discovery without hardware-lease admission or refresh.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
           "closureStatus": "source-contract-traced",
@@ -77968,7 +77968,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned physical iOS record, host-device discovery and lazy automation metadata; no hardware lease admission or refresh.",
           "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -78045,7 +78045,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects its recorded desktop target; status projects the owned record and native backend discovery/plan. No physical-device lease admission or broker-child owner check.",
           "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -78098,7 +78098,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects its recorded desktop target; status projects the owned record and native backend discovery/plan. No physical-device lease admission or broker-child owner check.",
           "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -78151,7 +78151,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current QEMU owner selects its stored lab; public owned-target status holds the owner/device operation lock. Running status probes and publishes readiness through native guarded storage; stopped status projects the stored lab. Raw inspectLab lacks the public wrapper lock and retains native guarded storage.",
           "lockOwner": "Public owned-target wrapper holds withOwnerDeviceOperation('linux', deviceId); raw inspectLab does not acquire that wrapper lock. Native guarded storage publishes running readiness.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -78222,7 +78222,7 @@
           "workItemIds": [
             "OP-device-status"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Host X11 current-display observation through currentDisplayTarget; no owned-device record, physical lease or authenticated backend-child owner admission.",
           "lockOwner": "Current display is host observation; no owned-device mutation lock.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -81805,7 +81805,7 @@
           "workItemIds": [
             "OP-device-ui"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects the recorded Sandbox target; native Windows helper bridge verifies correlated request/response IDs and helper file paths before inward accessibility projection. No physical-device lease or broker-child admission on this direct route.",
           "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -81858,7 +81858,7 @@
           "workItemIds": [
             "OP-device-ui"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Current native provider owner selects the recorded macOS VM target; native accessibility helper uses its selected SSH bridge and native helper/script paths, then parses the result. No physical-device lease or broker-child admission on this direct route.",
           "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -85522,7 +85522,7 @@
           "workItemIds": [
             "OP-mobile-wait-text"
           ],
-          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "authorityOwner": "Public request selects mobile backend/device and uses authenticated broker Appium session ensure/request. Native broker verifies owned target, managed endpoint/session and request path; physical hardware lease checks apply conditionally to physical backends.",
           "lockOwner": "Broker Appium retains exact owner/device operation, physical lease heartbeat and verified managed listener/session authority.",
           "supportDisposition": "supported",
           "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182094,7 +182094,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects the exact recorded target. Owned emulator record, native discovery and lazy automation metadata; no physical hardware lease admission.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182147,7 +182147,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned emulator record, native discovery and lazy automation metadata; no physical hardware lease admission.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182224,7 +182224,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects the exact recorded target. Owned physical Android record; hardware lease refresh precedes selected-serial adb get-state and native discovery.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182277,7 +182277,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned physical Android record; hardware lease refresh precedes selected-serial adb get-state and native discovery.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182354,7 +182354,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects the exact recorded target. Owned simulator record, native discovery reconciliation and lazy automation metadata; no physical hardware lease admission.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182407,7 +182407,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned simulator record, native discovery reconciliation and lazy automation metadata; no physical hardware lease admission.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182484,8 +182484,8 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
-      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "authorityOwner": "Current native provider owner selects the exact recorded target. Owned physical iOS record, host-device discovery and lazy automation metadata; no hardware lease admission or refresh.",
+      "lockOwner": "Read-only physical iOS status bypasses provider mutation-operation lock; it reads owned record and host discovery without hardware-lease admission or refresh.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
       "closureStatus": "source-contract-traced",
@@ -182537,7 +182537,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Authenticated broker owner selects the exact owned backend/device record in invokeBackendDeviceTool; physical hardware lease admission applies there when applicable. Default child validates canonical launch cwd/profile owner and invokes the selected provider status handler. Owned physical iOS record, host-device discovery and lazy automation metadata; no hardware lease admission or refresh.",
       "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182614,7 +182614,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects its recorded desktop target; status projects the owned record and native backend discovery/plan. No physical-device lease admission or broker-child owner check.",
       "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182667,7 +182667,7 @@
       "workItemIds": [
         "OP-device-ui"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects the recorded Sandbox target; native Windows helper bridge verifies correlated request/response IDs and helper file paths before inward accessibility projection. No physical-device lease or broker-child admission on this direct route.",
       "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182720,7 +182720,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects its recorded desktop target; status projects the owned record and native backend discovery/plan. No physical-device lease admission or broker-child owner check.",
       "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182773,7 +182773,7 @@
       "workItemIds": [
         "OP-device-ui"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current native provider owner selects the recorded macOS VM target; native accessibility helper uses its selected SSH bridge and native helper/script paths, then parses the result. No physical-device lease or broker-child admission on this direct route.",
       "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182826,7 +182826,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Current QEMU owner selects its stored lab; public owned-target status holds the owner/device operation lock. Running status probes and publishes readiness through native guarded storage; stopped status projects the stored lab. Raw inspectLab lacks the public wrapper lock and retains native guarded storage.",
       "lockOwner": "Public owned-target wrapper holds withOwnerDeviceOperation('linux', deviceId); raw inspectLab does not acquire that wrapper lock. Native guarded storage publishes running readiness.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182897,7 +182897,7 @@
       "workItemIds": [
         "OP-device-status"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Host X11 current-display observation through currentDisplayTarget; no owned-device record, physical lease or authenticated backend-child owner admission.",
       "lockOwner": "Current display is host observation; no owned-device mutation lock.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
@@ -182956,7 +182956,7 @@
       "workItemIds": [
         "OP-mobile-wait-text"
       ],
-      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "authorityOwner": "Public request selects mobile backend/device and uses authenticated broker Appium session ensure/request. Native broker verifies owned target, managed endpoint/session and request path; physical hardware lease checks apply conditionally to physical backends.",
       "lockOwner": "Broker Appium retains exact owner/device operation, physical lease heartbeat and verified managed listener/session authority.",
       "supportDisposition": "supported",
       "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
