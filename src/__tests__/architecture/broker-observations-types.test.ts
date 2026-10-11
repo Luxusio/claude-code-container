@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { BrokerServicePorts, LifecyclePreviewPorts, MetadataObservationPorts, ProviderPlanObservation } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
+import type { BrokerServicePorts, LifecyclePreviewPorts, MetadataObservationPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
 import type { LifecyclePreviewRequest } from "@ccc/device-lab/device-lab/domain/broker-observation-command-plan.js";
 import { coreBoundaryViolations } from "./core-boundary.js";
 import { createBrokerDeviceStatus } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
@@ -27,7 +27,7 @@ void consumedDeviceStatus;
 
 function requiredSynchronousContracts(metadata: MetadataObservationPorts,
     service: BrokerServicePorts<object, "status", { supported: boolean; definitionPath: string | null }, { ownerId: string } | null, object, { mode: string; provider: string }, object>,
-    preview: LifecyclePreviewPorts<LifecyclePreviewRequest, object, unknown, unknown, ProviderPlanObservation, { ok: true; port: number } | { ok: false }>) {
+    preview: LifecyclePreviewPorts<LifecyclePreviewRequest, object, { readonly key: symbol }, { ok: true; port: number } | { ok: false }>) {
     const metadataCopy: MetadataObservationPorts = { ...metadata,
         // @ts-expect-error A metadata query cannot return an asynchronous observation.
         read: async () => [],
@@ -38,7 +38,7 @@ function requiredSynchronousContracts(metadata: MetadataObservationPorts,
     };
     const previewCopy: typeof preview = { ...preview,
         // @ts-expect-error Native provider intent evidence cannot be a Promise.
-        existingPlan: async () => ({ mode: "intent", provider: "native" }),
+        existingPlan: async () => ({ key: Symbol("native") }),
     };
     const { read: omitted, ...incomplete } = metadata; void omitted;
     // @ts-expect-error There is no default owner state reader.

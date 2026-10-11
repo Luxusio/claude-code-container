@@ -1,8 +1,8 @@
 # iOS simulator and macOS VM broker lifecycle
 
-Authenticated broker applications keep iOS simulator and macOS VM variants separate from direct providers. Each owns create/start/stop/delete policy. Domains construct records and command plans; required ports expose individual native steps.
+Authenticated broker applications keep iOS simulator and macOS VM variants separate from direct providers. Each owns create/start/stop/delete policy and returns semantic outcomes. Domains construct records; required ports expose individual native effects. Executable paths, argument arrays and input framing belong to broker composition. Prepared capabilities remain opaque to the applications.
 
-The outward broker retains validation, authenticated owner selection, operation locks, preview, dry-run and idempotent responses. Publication compares the observed current record under the native mutation lock; an uncommitted successor is never adopted.
+The outward broker retains validation, authenticated owner selection, operation locks, public preview, dry-run and idempotent responses. It renders HTTP responses and redacts semantic records. Publication compares the observed current record under the native mutation lock; an uncommitted successor is never adopted.
 
 iOS commands verify owner-prefixed names and exact UDIDs through bounded simctl inventory. Create parses the successful UDID before claiming state. Claim failure compensates newly provisioned resources while preserving resources referenced by existing records. Broker boot semantics remain distinct from direct bootstatus waiting.
 

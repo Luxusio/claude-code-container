@@ -2,10 +2,11 @@ export type BrokerWindowsSandboxRecord = Record<string, unknown>;
 export type BrokerWindowsSandboxClaim<Device> = { ok: true } | {
     ok: false; error: string; field: string; value: unknown; existing: Device;
 };
-export type BrokerWindowsSandboxCreateOutcome<Device, Rollback> =
+export interface BrokerWindowsSandboxCreateRollback { attempted:false;ok:true;reason:"no-provider-resource-created" }
+export type BrokerWindowsSandboxCreateOutcome<Device> =
     | { kind: "created"; device: Device }
-    | { kind: "claim-exception"; error: unknown; rollback: Rollback; stateCode?: string }
-    | { kind: "claim-conflict"; claim: Extract<BrokerWindowsSandboxClaim<Device>, {ok: false}>; rollback: Rollback }
+    | { kind: "claim-exception"; error: unknown; rollback: BrokerWindowsSandboxCreateRollback }
+    | { kind: "claim-conflict"; claim: Extract<BrokerWindowsSandboxClaim<Device>, {ok: false}>; rollback: BrokerWindowsSandboxCreateRollback }
     | { kind: "config-failure"; error: unknown };
 
 /** Native composition supplies the single clock and fenced config path. */

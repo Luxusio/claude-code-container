@@ -4,23 +4,33 @@ export interface BrokerMacosLifecycleRequest {
     force: boolean; dryRun: boolean; headless?: boolean; waitForBoot?: boolean;
     bootTimeoutMs?: number; create?: Record<string, unknown>;
 }
-export interface BrokerMacosProviderCommand {
-    mode: "exec" | "detached" | "noop"; provider: string;
-    executable?: string; args?: string[]; input?: string; reason?: string;
-}
 export interface BrokerMacosProviderResult {
-    mode: string; provider: string; executable?: string; args?: string[]; input?: string;
-    status?: number | null; signal?: string | null; stdout?: string; stderr?: string;
-    error?: string; timedOut?: boolean; outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean;
+    mode: string; provider: string; status?: number | null; signal?: string | null;
+    stdout?: string; stderr?: string; error?: string; timedOut?: boolean;
+    outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean; receipt: unknown;
 }
-export type BrokerMacosPlannedCommand = BrokerMacosProviderCommand | { error: string; missing: string[] };
-export interface BrokerMacosLifecyclePlan {
-    create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: BrokerMacosPlannedCommand;
+export type BrokerMacosPlannedCommand<Effect> =
+    {kind: "unavailable"; error: string; missing: string[]} |
+    {kind: "metadata-only"; reason: string} |
+    {kind: "ready"; effect: Effect; provider: string; canCompensate: boolean; bootEligible: boolean};
+export interface BrokerMacosLifecyclePlan<Effect> {
+    create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: BrokerMacosPlannedCommand<Effect>;
 }
-export interface BrokerMacosLifecycleInput {
-    ownerId: string; parsed: BrokerMacosLifecycleRequest; plan: BrokerMacosLifecyclePlan | undefined; expectedDevice: unknown;
+export interface BrokerMacosLifecycleInput<Effect> {
+    ownerId: string; parsed: BrokerMacosLifecycleRequest; plan: BrokerMacosLifecyclePlan<Effect> | undefined; expectedDevice: unknown;
 }
-export type BrokerMacosLifecycleResponse = { status: number; payload: unknown };
+export type BrokerMacosRollback = {attempted: false; ok: boolean; reason: string} | {attempted: true; ok: boolean; result: BrokerMacosProviderResult};
+export type BrokerMacosLifecycleResponse<Effect> =
+    {kind: "refused"; error: string; missing: string[]; plan: BrokerMacosLifecyclePlan<Effect> | null} |
+    {kind: "provider-failed"; error: string; plan: BrokerMacosLifecyclePlan<Effect> | undefined; execution: BrokerMacosProviderResult} |
+    {kind: "state-failed"; cause: unknown; rollback: BrokerMacosRollback} |
+    {kind: "rollback-failed"; error: string; stateError: string; rollback: BrokerMacosRollback} |
+    {kind: "claim-conflict"; error: string; field: string; value: unknown; existing: Record<string,unknown>; rollback: BrokerMacosRollback} |
+    {kind: "auxiliary-failed"; plan: BrokerMacosLifecyclePlan<Effect> | undefined; device: unknown; auxiliary: BrokerMacosAuxiliaryFacts} |
+    {kind: "completed" | "state-conflict" | "operation-failed"; plan: BrokerMacosLifecyclePlan<Effect> | undefined; device: unknown; execution: BrokerMacosProviderResult; success: boolean; publication?: BrokerMacosPublication; auxiliary?: BrokerMacosAuxiliaryFacts; boot?: BrokerMacosBoot | null};
+export interface BrokerMacosAuxiliaryFacts {
+    ok: boolean; changed: boolean; stateConflict?: boolean; appium: Record<string,unknown>; recording: Record<string,unknown>; minimizeWatchdog: Record<string,unknown>;
+}
 export type BrokerMacosPublication = { found: boolean; matched: boolean; device: unknown };
 export type BrokerMacosClaim = { ok: true; device: Record<string, unknown> } |
     { ok: false; error: string; field: string; value: unknown; existing: Record<string, unknown> };
@@ -85,24 +95,9 @@ export function brokerMacosSshConfig(create: Record<string, unknown>) {
 
 
 export type BrokerMacosBoot =
-    { ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: BrokerMacosProviderResult; attempts?: BrokerMacosProviderResult[] } |
-    { ok: false; error: BrokerMacosProviderResult; attempts?: BrokerMacosProviderResult[] };
-export type BrokerMacosPublicationChange = { kind: "start" | "stop" | "delete"; boot: BrokerMacosBoot | null };
-export function brokerMacosCreateCommand(provider: string, image: string, instance: string, executable: string | null): BrokerMacosProviderCommand {
-    return { mode: "exec", provider, executable: executable || undefined, args: ["clone",image,instance] };
-}
-export function brokerMacosExistingCommand(parsed: BrokerMacosLifecycleRequest, device: unknown, provider: string, instance: string, executable: string | null): BrokerMacosProviderCommand {
-    if (parsed.command === "device_status") return { mode: "exec", provider, executable: executable || undefined, args: provider === "tart" ? ["get",instance] : ["status",instance] };
-    if (parsed.command === "device_start") {
-        if (provider === "tart") {
-            const headless = typeof parsed.headless === "boolean" ? parsed.headless : Boolean(device && typeof device === "object" && (device as Record<string, unknown>).headless === true);
-            return { mode: "detached", provider, executable: executable || undefined, args: ["run",...(headless ? ["--no-graphics"] : []),instance] };
-        }
-        return { mode: "exec", provider, executable: executable || undefined, args: ["start",instance] };
-    }
-    if (parsed.command === "device_stop") return { mode: "exec", provider, executable: executable || undefined, args: ["stop",instance] };
-    return { mode: "exec", provider, executable: executable || undefined, args: ["delete",instance] };
-}
+    {ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: BrokerMacosProviderResult; attempts?: BrokerMacosProviderResult[]} |
+    {ok: false; reason: "missing-target" | "timed-out"; instance: string | null; last?: BrokerMacosProviderResult; attempts?: BrokerMacosProviderResult[]};
+export type BrokerMacosPublicationChange = {kind: "start" | "stop" | "delete"; boot: BrokerMacosBoot | null};
 export function brokerMacosReplacement(candidate: Record<string, unknown>, change: BrokerMacosPublicationChange): Record<string, unknown> | null {
     if (change.kind === "delete") return null;
     const boot = change.boot;

@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createAndroidPreviewPortAllocation, createLifecyclePreview } from "@ccc/device-lab/device-lab/application/broker-observation-command-plan.js";
 import { hyperVPreviewConflicts, type LifecyclePreviewRequest } from "@ccc/device-lab/device-lab/domain/broker-observation-command-plan.js";
-import type { LifecyclePreviewPorts, ProviderPlanObservation } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
+import type { LifecyclePreviewPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
 
 type Allocation = { ok: true; port: number } | { ok: false; error: string };
 function fixture(devices: unknown[] = []) {
     const trace: string[] = [];
-    type Ports = LifecyclePreviewPorts<LifecyclePreviewRequest, object, unknown, unknown, ProviderPlanObservation, Allocation>;
+    type Capability = { readonly token: string } | { error: string; missing: string[] };
+    type Ports = LifecyclePreviewPorts<LifecyclePreviewRequest, object, Capability, Allocation>;
     const ports: { -readonly [Key in keyof Ports]: Ports[Key] } = {
         read: () => { trace.push("read"); return devices; },
         hyperV: parsed => parsed.backend === "windows-vm" || parsed.backend === "linux-vm",
@@ -14,46 +15,36 @@ function fixture(devices: unknown[] = []) {
         androidPort: () => { trace.push("allocate"); return { ok: true, port: 5554 }; },
         createDefinition: (_owner, parsed) => { trace.push("define:" + parsed.create?.port); return { id: parsed.deviceId }; },
         assertWritable: produce => { trace.push("capacity"); produce(); },
-        redactDevice: device => { trace.push("redact-device"); return device; },
-        redactHyperVDevice: device => { trace.push("redact-hyper-device"); return device; },
-        redactCreate: parsed => { trace.push("redact-create"); return parsed.create; },
-        publicHyperVCreate: parsed => { trace.push("redact-hyper-create"); return parsed.create; },
-        maskedHyperVPlan: () => { trace.push("mask"); return { mode: "masked", provider: "hyper-v" }; },
-        createPlan: () => { trace.push("create-plan"); return { mode: "intent", provider: "synthetic" }; },
-        existingPlan: () => { trace.push("existing-plan"); return { mode: "intent", provider: "synthetic" }; },
+        createPlan: () => { trace.push("create-plan"); return { token: "create" }; },
+        existingPlan: () => { trace.push("existing-plan"); return { token: "existing" }; },
         attachmentMatches: () => { trace.push("attachment"); return true; },
     };
-    const run = (extra: Partial<LifecyclePreviewRequest> = {}, context: object | undefined = {}, redact = true) => createLifecyclePreview(ports)("owner", {
+    const run = (extra: Partial<LifecyclePreviewRequest> = {}, context: object | undefined = {}) => createLifecyclePreview(ports)("owner", {
         backend: "android-emulator", stateKey: "android", command: "device_create", deviceId: "device", force: false, dryRun: true, create: { name: "device" }, ...extra,
-    }, context, redact);
+    }, context);
     return { trace, ports, run };
 }
 
 describe("complete inward lifecycle preview", () => {
-    it("allocates without reservation, checks capacity then discloses before native intent", () => {
+    it("allocates without reservation and checks capacity before preparing an opaque effect", () => {
         const f = fixture(); expect(f.run().kind).toBe("create");
-        expect(f.trace).toEqual(["read", "allocate", "define:5554", "capacity", "redact-device", "redact-create", "create-plan"]);
+        expect(f.trace).toEqual(["read", "allocate", "define:5554", "capacity", "create-plan"]);
     });
     it("withholds later observations after allocation or capacity failure", () => {
         const f = fixture(); f.ports.androidPort = () => ({ ok: false, error: "conflict" }); expect(f.run().kind).toBe("allocation-failed"); expect(f.trace).toEqual(["read"]);
         const g = fixture(); const sentinel = {}; g.ports.assertWritable = () => { throw sentinel; };
         expect(g.run()).toEqual({ kind: "state-failed", error: sentinel }); expect(g.trace).not.toContain("create-plan");
     });
-    it("keeps disclosure errors outside the capacity catch and before provider queries", () => {
-        const f = fixture(); const sentinel = {}; f.ports.redactDevice = () => { throw sentinel; };
-        try { f.run(); throw new Error("unexpected success"); } catch (error) { expect(error).toBe(sentinel); }
-        expect(f.trace).not.toContain("create-plan");
-    });
-    it("uses redaction mutations in the subsequent existing-device query", () => {
+    it("passes the observed record to native preparation without applying a public projection", () => {
         const device = { id: "device", status: "before" }; const f = fixture([device]);
-        f.ports.redactDevice = value => { (value as typeof device).status = "after"; return value; };
-        f.ports.existingPlan = (_owner, _parsed, value) => { expect(value).toBe(device); expect(device.status).toBe("after"); return { mode: "intent", provider: "synthetic" }; };
+        f.ports.existingPlan = (_owner, _parsed, value) => { expect(value).toBe(device); expect(device.status).toBe("before"); return { token: "existing" }; };
         expect(f.run({ command: "device_status" }).kind).toBe("existing");
     });
-    it("skips Hyper-V native encoders for redacted plans and keeps unnormalized plans deferred", () => {
+    it("preserves opaque Hyper-V preparation and defers it without a native context", () => {
         const f = fixture(); const result = f.run({ backend: "linux-vm", stateKey: "linux-vm" }); expect(result.kind).toBe("create");
-        expect(f.trace.slice(-3)).toEqual(["redact-device", "redact-hyper-create", "mask"]); expect(f.trace).not.toContain("create-plan");
-        const g = fixture(); const deferred = createLifecyclePreview(g.ports)("owner", { backend: "android-emulator", stateKey: "android", command: "device_create", deviceId: "device", force: false, dryRun: true, create: { name: "device" } }, undefined, true); if (deferred.kind !== "create") throw new Error("unexpected refusal");
+        if (result.kind !== "create") throw new Error("unexpected refusal");
+        expect(result.value.providerPlan).toEqual({ token: "create" });
+        const g = fixture(); const deferred = createLifecyclePreview(g.ports)("owner", { backend: "android-emulator", stateKey: "android", command: "device_create", deviceId: "device", force: false, dryRun: true, create: { name: "device" } }, undefined); if (deferred.kind !== "create") throw new Error("unexpected refusal");
         expect(deferred.value.providerPlan).toBeNull(); expect(deferred.value.providerAvailable).toBe(false); expect(g.trace).not.toContain("create-plan");
     });
     it("preserves native missing-provider evidence inside a successful plan", () => {

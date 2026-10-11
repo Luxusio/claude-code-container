@@ -1,3 +1,8 @@
+import {planBrokerAndroidCreate, planBrokerAndroidExisting} from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
+import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCommand as semanticIosExisting} from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
+import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExistingCommand as semanticMacosExisting} from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
+import type {BrokerAndroidPreparationPorts} from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
+import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerMacosBoot, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
 import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
 import type {BrokerRecordingRefusal, BrokerRecordingRequest, BrokerRecordingTarget} from "./device-lab/domain/broker-recording.js";
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
@@ -34,16 +39,16 @@ import type { BrokerOwnerRegistration as DeviceBrokerOwnerRegistration } from ".
 import type { BrokerAuthQuarantine } from "./device-lab/ports/broker-owner.js";
 import { createBrokerPhysicalLeasesApplication } from "./device-lab/application/broker-physical-leases.js";
 import { validateLeaseParams, type LeaseParamSuccess, type LeaseFailure } from "./device-lab/domain/broker-physical-leases.js";
-import { createBrokerWindowsSandboxLifecycle, planBrokerWindowsSandboxCommand } from "./device-lab/application/lifecycle/windows-sandbox-lifecycle.js";
+import { createBrokerWindowsSandboxLifecycle } from "./device-lab/application/lifecycle/windows-sandbox-lifecycle.js";
 import { brokerWindowsSandboxReplacement } from "./device-lab/domain/lifecycle/windows-sandbox-lifecycle.js";
 import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/lifecycle/windows-sandbox-lifecycle.js";
-import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, planBrokerIosCreateCommand, planBrokerIosExistingCommand, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
-import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, planBrokerMacosCreateCommand, planBrokerMacosExistingCommand, rollbackBrokerMacosCreate, waitForBrokerMacosBoot } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
+import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
+import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, rollbackBrokerMacosCreate, waitForBrokerMacosBoot } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
 import { brokerMacosReplacement, brokerMacosUniqueFields } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "./device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/macos-vm-lifecycle.js";
-import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord, planBrokerAndroidCreateCommand, planBrokerAndroidExistingCommand } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
+import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidEmulatorLifecyclePorts } from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import { createBrokerWindowsSandboxCreate } from "./device-lab/application/lifecycle/windows-sandbox-create.js";
 import { brokerWindowsSandboxRecord } from "./device-lab/domain/lifecycle/windows-sandbox-create.js";
@@ -4366,10 +4371,10 @@ async function rollbackProviderCreateAfterConflict(
     if (!isHyperVBackend(parsed.backend) && (!providerCommand || providerCommand.mode === "noop")) {
         return { attempted: false, ok: true, reason: "no-provider-resource-created" };
     }
-    if (parsed.backend === "ios-simulator") return rollbackBrokerIosCreate(brokerIosLifecyclePorts(normalized), device, existing, providerCommand);
+    if (parsed.backend === "ios-simulator") return rollbackBrokerIosCreate(brokerIosLifecyclePorts(normalized), device, existing, nativeLifecyclePreparation(providerCommand)).then(renderBrokerProviderRollback);
     if(isHyperVBackend(parsed.backend))return renderHyperVCreateRollback(await brokerHyperVCreateStartApplication(normalized).rollbackCreate(parsed,device,existing,hyperVDeadlineAt));
 
-    if (parsed.backend === "macos-vm") return rollbackBrokerMacosCreate(brokerMacosLifecyclePorts(normalized), device, existing, providerCommand);
+    if (parsed.backend === "macos-vm") return rollbackBrokerMacosCreate(brokerMacosLifecyclePorts(normalized), device, existing, nativeLifecyclePreparation(providerCommand)).then(renderBrokerProviderRollback);
     return { attempted: false, ok: true, reason: "create-does-not-provision-a-provider-resource" };
 }
 
@@ -4580,10 +4585,13 @@ function resolveAndroidEmulatorCreatePortForInvoke(
     parsed: CommandParamSuccess,
     normalized: NormalizedBrokerOptions,
 ): AndroidEmulatorPortAllocation {
-    return allocateBrokerAndroidCreatePort(ownerId, parsed, {
-        previewAllocation: (ownerId, parsed, additionalUsedPorts) => resolveAndroidEmulatorCreatePort(ownerId, parsed, additionalUsedPorts),
-        livePorts: () => liveAndroidEmulatorPortsForAllocation(normalized),
+    const observation = allocateBrokerAndroidCreatePort(ownerId, parsed, {
+        previewAllocation: (ownerId, parsed, additionalUsedPorts) => {const result = resolveAndroidEmulatorCreatePort(ownerId, parsed, additionalUsedPorts); if(result.ok) return result; const {status, ...facts} = result; return {...facts, reason: nativeAndroidFailureReason(status)};},
+        livePorts: () => brokerAndroidLifecyclePorts(normalized).livePorts(),
     });
+    if (observation.ok) return observation;
+    const {reason, ...facts} = observation;
+    return {...facts, status: reason === "invalid" ? 400 : reason === "provider-unavailable" ? 503 : reason === "provider-failed" ? 502 : reason === "state-write-failed" ? 500 : 409};
 }
 
 
@@ -6546,10 +6554,105 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
 }
 
 
+type NativeLifecycleCommand = ProviderCommand | {error: string; missing: string[]};
+
+
+
+
+
+
+
+function planBrokerWindowsSandboxCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, ports: {
+    executable(name: string): string;
+    stopRuntimeId(owner: string, device: unknown): string | null;
+    readConfig(owner: string, id: string, path: string | null): {
+        ok: true;
+        config: string;
+    } | {
+        ok: false;
+        error: string;
+        missing: string[];
+    };
+    newRuntimeId(): string;
+}): NativeLifecycleCommand {
+    if (parsed.command === 'device_status')
+        return { mode: 'noop', provider: 'wsb', reason: 'Windows Sandbox status/delete is represented by owner state in this broker layer' };
+    const executable = ports.executable('wsb');
+    const status = String((device as {
+        status?: unknown;
+    })?.status || '').toLowerCase();
+    if (parsed.command === 'device_stop' || (parsed.command === 'device_delete' && ['running', 'booted', 'started', 'starting'].includes(status))) {
+        const sandboxId = ports.stopRuntimeId(ownerId, device);
+        if (!sandboxId)
+            return { error: 'missing-provider-metadata', missing: ['sandboxId GUID'] };
+        return { mode: 'exec', provider: 'wsb', executable: executable || undefined, args: ['stop', '--id', sandboxId], sandboxId };
+    }
+    if (parsed.command === 'device_delete')
+        return { mode: 'noop', provider: 'wsb', reason: 'Stopped Windows Sandbox delete is represented by owner state in this broker layer' };
+    const config = ports.readConfig(ownerId, parsed.deviceId, field(device, 'configPath') || field(device, 'wsbConfigPath'));
+    if (!config.ok)
+        return { error: config.error, missing: config.missing };
+    const existing = field(device, 'sandboxId');
+    const sandboxId = existing && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existing) ? existing : ports.newRuntimeId();
+    const minimized = typeof parsed.minimized === 'boolean' ? parsed.minimized : (device as {
+        minimized?: unknown;
+    })?.minimized !== false;
+    return { mode: 'exec', provider: 'wsb', executable: executable || undefined, args: ['start', '--id', sandboxId, '--config', config.config], sandboxId, waitForExit: false, ...(minimized ? { windowStyle: 'minimized' as const } : {}) };
+}
+
+
+
+
+
+function nativeLifecyclePreparation(command: NativeLifecycleCommand | null | undefined) {
+    if (!command)
+        return { kind: "metadata-only" as const, reason: "device_create writes owner-scoped broker metadata" };
+    if ("error" in command)
+        return { kind: "unavailable" as const, error: command.error, missing: command.missing };
+    if (command.mode === "noop")
+        return { kind: "metadata-only" as const, reason: command.reason || "device_create writes owner-scoped broker metadata" };
+    return { kind: "ready" as const, effect: new NativeProviderLifecycleEffect(command), mode: command.mode, provider: command.provider, canCompensate: Boolean(command.executable), bootEligible: command.provider === "tart" && command.mode === "detached" && Boolean(command.executable) };
+}
+function nativePreparedCommand(prepared: {
+    kind: "ready";
+    effect: NativeProviderLifecycleEffect;
+} | {
+    kind: "metadata-only";
+    reason?: string;
+} | {
+    kind: "unavailable";
+    error: string;
+    missing: string[];
+}, metadataReason = "device_create writes owner-scoped broker metadata"): NativeLifecycleCommand {
+    if (prepared.kind === "unavailable")
+        return { error: prepared.error, missing: prepared.missing };
+    if (prepared.kind === "ready")
+        return prepared.effect.command;
+    return { mode: "noop", provider: "host-broker-state", reason: prepared.reason || metadataReason };
+}
+function planBrokerAndroidCreateCommand(owner: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, create = parsed.create || {}) {
+    return nativePreparedCommand(planBrokerAndroidCreate(owner, parsed, brokerAndroidPreparationPorts(normalized), create));
+}
+function planBrokerAndroidExistingCommand(owner: string, parsed: CommandParamSuccess, device: unknown, normalized: NormalizedBrokerOptions) {
+    return nativePreparedCommand(planBrokerAndroidExisting(owner, parsed, device, brokerAndroidPreparationPorts(normalized)), parsed.deleteAvd === false
+        ? "Android emulator deleteAvd=false deletes only owner broker metadata" : "Owner-scoped Android AVD artifacts are removed through identity-fenced storage cleanup");
+}
+function planBrokerIosCreateCommand(owner: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, create = parsed.create || {}) {
+    return nativePreparedCommand(semanticIosCreate(owner, parsed, brokerIosLifecyclePorts(normalized), create));
+}
+function planBrokerIosExistingCommand(owner: string, parsed: CommandParamSuccess, device: unknown, normalized: NormalizedBrokerOptions) {
+    return nativePreparedCommand(semanticIosExisting(owner, parsed, device, brokerIosLifecyclePorts(normalized)));
+}
+function planBrokerMacosCreateCommand(owner: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, create = parsed.create || {}) {
+    return nativePreparedCommand(semanticMacosCreate(owner, parsed, brokerMacosLifecyclePorts(normalized), create));
+}
+function planBrokerMacosExistingCommand(owner: string, parsed: CommandParamSuccess, device: unknown, normalized: NormalizedBrokerOptions) {
+    return nativePreparedCommand(semanticMacosExisting(owner, parsed, device, brokerMacosLifecyclePorts(normalized)));
+}
 function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions): ProviderCommand | { error: string; missing: string[] } {
     const create = parsed.create || {};
-    if (parsed.backend === "android-emulator" && create.createAvd === true) return planBrokerAndroidCreateCommand(ownerId, parsed, { ownedAvdName: (name, owner) => ownedAndroidAvdName(name, owner), executable: name => executableFor(name, normalized) }, create);
-    if (parsed.backend === "ios-simulator" && create.createSimulator === true) return planBrokerIosCreateCommand(ownerId, parsed, { executable: name => executableFor(name, normalized), createCommand: input => iosSimulatorCreateCommand({ ...input, executable: input.executable as string }) }, create);
+    if (parsed.backend === "android-emulator" && create.createAvd === true) return planBrokerAndroidCreateCommand(ownerId, parsed, normalized, create);
+    if (parsed.backend === "ios-simulator" && create.createSimulator === true) return planBrokerIosCreateCommand(ownerId, parsed, normalized, create);
     if (isHyperVBackend(parsed.backend)) {
         const linuxGuest = parsed.backend === "linux-vm";
         const image = typeof create.image === "string" && create.image ? create.image : null;
@@ -6617,7 +6720,7 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
             return { error: error instanceof Error ? error.message : "invalid-hyper-v-create-options", missing: [] };
         }
     }
-    if (parsed.backend === "macos-vm") return planBrokerMacosCreateCommand(ownerId, parsed, { executable: name => executableFor(name, normalized) }, create);
+    if (parsed.backend === "macos-vm") return planBrokerMacosCreateCommand(ownerId, parsed, normalized, create);
     return { mode: "noop", provider: "host-broker-state", reason: "device_create writes owner-scoped broker metadata" };
 }
 
@@ -6672,7 +6775,7 @@ function resolveBrokerOwnedIosSimulatorTarget(ownerId: string, device: unknown, 
 }
 
 function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device: unknown, normalized: NormalizedBrokerOptions): ProviderCommand | { error: string; missing: string[] } {
-    if (parsed.backend === "android-emulator") return planBrokerAndroidExistingCommand(ownerId, parsed, device, { ownedAvdName: (name, owner) => ownedAndroidAvdName(name, owner), executable: name => executableFor(name, normalized) });
+    if (parsed.backend === "android-emulator") return planBrokerAndroidExistingCommand(ownerId, parsed, device, normalized);
 
     if (parsed.backend === "android-device") {
         const serial = field(device, "serial");
@@ -6683,7 +6786,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         return { mode: "noop", provider: "android-device", reason: "physical Android stop/delete does not power off or disconnect the real device" };
     }
 
-    if (parsed.backend === "ios-simulator") return planBrokerIosExistingCommand(ownerId, parsed, device, { verifyOwnedTarget: (owner, record) => resolveBrokerOwnedIosSimulatorTarget(owner, record, normalized), executable: name => executableFor(name, normalized) });
+    if (parsed.backend === "ios-simulator") return planBrokerIosExistingCommand(ownerId, parsed, device, normalized);
 
     if (parsed.backend === "ios-device") {
         const udid = field(device, "udid");
@@ -6694,7 +6797,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         return { mode: "noop", provider: "ios-device", reason: "physical iOS stop/delete does not power off, erase, or disconnect the real device" };
     }
 
-    if (parsed.backend === "windows-sandbox") return planBrokerWindowsSandboxCommand(ownerId,parsed,device,brokerWindowsLifecyclePorts(normalized));
+    if (parsed.backend === "windows-sandbox") return planBrokerWindowsSandboxCommand(ownerId,parsed,device,{executable: name => executableFor(name, normalized), stopRuntimeId: brokerWindowsSandboxIdForStop, readConfig: readBrokerWindowsLifecycleConfig, newRuntimeId: randomGuid});
 
     if (isHyperVBackend(parsed.backend)) {
         const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
@@ -6737,7 +6840,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         }
     }
 
-    if (parsed.backend === "macos-vm") return planBrokerMacosExistingCommand(ownerId, parsed, device, { executable: name => executableFor(name, normalized) });
+    if (parsed.backend === "macos-vm") return planBrokerMacosExistingCommand(ownerId, parsed, device, normalized);
 
     return { error: "unsupported-provider-command", missing: [] };
 }
@@ -8204,7 +8307,7 @@ type MacosVmBootRegistration =
     | { ok: false; error: ProviderCommandResult; attempts?: ProviderCommandResult[] };
 
 function waitForBrokerMacosVmBoot(parsed: CommandParamSuccess, device: unknown, command: ProviderCommand, normalized: NormalizedBrokerOptions): MacosVmBootRegistration {
-    return waitForBrokerMacosBoot(parsed, device, command, brokerMacosLifecyclePorts(normalized));
+    return renderBrokerMacosBoot(waitForBrokerMacosBoot(parsed, device, nativeLifecyclePreparation(command), brokerMacosLifecyclePorts(normalized)), command);
 }
 
 function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, macosBoot?: MacosVmBootRegistration | null, _execution?: ProviderCommandResult, _hyperVGuestReady?: ReturnType<typeof parseHyperVGuestReadyObservation> | null) {
@@ -8344,7 +8447,8 @@ function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?:
         const response = { status: 200, payload: { ok: true, result: { ...observation.value, device: null, idempotent: true, alreadyMissing: true, providerCommand: null, execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false } } } };
         return { response, result: response.payload.result };
     }
-    const { providerPlan, providerAvailable, ...value } = observation.value;
+    const { providerPlan, providerAvailable, ...selected } = observation.value;
+    const value = observation.kind === "create" ? {...selected, create: redactSecrets && isHyperVBackend(parsed.backend) ? observation.value.create : redactBrokerCreateSecrets(observation.value.create)} : selected;
     {
         const response = { status: 200, payload: { ok: true, result: { ...value, providerCommand: providerPlan, execution: { mode: "planned", providerExecution: providerAvailable ? "available" : "deferred", mutatesHost: false } } } };
         return { response, result: response.payload.result };
@@ -8354,163 +8458,242 @@ function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?:
 function lifecycleCommandPlan(ownerId:string,params:unknown,normalized?:NormalizedBrokerOptions,redactSecrets=true,expected?:{device?:unknown}){return lifecycleCommandPlanning(ownerId,params,normalized,redactSecrets,expected).response;}
 
 
-function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions | undefined, redactSecrets: boolean, expected?: { device?: unknown }) {
-    return createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, ReturnType<typeof redactBrokerDeviceSecrets>, ReturnType<typeof redactBrokerCreateSecrets> | ReturnType<typeof publicHyperVCreateConfiguration>, ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | { mode: string; provider: string }, AndroidEmulatorPortAllocation>({
-    read: (ownerId, parsed: CommandParamSuccess) => {
-        const devices = readOwnerDevices(ownerId, parsed.stateKey);
-        if (expected) expected.device = structuredClone(devices.find(candidate => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId));
-        return devices;
-    },
-    hyperV: parsed => isHyperVBackend(parsed.backend),
-    validIncarnation: parsed => validHyperVIncarnationId(parsed.expectedIncarnationId),
-    incarnation: device => hyperVDeviceIncarnationId(device),
-    conflicts: (device, parsed) => hyperVCreateConfigurationConflicts(device, parsed),
-    androidPort: (ownerId, parsed) => resolveAndroidEmulatorCreatePort(ownerId, parsed),
-    createDefinition: (ownerId, parsed) => createOwnerDeviceRecord(ownerId, parsed),
-    assertWritable: read => assertOwnerDeviceStateWritable(read(), DEVICE_BROKER_INVENTORY_FILE_LIMIT),
-    redactDevice: device => redactBrokerDeviceSecrets(device),
-    redactHyperVDevice: device => redactHyperVDeviceSecrets(device),
-    redactCreate: parsed => redactBrokerCreateSecrets(parsed.create),
-    publicHyperVCreate: (effective, original) => publicHyperVCreateConfiguration({ ...(effective.create || {}), ...hyperVSecureBootConfiguration(original.backend) }),
-    maskedHyperVPlan: () => ({ mode: "powershell", provider: "hyper-v" }),
-    createPlan: (ownerId, parsed, normalized: NormalizedBrokerOptions) => providerCommandForCreate(ownerId, parsed, normalized),
-    existingPlan: (ownerId, parsed, device, normalized) => providerCommandFor(ownerId, parsed, device, normalized),
-    attachmentMatches: (ownerId, parsed, device) => physicalDeviceLeaseMatches(ownerId, parsed.stateKey, parsed.deviceId, device),
-})(ownerId, parsed, normalized, redactSecrets);
+function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions | undefined, redactSecrets: boolean, expected?: {
+    device?: unknown;
+}) {
+    const observation = createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | {
+        mode: string;
+        provider: string;
+    }, AndroidEmulatorPortAllocation>({
+        read: (ownerId, parsed: CommandParamSuccess) => {
+            const devices = readOwnerDevices(ownerId, parsed.stateKey);
+            if (expected)
+                expected.device = structuredClone(devices.find(candidate => candidate && typeof candidate === "object" && (candidate as {
+                    id?: unknown;
+                }).id === parsed.deviceId));
+            return devices;
+        },
+        hyperV: parsed => isHyperVBackend(parsed.backend),
+        validIncarnation: parsed => validHyperVIncarnationId(parsed.expectedIncarnationId),
+        incarnation: device => hyperVDeviceIncarnationId(device),
+        conflicts: (device, parsed) => hyperVCreateConfigurationConflicts(device, parsed),
+        androidPort: (ownerId, parsed) => resolveAndroidEmulatorCreatePort(ownerId, parsed),
+        createDefinition: (ownerId, parsed) => createOwnerDeviceRecord(ownerId, parsed),
+        assertWritable: read => assertOwnerDeviceStateWritable(read(), DEVICE_BROKER_INVENTORY_FILE_LIMIT),
+        createPlan: (ownerId, parsed, normalized: NormalizedBrokerOptions) => redactSecrets && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : providerCommandForCreate(ownerId, parsed, normalized),
+        existingPlan: (ownerId, parsed, device, normalized) => redactSecrets && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : providerCommandFor(ownerId, parsed, device, normalized),
+        attachmentMatches: (ownerId, parsed, device) => physicalDeviceLeaseMatches(ownerId, parsed.stateKey, parsed.deviceId, device),
+    })(ownerId, parsed, normalized);
+    if (!redactSecrets)
+        return observation;
+    if (observation.kind === "equivalent-create")
+        return { ...observation, value: { ...observation.value, device: redactHyperVDeviceSecrets(observation.value.device) } };
+    if (observation.kind === "create")
+        return { ...observation, value: { ...observation.value,
+                device: redactBrokerDeviceSecrets(observation.value.device),
+                create: isHyperVBackend(parsed.backend) ? publicHyperVCreateConfiguration({ ...observation.value.create, ...hyperVSecureBootConfiguration(parsed.backend) }) : redactBrokerCreateSecrets(observation.value.create),
+                providerPlan: normalized && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : observation.value.providerPlan } };
+    if (observation.kind === "existing")
+        return { ...observation, value: { ...observation.value,
+                device: isHyperVBackend(parsed.backend) ? redactHyperVDeviceSecrets(observation.value.device) : redactBrokerDeviceSecrets(observation.value.device),
+                providerPlan: normalized && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : observation.value.providerPlan } };
+    return observation;
 }
 
-function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerAndroidEmulatorLifecyclePorts {
+type NativeAndroidRuntime = {adb: string; emulator: string};
+function brokerAndroidPreparationPorts(normalized: NormalizedBrokerOptions): BrokerAndroidPreparationPorts<NativeAndroidRuntime, NativeProviderLifecycleEffect> {
+    const ready = (command: ProviderCommand) => ({ kind: "ready" as const, effect: new NativeProviderLifecycleEffect(command), mode: command.mode, provider: command.provider });
     return {
-        execute: (command, options) => normalized.commandRunner(command, options),
-        executable: name => executableFor(name, normalized),
-        now: () => Date.now(),
-        sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
-        timestamp: () => new Date().toISOString(),
-        avdHome: () => androidAvdHome(),
-        validPort: port => validAndroidEmulatorPort(port),
-        livePorts: () => liveAndroidEmulatorPortsForAllocation(normalized),
-        liveAvds: () => liveAndroidAvdNames(normalized),
-        avdProcesses: (name, timeoutMs, registeredName) => androidAvdProcessState(name, normalized, timeoutMs, registeredName),
-        ownedAvdName: (name, ownerId) => ownedAndroidAvdName(name, ownerId),
-        approvedAvdRoot: root => approvedAndroidAvdRoot(root, normalized.platform),
-        avdArtifacts: (ownerId, root) => listOwnedAndroidAvdArtifacts(ownerId, { root }),
-        removeAvdArtifacts: (name, ownerId, root, verifyInactive) => removeOwnedAndroidAvdArtifacts(name, ownerId, { root, verifyInactive }),
-        claimDefinition: (ownerId, parsed, device) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        captureRuntime: () => ({ adb: executableFor("adb", normalized), emulator: executableFor("emulator", normalized) }), ownedAvdName: ownedAndroidAvdName,
+        prepareCreate: ({ avdName, systemImage, deviceProfile }) => ready({ mode: "exec", provider: "avdmanager", executable: executableFor("avdmanager", normalized), args: ["create", "avd", "--name", avdName, "--package", systemImage, "--force", ...(deviceProfile ? ["--device", deviceProfile] : [])], input: "no\n" }),
+        prepareStatus: (runtime, serial) => ready({ mode: "exec", provider: "adb", executable: runtime.adb, args: ["-s", serial, "get-state"] }),
+        prepareStop: (runtime, serial) => ready({ mode: "exec", provider: "adb", executable: runtime.adb, args: ["-s", serial, "emu", "kill"] }),
+        prepareStart: (runtime, facts) => ready({ mode: "detached", provider: "emulator", executable: runtime.emulator, args: ["-avd", facts.avdName, ...(facts.port ? ["-port", String(facts.port)] : []), ...(facts.headless ? ["-no-window", "-no-audio"] : []), "-netsim-args", "--no-cli-ui --no-web-ui"], windowsHiddenLauncher: true }),
+    };
+}
+function nativeAndroidFailureReason(status: number) {
+    return status === 400 ? "invalid" as const : status === 503 ? "provider-unavailable" as const : status === 502 ? "provider-failed" as const : status === 500 ? "state-write-failed" as const : "conflict" as const;
+}
+function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerAndroidEmulatorLifecyclePorts<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt> {
+    return {
+        executePrepared: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        metadataObservation: (purpose, options) => purpose === "create" ? nativeLifecycleObservation({ mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" })
+            : nativeLifecycleObservation(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: purpose === "delete-metadata" ? "Android emulator deleteAvd=false deletes only owner broker metadata" : "Android AVD artifacts are removed by identity-fenced storage cleanup" }, options)),
+        prepareStopInventory: () => { const adb = executableFor("adb", normalized); return adb ? { kind: "ready", effect: new NativeProviderLifecycleEffect({ mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }) } : { kind: "unavailable" }; },
+        prepareBootProbe: serial => {
+            const adb = executableFor("adb", normalized);
+            return adb && serial ? { kind: "ready", effect: new NativeProviderLifecycleEffect({ mode: "exec", provider: "adb", executable: adb, args: ["-s", serial, "shell", "getprop", "sys.boot_completed"] }) }
+                : { kind: "unavailable", observation: nativeLifecycleObservation({ mode: "exec", provider: "adb", executable: adb || undefined, args: serial ? ["-s", serial, "shell", "getprop", "sys.boot_completed"] : [], status: null, stdout: "", stderr: "", error: serial ? "missing-executable: adb" : "missing-provider-metadata: serial or port" }) };
+        },
+        now: () => performance.now(), sleep: milliseconds => { sleepSync(milliseconds); return undefined; }, timestamp: () => new Date().toISOString(), avdHome: androidAvdHome,
+        validPort: validAndroidEmulatorPort,
+        livePorts: () => { const result = liveAndroidEmulatorPortsForAllocation(normalized); if (result.ok)
+            return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
+        liveAvds: () => { const result = liveAndroidAvdNames(normalized); if (result.ok)
+            return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
+        avdProcesses: (name, timeout, registered) => { const result = androidAvdProcessState(name, normalized, timeout, registered); if (result.ok)
+            return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
+        ownedAvdName: ownedAndroidAvdName, approvedAvdRoot: root => approvedAndroidAvdRoot(root, normalized.platform),
+        avdArtifacts: (owner, root) => listOwnedAndroidAvdArtifacts(owner, { root }),
+        removeAvdArtifacts: (name, owner, root, verifyInactive) => removeOwnedAndroidAvdArtifacts(name, owner, { root, verifyInactive }),
+        claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
+        transition: (owner, parsed, expected, replace) => transitionOwnerLifecycleDevice(owner, parsed.stateKey, parsed.deviceId, expected, candidate => {
+            const replacement = replace(candidate);
+            if (cleanupRecord(replacement) && cleanupRecord(replacement.lastBootCheck)) {
+                const boot = replacement.lastBootCheck.result;
+                if (cleanupRecord(boot) && boot.receipt instanceof NativeBrokerExecutionReceipt)
+                    replacement.lastBootCheck.result = boot.receipt.value;
+            }
+            return replacement;
+        }),
+        stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    };
+}
+
+function readBrokerWindowsLifecycleConfig(ownerId: string, deviceId: string, recordedPath: string | null): {
+    ok: true;
+    config: string;
+} | {
+    ok: false;
+    error: string;
+    missing: string[];
+} {
+    const configPath = recordedPath || brokerWindowsConfigPath(ownerId, deviceId);
+    const root = join(brokerRoot(), "owners", ownerId, "windows");
+    if (!pathWithin(root, configPath))
+        return { ok: false, error: "invalid-provider-metadata", missing: ["owner-scoped configPath"] };
+    if (!recordedPath) {
+        try {
+            lstatSync(configPath);
+        }
+        catch (error) {
+            return (error as NodeJS.ErrnoException).code === "ENOENT"
+                ? { ok: false, error: "missing-provider-metadata", missing: ["configPath"] }
+                : { ok: false, error: "invalid-provider-metadata", missing: ["owner-scoped configPath readable"] };
+        }
+    }
+    try {
+        assertDeviceLabPathWithinRoot(root, configPath, "windows-sandbox-config");
+        const config = readDeviceLabTextFile(configPath, "windows-sandbox-config", DEVICE_BROKER_WINDOWS_CONFIG_LIMIT_BYTES);
+        if (config === null)
+            throw new Error("windows-sandbox-config-missing");
+        return { ok: true, config };
+    }
+    catch {
+        return { ok: false, error: "invalid-provider-metadata", missing: ["owner-scoped configPath readable"] };
+    }
+}
+function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerWindowsSandboxLifecyclePorts<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt> {
+    return {
+        prepare: (owner, parsed, device) => {
+            const command = planBrokerWindowsSandboxCommand(owner, parsed, device, { executable: name => executableFor(name, normalized), stopRuntimeId: brokerWindowsSandboxIdForStop, readConfig: readBrokerWindowsLifecycleConfig, newRuntimeId: randomGuid });
+            if ("error" in command)
+                return { kind: "unavailable", error: command.error, missing: command.missing };
+            return { kind: "ready", handle: new NativeProviderLifecycleEffect(command), operationKind: command.mode === "noop" ? "metadata-only" : "runtime", sandboxId: command.sandboxId, minimized: command.windowStyle === "minimized" };
+        },
+        run: (handle, options) => nativeLifecycleObservation(normalized.commandRunner(handle.command, options)),
+        listRuntime: (handle, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options)),
+        isCanonicalConfig: (ownerId, deviceId, path) => resolve(path) === resolve(brokerWindowsConfigPath(ownerId, deviceId)),
+        writeConfig: (ownerId, deviceId, device) => { writeBrokerWindowsConfig(ownerId, deviceId, device, normalized); return undefined; },
+        claimSingleton: (ownerId, device, id) => claimBrokerWindowsSandboxLock(ownerId, device, id),
+        releaseSingleton: (ownerId, device, id) => { releaseBrokerWindowsSandboxLock(ownerId, device, id); return undefined; },
+        updateSingletonRuntimeId: (ownerId, device, claimed, runtime) => { updateBrokerWindowsSandboxLockRuntimeId(ownerId, device, claimed, runtime); return undefined; },
+        helperPaths: (ownerId, deviceId) => brokerWindowsHelperPaths(ownerId, deviceId),
+        removeMarker: path => { rmSync(path, { force: true }); return undefined; },
+        runtimeIds: output => windowsSandboxSessionIdsFromBrokerListOutput(output),
+        snapshotWindows: options => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "powershell", executable: "powershell.exe", args: windowsSandboxWindowHandleSnapshotArgs() }, options)),
+        windowHandles: output => windowsSandboxWindowHandlesFromOutput(output),
+        launchWatchdog: (startedAfter, paths, handles, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "detached", provider: "powershell", executable: "powershell.exe", args: windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS, startedAfter, paths.minimizeWatchdogCancelPath, handles, paths.minimizeWatchdogResultPath) }, options)),
+        waitForMinimizeConfirmation: path => nativeLifecycleObservation(waitForBrokerWindowsMinimizeConfirmation(path)),
+        cancelWatchdog: (ownerId, deviceId) => cancelBrokerWindowsMinimizeWatchdog(ownerId, deviceId),
         cleanupAuxiliary: (ownerId, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expected),
-        transition: (ownerId, parsed, expected, replace) => transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, expected, replace),
-        redactDevice: device => redactBrokerDeviceSecrets(device),
-        stateErrorCode: error => ownerDeviceStateErrorCode(error),
-        stateFailure: (error, parsed) => ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey }),
-        failureDetail: result => providerFailureDetail(result),
+        cleanArtifacts: (ownerId, deviceId) => normalized.windowsDeviceArtifactCleaner(ownerId, deviceId),
+        inspectExpectedRecord: (ownerId, stateKey, deviceId, expected) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
+            const device = readOwnerDevices(ownerId, stateKey).find(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string, unknown>).id === deviceId);
+            return { found: Boolean(device), matched: Boolean(device && isDeepStrictEqual(device, expected)), device: device || null };
+        }),
+        publish: (ownerId, stateKey, deviceId, expected, change) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, candidate => {
+            const replacement = brokerWindowsSandboxReplacement(candidate, change);
+            if (replacement === null)
+                return null;
+            if (change.kind === "start" && typeof change.watchdog?.pid === "number") {
+                (replacement.minimizeWatchdog as Record<string, unknown>).startedAt = new Date().toISOString();
+            }
+            return { ...replacement, updatedAt: new Date().toISOString() };
+        }),
+        now: () => performance.now(),
+        timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
+        sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
+        get platform() { return normalized.platform; },
         get commandTimeoutMs() { return normalized.commandTimeoutMs; },
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
 
-function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerWindowsSandboxLifecyclePorts {
-    return {
-        execute: (command,options) => normalized.commandRunner(command,options),
-        executable: name => executableFor(name,normalized),
-        stopRuntimeId: (ownerId,device) => brokerWindowsSandboxIdForStop(ownerId,device),
-        newRuntimeId: () => randomGuid(),
-        readConfig: (ownerId,deviceId,recordedPath) => {
-            const configPath=recordedPath || brokerWindowsConfigPath(ownerId,deviceId);
-            const root=join(brokerRoot(),"owners",ownerId,"windows");
-            if(!pathWithin(root,configPath)) return {ok:false,error:"invalid-provider-metadata",missing:["owner-scoped configPath"]};
-            if(!recordedPath) {
-                try { lstatSync(configPath); }
-                catch(error) { return (error as NodeJS.ErrnoException).code === "ENOENT"
-                    ? {ok:false,error:"missing-provider-metadata",missing:["configPath"]}
-                    : {ok:false,error:"invalid-provider-metadata",missing:["owner-scoped configPath readable"]}; }
-            }
-            try {
-                assertDeviceLabPathWithinRoot(root,configPath,"windows-sandbox-config");
-                const config=readDeviceLabTextFile(configPath,"windows-sandbox-config",DEVICE_BROKER_WINDOWS_CONFIG_LIMIT_BYTES);
-                if(config === null) throw new Error("windows-sandbox-config-missing");
-                return {ok:true,config};
-            } catch { return {ok:false,error:"invalid-provider-metadata",missing:["owner-scoped configPath readable"]}; }
-        },
-        isCanonicalConfig: (ownerId,deviceId,path) => resolve(path) === resolve(brokerWindowsConfigPath(ownerId,deviceId)),
-        writeConfig: (ownerId,deviceId,device) => {writeBrokerWindowsConfig(ownerId,deviceId,device,normalized); return undefined;},
-        claimSingleton: (ownerId,device,id) => claimBrokerWindowsSandboxLock(ownerId,device,id),
-        releaseSingleton: (ownerId,device,id) => {releaseBrokerWindowsSandboxLock(ownerId,device,id); return undefined;},
-        updateSingletonRuntimeId: (ownerId,device,claimed,runtime) => {updateBrokerWindowsSandboxLockRuntimeId(ownerId,device,claimed,runtime); return undefined;},
-        helperPaths: (ownerId,deviceId) => brokerWindowsHelperPaths(ownerId,deviceId),
-        removeMarker: path => {rmSync(path,{force:true}); return undefined;},
-        runtimeIds: output => windowsSandboxSessionIdsFromBrokerListOutput(output),
-        windowSnapshotCommand: () => ({mode:"exec",provider:"powershell",executable:"powershell.exe",args:windowsSandboxWindowHandleSnapshotArgs()}),
-        windowHandles: output => windowsSandboxWindowHandlesFromOutput(output),
-        watchdogCommand: (startedAfter,paths,handles) => ({mode:"detached",provider:"powershell",executable:"powershell.exe",args:windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,startedAfter,paths.minimizeWatchdogCancelPath,handles,paths.minimizeWatchdogResultPath)}),
-        waitForMinimizeConfirmation: path => waitForBrokerWindowsMinimizeConfirmation(path),
-        cancelWatchdog: (ownerId,deviceId) => cancelBrokerWindowsMinimizeWatchdog(ownerId,deviceId),
-        cleanupAuxiliary: (ownerId,parsed,expected) => cleanupLifecycleAuxiliaryRuntime(ownerId,parsed,normalized,expected),
-        cleanArtifacts: (ownerId,deviceId) => normalized.windowsDeviceArtifactCleaner(ownerId,deviceId),
-        inspectExpectedRecord: (ownerId,stateKey,deviceId,expected) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId,stateKey), () => {
-            const device=readOwnerDevices(ownerId,stateKey).find(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string,unknown>).id === deviceId);
-            return {found:Boolean(device),matched:Boolean(device && isDeepStrictEqual(device,expected)),device:device || null};
-        }),
-        publish: (ownerId,stateKey,deviceId,expected,change) => transitionOwnerLifecycleDevice(ownerId,stateKey,deviceId,expected,candidate => {
-            const replacement=brokerWindowsSandboxReplacement(candidate,change);
-            if(replacement === null) return null;
-            if(change.kind === "start" && typeof change.watchdog?.pid === "number") {
-                (replacement.minimizeWatchdog as Record<string,unknown>).startedAt=new Date().toISOString();
-            }
-            return {...replacement,updatedAt:new Date().toISOString()};
-        }),
-        redactDevice: device => redactBrokerDeviceSecrets(device),
-        failureDetail: result => providerFailureDetail(result),
-        now: () => Date.now(),
-        timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
-        sleep: milliseconds => {sleepSync(milliseconds); return undefined;},
-        get platform() {return normalized.platform;},
-        get commandTimeoutMs() {return normalized.commandTimeoutMs;},
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-    };
+function nativeLifecycleObservation(receipt: ProviderCommandResult) {
+    return { mode: receipt.mode, provider: receipt.provider, status: receipt.status, signal: receipt.signal,
+        stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error, timedOut: receipt.timedOut,
+        outputLimitExceeded: receipt.outputLimitExceeded, typedCreateInvalidResult: receipt.typedCreateInvalidResult,
+        receipt: new NativeBrokerExecutionReceipt(receipt) };
 }
-
-function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts {
+function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts<NativeProviderLifecycleEffect> {
     return {
-        execute: (command, options) => normalized.commandRunner(command, options),
-        executable: name => executableFor(name, normalized),
-        timestamp: () => new Date().toISOString(),
-        createCommand: input => iosSimulatorCreateCommand({ ...input, executable: input.executable as string }),
-        createdUdid: stdout => iosSimulatorCreatedUdid(stdout),
-        deleteCommand: (executable, udid) => iosSimulatorDeleteCommand(executable, udid),
-        verifyOwnedTarget: (ownerId, device) => resolveBrokerOwnedIosSimulatorTarget(ownerId, device, normalized),
-        claimDefinition: (ownerId, parsed, device) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
-        cleanupAuxiliary: (ownerId, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expected),
-        publish: (ownerId, stateKey, deviceId, expected, change) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, candidate => {
+        execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        prepareCreate: input => {
+            const executable = executableFor("xcrun", normalized);
+            const command = iosSimulatorCreateCommand({ ...input, executable });
+            if ("error" in command)
+                return { kind: "unavailable", error: command.error, missing: command.missing };
+            return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider: command.provider, canCompensate: Boolean(command.executable), bootEligible: false };
+        },
+        prepareExisting: ({ parsed, target }) => {
+            const executable = executableFor("xcrun", normalized);
+            const verb = parsed.command === "device_status" ? "list" : parsed.command === "device_start" ? "boot" : parsed.command === "device_stop" ? "shutdown" : "delete";
+            const command: ProviderCommand = { mode: "exec", provider: "xcrun", executable, args: verb === "list" ? ["simctl", "list", "devices", target] : ["simctl", verb, target] };
+            return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider: "xcrun", canCompensate: Boolean(executable), bootEligible: false };
+        },
+        prepareDelete: (effect, target) => new NativeProviderLifecycleEffect(iosSimulatorDeleteCommand(effect.command.executable || "", target)),
+        timestamp: () => new Date().toISOString(), createdUdid: iosSimulatorCreatedUdid,
+        verifyOwnedTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized),
+        claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
+        publish: (owner, state, id, expected, change) => transitionOwnerLifecycleDevice(owner, state, id, expected, candidate => {
             const replacement = brokerIosReplacement(candidate, change);
             return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
         }),
-        redactDevice: device => redactBrokerDeviceSecrets(device),
-        stateErrorCode: error => ownerDeviceStateErrorCode(error),
-        stateFailure: (error, parsed) => ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey }),
-        failureDetail: result => providerFailureDetail(result),
-        get commandTimeoutMs() { return normalized.commandTimeoutMs; },
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
-
-function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts {
+function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts<NativeProviderLifecycleEffect> {
     return {
-        execute: (command, options) => normalized.commandRunner(command, options),
-        executable: name => executableFor(name, normalized),
-        timestamp: () => new Date().toISOString(),
-        now: () => Date.now(),
-        sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
-        claimDefinition: (ownerId, parsed, device) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
-        cleanupAuxiliary: (ownerId, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expected),
-        publish: (ownerId, stateKey, deviceId, expected, change) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, candidate => {
+        executeMetadata: (reason, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason }, options)),
+        execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        prepareCreate: ({ provider, image, instance }) => {
+            const command: ProviderCommand = { mode: "exec", provider, executable: executableFor(provider, normalized), args: ["clone", image, instance] };
+            return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(command.executable), bootEligible: false };
+        },
+        prepareExisting: ({ parsed, provider, instance, headless }) => {
+            const executable = executableFor(provider, normalized);
+            const command: ProviderCommand = parsed.command === "device_status" ? { mode: "exec", provider, executable, args: [provider === "tart" ? "get" : "status", instance] }
+                : parsed.command === "device_start" ? { mode: provider === "tart" ? "detached" : "exec", provider, executable, args: provider === "tart" ? ["run", ...(headless ? ["--no-graphics"] : []), instance] : ["start", instance] }
+                    : { mode: "exec", provider, executable, args: [parsed.command === "device_stop" ? "stop" : "delete", instance] };
+            return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(executable), bootEligible: command.mode === "detached" && Boolean(executable) };
+        },
+        prepareDelete: (effect, target) => new NativeProviderLifecycleEffect({ mode: "exec", provider: effect.command.provider, executable: effect.command.executable, args: ["delete", target] }),
+        observeIp: (effect, instance, resolver, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "tart", executable: effect.command.executable, args: resolver === "arp" ? ["ip", "--resolver=arp", instance] : ["ip", instance] }, options)),
+        timestamp: () => new Date().toISOString(), now: () => performance.now(), sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
+        claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
+        publish: (owner, state, id, expected, change) => transitionOwnerLifecycleDevice(owner, state, id, expected, candidate => {
             const replacement = brokerMacosReplacement(candidate, change);
-            return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
+            if (replacement === null)
+                return null;
+            if (cleanupRecord(replacement.lastBootCheck) && change.boot?.ok && change.boot.result)
+                replacement.lastBootCheck.result = change.boot.result.receipt instanceof NativeBrokerExecutionReceipt ? change.boot.result.receipt.value : change.boot.result;
+            return { ...replacement, updatedAt: new Date().toISOString() };
         }),
-        redactDevice: device => redactBrokerDeviceSecrets(device),
-        stateErrorCode: error => ownerDeviceStateErrorCode(error),
-        stateFailure: (error, parsed) => ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey }),
-        failureDetail: result => providerFailureDetail(result),
-        get commandTimeoutMs() { return normalized.commandTimeoutMs; },
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
 
@@ -8616,6 +8799,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
             create?: unknown;
             device?: unknown;
             idempotent?: boolean;
+            execution?: {mode: string; providerExecution: string; mutatesHost: boolean};
             providerCommand?: ProviderCommand | {
                 error: string;
                 missing: string[];
@@ -8658,38 +8842,35 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
             },
         };
     }
-    if (parsed.backend === "android-emulator") {
+    const publicContext = {ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, command: parsed.command, deleteAvd: parsed.deleteAvd, plan: payload.result};
+    if (parsed.backend === "android-emulator" && ["device_create", "device_start", "device_stop", "device_delete"].includes(parsed.command)) {
         const lifecycle = createBrokerAndroidEmulatorLifecycle(brokerAndroidLifecyclePorts(normalized));
-        const input = { ownerId, parsed, plan: payload.result, expectedDevice, createAvdRoot: androidCreateAvdRoot };
-        if (parsed.command === "device_create")
-            return lifecycle.create(input);
-        if (parsed.command === "device_start")
-            return lifecycle.start(input);
-        if (parsed.command === "device_stop")
-            return lifecycle.stop(input);
-        if (parsed.command === "device_delete")
-            return lifecycle.delete(input);
+        const {providerCommand, execution: _publicExecution, ...facts} = payload.result || {};
+        const input = {ownerId, parsed, plan: payload.result ? {...facts, create: parsed.create, preparation: nativeLifecyclePreparation(providerCommand)} : undefined, expectedDevice, createAvdRoot: androidCreateAvdRoot};
+        const result = parsed.command === "device_create" ? await lifecycle.create(input) : parsed.command === "device_start" ? await lifecycle.start(input) : parsed.command === "device_stop" ? await lifecycle.stop(input) : await lifecycle.delete(input);
+        return renderBrokerAndroidLifecycle(result, publicContext, redactBrokerDeviceSecrets, ownerDeviceStateFailure, providerFailureDetail);
     }
-    if (parsed.backend === "ios-simulator" || parsed.backend === "macos-vm") {
-        const lifecycle = parsed.backend === "ios-simulator" ? createBrokerIosSimulatorLifecycle(brokerIosLifecyclePorts(normalized)) : createBrokerMacosVmLifecycle(brokerMacosLifecyclePorts(normalized));
-        const input = { ownerId, parsed, plan: payload.result, expectedDevice };
-        if (parsed.command === "device_create")
-            return lifecycle.create(input);
-        if (parsed.command === "device_start")
-            return lifecycle.start(input);
-        if (parsed.command === "device_stop")
-            return lifecycle.stop(input);
-        if (parsed.command === "device_delete")
-            return lifecycle.delete(input);
+    if ((parsed.backend === "ios-simulator" || parsed.backend === "macos-vm") && ["device_create", "device_start", "device_stop", "device_delete"].includes(parsed.command)) {
+        const {providerCommand, execution: _publicExecution, ...facts} = payload.result || {};
+        const input = {ownerId, parsed, plan: payload.result ? {...facts, create: parsed.create, providerCommand: nativeLifecyclePreparation(providerCommand)} : undefined, expectedDevice};
+        if (parsed.backend === "ios-simulator") {
+            const lifecycle = createBrokerIosSimulatorLifecycle(brokerIosLifecyclePorts(normalized));
+            const result = parsed.command === "device_create" ? await lifecycle.create(input) : parsed.command === "device_start" ? await lifecycle.start(input) : parsed.command === "device_stop" ? await lifecycle.stop(input) : await lifecycle.delete(input);
+            return renderBrokerIosMacosLifecycle(result, publicContext, redactBrokerDeviceSecrets, ownerDeviceStateFailure, providerFailureDetail);
+        }
+        const lifecycle = createBrokerMacosVmLifecycle(brokerMacosLifecyclePorts(normalized));
+        const result = parsed.command === "device_create" ? await lifecycle.create(input) : parsed.command === "device_start" ? await lifecycle.start(input) : parsed.command === "device_stop" ? await lifecycle.stop(input) : await lifecycle.delete(input);
+        return renderBrokerIosMacosLifecycle(result, publicContext, redactBrokerDeviceSecrets, ownerDeviceStateFailure, providerFailureDetail);
     }
     if (parsed.backend === "windows-sandbox" && ["device_start", "device_stop", "device_delete"].includes(parsed.command)) {
-        const lifecycle = createBrokerWindowsSandboxLifecycle(brokerWindowsLifecyclePorts(normalized));
-        const input = { ownerId, parsed, plan: payload.result, expectedDevice };
-        if (parsed.command === "device_start")
-            return lifecycle.start(input);
-        if (parsed.command === "device_stop")
-            return lifecycle.stop(input);
-        return lifecycle.delete(input);
+        const ports = brokerWindowsLifecyclePorts(normalized);
+        const lifecycle = createBrokerWindowsSandboxLifecycle(ports);
+        const command = payload.result?.providerCommand;
+        const prepared = command && "mode" in command ? {kind: "ready" as const, handle: new NativeProviderLifecycleEffect(command), operationKind: command.mode === "noop" ? "metadata-only" as const : "runtime" as const, sandboxId: command.sandboxId, minimized: command.windowStyle === "minimized"}
+            : command ? {kind: "unavailable" as const, error: command.error, missing: command.missing} : undefined;
+        const input = {ownerId, parsed, device: payload.result?.device, prepared, expectedDevice};
+        const result = parsed.command === "device_start" ? await lifecycle.start(input) : parsed.command === "device_stop" ? await lifecycle.stop(input) : await lifecycle.delete(input);
+        return renderBrokerSandboxLifecycle(result, publicContext, redactBrokerDeviceSecrets, providerFailureDetail);
     }
     if (parsed.command === "device_create") {
         const providerCommand = payload.result?.providerCommand;
@@ -8746,20 +8927,11 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
             const outcome = await createBrokerWindowsSandboxCreate({
                 createRecord: (input: CommandParamSuccess) => createOwnerDeviceRecord(ownerId, input) as Record<string, unknown>,
                 claimDefinition: (device: Record<string, unknown>) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(persistedParsed)),
-                rollbackAfterClaimFailure: (device: Record<string, unknown>, existing: Record<string, unknown> | null) => rollbackProviderCreateAfterConflict(persistedParsed, device, existing, providerCommand && !("error" in providerCommand) ? providerCommand : null, normalized, hyperVCleanupDeadlineAt),
                 publishConfig: (input: CommandParamSuccess) => writeBrokerWindowsConfig(ownerId, parsed.deviceId, input.create || {}, normalized),
                 removeMatchingClaim: (id: unknown, createdAt: unknown) => ownerRepository.removeMatchingClaim(ownerId, parsed.stateKey, id, createdAt),
-                stateErrorCode: error => ownerDeviceStateErrorCode(error),
             }).create(persistedParsed);
             if (outcome.kind === "claim-exception") {
                 const { error, rollback } = outcome;
-                if (!rollback.ok) {
-                    return { status: 502, payload: {
-                            ok: false, error: "owner-device-state-rollback-failed", ownerId,
-                            backend: parsed.backend, deviceId: parsed.deviceId,
-                            stateError: outcome.stateCode, rollback,
-                        } };
-                }
                 const failure = ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
                 return { ...failure, payload: { ...(failure.payload as Record<string, unknown>), rollback } };
             }

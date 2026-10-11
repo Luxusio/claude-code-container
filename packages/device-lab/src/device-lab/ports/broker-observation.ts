@@ -84,8 +84,7 @@ export interface AndroidPreviewPortAllocationPorts<Parsed extends LifecyclePrevi
     readonly seed: (ownerId: string, parsed: Parsed) => number;
 }
 
-export type ProviderPlanObservation = ServiceQueryObservation | { error: string; missing: string[] };
-export interface LifecyclePreviewPorts<Parsed extends LifecyclePreviewRequest, Context, DeviceProjection, CreateProjection, ProviderPlan extends ProviderPlanObservation, Allocation extends { ok: true; port: number } | { ok: false }> {
+export interface LifecyclePreviewPorts<Parsed extends LifecyclePreviewRequest, Context, ProviderPlan, Allocation extends { ok: true; port: number } | { ok: false }> {
     readonly read: (ownerId: string, parsed: Parsed) => unknown[];
     readonly hyperV: (parsed: Parsed) => boolean;
     readonly validIncarnation: (parsed: Parsed) => boolean;
@@ -94,11 +93,6 @@ export interface LifecyclePreviewPorts<Parsed extends LifecyclePreviewRequest, C
     readonly androidPort: (ownerId: string, parsed: Parsed) => Allocation;
     readonly createDefinition: (ownerId: string, parsed: Parsed) => unknown;
     readonly assertWritable: (devices: () => unknown[]) => void;
-    readonly redactDevice: (device: unknown) => DeviceProjection;
-    readonly redactHyperVDevice: (device: unknown) => DeviceProjection;
-    readonly redactCreate: (parsed: Parsed) => CreateProjection;
-    readonly publicHyperVCreate: (effective: Parsed, original: Parsed) => CreateProjection;
-    readonly maskedHyperVPlan: () => ProviderPlan;
     readonly createPlan: (ownerId: string, parsed: Parsed, context: Context) => ProviderPlan;
     readonly existingPlan: (ownerId: string, parsed: Parsed, device: unknown, context: Context) => ProviderPlan;
     readonly attachmentMatches: (ownerId: string, parsed: Parsed, device: Record<string, unknown>) => boolean;

@@ -8,68 +8,36 @@ export interface BrokerWindowsSandboxRequest {
     dryRun: boolean;
     minimized?: boolean;
 }
-export interface BrokerWindowsSandboxCommand {
-    mode: 'exec' | 'detached' | 'noop';
-    provider: string;
-    executable?: string;
-    args?: string[];
-    input?: string;
-    reason?: string;
-    sandboxId?: string;
-    requestedSandboxId?: string;
-    windowStyle?: 'minimized';
-    waitForExit?: boolean;
-    windowsHiddenLauncher?: boolean;
-    env?: Record<string, string | undefined>;
-    cwd?: string;
+export interface BrokerWindowsSandboxResult<Receipt = unknown> {
+    status?:number|null;signal?:string|null;stdout?:string;stderr?:string;error?:string;pid?:number;
+    timedOut?:boolean;outputLimitExceeded?:boolean;receipt?:Receipt;
 }
-export interface BrokerWindowsSandboxResult {
-    mode: string;
-    provider: string;
-    executable?: string;
-    args?: string[];
-    input?: string;
-    status?: number | null;
-    signal?: string | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-    pid?: number;
-    timedOut?: boolean;
-    outputLimitExceeded?: boolean;
+export type BrokerWindowsSandboxPrepared<Prepared> = {kind:'unavailable';error:string;missing:string[]} |
+    {kind:'ready';handle:Prepared;operationKind:'runtime'|'metadata-only';sandboxId?:string;minimized:boolean};
+export interface BrokerWindowsSandboxInput<Prepared> {
+    ownerId:string;parsed:BrokerWindowsSandboxRequest;device:unknown;
+    prepared:BrokerWindowsSandboxPrepared<Prepared>|undefined;expectedDevice:unknown;
 }
-export type BrokerWindowsSandboxPlannedCommand = BrokerWindowsSandboxCommand | {
-    error: string;
-    missing: string[];
-};
-export interface BrokerWindowsSandboxPlan {
-    create?: unknown;
-    device?: unknown;
-    idempotent?: boolean;
-    providerCommand?: BrokerWindowsSandboxPlannedCommand;
-}
-export interface BrokerWindowsSandboxInput {
-    ownerId: string;
-    parsed: BrokerWindowsSandboxRequest;
-    plan: BrokerWindowsSandboxPlan | undefined;
-    expectedDevice: unknown;
-}
-export type BrokerWindowsSandboxResponse = {
-    status: number;
-    payload: unknown;
-};
-export type BrokerWindowsSandboxPublication = {
-    found: boolean;
-    matched: boolean;
-    device: unknown;
-};
+export type BrokerWindowsSandboxPublication = {found:boolean;matched:boolean;device:unknown};
 export interface BrokerWindowsSandboxChange {
-    kind: 'start' | 'stop' | 'delete';
-    minimized?: boolean;
-    command: BrokerWindowsSandboxCommand;
-    watchdog: BrokerWindowsSandboxResult | null;
-    confirmation: BrokerWindowsSandboxResult | null;
-    watchdogCancelPath?: string;
+    kind:'start'|'stop'|'delete';minimized?:boolean;
+    runtime:{sandboxId?:string;requestedSandboxId?:string;minimized:boolean};
+    watchdog:BrokerWindowsSandboxResult|null;confirmation:BrokerWindowsSandboxResult|null;watchdogCancelPath?:string;
+}
+export interface BrokerWindowsSandboxFacts<Receipt> {
+    device:unknown;invoked:boolean;mutatesHost:boolean;execution?:BrokerWindowsSandboxResult<Receipt>;
+    runtime?:{sandboxId?:string;requestedSandboxId?:string;minimized:boolean};
+    registration?:BrokerWindowsSandboxResult<Receipt>|null;watchdog?:BrokerWindowsSandboxResult<Receipt>|null;
+    confirmation?:BrokerWindowsSandboxResult<Receipt>|null;watchdogCleanup?:unknown;auxiliaryCleanup?:unknown;artifactCleanup?:unknown;
+    publication?:BrokerWindowsSandboxPublication;
+}
+export type BrokerWindowsSandboxOutcome<Receipt> =
+    {kind:'refused';category:'invalid'|'conflict'|'provider-failed'|'state-write-failed';error:string;detail?:string;missing?:string[];lock?:unknown;facts?:BrokerWindowsSandboxFacts<Receipt>} |
+    {kind:'completed';success:true;facts:BrokerWindowsSandboxFacts<Receipt>} |
+    {kind:'failed';success:false;facts:BrokerWindowsSandboxFacts<Receipt>} |
+    {kind:'indeterminate';success:false;facts:BrokerWindowsSandboxFacts<Receipt>};
+export function brokerWindowsSandboxRecord(value:unknown):value is Record<string,unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 export function brokerWindowsSandboxField(value: unknown, name: string): string | null {
     if (!value || typeof value !== 'object')
@@ -107,11 +75,11 @@ export function brokerWindowsSandboxReplacement(candidate: unknown, change: Brok
         ...device, status: change.kind === 'start' ? 'running' : 'stopped',
         ...(change.kind === 'start' ? {
             minimized: typeof change.minimized === 'boolean' ? change.minimized : device.minimized !== false,
-            minimizeConfirmed: change.command.windowStyle === 'minimized' && Boolean(change.confirmation && brokerWindowsSandboxCommandSucceeded(change.confirmation)),
-            minimizeWarning: change.command.windowStyle === 'minimized' && (!change.confirmation || !brokerWindowsSandboxCommandSucceeded(change.confirmation))
+            minimizeConfirmed: change.runtime.minimized && Boolean(change.confirmation && brokerWindowsSandboxCommandSucceeded(change.confirmation)),
+            minimizeWarning: change.runtime.minimized && (!change.confirmation || !brokerWindowsSandboxCommandSucceeded(change.confirmation))
                 ? change.confirmation?.error || change.confirmation?.stderr || 'Windows Sandbox started, but window minimization was not confirmed' : null,
-            ...(change.command.sandboxId ? { sandboxId: change.command.sandboxId } : {}),
-            ...(change.command.requestedSandboxId ? { requestedSandboxId: change.command.requestedSandboxId } : {}),
+            ...(change.runtime.sandboxId ? { sandboxId: change.runtime.sandboxId } : {}),
+            ...(change.runtime.requestedSandboxId ? { requestedSandboxId: change.runtime.requestedSandboxId } : {}),
             ...(typeof change.watchdog?.pid === 'number' ? { minimizeWatchdog: { pid: change.watchdog.pid, processOwner: 'host-broker', startedBy: 'broker.windows-sandbox.minimize-watchdog', timeoutMs: 180000, cancelPath: change.watchdogCancelPath } } : {}),
         } : {}),
     };

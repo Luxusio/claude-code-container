@@ -21,6 +21,12 @@ boot observation. An application port represents one native step, not a complete
 legacy operation. Access occurs at the original phase, with mutable carriers and
 raw errors preserved.
 
+The broker application returns semantic lifecycle facts. Provider preparation
+exposes an opaque capability for one native effect; executable paths, argument
+arrays and input framing stay in broker composition. The native presenter owns
+HTTP status, public plans and secret redaction. Polling, compensation eligibility
+and conditional publication remain in the application.
+
 Create compensates provisioned artifacts after claim failures. Start publishes a
 claimed runtime only after native identity capture and retains the original boot
 and rollback outcomes. Stop reports uncertain termination without publishing a
@@ -36,18 +42,11 @@ Complete-record equality does not establish process generations or reject
 byte-identical ABA. The historical id-only race is pre-repair evidence and is
 not a passing successor-safety claim.
 
-Original controls were captured from reconciled commit
-`da5c4bd2ff4121c8ca2ab0f8ff9d0e3332007c8d`, tree
-`a571832afc655b6f0871c6c9c8228f15f4aad95e`, before production changes. Thirteen
-bounded controls and ten selected existing native regressions passed, with strict
-architecture compilation using `skipLibCheck=false`. Frozen source/assets,
-genuine emission and test inputs were authenticated after execution. Earlier
-unsuccessful oracle attempts remain retained. Durable tests inline the minimal
-observations and exercise actual public MCP and authenticated broker bindings.
-
-Those originals establish a comparison baseline, not candidate or shipping
-acceptance. Candidate verification must cover current lifecycle applications,
-required synchronous/asynchronous ports and both emitted distribution forms.
+Verification exercises current lifecycle applications, required finite ports,
+actual public MCP and authenticated broker bindings, and both emitted
+distribution forms. Core tests assert lifecycle decisions and observed state;
+native tests assert public responses and process effects. They do not need
+frozen original implementations or implementation-name assertions.
 Provider/process/signal denial counters and owned fixture joins are bounded
 controls, not a blanket filesystem/network syscall proof. Real emulator,
 provisioning and destructive SDK/AVD acceptance on native hosts remains separate

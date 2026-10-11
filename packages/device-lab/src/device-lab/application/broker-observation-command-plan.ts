@@ -1,5 +1,5 @@
 import type { AndroidPreviewAllocation, LifecyclePreviewRequest } from "../domain/broker-observation-command-plan.js";
-import type { AndroidPreviewPortAllocationPorts, LifecyclePreviewPorts, ProviderPlanObservation } from "../ports/broker-observation.js";
+import type { AndroidPreviewPortAllocationPorts, LifecyclePreviewPorts } from "../ports/broker-observation.js";
 
 export function createAndroidPreviewPortAllocation<Parsed extends LifecyclePreviewRequest>(
     ports: AndroidPreviewPortAllocationPorts<Parsed>, minimum: number, maximum: number,
@@ -22,10 +22,10 @@ export function createAndroidPreviewPortAllocation<Parsed extends LifecyclePrevi
     };
 }
 
-export function createLifecyclePreview<Parsed extends LifecyclePreviewRequest, Context, DeviceProjection, CreateProjection, ProviderPlan extends ProviderPlanObservation, Allocation extends { ok: true; port: number } | { ok: false }>(
-    ports: LifecyclePreviewPorts<Parsed, Context, DeviceProjection, CreateProjection, ProviderPlan, Allocation>,
+export function createLifecyclePreview<Parsed extends LifecyclePreviewRequest, Context, ProviderPlan, Allocation extends { ok: true; port: number } | { ok: false }>(
+    ports: LifecyclePreviewPorts<Parsed, Context, ProviderPlan, Allocation>,
 ) {
-    return function plan(ownerId: string, parsed: Parsed, context: Context | undefined, redactSecrets: boolean) {
+    return function plan(ownerId: string, parsed: Parsed, context: Context | undefined) {
         let devices: unknown[];
         try { devices = ports.read(ownerId, parsed); }
         catch (error) { return { kind: "state-failed" as const, error }; }
@@ -42,7 +42,7 @@ export function createLifecyclePreview<Parsed extends LifecyclePreviewRequest, C
                     const conflicts = ports.conflicts(record, parsed);
                     if (conflicts.length === 0) return { kind: "equivalent-create" as const, value: {
                         ownerId, backend: parsed.backend, stateKey: parsed.stateKey, command: parsed.command, deviceId: parsed.deviceId,
-                        device: redactSecrets ? ports.redactHyperVDevice(record) : record,
+                        device: record,
                     } };
                     return { kind: "configuration-conflict" as const, conflicts };
                 }
@@ -62,9 +62,9 @@ export function createLifecyclePreview<Parsed extends LifecyclePreviewRequest, C
             return { kind: "create" as const, value: {
                 ownerId, backend: parsed.backend, stateKey: parsed.stateKey, command: parsed.command, deviceId: parsed.deviceId,
                 force: parsed.force, dryRun: parsed.dryRun,
-                device: redactSecrets ? ports.redactDevice(plannedDevice) : plannedDevice,
-                create: redactSecrets && ports.hyperV(parsed) ? ports.publicHyperVCreate(effectiveParsed, parsed) : ports.redactCreate(effectiveParsed),
-                providerPlan: context ? redactSecrets && ports.hyperV(parsed) ? ports.maskedHyperVPlan() : ports.createPlan(ownerId, effectiveParsed, context) : null,
+                device: plannedDevice,
+                create: effectiveParsed.create,
+                providerPlan: context ? ports.createPlan(ownerId, effectiveParsed, context) : null,
                 providerAvailable: Boolean(context),
             } };
         }
@@ -82,8 +82,8 @@ export function createLifecyclePreview<Parsed extends LifecyclePreviewRequest, C
         return { kind: "existing" as const, value: {
             ownerId, backend: parsed.backend, stateKey: parsed.stateKey, command: parsed.command, deviceId: parsed.deviceId,
             force: parsed.force, dryRun: parsed.dryRun,
-            device: redactSecrets && ports.hyperV(parsed) ? ports.redactHyperVDevice(device) : redactSecrets ? ports.redactDevice(device) : device,
-            providerPlan: context ? redactSecrets && ports.hyperV(parsed) ? ports.maskedHyperVPlan() : ports.existingPlan(ownerId, parsed, device, context) : null,
+            device,
+            providerPlan: context ? ports.existingPlan(ownerId, parsed, device, context) : null,
             providerAvailable: Boolean(context),
         } };
     };

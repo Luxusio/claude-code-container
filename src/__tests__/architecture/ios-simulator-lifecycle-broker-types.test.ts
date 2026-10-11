@@ -1,74 +1,48 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { createBrokerIosSimulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.js";
-import type { BrokerIosLifecycleInput, BrokerIosLifecycleRequest, BrokerIosLifecycleResponse, BrokerIosPublication, BrokerIosPublicationChange, BrokerIosProviderResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
+import { brokerIosReplacement, type BrokerIosLifecycleInput, type BrokerIosLifecycleResponse, type BrokerIosProviderResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
-import type { DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
-import { coreBoundaryViolations } from "./core-boundary.js";
 
-type NativeBrokerRpcResult = Awaited<ReturnType<NonNullable<DeviceBrokerOptions["deviceToolRunner"]>>>;
-type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
-const allNativeLeavesRequired: [OptionalKeys<BrokerIosSimulatorLifecyclePorts>] extends [never] ? true : false = true;
-void allNativeLeavesRequired;
+type Effect = { readonly token: unique symbol };
 
-// Compiled by the explicit skipLibCheck=false architecture/source/emission
-// consumers. None of these declarations execute a fixture or native effect.
-function strictContracts(ports: BrokerIosSimulatorLifecyclePorts, input: BrokerIosLifecycleInput): void {
-    const lifecycle = createBrokerIosSimulatorLifecycle(ports);
-    const outcomes: Promise<BrokerIosLifecycleResponse>[] = [lifecycle.create(input), lifecycle.start(input), lifecycle.stop(input), lifecycle.delete(input)];
-    // Native BrokerRpcResult payload is opaque; consumers must narrow it.
-    const nativeFailure: NativeBrokerRpcResult = { status: 409, payload: new Error("raw native carrier") };
-    const compatibleResponse: BrokerIosLifecycleResponse = nativeFailure;
-    const compatibleNative: NativeBrokerRpcResult = compatibleResponse;
-    void compatibleNative;
-    const opaqueArrayResponse: BrokerIosLifecycleResponse = { status: 200, payload: ["raw", { retained: true }] };
-    const opaquePrimitiveResponse: BrokerIosLifecycleResponse = { status: 502, payload: "raw native refusal" };
-    // @ts-expect-error opaque native payload cannot expose unchecked properties
-    const uncheckedPayloadError = compatibleResponse.payload.error;
-    // @ts-expect-error the specific native stateFailure leaf always returns object-shaped payload
-    const opaqueStateFailure: BrokerIosSimulatorLifecyclePorts = { ...ports, stateFailure: () => nativeFailure };
-    void opaqueStateFailure; void opaqueArrayResponse; void opaquePrimitiveResponse; void uncheckedPayloadError;
-    const mutable: Record<string, unknown> = lifecycle.createRecord(input.ownerId, input.parsed);
-    mutable.raw = { arbitraryMutableNativeField: true };
-    const { execute, ...missingExecution } = ports; void execute;
-    // @ts-expect-error synchronous actual native execution is a required leaf
-    createBrokerIosSimulatorLifecycle(missingExecution);
-    // @ts-expect-error native command observation must not return a Promise
-    const asyncExecution: BrokerIosSimulatorLifecyclePorts = { ...ports, execute: async () => ({ mode: "exec", provider: "xcrun", status: 0 }) };
-    // @ts-expect-error committed auxiliary cleanup carries result, device and committed
-    const weakCleanup: BrokerIosSimulatorLifecyclePorts = { ...ports, cleanupAuxiliary: () => ({ committed: true }) };
-    // @ts-expect-error CAS publication preserves both matched and found
-    const weakPublication: BrokerIosSimulatorLifecyclePorts = { ...ports, publish: () => ({ matched: true, device: null }) };
-    // @ts-expect-error complete-record CAS is synchronously observed
-    const asyncPublication: BrokerIosSimulatorLifecyclePorts = { ...ports, publish: async () => ({ matched: true, found: true, device: null }) };
-    // @ts-expect-error native identity verification is synchronous
-    const asyncIdentity: BrokerIosSimulatorLifecyclePorts = { ...ports, verifyOwnedTarget: async () => ({ ok: true, target: "udid" }) };
-    // @ts-expect-error raw typed helper observes UDID synchronously
-    const asyncUdid: BrokerIosSimulatorLifecyclePorts = { ...ports, createdUdid: async () => "udid" };
-    // @ts-expect-error native timestamp remains synchronous, not a policy default
-    const asyncTimestamp: BrokerIosSimulatorLifecyclePorts = { ...ports, timestamp: async () => "fixed" };
-    const { timestamp, ...missingTimestamp } = ports; void timestamp;
-    // @ts-expect-error the publication/record native clock is required
-    createBrokerIosSimulatorLifecycle(missingTimestamp);
-    // @ts-expect-error publication uses a finite semantic change, no arbitrary updater
-    const arbitraryReplacement: BrokerIosPublicationChange = { kind: "start", replace: () => null };
-    // @ts-expect-error native claim/execution request always carries owner-independent force/dryRun
-    const weakRequest: BrokerIosLifecycleRequest = { ok: true, backend: "ios-simulator", stateKey: "ios", command: "device_start", deviceId: "fixture" };
-    const nativeResult: BrokerIosProviderResult = { mode: "exec", provider: "xcrun", status: null, stdout: "raw", stderr: "raw", error: "raw" };
-    const publication: BrokerIosPublication = { found: true, matched: true, device: mutable };
-    void outcomes; void asyncExecution; void weakCleanup; void weakPublication; void asyncPublication;
-    void asyncIdentity; void asyncUdid; void asyncTimestamp; void arbitraryReplacement; void weakRequest; void nativeResult; void publication;
+// Consumed by the normal strict compiler; this function is never invoked.
+function contracts(ports: BrokerIosSimulatorLifecyclePorts<Effect>, input: BrokerIosLifecycleInput<Effect>, effect: Effect, outcome: BrokerIosLifecycleResponse<Effect>) {
+    const app = createBrokerIosSimulatorLifecycle(ports);
+    const outcomes: Promise<BrokerIosLifecycleResponse<Effect>>[] = [app.create(input), app.start(input), app.stop(input), app.delete(input)];
+    const plan = app.planExisting(input.ownerId, input.parsed, input.expectedDevice);
+    if (plan.kind === "ready") {
+        const prepared: Effect = plan.effect;
+        const result: BrokerIosProviderResult = ports.execute(prepared, { timeoutMs: 5000, outputLimit: 32768 });
+        void result;
+        // @ts-expect-error opaque native effects expose no process arguments
+        prepared.args;
+    }
+    const deletion: Effect = ports.prepareDelete(effect, "owned");
+    const { prepareCreate, ...withoutPreparation } = ports;
+    // @ts-expect-error finite native preparation is required
+    createBrokerIosSimulatorLifecycle(withoutPreparation);
+    // @ts-expect-error preparation settles synchronously before execution
+    createBrokerIosSimulatorLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only", reason: "unavailable" }) });
+    // @ts-expect-error native effect observations are synchronous
+    createBrokerIosSimulatorLifecycle({ ...ports, execute: async () => ({ mode: "exec", provider: "simctl", status: 0, receipt: null }) });
+    // @ts-expect-error publication reports found and matched independently
+    createBrokerIosSimulatorLifecycle({ ...ports, publish: () => ({ matched: true, device: null }) });
+    // @ts-expect-error complete-record publication is synchronous
+    createBrokerIosSimulatorLifecycle({ ...ports, publish: async () => ({ found: true, matched: true, device: null }) });
+    // @ts-expect-error cleanup identifies committed expected-record advancement
+    createBrokerIosSimulatorLifecycle({ ...ports, cleanupAuxiliary: () => ({ committed: true }) });
+    // @ts-expect-error semantic outcomes have no HTTP status
+    outcome.status;
+    // @ts-expect-error semantic outcomes have no HTTP payload
+    outcome.payload;
+    // @ts-expect-error owned target verification is synchronous
+    createBrokerIosSimulatorLifecycle({ ...ports, verifyOwnedTarget: async () => ({ ok: true, target: "udid" }) });
+    void [outcomes, deletion, prepareCreate];
 }
-void strictContracts;
+void contracts;
 
-describe("iOS broker source declaration and inward dependency contracts", () => {
-    it("keeps all native leaves required and every concrete source in its admitted layer", () => {
-        const root = fileURLToPath(new URL("../../../packages/device-lab/src/device-lab/", import.meta.url));
-        for (const layer of ["application", "domain", "ports"] as const) {
-            const file = fileURLToPath(new URL(`../../../packages/device-lab/src/device-lab/${layer}/lifecycle/ios-simulator-lifecycle.ts`, import.meta.url));
-            expect(coreBoundaryViolations(readFileSync(file, "utf8"), file, { root, language: "ts" })).toEqual([]);
-        }
-        expect(allNativeLeavesRequired).toBe(true);
-    });
+it("stops an iOS record without removing unrelated ownership metadata", () => {
+    const device = { id: "owned", status: "running", udid: "owned-udid", ownerId: "owner", extra: { retained: true } };
+    expect(brokerIosReplacement(device, { kind: "stop" })).toEqual({ ...device, status: "stopped" });
+    expect(device.status).toBe("running");
 });

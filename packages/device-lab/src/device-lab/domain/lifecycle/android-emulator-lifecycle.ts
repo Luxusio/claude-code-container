@@ -14,51 +14,60 @@ export interface BrokerAndroidLifecycleRequest {
     create?: Record<string, unknown>;
 }
 
-export interface BrokerAndroidProviderCommand {
-    mode: "exec" | "detached" | "noop";
-    provider: string;
-    executable?: string;
-    args?: string[];
-    input?: string;
-    reason?: string;
-    windowsHiddenLauncher?: boolean;
+export interface BrokerAndroidProviderResult<Receipt> {
+    mode: string; provider: string; receipt?: Receipt;
+    status?: number | null; signal?: string | null; stdout?: string; stderr?: string; error?: string;
+    timedOut?: boolean; outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean;
+}
+export type BrokerAndroidPreparation<Effect> =
+    | {kind: "ready"; effect: Effect; mode: string; provider: string}
+    | {kind: "metadata-only"}
+    | {kind: "unavailable"; error: string; missing: string[]};
+export type BrokerAndroidBoot<Receipt> =
+    | {ok: true; ready: boolean; skipped?: boolean; result?: BrokerAndroidProviderResult<Receipt>; attempts?: BrokerAndroidProviderResult<Receipt>[]}
+    | {ok: false; ready: false; error: BrokerAndroidProviderResult<Receipt>; attempts?: BrokerAndroidProviderResult<Receipt>[]};
+export interface BrokerAndroidLifecyclePlan<Effect> {
+    ownerId?: string; backend?: string; stateKey?: string; command?: string; deviceId?: string;
+    force?: boolean; dryRun?: boolean; create?: unknown; device?: unknown; idempotent?: boolean;
+    preparation: BrokerAndroidPreparation<Effect>;
+}
+export interface BrokerAndroidLifecycleInput<Effect> {
+    ownerId: string; parsed: BrokerAndroidLifecycleRequest; plan: BrokerAndroidLifecyclePlan<Effect> | undefined;
+    expectedDevice: unknown; createAvdRoot: string | null;
+}
+export type BrokerAndroidFailureReason = "invalid" | "conflict" | "provider-unavailable" | "provider-failed" | "state-write-failed";
+export interface BrokerAndroidRollback {
+    attempted?: boolean; ok: boolean; reason?: string; error?: string; artifactsRemoved?: unknown;
+}
+export interface BrokerAndroidAuxiliaryCleanup {
+    result: {
+        ok: boolean;
+        changed: boolean;
+        stateConflict?: boolean;
+        appium: Record<string, unknown>;
+        recording: Record<string, unknown>;
+        minimizeWatchdog: Record<string, unknown>;
+    };
+    device: unknown;
+    committed: boolean;
 }
 
-export interface BrokerAndroidProviderResult {
-    mode: string;
-    provider: string;
-    executable?: string;
-    args?: string[];
-    status?: number | null;
-    signal?: string | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-    timedOut?: boolean;
-    outputLimitExceeded?: boolean;
-    typedCreateInvalidResult?: boolean;
+export interface BrokerAndroidOutcomeFacts<Effect, Receipt> {
+    ownerId?: string; backend?: string; deviceId?: string; plan?: BrokerAndroidLifecyclePlan<Effect> | null;
+    device?: unknown; error?: string; detail?: string; missing?: string[]; field?: string; value?: unknown; existing?: unknown; found?: boolean;
+    rollback?: BrokerAndroidRollback; stateError?: string; boot?: BrokerAndroidBoot<Receipt>;
+    auxiliaryCleanup?: BrokerAndroidAuxiliaryCleanup["result"];
+    execution?: BrokerAndroidProviderResult<Receipt>; invoked?: boolean; mutatesHost?: boolean;
 }
-
-export type BrokerAndroidBoot =
-    | { ok: true; ready: boolean; skipped?: boolean; result?: BrokerAndroidProviderResult; attempts?: BrokerAndroidProviderResult[] }
-    | { ok: false; ready: false; error: BrokerAndroidProviderResult; attempts?: BrokerAndroidProviderResult[] };
-
-export interface BrokerAndroidLifecyclePlan {
-    create?: unknown;
-    device?: unknown;
-    idempotent?: boolean;
-    providerCommand?: BrokerAndroidProviderCommand | { error: string; missing: string[] };
-}
-
-export interface BrokerAndroidLifecycleInput {
-    ownerId: string;
-    parsed: BrokerAndroidLifecycleRequest;
-    plan: BrokerAndroidLifecyclePlan | undefined;
-    expectedDevice: unknown;
-    createAvdRoot: string | null;
-}
-
-export type BrokerAndroidLifecycleResponse = { status: number; payload: Record<string, unknown> };
+export type BrokerAndroidLifecycleOutcome<Effect, Receipt> = BrokerAndroidOutcomeFacts<Effect, Receipt> & (
+    {kind: "created"; device: unknown; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: boolean}
+    | {kind: "completed"; device: unknown; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: boolean}
+    | {kind: "refused"; reason: BrokerAndroidFailureReason; error: string}
+    | {kind: "state-exception"; cause: unknown; rollback: BrokerAndroidRollback; backend: string; stateKey: string}
+    | {kind: "provider-failed"; error: string; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: false}
+    | {kind: "auxiliary-failed"; error: "auxiliary-runtime-cleanup-failed"; device: unknown; auxiliaryCleanup: BrokerAndroidAuxiliaryCleanup["result"]; invoked: false; mutatesHost: boolean}
+    | {kind: "stop-unconfirmed"; error: "android-emulator-stop-unconfirmed"; detail: string; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: true}
+    | {kind: "publication-conflict"; error: "owner-device-state-conflict"; found: boolean; device: unknown; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: boolean});
 export type BrokerAndroidPublication = { found: boolean; matched: boolean; device: unknown };
 export type BrokerAndroidClaim =
     | { ok: true; device: Record<string, unknown> }
@@ -80,14 +89,8 @@ export function brokerAndroidSerial(device: unknown): string | null {
     return brokerAndroidField(device, "serial") || (brokerAndroidNumber(device, "port") ? `emulator-${brokerAndroidNumber(device, "port")}` : null);
 }
 
-export function brokerAndroidCommandSucceeded(result: BrokerAndroidProviderResult): boolean {
+export function brokerAndroidCommandSucceeded(result: BrokerAndroidProviderResult<unknown>): boolean {
     return result.status === 0 && !result.error;
-}
-
-export function brokerAndroidStartArgs(parsed: BrokerAndroidLifecycleRequest, device: unknown): string[] {
-    const deviceHeadless = device && typeof device === "object" ? (device as Record<string, unknown>).headless : undefined;
-    const headless = typeof parsed.headless === "boolean" ? parsed.headless : deviceHeadless !== false;
-    return [...(headless ? ["-no-window", "-no-audio"] : []), "-netsim-args", "--no-cli-ui --no-web-ui"];
 }
 
 export function brokerAndroidAvdName(ownerId: string, create: Record<string, unknown>, fallbackName: string): string {
@@ -106,7 +109,7 @@ export function brokerAndroidRecord(ownerId: string, parsed: BrokerAndroidLifecy
     };
 }
 
-export function brokerAndroidReplacement(candidate: Record<string, unknown>, parsed: BrokerAndroidLifecycleRequest, boot: BrokerAndroidBoot | null) {
+export function brokerAndroidReplacement(candidate: Record<string, unknown>, parsed: BrokerAndroidLifecycleRequest, boot: BrokerAndroidBoot<unknown> | null) {
     if (parsed.command === "device_delete") return null;
     return {
         ...candidate,

@@ -1,22 +1,20 @@
-import type { BrokerMacosLifecycleRequest, BrokerMacosProviderCommand, BrokerMacosProviderResult, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange } from "../../domain/lifecycle/macos-vm-lifecycle.js";
-export interface BrokerMacosAuxiliaryCleanup {
-    result: { ok: boolean; changed: boolean; stateConflict?: boolean; appium: Record<string, unknown>; recording: Record<string, unknown>; minimizeWatchdog: Record<string, unknown> };
-    device: unknown; committed: boolean;
-}
-/** Fixed native leaves; operation and compensation ordering belong to the application. */
-export interface BrokerMacosVmLifecyclePorts {
-    readonly execute: (command: BrokerMacosProviderCommand, options: { timeoutMs: number; outputLimit: number }) => BrokerMacosProviderResult;
-    readonly executable: (name: string) => string | null;
+import type {BrokerMacosLifecycleRequest, BrokerMacosProviderResult, BrokerMacosPlannedCommand, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange, BrokerMacosAuxiliaryFacts} from "../../domain/lifecycle/macos-vm-lifecycle.js";
+export interface BrokerMacosAuxiliaryCleanup {result: BrokerMacosAuxiliaryFacts; device: unknown; committed: boolean;}
+/** One prepared native effect at a time; eligibility, publication and recovery stay inward. */
+export interface BrokerMacosVmLifecyclePorts<Effect> {
+    readonly execute: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerMacosProviderResult;
+    readonly executeMetadata: (reason: string, options: {timeoutMs: number; outputLimit: number}) => BrokerMacosProviderResult;
+    readonly prepareCreate: (input: {provider: string; image: string; instance: string}) => BrokerMacosPlannedCommand<Effect>;
+    readonly prepareExisting: (input: {parsed: BrokerMacosLifecycleRequest; provider: string; instance: string; headless: boolean}) => BrokerMacosPlannedCommand<Effect>;
+    readonly prepareDelete: (effect: Effect, target: string) => Effect;
     readonly timestamp: () => string;
-    readonly claimDefinition: (ownerId: string, parsed: BrokerMacosLifecycleRequest, device: Record<string, unknown>) => BrokerMacosClaim;
+    readonly claimDefinition: (ownerId: string, parsed: BrokerMacosLifecycleRequest, device: Record<string,unknown>) => BrokerMacosClaim;
     readonly cleanupAuxiliary: (ownerId: string, parsed: BrokerMacosLifecycleRequest, expected: unknown) => BrokerMacosAuxiliaryCleanup;
     readonly publish: (ownerId: string, stateKey: string, deviceId: string, expected: unknown, change: BrokerMacosPublicationChange) => BrokerMacosPublication;
-    readonly redactDevice: (device: unknown) => unknown;
     readonly stateErrorCode: (error: unknown) => string | null;
-    readonly stateFailure: (error: unknown, parsed: BrokerMacosLifecycleRequest) => { status: number; payload: Record<string, unknown> };
-    readonly failureDetail: (result: BrokerMacosProviderResult) => string;
     readonly commandTimeoutMs: number;
     readonly outputLimit: number;
     readonly now: () => number;
     readonly sleep: (milliseconds: number) => undefined;
+    readonly observeIp: (effect: Effect, instance: string, resolver: "default" | "arp", options: {timeoutMs: number; outputLimit: number}) => BrokerMacosProviderResult;
 }

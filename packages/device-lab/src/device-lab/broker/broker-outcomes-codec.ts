@@ -186,3 +186,159 @@ export function renderBrokerAppium(outcome: BrokerAppiumResponse): WireResult {
         }
     }
 }
+
+export class NativeProviderLifecycleEffect {
+    constructor(readonly command: ProviderCommand) { }
+}
+import type { BrokerAndroidLifecycleOutcome, BrokerAndroidBoot } from "../domain/lifecycle/android-emulator-lifecycle.js";
+import type { BrokerIosLifecycleResponse } from "../domain/lifecycle/ios-simulator-lifecycle.js";
+import type { BrokerMacosLifecycleResponse, BrokerMacosBoot } from "../domain/lifecycle/macos-vm-lifecycle.js";
+import type { BrokerWindowsSandboxOutcome } from "../domain/lifecycle/windows-sandbox-lifecycle.js";
+export type NativeLifecyclePresentation = {
+    ownerId: string;
+    backend: string;
+    stateKey: string;
+    deviceId: string;
+    command: string;
+    deleteAvd?: boolean;
+    plan: Record<string, unknown> | undefined;
+};
+type LifecycleObservation = {
+    receipt?: unknown;
+    mode?: string;
+    provider?: string;
+    status?: number | null;
+    signal?: string | null;
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    timedOut?: boolean;
+    outputLimitExceeded?: boolean;
+};
+export function renderBrokerLifecycleObservation(observed: LifecycleObservation): ProviderCommandResult {
+    const { receipt, ...facts } = observed;
+    return receipt instanceof NativeBrokerExecutionReceipt ? { ...receipt.value, ...facts, mode: observed.mode ?? receipt.value.mode, provider: observed.provider ?? receipt.value.provider }
+        : { ...facts, mode: observed.mode ?? "exec", provider: observed.provider ?? "wsb" };
+}
+export function renderBrokerProviderRollback(rollback: {
+    attempted?: boolean;
+    ok: boolean;
+    reason?: string;
+    result?: LifecycleObservation;
+}) {
+    return { ...rollback, ...(rollback.result ? { result: renderBrokerLifecycleObservation(rollback.result) } : {}) };
+}
+export function renderBrokerMacosBoot(boot: BrokerMacosBoot, command: ProviderCommand) {
+    if (boot.ok)
+        return { ...boot, ...(boot.result ? { result: renderBrokerLifecycleObservation(boot.result) } : {}), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
+    const observed = boot.last ? renderBrokerLifecycleObservation(boot.last) : {};
+    return { ok: false as const, error: { ...observed, mode: "exec", provider: "tart", executable: command.executable,
+            args: boot.instance ? ["ip", boot.instance] : ["ip"], status: boot.last?.status ?? null,
+            error: boot.reason === "missing-target" ? "missing-provider-metadata: providerInstance" : `Timed out waiting for Tart IP for ${boot.instance}` },
+        ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
+}
+function androidBoot(boot: BrokerAndroidBoot<NativeBrokerExecutionReceipt>) {
+    return boot.ok ? { ...boot, ...(boot.result ? { result: renderBrokerLifecycleObservation(boot.result) } : {}), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) }
+        : { ...boot, error: renderBrokerLifecycleObservation(boot.error), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
+}
+function lifecycleResult(context: NativeLifecyclePresentation, device: unknown, execution: LifecycleObservation | undefined, invoked: boolean, mutatesHost: boolean) {
+    return { ...context.plan, device, invoked, dryRun: false, execution: { mode: context.command === "device_create" && execution?.mode === "noop" ? "state" : execution?.mode,
+            providerExecution: invoked ? context.command === "device_create" && execution?.mode === "noop" ? "broker-state" : "executed" : "blocked", mutatesHost,
+            ...(execution && !(context.command === "device_create" && execution.mode === "noop") ? { command: renderBrokerLifecycleObservation(execution) } : {}) } };
+}
+export function renderBrokerAndroidLifecycle(outcome: BrokerAndroidLifecycleOutcome<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt>, context: NativeLifecyclePresentation, redactDevice: (device: unknown) => unknown, stateFailure: (cause: unknown, target: {
+    backend: string;
+    stateKey: string;
+}) => {
+    status: number;
+    payload: Record<string, unknown>;
+}, failureDetail: (result: ProviderCommandResult) => string): WireResult {
+    if (outcome.kind === "state-exception") {
+        const failure = stateFailure(outcome.cause, outcome);
+        return { ...failure, payload: { ...failure.payload, rollback: outcome.rollback } };
+    }
+    const base = { ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId };
+    switch (outcome.kind) {
+        case "refused": {
+            const { kind: _kind, reason, plan: _plan, device, execution: _execution, boot: _boot, auxiliaryCleanup: _auxiliary, invoked: _invoked, mutatesHost: _mutates, ...facts } = outcome;
+            const status = refusalStatus(reason, outcome.error);
+            return { status: outcome.error === "owner-device-state-rollback-failed" || outcome.error === "owner-device-conflict-rollback-failed" ? 502 : status,
+                payload: { ok: false, ...facts, ...(device !== undefined ? { device: redactDevice(device) } : {}), ...(outcome.plan ? { plan: { ...context.plan, device: redactDevice(outcome.plan.device) } } : {}) } };
+        }
+        case "provider-failed": return { status: 502, payload: { ok: false, error: outcome.error,
+                detail: failureDetail(renderBrokerLifecycleObservation(outcome.execution)), ...(outcome.rollback ? { rollback: outcome.rollback } : {}), result: { ...lifecycleResult(context, redactDevice(outcome.device ?? outcome.plan?.device), outcome.execution, true, false),
+                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: renderBrokerLifecycleObservation(outcome.boot.error) } } : {}),
+                    ...(outcome.boot && !outcome.boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost: false, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: null, androidBoot: androidBoot(outcome.boot) } } } : {}),
+                    ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
+        case "auxiliary-failed": return { status: 502, payload: { ok: false, error: outcome.error,
+                result: { ...lifecycleResult(context, redactDevice(outcome.device), undefined, false, outcome.mutatesHost === true), auxiliaryCleanup: outcome.auxiliaryCleanup, execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: outcome.mutatesHost === true } } } };
+        case "stop-unconfirmed": return { status: 502, payload: { ok: false, error: outcome.error, detail: outcome.detail, ...base,
+                result: lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, true) } };
+        case "publication-conflict": return { status: 409, payload: { ok: false, error: outcome.error, ...base, found: outcome.found,
+                result: lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, outcome.mutatesHost) } };
+        case "created":
+        case "completed": return { status: 200, payload: { ok: true, result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, outcome.mutatesHost),
+                    ...(context.command === "device_delete" && context.deleteAvd !== false ? { providerCommand: { mode: "noop", provider: "host-broker-state", reason: "Android AVD artifacts are removed by identity-fenced storage cleanup" } } : {}),
+                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: renderBrokerLifecycleObservation(outcome.boot.error) } } : {}), ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
+    }
+}
+export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleResponse<NativeProviderLifecycleEffect> | BrokerMacosLifecycleResponse<NativeProviderLifecycleEffect>, context: NativeLifecyclePresentation, redactDevice: (device: unknown) => unknown, stateFailure: (cause: unknown, target: {
+    backend: string;
+    stateKey: string;
+}) => {
+    status: number;
+    payload: Record<string, unknown>;
+}, failureDetail: (result: ProviderCommandResult) => string): WireResult {
+    const base = { ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId };
+    switch (outcome.kind) {
+        case "refused": return { status: 400, payload: { ok: false, error: outcome.error, missing: outcome.missing, plan: outcome.plan ? { ...context.plan, device: redactDevice(outcome.plan.device) } : null } };
+        case "state-failed": {
+            const failure = stateFailure(outcome.cause, context);
+            return { ...failure, payload: { ...failure.payload, rollback: renderBrokerProviderRollback(outcome.rollback) } };
+        }
+        case "rollback-failed": return { status: 502, payload: { ok: false, ...base, error: outcome.error, stateError: outcome.stateError, rollback: renderBrokerProviderRollback(outcome.rollback) } };
+        case "claim-conflict": return { status: outcome.rollback.ok ? 409 : 502, payload: { ok: false, ...base, error: outcome.error, field: outcome.field, value: outcome.value, existing: redactDevice(outcome.existing), rollback: renderBrokerProviderRollback(outcome.rollback) } };
+        case "provider-failed": return outcome.error === "ios-simulator-create-invalid-udid" ? { status: 502, payload: { ok: false, error: outcome.error, ownerId: context.ownerId, deviceId: context.deviceId } }
+            : { status: 502, payload: { ok: false, error: outcome.error, detail: failureDetail(renderBrokerLifecycleObservation(outcome.execution)), result: lifecycleResult(context, redactDevice(outcome.plan?.device), outcome.execution, true, false) } };
+        case "auxiliary-failed": return { status: 502, payload: { ok: false, error: "auxiliary-runtime-cleanup-failed",
+                result: { ...lifecycleResult(context, redactDevice(outcome.device), undefined, false, (outcome.auxiliary.changed || outcome.auxiliary.appium.cleared === true || outcome.auxiliary.recording.cleared === true || outcome.auxiliary.minimizeWatchdog.cleared === true)), auxiliaryCleanup: outcome.auxiliary, execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: outcome.auxiliary.changed || outcome.auxiliary.appium.cleared === true || outcome.auxiliary.recording.cleared === true || outcome.auxiliary.minimizeWatchdog.cleared === true } } } };
+        case "completed":
+        case "state-conflict":
+        case "operation-failed": {
+            const boot = "boot" in outcome && outcome.boot && context.plan && cleanupCommand(context.plan.providerCommand) ? renderBrokerMacosBoot(outcome.boot, context.plan.providerCommand) : undefined;
+            return { status: outcome.kind === "state-conflict" ? 409 : outcome.success ? 200 : 502, payload: { ok: outcome.success && outcome.kind !== "state-conflict",
+                    ...(outcome.kind === "state-conflict" ? { error: "owner-device-state-conflict", ...base, found: outcome.publication?.found } : !outcome.success ? { error: "provider-command-failed", detail: failureDetail(renderBrokerLifecycleObservation(outcome.execution)) } : {}),
+                    result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, outcome.success), ...(outcome.auxiliary ? { auxiliaryCleanup: outcome.auxiliary } : {}), ...(boot && !boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost: outcome.success, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: boot, androidBoot: null } } } : {}) } } };
+        }
+    }
+}
+function cleanupCommand(command: unknown): command is ProviderCommand {
+    return command !== null && typeof command === "object" && "mode" in command && (command.mode === "exec" || command.mode === "detached" || command.mode === "noop") && "provider" in command && typeof command.provider === "string";
+}
+function sandboxRegistration(observation: LifecycleObservation, context: NativeLifecyclePresentation) {
+    if (observation.receipt instanceof NativeBrokerExecutionReceipt)
+        return renderBrokerLifecycleObservation(observation);
+    const descriptor = context.plan && cleanupCommand(context.plan.providerCommand) ? context.plan.providerCommand : null;
+    return { ...renderBrokerLifecycleObservation(observation), executable: descriptor?.executable,
+        args: observation.error === "windows-sandbox-start-missing-registration-metadata" ? descriptor?.args || [] : ["list", "--raw"] };
+}
+export function renderBrokerSandboxLifecycle(outcome: BrokerWindowsSandboxOutcome<NativeBrokerExecutionReceipt>, context: NativeLifecyclePresentation, redactDevice: (device: unknown) => unknown, failureDetail: (result: ProviderCommandResult) => string): WireResult {
+    const facts = outcome.facts;
+    const execution = facts?.execution;
+    const success = outcome.kind === "completed" && outcome.success;
+    const publicationConflict = facts?.publication?.matched === false;
+    const result = facts ? { ...lifecycleResult(context, redactDevice(facts.device), execution, facts.invoked, facts.mutatesHost),
+        ...(facts.runtime && context.plan && cleanupCommand(context.plan.providerCommand) ? { providerCommand: { ...context.plan.providerCommand, ...(facts.runtime.sandboxId ? { sandboxId: facts.runtime.sandboxId } : {}), ...(facts.runtime.requestedSandboxId ? { requestedSandboxId: facts.runtime.requestedSandboxId } : {}) } } : {}),
+        ...(facts.watchdog ? { minimizeWatchdog: renderBrokerLifecycleObservation(facts.watchdog) } : {}),
+        ...(facts.confirmation ? { minimizeConfirmation: renderBrokerLifecycleObservation(facts.confirmation) } : {}), ...(facts.watchdogCleanup ? { minimizeWatchdogCleanup: facts.watchdogCleanup } : {}),
+        ...(facts.auxiliaryCleanup ? { auxiliaryCleanup: facts.auxiliaryCleanup } : {}), ...(facts.artifactCleanup ? { windowsDeviceArtifactCleanup: facts.artifactCleanup } : {}),
+        ...(!facts.invoked ? { execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: facts.mutatesHost, ...(execution ? { command: renderBrokerLifecycleObservation(execution) } : {}) } } : {}),
+        ...(facts.registration && execution ? { execution: { mode: renderBrokerLifecycleObservation(execution).mode, providerExecution: "executed", mutatesHost: facts.mutatesHost, command: { ...renderBrokerLifecycleObservation(execution), registration: sandboxRegistration(facts.registration, context), macosBoot: null, androidBoot: null } } } : {}) } : undefined;
+    if (outcome.kind === "refused")
+        return { status: refusalStatus(outcome.category, outcome.error), payload: { ok: false, error: outcome.error,
+            ...(outcome.error === "windows-sandbox-config-refresh-failed" || outcome.error === "windows-sandbox-device-artifact-cleanup-failed" || outcome.error === "owner-device-state-conflict" ? {ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId} : {}),
+            ...(outcome.error === "owner-device-state-conflict" ? {found: facts?.publication?.found} : {}),
+                ...(outcome.detail ? { detail: outcome.detail } : outcome.error === "windows-sandbox-runtime-snapshot-failed" && execution ? { detail: failureDetail(renderBrokerLifecycleObservation(execution)) } : {}), ...(outcome.missing ? { missing: outcome.missing, plan: context.plan || null } : {}), ...(outcome.lock !== undefined ? { lock: outcome.lock, plan: context.plan || null } : {}), ...(result ? { result } : {}) } };
+    return { status: publicationConflict ? 409 : success ? 200 : 502, payload: { ok: success && !publicationConflict,
+            ...(publicationConflict ? { error: "owner-device-state-conflict", ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId, found: facts?.publication?.found } : !success ? { error: "provider-command-failed", detail: failureDetail(renderBrokerLifecycleObservation(execution || {})) } : {}), result } };
+}

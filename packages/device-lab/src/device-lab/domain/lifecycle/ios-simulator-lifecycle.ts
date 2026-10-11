@@ -4,23 +4,33 @@ export interface BrokerIosLifecycleRequest {
     force: boolean; dryRun: boolean; headless?: boolean; waitForBoot?: boolean;
     bootTimeoutMs?: number; create?: Record<string, unknown>;
 }
-export interface BrokerIosProviderCommand {
-    mode: "exec" | "detached" | "noop"; provider: string;
-    executable?: string; args?: string[]; input?: string; reason?: string;
-}
 export interface BrokerIosProviderResult {
-    mode: string; provider: string; executable?: string; args?: string[]; input?: string;
-    status?: number | null; signal?: string | null; stdout?: string; stderr?: string;
-    error?: string; timedOut?: boolean; outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean;
+    mode: string; provider: string; status?: number | null; signal?: string | null;
+    stdout?: string; stderr?: string; error?: string; timedOut?: boolean;
+    outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean; receipt: unknown;
 }
-export type BrokerIosPlannedCommand = BrokerIosProviderCommand | { error: string; missing: string[] };
-export interface BrokerIosLifecyclePlan {
-    create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: BrokerIosPlannedCommand;
+export type BrokerIosPlannedCommand<Effect> =
+    {kind: "unavailable"; error: string; missing: string[]} |
+    {kind: "metadata-only"; reason: string} |
+    {kind: "ready"; effect: Effect; provider: string; canCompensate: boolean; bootEligible: boolean};
+export interface BrokerIosLifecyclePlan<Effect> {
+    create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: BrokerIosPlannedCommand<Effect>;
 }
-export interface BrokerIosLifecycleInput {
-    ownerId: string; parsed: BrokerIosLifecycleRequest; plan: BrokerIosLifecyclePlan | undefined; expectedDevice: unknown;
+export interface BrokerIosLifecycleInput<Effect> {
+    ownerId: string; parsed: BrokerIosLifecycleRequest; plan: BrokerIosLifecyclePlan<Effect> | undefined; expectedDevice: unknown;
 }
-export type BrokerIosLifecycleResponse = { status: number; payload: unknown };
+export type BrokerIosRollback = {attempted: false; ok: boolean; reason: string} | {attempted: true; ok: boolean; result: BrokerIosProviderResult};
+export type BrokerIosLifecycleResponse<Effect> =
+    {kind: "refused"; error: string; missing: string[]; plan: BrokerIosLifecyclePlan<Effect> | null} |
+    {kind: "provider-failed"; error: string; plan: BrokerIosLifecyclePlan<Effect> | undefined; execution: BrokerIosProviderResult} |
+    {kind: "state-failed"; cause: unknown; rollback: BrokerIosRollback} |
+    {kind: "rollback-failed"; error: string; stateError: string; rollback: BrokerIosRollback} |
+    {kind: "claim-conflict"; error: string; field: string; value: unknown; existing: Record<string,unknown>; rollback: BrokerIosRollback} |
+    {kind: "auxiliary-failed"; plan: BrokerIosLifecyclePlan<Effect> | undefined; device: unknown; auxiliary: BrokerIosAuxiliaryFacts} |
+    {kind: "completed" | "state-conflict" | "operation-failed"; plan: BrokerIosLifecyclePlan<Effect> | undefined; device: unknown; execution: BrokerIosProviderResult; success: boolean; publication?: BrokerIosPublication; auxiliary?: BrokerIosAuxiliaryFacts};
+export interface BrokerIosAuxiliaryFacts {
+    ok: boolean; changed: boolean; stateConflict?: boolean; appium: Record<string,unknown>; recording: Record<string,unknown>; minimizeWatchdog: Record<string,unknown>;
+}
 export type BrokerIosPublication = { found: boolean; matched: boolean; device: unknown };
 export type BrokerIosClaim = { ok: true; device: Record<string, unknown> } |
     { ok: false; error: string; field: string; value: unknown; existing: Record<string, unknown> };
@@ -63,12 +73,6 @@ export function brokerIosCreateCommand(ownerId: string, parsed: BrokerIosLifecyc
     const ownerPrefix = `ccc-${ownerId}-`;
     const simulatorName = typeof create.simulatorName === "string" && create.simulatorName ? create.simulatorName : `${ownerPrefix}${slug(name)}`;
     return { simulatorName, ownerPrefix, deviceType: create.deviceType, runtime: create.runtime };
-}
-export function brokerIosExistingCommand(parsed: BrokerIosLifecycleRequest, target: string, executable: string | null): BrokerIosProviderCommand {
-    if (parsed.command === "device_status") return { mode: "exec", provider: "xcrun", executable: executable || undefined, args: ["simctl","list","devices",target] };
-    if (parsed.command === "device_start") return { mode: "exec", provider: "xcrun", executable: executable || undefined, args: ["simctl","boot",target] };
-    if (parsed.command === "device_stop") return { mode: "exec", provider: "xcrun", executable: executable || undefined, args: ["simctl","shutdown",target] };
-    return { mode: "exec", provider: "xcrun", executable: executable || undefined, args: ["simctl","delete",target] };
 }
 export function brokerIosReplacement(candidate: Record<string, unknown>, change: BrokerIosPublicationChange): Record<string, unknown> | null {
     if (change.kind === "delete") return null;

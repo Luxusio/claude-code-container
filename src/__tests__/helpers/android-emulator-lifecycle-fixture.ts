@@ -133,12 +133,23 @@ export function directLifecyclePorts(initial?: AndroidEmulatorDevice) {
     return { ports, child, discovery, trace, transitions, current: () => current, replace: (next: AndroidEmulatorDevice | undefined) => { current = next; }, clockReads: () => clockReads };
 }
 
+export type BrokerAndroidTestEffect = { action: "create" | "start" | "stop" | "delete" | "stop-inventory" | "boot-probe" };
+export type BrokerAndroidTestReceipt = { sequence: number };
+export type BrokerAndroidTestPorts = BrokerAndroidEmulatorLifecyclePorts<BrokerAndroidTestEffect, BrokerAndroidTestReceipt>;
+
 export function brokerLifecyclePorts(initial: Record<string, unknown> | undefined = undefined) {
     let current = initial, time = 0;
-    const trace: string[] = [], publications: unknown[] = [], commands: Array<{ provider: string; args?: string[]; timeoutMs: number }> = [];
-    const ports: { -readonly [K in keyof BrokerAndroidEmulatorLifecyclePorts]: BrokerAndroidEmulatorLifecyclePorts[K] } = {
-        execute: (command, options) => { trace.push("execute:" + command.provider); commands.push({ provider: command.provider, args: command.args, timeoutMs: options.timeoutMs }); return { ...command, status: 0, stdout: command.args?.includes("sys.boot_completed") ? "1\n" : command.args?.[0] === "devices" ? "List of devices attached\n" : "raw native output", stderr: "" }; },
-        executable: name => name,
+    const trace: string[] = [], publications: unknown[] = [], commands: Array<{ effect: BrokerAndroidTestEffect; timeoutMs: number }> = [];
+    const ports: { -readonly [K in keyof BrokerAndroidTestPorts]: BrokerAndroidTestPorts[K] } = {
+        executePrepared: (effect, options) => {
+            const provider = effect.action === "create" || effect.action === "delete" ? "avdmanager" : effect.action === "start" ? "emulator" : "adb";
+            trace.push("execute:" + provider); commands.push({ effect, timeoutMs: options.timeoutMs });
+            return { mode: effect.action === "start" ? "detached" : "exec", provider, status: 0,
+                stdout: effect.action === "boot-probe" ? "1\n" : effect.action === "stop-inventory" ? "List of devices attached\n" : "raw native output", stderr: "", receipt: { sequence: commands.length } };
+        },
+        metadataObservation: () => ({ mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" }),
+        prepareStopInventory: () => ({ kind: "ready", effect: { action: "stop-inventory" } }),
+        prepareBootProbe: () => ({ kind: "ready", effect: { action: "boot-probe" } }),
         now: () => time,
         sleep: ms => { time += ms; trace.push("sleep:" + ms); return undefined; },
         timestamp: () => { trace.push("timestamp"); return "native-timestamp"; },
@@ -162,19 +173,16 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
             else throw Error("Invalid policy replacement");
             return { found: true, matched: true, device: current || null };
         },
-        redactDevice: device => device,
         stateErrorCode: error => error instanceof Error ? error.message : null,
-        stateFailure: error => ({ status: 500, payload: { ok: false, error: String(error) } }),
-        failureDetail: result => [result.error && "error: " + result.error, result.stderr && "stderr: " + result.stderr, result.stdout && "stdout: " + result.stdout].filter(Boolean).join("\n"),
         commandTimeoutMs: 5000,
         outputLimit: 32768,
     };
-    const input = (command: "device_create" | "device_start" | "device_stop" | "device_delete", overrides: Partial<BrokerAndroidLifecycleRequest> = {}): BrokerAndroidLifecycleInput => {
+    const input = (command: "device_create" | "device_start" | "device_stop" | "device_delete", overrides: Partial<BrokerAndroidLifecycleRequest> = {}): BrokerAndroidLifecycleInput<BrokerAndroidTestEffect> => {
         const parsed: BrokerAndroidLifecycleRequest = { ok: true, backend: "android-emulator", stateKey: "android", command, deviceId: "android-unit", force: false, dryRun: false, ...overrides,
             ...(command === "device_create" ? { create: { port: 5630, ...overrides.create } } : {}) };
         const plannedDevice = command === "device_create" ? { id: parsed.deviceId, backend: parsed.backend, avdName: "ccc-owner-unit", port: 5630, status: "stopped", ...parsed.create } : current;
         return { ownerId: "owner", parsed, expectedDevice: current, createAvdRoot: "/owned-avd",
-            plan: { device: plannedDevice, create: parsed.create, providerCommand: { mode: command === "device_start" ? "detached" : "exec", provider: command === "device_create" || command === "device_delete" ? "avdmanager" : command === "device_start" ? "emulator" : "adb", executable: command === "device_start" ? "emulator" : command === "device_create" || command === "device_delete" ? "avdmanager" : "adb", args: command === "device_stop" ? ["-s", "emulator-5630", "emu", "kill"] : command === "device_start" ? ["-avd", "ccc-owner-unit", "-port", "5630"] : command === "device_create" ? ["create", "avd", "--name", "ccc-owner-unit", "--package", "system-images;android-35;google_apis;x86_64", "--force"] : [] } } };
+            plan: { device: plannedDevice, create: parsed.create, preparation: { kind: "ready", mode: command === "device_start" ? "detached" : "exec", provider: command === "device_create" || command === "device_delete" ? "avdmanager" : command === "device_start" ? "emulator" : "adb", effect: { action: command === "device_create" ? "create" : command === "device_start" ? "start" : command === "device_stop" ? "stop" : "delete" } } } };
     };
     return { ports, input, trace, publications, commands, current: () => current, replace: (next: Record<string, unknown> | undefined) => { current = next; } };
 }

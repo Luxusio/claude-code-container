@@ -50,22 +50,37 @@ describe("direct synchronous Sandbox create policy", () => {
 });
 
 function brokerFixture(mode = "success") {
-    const trace: string[] = []; const fault = { mode }; const device = { id: "sandbox", createdAt: "generation" }; const files: string[] = [];
+    const trace: string[] = []; const fault = { mode }; const compensationFault = { compensation: mode }; const device = { id: "sandbox", createdAt: "generation" }; const files: string[] = [];
     let records = [device, { id: "sandbox", createdAt: "successor" }];
-    const ports: BrokerWindowsSandboxCreatePorts<{ name: string }, typeof device, { ok: boolean; evidence: string }> = {
+    const ports: BrokerWindowsSandboxCreatePorts<{ name: string }, typeof device> = {
         createRecord: () => { trace.push("record"); if (mode === "record-throw") throw fault; return device; },
-        claimDefinition: () => { trace.push("claim"); if (["claim-throw", "rollback-throw", "rollback-false"].includes(mode)) throw fault; return mode === "conflict" ? { ok: false, error: "conflict", field: "id", value: "sandbox", existing: records[1] } : { ok: true }; },
-        rollbackAfterClaimFailure: async (_device, existing) => { trace.push(existing ? "rollback:existing" : "rollback:null"); if (mode === "rollback-throw") throw fault; return { ok: mode !== "rollback-false", evidence: "opaque" }; },
+        claimDefinition: () => { trace.push("claim"); if (mode === "claim-throw") throw fault; return mode === "conflict" ? { ok: false, error: "conflict", field: "id", value: "sandbox", existing: records[1] } : { ok: true }; },
         publishConfig: () => { trace.push("config"); files.push("partial-helper"); if (["config-throw", "mutation-throw"].includes(mode)) throw fault; return "/private/config"; },
-        removeMatchingClaim: (id, createdAt) => { trace.push("mutate"); if (mode === "mutation-throw") throw fault; records = records.filter(candidate => retainAfterWindowsConfigFailure(candidate, id, createdAt)); return records; },
-        stateErrorCode: () => { trace.push("state-code"); return null; },
+        removeMatchingClaim: (id, createdAt) => { trace.push("mutate"); if (mode === "mutation-throw") throw compensationFault; records = records.filter(candidate => retainAfterWindowsConfigFailure(candidate, id, createdAt)); return records; },
     };
-    return { app: createBrokerWindowsSandboxCreate(ports), trace, fault, files, records: () => records };
+    return { app: createBrokerWindowsSandboxCreate(ports), trace, fault, compensationFault, files, records: () => records };
 }
 describe("asynchronous broker Sandbox create transaction", () => {
     it("claims before native config and does nothing during construction", async () => { const f = brokerFixture(); expect(f.trace).toEqual([]); const result = f.app.create({ name: "Sandbox" }); expect(result).toBeInstanceOf(Promise); expect(await result).toMatchObject({ kind: "created" }); expect(f.trace).toEqual(["record", "claim", "config"]); });
-    it.each(["claim-throw", "conflict", "rollback-false"])("keeps rollback evidence and skips config on %s", async mode => { const f = brokerFixture(mode); const result = await f.app.create({ name: "Sandbox" }); expect(result.kind).toBe(mode === "conflict" ? "claim-conflict" : "claim-exception"); if (result.kind === "claim-exception") expect(result.error).toBe(f.fault); expect(f.trace).not.toContain("config"); expect(f.trace).toContain(mode === "conflict" ? "rollback:existing" : "rollback:null"); if (mode === "rollback-false") expect(result).toMatchObject({ stateCode: "owner-state-write-failed" }); });
+    it.each(["claim-throw", "conflict"])("reports no provider resource and skips config on %s", async mode => {
+        const f = brokerFixture(mode);
+        const result = await f.app.create({ name: "Sandbox" });
+        expect(result.kind).toBe(mode === "conflict" ? "claim-conflict" : "claim-exception");
+        if (result.kind === "claim-exception") expect(result.error).toBe(f.fault);
+        expect(result).toMatchObject({ rollback: { attempted: false, ok: true, reason: "no-provider-resource-created" } });
+        if (result.kind === "claim-conflict") expect(result.claim.existing).toEqual({ id: "sandbox", createdAt: "successor" });
+        expect(f.files).toEqual([]);
+        expect(f.records()).toEqual([{ id: "sandbox", createdAt: "generation" }, { id: "sandbox", createdAt: "successor" }]);
+        expect(f.trace).not.toContain("config");
+    });
     it("removes only original generation and retains partial files after config fault", async () => { const f = brokerFixture("config-throw"); expect(await f.app.create({ name: "Sandbox" })).toEqual({ kind: "config-failure", error: f.fault }); expect(f.trace).toEqual(["record", "claim", "config", "mutate"]); expect(f.records()).toEqual([{ id: "sandbox", createdAt: "successor" }]); expect(f.files).toEqual(["partial-helper"]); });
-    it.each(["record-throw", "rollback-throw", "mutation-throw"])("preserves raw %s at its existing boundary", async mode => { const f = brokerFixture(mode); await expect(f.app.create({ name: "Sandbox" })).rejects.toBe(f.fault); if (mode === "mutation-throw") { expect(f.records()).toHaveLength(2); expect(f.files).toEqual(["partial-helper"]); } });
+    it.each(["record-throw", "mutation-throw"])("preserves raw %s at its existing boundary", async mode => {
+        const f = brokerFixture(mode);
+        await expect(f.app.create({ name: "Sandbox" })).rejects.toBe(mode === "mutation-throw" ? f.compensationFault : f.fault);
+        if (mode === "mutation-throw") {
+            expect(f.records()).toEqual([{ id: "sandbox", createdAt: "generation" }, { id: "sandbox", createdAt: "successor" }]);
+            expect(f.files).toEqual(["partial-helper"]);
+        }
+    });
     it("retains malformed records and other identities during compensation", () => { for (const value of [null, undefined, false, 0, "raw", {}, { id: "other", createdAt: "generation" }, { id: "sandbox", createdAt: "successor" }]) expect(retainAfterWindowsConfigFailure(value, "sandbox", "generation")).toBe(true); expect(retainAfterWindowsConfigFailure({ id: "sandbox", createdAt: "generation" }, "sandbox", "generation")).toBe(false); });
 });

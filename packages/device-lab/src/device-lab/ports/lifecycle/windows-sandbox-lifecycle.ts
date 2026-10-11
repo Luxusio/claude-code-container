@@ -1,4 +1,4 @@
-import type { BrokerWindowsSandboxRequest, BrokerWindowsSandboxCommand, BrokerWindowsSandboxResult, BrokerWindowsSandboxPlannedCommand, BrokerWindowsSandboxPublication, BrokerWindowsSandboxChange } from '../../domain/lifecycle/windows-sandbox-lifecycle.js';
+import type { BrokerWindowsSandboxRequest, BrokerWindowsSandboxResult, BrokerWindowsSandboxPublication, BrokerWindowsSandboxChange, BrokerWindowsSandboxPrepared } from '../../domain/lifecycle/windows-sandbox-lifecycle.js';
 export interface BrokerWindowsSandboxAuxiliaryCleanup {
     result: {
         ok: boolean;
@@ -16,22 +16,10 @@ export interface BrokerWindowsSandboxHelperPaths {
     minimizeWatchdogResultPath: string;
 }
 /** Native guarded leaves; lifecycle choices and response/compensation policy live inward. */
-export interface BrokerWindowsSandboxLifecyclePorts {
-    execute(command: BrokerWindowsSandboxCommand, options: {
-        timeoutMs: number;
-        outputLimit: number;
-    }): BrokerWindowsSandboxResult;
-    executable(name: 'wsb'): string | null;
-    stopRuntimeId(ownerId: string, device: unknown): string | null;
-    newRuntimeId(): string;
-    readConfig(ownerId: string, deviceId: string, recordedPath: string | null): {
-        ok: true;
-        config: string;
-    } | {
-        ok: false;
-        error: string;
-        missing: string[];
-    };
+export interface BrokerWindowsSandboxLifecyclePorts<Prepared, Receipt> {
+    prepare(ownerId:string,request:BrokerWindowsSandboxRequest,device:unknown):BrokerWindowsSandboxPrepared<Prepared>;
+    run(handle:Prepared,options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>;
+    listRuntime(handle:Prepared,options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>;
     isCanonicalConfig(ownerId: string, deviceId: string, path: string): boolean;
     writeConfig(ownerId: string, deviceId: string, device: Record<string, unknown>): undefined;
     claimSingleton(ownerId: string, device: unknown, sandboxId?: string): {
@@ -46,10 +34,10 @@ export interface BrokerWindowsSandboxLifecyclePorts {
     helperPaths(ownerId: string, deviceId: string): BrokerWindowsSandboxHelperPaths;
     removeMarker(path: string): undefined;
     runtimeIds(stdout: string): string[];
-    windowSnapshotCommand(): BrokerWindowsSandboxCommand;
+    snapshotWindows(options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>;
     windowHandles(stdout: string): number[] | null;
-    watchdogCommand(startedAfter: string, paths: BrokerWindowsSandboxHelperPaths, baseline: number[]): BrokerWindowsSandboxCommand;
-    waitForMinimizeConfirmation(path: string): BrokerWindowsSandboxResult;
+    launchWatchdog(startedAfter:string,paths:BrokerWindowsSandboxHelperPaths,baseline:number[],options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>;
+    waitForMinimizeConfirmation(path: string): BrokerWindowsSandboxResult<Receipt>;
     cancelWatchdog(ownerId: string, deviceId: string): {
         attempted: boolean;
         ok: boolean;
@@ -65,8 +53,6 @@ export interface BrokerWindowsSandboxLifecyclePorts {
     };
     inspectExpectedRecord(ownerId: string, stateKey: string, deviceId: string, expected: unknown): BrokerWindowsSandboxPublication;
     publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, change: BrokerWindowsSandboxChange): BrokerWindowsSandboxPublication;
-    redactDevice(device: unknown): unknown;
-    failureDetail(result: BrokerWindowsSandboxResult): string;
     now(): number;
     timestampBefore(milliseconds: number): string;
     sleep(milliseconds: number): undefined;
@@ -74,4 +60,3 @@ export interface BrokerWindowsSandboxLifecyclePorts {
     readonly commandTimeoutMs: number;
     readonly outputLimit: number;
 }
-export type { BrokerWindowsSandboxPlannedCommand };

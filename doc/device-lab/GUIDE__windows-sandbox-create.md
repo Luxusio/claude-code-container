@@ -15,11 +15,13 @@ response. A helper or claim failure preserves its original thrown value. A claim
 conflict leaves previously generated helper files in place, as before.
 
 The broker application creates the record, attempts the owner claim, performs
-the existing rollback on a claim exception or conflict, and publishes the
+the nonprovisioning compensation decision on a claim exception or conflict, and publishes the
 configuration only after a successful claim. Configuration failure removes only
 records with both the created record's ID and `createdAt`. Replacement records
-with another timestamp survive. Partial configuration files remain. Rollback
-exceptions and compensation mutation exceptions propagate without a new catch.
+with another timestamp survive. Partial configuration files remain. Sandbox
+create has not created a provider resource before the claim, so the application
+returns `no-provider-resource-created` compensation evidence directly. A
+configuration compensation mutation exception propagates without a new catch.
 The native facade converts outcomes into its existing HTTP status and payload,
 including the original rollback evidence, redaction and error detail.
 
@@ -40,8 +42,8 @@ internal variant witness is not an assertion of public input reachability.
 
 Direct ports are `deriveDeviceId`, `readDefinitions`, `readOwnerId`,
 `ensureHelperWorkspace`, `wallTimestamp` and `claimDefinition`. Broker ports are
-`createRecord`, `claimDefinition`, `rollbackAfterClaimFailure`, `publishConfig`,
-`removeMatchingClaim` and `stateErrorCode`. Constructors check bindings without
+`createRecord`, `claimDefinition`, `publishConfig` and `removeMatchingClaim`.
+Constructors check bindings without
 performing effects. Applications add no retry, lock, capacity control or
 filesystem/process dependency. They do not accept a whole-transaction callback.
 
@@ -62,14 +64,12 @@ timestamp.
 
 ## Verification
 
-Freeze actual baseline facades and native assets before source edits, then
-capture actual cold direct create and ordered baseline branches. Replay compares
-actual baseline and candidate branches using the same inputs, raw faults and
-observed state. Faults include helper failure, claim exception/conflict, rollback
-throw, configuration partial write and compensation mutation throw. Preserve
-surviving directories, files and records, not just returned JSON.
+Use the current applications and actual direct MCP/authenticated broker facades.
+Faults include helper failure, claim exception/conflict, configuration partial
+write and compensation mutation throw. Assert surviving directories, files and
+records, as well as returned semantic outcomes and public responses.
 
-The create core, replay, facade and type suites complement existing Windows MCP,
+The create core, facade and type suites complement existing Windows MCP,
 authenticated broker, owner-state, timeout, bootstrap and boundary regressions.
 Actual direct MCP and authenticated broker RPC must cover positive and negative
 admission, invalid input, dry-run, duplicate 409 and native symlink refusal.

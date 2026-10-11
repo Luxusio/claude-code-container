@@ -3,9 +3,10 @@ import { createAndroidPreviewPortAllocation } from "../../../packages/device-lab
 import type { LifecyclePreviewRequest } from "../../../packages/device-lab/src/device-lab/domain/broker-observation-command-plan.js";
 import type { AndroidPreviewPortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-observation.js";
 import { createAndroidEmulatorLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs";
+import { createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
+import type { BrokerAndroidLifecycleInput } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/android-emulator-lifecycle.js";
 import type { AndroidEmulatorDevice, AndroidEmulatorLifecyclePorts } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
-import type { BrokerAndroidEmulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
-import { directLifecyclePorts, type DirectLifecycleResult, type DirectOwnedChild } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { directLifecyclePorts, type DirectLifecycleResult, type DirectOwnedChild, type BrokerAndroidTestPorts as BrokerAndroidEmulatorLifecyclePorts, type BrokerAndroidTestEffect } from "../helpers/android-emulator-lifecycle-fixture.js";
 
 // ORIGINAL checked contract for the already-inward broker preview allocator.
 // Retain the original prerequisite alongside the candidate operation contracts.
@@ -59,7 +60,7 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     // @ts-expect-error polling pacing must finish synchronously, not return a Promise
     const asyncSleep: BrokerAndroidEmulatorLifecyclePorts = { ...broker, sleep: async () => undefined };
     // @ts-expect-error provider command result is a synchronous native observation
-    const asyncExecution: BrokerAndroidEmulatorLifecyclePorts = { ...broker, execute: async () => ({ mode: "exec", provider: "adb", status: 0 }) };
+    const asyncExecution: BrokerAndroidEmulatorLifecyclePorts = { ...broker, executePrepared: async () => ({ mode: "exec", provider: "adb", status: 0 }) };
     // @ts-expect-error committed auxiliary cleanup must carry its complete result/device observation
     const weakCleanup: BrokerAndroidEmulatorLifecyclePorts = { ...broker, cleanupAuxiliary: () => ({ committed: true }) };
     // @ts-expect-error complete-record conditional publication is synchronously observed
@@ -72,6 +73,22 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     void asyncSleep; void asyncExecution; void weakCleanup; void asyncPublication; void weakInventory; void missingClock;
 }
 void brokerOperationContractNegatives;
+
+async function brokerSemanticConsumer(ports: BrokerAndroidEmulatorLifecyclePorts, input: BrokerAndroidLifecycleInput<BrokerAndroidTestEffect>): Promise<void> {
+    const app = createBrokerAndroidEmulatorLifecycle(ports);
+    const outcome = await app.start(input);
+    // @ts-expect-error lifecycle outcomes do not expose HTTP response bodies
+    const payload = outcome.payload;
+    // @ts-expect-error lifecycle outcomes do not expose HTTP response status
+    const status = outcome.status;
+    const { executePrepared, ...withoutExecution } = ports;
+    // @ts-expect-error a prepared native effect requires its execution capability
+    createBrokerAndroidEmulatorLifecycle(withoutExecution);
+    // @ts-expect-error the core cannot submit arbitrary executable/argv recipes
+    ports.executePrepared({ executable: "adb", args: [] }, { timeoutMs: 1000, outputLimit: 1024 });
+    void [payload, status, executePrepared];
+}
+void brokerSemanticConsumer;
 
 describe("Android emulator original checked prerequisite port contract", () => {
     it("uses the existing broker allocation contract with mutable native inventory and request carriers", () => {

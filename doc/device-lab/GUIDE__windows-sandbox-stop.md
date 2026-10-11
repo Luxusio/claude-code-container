@@ -13,7 +13,8 @@ record before releasing the singleton and removing scratch; a scratch failure
 can therefore leave files after the record is gone.
 
 `createBrokerWindowsSandboxLifecycle` owns the distinct authenticated broker
-start/stop/delete execution and response policy. It refreshes canonical configs,
+start/stop/delete execution policy and semantic outcomes. Native composition
+prepares bounded effects and renders public responses. It refreshes canonical configs,
 advances the expected record after auxiliary cleanup, interprets runtime and
 window observations, and publishes through the native CAS boundary. Before claiming
 or launching, its runtime baseline rejects a requested GUID that already exists;
@@ -27,6 +28,11 @@ checks, guarded config/workspace paths, bounded WSB/PowerShell commands, watchdo
 process authority and atomic state publication. Applications receive required
 named ports rather than filesystem/process namespaces or a legacy lifecycle
 callback. Construction does not launch providers.
+
+Opaque prepared effects carry native WSB and PowerShell recipes without making
+those recipes inspectable by the core. Runtime registration, watchdog ordering,
+success interpretation, compensation eligibility and uncertainty retention stay
+in the lifecycle application; HTTP status and secret redaction stay outward.
 
 Verification uses ordinary application ports and required-capability type checks,
 existing fake-WSB public MCP tests, native owner/lock regressions, and authenticated
