@@ -1,0 +1,23 @@
+/** @param {import('../ports/desktop-device-access.mjs').DesktopAccessArguments} args */
+export function desktopAccessibilityLimits(args) {
+    return {
+        maxDepth: Math.max(0, Math.min(Number.isFinite(Number(args.maxDepth)) ? Number(args.maxDepth) : 3, 8)),
+        maxNodes: Math.max(1, Math.min(Number.isFinite(Number(args.maxNodes)) ? Number(args.maxNodes) : 200, 1000)),
+    };
+}
+
+/** @param {string} ownerId @param {string} display @param {boolean} available
+ * @returns {import('../ports/desktop-device-access.mjs').X11AccessTarget} */
+export function x11AccessTarget(ownerId, display, available) {
+    return {
+        id: "x11-current-display", kind: "display", backend: "x11", creatable: false,
+        lifecycle: "current", ownerId, display, available,
+        capabilities: [
+            "device_status", "device_screenshot", "device_click", "device_double_click",
+            "device_key", "device_type", "device_scroll", "device_cursor_position",
+            "device_window_list", "device_drag", "device_focus_window", "display_screenshot",
+            "display_click", "display_double_click", "display_key", "display_type",
+            "display_scroll", "display_cursor_position",
+        ],
+    };
+}

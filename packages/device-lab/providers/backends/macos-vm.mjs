@@ -7,6 +7,7 @@ import { createMacosVmLifecycleApplication } from "../application/lifecycle/maco
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
+import { createDesktopDeviceAccess } from "../application/desktop-device-access.mjs";
 import { commandPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath, validateLocalReferencePath } from "../policy/files.mjs";
@@ -977,6 +978,50 @@ const macosDesktopPorts = {
 };
 const macosDesktop = createDesktopControlTransfer(macosDesktopPorts);
 
+/** @typedef {{tempRoot:string,localPath:string,remotePath:string,commandOptions:ReturnType<typeof sshCommandOptions>}} MacosScreenshotStage */
+/** @type {import('../ports/desktop-device-access.mjs').MacosDeviceAccessPorts<NonNullable<ReturnType<typeof findMacosDevice>>,ReturnType<typeof macosDiscovery>,{target:string,discovery:ReturnType<typeof sshDiscovery>},MacosScreenshotStage>} */
+const macosAccessPorts = {
+    variant: "macos",
+    target: id => findMacosDevice(id),
+    discovery: () => macosDiscovery(),
+    publicDevice: (device, discovery) => deviceWithPlan(device, discovery),
+    backend: discovery => macosBackend(discovery),
+    bridge: (device, operation) => {
+        const bridge = sshBridge(device, operation);
+        return bridge.error !== undefined ? { ok: false, result: bridge.error } : { ok: true, bridge };
+    },
+    exec: (device, bridge, command, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
+        [...sshBaseArgs(device), bridge.target, command], timeoutMs, sshCommandOptions(device)),
+    helper: (device, argv, timeoutMs) => macosHelperCommand(device, "accessibility_snapshot", argv, timeoutMs),
+    parseHelper: stdout => macosHelperJson(stdout),
+    stageScreenshot: device => {
+        const tempRoot = mkdtempSync(join(tmpdir(), "ccc-macos-screenshot-"));
+        const localPath = join(tempRoot, "screenshot.png");
+        const remotePath = `/tmp/ccc-${device.id}-${randomUUID()}-screenshot.png`;
+        const commandOptions = sshCommandOptions(device);
+        return { tempRoot, localPath, remotePath, commandOptions };
+    },
+    capture: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
+        [...sshBaseArgs(device), bridge.target, macosScreenshotCommand(stage.remotePath)], timeoutMs, stage.commandOptions),
+    copy: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.scp,
+        [...scpBaseArgs(device), `${bridge.target}:${stage.remotePath}`, stage.localPath], timeoutMs, stage.commandOptions),
+    readScreenshot: stage => screenshotFileResult(stage.localPath, "macos-vm-screenshot"),
+    cleanupRemote: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
+        [...sshBaseArgs(device), bridge.target, `rm -f -- ${shellQuote(stage.remotePath)}`], Math.min(macosHelperTimeoutMs(timeoutMs), 5000), stage.commandOptions),
+    disposeScreenshot: stage => { rmSync(stage.tempRoot, { recursive: true, force: true }); return undefined; },
+};
+const macosAccess = createDesktopDeviceAccess(macosAccessPorts);
+
+/** @param {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} outcome */
+function macosAccessResult(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.value);
+    if (outcome.kind === "text") return textResult(false, outcome.text);
+    if (outcome.kind === "command-failure") return fail(outcome.receipt);
+    if (outcome.kind === "native") return outcome.value;
+    return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
+}
+
 /** @param {import('../domain/desktop-control-transfer.mjs').DesktopOutcome} outcome */
 function macosDesktopResult(outcome) {
     if (outcome === undefined) return undefined;
@@ -1008,13 +1053,7 @@ async function handleMacosToolUnlocked(name, args) {
 
         case "device_delete": return macosVmLifecycle.delete(args);
 
-        case "device_status": {
-            const { deviceId } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const discovery = macosDiscovery();
-            return jsonResult({ device: deviceWithPlan(device, discovery), backend: macosBackend(discovery) });
-        }
+        case "device_status": return macosAccessResult(await macosAccess.handle(name, args));
 
         case "device_snapshot_create": return macosImages.createSnapshot(args);
         case "device_snapshot_restore": return macosImages.restoreSnapshot(args);
@@ -1024,41 +1063,13 @@ async function handleMacosToolUnlocked(name, args) {
 
         case "device_stop": return macosVmLifecycle.stop(args);
 
-        case "device_exec": {
-            const { deviceId, command, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const bridge = sshBridge(device, name);
-            if (bridge.error) return bridge.error;
-            const r = runHelperCommand(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, command], helperTimeoutMs, sshCommandOptions(device));
-            return jsonResult({ stdout: r.stdout, stderr: r.stderr, status: r.status, provider: "ssh" });
-        }
+        case "device_exec": return macosAccessResult(await macosAccess.handle(name, args));
 
         case "device_upload":
         case "device_download":
             return macosDesktopResult(await macosDesktop.handle(name, args));
 
-        case "device_screenshot": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const bridge = sshBridge(device, name);
-            if (bridge.error) return bridge.error;
-            const tempRoot = mkdtempSync(join(tmpdir(), "ccc-macos-screenshot-"));
-            const localPath = join(tempRoot, "screenshot.png");
-            const remotePath = `/tmp/ccc-${device.id}-${randomUUID()}-screenshot.png`;
-            const commandOptions = sshCommandOptions(device);
-            try {
-                const capture = runHelperCommand(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, macosScreenshotCommand(remotePath)], helperTimeoutMs, commandOptions);
-                if (capture.status !== 0) return fail(capture);
-                const copy = runHelperCommand(bridge.discovery.scp, [...scpBaseArgs(device), `${bridge.target}:${remotePath}`, localPath], helperTimeoutMs, commandOptions);
-                if (copy.status !== 0) return fail(copy);
-                return screenshotFileResult(localPath, "macos-vm-screenshot");
-            } finally {
-                runHelperCommand(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `rm -f -- ${shellQuote(remotePath)}`], Math.min(macosHelperTimeoutMs(helperTimeoutMs), 5000), commandOptions);
-                rmSync(tempRoot, { recursive: true, force: true });
-            }
-        }
+        case "device_screenshot": return macosAccessResult(await macosAccess.handle(name, args));
 
         case "device_click":
         case "device_double_click":
@@ -1071,26 +1082,7 @@ async function handleMacosToolUnlocked(name, args) {
         case "device_window_list":
             return macosDesktopResult(await macosDesktop.handle(name, args));
 
-        case "device_accessibility_snapshot": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            const maxDepth = Math.max(0, Math.min(Number.isFinite(Number(args.maxDepth)) ? Number(args.maxDepth) : 3, 8));
-            const maxNodes = Math.max(1, Math.min(Number.isFinite(Number(args.maxNodes)) ? Number(args.maxNodes) : 200, 1000));
-            const helper = macosHelperCommand(device, "accessibility_snapshot", [String(maxDepth), String(maxNodes)], helperTimeoutMs);
-            if (helper.error) return helper.error;
-            if (helper.result.status !== 0) return fail(helper.result);
-            const payload = macosHelperJson(helper.result.stdout);
-            return jsonResult({
-                provider: payload?.accessibility?.provider || payload?.provider || "macos-system-events",
-                remoteScriptPath: helper.remoteScriptPath,
-                accessibility: payload?.accessibility || null,
-                response: payload,
-                stdout: helper.result.stdout,
-                stderr: helper.result.stderr,
-                status: helper.result.status,
-            });
-        }
+        case "device_accessibility_snapshot": return macosAccessResult(await macosAccess.handle(name, args));
 
         case "device_record_video_status": {
             const { deviceId } = args;

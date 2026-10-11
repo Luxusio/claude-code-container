@@ -3,6 +3,7 @@ import { readPhysicalLeases as observationPhysicalLeases } from "../state/physic
 import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
 import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../application/lifecycle/windows-sandbox-stop.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
+import { createDesktopDeviceAccess } from "../application/desktop-device-access.mjs";
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -1560,6 +1561,41 @@ const windowsDesktopPorts = {
 };
 const windowsDesktop = createDesktopControlTransfer(windowsDesktopPorts);
 
+/** @type {import('../ports/desktop-device-access.mjs').WindowsDeviceAccessPorts<NonNullable<ReturnType<typeof findWindowsDevice>>,ReturnType<typeof ensureHelperWorkspace>>} */
+const windowsAccessPorts = {
+    variant: "windows",
+    target: id => findWindowsDevice(id),
+    publicDevice: device => withTargetStatus({ ...device, helper: windowsHelperMetadata(device) }),
+    backend: () => windowsBackend(),
+    request: (device, request, timeoutMs) => {
+        const { type, ...payload } = request;
+        return windowsHelperRequest(device, type, payload, timeoutMs);
+    },
+    screenshotPath: (helper, response) => verifiedHelperOutputPath(helper, response.imagePath || response.hostImagePath, `${response.id}.png`),
+    readScreenshot: path => {
+        try {
+            const image = readDeviceLabBinaryFile(path, "windows-helper-screenshot", WINDOWS_SANDBOX_SCREENSHOT_LIMIT_BYTES);
+            return image ? { kind: "image", data: image.toString("base64") } : { kind: "missing" };
+        } catch (error) {
+            const carrier = error !== null && (typeof error === "object" || typeof error === "function") ? error : null;
+            const reason = (carrier && "code" in carrier ? carrier.code : undefined)
+                || (carrier && "message" in carrier ? carrier.message : undefined) || String(error);
+            return { kind: "invalid", reason: String(reason) };
+        }
+    },
+};
+const windowsAccess = createDesktopDeviceAccess(windowsAccessPorts);
+
+/** @param {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} outcome */
+function windowsAccessResult(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.value);
+    if (outcome.kind === "text") return textResult(false, outcome.text);
+    if (outcome.kind === "native") return outcome.value;
+    if (outcome.kind === "command-failure") return fail(outcome.receipt);
+    return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
+}
+
 async function handleWindowsToolUnlocked(name, args) {
     const desktop = await windowsDesktop.handle(name, args);
     if (desktop !== undefined) {
@@ -1589,65 +1625,16 @@ async function handleWindowsToolUnlocked(name, args) {
 
         case "device_delete": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).delete(args);
 
-        case "device_status": {
-            const { deviceId } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            return jsonResult({ device: withTargetStatus({ ...device, helper: windowsHelperMetadata(device) }), backend: windowsBackend() });
-        }
+        case "device_status": return windowsAccessResult(await windowsAccess.handle(name, args));
 
         case "device_start": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).start(args);
 
         case "device_stop": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).stop(args);
 
-        case "device_exec": {
-            const { deviceId, command, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const result = await windowsHelperRequest(device, "exec", { command }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper exec failed");
-            return jsonResult({
-                stdout: result.response.stdout || "",
-                stderr: result.response.stderr || "",
-                status: result.response.status ?? 0,
-                provider: "windows-helper",
-            });
-        }
-
-        case "device_screenshot": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const result = await windowsHelperRequest(device, "screenshot", {}, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper screenshot failed");
-            const imagePath = verifiedHelperOutputPath(result.helper, result.response.imagePath || result.response.hostImagePath, `${result.response.id}.png`);
-            if (!imagePath) return textResult(false, "Windows helper screenshot output is missing or unsafe");
-            try {
-                const image = readDeviceLabBinaryFile(imagePath, "windows-helper-screenshot", WINDOWS_SANDBOX_SCREENSHOT_LIMIT_BYTES);
-                if (!image) return textResult(false, `Windows helper screenshot output missing: ${imagePath}`);
-                return { content: [{ type: "image", data: image.toString("base64"), mimeType: "image/png" }] };
-            } catch (error) {
-                return textResult(false, `Windows helper screenshot output is invalid: ${error?.code || error?.message || String(error)}`);
-            }
-        }
-
-        case "device_accessibility_snapshot": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const maxDepth = Math.max(0, Math.min(Number.isFinite(Number(args.maxDepth)) ? Number(args.maxDepth) : 3, 8));
-            const maxNodes = Math.max(1, Math.min(Number.isFinite(Number(args.maxNodes)) ? Number(args.maxNodes) : 200, 1000));
-            const result = await windowsHelperRequest(device, "accessibility_snapshot", { maxDepth, maxNodes }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper accessibility snapshot failed");
-            return jsonResult({
-                provider: result.response.accessibility?.provider || "windows-uiautomation",
-                accessibility: result.response.accessibility || null,
-                response: result.response,
-            });
-        }
+        case "device_exec":
+        case "device_screenshot":
+        case "device_accessibility_snapshot":
+            return windowsAccessResult(await windowsAccess.handle(name, args));
 
         case "device_record_video_status": {
             const { deviceId, helperTimeoutMs } = args;
