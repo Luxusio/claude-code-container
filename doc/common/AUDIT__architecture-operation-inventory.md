@@ -1,20 +1,41 @@
 # Architecture operation inventory
 
-Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Current source audited: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-Status: **incomplete inventory; source review remediation pending**. The formal
-review found missing observation routes, stale authority/reference records and
-an incomplete operation previously counted as migrated. No complete required
-TODO denominator or architecture implementation percentage is certified.
+Status: **current reference corrections await independent acceptance; confirmed
+source work remains**. The original nine review findings now have current
+ownership/reference corrections. Their historical reasons and source observations
+remain recorded separately. The broader original-scope audit found unfinished
+work in supported direct bindings and shared presentation contracts.
 
-The discovered rows currently contain 31 migrated, 16 partial and 172 pending
-items. The 219 discovered rows are a candidate set, not the complete required
-total. The nine review corrections have been applied locally and await independent
-re-review; these counts must not be used as the overall progress fraction.
-Current implementation scope is Codex and Claude; the retained OpenCode candidate
-is excluded. Unmerged source candidates and non-attesting review/QA results do
-not update this baseline's accepted numerator.
+The supported Codex/Claude scope contains 218 existing operations, with one
+retained OpenCode operation excluded. The progress overlay now qualifies
+**206/218 source operations (94.5%)**, with **12 partial**, no unmerged candidates
+and no additional operation IDs. The prior 218/218 overlay incorrectly treated
+accepted broker or bounded source contributions as complete across all required
+bindings. Those accepted commits and actual review/QA results remain valid for
+their recorded scope; their twelve whole-operation credits are withheld.
+
+This is a provisional code count, not full architecture acceptance. The bounded
+audit does not certify exhaustive remaining scope. Source scope closure,
+current production-universe reconciliation and denominator certification remain
+incomplete. Native, installed-image, reliability and formal acceptance remain
+separate from source accounting.
+
+| Confirmed source work | Existing operations | Current scope |
+| --- | ---: | --- |
+| Direct physical leases | 4 | Claim, heartbeat, prune, release and transaction compensation in `physical-lease-store.mjs` |
+| Direct physical attachment | 2 | Android/iOS attach and detach sequencing, publication and compensation |
+| Provider recording | 3 | Start, finalization and status in Android, iOS Simulator, macOS and Sandbox; broker desktop routes reach these children |
+| Legacy admin deletion | 1 | Exported synchronous `deleteOwnerDevice` binding under the existing admin-cleanup operation |
+| Shared result separation | 2 | Physical stop and device flow still expose MCP-shaped presentation results in shared applications |
+
+M01/M14 also need the existing dependency graph to cover MCP and installer core
+roots and current checked-MJS composition consumers. These are zero-operation
+obligations. They add no implementation credit or denominator rows. The six
+current source gaps and five prospective source tasks are recorded in the JSON.
 
 This is an unweighted count of operation cutovers, not an estimate of remaining
 effort or overall Goal acceptance. A small installation policy and a large
@@ -23,7 +44,11 @@ transport bindings do not add work items. Each row has one counting owner even
 when its requirements span packets. Review and QA of this inventory assess the
 accounting; they do not certify native execution or the completed architecture.
 
-| Packet | Total | Migrated | Partial | Pending |
+The following packet table is the **historical c284 baseline**, not current
+implementation progress. Current counts come from the accepted-source overlay
+and its current whole-binding qualifications in the [WBS](GUIDE__architecture-work-breakdown.md).
+
+| Historical packet | Total | Migrated | Partial | Pending |
 | --- | ---: | ---: | ---: | ---: |
 | M00 | 0 | 0 | 0 | 0 |
 | M01 | 0 | 0 | 0 | 0 |
@@ -46,7 +71,8 @@ foundation, inventory and verification requirements remain mapped in
 `coverage` and `acceptanceItems`. Zero operation rows does not mean those
 requirements are complete or excluded.
 
-Acceptance evidence is tracked separately. A migrated source policy does not
+The following acceptance table is also the historical snapshot. Acceptance
+evidence is tracked separately. A migrated source policy does not
 prove native execution, installed artifact parity or reliability. Each evidence
 claim is limited to its recorded revision and scope. The verified source entries
 below describe recorded bounded cutovers; they are not verified whole-packet
@@ -61,12 +87,15 @@ results, and those results do not certify subsequent changes.
 | native | 0 | 15 | 0 | 0 |
 | reliability | 0 | 15 | 0 | 0 |
 
-To reproduce the discovered counts, count `workItems` once by `id` and group by
-`implementationStatus`. Publish a completion fraction only after source scope
-is closed and independently accepted. For packet counts, group
-by `countingOwner`, not `packets`. Acceptance totals group `acceptanceItems` by
-`kind` and `status`; they use a separate denominator. `closure` records the
-source-mapping claim and its review status, not an architecture acceptance gate.
+To reproduce historical counts, count `workItems` once by `id` and group by
+`implementationStatus`. For current provisional source counts, apply the
+progress overlay through `node scripts/render-architecture-progress.mjs`.
+Partial required bindings receive no whole-operation credit. For packet counts,
+group by `countingOwner`, not `packets`. Acceptance totals group
+`acceptanceItems` by `kind` and `status`; they use a separate denominator.
+`closure` records source-mapping and review status, not full architecture
+acceptance. No certified percentage is published before exhaustive source scope
+is independently accepted.
 
 After each cutover, update the affected stable IDs, bindings, supporting source
 and evidence, then recompute this audit. New or changed operation boundaries

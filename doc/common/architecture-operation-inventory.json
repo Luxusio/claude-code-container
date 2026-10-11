@@ -132,7 +132,7 @@
   },
   "closure": {
     "exhaustive": false,
-    "status": "source-remediation-awaiting-independent-review",
+    "status": "current-reference-corrections-and-confirmed-source-gaps-awaiting-acceptance",
     "blockingGapIds": [
       "GAP-review-create-completion",
       "GAP-review-observation-routes",
@@ -142,12 +142,18 @@
       "GAP-review-binding-authority",
       "GAP-review-semantic-references",
       "GAP-review-closure-text",
-      "GAP-review-image-owner"
+      "GAP-review-image-owner",
+      "GAP-source-direct-physical-leases",
+      "GAP-source-direct-physical-attachment",
+      "GAP-source-direct-recording",
+      "GAP-source-legacy-admin-delete",
+      "GAP-source-shared-result-separation",
+      "GAP-source-core-enforcement"
     ],
     "totals": null,
     "sourceScopeClosed": false,
-    "countCertification": "not certified; local source/data corrections require independent coordinator re-review",
-    "reason": "Nine formal source/accounting corrections are recorded against reopened baseline source. Explicit review gaps remain until independent re-review accepts the source denominator; native/emitted/acceptance scopes remain unchanged."
+    "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
+    "reason": "Historical nine review findings have current reference corrections pending independent current acceptance. A separate original-scope audit at59c019 confirms twelve existing operations remain partial across direct workflow or shared-result contracts, plus zero-operation enforcement obligations. No new operation IDs; historical accepted contributions retained. Exhaustive source scope, native and formal acceptance remain unverified."
   },
   "provenance": {
     "historicalLedger": {
@@ -1428,7 +1434,7 @@
       "businessBoundary": "Under mount-identity family guard, refuse namespace collision, prepare exact run arguments, assert sources, create and validate returned immutable ID/mounts; compensate exact created ID only for source/mount verification failure. Synchronization and finish occur after that catch.",
       "completionCriteria": "Complete accepted create lifecycle policy inward with exact 64-hex returned ID and absent-after-compensation proof; retain original catch boundary and native preparation/finish authority.",
       "implementationStatus": "partial",
-      "statusReason": "Verified bounded creation orchestration is inward, but assigned launch-argument, relabel and mount policy remains legacy. Preserve bounded source evidence without crediting the whole operation.",
+      "statusReason": "Accepted inward create orchestration and launch-argument/mount/relabel decisions; native docker composition supplies finite runtime/filesystem leaves. Current source references reconciled; universe/native certification remains unproven.",
       "sources": [
         {
           "path": "src/application/container-create-lifecycle.ts",
@@ -1820,7 +1826,27 @@
       "currentCallTrace": [
         "startProjectContainerLocked runs existingLifecycle then createNativeContainerCreateLifecycle.run only for continue-to-create.",
         "create application holds mount-identity family guard, observes namespace/collision, prepares args, asserts sources, runs create and validates exact returned64hex ID/mounts before synchronization/finish.",
-        "Native compensation uses captured create CLI rm -f exact ID then explicit inspect-not-found proof."
+        "Native compensation uses captured create CLI rm -f exact ID then explicit inspect-not-found proof.",
+        {
+          "scope": "Current accepted source ownership; original sources/handlers/proofs remain historical static observations",
+          "sourceTrace": [
+            {
+              "path": "src/application/container-launch-arguments.ts",
+              "symbol": "createContainerLaunchArguments",
+              "line": 74,
+              "gitBlob": "9a497355bd69df326a38cea0567350999b179807"
+            },
+            {
+              "path": "src/docker.ts",
+              "symbol": "buildDockerRunArgs",
+              "line": 794,
+              "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f"
+            }
+          ],
+          "bindingIds": [
+            "BIND-source-container-create"
+          ]
+        }
       ],
       "boundaryReview": "Current wording compensation on failed readiness/setup is too broad: catch covers created source/mount verification; later synchronization/finish failures have distinct native authority. Narrow to accepted creation slice.",
       "inventoryGaps": [],
@@ -8455,7 +8481,7 @@
       "businessBoundary": "Initialize from host; bounded text TARGETS; image-first poll; digest baselines; re-read local before overwriting.",
       "completionCriteria": "Preserve host-first restart, oversized local refusal, concurrent local copy and no upload echo; isolate policy from curl/xclip/process effects.",
       "implementationStatus": "pending",
-      "statusReason": "Historical baseline implementationStatus retained. Current accepted Source9a921 inward synchronization and canonical native CCC execution binding are independently Code/Docs reviewed and ordinary676/build/shipping/delivery input-qualified; counted once in clipboard-x11-source-closure. Standalone Containerfile baked policy fix and native/formal certification remain separate delivery gates.",
+      "statusReason": "Historical baseline implementationStatus retained. Accepted9a921 inward synchronization and canonical CCC execution binding are independently reviewed/676-case input-qualified and counted once. Accepted4ad7 three-recipe asset directory/inclusion fix passed actual Docker image/ccc inspections, current npm/Unix payload and protected FF. Native Podman/Windows/macOS, formal and exhaustive certification remain separate.",
       "sources": [
         {
           "path": "scripts/ccc-x11-bridge",
@@ -8711,7 +8737,24 @@
               "gitBlob": "b9fc3f4d0d72b3110777d3ccec42170a92df45e3",
               "line": 154
             }
-          ]
+          ],
+          "currentDistributionAcceptance": {
+            "sourceCommit": "4ad7ec4bd2e62926901d5b49f8659b27bcd72aee",
+            "taskId": "TASK__architecture-x11-containerfile-asset",
+            "scope": "Actual local Docker builds of Containerfile, Dockerfile and Dockerfile.distribution; installed bridge/policy readable as ccc, root parent0755/policy0644, exact normalized bytes/Bash syntax; current npm/materialized Unix payload and verified protected main FF. Native Podman/Windows/macOS/formal/full Goal unverified.",
+            "reviewQa": "Actual independent current CodeDEEP/Security and sole image/shipping QA PASS; automatic records absent after one verify and exact park.",
+            "recipes": [
+              "Containerfile",
+              "Dockerfile",
+              "Dockerfile.distribution"
+            ],
+            "sourcePins": [
+              "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+              "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+              "1c458f7d3d5ccf4493fec1288f3a71cf98b1339abfa1376169587dc3a3ddc9f2"
+            ],
+            "nativePodmanCertified": false
+          }
         }
       ],
       "aliases": [],
@@ -8884,9 +8927,44 @@
             }
           ],
           "exactBindingSource": "container-exec syncClipboard before bridge launch -> syncClipboardShims policy-first staging -> bridge_main -> bridge_cycle -> clipboard_x11_sync_cycle",
-          "distributionException": "Accepted Containerfile does not bake the policy asset. Canonical CCC exec stages policy before bridge launch; standalone Containerfile baked-policy coverage is unverified and a separate Source fix is queued."
+          "distributionException": "Historical9a921 standalone recipe omission is resolved by accepted4ad7 fixed asset/directory Source and actual three Docker image inspections. Native Podman certification remains unverified.",
+          "historicalDistributionExceptionAt9a921": "Accepted Containerfile does not bake the policy asset. Canonical CCC exec stages policy before bridge launch; standalone Containerfile baked-policy coverage is unverified and a separate Source fix is queued.",
+          "currentDistributionAcceptance": {
+            "sourceCommit": "4ad7ec4bd2e62926901d5b49f8659b27bcd72aee",
+            "taskId": "TASK__architecture-x11-containerfile-asset",
+            "scope": "Actual local Docker builds of Containerfile, Dockerfile and Dockerfile.distribution; installed bridge/policy readable as ccc, root parent0755/policy0644, exact normalized bytes/Bash syntax; current npm/materialized Unix payload and verified protected main FF. Native Podman/Windows/macOS/formal/full Goal unverified.",
+            "reviewQa": "Actual independent current CodeDEEP/Security and sole image/shipping QA PASS; automatic records absent after one verify and exact park.",
+            "recipes": [
+              "Containerfile",
+              "Dockerfile",
+              "Dockerfile.distribution"
+            ],
+            "sourcePins": [
+              "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+              "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+              "1c458f7d3d5ccf4493fec1288f3a71cf98b1339abfa1376169587dc3a3ddc9f2"
+            ],
+            "nativePodmanCertified": false
+          }
         }
-      ]
+      ],
+      "currentDistributionAcceptance": {
+        "sourceCommit": "4ad7ec4bd2e62926901d5b49f8659b27bcd72aee",
+        "taskId": "TASK__architecture-x11-containerfile-asset",
+        "scope": "Actual local Docker builds of Containerfile, Dockerfile and Dockerfile.distribution; installed bridge/policy readable as ccc, root parent0755/policy0644, exact normalized bytes/Bash syntax; current npm/materialized Unix payload and verified protected main FF. Native Podman/Windows/macOS/formal/full Goal unverified.",
+        "reviewQa": "Actual independent current CodeDEEP/Security and sole image/shipping QA PASS; automatic records absent after one verify and exact park.",
+        "recipes": [
+          "Containerfile",
+          "Dockerfile",
+          "Dockerfile.distribution"
+        ],
+        "sourcePins": [
+          "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+          "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+          "1c458f7d3d5ccf4493fec1288f3a71cf98b1339abfa1376169587dc3a3ddc9f2"
+        ],
+        "nativePodmanCertified": false
+      }
     },
     {
       "id": "OP-codex-launch",
@@ -11559,7 +11637,16 @@
           "lockCategories": [],
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
         }
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "The retained exported synchronous deleteOwnerDevice/devicesCli binding still owns delete eligibility, provider cleanup, lease/claim release and conditional removal."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "The retained exported synchronous deleteOwnerDevice/devicesCli binding still owns delete eligibility, provider cleanup, lease/claim release and conditional removal.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-device-admin-prune",
@@ -13128,7 +13215,7 @@
           }
         ],
         "scopeNotes": [
-          "Branch proof: platform/powershell641\u2013650; root653/732\u2013735; receipt659/783\u2013785; diagnosticreadiness660\u2013663; guardselection738,parent748\u2013749,guard756,options763; setup/fabric757\u2013761.",
+          "Branch proof: platform/powershell641–650; root653/732–735; receipt659/783–785; diagnosticreadiness660–663; guardselection738,parent748–749,guard756,options763; setup/fabric757–761.",
           "Binding owner explicit Windows host confirmation+separate evaluation flag; lockOwner hosthyper-v.mutation.lock across elevated setup/fabric ensure."
         ],
         "sourceUnknowns": [],
@@ -14733,7 +14820,22 @@
                 "symbol": "mutateOwnerDevices",
                 "line": 5497,
                 "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-                "kind": "authorityTrace"
+                "kind": "authorityTrace",
+                "currentSourceTrace": [
+                  {
+                    "path": "packages/device-lab/src/device-lab-broker.ts",
+                    "symbol": "ownerRepository",
+                    "line": 4044,
+                    "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                  },
+                  {
+                    "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                    "symbol": "createBrokerOwnerRepository",
+                    "line": 9,
+                    "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                  }
+                ],
+                "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
               },
               {
                 "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -14861,7 +14963,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "authorityTrace"
+              "kind": "authorityTrace",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -24149,11 +24266,11 @@
       ],
       "countingOwner": "M03",
       "operation": "Device inventory",
-      "policyOwner": "device-lab-mcp/src/server.mjs",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-inventory.ts",
       "businessBoundary": "Observe focused or aggregate provider inventory for devices view:available: current owner definitions plus backend-native candidates/prerequisites/creation choices where implemented. Preserve provider-specific returned scope and failure/incomplete markers; no provider startup. Broker iOS/Sandbox/macOS/HyperV focused variants currently return owner definitions only, while Android adds host candidates or SDK choices.",
       "completionCriteria": "Move the complete recorded definition/listing or available-candidate inventory policy inward with explicit state/context/native observations; preserve exact route owner, provider variants, errors and direct iOS metadata reconciliation.",
       "implementationStatus": "pending",
-      "statusReason": "Existing workflow remains in legacy/effect-facing implementation; this records required migration, not a missing product feature.",
+      "statusReason": "Accepted owned-definition versus available/native inventory application policies; native discovery and guarded iOS metadata observation remain bound leaves.",
       "sources": [
         {
           "path": "device-lab-mcp/src/server.mjs",
@@ -24815,7 +24932,46 @@
       "currentCallTrace": [
         "MCP devices view:available with backend -> private device_inventory -> focused direct/broker provider handler",
         "MCP devices view:available without backend -> availableDevices two-worker eight-backend aggregate",
-        "broker.device.tool.invoke params.tool=device_inventory -> invokeDeviceInventory"
+        "broker.device.tool.invoke params.tool=device_inventory -> invokeDeviceInventory",
+        {
+          "scope": "Current accepted source ownership; original sources/handlers/proofs remain historical static observations",
+          "sourceTrace": [
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "observeOwnerInventory",
+              "line": 3370,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "observeFocusedInventory",
+              "line": 3462,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-inventory.ts",
+              "symbol": "createOwnerInventory",
+              "line": 4,
+              "gitBlob": "1ab482e1e5b44af593f73a399de072d054db6872"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-inventory.ts",
+              "symbol": "createFocusedInventory",
+              "line": 32,
+              "gitBlob": "1ab482e1e5b44af593f73a399de072d054db6872"
+            }
+          ],
+          "bindingIds": [
+            "BIND-broker-android-emulator-device_inventory",
+            "BIND-broker-android-device-device_inventory",
+            "BIND-broker-ios-simulator-device_inventory",
+            "BIND-broker-ios-device-device_inventory",
+            "BIND-broker-windows-sandbox-device_inventory",
+            "BIND-broker-macos-vm-device_inventory",
+            "BIND-broker-windows-vm-device_inventory",
+            "BIND-broker-linux-vm-device_inventory"
+          ]
+        }
       ],
       "bindingIds": [
         "BIND-broker-android-emulator-device_inventory",
@@ -25192,8 +25348,8 @@
         }
       ],
       "currentCallTrace": [
-        "devices/view=backends normalized discovery -> handleDeviceBackends. optsOutOfImplicitBroker forces brokerStatus autolaunch:false/probe:false:430 and direct report. Default detailfalse reports container display+linux only; detailtrue computes local provider descriptors. Successful broker merge:442; failed broker:459\u2013484 returns okfalse/container backends without promoting mutation fallback.",
-        "directBackendList:388\u2013410 observes Android/iOS/Sandbox/WindowsVM/macOS/Linux descriptors. Descriptor helpers observe FS/env/executable availability; no owner state writers, provider startups, or resource lock.",
+        "devices/view=backends normalized discovery -> handleDeviceBackends. optsOutOfImplicitBroker forces brokerStatus autolaunch:false/probe:false:430 and direct report. Default detailfalse reports container display+linux only; detailtrue computes local provider descriptors. Successful broker merge:442; failed broker:459–484 returns okfalse/container backends without promoting mutation fallback.",
+        "directBackendList:388–410 observes Android/iOS/Sandbox/WindowsVM/macOS/Linux descriptors. Descriptor helpers observe FS/env/executable availability; no owner state writers, provider startups, or resource lock.",
         "broker.backends authenticated dispatch:16440 -> hostBackends:3556; per-provider executable observations; Windows readiness query:3584 bounded <=15s and Ubuntu metadata-only cache advisory.",
         "Method absent from DEVICE_BROKER_MUTATING_RPC_METHODS:576; brokerRpcMutatesOwnerState:16542 returnsfalse; HTTP branch:16705 bypasses owner mutation tail. Common transport setup delegated separately."
       ],
@@ -25703,7 +25859,16 @@
       },
       "bindingIds": [
         "BIND-lease-claim-broker-lease-claim"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct provider physical-lease-store.mjs claim/reuse and aggregate/authoritative-lock transaction policy remain outside application."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct provider physical-lease-store.mjs claim/reuse and aggregate/authoritative-lock transaction policy remain outside application.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-lease-heartbeat",
@@ -25958,7 +26123,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-lease-heartbeat-broker-lease-heartbeat"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct provider physical-lease-store.mjs expiry, heartbeat eligibility and timer lifecycle policy remain outside application."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct provider physical-lease-store.mjs expiry, heartbeat eligibility and timer lifecycle policy remain outside application.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-lease-prune",
@@ -26200,7 +26374,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-lease-prune-broker-lease-prune"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct provider physical-lease-store.mjs prune admission, authoritative reread and compensation policy remain outside application."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct provider physical-lease-store.mjs prune admission, authoritative reread and compensation policy remain outside application.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-lease-release",
@@ -26442,7 +26625,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-lease-release-broker-lease-release"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct provider physical-lease-store.mjs exact release, residue and release-with-mutation/rollback policy remain outside application."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct provider physical-lease-store.mjs exact release, residue and release-with-mutation/rollback policy remain outside application.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-physical-attach",
@@ -26771,7 +26963,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-physical-attach-broker-physical-attach"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Android/iOS direct device_attach still own discovery/selection, claim, publication and compensation sequencing."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Android/iOS direct device_attach still own discovery/selection, claim, publication and compensation sequencing.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-physical-detach",
@@ -27114,7 +27315,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-physical-detach-broker-physical-detach"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Android/iOS direct device_detach still own lifecycle admission, auxiliary cleanup, CAS/lease removal and rollback sequencing."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Android/iOS direct device_detach still own lifecycle admission, auxiliary cleanup, CAS/lease removal and rollback sequencing.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-apple-trust-diagnostic",
@@ -27406,7 +27616,7 @@
         "brokerApple -> brokerRpcRequest; not imported/called by MCP server and not advertised as standalone public MCP tool. Internal real/test broker-api-client fixture invokes it.",
         "validateAppleTrustParams:7053 (status/pair/connect), then appleTrustStatus:7355 executes xcrun xctrace list devices only:7359 under configured timeout/outputbound, parses visible devices:7033 and composes diagnostics:7079.",
         "status200; connect200 only selected matchingUDID WiFi and not unavailable -> alreadyNetworkVisible/manualRequiredfalse; otherwise pair/connect409 ios-apple-pairing-manual-required. No native pair/connect command.",
-        "Despite observation-only handler, broker.apple.trust is mutation-set member:584, so HTTP:16705\u201316707 awaits owner tail serializeBrokerOwnerMutation:16556. Release/finally deletes tail only if still current:16564\u201316567."
+        "Despite observation-only handler, broker.apple.trust is mutation-set member:584, so HTTP:16705–16707 awaits owner tail serializeBrokerOwnerMutation:16556. Release/finally deletes tail only if still current:16564–16567."
       ],
       "diagnosticBindingVariants": [
         {
@@ -27506,7 +27716,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "kind": "authorityTrace",
-              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -27875,7 +28100,22 @@
                 "symbol": "mutateOwnerDevices",
                 "line": 5497,
                 "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-                "kind": "authorityTrace"
+                "kind": "authorityTrace",
+                "currentSourceTrace": [
+                  {
+                    "path": "packages/device-lab/src/device-lab-broker.ts",
+                    "symbol": "ownerRepository",
+                    "line": 4044,
+                    "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                  },
+                  {
+                    "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                    "symbol": "createBrokerOwnerRepository",
+                    "line": 9,
+                    "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                  }
+                ],
+                "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
               }
             ],
             "lock": [
@@ -28079,7 +28319,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "authorityTrace"
+              "kind": "authorityTrace",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ],
           "lock": [
@@ -28302,7 +28557,22 @@
                 "symbol": "mutateOwnerDevices",
                 "line": 5497,
                 "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-                "kind": "authorityTrace"
+                "kind": "authorityTrace",
+                "currentSourceTrace": [
+                  {
+                    "path": "packages/device-lab/src/device-lab-broker.ts",
+                    "symbol": "ownerRepository",
+                    "line": 4044,
+                    "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                  },
+                  {
+                    "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                    "symbol": "createBrokerOwnerRepository",
+                    "line": 9,
+                    "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                  }
+                ],
+                "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
               }
             ],
             "lock": [
@@ -28432,9 +28702,9 @@
                 }
               ],
               "branchReferences": [
-                "windows-sandbox2269\u20132303/record_start2285",
-                "windows-helper.ps1 record_start246\u2013274",
-                "macos-vm2325\u20132391/detachedSSH2342\u20132366/rollback2379\u20132391"
+                "windows-sandbox2269–2303/record_start2285",
+                "windows-helper.ps1 record_start246–274",
+                "macos-vm2325–2391/detachedSSH2342–2366/rollback2379–2391"
               ]
             }
           }
@@ -28448,7 +28718,16 @@
       },
       "bindingIds": [
         "BIND-recording-start-device_record_video_start"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct Android/emulator/iOS Simulator/macOS/Sandbox recording handlers still own eligibility, launch/publication and compensation; broker desktop routes reach those children."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct Android/emulator/iOS Simulator/macOS/Sandbox recording handlers still own eligibility, launch/publication and compensation; broker desktop routes reach those children.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-recording-finalize",
@@ -28517,7 +28796,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "authorityTrace"
+              "kind": "authorityTrace",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ]
         },
@@ -28825,7 +29119,22 @@
                 "symbol": "mutateOwnerDevices",
                 "line": 5497,
                 "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-                "kind": "authorityTrace"
+                "kind": "authorityTrace",
+                "currentSourceTrace": [
+                  {
+                    "path": "packages/device-lab/src/device-lab-broker.ts",
+                    "symbol": "ownerRepository",
+                    "line": 4044,
+                    "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                  },
+                  {
+                    "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                    "symbol": "createBrokerOwnerRepository",
+                    "line": 9,
+                    "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                  }
+                ],
+                "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
               }
             ],
             "lock": [
@@ -29029,7 +29338,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "authorityTrace"
+              "kind": "authorityTrace",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ],
           "lock": [
@@ -29177,7 +29501,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-recording-finalize-device_record_video_stop"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct recording handlers still own generation finalization and artifact-copy/publication failure decisions across supported providers."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct recording handlers still own generation finalization and artifact-copy/publication failure decisions across supported providers.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-recording-status",
@@ -29246,7 +29579,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "authorityTrace"
+              "kind": "authorityTrace",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ]
         },
@@ -29553,7 +29901,22 @@
                 "symbol": "mutateOwnerDevices",
                 "line": 5497,
                 "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-                "kind": "authorityTrace"
+                "kind": "authorityTrace",
+                "currentSourceTrace": [
+                  {
+                    "path": "packages/device-lab/src/device-lab-broker.ts",
+                    "symbol": "ownerRepository",
+                    "line": 4044,
+                    "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                  },
+                  {
+                    "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                    "symbol": "createBrokerOwnerRepository",
+                    "line": 9,
+                    "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                  }
+                ],
+                "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
               }
             ],
             "lock": {
@@ -29748,7 +30111,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "authorityTrace"
+              "kind": "authorityTrace",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ],
           "lock": {
@@ -29887,7 +30265,16 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-recording-status-device_record_video_status"
-      ]
+      ],
+      "sourceImplementationRemainingWork": [
+        "Direct recording handlers still own recording liveness/current-generation status reconciliation decisions."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Direct recording handlers still own recording liveness/current-generation status reconciliation decisions.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-appium-server-start",
@@ -33058,7 +33445,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "kind": "authorityTrace",
-              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -33119,7 +33521,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "kind": "authorityTrace",
-              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ]
         },
@@ -33309,7 +33726,7 @@
             "section": "native process/state support roles"
           },
           {
-            "source": "cleanupOwnerRuntime:9118\u20139145",
+            "source": "cleanupOwnerRuntime:9118–9145",
             "detail": "native outside short mutation; exact-recordCAS; lease rollback"
           }
         ],
@@ -33349,11 +33766,11 @@
       ],
       "countingOwner": "M06",
       "operation": "Import or reuse exact CCC Hyper-V VHDX image",
-      "policyOwner": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/hyper-v-image-preparation.ts",
       "businessBoundary": "Stage a bounded regular project-root VHDX with descriptor/fullhash identity; reject foreign cache publication; inspect VHD and partition/generation; owned mount/dismount/readback; typed copy/full verification and exclusive atomic base/manifest publication with exact inode compensation.",
       "completionCriteria": "Complete named policy family decomposition and inward cutover preserving all reachable actions, provider differences and resource fencing.",
       "implementationStatus": "pending",
-      "statusReason": "Whole import/store policy remains effect-facing coordination; correcting source anchor does not certify inward migration.",
+      "statusReason": "Accepted inward image preparation mediator owns resolution/import decisions behind native image-store mechanisms; catalog/license receipt support remains distinct. No image-build/native certification inferred.",
       "sources": [
         {
           "path": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
@@ -33729,6 +34146,27 @@
           ],
           "lockCategories": [],
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
+        },
+        {
+          "scope": "Current accepted source ownership; original sources/handlers/proofs remain historical static observations",
+          "sourceTrace": [
+            {
+              "path": "packages/device-lab/src/device-lab/application/hyper-v-image-preparation.ts",
+              "symbol": "createHyperVImagePreparation",
+              "line": 13,
+              "gitBlob": "5125efb52ec12ab6abe265c0be5e65f4bba9e949"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
+              "symbol": "resolveHyperVImageForCreate",
+              "line": 628,
+              "gitBlob": "69b0b6624d0e19c7dde15a93abbadbd040b47282"
+            }
+          ],
+          "bindingIds": [
+            "BIND-source-hyperv-image-import",
+            "BIND-hv-hyperv-image-import-0"
+          ]
         }
       ],
       "authorityRef": "hyperv-image",
@@ -41882,7 +42320,7 @@
       },
       "requiredBindings": [
         {
-          "id": "BIND-broker-native-windows-vm-hyperv-snapshot-list",
+          "id": "BIND-broker-windows-vm-device_snapshot_list",
           "backend": "windows-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -41912,10 +42350,11 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-windows-vm-hyperv-snapshot-list"
         },
         {
-          "id": "BIND-broker-native-linux-vm-hyperv-snapshot-list",
+          "id": "BIND-broker-linux-vm-device_snapshot_list",
           "backend": "linux-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -41945,7 +42384,8 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-linux-vm-hyperv-snapshot-list"
         }
       ],
       "aliases": [],
@@ -42098,8 +42538,8 @@
         "Repair is invoked before snapshot actions and relevant lifecycle operations, and following failed snapshot effects; no public repair tool."
       ],
       "bindingIds": [
-        "BIND-broker-native-windows-vm-hyperv-snapshot-list",
-        "BIND-broker-native-linux-vm-hyperv-snapshot-list"
+        "BIND-broker-windows-vm-device_snapshot_list",
+        "BIND-broker-linux-vm-device_snapshot_list"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -42267,7 +42707,7 @@
       },
       "requiredBindings": [
         {
-          "id": "BIND-broker-native-windows-vm-hyperv-snapshot-create",
+          "id": "BIND-broker-windows-vm-device_snapshot_create",
           "backend": "windows-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -42297,10 +42737,11 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-windows-vm-hyperv-snapshot-create"
         },
         {
-          "id": "BIND-broker-native-linux-vm-hyperv-snapshot-create",
+          "id": "BIND-broker-linux-vm-device_snapshot_create",
           "backend": "linux-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -42330,7 +42771,8 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-linux-vm-hyperv-snapshot-create"
         }
       ],
       "aliases": [],
@@ -42483,8 +42925,8 @@
         "Repair is invoked before snapshot actions and relevant lifecycle operations, and following failed snapshot effects; no public repair tool."
       ],
       "bindingIds": [
-        "BIND-broker-native-windows-vm-hyperv-snapshot-create",
-        "BIND-broker-native-linux-vm-hyperv-snapshot-create"
+        "BIND-broker-windows-vm-device_snapshot_create",
+        "BIND-broker-linux-vm-device_snapshot_create"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -42652,7 +43094,7 @@
       },
       "requiredBindings": [
         {
-          "id": "BIND-broker-native-windows-vm-hyperv-snapshot-restore",
+          "id": "BIND-broker-windows-vm-device_snapshot_restore",
           "backend": "windows-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -42682,10 +43124,11 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-windows-vm-hyperv-snapshot-restore"
         },
         {
-          "id": "BIND-broker-native-linux-vm-hyperv-snapshot-restore",
+          "id": "BIND-broker-linux-vm-device_snapshot_restore",
           "backend": "linux-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -42715,7 +43158,8 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-linux-vm-hyperv-snapshot-restore"
         }
       ],
       "aliases": [],
@@ -42868,8 +43312,8 @@
         "Repair is invoked before snapshot actions and relevant lifecycle operations, and following failed snapshot effects; no public repair tool."
       ],
       "bindingIds": [
-        "BIND-broker-native-windows-vm-hyperv-snapshot-restore",
-        "BIND-broker-native-linux-vm-hyperv-snapshot-restore"
+        "BIND-broker-windows-vm-device_snapshot_restore",
+        "BIND-broker-linux-vm-device_snapshot_restore"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -43037,7 +43481,7 @@
       },
       "requiredBindings": [
         {
-          "id": "BIND-broker-native-windows-vm-hyperv-snapshot-delete",
+          "id": "BIND-broker-windows-vm-device_snapshot_delete",
           "backend": "windows-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -43067,10 +43511,11 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-windows-vm-hyperv-snapshot-delete"
         },
         {
-          "id": "BIND-broker-native-linux-vm-hyperv-snapshot-delete",
+          "id": "BIND-broker-linux-vm-device_snapshot_delete",
           "backend": "linux-vm",
           "provider": "hyper-v",
           "executor": "broker-native",
@@ -43100,7 +43545,8 @@
           "closureStatus": "source-route-traced",
           "handlerProof": "Broker supports windows-vm/linux-vm Hyper-V and selects exact native path, with incarnation and owner operation lock.",
           "invariantAcceptance": "unverified",
-          "nativeAcceptance": "unverified"
+          "nativeAcceptance": "unverified",
+          "proposedBindingId": "BIND-broker-native-linux-vm-hyperv-snapshot-delete"
         }
       ],
       "aliases": [],
@@ -43253,8 +43699,8 @@
         "Repair is invoked before snapshot actions and relevant lifecycle operations, and following failed snapshot effects; no public repair tool."
       ],
       "bindingIds": [
-        "BIND-broker-native-windows-vm-hyperv-snapshot-delete",
-        "BIND-broker-native-linux-vm-hyperv-snapshot-delete"
+        "BIND-broker-windows-vm-device_snapshot_delete",
+        "BIND-broker-linux-vm-device_snapshot_delete"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -87723,7 +88169,7 @@
         },
         "lock": {
           "disposition": "retained",
-          "reason": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+          "reason": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
           "sources": [
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -87808,7 +88254,7 @@
             }
           ],
           "authorityOwner": "explicit cwd/profile and optional expectedOwnerId; no HTTP registration route",
-          "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+          "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
           "supportDisposition": "supported",
           "closureStatus": "source-route-and-handler-traced",
           "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -87883,16 +88329,16 @@
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
       "currentCallTrace": [
-        "resolve cwd->canonical mount/profile identity:1219\u20131223; owner mismatch rejected before mutation.",
-        "ensure 0700 directory chain with link/non-directory rejection:1140\u20131161.",
-        "build version1 ownerId/basis/mount/hostPath/profile/registeredAt:1227\u20131234.",
-        "lock registrationFile.lock:1236; safe read existing:1237; equivalent basis/mount/profile returns existing and preserves its hostProjectPath:1238\u20131241; else atomic publish:1242."
+        "resolve cwd->canonical mount/profile identity:1219–1223; owner mismatch rejected before mutation.",
+        "ensure 0700 directory chain with link/non-directory rejection:1140–1161.",
+        "build version1 ownerId/basis/mount/hostPath/profile/registeredAt:1227–1234.",
+        "lock registrationFile.lock:1236; safe read existing:1237; equivalent basis/mount/profile returns existing and preserves its hostProjectPath:1238–1241; else atomic publish:1242."
       ],
       "authoritySourceTrace": {
         "executor": "trusted local host broker composition",
         "owner": "explicit cwd/profile and optional expectedOwnerId; no HTTP registration route",
         "state": "homedir/.ccc/devices/broker/owners/<16hexowner>.json via deviceBrokerOwnerRegistrationFile:1165; validator:1184.",
-        "lock": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+        "lock": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
         "journal": "none; current registration authority record",
         "process": "none; broker supervision launches host process separately"
       },
@@ -87980,7 +88426,7 @@
       },
       "authority": {
         "executor": "host HTTP broker bootstrap endpoint",
-        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
+        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
         "state": {
           "disposition": "retained",
           "reason": "Reads broker/owners owner record without registering it; auth broker/auth/<owner>.json via deviceBrokerAuthSecretFile:1433. Secret/token not returned.",
@@ -88025,7 +88471,7 @@
         },
         "lock": {
           "disposition": "retained",
-          "reason": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+          "reason": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
           "sources": [
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -88103,8 +88549,8 @@
               "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
             }
           ],
-          "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
-          "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+          "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
+          "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
           "supportDisposition": "supported",
           "closureStatus": "source-route-and-handler-traced",
           "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -88205,16 +88651,16 @@
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
       "currentCallTrace": [
-        "POST-only:16604\u201316606; bounded/timed body parser:16608\u201316611.",
-        "mount/profile grammar and identity:16613\u201316628; safe registered owner read and exact basis/mount/profile match:16631\u201316643.",
-        "deviceBrokerOwnerSecret:16646 conditionally ensures auth; invalid provision returns503, then owner identity response only:16651\u201316658.",
-        "existing valid secret early return:1438\u20131442; missing/invalid ensures dirs, authFile.lock, concurrent recheck, stale artifact removal/quarantine:1445\u20131452; random32byte secret version/ownerId/createdAt publication:1455\u20131461; quarantine cleanup finally:1463\u20131464."
+        "POST-only:16604–16606; bounded/timed body parser:16608–16611.",
+        "mount/profile grammar and identity:16613–16628; safe registered owner read and exact basis/mount/profile match:16631–16643.",
+        "deviceBrokerOwnerSecret:16646 conditionally ensures auth; invalid provision returns503, then owner identity response only:16651–16658.",
+        "existing valid secret early return:1438–1442; missing/invalid ensures dirs, authFile.lock, concurrent recheck, stale artifact removal/quarantine:1445–1452; random32byte secret version/ownerId/createdAt publication:1455–1461; quarantine cleanup finally:1463–1464."
       ],
       "authoritySourceTrace": {
         "executor": "host HTTP broker bootstrap endpoint",
-        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
+        "owner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
         "state": "Reads broker/owners owner record without registering it; auth broker/auth/<owner>.json via deviceBrokerAuthSecretFile:1433. Secret/token not returned.",
-        "lock": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+        "lock": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
         "journal": "No intent journal; invalid auth quarantine transient recovery.",
         "process": "No launch or signaling; shared lock owner observation only"
       },
@@ -88547,19 +88993,19 @@
         {
           "route": "ccc devices / ccc devices status",
           "scope": "current cwd/profile owner only",
-          "trace": "devicesCliAsync:2356 -> fallback devicesCli:2450 -> default status:2263 -> formatDevicesStatus:2266\u20132268",
+          "trace": "devicesCliAsync:2356 -> fallback devicesCli:2450 -> default status:2263 -> formatDevicesStatus:2266–2268",
           "returnShape": "deviceLabSnapshot:1942 -> {ownerId,backends}; each backend devices/tools/missing/available; formatDevicesStatus:2118 header/count/prerequisite text"
         },
         {
           "route": "ccc devices list",
           "scope": "current cwd/profile owner only",
-          "trace": "devicesCli:2269\u20132273 args.length===1 -> formatDevicesList:2133",
+          "trace": "devicesCli:2269–2273 args.length===1 -> formatDevicesList:2133",
           "returnShape": "Owner/backend grouped labels excluding foreign owner definitions"
         },
         {
           "route": "ccc devices list --all-projects",
           "scope": "explicit local host crossowner read",
-          "gate": "devicesCli:2274 requires args.length===2 and exact literal --all-projects; otherwise usage/exit1:2278\u20132279",
+          "gate": "devicesCli:2274 requires args.length===2 and exact literal --all-projects; otherwise usage/exit1:2278–2279",
           "trace": "formatDevicesAllProjectsList:2152 -> deviceLabAllOwnersSnapshot:1958 -> allOwnerIds:285 -> enumerateDeviceProjectIds:286",
           "returnShape": "{owners:[{ownerId,backends:[{stateKey,name,devices}]}]}; text All Projects, owner/backend definitions, empty(none)"
         }
@@ -88643,9 +89089,9 @@
       "contractAnchors": [],
       "negativeCases": [
         "Wrong --all flag/admin list alias rejected",
-        "Non-directory/linked root: project-state20\u201323",
-        "Linked child:25\u201327",
-        "Changed root identity:29\u201331",
+        "Non-directory/linked root: project-state20–23",
+        "Linked child:25–27",
+        "Changed root identity:29–31",
         "Only initial missing root empty:38"
       ],
       "evidence": [],
@@ -89863,7 +90309,22 @@
               "symbol": "mutateOwnerDevices",
               "line": 5497,
               "kind": "implementation",
-              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "currentSourceTrace": [
+                {
+                  "path": "packages/device-lab/src/device-lab-broker.ts",
+                  "symbol": "ownerRepository",
+                  "line": 4044,
+                  "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+                },
+                {
+                  "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                  "symbol": "createBrokerOwnerRepository",
+                  "line": 9,
+                  "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+                }
+              ],
+              "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
             }
           ],
           "reason": "Lifecycle owner-device then host lock; actions owner-device lock; commit short devices.mutation.lock. Helpers acquire no lock."
@@ -94103,7 +94564,16 @@
       "currentCallTrace": [
         "Public device_run_flow -> handleDeviceRunFlow -> handleRunFlow; each admitted step resolves toolOperation, normalizes target/args and runs dispatchTool within withBrokerOperation."
       ],
-      "implementationRemainingWork": []
+      "implementationRemainingWork": [],
+      "sourceImplementationRemainingWork": [
+        "Shared device-flow application directly manipulates MCP content/envelopes instead of returning semantic application outcomes."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Shared device-flow application directly manipulates MCP content/envelopes instead of returning semantic application outcomes.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-physical-stop",
@@ -94346,7 +94816,16 @@
         "OP-recording-finalize",
         "OP-appium-server-stop"
       ],
-      "implementationRemainingWork": []
+      "implementationRemainingWork": [],
+      "sourceImplementationRemainingWork": [
+        "Shared physical-stop ports/application expose MCP-shaped content/isError presentation results contrary to SPEC shared-result separation."
+      ],
+      "currentWholeOperationQualification": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "status": "partial",
+        "reason": "Shared physical-stop ports/application expose MCP-shaped content/isError presentation results contrary to SPEC shared-result separation.",
+        "historicalAcceptedContributionRetained": true
+      }
     },
     {
       "id": "OP-device-reboot",
@@ -95207,7 +95686,7 @@
           "path": "src/opencode-data-access.ts",
           "kind": "support",
           "gitBlob": "70e3b4ffe425532bfe7bae440771a18e90a28267",
-          "responsibility": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup fa\u00e7ade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
+          "responsibility": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup façade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
         }
       ],
       "regressionAnchors": [
@@ -96909,7 +97388,7 @@
         "MCP devices default/view:owned -> device_list -> handleDeviceList",
         "broker.inventory -> ownerInventory(ownerId,true)",
         "brokerRpc({method:\"broker.inventory\"}) transport alias",
-        "iOS iosDevicesWithInventory865 calls reconcileIosDevice843: compare status/name, CAS guard updatedAt/status/udid/simulatorName852\u2013862, update status/name/updatedAt via owner repo. Remove blanket read-only/process-inapplicable authority for this direct binding."
+        "iOS iosDevicesWithInventory865 calls reconcileIosDevice843: compare status/name, CAS guard updatedAt/status/udid/simulatorName852–862, update status/name/updatedAt via owner repo. Remove blanket read-only/process-inapplicable authority for this direct binding."
       ],
       "canonicalDelegateRefs": [
         {
@@ -101804,7 +102283,7 @@
     {
       "path": "packages/device-lab/src/broker-entry.ts",
       "responsibility": "Standalone package binary grammar/exit-code adapter for trusted broker serve",
-      "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
+      "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
       "workItemIds": [
         "OP-broker-supervision",
         "OP-broker-owner-register"
@@ -101879,7 +102358,7 @@
     {
       "path": "packages/device-lab/src/device-lab-safe-cleanup.ts",
       "responsibility": "Native identity-fenced quarantine/recursive removal adapter for HyperV create/delete/image compensation",
-      "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
+      "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
       "workItemIds": [
         "OP-hyperv-image-acquire",
         "OP-windows-vm-create",
@@ -101901,7 +102380,7 @@
     {
       "path": "packages/device-lab/providers/backends/windows-vm.mjs",
       "responsibility": "Native descriptor and validated owner listing composition; no VM lifecycle policy",
-      "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control.'}",
+      "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control.'}",
       "workItemIds": [
         "OP-backend-discovery",
         "OP-device-inventory",
@@ -101922,7 +102401,7 @@
     {
       "path": "packages/device-lab/providers/backends/windows-helper.ps1",
       "responsibility": "Retained native Sandbox guest GUI/process/file effects and one-shot/daemon response transport",
-      "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
+      "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
       "workItemIds": [
         "OP-windows-sandbox-create",
         "OP-windows-sandbox-start",
@@ -101959,7 +102438,7 @@
     {
       "path": "packages/device-lab/providers/backends/android-sdk-inventory.mjs",
       "responsibility": "Bounded selected-SDK installed image/profile observation for device inventory",
-      "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start.'}",
+      "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start.'}",
       "workItemIds": [
         "OP-device-inventory"
       ],
@@ -108630,7 +109109,7 @@
       {
         "id": "M11-REQ-02",
         "packet": "M11",
-        "requirement": "Break concrete registry\u2194installer constant dependency first. Separate workspace create/repair/remove, profile resolution/migration and credential refresh plans. Native source reads/copies/signing rewrite behind scoped adapters.",
+        "requirement": "Break concrete registry↔installer constant dependency first. Separate workspace create/repair/remove, profile resolution/migration and credential refresh plans. Native source reads/copies/signing rewrite behind scoped adapters.",
         "assignedIds": [
           "OP-home-migrate",
           "OP-workspace-unified-create",
@@ -112151,7 +112630,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start.'}"
+        "justification": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start.'}"
       },
       {
         "path": "packages/device-lab/providers/backends/android-wait.mjs",
@@ -112431,7 +112910,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced.'}"
+        "justification": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced.'}"
       },
       {
         "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
@@ -112472,7 +112951,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control.'}"
+        "justification": "{'state': 'listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control.'}"
       },
       {
         "path": "packages/device-lab/providers/commands.mjs",
@@ -113285,7 +113764,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}"
+        "justification": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}"
       },
       {
         "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -113525,7 +114004,7 @@
           "ACC-M09-portable",
           "ACC-M13-install"
         ],
-        "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}"
+        "justification": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}"
       },
       {
         "path": "packages/device-lab/src/device-lab-shared-state.ts",
@@ -122956,7 +123435,7 @@
           "OP-opencode-data-access-preparation"
         ],
         "acceptanceIds": [],
-        "justification": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup fa\u00e7ade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
+        "justification": "Complete constrainedhost-owneddata ACLpreparation workflow plus scopednativeACLasset. EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup façade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained."
       },
       {
         "path": "src/ports/codex-config-preparation.ts",
@@ -145461,7 +145940,24 @@
           "gitBlob": "b9fc3f4d0d72b3110777d3ccec42170a92df45e3",
           "line": 154
         }
-      ]
+      ],
+      "currentDistributionAcceptance": {
+        "sourceCommit": "4ad7ec4bd2e62926901d5b49f8659b27bcd72aee",
+        "taskId": "TASK__architecture-x11-containerfile-asset",
+        "scope": "Actual local Docker builds of Containerfile, Dockerfile and Dockerfile.distribution; installed bridge/policy readable as ccc, root parent0755/policy0644, exact normalized bytes/Bash syntax; current npm/materialized Unix payload and verified protected main FF. Native Podman/Windows/macOS/formal/full Goal unverified.",
+        "reviewQa": "Actual independent current CodeDEEP/Security and sole image/shipping QA PASS; automatic records absent after one verify and exact park.",
+        "recipes": [
+          "Containerfile",
+          "Dockerfile",
+          "Dockerfile.distribution"
+        ],
+        "sourcePins": [
+          "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+          "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+          "1c458f7d3d5ccf4493fec1288f3a71cf98b1339abfa1376169587dc3a3ddc9f2"
+        ],
+        "nativePodmanCertified": false
+      }
     },
     {
       "id": "BIND-source-codex-launch",
@@ -181170,7 +181666,7 @@
         }
       ],
       "authorityOwner": "explicit cwd/profile and optional expectedOwnerId; no HTTP registration route",
-      "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231\u2013232",
+      "lockOwner": "file.lock wait5000ms stale30000ms call:1244/constants:231–232",
       "supportDisposition": "supported",
       "closureStatus": "source-route-and-handler-traced",
       "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -181211,8 +181707,8 @@
           "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
         }
       ],
-      "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673\u201316704.",
-      "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468\u20131469.",
+      "authorityOwner": "Canonical registered project/profile scope is eligibility; resolve has no x-ccc-device-token/HMAC gate. Token/HMAC/replay authorization belongs later ownerRPC:16673–16704.",
+      "lockOwner": "authFile.lock:1448 wait5000ms stale30000ms:1466; timeout maps device-broker-auth-lock-timeout:1468–1469.",
       "supportDisposition": "supported",
       "closureStatus": "source-route-and-handler-traced",
       "scope": "Current read-only source trace; no native effect/acceptance execution claim. "
@@ -184098,65 +184594,196 @@
     {
       "id": "GAP-review-create-completion",
       "kind": "inventory",
-      "reason": "Container create retains assigned launch argument and mount policy; bounded extraction is not whole-operation completion.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "Container create remains partial: buildDockerRunArgs, SELinux relabel and mount policy still live in source facade/native runtime. Existing accepted bounded orchestration evidence retained."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Current container launch/mount/relabel decisions reach createContainerLaunchArguments through buildDockerRunArgs; previous sourceCorrection describes historical bounded scope.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Current container launch/mount/relabel decisions reach createContainerLaunchArguments through buildDockerRunArgs; previous sourceCorrection describes historical bounded scope.",
+      "historicalSourceCorrection": "Container create remains partial: buildDockerRunArgs, SELinux relabel and mount policy still live in source facade/native runtime. Existing accepted bounded orchestration evidence retained.",
+      "historicalReason": "Container create retains assigned launch argument and mount policy; bounded extraction is not whole-operation completion."
     },
     {
       "id": "GAP-review-observation-routes",
       "kind": "inventory",
-      "reason": "Propagate the source-grounded broker observation proposals and reconcile every reachable method before counting a complete denominator.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "All eight literals matched current handler dispatch/client mappings; six new complete query/preview policies, existing device-session-status binding, echo explicit noncounted transport support."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Eight observation routes current owners traced: seven inward query/preview routes and noncounted echo transport; historical sources retained.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Eight observation routes current owners traced: seven inward query/preview routes and noncounted echo transport; historical sources retained.",
+      "historicalSourceCorrection": "All eight literals matched current handler dispatch/client mappings; six new complete query/preview policies, existing device-session-status binding, echo explicit noncounted transport support.",
+      "historicalReason": "Propagate the source-grounded broker observation proposals and reconcile every reachable method before counting a complete denominator."
     },
     {
       "id": "GAP-review-inventory-authority",
       "kind": "inventory",
-      "reason": "Reconcile owner-definition versus available-candidate inventory and preserve direct iOS metadata reconciliation.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "Owned-definition and available/native inventory routes distinguished; direct iOS bounded simctl query plus guarded status/name metadata update preserved; lease-mutator primary authority removed."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Current createOwnerInventory/createFocusedInventory distinguish owned definition and available observations; native iOS metadata observation remains guarded.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Current createOwnerInventory/createFocusedInventory distinguish owned definition and available observations; native iOS metadata observation remains guarded.",
+      "historicalSourceCorrection": "Owned-definition and available/native inventory routes distinguished; direct iOS bounded simctl query plus guarded status/name metadata update preserved; lease-mutator primary authority removed.",
+      "historicalReason": "Reconcile owner-definition versus available-candidate inventory and preserve direct iOS metadata reconciliation."
     },
     {
       "id": "GAP-review-retired-references",
       "kind": "inventory",
-      "reason": "Current proof owners and CLI dependencies must resolve to current canonical operations, not retired IDs.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "X11 proofs/context owners and exact profile CLI dependencies now use current canonical IDs. Historical source receipt broad names explicitly separated from current operation ownership."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Removed broker mutation and iOS helper symbols retained as historical provenance with current ownerRepository/createBrokerOwnerRepository and ensureIosAppiumSession/observation application traces.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Removed broker mutation and iOS helper symbols retained as historical provenance with current ownerRepository/createBrokerOwnerRepository and ensureIosAppiumSession/observation application traces.",
+      "historicalSourceCorrection": "X11 proofs/context owners and exact profile CLI dependencies now use current canonical IDs. Historical source receipt broad names explicitly separated from current operation ownership.",
+      "historicalReason": "Current proof owners and CLI dependencies must resolve to current canonical operations, not retired IDs."
     },
     {
       "id": "GAP-review-macos-dispositions",
       "kind": "inventory",
-      "reason": "Preserve supported direct Tart routes and record exact broker refusals in every binding copy.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "Direct Tart create/clone supported; broker base-image actions refused by global method validation, broker snapshots refused by backend support set. All binding copies synchronized."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Direct Tart support and broker refusal dispositions retained; current reference correction grants no new binding/native acceptance.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Direct Tart support and broker refusal dispositions retained; current reference correction grants no new binding/native acceptance.",
+      "historicalSourceCorrection": "Direct Tart create/clone supported; broker base-image actions refused by global method validation, broker snapshots refused by backend support set. All binding copies synchronized.",
+      "historicalReason": "Preserve supported direct Tart routes and record exact broker refusals in every binding copy."
     },
     {
       "id": "GAP-review-binding-authority",
       "kind": "inventory",
-      "reason": "Propagate grounded source/caller and lock category proposals to all canonical and operation-local binding records.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "37 advertised and33 source callable traces/70 proofs/257 categorized lock records matched baseline source and propagated to canonical and required binding copies; exact refusals and raw/public variants preserved."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Canonical snapshot proposed aliases matched exact existing backend/action identities; required IDs resolve existing rows, no duplicate bindings/proofs.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Canonical snapshot proposed aliases matched exact existing backend/action identities; required IDs resolve existing rows, no duplicate bindings/proofs.",
+      "historicalSourceCorrection": "37 advertised and33 source callable traces/70 proofs/257 categorized lock records matched baseline source and propagated to canonical and required binding copies; exact refusals and raw/public variants preserved.",
+      "historicalReason": "Propagate grounded source/caller and lock category proposals to all canonical and operation-local binding records."
     },
     {
       "id": "GAP-review-semantic-references",
       "kind": "inventory",
-      "reason": "Recheck import/reference relationships; an unrelated nearby AST call is not dependency proof.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "All import-labeled catalog callers matched exact AST imports; version reads match actual version-member identifier at2745/2931; SDK typed consumer matches androidCreationChoices3775."
+      "reason": "Accept current source-reference correction while retaining the original review finding: androidCreationChoices remains genuine imported SDK leaf; current enclosing owner is observeFocusedInventory. Historical version/member anchors retained separately from current accepted sources.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "androidCreationChoices remains genuine imported SDK leaf; current enclosing owner is observeFocusedInventory. Historical version/member anchors retained separately from current accepted sources.",
+      "historicalSourceCorrection": "All import-labeled catalog callers matched exact AST imports; version reads match actual version-member identifier at2745/2931; SDK typed consumer matches androidCreationChoices3775.",
+      "historicalReason": "Recheck import/reference relationships; an unrelated nearby AST call is not dependency proof."
     },
     {
       "id": "GAP-review-closure-text",
       "kind": "inventory",
-      "reason": "Reconcile stale source-scope explanations separately from unverified native acceptance.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "Obsolete migrated/native/global unknown-scope boilerplate reconciled with current named source/canonical responsibility; acceptance verification untouched."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Current inward ownership descriptions corrected separately from historical proof/baseline and unverified native/exhaustive acceptance.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Current inward ownership descriptions corrected separately from historical proof/baseline and unverified native/exhaustive acceptance.",
+      "historicalSourceCorrection": "Obsolete migrated/native/global unknown-scope boilerplate reconciled with current named source/canonical responsibility; acceptance verification untouched.",
+      "historicalReason": "Reconcile stale source-scope explanations separately from unverified native acceptance."
     },
     {
       "id": "GAP-review-image-owner",
       "kind": "inventory",
-      "reason": "Current Hyper-V image-import handler/owner references must identify image-store policy rather than catalog/license support.",
-      "remediationStatus": "locally-source-reconciled-awaiting-independent-review",
-      "sourceCorrection": "Canonical/export/source callable import refs now point to image-store imported resolver/policy. hyper-v-images.ts remains catalog/license receipt support; no new inward migration credit."
+      "reason": "Accept current source-reference correction while retaining the original review finding: Native image-store resolver binds createHyperVImagePreparation inward mediator; catalog/license support is distinct, no image-build certification.",
+      "remediationStatus": "candidate-reconciled-awaiting-independent-current-review",
+      "sourceCorrection": "Native image-store resolver binds createHyperVImagePreparation inward mediator; catalog/license support is distinct, no image-build certification.",
+      "historicalSourceCorrection": "Canonical/export/source callable import refs now point to image-store imported resolver/policy. hyper-v-images.ts remains catalog/license receipt support; no new inward migration credit.",
+      "historicalReason": "Current Hyper-V image-import handler/owner references must identify image-store policy rather than catalog/license support."
+    },
+    {
+      "id": "GAP-source-direct-physical-leases",
+      "kind": "source-implementation",
+      "reason": "Move direct physical lease transaction/expiry/heartbeat/prune/release/compensation policy inward; keep native storage and exact identity authority outward.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [
+        "OP-lease-claim",
+        "OP-lease-heartbeat",
+        "OP-lease-prune",
+        "OP-lease-release"
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/state/physical-lease-store.mjs",
+          "line": 178,
+          "revision": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-direct-physical-leases",
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+    },
+    {
+      "id": "GAP-source-direct-physical-attachment",
+      "kind": "source-implementation",
+      "reason": "Complete both direct Android/iOS attachment workflows; broker-only extraction cannot close the supported direct bindings.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [
+        "OP-physical-attach",
+        "OP-physical-detach"
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/backends/android-device.mjs",
+          "line": 457,
+          "revision": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-direct-physical-attachment",
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+    },
+    {
+      "id": "GAP-source-direct-recording",
+      "kind": "source-implementation",
+      "reason": "Complete recording policies in supported provider handlers and the broker desktop child routes that reach them.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [
+        "OP-recording-start",
+        "OP-recording-finalize",
+        "OP-recording-status"
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/backends/android.mjs",
+          "line": 859,
+          "revision": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-direct-recording",
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+    },
+    {
+      "id": "GAP-source-legacy-admin-delete",
+      "kind": "source-implementation",
+      "reason": "Complete retained exported synchronous admin deletion binding without erasing its provider/lease/CAS guards.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [
+        "OP-device-admin-cleanup"
+      ],
+      "sourceTrace": [
+        {
+          "path": "src/device-lab-admin.ts",
+          "line": 696,
+          "revision": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-admin-delete-completion",
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+    },
+    {
+      "id": "GAP-source-shared-result-separation",
+      "kind": "source-implementation",
+      "reason": "Return semantic shared application outcomes and translate MCP content/isError envelopes in presentation/composition.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [
+        "OP-physical-stop",
+        "OP-device-flow"
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/ports/physical-stop.mjs",
+          "line": 10,
+          "revision": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-core-enforcement-closure",
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+    },
+    {
+      "id": "GAP-source-core-enforcement",
+      "kind": "source-implementation",
+      "reason": "Cover MCP/installer migrated core roots in the real dependency graph and include actual checked-MJS composition consumers; zero-operation obligation.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "src/__tests__/architecture/core-boundary.test.ts",
+          "line": 9,
+          "revision": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-core-enforcement-closure",
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
     }
   ],
   "distributionBoundaries": {
@@ -208348,7 +208975,22 @@
         "native acceptance unverified",
         "complete staging/exception/native helper policy belongs workflow, not raw case count"
       ],
-      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution."
+      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution.",
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+          "symbol": "ensureIosAppiumSession",
+          "line": 259,
+          "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "symbol": "createIosObservationAccess",
+          "line": 6,
+          "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+        }
+      ],
+      "referenceScope": "Historical concreteCase/call names retained; current native helper delegates to observationAccess.ensureSession inward policy. No runtime/native proof inferred."
     },
     {
       "id": "PROOF-child-ios-simulator-mobile_wait_for_text",
@@ -208432,7 +209074,22 @@
         "advertisement and method gate membership must still be intersected",
         "public Appium mobile route has separate authority"
       ],
-      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution."
+      "sourceCheck": "baseline Git blob/declarations and concrete source case/branch line checked; no native execution.",
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+          "symbol": "ensureIosAppiumSession",
+          "line": 259,
+          "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "symbol": "createIosObservationAccess",
+          "line": 6,
+          "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+        }
+      ],
+      "referenceScope": "Historical concreteCase/call names retained; current native helper delegates to observationAccess.ensureSession inward policy. No runtime/native proof inferred."
     },
     {
       "id": "PROOF-direct-ios-simulator-mobile_back",
@@ -234916,7 +235573,22 @@
           "path": "packages/device-lab/src/device-lab-broker.ts",
           "symbol": "mutateOwnerDevices",
           "line": 5497,
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "currentSourceTrace": [
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "ownerRepository",
+              "line": 4044,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+              "symbol": "createBrokerOwnerRepository",
+              "line": 9,
+              "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+            }
+          ],
+          "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
@@ -234938,8 +235610,8 @@
         }
       ],
       "semantics": {
-        "state": "Shared payload call:55, captured/rechecked managed directories:63\u201380, nofollow descriptor regular/single-link identity and byte bound:65\u201374, unopened ENOENT->[]:84, writable payload+UTF8 limit:94\u201398.",
-        "lock": "No own lock; broker/admin devices.mutation.lock owns mutation validation+atomic write at broker:5501\u20135502/5528\u20135529, admin:296\u2013297.",
+        "state": "Shared payload call:55, captured/rechecked managed directories:63–80, nofollow descriptor regular/single-link identity and byte bound:65–74, unopened ENOENT->[]:84, writable payload+UTF8 limit:94–98.",
+        "lock": "No own lock; broker/admin devices.mutation.lock owns mutation validation+atomic write at broker:5501–5502/5528–5529, admin:296–297.",
         "journal": "No repository journal; lifecycle journal callers remain distinct.",
         "process": "No process identity/signalling."
       },
@@ -234969,7 +235641,9 @@
           "kind": "testCase"
         }
       ],
-      "inventoryNotes": [],
+      "inventoryNotes": [
+        "Historical declarations/callers retain baseline provenance; removed broker mutation/iOS session helper references are not current authorities. Current trace points to inward ownerRepository or observationAccess session policy."
+      ],
       "residualSourceGaps": [],
       "implementationDisposition": "Native support is source-traced; source/test references do not certify whole inward cutover or native execution.",
       "businessPolicyOwners": [
@@ -235106,8 +235780,8 @@
         }
       ],
       "semantics": {
-        "state": "Lease payload checks backend/hardware/owner plus optional TTL/date/claim exact fields and caller expectations:14\u201329. Sandbox provider/owner/device/optional claim/boot/runtime:36\u201346. Typed bounded reader delegation:33/50.",
-        "lock": "No own lock. Broker perhardware lease lock, admin hardware\u2192aggregate sublocks, Sandbox host singleton mutation lock owned callers.",
+        "state": "Lease payload checks backend/hardware/owner plus optional TTL/date/claim exact fields and caller expectations:14–29. Sandbox provider/owner/device/optional claim/boot/runtime:36–46. Typed bounded reader delegation:33/50.",
+        "lock": "No own lock. Broker perhardware lease lock, admin hardware→aggregate sublocks, Sandbox host singleton mutation lock owned callers.",
         "journal": "Lease/singleton records authority state; no journal here.",
         "process": "No launch/signals."
       },
@@ -235238,7 +235912,7 @@
         }
       ],
       "semantics": {
-        "state": "Explicit supplied root; linked/non-directory root:20\u201324, linked entries:25\u201327, root inode/device/mode replacement:29\u201331 reject; supplied accepted name predicate and sorted directory names:33\u201336; only initially missing root returns[]:38.",
+        "state": "Explicit supplied root; linked/non-directory root:20–24, linked entries:25–27, root inode/device/mode replacement:29–31 reject; supplied accepted name predicate and sorted directory names:33–36; only initially missing root returns[]:38.",
         "lock": "No acquired lock. Emulator allocation caller separately holds global port lock (broker:6091); admin workflows retain scopes.",
         "journal": "None.",
         "process": "None."
@@ -235412,7 +236086,22 @@
           "referenceDescription": "owner mutation lock",
           "callee": "withSharedMutationLock",
           "enclosingSymbol": "mutateOwnerDevices",
-          "kind": "callSite"
+          "kind": "callSite",
+          "currentSourceTrace": [
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "ownerRepository",
+              "line": 4044,
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+              "symbol": "createBrokerOwnerRepository",
+              "line": 9,
+              "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+            }
+          ],
+          "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
         },
         {
           "path": "src/device-lab-admin.ts",
@@ -235479,8 +236168,8 @@
         }
       ],
       "semantics": {
-        "state": "Managed directory capture/recheck:57\u2013127 with birthtime fallback:45\u201354. Exclusive0600 staging+bounded Windows rename+cleanup:177\u2013190; abandoned temp matches generated name/dead PID/regular nonlink/minimum age:153\u2013174; descriptor-bound copied bytes:197\u2013239.",
-        "lock": "Exclusive random token/PID/host/boot/process identity record; malformed/boot/PID reuse/unknown ceiling/foreign host stale rules:434\u2013467. Move/read/token and empty-only restore protect successor:470\u2013513; async holds until settle/finally:637\u2013644; waitBudget avoids queued identity process work:601\u2013603. TS sync only provides reclaimStale:false (519/554/557); MJS and async variants preserve their differing existing API.",
+        "state": "Managed directory capture/recheck:57–127 with birthtime fallback:45–54. Exclusive0600 staging+bounded Windows rename+cleanup:177–190; abandoned temp matches generated name/dead PID/regular nonlink/minimum age:153–174; descriptor-bound copied bytes:197–239.",
+        "lock": "Exclusive random token/PID/host/boot/process identity record; malformed/boot/PID reuse/unknown ceiling/foreign host stale rules:434–467. Move/read/token and empty-only restore protect successor:470–513; async holds until settle/finally:637–644; waitBudget avoids queued identity process work:601–603. TS sync only provides reclaimStale:false (519/554/557); MJS and async variants preserve their differing existing API.",
         "journal": "No journal in adapter; HyperV operation/network callers own schema/recovery.",
         "process": "Liveness/process identity observation and abandoned writer PID check; never device process termination."
       },
@@ -235535,7 +236224,8 @@
         }
       ],
       "inventoryNotes": [
-        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries.",
+        "Historical declarations/callers retain baseline provenance; removed broker mutation/iOS session helper references are not current authorities. Current trace points to inward ownerRepository or observationAccess session policy."
       ],
       "residualSourceGaps": [],
       "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
@@ -235704,7 +236394,7 @@
         }
       ],
       "semantics": {
-        "state": "No durable state; validates canonical mount/profile grammar:8\u201315/48\u201352, basis containername:mount, hashSHA25616.",
+        "state": "No durable state; validates canonical mount/profile grammar:8–15/48–52, basis containername:mount, hashSHA25616.",
         "lock": "None.",
         "journal": "None.",
         "process": "None."
@@ -235955,7 +236645,7 @@
         }
       ],
       "semantics": {
-        "state": "Regular/single-link descriptor/path identity:26\u201331/82\u201387, bounded bytes:34\u201342, unopened ENOENT null:93; root containment/nonlink parent:111\u2013134. Write verifies existing/new destination descriptor before truncation/write and after:145\u2013172. Nested creation requires explicit allowNestedCreate; ordinary nested download destination preexists:151\u2013154. JSON parse/validator stays invalid-state:184\u2013209.",
+        "state": "Regular/single-link descriptor/path identity:26–31/82–87, bounded bytes:34–42, unopened ENOENT null:93; root containment/nonlink parent:111–134. Write verifies existing/new destination descriptor before truncation/write and after:145–172. Nested creation requires explicit allowNestedCreate; ordinary nested download destination preexists:151–154. JSON parse/validator stays invalid-state:184–209.",
         "lock": "No own lock; caller guards unchanged.",
         "journal": "Reads journal bytes, no policy/schema itself.",
         "process": "None."
@@ -236151,7 +236841,7 @@
         }
       ],
       "semantics": {
-        "state": "Durable logical identity uses lexical resolution:52\u201369 independent of filesystem; Windows realpath/native realpath and case insensitive equivalence:12\u201343; missing leaf canonicalizes parent but other lookup errors remain:19\u201329.",
+        "state": "Durable logical identity uses lexical resolution:52–69 independent of filesystem; Windows realpath/native realpath and case insensitive equivalence:12–43; missing leaf canonicalizes parent but other lookup errors remain:19–29.",
         "lock": "None.",
         "journal": "None.",
         "process": "No subprocess; Windows filesystem observation only."
@@ -239766,7 +240456,7 @@
       "canonicalOperationIds": [
         "OP-opencode-data-access-preparation"
       ],
-      "assignment": "EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup fa\u00e7ade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained.",
+      "assignment": "EntireexportedprepareOpenCodeDataDirectory operation assignedabove; OPtoolsetup façade delegates conditionalprelude,thenalreadyaccepted requested-toolsetup/installer core. NativeACLidentity/flock/directxattrasset retained.",
       "source": {
         "path": "src/opencode-data-access.ts",
         "gitBlob": "70e3b4ffe425532bfe7bae440771a18e90a28267"
@@ -240080,7 +240770,7 @@
         }
       ],
       "semantics": {
-        "entrypoint": "Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.",
+        "entrypoint": "Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.",
         "state": "Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.",
         "lock": "No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.",
         "journal": "None.",
@@ -240275,7 +240965,33 @@
       "inventoryNotes": [
         "Version reporting is support for supervision/installed artifact compatibility, not an independent business use case."
       ],
-      "residualSourceGaps": []
+      "residualSourceGaps": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "line": 147,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+          "referencedIdentifier": "DEVICE_LAB_VERSION",
+          "kind": "importDependency",
+          "scope": "Current exact import/member reference; historical callers remain baseline observations"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "line": 2657,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+          "referencedIdentifier": "DEVICE_LAB_VERSION",
+          "kind": "identifierReference",
+          "scope": "Current exact import/member reference; historical callers remain baseline observations"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "line": 2838,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+          "referencedIdentifier": "DEVICE_LAB_VERSION",
+          "kind": "identifierReference",
+          "scope": "Current exact import/member reference; historical callers remain baseline observations"
+        }
+      ]
     },
     {
       "path": "packages/device-lab/src/device-lab/providers/ios-simulator.ts",
@@ -240458,8 +241174,8 @@
       "semantics": {
         "authority": "Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.",
         "state": "validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.",
-        "lock": "safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.",
-        "journal": "Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.",
+        "lock": "safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.",
+        "journal": "Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.",
         "process": "No spawned child or process signal; shared lock only observes owner process."
       },
       "regressionReferences": [
@@ -240579,10 +241295,10 @@
         }
       ],
       "semantics": {
-        "state": "listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.",
+        "state": "listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.",
         "lock": "Listing read acquires no owner mutation/operation lock (canonical repository:36).",
         "journal": "None.",
-        "process": "Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control."
+        "process": "Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control."
       },
       "regressionReferences": [
         {
@@ -240767,10 +241483,10 @@
       ],
       "semantics": {
         "authority": "Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.",
-        "state": "Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.",
-        "lock": "OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.",
+        "state": "Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.",
+        "lock": "OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.",
         "journal": "No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.",
-        "process": "Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced."
+        "process": "Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced."
       },
       "regressionReferences": [
         {
@@ -240834,7 +241550,7 @@
       "inventoryNotes": [
         "Direct windows-sandbox.mjs generates equivalent text rather than reading asset; broker reads packaged asset. No WindowsVM dependency.",
         "No move_window, app install/uninstall/clear-data or clipboard action branches exist. Clipboard redirection is WSB creation setting.",
-        "OP-device-list-files composes through exec (MCP server:1116\u20131130/1583\u20131589), not an invented native helper action."
+        "OP-device-list-files composes through exec (MCP server:1116–1130/1583–1589), not an invented native helper action."
       ],
       "residualSourceGaps": [],
       "actionMappings": [
@@ -240998,10 +241714,10 @@
         }
       ],
       "semantics": {
-        "state": "selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.",
+        "state": "selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.",
         "lock": "None.",
         "journal": "None.",
-        "process": "avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start."
+        "process": "avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start."
       },
       "regressionReferences": [
         {
@@ -241701,7 +242417,7 @@
           "workItemIds": [
             "OP-device-inventory"
           ],
-          "retainedResponsibility": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83\u2013117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779\u20133781. No provisioning or device start.'}",
+          "retainedResponsibility": "{'state': 'selectedSdk:25 prefers selected avdmanager/emulator/adb realpath SDK then configured candidate realpath; scans system-images bounded4096 entries/256results; closes directory in finally:58, directory entries must regular directory+identifier:54, system.img file check:68. Profiles parse bounded IDs/deduplicate/sort and incomplete diagnostics/truncation:83–117. No publication.', 'lock': 'None.', 'journal': 'None.', 'process': 'avdmanager list device:85 timeout5s/maxBuffer256KiB; injected broker command runner translates exact bound:3779–3781. No provisioning or device start.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -242718,7 +243434,7 @@
             "OP-recording-status",
             "OP-recording-finalize"
           ],
-          "retainedResponsibility": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3\u20138 and process-local Recordings map. Host owner/device artifact root broker:5543\u20135548/5560\u20135578, guest helper bootstrap launches hidden PowerShell:5637\u20135647, WSB mappings/logon:5688\u20135712. Response tempUTF8JSON -> rename -> remove request:320\u2013324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327\u2013335; ready/heartbeat/inbox loop250ms/finally release+dispose:336\u2013344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47\u201370/75\u201399; recording jobs/map/archive:253\u2013310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
+          "retainedResponsibility": "{'authority': 'Admission/owner/generation/path policy upstream; asset owns guest native effects and channel loop. Exact helper operation cases map existing canonical actions; no new helper/transport use case.', 'state': 'Fixed guest tools/request/response/download directories:3–8 and process-local Recordings map. Host owner/device artifact root broker:5543–5548/5560–5578, guest helper bootstrap launches hidden PowerShell:5637–5647, WSB mappings/logon:5688–5712. Response tempUTF8JSON -> rename -> remove request:320–324. Recording status can archive completed job and remove map entry, so not globally read-only.', 'lock': 'OnceRequestPath dispatch:326 precedes/bypasses daemon mutex. Daemon mutex hashes normalized script path, handles abandonment:327–335; ready/heartbeat/inbox loop250ms/finally release+dispose:336–344. No owner-file/lease authorization lock in helper; inherited caller device/recording generation fences remain canonical.', 'journal': 'No owner intent journal. Response/ready/heartbeat files are channel/control artifacts; recording archive is result artifact.', 'process': 'Exec/screenshot bounded background jobs/cancellation:47–70/75–99; recording jobs/map/archive:253–310; guest bootstrap process placement unchanged. No external binary internals traced.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -242989,7 +243705,7 @@
             "OP-device-dispatch",
             "OP-owner-repository"
           ],
-          "retainedResponsibility": "{'state': 'listWindowsVmDevices -> windows-vm-state:5\u20136 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33\u201339), returns lazy/creatable HyperV capability shape:41\u201352. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83\u201394, no VM probe/start/signal/control.'}",
+          "retainedResponsibility": "{'state': 'listWindowsVmDevices -> windows-vm-state:5–6 -> fresh device-store binding:12/16/67/82 homedir/.ccc/devices/owners/ownerId/windows-vm/devices.json. Descriptor availability=win32+PowerShell discovered (33–39), returns lazy/creatable HyperV capability shape:41–52. Does not assert actual HyperV readiness.', 'lock': 'Listing read acquires no owner mutation/operation lock (canonical repository:36).', 'journal': 'None.', 'process': 'Only bounded Windows PowerShell executable lookup via commands.mjs:74/83–94, no VM probe/start/signal/control.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -246023,7 +246739,7 @@
             "OP-broker-supervision",
             "OP-broker-owner-register"
           ],
-          "retainedResponsibility": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8\u20139. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
+          "retainedResponsibility": "{'entrypoint': 'Module process.argv slice:4 requires literal devices broker serve prefix:5 then forwards remaining args to startDeviceBrokerServe:6; invalid prefix usage/exitCode1:8–9. No exports.', 'state': 'Entrypoint writes only process.exitCode. Delegate serve:16847 parses host/port, computes owner, composes server, provisions owner token, publishes runtime on listen. Those existing owned operations are not duplicated in this file.', 'lock': 'No own lock; delegated broker owner/auth/runtime scopes stay at existing owners.', 'journal': 'None.', 'process': 'Runs in package-launched broker Node process, not another child itself. Supports approved native process placement.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -247394,7 +248110,7 @@
             "OP-windows-vm-delete",
             "OP-hyper-v-linux-delete"
           ],
-          "retainedResponsibility": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24\u201329; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138\u2013144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
+          "retainedResponsibility": "{'authority': 'Caller validates exact resource root, ownership/generation/provider absence before supplying target; helper adds physical directory identity fencing and per-user deletion serialization, not a new owning business policy.', 'state': 'validate target, capture regular nonlinked directory, rename into sibling .ccc-cleanup-random/target, revalidate identity, recursively stage each child .ccc-entry-random, verify original/staged/deletion identity and unlink links without following; Linux anchors open directory through /proc/self/fd. Empty directory is renamed .ccc-empty-random then rechecked before rmdir. dev/inode checks, zero-inode birth/ctime fallback.', 'lock': 'safeCleanupMutationLockFile:16 perUID temp ccc-device-lab-safe-cleanup-UID/mutation.lock; root mode0700/nonlink/uid check:24–29; withSharedMutationLock:153 wait5min stale10min spans quarantine through final removal. Caller workflow locks remain existing and precede this specialized sublock.', 'journal': 'Quarantine path is transient/recoverable residue, no intent/replay JSON. On failure preserve surviving quarantine and attach quarantineRoot to error:138–144; no automatic rename-back promised.', 'process': 'No spawned child or process signal; shared lock only observes owner process.'}",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
           "artifactAcceptance": "unverified"
         },
@@ -257612,7 +258328,7 @@
       "method": "broker.appium.status",
       "countDisposition": "existing-canonical-binding",
       "canonicalWorkItemId": "OP-device-session-status",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-appium.ts",
       "businessBoundary": "Read one exact owned device Appium metadata and return device/appium fields; no WebDriver health check, session ensure, lease refresh or metadata publication.",
       "sources": [
         {
@@ -257709,20 +258425,51 @@
       ],
       "scopeNotes": [
         "Reuse existing OP-device-session-status; no duplicate OP-appium-status count. Broker metadata observation is this exact variant; direct native session-status authority can differ and remains in its current per-executor proof.",
-        "server handleBrokerMobileTool:1237\u20131244 maps private mobile_session_status to brokerAppium(status). publicToolName outputs status, but omitted mobile_session_status plus GROUP_OPERATIONS proves no extra public session-status input route is invented."
+        "server handleBrokerMobileTool:1237–1244 maps private mobile_session_status to brokerAppium(status). publicToolName outputs status, but omitted mobile_session_status plus GROUP_OPERATIONS proves no extra public session-status input route is invented."
       ],
       "negativeCases": [
         "Invalid/nonobject params/backend/deviceId400",
         "Missing owned device404",
         "Corrupt/linked/oversized owner state fails via ownerDeviceStateFailure",
         "Foreign owner cannot view another owner definition"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "appiumSessionStatus",
+          "line": 15513,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerAppium",
+          "line": 2883,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-appium.ts",
+          "symbol": "createAppiumObservations",
+          "line": 4,
+          "gitBlob": "a6a54500cede124fd3ed2b4d6562fa475a68c87d"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "observeAppium",
+          "line": 9119,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.appium.list",
       "countDisposition": "new-complete-business-policy",
       "canonicalWorkItemId": "OP-appium-list",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-appium.ts",
       "businessBoundary": "List selected owner/backend device Appium projections, including idle device entries with appium:null. This is a backend list contract distinct from exact-device session status and from recording/clearing metadata.",
       "sources": [
         {
@@ -257815,13 +258562,44 @@
         "No owned records=>sessions[]",
         "Corrupt/linked/oversized state typed failure",
         "Owner scope excludes foreign metadata"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "appiumSessionList",
+          "line": 15542,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerAppium",
+          "line": 2883,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-appium.ts",
+          "symbol": "createAppiumObservations",
+          "line": 4,
+          "gitBlob": "a6a54500cede124fd3ed2b4d6562fa475a68c87d"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "observeAppium",
+          "line": 9119,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.lease.list",
       "countDisposition": "new-complete-business-policy",
       "canonicalWorkItemId": "OP-lease-list",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-leases.ts",
       "businessBoundary": "List active exact-owner physical hardware leases without claiming, refreshing, pruning or releasing them.",
       "sources": [
         {
@@ -257929,13 +258707,44 @@
         "Foreign/expired authoritative lease omitted without deleting it",
         "Linked/non-directory root409",
         "Entry cap507; malformed authoritative lease typed failure"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "listPhysicalBrokerLeases",
+          "line": 6904,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerLease",
+          "line": 2622,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-leases.ts",
+          "symbol": "createLeaseList",
+          "line": 51,
+          "gitBlob": "2412758b2053ad2d35824be1fef8a24a46e31245"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "observePhysicalLeases",
+          "line": 4754,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.physical.list",
       "countDisposition": "new-complete-business-policy",
       "canonicalWorkItemId": "OP-physical-list",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-leases.ts",
       "businessBoundary": "Observe owned physical device definitions together with active owned leases and Android native host candidates. This attachment+lease composite differs from candidate inventory and the lease-only list.",
       "sources": [
         {
@@ -258043,13 +258852,44 @@
         "all-owner request403 via validateLeaseParams",
         "Unsafe/corrupt authoritative lease or owner state fails closed",
         "Foreign owned definitions/leases excluded"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "listAttachedPhysicalDevices",
+          "line": 7547,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerPhysical",
+          "line": 2656,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-leases.ts",
+          "symbol": "createPhysicalComposite",
+          "line": 68,
+          "gitBlob": "2412758b2053ad2d35824be1fef8a24a46e31245"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "observePhysicalComposite",
+          "line": 4942,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.command.plan",
       "countDisposition": "new-complete-business-policy",
       "canonicalWorkItemId": "OP-device-lifecycle-plan",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-command-plan.ts",
       "businessBoundary": "Preview one owner-scoped lifecycle command with validation, idempotency/conflict checks, metadata capacity, incarnation/attachment fences and provider command DTO; execute no planned lifecycle mutation.",
       "sources": [
         {
@@ -258158,7 +258998,7 @@
       "aliases": [],
       "scopeNotes": [
         "Public authenticated RPC preview is independent observable policy, not one row per backend/command. Bind all eight accepted backend DTO variants from DEVICE_BROKER_COMMAND_BACKENDS:351 and six lifecycle command values:394, with branch-specific unsupported metadata preserved.",
-        "lifecycleCommandInvokeUnlocked:12883 delegates planner with redactSecrets=false; dryRun return12886\u201312904 shares decision but has distinct transport lock/redaction wrapper. Treat as delegated planner variant, not claim identical whole-route alias or globally lockfree dryRun."
+        "lifecycleCommandInvokeUnlocked:12883 delegates planner with redactSecrets=false; dryRun return12886–12904 shares decision but has distinct transport lock/redaction wrapper. Treat as delegated planner variant, not claim identical whole-route alias or globally lockfree dryRun."
       ],
       "negativeCases": [
         "Foreign/missing device404",
@@ -258167,13 +259007,44 @@
         "Create existing nonHyperV conflict409; HyperV equivalent creation idempotent",
         "Corrupt owner state/capacity bound fails before mutation",
         "Unproven iOS native identity yields providerCommand error metadata"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "lifecycleCommandPlan",
+          "line": 12658,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerCommand",
+          "line": 2702,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-command-plan.ts",
+          "symbol": "createLifecyclePreview",
+          "line": 25,
+          "gitBlob": "2dcb1b379f5efae2b95512729857cd4782483442"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "lifecycleCommandPlanning",
+          "line": 8151,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.status",
       "countDisposition": "new-complete-business-policy",
       "canonicalWorkItemId": "OP-broker-status",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
       "businessBoundary": "Observe broker runtime/process epoch, package/protocol version, persistence paths, service descriptor/owner and elevation gate facts without ensuring broker or installing service.",
       "sources": [
         {
@@ -258281,13 +259152,44 @@
         "Invalid token/HMAC/body rejected before method",
         "GET/status nonGET405",
         "Missing service owner/runtime produces null/presentfalse; unsafe reader behavior preserved"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "deviceBrokerStatus",
+          "line": 2921,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerRpc",
+          "line": 2257,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerStatus",
+          "line": 5,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "observeBrokerStatus",
+          "line": 2852,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.service.manager",
       "countDisposition": "new-complete-business-policy",
       "canonicalWorkItemId": "OP-broker-service-status",
-      "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
+      "policyOwner": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
       "businessBoundary": "Observe OS service-manager installed/running/owner diagnostics for status only, including dry-run preview. No service installation/start/stop/uninstall action is implemented.",
       "sources": [
         {
@@ -258404,11 +259306,42 @@
         "Unsupported manager RPC501",
         "DryRun runs no service commands",
         "Public brokerRpc rejects service method before network; authorized HTTP or direct exported deviceBrokerService required"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "deviceBrokerService",
+          "line": 3338,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "handleBrokerRpcUnsafe",
+          "line": 16395,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerService",
+          "line": 31,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "observeBrokerService",
+          "line": 3250,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     },
     {
       "method": "broker.echo",
-      "countDisposition": "explicit-noncounted-transport-support",
+      "countDisposition": "noncounted-transport-support",
       "canonicalWorkItemId": null,
       "policyOwner": "packages/device-lab/src/device-lab-broker.ts",
       "businessBoundary": "Echo authenticated ownerId and opaque params/null to exercise existing RPC/auth/serialization/liveness contract. No independent device or administration business decision.",
@@ -258480,7 +259413,32 @@
         "Invalid token/HMAC/replay/body/owner mismatch fails before echo",
         "Oversized body rejected by transport",
         "Missing/unknown method classified separately"
-      ]
+      ],
+      "historicalSources": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "handleBrokerRpcUnsafe",
+          "line": 16395,
+          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+          "kind": "sourceTrace"
+        },
+        {
+          "path": "device-lab-mcp/src/broker.mjs",
+          "symbol": "brokerRpc",
+          "line": 2257,
+          "gitBlob": "d2e8cb7a325795026371e79aa448ee6781d74e7c",
+          "kind": "sourceTrace"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "createDeviceBrokerServer",
+          "line": 9369,
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+        }
+      ],
+      "scope": "Current source ownership separately traced; historicalSources remain original static observations, not current runtime certification."
     }
   ],
   "brokerObservationTransportScope": {
@@ -258620,7 +259578,22 @@
             "path": "packages/device-lab/src/device-lab-broker.ts",
             "symbol": "mutateOwnerDevices",
             "line": 5497,
-            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "currentSourceTrace": [
+              {
+                "path": "packages/device-lab/src/device-lab-broker.ts",
+                "symbol": "ownerRepository",
+                "line": 4044,
+                "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+              },
+              {
+                "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                "symbol": "createBrokerOwnerRepository",
+                "line": 9,
+                "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+              }
+            ],
+            "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
           }
         ],
         "bindingIds": [
@@ -258834,7 +259807,22 @@
             "path": "packages/device-lab/src/device-lab-broker.ts",
             "symbol": "mutateOwnerDevices",
             "line": 5497,
-            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "currentSourceTrace": [
+              {
+                "path": "packages/device-lab/src/device-lab-broker.ts",
+                "symbol": "ownerRepository",
+                "line": 4044,
+                "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+              },
+              {
+                "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                "symbol": "createBrokerOwnerRepository",
+                "line": 9,
+                "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+              }
+            ],
+            "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
           }
         ],
         "bindingIds": [
@@ -258873,7 +259861,22 @@
             "path": "packages/device-lab/src/device-lab-broker.ts",
             "symbol": "mutateOwnerDevices",
             "line": 5497,
-            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b"
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "currentSourceTrace": [
+              {
+                "path": "packages/device-lab/src/device-lab-broker.ts",
+                "symbol": "ownerRepository",
+                "line": 4044,
+                "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a"
+              },
+              {
+                "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+                "symbol": "createBrokerOwnerRepository",
+                "line": 9,
+                "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e"
+              }
+            ],
+            "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
           }
         ],
         "bindingIds": [
@@ -259283,7 +260286,22 @@
             "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
             "symbol": "iosAppiumSessionOrResult",
             "line": 645,
-            "gitBlob": "3a38fb7d3893136197cc8dc85f5a70c1a2a0a652"
+            "gitBlob": "3a38fb7d3893136197cc8dc85f5a70c1a2a0a652",
+            "currentSourceTrace": [
+              {
+                "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+                "symbol": "ensureIosAppiumSession",
+                "line": 259,
+                "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+              },
+              {
+                "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+                "symbol": "createIosObservationAccess",
+                "line": 6,
+                "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+              }
+            ],
+            "referenceScope": "Historical deleted-symbol observation preserved; current inward/native composition supplied separately."
           },
           {
             "path": "packages/device-lab/providers/backends/ios-device.mjs",
@@ -259647,5 +260665,5 @@
     ],
     "acceptanceScope": "All proposed closures are static source-route/authority observations only; portable/native/emitted/installed/reliability acceptance is not inferred."
   },
-  "semanticImportReferenceScope": "ImportDeclaration/member/call evidence is matched by actual module specifier/identifier, never nearest-call substitution; all sourceRoleCatalog import-labeled references rechecked against baseline AST/source."
+  "semanticImportReferenceScope": "Historical import/reference observations retain their original static scope; current androidCreationChoices SDK leaf and observeFocusedInventory enclosing owner are separately reconciled. No nearby-call substitution or exhaustive/runtime/native certification."
 }

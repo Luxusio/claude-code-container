@@ -191,14 +191,26 @@
       "commit": "d5b9bfe282f2cca0f077d4a6e1c7721abeefa7e7",
       "taskId": "TASK__architecture-device-flow",
       "implementation": "candidate-complete",
-      "wholeOperationIds": [
+      "wholeOperationIds": [],
+      "partialOperationIds": [
         "OP-device-flow"
       ],
-      "partialOperationIds": [],
-      "codeReview": "independent code/security/portable QA and actual local delivery PASS; formal hook attestation pending",
+      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-device-flow: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "19e4b93bebb69eebbcbde94b5a685155fb3cbe1c"
+      "acceptedIntegrationCommit": "19e4b93bebb69eebbcbde94b5a685155fb3cbe1c",
+      "historicalWholeOperationIdsBeforeFinalScopeAudit": [
+        "OP-device-flow"
+      ],
+      "historicalCodeReviewBeforeFinalScopeAudit": "independent code/security/portable QA and actual local delivery PASS; formal hook attestation pending",
+      "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-device-flow"
+        ],
+        "status": "candidate-reconciled-awaiting-independent-current-review"
+      }
     },
     {
       "id": "container-identity-image",
@@ -312,15 +324,38 @@
         "OP-android-wireless-usb-tcpip",
         "OP-android-wireless-pair",
         "OP-android-wireless-connect",
+        "OP-workspace-content-repair-admission",
+        "OP-workspace-cli-remove"
+      ],
+      "partialOperationIds": [
+        "OP-physical-stop"
+      ],
+      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-physical-stop: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "b855553fb7122234176c33f774e766af5824a4c4",
+      "historicalWholeOperationIdsBeforeFinalScopeAudit": [
+        "OP-android-emulator-create",
+        "OP-android-emulator-start",
+        "OP-android-emulator-stop",
+        "OP-android-emulator-delete",
+        "OP-android-wireless-status",
+        "OP-android-wireless-usb-tcpip",
+        "OP-android-wireless-pair",
+        "OP-android-wireless-connect",
         "OP-physical-stop",
         "OP-workspace-content-repair-admission",
         "OP-workspace-cli-remove"
       ],
-      "partialOperationIds": [],
-      "codeReview": "Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS. Local75byte delivery b855 verified; empty hook receipts parked, no formal close.",
-      "integration": "accepted",
-      "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "b855553fb7122234176c33f774e766af5824a4c4"
+      "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS. Local75byte delivery b855 verified; empty hook receipts parked, no formal close.",
+      "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-physical-stop"
+        ],
+        "status": "candidate-reconciled-awaiting-independent-current-review"
+      }
     },
     {
       "id": "admin-qemu-integration",
@@ -360,14 +395,41 @@
         "OP-container-qemu-stop",
         "OP-container-qemu-delete",
         "OP-qemu-image-import",
+        "OP-device-admin-prune"
+      ],
+      "partialOperationIds": [
+        "OP-device-admin-cleanup"
+      ],
+      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-device-admin-cleanup: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "d24e5ca1aeb194b01cd640ef18a2e50b70f5679a",
+      "historicalWholeOperationIdsBeforeFinalScopeAudit": [
+        "OP-ios-simulator-create",
+        "OP-ios-simulator-start",
+        "OP-ios-simulator-stop",
+        "OP-ios-simulator-delete",
+        "OP-macos-vm-create",
+        "OP-macos-vm-start",
+        "OP-macos-vm-stop",
+        "OP-macos-vm-delete",
+        "OP-container-qemu-create",
+        "OP-container-qemu-start",
+        "OP-container-qemu-stop",
+        "OP-container-qemu-delete",
+        "OP-qemu-image-import",
         "OP-device-admin-prune",
         "OP-device-admin-cleanup"
       ],
-      "partialOperationIds": [],
-      "codeReview": "Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS. Relevant unchanged tests carry. Verified local source delivery; empty automatic receipts parked, no formal close.",
-      "integration": "accepted",
-      "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "d24e5ca1aeb194b01cd640ef18a2e50b70f5679a"
+      "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS. Relevant unchanged tests carry. Verified local source delivery; empty automatic receipts parked, no formal close.",
+      "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-device-admin-cleanup"
+        ],
+        "status": "candidate-reconciled-awaiting-independent-current-review"
+      }
     },
     {
       "id": "exec-broker-image-integration",
@@ -415,17 +477,38 @@
       "implementation": "candidate-complete",
       "wholeOperationIds": [
         "OP-broker-owner-register",
+        "OP-broker-owner-resolve"
+      ],
+      "partialOperationIds": [
+        "OP-lease-claim",
+        "OP-lease-heartbeat",
+        "OP-lease-prune",
+        "OP-lease-release"
+      ],
+      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-lease-claim, OP-lease-heartbeat, OP-lease-prune, OP-lease-release: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "cbea3003ef0340912d348245c18f17428d5c9eef",
+      "historicalWholeOperationIdsBeforeFinalScopeAudit": [
+        "OP-broker-owner-register",
         "OP-broker-owner-resolve",
         "OP-lease-claim",
         "OP-lease-heartbeat",
         "OP-lease-prune",
         "OP-lease-release"
       ],
-      "partialOperationIds": [],
-      "codeReview": "Actual independent Code/Security/Docs and affected correction reviews PASS. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded. Actual local source delivery at cbea preserves all97 user changes. Formal hook records and native-host certification remain unverified.",
-      "integration": "accepted",
-      "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "cbea3003ef0340912d348245c18f17428d5c9eef"
+      "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs and affected correction reviews PASS. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded. Actual local source delivery at cbea preserves all97 user changes. Formal hook records and native-host certification remain unverified.",
+      "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-lease-claim",
+          "OP-lease-heartbeat",
+          "OP-lease-prune",
+          "OP-lease-release"
+        ],
+        "status": "candidate-reconciled-awaiting-independent-current-review"
+      }
     },
     {
       "id": "broker-appium-workflows",
@@ -471,16 +554,32 @@
       "commit": "b669bf6ce416f0cdff04589a663adfcc09728a2c",
       "taskId": "TASK__architecture-broker-recording",
       "implementation": "candidate-complete",
-      "wholeOperationIds": [
+      "wholeOperationIds": [],
+      "partialOperationIds": [
         "OP-recording-start",
         "OP-recording-finalize",
         "OP-recording-status"
       ],
-      "partialOperationIds": [],
-      "codeReview": "Actual independent source/composed/affected Code, Security and Docs PASS. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes. Unrelated legacy native-JS strict diagnostics are not accepted; formal hook attestation and native-host certification remain unverified.",
+      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-recording-start, OP-recording-finalize, OP-recording-status: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "b669bf6ce416f0cdff04589a663adfcc09728a2c"
+      "acceptedIntegrationCommit": "b669bf6ce416f0cdff04589a663adfcc09728a2c",
+      "historicalWholeOperationIdsBeforeFinalScopeAudit": [
+        "OP-recording-start",
+        "OP-recording-finalize",
+        "OP-recording-status"
+      ],
+      "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent source/composed/affected Code, Security and Docs PASS. Current all eight native constructor contracts match; reached iOS/Linux binding issues fixed. Genuine complete build plus actual changed package/MCP artifact refresh, fresh consumed implementation/emitted contracts, 130 fresh regression cases, 668 qualified unchanged cases, seven recording-core cases, lint, seven package cases, real npm/Unix startup smoke and compiled CLI PASS. Source locally delivered at b669bf6c preserving all97 user paths and diff bytes. Unrelated legacy native-JS strict diagnostics are not accepted; formal hook attestation and native-host certification remain unverified.",
+      "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-recording-start",
+          "OP-recording-finalize",
+          "OP-recording-status"
+        ],
+        "status": "candidate-reconciled-awaiting-independent-current-review"
+      }
     },
     {
       "id": "mobile-control-transfer",
@@ -531,16 +630,33 @@
       "taskId": "TASK__architecture-device-transfers-physical-integration",
       "implementation": "candidate-complete",
       "wholeOperationIds": [
+        "OP-broker-physical-stop",
+        "OP-broker-owner-cleanup"
+      ],
+      "partialOperationIds": [
+        "OP-physical-attach",
+        "OP-physical-detach"
+      ],
+      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-physical-attach, OP-physical-detach: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "624c26f3685874e98367252be75d5fb9522d61e6",
+      "historicalWholeOperationIdsBeforeFinalScopeAudit": [
         "OP-physical-attach",
         "OP-physical-detach",
         "OP-broker-physical-stop",
         "OP-broker-owner-cleanup"
       ],
-      "partialOperationIds": [],
-      "codeReview": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified. These twelve bindings were partial at624c; their remaining supported bindings close in device-interaction-integration atb4b8 and count once there.",
-      "integration": "accepted",
-      "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "624c26f3685874e98367252be75d5fb9522d61e6"
+      "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified. These twelve bindings were partial at624c; their remaining supported bindings close in device-interaction-integration atb4b8 and count once there.",
+      "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-physical-attach",
+          "OP-physical-detach"
+        ],
+        "status": "candidate-reconciled-awaiting-independent-current-review"
+      }
     },
     {
       "id": "device-interaction-integration",
@@ -792,10 +908,28 @@
         "OP-clipboard-x11-sync"
       ],
       "partialOperationIds": [],
-      "codeReview": "Independent current metadata Code/Docs and ordinary retained-input QA qualification PASS. Inward Bash synchronization and canonical CCC policy-first native staging qualified by676 real X11/Docker/clipboard cases, genuine build/shipping and verified CRLF-preserving accepted source FF. One existing source binding and operation counted once. Standalone Containerfile baked policy acceptance, final metadata QA/delivery and native/formal/source-denominator certification remain separate.",
+      "codeReview": "Whole source policy binding9a921 qualified by676 real cases/genuine build/shipping/protected FF. Additional accepted4ad7 three-recipe asset fix actual Docker builds/ccc permission/syntax inspections/npmUnix/protected FF PASS; native Podman/formal/exhaustive acceptance unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
-      "acceptedIntegrationCommit": "9a921ca1ff9e0a5d877a6b5e0eb780981d4570c5"
+      "acceptedIntegrationCommit": "9a921ca1ff9e0a5d877a6b5e0eb780981d4570c5",
+      "historicalCodeReviewAt9a921": "Independent current metadata Code/Docs and ordinary retained-input QA qualification PASS. Inward Bash synchronization and canonical CCC policy-first native staging qualified by676 real X11/Docker/clipboard cases, genuine build/shipping and verified CRLF-preserving accepted source FF. One existing source binding and operation counted once. Standalone Containerfile baked policy acceptance, final metadata QA/delivery and native/formal/source-denominator certification remain separate.",
+      "currentDistributionAcceptance": {
+        "sourceCommit": "4ad7ec4bd2e62926901d5b49f8659b27bcd72aee",
+        "taskId": "TASK__architecture-x11-containerfile-asset",
+        "scope": "Actual local Docker builds of Containerfile, Dockerfile and Dockerfile.distribution; installed bridge/policy readable as ccc, root parent0755/policy0644, exact normalized bytes/Bash syntax; current npm/materialized Unix payload and verified protected main FF. Native Podman/Windows/macOS/formal/full Goal unverified.",
+        "reviewQa": "Actual independent current CodeDEEP/Security and sole image/shipping QA PASS; automatic records absent after one verify and exact park.",
+        "recipes": [
+          "Containerfile",
+          "Dockerfile",
+          "Dockerfile.distribution"
+        ],
+        "sourcePins": [
+          "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+          "1af9acd138d91768dfe37897845db452586829cc69c36f195b45a8557faac050",
+          "1c458f7d3d5ccf4493fec1288f3a71cf98b1339abfa1376169587dc3a3ddc9f2"
+        ],
+        "nativePodmanCertified": false
+      }
     }
   ],
   "planningLanes": [
@@ -840,7 +974,8 @@
       "coveredOperationIds": [
         "OP-device-flow"
       ],
-      "status": "source, both shipping forms, combined portable QA and independent local delivery PASS at19e4b93b; accepted feature source, formal verification pending and native acceptance unverified"
+      "status": "Accepted source remains a contribution; confirmed direct workflow/shared-result completion is queued in final source follow-ups. Whole credit withheld pending current implementation/review/QA/delivery.",
+      "statusBeforeFinalScopeAudit": "source, both shipping forms, combined portable QA and independent local delivery PASS at19e4b93b; accepted feature source, formal verification pending and native acceptance unverified"
     },
     {
       "id": "container-identity-image",
@@ -893,7 +1028,8 @@
         "OP-lease-prune",
         "OP-lease-release"
       ],
-      "status": "Six whole operations accepted and locally delivered at cbea3003 after actual independent Code/Security/Docs and current combined QA PASS; all97 user changes preserved. Formal hook attestation and native-host certification remain unverified."
+      "status": "Accepted source remains a contribution; confirmed direct workflow/shared-result completion is queued in final source follow-ups. Whole credit withheld pending current implementation/review/QA/delivery.",
+      "statusBeforeFinalScopeAudit": "Six whole operations accepted and locally delivered at cbea3003 after actual independent Code/Security/Docs and current combined QA PASS; all97 user changes preserved. Formal hook attestation and native-host certification remain unverified."
     },
     {
       "id": "verifier-trim",
@@ -939,7 +1075,8 @@
         "OP-recording-finalize",
         "OP-recording-status"
       ],
-      "status": "Three whole operations accepted in current joint b669bf6c delivery after actual independent review and shared QA PASS. Original recording worktree retained until source task disposition; no native-host or formal close claim."
+      "status": "Accepted source remains a contribution; confirmed direct workflow/shared-result completion is queued in final source follow-ups. Whole credit withheld pending current implementation/review/QA/delivery.",
+      "statusBeforeFinalScopeAudit": "Three whole operations accepted in current joint b669bf6c delivery after actual independent review and shared QA PASS. Original recording worktree retained until source task disposition; no native-host or formal close claim."
     },
     {
       "id": "android-control-transfer",
@@ -1141,6 +1278,32 @@
         "OP-clipboard-x11-sync"
       ],
       "status": "Accepted Source9a921 current inward synchronization/canonical CCC policy-first staging independently reviewed and ordinary676/build/shipping/CRLF-preserving source delivery input-qualified. One whole operation counted in clipboard-x11-source-closure. Standalone Containerfile asset fix, final metadata QA/delivery and native/formal certification remain separate."
+    },
+    {
+      "id": "final-inventory-reconciliation",
+      "taskId": "TASK__architecture-final-inventory-reconciliation",
+      "coveredOperationIds": [],
+      "status": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification."
     }
-  ]
+  ],
+  "currentSourceQualificationAudit": {
+    "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+    "confirmedPartialOperationIds": [
+      "OP-lease-claim",
+      "OP-lease-heartbeat",
+      "OP-lease-prune",
+      "OP-lease-release",
+      "OP-physical-attach",
+      "OP-physical-detach",
+      "OP-recording-start",
+      "OP-recording-finalize",
+      "OP-recording-status",
+      "OP-device-admin-cleanup",
+      "OP-physical-stop",
+      "OP-device-flow"
+    ],
+    "boundedReferenceCorrections": 9,
+    "sourceUniverseCertified": false,
+    "scope": "Actual independent original-scope audit and affected planning review; twelve concrete existing operation gaps, not exhaustive remaining-work certification."
+  }
 }
