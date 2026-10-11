@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **195/218 (89.4%)**.
-Integrated source: **195/218 (89.4%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **19**.
+Implemented including unmerged candidates: **205/218 (94.0%)**.
+Integrated source: **205/218 (94.0%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **9**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -60,6 +60,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | mobile\-app\-management | 8 | 0 | `c04cdf6e` | Actual independent full Code/Security/Guide and current affected/composed Code PASS\. Original strict actual inward JavaScript and twelve consumed negative contracts PASS; whole legacy native JavaScript strictness is not claimed\. One genuine current production build65\.192s PASS; nine required whole files225 effective cases with zero skips, lint, seven package semantic cases, actual extracted npm and materialized Unix exports/assets/MCP startup, compiled CLI0/0/1 PASS\. Genuine authenticated default native\-child journeys cover both Android variants, Simulator app/container actions and physical iOS devicectl/verified Appium stop; existing inward request/broker\-Appium peers retain supported other facets\. Normal currentc04 local FF delivery preserves all97 user paths and binary diff;18source/1232artifacts/fixed dependencies/18links authenticated, only generated cache changed and owned actors joined\. Native hardware/hosts, formal hook closure and inventory certification remain unverified\. | accepted @ c04cdf6e |
 | mobile\-environment | 6 | 0 | `11fc4bcd` | Actual independent full DEEP Code/Security/Guide and current affected Code PASS\. Both synchronous inward platform factories and fourteen consumed required/ordinary\-async contracts pass strong architecture compilation; original strong package compile qualifies the one local JSDoc\-only finite radio\-array correction, with original failure log retained\. One genuine current complete build65\.636s PASS; ten required whole files231cases0skip, lint, seven package semantic cases, actual extracted npm and materialized Unix exports/assets/MCP startup, compiled CLI0/0/1 PASS\. Genuine authenticated default native\-child witnesses cover emulator environment6, physical Android clipboard2 and Simulator location/clipboard3; accepted Appium environment recipes and direct physical refusals retain distinct supported bindings\. Normal11fc local FF source delivery preserves all97 user paths and binary diff;19source/1236artifacts/fixeddependencies/18links/locks authenticated, only generated Vitest cache changed, private checkout clean and owned actors joined\. Native hardware/hosts, whole legacy native\-JavaScript strictness, formal hook closure and inventory certification remain unverified\. | accepted @ 11fc4bcd |
 | workspace\-opening | 1 | 0 | `3e13e077` | Actual full DEEP Code/Security, corrected independent Docs and affected Code PASS; strong package/root and architecture contracts PASS\. One genuine complete build67\.14s; ten whole files552PASS/9configured platform/Git skips, lint, package7, actual npm/Unix packaging/MCP startup and compiled CLI0/0/1 PASS\.18source/1242emits/fixeddependencies/18links/locks authenticated; owned processes joined\. Actual normal3e13 source FF preserves all97 user paths and binary diff\. Root metadata delivery pending; native hosts/hardware, whole legacy\-JS strictness, formal hook closure and inventory certification remain unverified\. Claude/Codex effect\-contract correction gives zero unrestricted tool\-setup credit\. | accepted @ 3e13e077 |
+| hyper\-v\-lifecycle\-network | 10 | 0 | `fb6e1765` | Independent complete composed and affected Code/Security/Docs passed\. Current strict checks and original genuine build chain passed through authenticated successful\-stage qualification and executed failed/unrun retries\. All24 whole files753PASS0skip; lint, package7, actual npm/Unix exports/assets/MCP startup and compiled CLI0/0/1 passed\. Final55source/1272artifacts/7551dependencies/18links/2locks authenticated, only generated cache changed, private checkout clean and owned processes joined\. Original compile/runtime failures retained and corrected without weakening graph/type/native authority\. Normal local FF fb6e preserves97 original user paths and binary diff\. Ten whole Hyper\-V lifecycle/network operations count once; Android/iOS contributions remain zero global\-operation credits pending supported\-binding completion\. Formal hook closure, native hosts/hardware, PowerShell parser and inventory certification remain unverified\. | accepted @ fb6e1765 |
 
 ## 0.2 Active next plans
 
@@ -89,6 +90,10 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | apple\-wireless\-completion | OP\-apple\-trust\-diagnostic | Accepted broker Apple trust624c plus current inward public iOS wireless b4b8 closes required BIND\-broker\-ios\-device\-device\_wireless\. Current authenticated DEFAULT child USB/WiFi/unknown\-UDID status and provider/MCP refusal proofs PASS; literal udid forwarding fix included with pre\-edit REQ\. One whole OP\-apple\-trust\-diagnostic counted in device\-interaction\-integration\. Native/formal certification unverified\. |
 | android\-orientation | OP\-device\-orientation | Orientation source fb219, accepted b4b8 after actual independent reviews/current joint QA; all27 literal bindings include Android12\+iOS12\+Appiumrecipes3 and real native broker/MCP paths\. Whole OP\-device\-orientation counted once in device\-interaction\-integration\. Native/formal certification unverified\. |
 | hyper\-v\-desktop\-transfer | OP\-device\-click, OP\-device\-drag, OP\-device\-key, OP\-device\-type, OP\-device\-scroll, OP\-device\-cursor\-move, OP\-device\-cursor\-query, OP\-device\-focus\-window, OP\-device\-window\-list, OP\-device\-upload, OP\-device\-download | Four source/correction commits composed through13e217 thenb4b8; concrete DTO/inward focus, readonly carrier and type\-only client labels reviewed\. Genuine current build/public Windows/Linux controls/transfers QA and accepted\-parent local delivery PASS\. Eleven global operations count once in device\-interaction\-integration with accepted other providers; native/formal certification unverified\. |
+| android\-device\-access | OP\-device\-exec, OP\-device\-screenshot, OP\-device\-status, OP\-device\-ui, OP\-device\-session\-status, OP\-mobile\-wait\-app, OP\-mobile\-wait\-text | Android inward access and waits accepted as a contribution in fb6e after current753\-case combined QA and local delivery\. No whole global operation counted; remaining actual supported bindings still require completion\. Formal/native certification unverified\. |
+| ios\-observation\-access | OP\-device\-exec, OP\-device\-list\-files, OP\-device\-reset, OP\-device\-screenshot, OP\-device\-status, OP\-device\-ui, OP\-device\-session\-status, OP\-mobile\-wait\-app, OP\-mobile\-wait\-text | Simulator/physical inward access, session acquisition and waits accepted as a contribution in fb6e after current753\-case combined QA and local delivery\. No whole global credit before actual supported\-binding closure; inventory status/text\-wait omissions require qualification\. Formal/native certification unverified\. |
+| desktop\-device\-access | OP\-device\-exec, OP\-device\-list\-files, OP\-device\-screenshot, OP\-device\-status, OP\-device\-ui | Source6/Test8/Guide1 cf63b8e2 complete with actual independent Code/Security/Docs PASS after DTO\-direction correction\. Fifteen current pins; runtime/compiler/build UNRUN\. Reconcile accepted parent then compose with QEMU for one genuine QA cohort; no whole credits or native claims\. |
+| qemu\-guest\-execution | OP\-device\-exec, OP\-device\-list\-files | Source4/Test4/Guide1 e7abfa63 complete and actual independent Code/Security/Docs PASS\. Nine current pins; compiler/runtime/build UNRUN\. Reconcile accepted parent and compose with Desktop; no whole credits or native claims\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -121,14 +126,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-windows-sandbox-stop` — windows\-sandbox stop. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 - [x] `OP-windows-sandbox-delete` — windows\-sandbox delete. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 
-## 6. M05 — Hyper-V lifecycle (9/15 implemented)
+## 6. M05 — Hyper-V lifecycle (15/15 implemented)
 
-- [ ] `OP-windows-vm-create` — windows\-vm create. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-windows-vm-start` — windows\-vm start. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-windows-vm-create` — windows\-vm create. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
+- [x] `OP-windows-vm-start` — windows\-vm start. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
 - [x] `OP-windows-vm-stop` — windows\-vm stop. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
 - [x] `OP-windows-vm-delete` — windows\-vm delete. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
-- [ ] `OP-hyper-v-linux-create` — hyper\-v\-linux create. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
-- [ ] `OP-hyper-v-linux-start` — hyper\-v\-linux start. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-hyper-v-linux-create` — hyper\-v\-linux create. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
+- [x] `OP-hyper-v-linux-start` — hyper\-v\-linux start. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
 - [x] `OP-hyper-v-linux-stop` — hyper\-v\-linux stop. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
 - [x] `OP-hyper-v-linux-delete` — hyper\-v\-linux delete. **integrated**; hyper\-v\-stop\-delete @ 2c8bcbe6.
 - [x] `OP-hyperv-snapshot-list` — List exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
@@ -136,10 +141,10 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-hyperv-snapshot-restore` — Restore exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
 - [x] `OP-hyperv-snapshot-delete` — Delete exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
 - [x] `OP-hyperv-snapshot-repair` — Repair exact owned Hyper\-V snapshot. **integrated**; hyper\-v\-snapshot\-workflows @ 5122a56a.
-- [ ] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
-- [ ] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **TODO**; packages/device\-lab/src/device\-lab\-broker\.ts.
+- [x] `OP-hyperv-linux-guest-trust` — Validate and reconcile allocated Hyper\-V Linux guest SSH trust. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
+- [x] `OP-device-reboot` — Reboot exact owned Hyper\-V VM. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
 
-## 7. M06 — Images/network/admin (10/14 implemented)
+## 7. M06 — Images/network/admin (14/14 implemented)
 
 - [x] `OP-device-admin-cleanup` — Clean owned Device Lab resources. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-prune` — Prune stale Device Lab records. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
@@ -147,12 +152,12 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-device-admin-setup` — Set up Hyper\-V host fabric. **integrated**; sandbox\-request\-admin\-integration @ d0bb62a9.
 - [x] `OP-broker-owner-cleanup` — Broker owner cleanup. **integrated**; device\-transfers\-physical\-integration @ 624c26f3.
 - [x] `OP-hyperv-image-import` — Import or reuse exact CCC Hyper\-V VHDX image. **integrated**; exec\-broker\-image\-integration @ acefb933.
-- [ ] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
+- [x] `OP-hyperv-fabric-allocation` — Allocate exact Hyper\-V device network address. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
 - [x] `OP-qemu-image-import` — Qemu image import. **integrated**; qemu\-admin\-lifecycle\-integration @ d24e5ca1.
 - [x] `OP-device-admin-inventory` — Read host admin current\-owner and explicit all\-project device inventory. **integrated**; admin\-qemu\-integration @ b855553f.
-- [ ] `OP-hyperv-fabric-ensure` — Ensure and recover shared Hyper\-V host fabric. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
-- [ ] `OP-hyperv-fabric-release` — Release exact allocation and recover owned Hyper\-V host fabric cleanup. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
-- [ ] `OP-hyperv-allocation-reconcile` — Reconcile orphaned Hyper\-V network allocations. **TODO**; packages/device\-lab/src/device\-lab/broker/hyper\-v/network\.ts.
+- [x] `OP-hyperv-fabric-ensure` — Ensure and recover shared Hyper\-V host fabric. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
+- [x] `OP-hyperv-fabric-release` — Release exact allocation and recover owned Hyper\-V host fabric cleanup. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
+- [x] `OP-hyperv-allocation-reconcile` — Reconcile orphaned Hyper\-V network allocations. **integrated**; hyper\-v\-lifecycle\-network @ fb6e1765.
 - [x] `OP-hyperv-image-acquire` — Acquire and recover automatic Hyper\-V base image cache. **integrated**; exec\-broker\-image\-integration @ acefb933.
 - [x] `OP-qemu-image-list` — List owner QEMU base\-image definitions. **integrated**; admin\-qemu\-integration @ b855553f.
 

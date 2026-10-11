@@ -707,6 +707,30 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "3e13e077843028d530b027de323222057c083d0b"
+    },
+    {
+      "id": "hyper-v-lifecycle-network",
+      "branch": "refactor/architecture-hyper-v-lifecycle-network-integration-20261011",
+      "commit": "fb6e1765ca5414994e8889faf120e090f69f9954",
+      "taskId": "TASK__architecture-hyper-v-lifecycle-network-integration",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-windows-vm-create",
+        "OP-windows-vm-start",
+        "OP-hyper-v-linux-create",
+        "OP-hyper-v-linux-start",
+        "OP-device-reboot",
+        "OP-hyperv-fabric-allocation",
+        "OP-hyperv-fabric-ensure",
+        "OP-hyperv-fabric-release",
+        "OP-hyperv-allocation-reconcile",
+        "OP-hyperv-linux-guest-trust"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Independent complete composed and affected Code/Security/Docs passed. Current strict checks and original genuine build chain passed through authenticated successful-stage qualification and executed failed/unrun retries. All24 whole files753PASS0skip; lint, package7, actual npm/Unix exports/assets/MCP startup and compiled CLI0/0/1 passed. Final55source/1272artifacts/7551dependencies/18links/2locks authenticated, only generated cache changed, private checkout clean and owned processes joined. Original compile/runtime failures retained and corrected without weakening graph/type/native authority. Normal local FF fb6e preserves97 original user paths and binary diff. Ten whole Hyper-V lifecycle/network operations count once; Android/iOS contributions remain zero global-operation credits pending supported-binding completion. Formal hook closure, native hosts/hardware, PowerShell parser and inventory certification remain unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "fb6e1765ca5414994e8889faf120e090f69f9954"
     }
   ],
   "planningLanes": [
@@ -965,6 +989,57 @@
         "OP-device-download"
       ],
       "status": "Four source/correction commits composed through13e217 thenb4b8; concrete DTO/inward focus, readonly carrier and type-only client labels reviewed. Genuine current build/public Windows/Linux controls/transfers QA and accepted-parent local delivery PASS. Eleven global operations count once in device-interaction-integration with accepted other providers; native/formal certification unverified."
+    },
+    {
+      "id": "android-device-access",
+      "taskId": "TASK__architecture-android-device-access",
+      "coveredOperationIds": [
+        "OP-device-exec",
+        "OP-device-screenshot",
+        "OP-device-status",
+        "OP-device-ui",
+        "OP-device-session-status",
+        "OP-mobile-wait-app",
+        "OP-mobile-wait-text"
+      ],
+      "status": "Android inward access and waits accepted as a contribution in fb6e after current753-case combined QA and local delivery. No whole global operation counted; remaining actual supported bindings still require completion. Formal/native certification unverified."
+    },
+    {
+      "id": "ios-observation-access",
+      "taskId": "TASK__architecture-ios-observation-access",
+      "coveredOperationIds": [
+        "OP-device-exec",
+        "OP-device-list-files",
+        "OP-device-reset",
+        "OP-device-screenshot",
+        "OP-device-status",
+        "OP-device-ui",
+        "OP-device-session-status",
+        "OP-mobile-wait-app",
+        "OP-mobile-wait-text"
+      ],
+      "status": "Simulator/physical inward access, session acquisition and waits accepted as a contribution in fb6e after current753-case combined QA and local delivery. No whole global credit before actual supported-binding closure; inventory status/text-wait omissions require qualification. Formal/native certification unverified."
+    },
+    {
+      "id": "desktop-device-access",
+      "taskId": "TASK__architecture-desktop-device-access",
+      "coveredOperationIds": [
+        "OP-device-exec",
+        "OP-device-list-files",
+        "OP-device-screenshot",
+        "OP-device-status",
+        "OP-device-ui"
+      ],
+      "status": "Source6/Test8/Guide1 cf63b8e2 complete with actual independent Code/Security/Docs PASS after DTO-direction correction. Fifteen current pins; runtime/compiler/build UNRUN. Reconcile accepted parent then compose with QEMU for one genuine QA cohort; no whole credits or native claims."
+    },
+    {
+      "id": "qemu-guest-execution",
+      "taskId": "TASK__architecture-qemu-guest-execution",
+      "coveredOperationIds": [
+        "OP-device-exec",
+        "OP-device-list-files"
+      ],
+      "status": "Source4/Test4/Guide1 e7abfa63 complete and actual independent Code/Security/Docs PASS. Nine current pins; compiler/runtime/build UNRUN. Reconcile accepted parent and compose with Desktop; no whole credits or native claims."
     }
   ]
 }
