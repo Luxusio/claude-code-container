@@ -45,7 +45,7 @@ import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/life
 import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, rollbackBrokerMacosCreate } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
-import { brokerMacosReplacement, brokerMacosUniqueFields } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { brokerMacosReplacement, brokerMacosUniqueFields, type BrokerMacosMetadataPurpose } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "./device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
@@ -6604,13 +6604,21 @@ function planBrokerWindowsSandboxCommand(ownerId: string, parsed: CommandParamSu
 
 
 
+function nativeMetadataDescription(purpose: BrokerMacosMetadataPurpose): string {
+    if (purpose === "image-unset") return "macOS VM device_create without image writes owner-scoped broker metadata";
+    if (purpose === "stopped-definition-delete") return "Stopped macOS VM delete without providerInstance deletes only owner broker metadata";
+    return "device_create writes owner-scoped broker metadata";
+}
 function nativeLifecyclePreparation(command: NativeLifecycleCommand | null | undefined) {
     if (!command)
-        return { kind: "metadata-only" as const, reason: "device_create writes owner-scoped broker metadata" };
+        return { kind: "metadata-only" as const, purpose: "definition-only" as const };
     if ("error" in command)
         return { kind: "unavailable" as const, error: command.error, missing: command.missing };
-    if (command.mode === "noop")
-        return { kind: "metadata-only" as const, reason: command.reason || "device_create writes owner-scoped broker metadata" };
+    if (command.mode === "noop") {
+        const purpose: BrokerMacosMetadataPurpose = command.reason === nativeMetadataDescription("stopped-definition-delete")
+            ? "stopped-definition-delete" : command.reason === nativeMetadataDescription("image-unset") ? "image-unset" : "definition-only";
+        return { kind: "metadata-only" as const, purpose };
+    }
     return { kind: "ready" as const, effect: new NativeProviderLifecycleEffect(command), mode: command.mode, provider: command.provider, canCompensate: Boolean(command.executable), bootEligible: command.provider === "tart" && command.mode === "detached" && Boolean(command.executable) };
 }
 function nativePreparedCommand(prepared: {
@@ -6618,7 +6626,7 @@ function nativePreparedCommand(prepared: {
     effect: NativeProviderLifecycleEffect;
 } | {
     kind: "metadata-only";
-    reason?: string;
+    purpose?: BrokerMacosMetadataPurpose;
 } | {
     kind: "unavailable";
     error: string;
@@ -6628,7 +6636,7 @@ function nativePreparedCommand(prepared: {
         return { error: prepared.error, missing: prepared.missing };
     if (prepared.kind === "ready")
         return prepared.effect.command;
-    return { mode: "noop", provider: "host-broker-state", reason: prepared.reason || metadataReason };
+    return { mode: "noop", provider: "host-broker-state", reason: prepared.purpose ? nativeMetadataDescription(prepared.purpose) : metadataReason };
 }
 function planBrokerAndroidCreateCommand(owner: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, create = parsed.create || {}) {
     return nativePreparedCommand(planBrokerAndroidCreate(owner, parsed, brokerAndroidPreparationPorts(normalized), create));
@@ -8669,7 +8677,7 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
 }
 function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts<NativeProviderLifecycleEffect> {
     return {
-        executeMetadata: (reason, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason }, options)),
+        executeMetadata: (purpose, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: nativeMetadataDescription(purpose) }, options)),
         execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
         prepareCreate: ({ provider, image, instance }) => {
             const command: ProviderCommand = { mode: "exec", provider, executable: executableFor(provider, normalized), args: ["clone", image, instance] };

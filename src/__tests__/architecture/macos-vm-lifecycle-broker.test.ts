@@ -35,6 +35,27 @@ async function invoke(base: string, command: string, extra: Record<string, unkno
 }
 const successfulRunner = (): NonNullable<DeviceBrokerOptions["commandRunner"]> => command => ({ ...command, status: 0, stdout: "", stderr: "" });
 describe("authenticated macOS broker lifecycle", () => {
+    it.each([
+        ["vz", "device_create writes owner-scoped broker metadata"],
+        ["tart", "macOS VM device_create without image writes owner-scoped broker metadata"],
+    ])("keeps %s definition creation provider-free and executes metadata-only deletion", async (provider, description) => {
+        const runner = vi.fn(successfulRunner()), base = await start(runner);
+        const created = await invoke(base, "device_create", { name: "Unit", provider });
+        expect(created.status).toBe(200);
+        expect(created.body.result.providerCommand).toMatchObject({ mode: "noop", provider: "host-broker-state", reason: description });
+        expect(runner).not.toHaveBeenCalled();
+        const stored = devices()[0];
+        delete stored.providerInstance;
+        writeBrokerDevices(owner, "macos", [stored]);
+        const deleted = await invoke(base, "device_delete", { confirmDestructive: true });
+        expect(deleted.status).toBe(200);
+        expect(devices()).toEqual([]);
+        expect(runner).toHaveBeenCalledOnce();
+        expect(runner.mock.calls[0][0]).toEqual({
+            mode: "noop", provider: "host-broker-state",
+            reason: "Stopped macOS VM delete without providerInstance deletes only owner broker metadata",
+        });
+    });
     it("publishes create/start/stop/delete through the actual HTTP dispatcher", async () => {
         const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => ({
             ...command, status: 0, stdout: command.args?.[0] === "ip" ? "192.0.2.20" : "", stderr: "",

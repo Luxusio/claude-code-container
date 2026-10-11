@@ -11,7 +11,7 @@ export interface BrokerIosProviderResult {
 }
 export type BrokerIosPlannedCommand<Effect> =
     {kind: "unavailable"; error: string; missing: string[]} |
-    {kind: "metadata-only"; reason: string} |
+    {kind: "metadata-only"} |
     {kind: "ready"; effect: Effect; provider: string; canCompensate: boolean; bootEligible: boolean};
 export interface BrokerIosLifecyclePlan<Effect> {
     create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: BrokerIosPlannedCommand<Effect>;

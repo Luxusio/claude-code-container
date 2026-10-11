@@ -1,9 +1,9 @@
-import type {BrokerMacosLifecycleRequest, BrokerMacosProviderResult, BrokerMacosPlannedCommand, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange, BrokerMacosAuxiliaryFacts} from "../../domain/lifecycle/macos-vm-lifecycle.js";
+import type {BrokerMacosLifecycleRequest, BrokerMacosProviderResult, BrokerMacosPlannedCommand, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange, BrokerMacosAuxiliaryFacts, BrokerMacosMetadataPurpose} from "../../domain/lifecycle/macos-vm-lifecycle.js";
 export interface BrokerMacosAuxiliaryCleanup {result: BrokerMacosAuxiliaryFacts; device: unknown; committed: boolean;}
 /** One prepared native effect at a time; eligibility, publication and recovery stay inward. */
 export interface BrokerMacosVmLifecyclePorts<Effect> {
     readonly execute: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerMacosProviderResult;
-    readonly executeMetadata: (reason: string, options: {timeoutMs: number; outputLimit: number}) => BrokerMacosProviderResult;
+    readonly executeMetadata: (purpose: BrokerMacosMetadataPurpose, options: {timeoutMs: number; outputLimit: number}) => BrokerMacosProviderResult;
     readonly prepareCreate: (input: {provider: string; image: string; instance: string}) => BrokerMacosPlannedCommand<Effect>;
     readonly prepareExisting: (input: {parsed: BrokerMacosLifecycleRequest; provider: string; instance: string; headless: boolean}) => BrokerMacosPlannedCommand<Effect>;
     readonly prepareDelete: (effect: Effect, target: string) => Effect;

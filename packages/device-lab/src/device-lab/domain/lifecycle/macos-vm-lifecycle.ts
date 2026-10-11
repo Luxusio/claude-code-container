@@ -9,9 +9,10 @@ export interface BrokerMacosProviderResult {
     stdout?: string; stderr?: string; error?: string; timedOut?: boolean;
     outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean; receipt: unknown;
 }
+export type BrokerMacosMetadataPurpose = "definition-only" | "image-unset" | "stopped-definition-delete";
 export type BrokerMacosPlannedCommand<Effect> =
     {kind: "unavailable"; error: string; missing: string[]} |
-    {kind: "metadata-only"; reason: string} |
+    {kind: "metadata-only"; purpose: BrokerMacosMetadataPurpose} |
     {kind: "ready"; effect: Effect; provider: string; canCompensate: boolean; bootEligible: boolean};
 export interface BrokerMacosLifecyclePlan<Effect> {
     create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: BrokerMacosPlannedCommand<Effect>;

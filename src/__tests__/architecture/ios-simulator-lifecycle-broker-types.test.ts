@@ -22,7 +22,7 @@ function contracts(ports: BrokerIosSimulatorLifecyclePorts<Effect>, input: Broke
     // @ts-expect-error finite native preparation is required
     createBrokerIosSimulatorLifecycle(withoutPreparation);
     // @ts-expect-error preparation settles synchronously before execution
-    createBrokerIosSimulatorLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only", reason: "unavailable" }) });
+    createBrokerIosSimulatorLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only" }) });
     // @ts-expect-error native effect observations are synchronous
     createBrokerIosSimulatorLifecycle({ ...ports, execute: async () => ({ mode: "exec", provider: "simctl", status: 0, receipt: null }) });
     // @ts-expect-error publication reports found and matched independently

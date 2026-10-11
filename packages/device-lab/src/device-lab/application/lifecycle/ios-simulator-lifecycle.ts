@@ -16,7 +16,7 @@ export function createBrokerIosRecord(ownerId: string, parsed: BrokerIosLifecycl
 }
 export function planBrokerIosCreateCommand<Effect>(ownerId: string, parsed: BrokerIosLifecycleRequest, ports: Pick<BrokerIosSimulatorLifecyclePorts<Effect>, "prepareCreate">, create = parsed.create || {}): BrokerIosPlannedCommand<Effect> {
     if (create.createSimulator === true) return ports.prepareCreate(brokerIosCreateCommand(ownerId,parsed,create));
-    return {kind: "metadata-only", reason: "device_create writes owner-scoped broker metadata"};
+    return {kind: "metadata-only"};
 }
 export function planBrokerIosExistingCommand<Effect>(ownerId: string, parsed: BrokerIosLifecycleRequest, device: unknown, ports: Pick<BrokerIosSimulatorLifecyclePorts<Effect>, "verifyOwnedTarget" | "prepareExisting">): BrokerIosPlannedCommand<Effect> {
     const owned = ports.verifyOwnedTarget(ownerId,device);

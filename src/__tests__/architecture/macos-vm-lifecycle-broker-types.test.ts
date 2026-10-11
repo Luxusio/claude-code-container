@@ -22,7 +22,7 @@ function contracts(ports: BrokerMacosVmLifecyclePorts<Effect>, input: BrokerMaco
     // @ts-expect-error finite native preparation is required
     createBrokerMacosVmLifecycle(withoutPreparation);
     // @ts-expect-error preparation settles synchronously before execution
-    createBrokerMacosVmLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only", reason: "unavailable" }) });
+    createBrokerMacosVmLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only", purpose: "definition-only" }) });
     // @ts-expect-error native effect observations are synchronous
     createBrokerMacosVmLifecycle({ ...ports, execute: async () => ({ mode: "exec", provider: "tart", status: 0, receipt: null }) });
     // @ts-expect-error publication reports found and matched independently

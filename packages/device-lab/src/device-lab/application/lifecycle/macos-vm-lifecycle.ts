@@ -15,9 +15,9 @@ export function createBrokerMacosRecord(ownerId: string, parsed: BrokerMacosLife
 export function planBrokerMacosCreateCommand<Effect>(ownerId: string, parsed: BrokerMacosLifecycleRequest, ports: Pick<BrokerMacosVmLifecyclePorts<Effect>, "prepareCreate">, create = parsed.create || {}): BrokerMacosPlannedCommand<Effect> {
     const provider = create.provider === "auto" || !create.provider ? "tart" : String(create.provider);
     if (!["tart","vz","utmctl"].includes(provider)) return {kind: "unavailable", error: "unsupported-provider-command", missing: ["provider"]};
-    if (provider !== "tart") return {kind: "metadata-only", reason: "device_create writes owner-scoped broker metadata"};
+    if (provider !== "tart") return {kind: "metadata-only", purpose: "definition-only"};
     const image = typeof create.image === "string" && create.image ? create.image : null;
-    if (!image) return {kind: "metadata-only", reason: "macOS VM device_create without image writes owner-scoped broker metadata"};
+    if (!image) return {kind: "metadata-only", purpose: "image-unset"};
     return ports.prepareCreate({provider, image, instance: brokerMacosInstance(ownerId,parsed,create)});
 }
 export function planBrokerMacosExistingCommand<Effect>(ownerId: string, parsed: BrokerMacosLifecycleRequest, device: unknown, ports: Pick<BrokerMacosVmLifecyclePorts<Effect>, "prepareExisting">): BrokerMacosPlannedCommand<Effect> {
@@ -25,7 +25,7 @@ export function planBrokerMacosExistingCommand<Effect>(ownerId: string, parsed: 
     if (!["tart","vz","utmctl"].includes(provider)) return {kind: "unavailable", error: "unsupported-provider-command", missing: ["provider"]};
     const instance = brokerMacosField(device,"providerInstance");
     if (parsed.command === "device_delete" && !instance && !(parsed.stateKey !== "android-device" && parsed.stateKey !== "ios-device" && ["running","booted","started","starting"].includes(String((device as {status?: unknown})?.status || "").toLowerCase()))) {
-        return {kind: "metadata-only", reason: "Stopped macOS VM delete without providerInstance deletes only owner broker metadata"};
+        return {kind: "metadata-only", purpose: "stopped-definition-delete"};
     }
     if (!instance) return {kind: "unavailable", error: "missing-provider-metadata", missing: ["providerInstance"]};
     const headless = parsed.command === "device_start" && provider === "tart"
@@ -91,7 +91,7 @@ export function createBrokerMacosVmLifecycle<Effect>(ports: BrokerMacosVmLifecyc
         if (auxiliary?.committed) expected = structuredClone(auxiliary.device);
         if (auxiliary?.result.ok === false) return {kind: "auxiliary-failed", plan, device: auxiliary.device, auxiliary: auxiliary.result};
         const execution: BrokerMacosProviderResult = command.kind === "metadata-only"
-            ? ports.executeMetadata(command.reason,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit})
+            ? ports.executeMetadata(command.purpose,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit})
             : ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
         let success = brokerMacosCommandSucceeded(execution) || brokerMacosToleratesMissingDelete(parsed,execution);
         let boot: BrokerMacosBoot | null = null;
