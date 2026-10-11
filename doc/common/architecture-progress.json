@@ -240,7 +240,7 @@
       "partialOperationIds": [
         "OP-state-storage"
       ],
-      "codeReview": "independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending",
+      "codeReview": "independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending; accepted owner-state-content contribution306723dbb7d6e0674be63b4be4a1ea6e6cd5d584 actual independent reviews, genuine complete build,77 ordinary cases plus qualified graph, shipping and local FF PASS. Broader state-storage remains partial; counted once in this existing partial lane.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "da5d7d368184aef48ae15ef357be69757688c411"
@@ -1064,7 +1064,19 @@
       "coveredOperationIds": [
         "OP-device-status"
       ],
-      "status": "Complete Source4/Test4/Guide1 frozena6d88b21 actual full independent Code/Security/Docs PASS. Normal accepted56eaccbe-parent reconciliation and sole current QA queued. No whole status credit, native/formal acceptance unverified."
+      "status": "Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 after actual independent Code/Security/Docs PASS and sole current genuine complete build, four whole files190 behavior cases plus qualified graph, shipping and local FF PASS. Twelve supported status rows and eight lifecycle joins now recorded; whole status credit pending independent post-write all-binding/evidence qualification. Native/formal certification unverified.",
+      "taskId": "TASK__architecture-broker-device-status"
+    },
+    {
+      "id": "binding-catalog",
+      "taskId": "TASK__architecture-binding-catalog",
+      "coveredOperationIds": [
+        "OP-device-status",
+        "OP-device-ui",
+        "OP-mobile-wait-text",
+        "OP-tool-setup"
+      ],
+      "status": "Fifteen supported source-only rows and ten existing broker joins recorded; accepted Source provenance retained. All four whole-operation credits remain pending independent post-write source/all-binding and actual ordinary-QA evidence qualification; OpenCode separately excluded; native/formal certification unverified."
     }
   ]
 }

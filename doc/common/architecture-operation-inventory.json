@@ -4764,10 +4764,10 @@
       "countingOwner": "M11",
       "operation": "Prepare requested tool launcher",
       "policyOwner": "src/application/requested-tool-setup.ts",
-      "businessBoundary": "ensureTools facade performs retained OpenCode data ACL preparation before inward requested-tool route, single launcher probe and Codex sandbox policy. Complete public facade still includes this native policy.",
+      "businessBoundary": "Authorized Codex/Claude requested-tool launcher setup, single readiness probe and Codex sandbox policy are inward. The separately inventoried OpenCode data-ACL prelude is explicitly excluded from current migration scope; retained native behavior is unchanged.",
       "completionCriteria": "Retain mutable metadata evaluation, synchronous completion and original container-loss retry owner.",
       "implementationStatus": "partial",
-      "statusReason": "Requested-tool install-route/single launcher readiness/Codex sandbox policy is accepted inward; current ensureTools conditional OpenCode prelude delegates separately inventoried pending ACL preparation. No unknown inventory authority remains.",
+      "statusReason": "Accepted Codex/Claude requested-tool source and consumed native compositions; whole-operation accounting pending independent current all-binding/evidence qualification. OpenCode remains separately excluded, not silently treated as migrated.",
       "sources": [
         {
           "path": "src/application/requested-tool-setup.ts",
@@ -4914,14 +4914,28 @@
             "declarationKind": "export"
           },
           "normalizedHandler": "createRequestedToolSetup",
-          "authorityOwner": "Caller captured target plus mutable canonical ToolDefinition object",
-          "lockOwner": "Outer index.ts setup guard wait900000; OpenCode helper native directory flock; requested application does not acquire an extra lock.",
+          "authorityOwner": "Captured target and selected Codex/Claude tool definition through native requested-tool composition.",
+          "lockOwner": "Outer container setup readiness guard; requested-tool application acquires no extra lock. Excluded OpenCode prelude retains its separate native directory lock.",
           "supportDisposition": "existing-source-binding",
           "workItemIds": [
             "OP-tool-setup"
           ],
           "closureStatus": "specific-facade-traced",
-          "scope": "Existing source function binding; not a newly advertised tool/RPC route. Full public aliases/provider-executor matrix remains required for closure."
+          "scope": "Current authorized Codex/Claude requested-tool setup; separate excluded OP-opencode-data-access-preparation retains OpenCode prelude. No unrestricted tool credit.",
+          "sourceTrace": [
+            {
+              "path": "src/container-setup.ts",
+              "symbol": "ensureTools",
+              "line": 921,
+              "gitBlob": "805192ae2eb60d0f9df82f307b49b8e7d4725b08"
+            },
+            {
+              "path": "src/application/requested-tool-setup.ts",
+              "symbol": "createRequestedToolSetup",
+              "line": 5,
+              "gitBlob": "d31abd41639bd4497390e2766884c3e0afde88cb"
+            }
+          ]
         }
       ],
       "aliases": [],
@@ -77347,7 +77361,7 @@
       "businessBoundary": "Observe exact owned/current-display target and retain native normalized readiness/lease/session fields; no startup.",
       "completionCriteria": "Whole canonical status request/selection/ownership/normalization/result workflow inward with explicit native/session/storage ports; preserve every currently supported binding and refusal; provider command codecs stay retained adapters.",
       "implementationStatus": "pending",
-      "statusReason": "Canonical complete business action remains in legacy presentation/provider/native workflows. Existing shared generation/repository/library seams do not complete this action; existing unsupported routes are excluded.",
+      "statusReason": "Accepted inward source contributions and current supported binding joins recorded; whole-operation qualification remains pending independent post-write all-binding and accepted ordinary-QA evidence review. No native certification or whole credit from this metadata repair.",
       "sources": [
         {
           "path": "device-lab-mcp/src/server.mjs",
@@ -77492,6 +77506,1350 @@
           "nativeAcceptance": "unverified",
           "portableAcceptance": "unverified",
           "conditions": []
+        },
+        {
+          "id": "BIND-direct-android-emulator-device_status",
+          "backend": "android-emulator",
+          "provider": "android-emulator",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/android.mjs",
+            "symbol": "handleAndroidTool",
+            "line": 1059,
+            "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/android.mjs",
+              "symbol": "handleAndroidTool",
+              "line": 1059,
+              "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+            },
+            {
+              "path": "packages/device-lab/providers/application/android-device-access.mjs",
+              "symbol": "createAndroidDeviceAccess",
+              "line": 64,
+              "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-child-android-emulator-device_status",
+          "backend": "android-emulator",
+          "provider": "android-emulator",
+          "executor": "provider-child",
+          "route": "broker.device.tool.invoke",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/android.mjs",
+            "symbol": "handleAndroidTool",
+            "line": 1059,
+            "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 3966,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "defaultBrokerDeviceToolRunner",
+              "line": 7283,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "deviceLabBackendInvocation",
+              "line": 7039,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "runBrokerBackendChild",
+              "line": 7096,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/android.mjs",
+              "symbol": "handleAndroidTool",
+              "line": 1059,
+              "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+            },
+            {
+              "path": "packages/device-lab/providers/application/android-device-access.mjs",
+              "symbol": "createAndroidDeviceAccess",
+              "line": 64,
+              "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-direct-android-device-device_status",
+          "backend": "android-device",
+          "provider": "android-device",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/android-device.mjs",
+            "symbol": "handleAndroidRealTool",
+            "line": 820,
+            "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/android-device.mjs",
+              "symbol": "handleAndroidRealTool",
+              "line": 820,
+              "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+            },
+            {
+              "path": "packages/device-lab/providers/application/android-device-access.mjs",
+              "symbol": "createAndroidDeviceAccess",
+              "line": 64,
+              "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-child-android-device-device_status",
+          "backend": "android-device",
+          "provider": "android-device",
+          "executor": "provider-child",
+          "route": "broker.device.tool.invoke",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/android-device.mjs",
+            "symbol": "handleAndroidRealTool",
+            "line": 820,
+            "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 3966,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "defaultBrokerDeviceToolRunner",
+              "line": 7283,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "deviceLabBackendInvocation",
+              "line": 7039,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "runBrokerBackendChild",
+              "line": 7096,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/android-device.mjs",
+              "symbol": "handleAndroidRealTool",
+              "line": 820,
+              "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+            },
+            {
+              "path": "packages/device-lab/providers/application/android-device-access.mjs",
+              "symbol": "createAndroidDeviceAccess",
+              "line": 64,
+              "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-direct-ios-simulator-device_status",
+          "backend": "ios-simulator",
+          "provider": "ios-simulator",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+            "symbol": "handleIosTool",
+            "line": 640,
+            "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+              "symbol": "handleIosTool",
+              "line": 640,
+              "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+            },
+            {
+              "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+              "symbol": "createIosObservationAccess",
+              "line": 6,
+              "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-child-ios-simulator-device_status",
+          "backend": "ios-simulator",
+          "provider": "ios-simulator",
+          "executor": "provider-child",
+          "route": "broker.device.tool.invoke",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+            "symbol": "handleIosTool",
+            "line": 640,
+            "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 3966,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "defaultBrokerDeviceToolRunner",
+              "line": 7283,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "deviceLabBackendInvocation",
+              "line": 7039,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "runBrokerBackendChild",
+              "line": 7096,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+              "symbol": "handleIosTool",
+              "line": 640,
+              "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+            },
+            {
+              "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+              "symbol": "createIosObservationAccess",
+              "line": 6,
+              "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-direct-ios-device-device_status",
+          "backend": "ios-device",
+          "provider": "ios-device",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/ios-device.mjs",
+            "symbol": "handleIosRealTool",
+            "line": 387,
+            "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/ios-device.mjs",
+              "symbol": "handleIosRealTool",
+              "line": 387,
+              "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+            },
+            {
+              "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+              "symbol": "createIosObservationAccess",
+              "line": 6,
+              "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-child-ios-device-device_status",
+          "backend": "ios-device",
+          "provider": "ios-device",
+          "executor": "provider-child",
+          "route": "broker.device.tool.invoke",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/ios-device.mjs",
+            "symbol": "handleIosRealTool",
+            "line": 387,
+            "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 3966,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "defaultBrokerDeviceToolRunner",
+              "line": 7283,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "deviceLabBackendInvocation",
+              "line": 7039,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "runBrokerBackendChild",
+              "line": 7096,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/ios-device.mjs",
+              "symbol": "handleIosRealTool",
+              "line": 387,
+              "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+            },
+            {
+              "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+              "symbol": "createIosObservationAccess",
+              "line": 6,
+              "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-direct-windows-sandbox-device_status",
+          "backend": "windows-sandbox",
+          "provider": "windows-sandbox",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+            "symbol": "handleWindowsTool",
+            "line": 1731,
+            "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+              "symbol": "handleWindowsTool",
+              "line": 1731,
+              "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDesktopDeviceAccess",
+              "line": 9,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-direct-macos-vm-device_status",
+          "backend": "macos-vm",
+          "provider": "macos-vm",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+            "symbol": "handleMacosTool",
+            "line": 1232,
+            "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+              "symbol": "handleMacosTool",
+              "line": 1232,
+              "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDesktopDeviceAccess",
+              "line": 9,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-qemu-device_status",
+          "backend": "linux-vm",
+          "provider": "linux-vm",
+          "executor": "CCC local runtime",
+          "route": "public QEMU device_status -> handleLinuxVmTool -> inspectLab; raw inspectLab export",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/linux-vm.mjs",
+            "symbol": "handleLinuxVmTool",
+            "line": 967,
+            "gitBlob": "634cdc702fff8d41d1982d51cd2c99bf2e60ea10"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Public owned-target wrapper holds withOwnerDeviceOperation('linux', deviceId); raw inspectLab does not acquire that wrapper lock. Native guarded storage publishes running readiness.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/linux-vm.mjs",
+              "symbol": "inspectLab",
+              "line": 790,
+              "gitBlob": "634cdc702fff8d41d1982d51cd2c99bf2e60ea10"
+            },
+            {
+              "path": "packages/device-lab/providers/application/qemu-guest-access.mjs",
+              "symbol": "inspectLab",
+              "line": 284,
+              "gitBlob": "508826d34f55b260fd13f13bac911f3a8b1cee05"
+            },
+            {
+              "path": "packages/device-lab/providers/application/qemu-guest-access.mjs",
+              "symbol": "recordReadiness",
+              "line": 241,
+              "gitBlob": "508826d34f55b260fd13f13bac911f3a8b1cee05"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/linux-vm.mjs",
+              "symbol": "handleLinuxVmTool",
+              "line": 967,
+              "gitBlob": "634cdc702fff8d41d1982d51cd2c99bf2e60ea10"
+            },
+            {
+              "path": "packages/device-lab/providers/application/qemu-guest-access.mjs",
+              "symbol": "createQemuGuestAccessApplication",
+              "line": 9,
+              "gitBlob": "508826d34f55b260fd13f13bac911f3a8b1cee05"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-public-current-display-device_status",
+          "backend": "current-display",
+          "provider": "current-display",
+          "executor": "direct native X11",
+          "route": "public current-display device_status normalization",
+          "action": "device_status",
+          "publicContract": "status",
+          "handler": {
+            "path": "packages/device-lab/providers/display/x11.mjs",
+            "symbol": "currentDisplayTarget",
+            "line": 49,
+            "gitBlob": "b4f65064b9c38d8e40d8397d96e664c250c3353e"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Current display is host observation; no owned-device mutation lock.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleCurrentDisplayDeviceTool",
+              "line": 625,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/display/x11.mjs",
+              "symbol": "currentDisplayTarget",
+              "line": 49,
+              "gitBlob": "b4f65064b9c38d8e40d8397d96e664c250c3353e"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDisplayDeviceAccess",
+              "line": 69,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-broker-android-emulator-device_status",
+          "backend": "android-emulator",
+          "provider": "android-emulator",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "ANDROID_EMULATOR_CAPABILITIES",
+              "line": 262,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "Broker lifecycleCommandInvoke holds the shared owner/stateKey/device operation lock. Owner-record publication takes the separate devices.mutation.lock; physical lease mutations retain their hardware-specific guards where invoked.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "ordinary-lifecycle"
+        },
+        {
+          "id": "BIND-broker-android-device-device_status",
+          "backend": "android-device",
+          "provider": "android-device",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "ANDROID_REAL_CAPABILITIES",
+              "line": 283,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "Broker lifecycleCommandInvoke holds the shared owner/stateKey/device operation lock. Owner-record publication takes the separate devices.mutation.lock; physical lease mutations retain their hardware-specific guards where invoked.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "ordinary-lifecycle"
+        },
+        {
+          "id": "BIND-broker-ios-simulator-device_status",
+          "backend": "ios-simulator",
+          "provider": "ios-simulator",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "IOS_SIMULATOR_CAPABILITIES",
+              "line": 302,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "Broker lifecycleCommandInvoke holds the shared owner/stateKey/device operation lock. Owner-record publication takes the separate devices.mutation.lock; physical lease mutations retain their hardware-specific guards where invoked.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "ordinary-lifecycle"
+        },
+        {
+          "id": "BIND-broker-ios-device-device_status",
+          "backend": "ios-device",
+          "provider": "ios-device",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "IOS_REAL_CAPABILITIES",
+              "line": 317,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "Broker lifecycleCommandInvoke holds the shared owner/stateKey/device operation lock. Owner-record publication takes the separate devices.mutation.lock; physical lease mutations retain their hardware-specific guards where invoked.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "ordinary-lifecycle"
+        },
+        {
+          "id": "BIND-broker-windows-sandbox-device_status",
+          "backend": "windows-sandbox",
+          "provider": "windows-sandbox",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "DESKTOP_DEVICE_CAPABILITIES",
+              "line": 328,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "Broker lifecycleCommandInvoke holds the shared owner/stateKey/device operation lock. Owner-record publication takes the separate devices.mutation.lock; physical lease mutations retain their hardware-specific guards where invoked.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "ordinary-lifecycle"
+        },
+        {
+          "id": "BIND-broker-macos-vm-device_status",
+          "backend": "macos-vm",
+          "provider": "macos-vm",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "MACOS_VM_CAPABILITIES",
+              "line": 337,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": [
+              "DESKTOP_DEVICE_CAPABILITIES"
+            ]
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "Broker lifecycleCommandInvoke holds the shared owner/stateKey/device operation lock. Owner-record publication takes the separate devices.mutation.lock; physical lease mutations retain their hardware-specific guards where invoked.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "ordinary-lifecycle"
+        },
+        {
+          "id": "BIND-broker-windows-vm-device_status",
+          "backend": "windows-vm",
+          "provider": "hyper-v",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "HYPER_V_VM_CAPABILITIES",
+              "line": 342,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "For non-dry-run invocation broker holds owner/stateKey/device operation lock, then Hyper-V host mutation lock for create/delete/start/stop/reboot or status with pending lifecycle/snapshot journal. Ordinary status omits host guard. Hyper-V dry-run returns before these acquisitions.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "hyperv-lifecycle"
+        },
+        {
+          "id": "BIND-broker-linux-vm-device_status",
+          "backend": "linux-vm",
+          "provider": "hyper-v",
+          "executor": "broker-native",
+          "route": "broker.command.invoke",
+          "action": "device_status",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "HYPER_V_LINUX_VM_CAPABILITIES",
+              "line": 350,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": [
+              "HYPER_V_VM_CAPABILITIES"
+            ]
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/src/device-lab-broker.ts",
+            "kind": "implementation",
+            "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+            "symbol": "lifecycleCommandInvoke",
+            "line": 15377
+          },
+          "handlerProof": "dispatch family reached; concrete action/provider branch and normalized public alias not fully proven",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "For non-dry-run invocation broker holds owner/stateKey/device operation lock, then Hyper-V host mutation lock for create/delete/start/stop/reboot or status with pending lifecycle/snapshot journal. Ordinary status omits host guard. Hyper-V dry-run returns before these acquisitions.",
+          "workItemIds": [
+            "OP-device-status"
+          ],
+          "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerLifecycleTool",
+              "line": 633,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "lifecycleCommandInvoke",
+              "line": 9070,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerDeviceStatusApplication",
+              "line": 8473,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+              "symbol": "createBrokerDeviceStatus",
+              "line": 61,
+              "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
+            }
+          ],
+          "lockAuthorityCategoryId": "hyperv-lifecycle"
         }
       ],
       "aliases": [],
@@ -77546,7 +78904,27 @@
       "remainingGaps": [],
       "countEligibility": "canonical-action-contract",
       "bindingIds": [
-        "BIND-proof-x11-display_current"
+        "BIND-proof-x11-display_current",
+        "BIND-direct-android-emulator-device_status",
+        "BIND-child-android-emulator-device_status",
+        "BIND-direct-android-device-device_status",
+        "BIND-child-android-device-device_status",
+        "BIND-direct-ios-simulator-device_status",
+        "BIND-child-ios-simulator-device_status",
+        "BIND-direct-ios-device-device_status",
+        "BIND-child-ios-device-device_status",
+        "BIND-direct-windows-sandbox-device_status",
+        "BIND-direct-macos-vm-device_status",
+        "BIND-qemu-device_status",
+        "BIND-public-current-display-device_status",
+        "BIND-broker-android-emulator-device_status",
+        "BIND-broker-android-device-device_status",
+        "BIND-broker-ios-simulator-device_status",
+        "BIND-broker-ios-device-device_status",
+        "BIND-broker-windows-sandbox-device_status",
+        "BIND-broker-macos-vm-device_status",
+        "BIND-broker-windows-vm-device_status",
+        "BIND-broker-linux-vm-device_status"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -79647,7 +81025,7 @@
       "businessBoundary": "Return current mobile hierarchy or desktop accessibility for exact target; retain platform-specific availability, selected native/Appium source and normalized public UI envelope.",
       "completionCriteria": "Whole canonical ui request/selection/ownership/normalization/result workflow inward with explicit native/session/storage ports; preserve every currently supported binding and refusal; provider command codecs stay retained adapters.",
       "implementationStatus": "pending",
-      "statusReason": "Canonical complete business action remains in legacy presentation/provider/native workflows. Existing shared generation/repository/library seams do not complete this action; existing unsupported routes are excluded.",
+      "statusReason": "Accepted inward source contributions and current supported binding joins recorded; whole-operation qualification remains pending independent post-write all-binding and accepted ordinary-QA evidence review. No native certification or whole credit from this metadata repair.",
       "sources": [
         {
           "path": "device-lab-mcp/src/server.mjs",
@@ -80408,6 +81786,300 @@
           "nativeAcceptance": "unverified",
           "portableAcceptance": "unverified",
           "conditions": []
+        },
+        {
+          "id": "BIND-direct-windows-sandbox-device_accessibility_snapshot",
+          "backend": "windows-sandbox",
+          "provider": "windows-sandbox",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_accessibility_snapshot",
+          "publicContract": "ui",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+            "symbol": "handleWindowsTool",
+            "line": 1731,
+            "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-ui"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+              "symbol": "handleWindowsTool",
+              "line": 1731,
+              "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDesktopDeviceAccess",
+              "line": 9,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-direct-macos-vm-device_accessibility_snapshot",
+          "backend": "macos-vm",
+          "provider": "macos-vm",
+          "executor": "direct provider process",
+          "route": "existing direct/provider/public normalization path",
+          "action": "device_accessibility_snapshot",
+          "publicContract": "ui",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+            "symbol": "handleMacosTool",
+            "line": 1232,
+            "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-device-ui"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+              "symbol": "handleMacosTool",
+              "line": 1232,
+              "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDesktopDeviceAccess",
+              "line": 9,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
+        },
+        {
+          "id": "BIND-broker-windows-sandbox-device_accessibility_snapshot",
+          "backend": "windows-sandbox",
+          "provider": "windows-sandbox",
+          "executor": "provider-child",
+          "route": "broker.device.tool.invoke",
+          "action": "device_accessibility_snapshot",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "DESKTOP_DEVICE_CAPABILITIES",
+              "line": 328,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": []
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+            "symbol": "handleWindowsToolUnlocked",
+            "line": 1793,
+            "gitBlob": "243a764927f5e2957be4d90560fa6ad68e4baedd",
+            "concreteCaseLine": 2240
+          },
+          "handlerProof": "Broker backend method set admits desktop accessibility and recording. The default runner verifies the canonical launch cwd/profile owner, selects this provider module and named exported handler, and invokes it in the provider child. invokeDeviceTool deliberately avoids the shared child operation guard before desktop recording. Concrete provider switch cases own the helper/SSH effect and recording generation compensation/finalization.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "For raw broker.device.tool.invoke binding broker delegates to provider child; public provider handler acquires shared owner/stateKey/device operation lock when requiresOwnerDeviceOperation selects action and valid owned target exists. Physical dispatch/handler lease heartbeats retain hardware guards; owner updates retain separate repository mutation lock.",
+          "workItemIds": [
+            "OP-device-ui"
+          ],
+          "closureStatus": "source-contract-traced",
+          "canonicalActionId": "OP-device-ui",
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "proofIds": [
+            "PROOF-reconciled-broker-windows-sandbox-device_accessibility_snapshot"
+          ],
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "provider-child-windows-sandbox",
+          "lockAuthorityCategoryId": "selected-provider-operations",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 3966,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "defaultBrokerDeviceToolRunner",
+              "line": 7283,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+              "symbol": "handleWindowsTool",
+              "line": 1731,
+              "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDesktopDeviceAccess",
+              "line": 9,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ]
+        },
+        {
+          "id": "BIND-broker-macos-vm-device_accessibility_snapshot",
+          "backend": "macos-vm",
+          "provider": "macos-vm",
+          "executor": "provider-child",
+          "route": "broker.device.tool.invoke",
+          "action": "device_accessibility_snapshot",
+          "advertisement": {
+            "source": {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "kind": "implementation",
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "symbol": "MACOS_VM_CAPABILITIES",
+              "line": 337,
+              "declarationKind": "const"
+            },
+            "spreadExpansion": [
+              "DESKTOP_DEVICE_CAPABILITIES"
+            ]
+          },
+          "supportDisposition": "advertised-supported",
+          "handler": {
+            "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+            "symbol": "handleMacosToolUnlocked",
+            "line": 1255,
+            "gitBlob": "46ea394d6a4efadb5e48e20cd4be70404e6d81a1",
+            "concreteCaseLine": 2297
+          },
+          "handlerProof": "Broker backend method set admits desktop accessibility and recording. The default runner verifies the canonical launch cwd/profile owner, selects this provider module and named exported handler, and invokes it in the provider child. invokeDeviceTool deliberately avoids the shared child operation guard before desktop recording. Concrete provider switch cases own the helper/SSH effect and recording generation compensation/finalization.",
+          "authorityOwner": "authenticated broker owner",
+          "lockOwner": "For raw broker.device.tool.invoke binding broker delegates to provider child; public provider handler acquires shared owner/stateKey/device operation lock when requiresOwnerDeviceOperation selects action and valid owned target exists. Physical dispatch/handler lease heartbeats retain hardware guards; owner updates retain separate repository mutation lock.",
+          "workItemIds": [
+            "OP-device-ui"
+          ],
+          "closureStatus": "source-contract-traced",
+          "canonicalActionId": "OP-device-ui",
+          "normalizationSources": [
+            {
+              "path": "device-lab-mcp/src/tools.mjs",
+              "symbol": "toolOperation",
+              "line": 43,
+              "gitBlob": "9e36df52af21d1be997cf9b4b7b18639d4409f09"
+            },
+            {
+              "path": "device-lab-mcp/src/server.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1496,
+              "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc"
+            }
+          ],
+          "proofIds": [
+            "PROOF-reconciled-broker-macos-vm-device_accessibility_snapshot"
+          ],
+          "nativeAcceptance": "unverified",
+          "evidenceGroupId": "provider-child-macos-vm",
+          "lockAuthorityCategoryId": "selected-provider-operations",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "invokeDeviceTool",
+              "line": 3966,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "defaultBrokerDeviceToolRunner",
+              "line": 7283,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+              "symbol": "handleMacosTool",
+              "line": 1232,
+              "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+            },
+            {
+              "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+              "symbol": "createDesktopDeviceAccess",
+              "line": 9,
+              "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+            }
+          ]
         }
       ],
       "aliases": [],
@@ -80459,7 +82131,11 @@
         "BIND-proof-child-ios-device-mobile_dump_ui",
         "BIND-proof-broker-mobile-mobile_dump_ui",
         "BIND-proof-hyperv-windows-vm-AX",
-        "BIND-proof-hyperv-linux-vm-AX"
+        "BIND-proof-hyperv-linux-vm-AX",
+        "BIND-direct-windows-sandbox-device_accessibility_snapshot",
+        "BIND-direct-macos-vm-device_accessibility_snapshot",
+        "BIND-broker-windows-sandbox-device_accessibility_snapshot",
+        "BIND-broker-macos-vm-device_accessibility_snapshot"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -83201,7 +84877,7 @@
       "businessBoundary": "Validate nonempty text, create bounded timeout/interval budget, repeatedly observe hierarchy and stop when text appears; deadline charged during lock/session/native/HTTP observation, no automatic replay after expiry.",
       "completionCriteria": "Whole canonical wait-text request/selection/ownership/normalization/result workflow inward with explicit native/session/storage ports; preserve every currently supported binding and refusal; provider command codecs stay retained adapters.",
       "implementationStatus": "pending",
-      "statusReason": "Canonical complete business action remains in legacy presentation/provider/native workflows. Existing shared generation/repository/library seams do not complete this action; existing unsupported routes are excluded.",
+      "statusReason": "Accepted inward source contributions and current supported binding joins recorded; whole-operation qualification remains pending independent post-write all-binding and accepted ordinary-QA evidence review. No native certification or whole credit from this metadata repair.",
       "sources": [
         {
           "path": "device-lab-mcp/src/server.mjs",
@@ -83827,6 +85503,65 @@
             "method must pass backend method set",
             "owner must match launch cwd/profile expected owner"
           ]
+        },
+        {
+          "id": "BIND-broker-appium-mobile_wait_for_text",
+          "backend": "broker-mobile",
+          "provider": "broker-mobile",
+          "executor": "broker-owned Appium HTTP",
+          "route": "public broker-mobile mobile_wait_for_text -> broker Appium ensure/request",
+          "action": "mobile_wait_for_text",
+          "publicContract": "wait-text",
+          "handler": {
+            "path": "device-lab-mcp/src/application/device-request.mjs",
+            "symbol": "handleBrokerMobileTool",
+            "line": 1030,
+            "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+          },
+          "proofIds": [],
+          "workItemIds": [
+            "OP-mobile-wait-text"
+          ],
+          "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+          "lockOwner": "Broker Appium retains exact owner/device operation, physical lease heartbeat and verified managed listener/session authority.",
+          "supportDisposition": "supported",
+          "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+          "closureStatus": "source-contract-traced",
+          "sourceTrace": [
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "createDeviceRequest",
+              "line": 49,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "dispatchDeviceTool",
+              "line": 1330,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "symbol": "brokerAppiumApplication",
+              "line": 9250,
+              "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+            },
+            {
+              "path": "device-lab-mcp/src/application/device-request.mjs",
+              "symbol": "handleBrokerMobileTool",
+              "line": 1030,
+              "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-appium.ts",
+              "symbol": "createBrokerAppiumApplication",
+              "line": 16,
+              "gitBlob": "eac6893f518b7420be7db05ddfc6cdedc3367dca"
+            }
+          ],
+          "nativeAcceptance": "unverified",
+          "portableAcceptance": "unverified",
+          "conditions": []
         }
       ],
       "aliases": [],
@@ -83886,7 +85621,8 @@
         "BIND-proof-direct-ios-simulator-mobile_wait_for_text",
         "BIND-proof-child-ios-simulator-mobile_wait_for_text",
         "BIND-proof-direct-ios-device-mobile_wait_for_text",
-        "BIND-proof-child-ios-device-mobile_wait_for_text"
+        "BIND-proof-child-ios-device-mobile_wait_for_text",
+        "BIND-broker-appium-mobile_wait_for_text"
       ],
       "inventoryGaps": [],
       "delegatedWorkItemIds": [
@@ -121598,25 +123334,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "ordinary-lifecycle"
@@ -124834,25 +126585,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "ordinary-lifecycle"
@@ -128070,25 +129836,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "ordinary-lifecycle"
@@ -130856,25 +132637,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "ordinary-lifecycle"
@@ -133033,25 +134829,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "ordinary-lifecycle"
@@ -133817,7 +135628,45 @@
       ],
       "nativeAcceptance": "unverified",
       "evidenceGroupId": "provider-child-windows-sandbox",
-      "lockAuthorityCategoryId": "selected-provider-operations"
+      "lockAuthorityCategoryId": "selected-provider-operations",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 3966,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "defaultBrokerDeviceToolRunner",
+          "line": 7283,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+          "symbol": "handleWindowsTool",
+          "line": 1731,
+          "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDesktopDeviceAccess",
+          "line": 9,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ]
     },
     {
       "id": "BIND-broker-windows-sandbox-device_record_video_start",
@@ -135062,25 +136911,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "ordinary-lifecycle"
@@ -135870,7 +137734,45 @@
       ],
       "nativeAcceptance": "unverified",
       "evidenceGroupId": "provider-child-macos-vm",
-      "lockAuthorityCategoryId": "selected-provider-operations"
+      "lockAuthorityCategoryId": "selected-provider-operations",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 3966,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "defaultBrokerDeviceToolRunner",
+          "line": 7283,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+          "symbol": "handleMacosTool",
+          "line": 1232,
+          "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDesktopDeviceAccess",
+          "line": 9,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ]
     },
     {
       "id": "BIND-broker-macos-vm-device_record_video_start",
@@ -136654,25 +138556,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "hyperv-lifecycle"
@@ -138112,25 +140029,40 @@
       "closureStatus": "native-status-selector-and-owner-journal-scope-traced",
       "sourceTrace": [
         {
-          "path": "device-lab-mcp/src/server.mjs",
-          "kind": "implementation",
-          "gitBlob": "307dae3d115882ea98ac782550e13cb499420fdc",
-          "symbol": "wantsBrokerLifecycle",
-          "line": 248
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerLifecycleTool",
+          "line": 633,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
           "symbol": "lifecycleCommandInvoke",
-          "line": 15377
+          "line": 9070,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
         },
         {
           "path": "packages/device-lab/src/device-lab-broker.ts",
-          "kind": "implementation",
-          "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-          "symbol": "providerCommandFor",
-          "line": 10333
+          "symbol": "brokerDeviceStatusApplication",
+          "line": 8473,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-observation-status.ts",
+          "symbol": "createBrokerDeviceStatus",
+          "line": 61,
+          "gitBlob": "c34f63ab3a7889e77e2667c377328c034d9a651a"
         }
       ],
       "lockAuthorityCategoryId": "hyperv-lifecycle"
@@ -142113,14 +144045,28 @@
         "declarationKind": "export"
       },
       "normalizedHandler": "createRequestedToolSetup",
-      "authorityOwner": "Caller captured target plus mutable canonical ToolDefinition object",
-      "lockOwner": "Outer index.ts setup guard wait900000; OpenCode helper native directory flock; requested application does not acquire an extra lock.",
+      "authorityOwner": "Captured target and selected Codex/Claude tool definition through native requested-tool composition.",
+      "lockOwner": "Outer container setup readiness guard; requested-tool application acquires no extra lock. Excluded OpenCode prelude retains its separate native directory lock.",
       "supportDisposition": "existing-source-binding",
       "workItemIds": [
         "OP-tool-setup"
       ],
       "closureStatus": "specific-facade-traced",
-      "scope": "Existing source function binding; not a newly advertised tool/RPC route. Full public aliases/provider-executor matrix remains required for closure."
+      "scope": "Current authorized Codex/Claude requested-tool setup; separate excluded OP-opencode-data-access-preparation retains OpenCode prelude. No unrestricted tool credit.",
+      "sourceTrace": [
+        {
+          "path": "src/container-setup.ts",
+          "symbol": "ensureTools",
+          "line": 921,
+          "gitBlob": "805192ae2eb60d0f9df82f307b49b8e7d4725b08"
+        },
+        {
+          "path": "src/application/requested-tool-setup.ts",
+          "symbol": "createRequestedToolSetup",
+          "line": 5,
+          "gitBlob": "d31abd41639bd4497390e2766884c3e0afde88cb"
+        }
+      ]
     },
     {
       "id": "BIND-source-version-context",
@@ -180129,6 +182075,927 @@
       ],
       "closureStatus": "named-literal-client-handler-authority-traced",
       "nonCountedResponsibility": "RPC/auth/serialization support; no independent device/admin policy row"
+    },
+    {
+      "id": "BIND-direct-android-emulator-device_status",
+      "backend": "android-emulator",
+      "provider": "android-emulator",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/android.mjs",
+        "symbol": "handleAndroidTool",
+        "line": 1059,
+        "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android.mjs",
+          "symbol": "handleAndroidTool",
+          "line": 1059,
+          "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+        },
+        {
+          "path": "packages/device-lab/providers/application/android-device-access.mjs",
+          "symbol": "createAndroidDeviceAccess",
+          "line": 64,
+          "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-child-android-emulator-device_status",
+      "backend": "android-emulator",
+      "provider": "android-emulator",
+      "executor": "provider-child",
+      "route": "broker.device.tool.invoke",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/android.mjs",
+        "symbol": "handleAndroidTool",
+        "line": 1059,
+        "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 3966,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "defaultBrokerDeviceToolRunner",
+          "line": 7283,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "deviceLabBackendInvocation",
+          "line": 7039,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "runBrokerBackendChild",
+          "line": 7096,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android.mjs",
+          "symbol": "handleAndroidTool",
+          "line": 1059,
+          "gitBlob": "522a7d12598d2ad01527b89f515a8dc8c966e7c5"
+        },
+        {
+          "path": "packages/device-lab/providers/application/android-device-access.mjs",
+          "symbol": "createAndroidDeviceAccess",
+          "line": 64,
+          "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-android-device-device_status",
+      "backend": "android-device",
+      "provider": "android-device",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/android-device.mjs",
+        "symbol": "handleAndroidRealTool",
+        "line": 820,
+        "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android-device.mjs",
+          "symbol": "handleAndroidRealTool",
+          "line": 820,
+          "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+        },
+        {
+          "path": "packages/device-lab/providers/application/android-device-access.mjs",
+          "symbol": "createAndroidDeviceAccess",
+          "line": 64,
+          "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-child-android-device-device_status",
+      "backend": "android-device",
+      "provider": "android-device",
+      "executor": "provider-child",
+      "route": "broker.device.tool.invoke",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/android-device.mjs",
+        "symbol": "handleAndroidRealTool",
+        "line": 820,
+        "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 3966,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "defaultBrokerDeviceToolRunner",
+          "line": 7283,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "deviceLabBackendInvocation",
+          "line": 7039,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "runBrokerBackendChild",
+          "line": 7096,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android-device.mjs",
+          "symbol": "handleAndroidRealTool",
+          "line": 820,
+          "gitBlob": "c07639728b18096ac01294bd06ad29fde7c4b669"
+        },
+        {
+          "path": "packages/device-lab/providers/application/android-device-access.mjs",
+          "symbol": "createAndroidDeviceAccess",
+          "line": 64,
+          "gitBlob": "8ebc1a102a216b745135c5c3d193a620b09eebb3"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-ios-simulator-device_status",
+      "backend": "ios-simulator",
+      "provider": "ios-simulator",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+        "symbol": "handleIosTool",
+        "line": 640,
+        "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+          "symbol": "handleIosTool",
+          "line": 640,
+          "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "symbol": "createIosObservationAccess",
+          "line": 6,
+          "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-child-ios-simulator-device_status",
+      "backend": "ios-simulator",
+      "provider": "ios-simulator",
+      "executor": "provider-child",
+      "route": "broker.device.tool.invoke",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+        "symbol": "handleIosTool",
+        "line": 640,
+        "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 3966,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "defaultBrokerDeviceToolRunner",
+          "line": 7283,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "deviceLabBackendInvocation",
+          "line": 7039,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "runBrokerBackendChild",
+          "line": 7096,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+          "symbol": "handleIosTool",
+          "line": 640,
+          "gitBlob": "5b2df89554cd9033aa0975cd0d20c552a73c3f21"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "symbol": "createIosObservationAccess",
+          "line": 6,
+          "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-ios-device-device_status",
+      "backend": "ios-device",
+      "provider": "ios-device",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/ios-device.mjs",
+        "symbol": "handleIosRealTool",
+        "line": 387,
+        "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/ios-device.mjs",
+          "symbol": "handleIosRealTool",
+          "line": 387,
+          "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "symbol": "createIosObservationAccess",
+          "line": 6,
+          "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-child-ios-device-device_status",
+      "backend": "ios-device",
+      "provider": "ios-device",
+      "executor": "provider-child",
+      "route": "broker.device.tool.invoke",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/ios-device.mjs",
+        "symbol": "handleIosRealTool",
+        "line": 387,
+        "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; native owned-target and physical lease guards remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "invokeDeviceTool",
+          "line": 3966,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "defaultBrokerDeviceToolRunner",
+          "line": 7283,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "deviceLabBackendInvocation",
+          "line": 7039,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "runBrokerBackendChild",
+          "line": 7096,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/ios-device.mjs",
+          "symbol": "handleIosRealTool",
+          "line": 387,
+          "gitBlob": "d954e0ead1cc50f3fc4188bc2b087dedd1bd0a0a"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "symbol": "createIosObservationAccess",
+          "line": 6,
+          "gitBlob": "9a3e7853d76ea2346063a8d6d1791aaa2a675535"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-windows-sandbox-device_status",
+      "backend": "windows-sandbox",
+      "provider": "windows-sandbox",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+        "symbol": "handleWindowsTool",
+        "line": 1731,
+        "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+          "symbol": "handleWindowsTool",
+          "line": 1731,
+          "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDesktopDeviceAccess",
+          "line": 9,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-windows-sandbox-device_accessibility_snapshot",
+      "backend": "windows-sandbox",
+      "provider": "windows-sandbox",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_accessibility_snapshot",
+      "publicContract": "ui",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+        "symbol": "handleWindowsTool",
+        "line": 1731,
+        "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-ui"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/windows-sandbox.mjs",
+          "symbol": "handleWindowsTool",
+          "line": 1731,
+          "gitBlob": "b03a646d3ff3e48bc47cc2a84a29fff90aa098af"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDesktopDeviceAccess",
+          "line": 9,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-macos-vm-device_status",
+      "backend": "macos-vm",
+      "provider": "macos-vm",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+        "symbol": "handleMacosTool",
+        "line": 1232,
+        "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Status bypasses provider mutation-operation lock; selected owner/native target checks remain.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+          "symbol": "handleMacosTool",
+          "line": 1232,
+          "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDesktopDeviceAccess",
+          "line": 9,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-direct-macos-vm-device_accessibility_snapshot",
+      "backend": "macos-vm",
+      "provider": "macos-vm",
+      "executor": "direct provider process",
+      "route": "existing direct/provider/public normalization path",
+      "action": "device_accessibility_snapshot",
+      "publicContract": "ui",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+        "symbol": "handleMacosTool",
+        "line": 1232,
+        "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-ui"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Public native handler holds selected owner/device operation lock for accessibility snapshot.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/macos-vm.mjs",
+          "symbol": "handleMacosTool",
+          "line": 1232,
+          "gitBlob": "e8574bdb81656ac75b4f6cd6accfad3aee1e6b26"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDesktopDeviceAccess",
+          "line": 9,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-qemu-device_status",
+      "backend": "linux-vm",
+      "provider": "linux-vm",
+      "executor": "CCC local runtime",
+      "route": "public QEMU device_status -> handleLinuxVmTool -> inspectLab; raw inspectLab export",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/backends/linux-vm.mjs",
+        "symbol": "handleLinuxVmTool",
+        "line": 967,
+        "gitBlob": "634cdc702fff8d41d1982d51cd2c99bf2e60ea10"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Public owned-target wrapper holds withOwnerDeviceOperation('linux', deviceId); raw inspectLab does not acquire that wrapper lock. Native guarded storage publishes running readiness.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/linux-vm.mjs",
+          "symbol": "inspectLab",
+          "line": 790,
+          "gitBlob": "634cdc702fff8d41d1982d51cd2c99bf2e60ea10"
+        },
+        {
+          "path": "packages/device-lab/providers/application/qemu-guest-access.mjs",
+          "symbol": "inspectLab",
+          "line": 284,
+          "gitBlob": "508826d34f55b260fd13f13bac911f3a8b1cee05"
+        },
+        {
+          "path": "packages/device-lab/providers/application/qemu-guest-access.mjs",
+          "symbol": "recordReadiness",
+          "line": 241,
+          "gitBlob": "508826d34f55b260fd13f13bac911f3a8b1cee05"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/linux-vm.mjs",
+          "symbol": "handleLinuxVmTool",
+          "line": 967,
+          "gitBlob": "634cdc702fff8d41d1982d51cd2c99bf2e60ea10"
+        },
+        {
+          "path": "packages/device-lab/providers/application/qemu-guest-access.mjs",
+          "symbol": "createQemuGuestAccessApplication",
+          "line": 9,
+          "gitBlob": "508826d34f55b260fd13f13bac911f3a8b1cee05"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-public-current-display-device_status",
+      "backend": "current-display",
+      "provider": "current-display",
+      "executor": "direct native X11",
+      "route": "public current-display device_status normalization",
+      "action": "device_status",
+      "publicContract": "status",
+      "handler": {
+        "path": "packages/device-lab/providers/display/x11.mjs",
+        "symbol": "currentDisplayTarget",
+        "line": 49,
+        "gitBlob": "b4f65064b9c38d8e40d8397d96e664c250c3353e"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-device-status"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Current display is host observation; no owned-device mutation lock.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleCurrentDisplayDeviceTool",
+          "line": 625,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/providers/display/x11.mjs",
+          "symbol": "currentDisplayTarget",
+          "line": 49,
+          "gitBlob": "b4f65064b9c38d8e40d8397d96e664c250c3353e"
+        },
+        {
+          "path": "packages/device-lab/providers/application/desktop-device-access.mjs",
+          "symbol": "createDisplayDeviceAccess",
+          "line": 69,
+          "gitBlob": "21831b2c0c7361e1aa1ffa1790340004c7f23516"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
+    },
+    {
+      "id": "BIND-broker-appium-mobile_wait_for_text",
+      "backend": "broker-mobile",
+      "provider": "broker-mobile",
+      "executor": "broker-owned Appium HTTP",
+      "route": "public broker-mobile mobile_wait_for_text -> broker Appium ensure/request",
+      "action": "mobile_wait_for_text",
+      "publicContract": "wait-text",
+      "handler": {
+        "path": "device-lab-mcp/src/application/device-request.mjs",
+        "symbol": "handleBrokerMobileTool",
+        "line": 1030,
+        "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+      },
+      "proofIds": [],
+      "workItemIds": [
+        "OP-mobile-wait-text"
+      ],
+      "authorityOwner": "Exact owned target and native identity/physical lease checks; authenticated canonical launch owner for broker child.",
+      "lockOwner": "Broker Appium retains exact owner/device operation, physical lease heartbeat and verified managed listener/session authority.",
+      "supportDisposition": "supported",
+      "reason": "Current accepted source route traced; whole-operation qualification remains pending independent post-write review.",
+      "closureStatus": "source-contract-traced",
+      "sourceTrace": [
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "createDeviceRequest",
+          "line": 49,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "dispatchDeviceTool",
+          "line": 1330,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "brokerAppiumApplication",
+          "line": 9250,
+          "gitBlob": "c4357b59d99995361be1470b75e4bb7f83e23d0e"
+        },
+        {
+          "path": "device-lab-mcp/src/application/device-request.mjs",
+          "symbol": "handleBrokerMobileTool",
+          "line": 1030,
+          "gitBlob": "6ef670dc2f81e03da2bc578ad0e2e683c9e5f870"
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-appium.ts",
+          "symbol": "createBrokerAppiumApplication",
+          "line": 16,
+          "gitBlob": "eac6893f518b7420be7db05ddfc6cdedc3367dca"
+        }
+      ],
+      "nativeAcceptance": "unverified",
+      "portableAcceptance": "unverified",
+      "conditions": []
     }
   ],
   "gaps": [
