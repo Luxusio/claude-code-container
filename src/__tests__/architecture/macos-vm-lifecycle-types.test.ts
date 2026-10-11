@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
 import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
-import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle, MacosCloneFailureEvidence } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
 // These are strict source AND genuine-emission consumer controls. Vitest alone
 // does not check their directives; QA must use skipLibCheck=false on both.
-type Result={ok:boolean;value:unknown;content?:{text?:string}[]};
+type Result={ok:boolean;value:unknown};
 const device:MacosVmDevice={id:"unit",status:"stopped",extra:{raw:true}};
 const child={pid:71,unref(){return undefined;}};
 const plan={available:true,missing:[],selectedProvider:"tart",providerCommand:"tart",providerInstance:"instance",startCommand:{command:"tart",args:["run","instance"]},stopCommand:{command:"tart",args:["stop","instance"]}};
@@ -20,6 +20,7 @@ const ports:MacosVmLifecyclePorts<Result,typeof child>={
     waitGuestHelper:async()=>({ok:true}),provisionHelper:()=>({ok:true}),signalRecording:()=>({signaled:false}),waitRecordingExit:async()=>true,
     sshBridge:()=>({discovery:{ssh:"ssh"},target:"host"}),sshBaseArgs:()=>[],shellQuote:value=>value,sshCommandOptions:()=>({}),
     helperCommand:()=>({status:0,stdout:"",stderr:""}),textResult:(ok,value)=>({ok,value}),jsonResult:value=>({ok:true,value}),fail:value=>({ok:false,value}),
+    presentCloneFailure:evidence=>({ok:false,value:evidence}),
 };
 type OptionalKeys<T>={[K in keyof T]-?:object extends Pick<T,K>?K:never}[keyof T];
 const allLeavesRequired:[OptionalKeys<typeof ports>]extends[never]?true:false=true;void allLeavesRequired;
@@ -29,10 +30,16 @@ const synchronousImage:Result|undefined=app.createImage({backend:"other"});
 function positiveAsyncContract(){
     const asynchronousStart:Promise<Result|undefined>=app.start({deviceId:"missing"});
     const recordingExit:Promise<boolean>=ports.waitRecordingExit({runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)}},1000);
-    void asynchronousStart;void recordingExit;
+    const command={status:null,stdout:"",stderr:"clone timed out",signal:"SIGTERM"};
+    const evidence:MacosCloneFailureEvidence=app.cloneFailureEvidence(command,null,"owned-target");
+    const presented:Result=app.cloneFailure(evidence.command,evidence.cleanup,evidence.target);
+    void asynchronousStart;void recordingExit;void presented;
 }
 void synchronousCreate;void synchronousImage;void positiveAsyncContract;
 function negativeContracts(){
+    const {presentCloneFailure,...missingClonePresenter}=ports;void presentCloneFailure;
+    // @ts-expect-error Clone failure presentation is an explicit required native capability.
+    createMacosVmLifecycleApplication(missingClonePresenter);
     const {parseLifecycleClaimedAt,...missingParse}=ports;void parseLifecycleClaimedAt;
     // @ts-expect-error original claimed-at parsing requires its explicit native leaf
     createMacosVmLifecycleApplication(missingParse);
@@ -95,9 +102,13 @@ function negativeContracts(){
 }
 void negativeContracts;
 const imagePorts:MacosImageSnapshotsPorts<Result>={...ports,snapshotId:()=>"snapshot-before",
-    providerCommand:()=>({status:0,stdout:"",stderr:""}),publicDevice:value=>value,waitRecordingExit:async()=>true};
+    providerCommand:()=>({status:0,stdout:"",stderr:""}),publicDevice:value=>value,waitRecordingExit:async()=>true,
+    presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}})};
 const imageApp=createMacosImageSnapshots(imagePorts,app);
 function imageContracts(){
+    const {presentRestoreFailure,...missingRestorePresenter}=imagePorts;void presentRestoreFailure;
+    // @ts-expect-error Preserved restore failure presentation is a required native capability.
+    createMacosImageSnapshots(missingRestorePresenter,app);
     const cloned:Promise<Result|undefined>=imageApp.clone({sourceDeviceId:"unit",deviceId:"copy"});
     const snapshot:Promise<Result|undefined>=imageApp.createSnapshot({deviceId:"unit",snapshotName:"Before"});
     const restored:Promise<Result|undefined>=imageApp.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});

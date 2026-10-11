@@ -1,8 +1,24 @@
 export type DesktopRecord = Record<string, unknown>;
-export interface DesktopRpcResult {
-    status: number;
-    payload: unknown;
+export type DesktopFailureCategory = 'invalid' | 'denied' | 'missing' | 'conflict' | 'too-large' | 'guest-failed' | 'unsupported' | 'provider-failed' | 'unavailable';
+export interface DesktopFacts {
+    ok: boolean;
+    error?: string;
+    ownerId?: string;
+    backend?: string | null;
+    deviceId?: string;
+    tool?: string;
+    missing?: string[];
+    minimumTimeoutMs?: number;
+    detail?: unknown;
+    remedy?: string;
+    execution?: unknown;
+    bytes?: number;
+    maxFileBytes?: number;
+    result?: DesktopRecord;
 }
+export type DesktopOutcome =
+    { kind: 'success'; facts: DesktopFacts; capture?: DesktopCapture } |
+    { kind: 'failure'; category: DesktopFailureCategory; facts: DesktopFacts };
 /** Raw request fields retain their input types until the application admits them. */
 export interface DesktopArguments {
     incarnationId?: unknown;
@@ -187,13 +203,10 @@ export function desktopField(record: DesktopDevice, key: string): string | null 
 export function desktopSucceeded(result: DesktopExecution) { return result.status === 0 && !result.error; }
 export const DESKTOP_CONSOLE_TOOLS: ReadonlySet<string> = new Set(['device_screenshot', 'device_click', 'device_double_click', 'device_drag', 'device_key', 'device_type', 'device_scroll', 'device_cursor_position']);
 export function desktopReadOnly(tool: string) { return ['device_screenshot', 'device_cursor_position', 'device_window_list'].includes(tool); }
-export function desktopInputFailure(result: DesktopRpcResult, tool: string): DesktopRpcResult {
-    const payload = desktopRecord(result.payload) ? result.payload : {
-        ok: false
-    };
+export function desktopInputFailure(result: DesktopOutcome, tool: string): DesktopOutcome {
     return {
-        ...result, payload: {
-            ...payload, tool
+        ...result, facts: {
+            ...result.facts, tool
         }
     };
 }

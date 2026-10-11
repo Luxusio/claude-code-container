@@ -5,7 +5,7 @@ export interface DesktopAccessTarget { id:string }
 export interface DesktopAccessDiscovery { available:boolean }
 export interface DesktopAccessBridge { target:string }
 export interface DesktopScreenshotStage { localPath:string }
-export interface DesktopScreenshotResult { content:({type:string;data:string;mimeType:string}|{type:string;text:string})[]; isError?:boolean }
+export type DesktopScreenshotResult = {kind:"image";data:string}|{kind:"missing";message:string}|{kind:"invalid";message:string};
 export type DesktopAccessOutcome = {kind:'json';value:object}|{kind:'text';text:string}|{kind:'native';value:object}|{kind:'command-failure';receipt:CommandReceipt}|{kind:'image';data:string};
 export interface AccessibilityPayload { provider?:string; accessibility?:{provider?:string} }
 export interface WindowsAccessResponse { id?:string; ok?:boolean; error?:string; stdout?:string; stderr?:string; status?:number|null; imagePath?:string; hostImagePath?:string; accessibility?:{provider?:string} }

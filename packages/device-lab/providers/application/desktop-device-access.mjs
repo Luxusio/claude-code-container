@@ -54,7 +54,8 @@ export function createDesktopDeviceAccess(ports) {
             if (capture.status !== 0) return {kind:'command-failure',receipt:capture};
             const copy = ports.copy(target,selected.bridge,stage,args.helperTimeoutMs);
             if (copy.status !== 0) return {kind:'command-failure',receipt:copy};
-            return {kind:'native',value:ports.readScreenshot(stage)};
+            const image = ports.readScreenshot(stage);
+            return image.kind === 'image' ? image : {kind:'text',text:image.message};
         } finally {
             ports.cleanupRemote(target,selected.bridge,stage,args.helperTimeoutMs);
             ports.disposeScreenshot(stage);
@@ -77,7 +78,8 @@ export function createDisplayDeviceAccess(ports) {
         try {
             const result = ports.capture(stage);
             if (result.status !== 0) return {kind:'command-failure',receipt:result};
-            return {kind:'native',value:ports.readScreenshot(stage)};
+            const image = ports.readScreenshot(stage);
+            return image.kind === 'image' ? image : {kind:'text',text:image.message};
         } finally { ports.disposeScreenshot(stage); }
     }
     return {current,handle};

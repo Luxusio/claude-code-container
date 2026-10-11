@@ -209,25 +209,14 @@ export function createMacosVmLifecycleApplication(ports) {
      * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult | null} cleanup
      * @param {string} target */
     function tartCloneFailure(result, cleanup, target) {
-        if (!cleanup) return (0, ports.fail)(result);
-        return (0, ports.textResult)(false, JSON.stringify({
-            ok: false,
-            error: "macos-tart-clone-failed",
-            target,
-            timedOut: true,
-            command: {
-                status: result.status,
-                signal: result.signal || null,
-                detail: result.stderr || result.stdout || result.error?.message || "clone timed out",
-            },
-            cleanup: {
-                ok: cleanup.status === 0,
-                status: cleanup.status,
-                signal: cleanup.signal || null,
-                detail: cleanup.stderr || cleanup.stdout || cleanup.error?.message || null,
-            },
-        }));
+        return ports.presentCloneFailure({ target, command: result, cleanup });
     }
+
+    /** @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult} command
+     * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult|null} cleanup
+     * @param {string} target
+     * @returns {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosCloneFailureEvidence} */
+    function cloneFailureEvidence(command, cleanup, target) { return { target, command, cleanup }; }
 
     /** @param {MacosVmProviderPlan} plan @param {string} instance */
     function deleteInstance(plan, instance) {
@@ -672,6 +661,6 @@ export function createMacosVmLifecycleApplication(ports) {
         recoverStale: recoverStaleMacosLifecycle, claimLifecycle: claimMacosLifecycle,
         currentLifecycleDevice: currentMacosLifecycleDevice, abortLifecycle: abortMacosLifecycle,
         transitionCurrent: transitionCurrentMacosLifecycle, rollbackStarted: rollbackStartedMacosVm,
-        rollbackCreated: rollbackCreatedMacosResource, clone: runTartClone, cloneFailure: tartCloneFailure,
+        rollbackCreated: rollbackCreatedMacosResource, clone: runTartClone, cloneFailure: tartCloneFailure, cloneFailureEvidence,
         replacement: macosLifecycleReplacement };
 }

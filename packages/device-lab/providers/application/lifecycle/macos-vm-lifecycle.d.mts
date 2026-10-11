@@ -1,4 +1,4 @@
-import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
+import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback, MacosCloneFailureEvidence } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
 export interface MacosVmLifecycle<Result> {
     create(input: MacosVmLifecycleInput): Result | undefined;
     createImage(input: MacosVmLifecycleInput): Result | undefined;
@@ -16,6 +16,7 @@ export interface MacosVmLifecycle<Result> {
     rollbackStarted(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, plan: MacosVmProviderPlan): MacosVmRollback;
     rollbackCreated(deviceId: string | undefined, plan: MacosVmProviderPlan, instance: string): MacosVmRollback;
     clone(plan: MacosVmProviderPlan, source: string | null | undefined, target: string): {result: MacosVmCommandResult; cleanup: MacosVmCommandResult | null};
+    cloneFailureEvidence(command: MacosVmCommandResult, cleanup: MacosVmCommandResult | null, target: string): MacosCloneFailureEvidence;
     cloneFailure(result: MacosVmCommandResult, cleanup: MacosVmCommandResult | null, target: string): Result;
 }
 export function createMacosVmLifecycleApplication<Result, Child extends MacosVmProcessHandle = MacosVmProcessHandle>(ports: MacosVmLifecyclePorts<Result, Child>): MacosVmLifecycle<Result>;

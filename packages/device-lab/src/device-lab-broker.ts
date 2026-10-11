@@ -13,6 +13,7 @@ import type { BrokerPhysicalDevicesPorts } from './device-lab/ports/broker-physi
 import type { BrokerOwnerCleanupPorts } from './device-lab/ports/broker-owner-cleanup.js';
 import { createHyperVDesktopTransferApplication } from "./device-lab/application/hyper-v-desktop-transfer.js";
 import type { HyperVDesktopTransferPorts } from "./device-lab/ports/hyper-v-desktop-transfer.js";
+import { desktopRecord, type DesktopOutcome, type DesktopFailureCategory } from "./device-lab/domain/hyper-v-desktop-transfer.js";
 import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyper-v-snapshots.js";
 import type { SnapshotExecution } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
@@ -3832,7 +3833,11 @@ function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOpti
         incarnation: hyperVDeviceIncarnationId,
         validIncarnation: validHyperVIncarnationId,
         pendingJournal: (ownerId, stateKey, deviceId) => existsSync(hyperVSnapshotJournalPath(ownerId, stateKey, deviceId)),
-        repair: (ownerId, stateKey, deviceId, device, powershell) => reconcileHyperVSnapshotJournal(ownerId, stateKey, deviceId, device, powershell, normalized),
+        repair: async (ownerId, stateKey, deviceId, device, powershell) => {
+            const repaired = await reconcileHyperVSnapshotJournal(ownerId, stateKey, deviceId, device, powershell, normalized);
+            if (repaired.ok) return repaired;
+            return { ok: false, category: repaired.status === 409 ? 'conflict' : 'provider-failed', error: repaired.error, ...(repaired.detail ? { detail: repaired.detail } : {}) };
+        },
         ownershipNotes: ownershipMarker,
         createConsole: executable => createDeviceLabHyperVWindowsClient({
             executable,
@@ -3900,9 +3905,30 @@ function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOpti
     return createHyperVDesktopTransferApplication(ports);
 }
 
+/** Presentation follows application decisions and frame publication. */
+function renderHyperVDesktopOutcome(outcome: DesktopOutcome): BrokerRpcResult {
+    if (outcome.kind === 'failure') {
+        const statuses: Record<DesktopFailureCategory, number> = {
+            invalid: 400, denied: 403, missing: 404, conflict: 409, 'too-large': 413,
+            'guest-failed': 422, unsupported: 501, 'provider-failed': 502, unavailable: 503,
+        };
+        return { status: statuses[outcome.category], payload: outcome.facts };
+    }
+    if (!outcome.capture) return { status: 200, payload: outcome.facts };
+    const result = desktopRecord(outcome.facts.result) ? outcome.facts.result : {};
+    const capture = outcome.capture;
+    return { status: 200, payload: { ...outcome.facts, result: { ...result, mcpResult: {
+        content: [
+            { type: 'image', data: capture.pngBase64, mimeType: 'image/png' },
+            { type: 'text', text: JSON.stringify({ backend: result.backend, deviceId: result.deviceId,
+                width: capture.width, height: capture.height, incarnationId: result.incarnationId, capturedAt: result.capturedAt }) },
+        ],
+    } } } };
+}
+
 async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
     if (isSnapshotTool(parsed.tool)) return brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match);
-    return brokerHyperVDesktopTransferApplication(normalized).invoke(ownerId, parsed, match);
+    return renderHyperVDesktopOutcome(await brokerHyperVDesktopTransferApplication(normalized).invoke(ownerId, parsed, match));
 }
 
 async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {

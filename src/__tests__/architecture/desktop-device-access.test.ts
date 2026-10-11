@@ -25,7 +25,7 @@ function macosFixture() {
         parseHelper: () => null,
         stageScreenshot: () => ({ localPath: "/owned/stage/screenshot.png", remotePath: "/tmp/owned-screenshot.png" }),
         capture: () => ({ status: 0, stdout: "", stderr: "" }), copy: () => ({ status: 0, stdout: "", stderr: "" }),
-        readScreenshot: () => ({ content: [{ type: "image", data: "native-image", mimeType: "image/png" }] }),
+        readScreenshot: () => ({ kind: "image", data: "native-image" }),
         cleanupRemote: () => { state.remoteCleaned = true; return { status: 0, stdout: "", stderr: "" }; },
         disposeScreenshot: () => { expect(state.remoteCleaned, "remote cleanup must precede local disposal").toBe(true); state.disposed = true; return undefined; },
     };
@@ -33,6 +33,19 @@ function macosFixture() {
 }
 
 describe("desktop device access policy", () => {
+    it("returns macOS screenshot bytes and releases its remote and local capture", async () => {
+        const f = macosFixture();
+        await expect(createDesktopDeviceAccess(f.ports).handle("device_screenshot", {})).resolves.toEqual({ kind: "image", data: "native-image" });
+        expect(f.state).toEqual({ remoteCleaned: true, disposed: true });
+    });
+
+    it("reports a rejected macOS screenshot and releases the capture", async () => {
+        const f = macosFixture();
+        f.ports.readScreenshot = () => ({ kind: "invalid", message: "screenshot-file-link" });
+        await expect(createDesktopDeviceAccess(f.ports).handle("device_screenshot", {})).resolves.toEqual({ kind: "text", text: "screenshot-file-link" });
+        expect(f.state).toEqual({ remoteCleaned: true, disposed: true });
+    });
+
     it("returns native Windows helper refusal without reading screenshot output", async () => {
         const ports = windowsPorts();
         ports.request = async () => ({ helper: { outputRoot: "/owned/output" }, error: "helper unavailable" });

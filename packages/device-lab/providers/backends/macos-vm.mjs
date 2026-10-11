@@ -13,7 +13,7 @@ import { commandPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath, validateLocalReferencePath } from "../policy/files.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
-import { screenshotFileResult } from "../screenshot-file.mjs";
+import { readScreenshotFile } from "../screenshot-file.mjs";
 import { claimMacosDevice, findMacosDevice, readMacosDevices, transitionMacosDevice, updateMacosDevice } from "../state/macos-state.mjs";
 import { withOwnerDeviceOperation, withOwnerDeviceOperations } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -106,6 +106,7 @@ const macosVmLifecycle = createMacosVmLifecycleApplication({
     get textResult() { return textResult; },
     get jsonResult() { return jsonResult; },
     get fail() { return fail; },
+    get presentCloneFailure() { return presentMacosCloneFailure; },
     timestamp: () => new Date().toISOString(),
     now: () => Date.now(),
     get parseLifecycleClaimedAt() {
@@ -956,7 +957,7 @@ const macosAccessPorts = {
         [...sshBaseArgs(device), bridge.target, macosScreenshotCommand(stage.remotePath)], timeoutMs, stage.commandOptions),
     copy: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.scp,
         [...scpBaseArgs(device), `${bridge.target}:${stage.remotePath}`, stage.localPath], timeoutMs, stage.commandOptions),
-    readScreenshot: stage => screenshotFileResult(stage.localPath, "macos-vm-screenshot"),
+    readScreenshot: stage => readScreenshotFile(stage.localPath, "macos-vm-screenshot"),
     cleanupRemote: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
         [...sshBaseArgs(device), bridge.target, `rm -f -- ${shellQuote(stage.remotePath)}`], Math.min(macosHelperTimeoutMs(timeoutMs), 5000), stage.commandOptions),
     disposeScreenshot: stage => { rmSync(stage.tempRoot, { recursive: true, force: true }); return undefined; },
@@ -1127,6 +1128,21 @@ const deviceObservation = createDeviceObservation({ kind: "macos-vm", ownerId: (
         "device_download",
     ], platform: () => process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device) });
 
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosCloneFailureEvidence} evidence */
+function macosCloneFailureText(evidence) {
+    const { command: result, cleanup, target } = evidence;
+    if (!cleanup) return null;
+    return JSON.stringify({ ok: false, error: "macos-tart-clone-failed", target, timedOut: true,
+        command: { status: result.status, signal: result.signal || null, detail: result.stderr || result.stdout || result.error?.message || "clone timed out" },
+        cleanup: { ok: cleanup.status === 0, status: cleanup.status, signal: cleanup.signal || null, detail: cleanup.stderr || cleanup.stdout || cleanup.error?.message || null },
+    });
+}
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosCloneFailureEvidence} evidence */
+function presentMacosCloneFailure(evidence) {
+    const text = macosCloneFailureText(evidence);
+    return text === null ? fail(evidence.command) : textResult(false, text);
+}
+
 const macosImages = createMacosImageSnapshots({
     read: () => readMacosDevices(),
     find: id => findMacosDevice(id),
@@ -1147,4 +1163,5 @@ const macosImages = createMacosImageSnapshots({
     textResult: (ok, message) => textResult(ok, message),
     jsonResult: value => jsonResult(value),
     fail: command => fail(command),
+    presentRestoreFailure: (evidence, fallbackError, candidate) => textResult(false, `${evidence ? macosCloneFailureText(evidence) || `Error: ${fallbackError}` : `Error: ${fallbackError}`}. Restore candidate preserved: ${candidate}`),
 }, macosVmLifecycle);

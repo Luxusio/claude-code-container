@@ -389,7 +389,7 @@ function spawnObservationAppium(executable, port) {
     };
 }
 
-/** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../ports/ios-observation-access.mjs').IosAccessNativeResult>} */
+/** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../responses.mjs').IosAccessNativeResult>} */
 const observationPorts = {
     kind: "physical",
     findDevice: id => findIosRealDevice(id),

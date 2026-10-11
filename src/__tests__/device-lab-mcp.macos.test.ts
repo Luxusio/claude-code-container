@@ -281,6 +281,100 @@ describe("macOS VM backend with fake Tart provider", () => {
         }
     });
 
+    it.each([false, true])("preserves the restore candidate after activation timeout, cleanup failure=%s", { timeout: 20000 }, async (cleanupFails) => {
+        const tartPath = join(context.binDir, "tart");
+        const originalTart = readFileSync(tartPath, "utf-8");
+        const oldCloneTimeout = process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS;
+        const oldDeleteTimeout = process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS;
+        const deviceId = `macos-restore-timeout-${cleanupFails ? "failed" : "clean"}`;
+        const resourceDir = join(homeDir, `${deviceId}-resources`);
+        mkdirSync(resourceDir);
+        try {
+            const created = await handleMacosTool("device_create", {
+                backend: "macos-vm", name: "Restore Timeout", deviceId, provider: "tart",
+            });
+            expect(created?.isError).not.toBe(true);
+            const primary = (JSON.parse((created?.content as Array<{ text: string }>)[0].text) as {
+                device: { providerInstance: string };
+            }).device.providerInstance;
+            const resource = (name: string) => join(resourceDir, encodeURIComponent(name));
+            writeFileSync(resource(primary), "snapshot bytes");
+            writeFileSync(tartPath, `#!${process.execPath}\n`
+                + `const fs = require("node:fs"), path = require("node:path"), args = process.argv.slice(2);\n`
+                + `const primary = ${JSON.stringify(primary)}, cleanupFails = ${cleanupFails};\n`
+                + `const resource = name => path.join(${JSON.stringify(resourceDir)}, encodeURIComponent(name));\n`
+                + `fs.appendFileSync(process.env.FAKE_TART_LOG, "tart " + args.join(" ") + "\\n");\n`
+                + `if (args[0] === "run" && args[1] === "--help") process.exit(0);\n`
+                + `if (args[0] === "clone") {\n`
+                + `  if (!fs.existsSync(resource(args[1])) || fs.existsSync(resource(args[2]))) process.exit(7);\n`
+                + `  if (args[1].startsWith(primary + "-restore-") && args[2] === primary) {\n`
+                + `    fs.writeFileSync(resource(primary), "partial activation");\n`
+                + `    console.error("activation timeout witness"); setTimeout(() => {}, 10000);\n`
+                + `  } else { fs.copyFileSync(resource(args[1]), resource(args[2])); process.exit(0); }\n`
+                + `} else if (args[0] === "delete") {\n`
+                + `  if (args[1] === primary && fs.existsSync(resource(primary)) && fs.readFileSync(resource(primary), "utf8") === "partial activation") {\n`
+                + `    if (cleanupFails) { console.error("timeout cleanup denied"); process.exit(9); }\n`
+                + `    fs.rmSync(resource(primary)); console.log("primary cleanup complete"); process.exit(0);\n`
+                + `  }\n`
+                + `  fs.rmSync(resource(args[1]), {force:true}); process.exit(0);\n`
+                + `} else process.exit(0);\n`);
+            chmodSync(tartPath, 0o755);
+            process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS = "1000";
+            process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS = "1000";
+            const snapshotResult = await handleMacosTool("device_snapshot_create", {
+                deviceId, snapshotName: "Before Timeout",
+            });
+            expect(snapshotResult?.isError).not.toBe(true);
+            const snapshot = (JSON.parse((snapshotResult?.content as Array<{ text: string }>)[0].text) as {
+                snapshot: { id: string; providerInstance: string };
+            }).snapshot;
+            writeFileSync(resource(primary), "changed primary");
+
+            const restored = await handleMacosTool("device_snapshot_restore", {
+                deviceId, snapshotId: snapshot.id,
+            });
+            expect(restored?.isError).toBe(true);
+            const state = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as {
+                devices: Array<{ id: string; status: string; lifecycle?: unknown; restoreRecovery: {
+                    candidateProviderInstance: string; snapshotId: string; snapshotName: string; phase: string; error: string;
+                } }>;
+            };
+            const saved = state.devices.find(device => device.id === deviceId);
+            expect(saved?.status).toBe("stopped");
+            expect(saved?.lifecycle).toBeUndefined();
+            expect(saved?.restoreRecovery).toEqual(expect.objectContaining({
+                snapshotId: snapshot.id, snapshotName: "Before Timeout", phase: "prepared",
+                error: "activation timeout witness\n",
+            }));
+            const candidate = saved!.restoreRecovery.candidateProviderInstance;
+            expect(candidate.startsWith(`${primary}-restore-${snapshot.id}-`)).toBe(true);
+            expect(readFileSync(resource(candidate), "utf-8")).toBe("snapshot bytes");
+            expect(readFileSync(resource(snapshot.providerInstance), "utf-8")).toBe("snapshot bytes");
+            expect(existsSync(resource(primary))).toBe(cleanupFails);
+            if (cleanupFails) expect(readFileSync(resource(primary), "utf-8")).toBe("partial activation");
+            const text = (restored?.content as Array<{ text: string }>)[0].text;
+            const suffix = `. Restore candidate preserved: ${candidate}`;
+            expect(text.endsWith(suffix)).toBe(true);
+            expect(JSON.parse(text.slice(0, -suffix.length))).toEqual({
+                ok: false, error: "macos-tart-clone-failed", target: primary, timedOut: true,
+                command: { status: null, signal: "SIGTERM", detail: "activation timeout witness\n" },
+                cleanup: { ok: !cleanupFails, status: cleanupFails ? 9 : 0, signal: null,
+                    detail: cleanupFails ? "timeout cleanup denied\n" : "primary cleanup complete\n" },
+            });
+        } finally {
+            // The synchronous provider calls have joined their allocated children.
+            writeFileSync(tartPath, originalTart);
+            chmodSync(tartPath, 0o755);
+            if (oldCloneTimeout === undefined) delete process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS;
+            else process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS = oldCloneTimeout;
+            if (oldDeleteTimeout === undefined) delete process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS;
+            else process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS = oldDeleteTimeout;
+            await handleMacosTool("device_delete", { deviceId });
+            rmSync(resourceDir, { recursive: true, force: true });
+            writeFileSync(logPath, "");
+        }
+    });
+
     it("does not persist a Tart process that exits successfully during startup as running", async () => {
         const deviceId = "macos-immediate-exit";
         const created = await handleMacosTool("device_create", {

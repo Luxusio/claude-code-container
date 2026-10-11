@@ -96,4 +96,7 @@ export interface MacosVmLifecyclePorts<Result, Child extends MacosVmProcessHandl
     textResult(ok: boolean, text: string): Result;
     jsonResult(value: unknown): Result;
     fail(result: MacosVmCommandResult): Result;
+    presentCloneFailure(evidence: MacosCloneFailureEvidence): Result;
 }
+
+export interface MacosCloneFailureEvidence { target:string; command:MacosVmCommandResult; cleanup:MacosVmCommandResult|null; }

@@ -1,8 +1,7 @@
-import type { MacosVmLifecycleInput, MacosVmDevice, MacosVmProviderPlan, MacosVmCommandResult, MacosVmClaimResult, MacosVmTransition, MacosVmRuntime, MacosVmSignal } from "./lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecycleInput, MacosVmDevice, MacosVmProviderPlan, MacosVmCommandResult, MacosVmClaimResult, MacosVmTransition, MacosVmRuntime, MacosVmSignal, MacosCloneFailureEvidence } from "./lifecycle/macos-vm-lifecycle.mjs";
 export interface MacosImageInput extends MacosVmLifecycleInput { snapshotName?: string; snapshotId?: string; }
-export interface MacosImageResult { content?: { text?: string }[]; }
 /** Native observations/effects only; lifecycle claim and clone policy is an inward peer. */
-export interface MacosImageSnapshotsPorts<Result extends MacosImageResult> {
+export interface MacosImageSnapshotsPorts<Result> {
     read(): MacosVmDevice[];
     find(deviceId: string | undefined): MacosVmDevice | null | undefined;
     claim(device: MacosVmDevice): MacosVmClaimResult;
@@ -21,5 +20,6 @@ export interface MacosImageSnapshotsPorts<Result extends MacosImageResult> {
     waitRecordingExit(recording: MacosVmRuntime | null | undefined, timeoutMs: number): Promise<boolean>;
     textResult(ok: boolean, message: string): Result;
     jsonResult(value: unknown): Result;
+    presentRestoreFailure(evidence: MacosCloneFailureEvidence | null, fallbackError: string, candidate: string): Result;
     fail(command: MacosVmCommandResult): Result;
 }

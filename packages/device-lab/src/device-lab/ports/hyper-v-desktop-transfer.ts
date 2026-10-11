@@ -1,4 +1,4 @@
-import type { DesktopDevice, DesktopWindowList, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopCommand, DesktopSshFacts } from '../domain/hyper-v-desktop-transfer.js';
+import type { DesktopDevice, DesktopWindowList, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopCommand, DesktopSshFacts, DesktopFailureCategory } from '../domain/hyper-v-desktop-transfer.js';
 export interface DesktopRoots {
     deviceRoot: string;
     privateRoot: string;
@@ -14,7 +14,7 @@ export interface DesktopRepair {
 }
 export interface DesktopRepairFailure {
     ok: false;
-    status: number;
+    category: DesktopFailureCategory;
     error: string;
     detail?: unknown;
 }

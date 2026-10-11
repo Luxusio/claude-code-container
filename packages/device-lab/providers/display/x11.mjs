@@ -4,7 +4,7 @@ import { join } from "path";
 import { run, runWithTimeout } from "../commands.mjs";
 import { DISPLAY, ownerId } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
-import { screenshotFileResult } from "../screenshot-file.mjs";
+import { readScreenshotFile } from "../screenshot-file.mjs";
 import { withTargetStatus } from "../status.mjs";
 import { X11_WINDOW_LIST_COMMAND, parseX11WindowList } from "./window-list.mjs";
 
@@ -41,7 +41,7 @@ const displayAccessPorts = {
         return { tempRoot, localPath: join(tempRoot, "screenshot.png") };
     },
     capture: stage => runWithTimeout("scrot", ["-p", "-o", stage.localPath], 30_000),
-    readScreenshot: stage => screenshotFileResult(stage.localPath, "x11-screenshot"),
+    readScreenshot: stage => readScreenshotFile(stage.localPath, "x11-screenshot"),
     disposeScreenshot: stage => { rmSync(stage.tempRoot, { recursive: true, force: true }); return undefined; },
 };
 const displayAccess = createDisplayDeviceAccess(displayAccessPorts);

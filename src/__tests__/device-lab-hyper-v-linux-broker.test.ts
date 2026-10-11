@@ -2981,7 +2981,13 @@ describe("device-lab Hyper-V broker", () => {
             expect(guiTypeScript).toContain("xdotool type --clearmodifiers --delay 10 --file -");
             expect(guiTypeScript).not.toContain("touch /tmp/ccc-gui-input");
             expect(guiTypeCalls.some((command) => hyperVWindowsOperationRequest(command)?.operation === "Send-VMConsoleInput")).toBe(false);
-            expect((await tool("device_screenshot", {})).status).toBe(200);
+            const screenshot = await tool("device_screenshot", {});
+            expect(screenshot.status).toBe(200);
+            const screenshotBody = await screenshot.json();
+            expect(screenshotBody.result).toMatchObject({ backend: "linux-vm", deviceId, width: 640, height: 480, incarnationId: activeIncarnationId });
+            expect(screenshotBody.result.mcpResult.content[0]).toEqual({ type: "image", mimeType: "image/png", data: consolePng.toString("base64") });
+            expect(JSON.parse(screenshotBody.result.mcpResult.content[1].text)).toEqual({ backend: "linux-vm", deviceId, width: 640, height: 480, incarnationId: activeIncarnationId, capturedAt: screenshotBody.result.capturedAt });
+            expect(screenshotBody.result.capturedAt).toEqual(expect.any(String));
             const beforeGuiScroll = commandRunner.mock.calls.length;
             const guiScroll = await tool("device_scroll", { x: 320, y: 240, direction: "up", amount: 3 });
             expect(guiScroll.status, JSON.stringify(await guiScroll.clone().json())).toBe(200);
@@ -2994,6 +3000,9 @@ describe("device-lab Hyper-V broker", () => {
             const guiScrollEnvelope = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| bash/.exec(guiScrollSsh?.args?.at(-1) || "");
             expect(Buffer.from(guiScrollEnvelope?.[1] || "", "base64").toString("utf8")).toContain("xdotool click --repeat 3 --delay 40 4");
             sshFailure = true;
+            const failedType = await tool("device_type", { text: "guest input" });
+            expect(failedType.status).toBe(502);
+            expect(await failedType.json()).toMatchObject({ ok: false, tool: "device_type", error: "hyper-v-linux-guest-provider-failed" });
             const failedScroll = await tool("device_scroll", { x: 320, y: 240, direction: "down", amount: 1 });
             expect(failedScroll.status).toBe(502);
             expect(await failedScroll.json()).toEqual(expect.objectContaining({ tool: "device_scroll", error: "hyper-v-linux-guest-provider-failed" }));

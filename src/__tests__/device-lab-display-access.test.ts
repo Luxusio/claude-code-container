@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const fixture = vi.hoisted(() => ({ failure: false, missingOutput: false, screenshotPath: "" }));
+const fixture = vi.hoisted(() => ({ failure: false, missingOutput: false, emptyOutput: false, screenshotPath: "" }));
 vi.mock("fs", async (original) => {
     const actual = await original<typeof import("fs")>();
     return {
@@ -22,7 +22,7 @@ vi.mock("@ccc/device-lab/providers/commands.mjs", async (original) => {
             fixture.screenshotPath = args[2];
             if (fixture.failure) return { status: 7, stdout: "", stderr: "capture unavailable" };
             if (fixture.missingOutput) return { status: 0, stdout: "", stderr: "" };
-            fs.writeFileSync(fixture.screenshotPath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 42]));
+            fs.writeFileSync(fixture.screenshotPath, fixture.emptyOutput ? Buffer.alloc(0) : Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 42]));
             return { status: 0, stdout: "", stderr: "" };
         },
     };
@@ -30,10 +30,18 @@ vi.mock("@ccc/device-lab/providers/commands.mjs", async (original) => {
 import { existsSync } from "node:fs";
 import { currentDisplayTarget, handleDisplayTool } from "@ccc/device-lab/providers/display/x11.mjs";
 
-beforeEach(() => { fixture.failure = false; fixture.missingOutput = false; fixture.screenshotPath = ""; });
+beforeEach(() => { fixture.failure = false; fixture.missingOutput = false; fixture.emptyOutput = false; fixture.screenshotPath = ""; });
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("actual X11 display access facade", () => {
+    it("refuses empty native capture bytes and disposes the allocated directory", async () => {
+        fixture.emptyOutput = true;
+        await expect(handleDisplayTool("display_screenshot", {})).resolves.toEqual({ isError: true, content: [{ type: "text", text: "x11-screenshot-output-missing" }] });
+        expect(fixture.screenshotPath).not.toBe("");
+        expect(existsSync(fixture.screenshotPath)).toBe(false);
+        expect(existsSync(dirname(fixture.screenshotPath))).toBe(false);
+    });
+
     it("returns the synchronous current target with its native metadata", () => {
         const target = currentDisplayTarget();
         expect(target).toMatchObject({ id: "x11-current-display", kind: "display", backend: "x11", creatable: false, lifecycle: "current", available: true,

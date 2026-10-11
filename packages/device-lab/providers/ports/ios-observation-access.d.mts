@@ -141,8 +141,3 @@ export interface IosPhysicalAccessPorts<Device extends IosAccessDevice, Result> 
     hostDevices(discovery: IosAccessDiscovery): { udid?: string }[];
 }
 export type IosObservationAccessPorts<Device extends IosAccessDevice, Result> = IosSimulatorAccessPorts<Device, Result> | IosPhysicalAccessPorts<Device, Result>;
-
-export interface IosAccessNativeResult {
-    content: { type: string; text?: string; data?: unknown; mimeType?: string }[];
-    isError?: boolean;
-}

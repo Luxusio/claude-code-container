@@ -1,15 +1,15 @@
-import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopRpcResult, type DesktopCommand, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
+import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopCommand, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
 import type { HyperVDesktopTransferPorts } from '../ports/hyper-v-desktop-transfer.js';
 export function createHyperVDesktopTransferApplication<Console, Stage, Bytes extends {
     readonly length: number;
 }>(ports: HyperVDesktopTransferPorts<Console, Stage, Bytes>) {
-    async function invoke(ownerId: string, parsed: DesktopRequest, match: DesktopTarget): Promise<DesktopRpcResult> {
+    async function invoke(ownerId: string, parsed: DesktopRequest, match: DesktopTarget): Promise<DesktopOutcome> {
         const deviceId = String(parsed.deviceId);
         let device = match.device;
         const powershell = ports.executable("powershell.exe") || ports.executable("pwsh") || ports.executable("powershell");
         if (!powershell)
             return {
-                status: 400, payload: {
+                kind: 'failure', category: 'invalid', facts: {
                     ok: false, error: "missing-provider-command", missing: ["powershell"], backend: match.backend, deviceId
                 }
             };
@@ -20,14 +20,14 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             const expectedIncarnationId = parsed.params.incarnationId;
             if (!ports.validIncarnation(expectedIncarnationId)) {
                 return {
-                    status: 409, payload: {
+                    kind: 'failure', category: 'conflict', facts: {
                         ok: false, error: "hyper-v-incarnation-required", ownerId, backend: match.backend, deviceId, tool: parsed.tool
                     }
                 };
             }
             if (!initialIncarnationId || expectedIncarnationId !== initialIncarnationId) {
                 return {
-                    status: 409, payload: {
+                    kind: 'failure', category: 'conflict', facts: {
                         ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: match.backend, deviceId, tool: parsed.tool
                     }
                 };
@@ -36,7 +36,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
         const reconciliation = await ports.repair(ownerId, match.stateKey, deviceId, device, powershell);
         if (!reconciliation.ok)
             return {
-                status: reconciliation.status, payload: {
+                kind: 'failure', category: reconciliation.category, facts: {
                     ok: false, error: reconciliation.error, ownerId, backend: match.backend, deviceId, ...(reconciliation.detail ? {
                         detail: reconciliation.detail
                     } : {})
@@ -49,7 +49,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
         const incarnationId = ports.incarnation(device);
         if (!vmId || !vmName || !diskPath || !incarnationId) {
             return {
-                status: 409, payload: {
+                kind: 'failure', category: 'conflict', facts: {
                     ok: false, error: "missing-provider-metadata", missing: ["vmId", "vmName", "diskPath", "incarnationId"], backend: match.backend, deviceId
                 }
             };
@@ -57,7 +57,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
         if (parsed.tool === "device_window_list" || parsed.tool === "device_focus_window") {
             if (match.backend === "windows-vm" && typeof parsed.params.helperTimeoutMs === "number" && parsed.params.helperTimeoutMs < 30000) {
                 return {
-                    status: 400, payload: {
+                    kind: 'failure', category: 'invalid', facts: {
                         ok: false, error: parsed.tool === "device_focus_window" ? "window-focus-timeout-too-short" : "window-list-timeout-too-short", minimumTimeoutMs: 30000, deviceId
                     }
                 };
@@ -78,16 +78,16 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             }, {
                 ...match, device
             });
-            if (result.status !== 200)
+            if (result.kind !== 'success')
                 return desktopInputFailure(result, parsed.tool);
-            const payload: DesktopRecord = desktopRecord(result.payload) ? result.payload : {};
+            const payload: DesktopRecord = desktopRecord(result.facts) ? result.facts : {};
             const resultRecord: DesktopRecord = desktopRecord(payload.result) ? payload.result : {};
             try {
                 const stdout = resultRecord.stdout;
                 if (typeof stdout !== "string")
                     throw new Error("window-list-invalid-result");
                 return {
-                    status: 200, payload: {
+                    kind: 'success', facts: {
                         ok: true, result: {
                             deviceId, tool: parsed.tool, ...(parsed.tool === "device_focus_window" ? parseGuestFocusWindow(stdout) : match.backend === "linux-vm" ? ports.linuxWindows(stdout) : parseWindowsGuestWindowList(stdout, ports.utf8Length(stdout))),
                         }
@@ -96,7 +96,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             }
             catch (error) {
                 return {
-                    status: 502, payload: {
+                    kind: 'failure', category: 'provider-failed', facts: {
                         ok: false, error: error instanceof Error ? error.message : "window-list-invalid-result", deviceId, tool: parsed.tool
                     }
                 };
@@ -111,8 +111,8 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 expectedNotes: ports.ownershipNotes(ownerId, deviceId, incarnationId),
             };
             const client = ports.createConsole(powershell);
-            const errorResult = (status: number, error: string): DesktopRpcResult => ({
-                status, payload: {
+            const errorResult = (category: DesktopFailureCategory, error: string): DesktopOutcome => ({
+                kind: 'failure', category, facts: {
                     ok: false, error, ownerId, backend: match.backend, deviceId, tool: parsed.tool,
                     ...(["hyper-v-console-screenshot-required", "hyper-v-console-geometry-changed"].includes(error)
                         ? {
@@ -137,22 +137,10 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                             nativeWidth: capture.nativeWidth, nativeHeight: capture.nativeHeight, capturedAt,
                         });
                         return {
-                            status: 200, payload: {
+                            kind: 'success', capture, facts: {
                                 ok: true, result: {
                                     ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console",
                                     width: capture.width, height: capture.height, incarnationId, capturedAt,
-                                    mcpResult: {
-                                        content: [
-                                            {
-                                                type: "image", data: capture.pngBase64, mimeType: "image/png"
-                                            },
-                                            {
-                                                type: "text", text: JSON.stringify({
-                                                    backend: match.backend, deviceId, width: capture.width, height: capture.height, incarnationId, capturedAt
-                                                })
-                                            },
-                                        ]
-                                    },
                                 }
                             }
                         };
@@ -160,7 +148,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     if (parsed.tool === "device_cursor_position" && !cursorMove) {
                         const cursor = await ports.cursor(client, identity);
                         return {
-                            status: 200, payload: {
+                            kind: 'success', facts: {
                                 ok: true, result: {
                                     ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console", ...cursor, incarnationId
                                 }
@@ -170,7 +158,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     if (parsed.tool === "device_key") {
                         const keys = hyperVConsoleKeyTokens(parsed.params.key);
                         if (!keys)
-                            return errorResult(400, "hyper-v-console-key-invalid");
+                            return errorResult("invalid", "hyper-v-console-key-invalid");
                         await ports.input(client, {
                             ...identity, action: "key", keys
                         });
@@ -178,7 +166,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     else if (parsed.tool === "device_type") {
                         const text = hyperVConsoleText(parsed.params.text);
                         if (text === null)
-                            return errorResult(400, "hyper-v-console-text-invalid");
+                            return errorResult("invalid", "hyper-v-console-text-invalid");
                         if (match.backend === "linux-vm") {
                             // Hyper-V's WMI TypeText reports success even when Linux does not
                             // receive the characters. Type through the verified guest X11
@@ -186,10 +174,10 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                             const currentVms = await ports.vms(client, identity.selector.id);
                             if (currentVms.length !== 1 || currentVms[0].id.toLowerCase() !== vmId.toLowerCase()
                                 || currentVms[0].name !== vmName || currentVms[0].notes !== identity.expectedNotes) {
-                                return errorResult(409, "hyper-v-console-identity-mismatch");
+                                return errorResult("conflict", "hyper-v-console-identity-mismatch");
                             }
                             if (currentVms[0].state !== "Running")
-                                return errorResult(409, "hyper-v-display-unavailable");
+                                return errorResult("conflict", "hyper-v-display-unavailable");
                             const typed = await invoke(ownerId, {
                                 ...parsed,
                                 tool: "device_exec",
@@ -197,7 +185,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                                     ...parsed.params, command: ports.linuxTypeCommand(text)
                                 },
                             }, match);
-                            if (typed.status !== 200)
+                            if (typed.kind !== 'success')
                                 return desktopInputFailure(typed, parsed.tool);
                             inputProvider = "hyper-v-ssh-x11";
                         }
@@ -210,11 +198,11 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     else {
                         const frame = ports.frame(ownerId, match.backend || "", deviceId, incarnationId);
                         if (!frame)
-                            return errorResult(409, "hyper-v-console-screenshot-required");
+                            return errorResult("conflict", "hyper-v-console-screenshot-required");
                         const x = hyperVConsolePixel(parsed.tool === "device_drag" ? parsed.params.x1 : parsed.params.x, frame.width);
                         const y = hyperVConsolePixel(parsed.tool === "device_drag" ? parsed.params.y1 : parsed.params.y, frame.height);
                         if (x === null || y === null)
-                            return errorResult(400, "hyper-v-console-pixel-invalid");
+                            return errorResult("invalid", "hyper-v-console-pixel-invalid");
                         const pointer = {
                             ...identity, x, y, width: frame.width, height: frame.height, nativeWidth: frame.nativeWidth, nativeHeight: frame.nativeHeight
                         };
@@ -222,7 +210,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                             const x2 = hyperVConsolePixel(parsed.params.x2, frame.width);
                             const y2 = hyperVConsolePixel(parsed.params.y2, frame.height);
                             if (x2 === null || y2 === null)
-                                return errorResult(400, "hyper-v-console-pixel-invalid");
+                                return errorResult("invalid", "hyper-v-console-pixel-invalid");
                             await ports.input(client, {
                                 ...pointer, action: "drag", x2, y2, durationMs: Number(parsed.params.durationMs ?? 700)
                             });
@@ -230,7 +218,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         else if (parsed.tool === "device_click" || parsed.tool === "device_double_click") {
                             const button = parsed.params.button === undefined ? "left" : parsed.params.button;
                             if (button !== "left" && button !== "right")
-                                return errorResult(400, "hyper-v-console-button-invalid");
+                                return errorResult("invalid", "hyper-v-console-button-invalid");
                             await ports.input(client, {
                                 ...pointer, action: parsed.tool === "device_click" ? "click" : "doubleClick", button
                             });
@@ -238,12 +226,12 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         else if (parsed.tool === "device_scroll") {
                             const direction = parsed.params.direction;
                             if (direction === "left" || direction === "right")
-                                return errorResult(400, "hyper-v-console-scroll-unsupported");
+                                return errorResult("invalid", "hyper-v-console-scroll-unsupported");
                             if (direction !== "up" && direction !== "down")
-                                return errorResult(400, "hyper-v-console-scroll-direction-invalid");
+                                return errorResult("invalid", "hyper-v-console-scroll-direction-invalid");
                             const amount = parsed.params.amount === undefined ? 1 : parsed.params.amount;
                             if (typeof amount !== "number" || !Number.isInteger(amount) || amount < 1 || amount > 10)
-                                return errorResult(400, "hyper-v-console-scroll-amount-invalid");
+                                return errorResult("invalid", "hyper-v-console-scroll-amount-invalid");
                             if (match.backend === "linux-vm") {
                                 // The synthetic mouse wheel does not reach the Linux X11 session. Keep the
                                 // console pointer move (proven by clicks), then press the X11 wheel buttons.
@@ -257,7 +245,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                                         ...parsed.params, command: ports.linuxScrollCommand(direction, amount)
                                     },
                                 }, match);
-                                if (scrolled.status !== 200)
+                                if (scrolled.kind !== 'success')
                                     return desktopInputFailure(scrolled, parsed.tool);
                                 inputProvider = "hyper-v-ssh-x11";
                             }
@@ -273,10 +261,10 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                             });
                         }
                         else
-                            return errorResult(501, "broker-device-tool-not-supported");
+                            return errorResult("unsupported", "broker-device-tool-not-supported");
                     }
                     return {
-                        status: 200, payload: {
+                        kind: 'success', facts: {
                             ok: true, result: {
                                 ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: inputProvider, incarnationId, applied: true
                             }
@@ -286,10 +274,10 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 catch (error) {
                     const providerError = ports.providerError(error);
                     const code = providerError ? providerError.code : ports.boundedErrorCode(error, "hyper-v-console-operation-failed");
-                    const status = providerError?.validation ? 400
-                        : ["hyper-v-console-identity-mismatch", "hyper-v-console-geometry-changed", "hyper-v-display-unavailable"].includes(code) ? 409
-                            : code === "hyper-v-console-wmi-access-denied" ? 403 : 502;
-                    return errorResult(status, code);
+                    const category: DesktopFailureCategory = providerError?.validation ? 'invalid'
+                        : ["hyper-v-console-identity-mismatch", "hyper-v-console-geometry-changed", "hyper-v-display-unavailable"].includes(code) ? 'conflict'
+                            : code === "hyper-v-console-wmi-access-denied" ? 'denied' : 'provider-failed';
+                    return errorResult(category, code);
                 }
             });
         }
@@ -312,7 +300,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 || !sshHostKeyFingerprint || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(sshHostKeyFingerprint)
                 || !guestUsername || !networkAddress) {
                 return {
-                    status: 409, payload: {
+                    kind: 'failure', category: 'conflict', facts: {
                         ok: false, error: "hyper-v-linux-guest-metadata-invalid", backend: match.backend, deviceId
                     }
                 };
@@ -326,7 +314,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             }
             catch (error) {
                 return {
-                    status: 409, payload: {
+                    kind: 'failure', category: 'conflict', facts: {
                         ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "hyper-v-linux-ssh-private-key-invalid"), backend: match.backend, deviceId
                     }
                 };
@@ -348,7 +336,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     const ssh = ports.executable("ssh.exe") || ports.executable("ssh");
                     if (!ssh)
                         return {
-                            status: 503, payload: {
+                            kind: 'failure', category: 'unavailable', facts: {
                                 ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
                             }
                         };
@@ -361,7 +349,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         const scp = ports.executable("scp.exe") || ports.executable("scp");
                         if (!scp)
                             return {
-                                status: 503, payload: {
+                                kind: 'failure', category: 'unavailable', facts: {
                                     ok: false, error: "missing-provider-command", missing: ["scp"], backend: match.backend, deviceId
                                 }
                             };
@@ -370,7 +358,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         const source = ports.readSource(localPath, "hyper-v-linux-guest-upload", maxBytes);
                         if (source === null)
                             return {
-                                status: 404, payload: {
+                                kind: 'failure', category: 'missing', facts: {
                                     ok: false, error: "hyper-v-linux-guest-upload-source-missing", backend: match.backend, deviceId
                                 }
                             };
@@ -383,7 +371,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         const ssh = ports.executable("ssh.exe") || ports.executable("ssh");
                         if (!ssh)
                             return {
-                                status: 503, payload: {
+                                kind: 'failure', category: 'unavailable', facts: {
                                     ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
                                 }
                             };
@@ -395,7 +383,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             }
             catch (error) {
                 return {
-                    status: 400, payload: {
+                    kind: 'failure', category: 'invalid', facts: {
                         ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-linux-guest-options"), backend: match.backend, deviceId
                     }
                 };
@@ -408,8 +396,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 if (stage)
                     ports.disposeStage(stage.handle);
                 return {
-                    status: 502,
-                    payload: {
+                    kind: 'failure', category: 'provider-failed', facts: {
                         ok: false,
                         error: "hyper-v-linux-guest-provider-failed",
                         ownerId,
@@ -429,7 +416,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     const downloaded = ports.decodeBase64(encoded);
                     if (downloaded.length > maxBytes) {
                         return {
-                            status: 413, payload: {
+                            kind: 'failure', category: 'too-large', facts: {
                                 ok: false, error: "hyper-v-linux-guest-download-source-too-large", ownerId, backend: match.backend, deviceId, bytes: downloaded.length, maxFileBytes: maxBytes
                             }
                         };
@@ -439,7 +426,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 }
                 catch (error) {
                     return {
-                        status: 502, payload: {
+                        kind: 'failure', category: 'provider-failed', facts: {
                             ok: false, error: ports.stateErrorCode(error) || "hyper-v-linux-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
                         }
                     };
@@ -449,7 +436,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 ports.disposeStage(stage.handle);
             }
             return {
-                status: 200, payload: {
+                kind: 'success', facts: {
                     ok: true, result: {
                         ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: parsed.tool === "device_upload" ? "hyper-v-scp" : "hyper-v-ssh", status: 0, stdout: parsed.tool === "device_download" ? "" : execution.stdout || "", stderr: execution.stderr || "", ...(localPath ? {
                             localPath
@@ -471,7 +458,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             const expectedCredential = expected.credentialPath;
             if (deviceRoot !== expectedRoot || privateRoot !== expectedPrivateRoot || credentialPath !== expectedCredential) {
                 return {
-                    status: 409, payload: {
+                    kind: 'failure', category: 'conflict', facts: {
                         ok: false, error: "hyper-v-guest-metadata-invalid", backend: match.backend, deviceId
                     }
                 };
@@ -481,14 +468,14 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 const credentialAvailable = ports.readableSecret(credentialPath, "hyper-v-guest-credential");
                 if (!credentialAvailable)
                     return {
-                        status: 409, payload: {
+                        kind: 'failure', category: 'conflict', facts: {
                             ok: false, error: "hyper-v-guest-credential-unavailable", backend: match.backend, deviceId
                         }
                     };
             }
             catch (error) {
                 return {
-                    status: 409, payload: {
+                    kind: 'failure', category: 'conflict', facts: {
                         ok: false, error: ports.stateErrorCode(error) || "hyper-v-guest-credential-invalid", backend: match.backend, deviceId
                     }
                 };
@@ -517,7 +504,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         const source = ports.readSource(localPath, "hyper-v-guest-upload", maxBytes);
                         if (source === null)
                             return {
-                                status: 404, payload: {
+                                kind: 'failure', category: 'missing', facts: {
                                     ok: false, error: "hyper-v-guest-upload-source-missing", backend: match.backend, deviceId
                                 }
                             };
@@ -541,7 +528,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 if (transferStage)
                     ports.disposeStage(transferStage.handle);
                 return {
-                    status: 400, payload: {
+                    kind: 'failure', category: 'invalid', facts: {
                         ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-guest-options"), backend: match.backend, deviceId
                     }
                 };
@@ -562,8 +549,8 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 const providerError = ports.providerError(error);
                 const code = providerError ? providerError.code : "guest-executor-failed";
                 return {
-                    status: providerError?.validation ? 400 : 502,
-                    payload: {
+                    kind: 'failure', category: providerError?.validation ? 'invalid' : 'provider-failed',
+                    facts: {
                         ok: false,
                         error: "hyper-v-guest-provider-failed",
                         ownerId,
@@ -585,7 +572,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 };
             if (!observation)
                 return {
-                    status: 502, payload: {
+                    kind: 'failure', category: 'provider-failed', facts: {
                         ok: false, error: "hyper-v-guest-invalid-result", ownerId, backend: match.backend, deviceId
                     }
                 };
@@ -596,7 +583,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     const downloadedBytes = downloaded?.length ?? null;
                     if (downloaded === null || downloadedBytes === null || !("bytes" in observation) || observation.bytes !== downloadedBytes) {
                         return {
-                            status: 502, payload: {
+                            kind: 'failure', category: 'provider-failed', facts: {
                                 ok: false, error: "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
                             }
                         };
@@ -606,7 +593,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 }
                 catch (error) {
                     return {
-                        status: 502, payload: {
+                        kind: 'failure', category: 'provider-failed', facts: {
                             ok: false, error: ports.stateErrorCode(error) || "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
                         }
                     };
@@ -619,7 +606,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 if (!("bytes" in observation) || observation.bytes !== uploadSourceBytes) {
                     ports.disposeStage(transferStage.handle);
                     return {
-                        status: 502, payload: {
+                        kind: 'failure', category: 'provider-failed', facts: {
                             ok: false, error: "hyper-v-guest-upload-invalid-result", ownerId, backend: match.backend, deviceId
                         }
                     };
@@ -629,8 +616,8 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             }
             const guestFailed = parsed.tool === "device_exec" && "status" in observation && observation.status !== 0;
             return {
-                status: guestFailed ? 422 : 200,
-                payload: {
+                ...(guestFailed ? { kind: 'failure' as const, category: 'guest-failed' as const } : { kind: 'success' as const }),
+                facts: {
                     ok: !guestFailed,
                     ...(guestFailed ? {
                         error: "hyper-v-guest-command-failed"
@@ -642,7 +629,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             };
         }
         return {
-            status: 501, payload: {
+            kind: 'failure', category: 'unsupported', facts: {
                 ok: false, error: "broker-hyper-v-tool-not-supported"
             }
         };

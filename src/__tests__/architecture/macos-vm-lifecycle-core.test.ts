@@ -6,7 +6,7 @@ import { createMacosImageSnapshots } from "../../../packages/device-lab/provider
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
 import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
-type Result={ok:boolean;value:unknown;content?:{text?:string}[]};
+type Result={ok:boolean;value:unknown};
 function nativeLeaves(initial?:MacosVmDevice){
     let current=initial;const trace:string[]=[],fault={native:"raw claim failure"};
     const child={pid:71,unref(){expect(this).toBe(child);trace.push("unref");}};
@@ -26,6 +26,7 @@ function nativeLeaves(initial?:MacosVmDevice){
         signalRecording(){trace.push("recording-signal");return {signaled:false,exited:true};},async waitRecordingExit(){trace.push("recording-wait");return true;},
         sshBridge:()=>({discovery:{ssh:"ssh"},target:"host"}),sshBaseArgs:()=>[],shellQuote:value=>"'"+value+"'",sshCommandOptions:()=>({}),
         helperCommand:()=>({status:0,stdout:"",stderr:""}),textResult:(ok,value)=>({ok,value}),jsonResult:value=>({ok:true,value}),fail:value=>({ok:false,value}),
+        presentCloneFailure:evidence=>({ok:false,value:evidence}),
     };
     return {ports,trace,fault,child,read:()=>current,replace:(value:MacosVmDevice)=>{current=value;}};
 }
@@ -158,9 +159,9 @@ describe("macOS image and snapshot publication",()=>{
         const source:MacosVmDevice={id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit"};
         const f=nativeLeaves(source);
         const resources=new Set(["ccc-owner-unit"]);
-        const command=(_command:string|null,args:(string|undefined)[])=>{
-            if(args[0]==="clone"&&args[2]!==undefined)resources.add(args[2]);
-            if(args[0]==="delete"&&args[1]!==undefined)resources.delete(args[1]);
+        const command:typeof f.ports.providerCommand=(_command,args)=>{
+            if(args[0]==="clone"&&typeof args[2]==="string")resources.add(args[2]);
+            if(args[0]==="delete"&&typeof args[1]==="string")resources.delete(args[1]);
             return {status:0,stdout:"",stderr:""};
         };
         f.ports.providerCommand=command;
@@ -173,6 +174,7 @@ describe("macOS image and snapshot publication",()=>{
         };
         const imagePorts:MacosImageSnapshotsPorts<Result>={...f.ports,snapshotId:()=>"snapshot-before",
             providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true,
+            presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}}),
             providerPlan:device=>({...f.ports.providerPlan(device),providerInstance:device.providerInstance||`ccc-owner-${device.id}`})};
         const app=createMacosImageSnapshots(imagePorts,createMacosVmLifecycleApplication(f.ports));
         await expect(app.clone({name:"Copy",deviceId:"copy",sourceDeviceId:"unit"})).rejects.toBe(f.fault);
@@ -184,9 +186,9 @@ describe("macOS image and snapshot publication",()=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",
             snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
         const resources=new Set(["ccc-owner-unit","owned-snapshot"]);
-        const command=(_command:string|null,args:(string|undefined)[])=>{
-            if(args[0]==="clone"&&args[2]!==undefined)resources.add(args[2]);
-            if(args[0]==="delete"&&args[1]!==undefined){
+        const command:typeof f.ports.providerCommand=(_command,args)=>{
+            if(args[0]==="clone"&&typeof args[2]==="string")resources.add(args[2]);
+            if(args[0]==="delete"&&typeof args[1]==="string"){
                 if(args[1].includes("-restore-"))return {status:9,stdout:"",stderr:"candidate cleanup denied"};
                 resources.delete(args[1]);
             }
@@ -194,7 +196,8 @@ describe("macOS image and snapshot publication",()=>{
         };
         f.ports.providerCommand=command;
         const imagePorts:MacosImageSnapshotsPorts<Result>={...f.ports,snapshotId:()=>"snapshot-before",
-            providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true};
+            providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true,
+            presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}})};
         const app=createMacosImageSnapshots(imagePorts,createMacosVmLifecycleApplication(f.ports));
         const result=await app.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
         expect(result?.ok).toBe(true);

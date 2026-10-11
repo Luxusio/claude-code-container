@@ -1,6 +1,6 @@
 import { macosSshConfig } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { macosImageProviderRefusal, macosCloneSourceRefusal, selectMacosSnapshot, macosRestoreCandidate, defineMacosImageDevice } from "../domain/macos-image-snapshots.mjs";
-/** @template {import("../ports/macos-image-snapshots.mjs").MacosImageResult} Result
+/** @template Result
  * @param {import("../ports/macos-image-snapshots.mjs").MacosImageSnapshotsPorts<Result>} ports
  * @param {import("./lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycle<Result>} lifecycle */
 export function createMacosImageSnapshots(ports, lifecycle) {
@@ -419,10 +419,10 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                         candidateProviderInstance: restoreCandidate
                     });
                 }
-                if (activationClone.cleanup) {
-                    return ports.textResult(false, `${(lifecycle.cloneFailure(activate, activationClone.cleanup, tart.plan.providerInstance).content || [])[0]?.text || `Error: ${recovery.error}`}. Restore candidate preserved: ${restoreCandidate}`);
-                }
-                return ports.textResult(false, `Error: ${recovery.error}. Restore candidate preserved: ${restoreCandidate}`);
+                const evidence = activationClone.cleanup
+                    ? lifecycle.cloneFailureEvidence(activate, activationClone.cleanup, tart.plan.providerInstance)
+                    : null;
+                return ports.presentRestoreFailure(evidence, recovery.error, restoreCandidate);
             }
             const activated = lifecycle.transitionCurrent(deviceId, claim.lifecycle, (current) => lifecycle.replacement(current, claim.lifecycle, {
                 ...completionUpdates,

@@ -1,3 +1,6 @@
+/** Native transport result; shared application Result remains opaque.
+ * @typedef {{content:{type:string,text?:string,data?:unknown,mimeType?:string}[],isError?:boolean}} IosAccessNativeResult
+ */
 export const MCP_ERROR_TEXT_LIMIT_BYTES = 64 * 1024;
 const ERROR_SUMMARY_KEYS = ["ok", "error", "code", "ownerId", "method", "backend", "deviceId", "tool", "routedBy", "status"];
 
