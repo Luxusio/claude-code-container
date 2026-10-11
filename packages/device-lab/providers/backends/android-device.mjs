@@ -59,7 +59,15 @@ const androidWirelessPorts = {
     pair(target, endpoint, code, timeoutMs) {
         const pairingCode = String(code);
         const args = ["pair", endpoint, pairingCode];
-        return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))), pairingCode);
+        try {
+            return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))), pairingCode);
+        } catch {
+            // Argument-validation exceptions can include the credential in their stack.
+            return wirelessEvidence(args, {
+                status: null, stdout: "", stderr: "",
+                error: { message: "android-wireless-pair-command-failed" },
+            }, pairingCode);
+        }
     },
     connect(target, endpoint, timeoutMs) {
         const args = ["connect", endpoint];

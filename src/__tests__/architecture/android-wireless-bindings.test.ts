@@ -28,9 +28,13 @@ try {
  const failed=await invoke({action:'pair',pairHost:'192.0.2.2',pairPort:37099,pairingCode:'654321'});
  assert.equal(failed.envelope.isError,true);assert.equal(failed.value.error,'android-wireless-pair-failed');
  assert(!JSON.stringify(failed).includes('654321'));assert(failed.value.command.args.includes('[redacted]'));
+ const malformed=await invoke({action:'pair',pairHost:'192.0.2.2',pairPort:37099,pairingCode:'987654\u0000'});
+ assert.equal(malformed.envelope.isError,true);assert.equal(malformed.value.error,'android-wireless-pair-failed');
+ assert.equal(malformed.value.command.status,null);assert(!JSON.stringify(malformed).includes('987654'));
+ assert.equal(malformed.value.command.error,'android-wireless-pair-command-failed');
  const followup=await invoke({action:'pair',pairHost:'192.0.2.2',pairPort:37099,pairingCode:'123456',host:'192.0.2.99'});
  assert.equal(followup.value.error,'android-wireless-connect-failed');assert(!JSON.stringify(followup).includes('123456'));assert(followup.value.pair.args.includes('[redacted]'));
- process.stdout.write(JSON.stringify({status:status.value,connected:connected.value,failed:failed.value,followup:followup.value}));
+ process.stdout.write(JSON.stringify({status:status.value,connected:connected.value,failed:failed.value,malformed:malformed.value,followup:followup.value}));
 } finally { await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve())); }
 `;
 describe("Android wireless actual authenticated default child", () => {
