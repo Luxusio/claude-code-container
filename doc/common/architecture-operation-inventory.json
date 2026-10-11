@@ -132,16 +132,17 @@
   },
   "closure": {
     "exhaustive": false,
-    "status": "operation-policy-qualified-three-known-structural-groups-open",
+    "status": "operation-policy-qualified-four-known-native-boundary-groups-open",
     "blockingGapIds": [
-      "GAP-source-broker-remaining-semantic-results",
-      "GAP-source-hyper-v-lifecycle-results-native-recipes",
-      "GAP-source-broker-provider-lifecycle-results"
+      "GAP-source-mobile-environment-native-boundaries",
+      "GAP-source-android-app-native-boundaries",
+      "GAP-source-admin-native-boundaries",
+      "GAP-source-container-native-recipe-boundaries"
     ],
     "totals": null,
     "sourceScopeClosed": false,
     "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
-    "reason": "Operation cutovers218/218 remain separate. Two of five identified original structural source groups accepted: MCP958c56c2 with QA584/protected delivery; brokercontrola5fbfb6f with QA385/build1322/protected delivery. Other broker results, Hyper-V lifecycle/image/network and broker provider lifecycle remain unimplemented after bounded owning audits. This subtotal is not an effort percentage or exhaustive remaining-work denominator. Current whole-source/callers, final integration/artifacts/images, reliability, native-platform and formal gates remain unverified; sourceScopeClosed/exhaustive/sourceDenominatorCertified stay false.",
+    "reason": "Operation cutovers218/218 remain separate. Five of nine identified original structural source groups accepted: MCP958c56c2, brokercontrola5fbfb6f, broker remaining0cebcfe0, Hyper-Vc181c0ff and provider8060aa02 with actual bounded source QA and protected delivery. Four known mobile environment, Android app, admin and container native-boundary groups remain implementation pending. This subtotal is not an effort percentage or exhaustive remaining-work denominator. Current whole-source/callers, final integration/artifacts/images, reliability, native-platform and formal gates remain unverified; sourceScopeClosed/exhaustive/sourceDenominatorCertified stay false.",
     "historicalBeforeBoundaryAcceptance": {
       "status": "operation-policy-qualified-original-structural-source-gaps-open",
       "blockingGapIds": [
@@ -163,6 +164,15 @@
       "sourceScopeClosed": false,
       "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
       "reason": "Nine bounded reference corrections and prior seven accepted operation qualifications remain unchanged. Accepted b14321e7 source, complete required-binding review, genuine QA267 and protected main delivery qualify physical attach/detach; direct attachment gap is bounded source-resolved. Only known recording start/finalize/status source gaps remain. Historical twelve-operation retractions and all prior source qualifications retained. Exhaustive source universe, native, reliability and formal acceptance remain unverified."
+    },
+    "historicalBeforeProviderStructuralAcceptance": {
+      "status": "operation-policy-qualified-three-known-structural-groups-open",
+      "reason": "Operation cutovers218/218 remain separate. Two of five identified original structural source groups accepted: MCP958c56c2 with QA584/protected delivery; brokercontrola5fbfb6f with QA385/build1322/protected delivery. Other broker results, Hyper-V lifecycle/image/network and broker provider lifecycle remain unimplemented after bounded owning audits. This subtotal is not an effort percentage or exhaustive remaining-work denominator. Current whole-source/callers, final integration/artifacts/images, reliability, native-platform and formal gates remain unverified; sourceScopeClosed/exhaustive/sourceDenominatorCertified stay false.",
+      "blockingGapIds": [
+        "GAP-source-broker-remaining-semantic-results",
+        "GAP-source-hyper-v-lifecycle-results-native-recipes",
+        "GAP-source-broker-provider-lifecycle-results"
+      ]
     }
   },
   "provenance": {
@@ -185164,7 +185174,7 @@
       "id": "GAP-source-broker-remaining-semantic-results",
       "kind": "source-implementation",
       "reason": "Broker Appium, recording, owner resolution and device observation status retain public HTTP/core-envelope coupling; direct recording and accepted shared desktop correction do not implement these separate subfamilies.",
-      "remediationStatus": "open-confirmed-structural-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [],
       "sourceTrace": [
         {
@@ -185188,13 +185198,24 @@
           "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
         }
       ],
-      "evidenceScope": "Complete current owning-family audit; separate original structural gate remains unimplemented. Zero additional counted operations; original SPEC boundary obligation."
+      "evidenceScope": "Historical audit before the bounded acceptance recorded in currentSourceDisposition: Complete current owning-family audit; separate original structural gate remains unimplemented. Zero additional counted operations; original SPEC boundary obligation. Current source qualification and remaining native/formal limits are recorded in currentSourceDisposition.",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-structural-source-gap",
+      "followupTaskId": "TASK__architecture-broker-remaining-result-boundaries",
+      "currentSourceDisposition": {
+        "sourceCommit": "0cebcfe028aa6a6a15f8afa020e436daef83616a",
+        "status": "independently-source-reconciled",
+        "reason": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified. Original reason/sourceTrace/evidenceScope remain historical.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-remaining-0ceb-3hu7nfyo/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
+        "nativeAcceptance": "unverified",
+        "formalAcceptance": "unverified"
+      }
     },
     {
       "id": "GAP-source-hyper-v-lifecycle-results-native-recipes",
       "kind": "source-implementation",
       "reason": "Hyper-V create/start, stop/delete, snapshots, image preparation and network/trust families retain HTTP-driven journal/rollback decisions and builder-to-runner native process recipes. Desktop prepared-leaf correction does not close these five lifecycle families.",
-      "remediationStatus": "open-confirmed-structural-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [],
       "sourceTrace": [
         {
@@ -185223,13 +185244,24 @@
           "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
         }
       ],
-      "evidenceScope": "Complete five-family app/domain/ports and native broker/image-store/network-adapter audit; no native execution or whole source-universe certification. Zero additional counted operations; original SPEC boundary obligation."
+      "evidenceScope": "Historical audit before the bounded acceptance recorded in currentSourceDisposition: Complete five-family app/domain/ports and native broker/image-store/network-adapter audit; no native execution or whole source-universe certification. Zero additional counted operations; original SPEC boundary obligation. Current source qualification and remaining native/formal limits are recorded in currentSourceDisposition.",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-structural-source-gap",
+      "followupTaskId": "TASK__architecture-hyper-v-result-boundaries",
+      "currentSourceDisposition": {
+        "sourceCommit": "c181c0ff11210b7c673b980ad786c69dde101c2b",
+        "status": "independently-source-reconciled",
+        "reason": "Accepted bounded source at c181c0ff: semantic create/start, stop/delete, snapshot, image and network/trust outcomes with finite native effects and outward response rendering. Actual independent Code/Security/Docs and QA527 across19 whole files, genuine build1326, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Earlier compiler and rollback failures corrected and retained as evidence. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified. Original reason/sourceTrace/evidenceScope remain historical.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/hyperv-results-c181-g4j3wyxs/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-hyper-v-result-boundaries-main-delivery-20261011.json",
+        "nativeAcceptance": "unverified",
+        "formalAcceptance": "unverified"
+      }
     },
     {
       "id": "GAP-source-broker-provider-lifecycle-results",
       "kind": "source-implementation",
       "reason": "Broker Android/iOS/macOS/Sandbox lifecycle application and ports retain transport-shaped results. Full remaining domain and caller inspection is required before implementation; bounded domain reads cannot establish an exhaustive audit.",
-      "remediationStatus": "open-confirmed-structural-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [],
       "sourceTrace": [
         {
@@ -185253,11 +185285,210 @@
           "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
         }
       ],
-      "evidenceScope": "Historical initial application/ports findings remain above. Subsequent complete bounded fifteen-file application/domain/ports and reached native/planning-consumer audit identifies semantic outcomes and finite prepared effects; implementation/prospective PLAN/review/QA/delivery remain pending. Zero operation credit; no exhaustive/native/formal certification.",
+      "evidenceScope": "Historical audit before the bounded acceptance recorded in currentSourceDisposition: Historical initial application/ports findings remain above. Subsequent complete bounded fifteen-file application/domain/ports and reached native/planning-consumer audit identifies semantic outcomes and finite prepared effects; implementation/prospective PLAN/review/QA/delivery remain pending. Zero operation credit; no exhaustive/native/formal certification. Current source qualification and remaining native/formal limits are recorded in currentSourceDisposition.",
       "currentAuditDisposition": {
+        "status": "bounded-source-resolved",
+        "reason": "Subsequent accepted source8060aa02 supersedes the bounded audit implementation-pending disposition; see currentSourceDisposition for actual QA/delivery and limits."
+      },
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-structural-source-gap",
+      "followupTaskId": "TASK__architecture-provider-lifecycle-result-boundaries",
+      "historicalAuditDispositionBeforeSourceAcceptance": {
         "status": "bounded-audit-complete-implementation-pending",
         "reason": "All fifteen named Android/iOS/macOS/Sandbox lifecycle/create core files and reached broker/planning consumers were inspected. Current semantic/result/native-process repair remains unimplemented; audit completion is not source acceptance."
+      },
+      "currentSourceDisposition": {
+        "sourceCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
+        "status": "independently-source-reconciled",
+        "reason": "Accepted bounded provider lifecycle source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects. Actual QA17 whole files/425 effective cases passed; genuine1330 artifacts qualified unchanged from prior build, current strong contracts/lint/packages/shipping/CLI passed; protected42 pins/97 user paths delivered. Formal empty receipt stream and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified. Original reason/sourceTrace/evidenceScope remain historical.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
+        "nativeAcceptance": "unverified",
+        "formalAcceptance": "unverified"
       }
+    },
+    {
+      "id": "GAP-source-mobile-environment-native-boundaries",
+      "kind": "source-implementation",
+      "reason": "Android/iOS environment domain builders construct ADB/simctl arrays and inward applications forward them to generic execution ports. Finite native framing must move outward while retaining validation, fallback ordering, partial-effect policy and physical-device refusal.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/domain/mobile-environment.mjs",
+          "line": 27,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/application/android-environment.mjs",
+          "line": 10,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/application/ios-environment.mjs",
+          "line": 26,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/ports/mobile-environment.d.mts",
+          "line": 16,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android.mjs",
+          "line": 785,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android-device.mjs",
+          "line": 466,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/ios-simulator.mjs",
+          "line": 594,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/ios-device.mjs",
+          "line": 329,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        }
+      ],
+      "evidenceScope": "Bounded owning/native source observations for the existing structural planning row and original SPEC adapter-only NativeProcess obligation. Zero additional counted operations; no accepted source credit, native/formal acceptance or exhaustive source-universe certification.",
+      "followupTaskId": "TASK__architecture-mobile-environment-native-boundaries"
+    },
+    {
+      "id": "GAP-source-android-app-native-boundaries",
+      "kind": "source-implementation",
+      "reason": "androidAppPlan builds install/launch/uninstall/permission shell arguments; createAndroidAppManagement forwards plan.args to execute in emulator and physical Android native compositions. Finite semantic effects and adapter-owned native framing remain pending.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/providers/domain/mobile-app-management.mjs",
+          "line": 40,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/application/android-app-management.mjs",
+          "line": 16,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/ports/mobile-app-management.d.mts",
+          "line": 17,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android.mjs",
+          "line": 733,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "packages/device-lab/providers/backends/android-device.mjs",
+          "line": 410,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        }
+      ],
+      "evidenceScope": "Bounded owning/native source observations for the existing structural planning row and original SPEC adapter-only NativeProcess obligation. Zero additional counted operations; no accepted source credit, native/formal acceptance or exhaustive source-universe certification.",
+      "followupTaskId": "TASK__architecture-android-app-native-boundaries"
+    },
+    {
+      "id": "GAP-source-admin-native-boundaries",
+      "kind": "source-implementation",
+      "reason": "Admin diagnostics/setup carry executable/argv recipes into generic runners, macOS deletion builds provider argv inward, and setup returns terminal text. Finite effects/framing and outward presentation remain pending; locks, expected records and lease/publication policy must be retained.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "src/application/device-admin-diagnostics.ts",
+          "line": 182,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/ports/device-admin-diagnostics.ts",
+          "line": 20,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/application/device-admin-setup.ts",
+          "line": 27,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/domain/device-admin-setup.ts",
+          "line": 19,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/ports/device-admin-setup.ts",
+          "line": 15,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/application/device-admin-delete.ts",
+          "line": 80,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/domain/device-admin-delete.ts",
+          "line": 11,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/ports/device-admin-delete.ts",
+          "line": 24,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/device-lab-admin.ts",
+          "line": 734,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        }
+      ],
+      "evidenceScope": "Bounded owning/native source observations for the existing structural planning row and original SPEC adapter-only NativeProcess obligation. Zero additional counted operations; no accepted source credit, native/formal acceptance or exhaustive source-universe certification.",
+      "followupTaskId": "TASK__architecture-admin-native-boundaries"
+    },
+    {
+      "id": "GAP-source-container-native-recipe-boundaries",
+      "kind": "source-implementation",
+      "reason": "Container launch arguments construct Docker/Podman run flags, create forwards prepared arrays, and exec constructs runtime exec flags for generic runners. Semantic intent and adapter-owned framing remain pending without changing runtime/session/credential authority.",
+      "remediationStatus": "open-confirmed-structural-source-gap",
+      "workItemIds": [],
+      "sourceTrace": [
+        {
+          "path": "src/application/container-launch-arguments.ts",
+          "line": 115,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/application/container-create-lifecycle.ts",
+          "line": 42,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/ports/container-create-lifecycle.ts",
+          "line": 30,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/application/container-exec.ts",
+          "line": 318,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/ports/container-exec.ts",
+          "line": 81,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        },
+        {
+          "path": "src/docker.ts",
+          "line": 2625,
+          "revision": "f5a0ee8c7f6e056503ce3e854147ff9a2701dedd"
+        }
+      ],
+      "evidenceScope": "Bounded owning/native source observations for the existing structural planning row and original SPEC adapter-only NativeProcess obligation. Zero additional counted operations; no accepted source credit, native/formal acceptance or exhaustive source-universe certification.",
+      "followupTaskId": "TASK__architecture-container-native-recipe-boundaries"
     }
   ],
   "distributionBoundaries": {

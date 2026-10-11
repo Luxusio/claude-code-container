@@ -2,7 +2,7 @@
 
 Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 Current recording source qualified: `6454e788ef3780cb0ccd8d54c6ece31c39ba4e17`.
-Current composed source accepted: `a5fbfb6fa45996d12863b92743b1af78879ada14`.
+Current composed source accepted: `f5a0ee8c7f6e056503ce3e854147ff9a2701dedd`.
 Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
@@ -38,13 +38,17 @@ does not resolve the broker recording result contract.
 | --- | --- | --- |
 | MCP request result selection | Shared request application/domain/ports, native server/flow composition and finite outward presenter | Accepted `958c56c2`; actual independent reviews, final QA584 and protected delivery |
 | Broker lease, physical and owner cleanup results | Nine core files, native broker composition and finite outward codec | Accepted `a5fbfb6f`; actual independent reviews, ten whole suites/QA385, genuine build1322 and protected delivery |
-| Other broker semantic results | Appium, broker recording, owner resolution and device status | Complete bounded audits; semantic results and finite native launch/install/recording effects remain unimplemented; status recovery depends on Hyper-V repair |
-| Hyper-V lifecycle results and native commands | Create/start, stop/delete, snapshots, image preparation and network/trust triplets plus native adapters | Complete five-family audit; prospective PLAN, implementation and required caller/test qualification pending |
-| Broker provider lifecycle results | All fifteen Android/iOS/macOS/Sandbox lifecycle/create application/domain/ports files plus reached native/planning consumers | Complete bounded audit; prospective PLAN, semantic outcomes and finite prepared native effects pending |
+| Other broker semantic results | Appium, broker recording, owner resolution and device status | Accepted `0cebcfe0`; actual independent reviews, thirteen whole suites/QA484, genuine build1330 and protected delivery |
+| Hyper-V lifecycle results and native commands | Create/start, stop/delete, snapshots, image preparation and network/trust triplets plus native adapters | Accepted `c181c0ff`; actual independent reviews, nineteen whole suites/QA527, genuine build1326 and protected delivery |
+| Broker provider lifecycle results | All fifteen Android/iOS/macOS/Sandbox lifecycle/create application/domain/ports files plus reached native/planning consumers | Accepted `8060aa02`; actual independent reviews, seventeen effective whole suites/QA425, qualified unchanged genuine build1330 and protected delivery |
+| Mobile environment native commands | Android/iOS environment domain/application/ports and four native backend bindings | Source-confirmed; finite native framing remains pending; validation, fallback and partial-effect policy stay inward |
+| Android app native commands | Android app domain/application/ports and emulator/physical backend bindings | Source-confirmed; install/launch/permission recipes remain inward; semantic native effects pending |
+| Admin native commands and presentation | Diagnostics/setup/deletion cores and device-lab-admin native composition | Source-confirmed; executable/argv and setup terminal text remain inward; locks/CAS/leases retained |
+| Container native commands | Launch/create/exec cores and selected-runtime native composition | Source-confirmed; Docker/Podman run/exec flags remain inward; runtime/session/credential authority retained |
 
-**2/5 identified structural groups are source-accepted.** This is an unweighted
+**5/9 identified structural groups are source-accepted.** This is an unweighted
 subtotal of known groups, not an effort percentage or an exhaustive denominator
-for the full migration. The other three groups remain unimplemented. Auditing a
+for the full migration. The other four identified groups remain unimplemented. Auditing a
 group does not earn source acceptance.
 
 These findings add no operation IDs or count credit. Their source anchors and
@@ -53,8 +57,24 @@ planning rows. This list does not certify exhaustive current source scope.
 
 Accepted `187743c2` removes the separate shared screenshot/recovery/Hyper-V
 desktop result coupling, Android ADB recipe coupling and duplicate compiler
-metatests. These are zero-operation improvements. Hyper-V desktop preparation
-leaves do not complete the remaining Hyper-V lifecycle families.
+metatests. These are zero-operation improvements. That desktop preparation
+correction alone did not qualify the five Hyper-V lifecycle families; their
+separate bounded source acceptance is recorded at `c181c0ff` above.
+
+Accepted `f5a0ee8c` also finishes the clipboard native read/write boundary in
+the existing factories: writer ports reduce from eleven to three, snapshot
+ports from twenty to six. Application retains admission, cache, coherence and
+generation; native composition owns process events, timers and capture recipes.
+Fresh QA has twelve whole files/379 passing cases and fifteen existing skips,
+genuine build1330, strong contracts, package7, actual npm/Unix shipping and
+compiled CLI success. This adds no operation or structural-group count and
+does not certify native Windows/macOS clipboard behavior.
+
+The separate representative architecture review also identified remaining
+direct/mobile control, remote/clean and QEMU/recording native boundaries and
+unnecessary selector/capture/call-mechanics preservation. Those findings remain
+under the original whole-source reconciliation obligation; the nine-group
+subtotal does not certify that they are the complete remaining universe.
 
 Current source-universe/exports/caller reconciliation, final type/dependency and
 composition qualification, final package/install/image evidence, reliability
@@ -92,8 +112,17 @@ Authoritative local evidence:
   and `/tmp/ccc-mcp-selection-inventory-main-delivery-result-20261011.json`.
 - Broker control outcomes: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-control-a5fb-ee996tiu/final-result.json`
   and `/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json`.
+- Other broker results: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-remaining-0ceb-3hu7nfyo/final-result.json`
+  and `/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json`.
+- Hyper-V results: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/hyperv-results-c181-g4j3wyxs/final-result.json`
+  and `/tmp/ccc-hyper-v-result-boundaries-main-delivery-20261011.json`.
+- Provider lifecycle: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json`
+  and `/tmp/ccc-provider-lifecycle-integration-after-20261012.json`.
+- Clipboard native boundary: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/clipboard-native-mpbxdg54/final-auth.json`
+  and `/tmp/ccc-clipboard-native-integration-after-20261012.json`.
 
-Protected deliveries preserve all 97 original user files, status and index.
+Protected deliveries preserve all 97 original user file bytes, dirty status and
+absence of staged changes.
 Owned QA processes were joined. Automatic review/QA records were absent after
 actual independent results and one fresh verification per source task; the
 selected formal parks remain truthful, with no fabricated task close. Portable

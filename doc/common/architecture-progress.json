@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-11",
+  "updatedAt": "2026-10-12",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -1503,7 +1503,11 @@
     {
       "id": "broker-provider-lifecycle-results-structural",
       "coveredOperationIds": [],
-      "status": "Audit complete; implementation pending. All fifteen Android/iOS/macOS/Sandbox lifecycle/create application/domain/ports files and reached native/planning consumers inspected. Semantic outcomes and finite prepared native effects identified; Sandbox create already semantic. Prospective PLAN, implementation, reviews, QA and delivery remain. No source acceptance or new operation credit; exhaustive/native/formal certification unverified."
+      "status": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
+      "taskId": "TASK__architecture-provider-lifecycle-result-boundaries",
+      "acceptedIntegrationCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json"
     },
     {
       "id": "shared-android-contract-cleanup-accepted",
