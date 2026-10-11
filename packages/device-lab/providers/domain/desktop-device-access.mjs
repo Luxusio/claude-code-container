@@ -1,4 +1,6 @@
-/** @param {import('../ports/desktop-device-access.mjs').DesktopAccessArguments} args */
+/** @typedef {{deviceId?:string,command?:string,helperTimeoutMs?:number,maxDepth?:number|string,maxNodes?:number|string}} DesktopAccessArguments */
+/** @typedef {{id:string,kind:'display',backend:'x11',creatable:false,lifecycle:'current',ownerId:string,display:string,capabilities:string[],available:boolean}} X11AccessTarget */
+/** @param {DesktopAccessArguments} args */
 export function desktopAccessibilityLimits(args) {
     return {
         maxDepth: Math.max(0, Math.min(Number.isFinite(Number(args.maxDepth)) ? Number(args.maxDepth) : 3, 8)),
@@ -7,7 +9,7 @@ export function desktopAccessibilityLimits(args) {
 }
 
 /** @param {string} ownerId @param {string} display @param {boolean} available
- * @returns {import('../ports/desktop-device-access.mjs').X11AccessTarget} */
+ * @returns {X11AccessTarget} */
 export function x11AccessTarget(ownerId, display, available) {
     return {
         id: "x11-current-display", kind: "display", backend: "x11", creatable: false,

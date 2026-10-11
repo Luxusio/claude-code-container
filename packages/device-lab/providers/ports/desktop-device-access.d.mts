@@ -1,10 +1,10 @@
 import type { CommandReceipt } from './desktop-control-transfer.mjs';
-export interface DesktopAccessArguments { deviceId?:string; command?:string; helperTimeoutMs?:number; maxDepth?:number|string; maxNodes?:number|string }
+import type { X11AccessTarget } from '../domain/desktop-device-access.mjs';
+export type { DesktopAccessArguments, X11AccessTarget } from '../domain/desktop-device-access.mjs';
 export interface DesktopAccessTarget { id:string }
 export interface DesktopAccessDiscovery { available:boolean }
 export interface DesktopAccessBridge { target:string }
 export interface DesktopScreenshotStage { localPath:string }
-export interface X11AccessTarget extends DesktopAccessTarget { kind:'display'; backend:'x11'; creatable:false; lifecycle:'current'; ownerId:string; display:string; capabilities:string[]; available:boolean }
 export type DesktopAccessOutcome = {kind:'json';value:object}|{kind:'text';text:string}|{kind:'native';value:object}|{kind:'command-failure';receipt:CommandReceipt}|{kind:'image';data:string};
 export interface AccessibilityPayload { provider?:string; accessibility?:{provider?:string} }
 export interface WindowsAccessResponse { id?:string; ok?:boolean; error?:string; stdout?:string; stderr?:string; status?:number|null; imagePath?:string; hostImagePath?:string; accessibility?:{provider?:string} }
