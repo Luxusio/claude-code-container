@@ -1487,6 +1487,13 @@ export function syncClipboardShims(containerName: string, distDir: string): void
             if (!result.error && result.status === 0) copied.push(`/usr/local/bin/${shim}`);
         }
     }
+    // Already-copied shims must remain runnable even if asset staging fails.
+    if (copied.length > 0) {
+        const normalized = spawnSync(cli, ["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...copied]);
+        if (normalized.error || normalized.status !== 0) return;
+        const executable = spawnSync(cli, ["exec", "-u", "root", containerName, "chmod", "+x", ...copied]);
+        if (executable.error || executable.status !== 0) return;
+    }
     const bridgeSource = join(distDir, "..", "scripts", "ccc-x11-bridge");
     const policySource = join(distDir, "..", "scripts", "lib", "clipboard-x11-sync.sh");
     const suffix = randomBytes(8).toString("hex");
@@ -1509,12 +1516,12 @@ export function syncClipboardShims(containerName: string, distDir: string): void
             const bridge = spawnSync(cli, ["cp", bridgeSource, `${containerName}:${bridgeStage}`]);
             bridgeCopied = !bridge.error && bridge.status === 0;
             if (!bridgeCopied) return;
-            copied.push(bridgeStage, policyStage);
         }
-        if (copied.length === 0) return;
-        const normalized = spawnSync(cli, ["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...copied]);
+        if (!bridgeCopied || !policyCopied) return;
+        const stages = [bridgeStage, policyStage];
+        const normalized = spawnSync(cli, ["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...stages]);
         if (normalized.error || normalized.status !== 0) return;
-        const executable = spawnSync(cli, ["exec", "-u", "root", containerName, "chmod", "+x", ...copied]);
+        const executable = spawnSync(cli, ["exec", "-u", "root", containerName, "chmod", "+x", ...stages]);
         if (executable.error || executable.status !== 0) return;
         if (bridgeCopied && policyCopied) {
             const policyOwner = spawnSync(cli, ["exec", "-u", "root", containerName, "chown", "root:root", policyStage]);

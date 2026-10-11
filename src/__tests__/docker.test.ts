@@ -1737,6 +1737,7 @@ describe("docker.ts module exports", () => {
             spawnSyncMock.mockImplementation((_executable, rawArgs) => {
                 const args = rawArgs as string[];
                 const failed = args[0] === "exec" && args[4] === failingCommand
+                    && (!["sed", "chmod"].includes(failingCommand) || args.some(arg => /^\/usr\/local\/(?:bin\/ccc-x11-bridge|lib\/ccc\/clipboard-x11-sync\.sh)\.[a-f0-9]+\.new$/.test(arg)))
                     && (failingCommand !== "install" || args.at(-1) === "/run/ccc-x11-bridge")
                     && (failingCommand !== "mv" || args.at(-1) === "/usr/local/lib/ccc/clipboard-x11-sync.sh");
                 return makeResult(failed ? 1 : 0);
@@ -1763,22 +1764,29 @@ describe("docker.ts module exports", () => {
             expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
 
-        it.each(["copy", "permissions"])("does not replace the bridge after policy %s failure", phase => {
+        it.each(["policy-directory", "policy-copy", "bridge-copy", "policy-permissions"])("leaves copied shims usable and the old bridge intact after %s failure", phase => {
             mockExistsSync.mockReturnValue(true);
             const policySource = join("/fake", "scripts", "lib", "clipboard-x11-sync.sh");
+            const bridgeSource = join("/fake", "scripts", "ccc-x11-bridge");
+            const shimState = { copied: false, normalized: false, executable: false };
             spawnSyncMock.mockImplementation((_executable, rawArgs) => {
                 const args = rawArgs as string[];
-                const failed = phase === "copy"
-                    ? args[0] === "cp" && args[1] === policySource
+                if (args[0] === "cp" && args[2] === "ccc-test-abc123:/usr/local/bin/xclip") shimState.copied = true;
+                if (args[4] === "sed" && args.includes("/usr/local/bin/xclip")) shimState.normalized = true;
+                if (args[4] === "chmod" && args[5] === "+x" && args.includes("/usr/local/bin/xclip")) shimState.executable = true;
+                const failed = phase === "policy-directory" ? args[4] === "install" && args.at(-1) === "/usr/local/lib/ccc"
+                    : phase === "policy-copy" ? args[0] === "cp" && args[1] === policySource
+                    : phase === "bridge-copy" ? args[0] === "cp" && args[1] === bridgeSource
                     : args[4] === "chmod" && args[5] === "644";
+                if (failed) expect(shimState).toEqual({ copied: true, normalized: true, executable: true });
                 return makeResult(failed ? 1 : 0);
             });
             syncClipboardShims("ccc-test-abc123", "/fake/dist");
+            expect(shimState).toEqual({ copied: true, normalized: true, executable: true });
             const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
-            const policyCopy = calls.find(args => args[0] === "cp" && args[1] === policySource)!;
-            const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
             expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f",
-                expect.stringMatching(/^\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/), policyStage]);
+                expect.stringMatching(/^\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/),
+                expect.stringMatching(/^\/usr\/local\/lib\/ccc\/clipboard-x11-sync\.sh\.[a-f0-9]+\.new$/)]);
             expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
     });

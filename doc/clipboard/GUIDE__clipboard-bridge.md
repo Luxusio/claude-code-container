@@ -115,7 +115,7 @@ scripts are normalized to LF.
 
 Refreshing an existing container stages both files, normalizes them, and
 publishes the root-owned, ccc-readable policy before renaming the bridge.
-Policy installation failure leaves the old bridge in place; owned stages are
-removed on every exit. Deploy or roll back the two assets together. The real
+Policy installation failure leaves the old bridge in place. Cleanup of owned
+stages is attempted on every exit. Deploy or roll back the two assets together. The real
 isolated X11 tests cover bytes, retries, races and process ownership; portable
 X11 evidence does not certify a native macOS pasteboard.
