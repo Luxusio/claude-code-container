@@ -418,7 +418,7 @@ The following locally reconciled gaps still await independent inventory acceptan
 | GAP\-source\-legacy\-admin\-delete | bounded\-source\-resolved | Complete retained exported synchronous admin deletion binding without erasing its provider/lease/CAS guards\. |
 | GAP\-source\-shared\-result\-separation | bounded\-source\-resolved | Return semantic shared application outcomes and translate MCP content/isError envelopes in presentation/composition\. |
 | GAP\-source\-core\-enforcement | bounded\-source\-resolved | Cover MCP/installer migrated core roots in the real dependency graph and include actual checked\-MJS composition consumers; zero\-operation obligation\. |
-| GAP\-source\-broker\-managed\-heartbeat | independently\-source\-reconciled | Broker\-managed heartbeat registry, identity key, TTL/default interval, replacement and timer cancellation policy remains a separate unaccepted source binding of existing OP\-lease\-heartbeat\. |
+| GAP\-source\-broker\-managed\-heartbeat | bounded\-source\-resolved | Broker\-managed heartbeat registry, identity key, TTL/default interval, replacement and timer cancellation policy remains a separate unaccepted source binding of existing OP\-lease\-heartbeat\. |
 
 ## 18. Excluded scope
 
