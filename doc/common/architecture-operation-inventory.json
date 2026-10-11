@@ -132,10 +132,8 @@
   },
   "closure": {
     "exhaustive": false,
-    "status": "operation-policy-qualified-original-structural-source-gaps-open",
+    "status": "operation-policy-qualified-three-known-structural-groups-open",
     "blockingGapIds": [
-      "GAP-source-mcp-request-selection",
-      "GAP-source-broker-lease-physical-cleanup-results",
       "GAP-source-broker-remaining-semantic-results",
       "GAP-source-hyper-v-lifecycle-results-native-recipes",
       "GAP-source-broker-provider-lifecycle-results"
@@ -143,7 +141,18 @@
     "totals": null,
     "sourceScopeClosed": false,
     "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
-    "reason": "Recording three operation policies accepted at6454 after final QA328 and protected delivery. Current1877 shared/Android/contract cleanup contributes zero operations with actual QA323 and protected63-pin/97-file delivery. Earlier only-recording-remaining claim is historical and superseded by known original MCP request, broker lease/physical/cleanup, remaining broker results, Hyper-V result/native-recipe and bounded provider-lifecycle structural findings. Operation-only218/218 does not mean overall migration100%; sourceScopeClosed/exhaustive/denominator certification remainfalse and native/installed-image/reliability/formal gates remain unverified.",
+    "reason": "Operation cutovers218/218 remain separate. Two of five identified original structural source groups accepted: MCP958c56c2 with QA584/protected delivery; brokercontrola5fbfb6f with QA385/build1322/protected delivery. Other broker results, Hyper-V lifecycle/image/network and broker provider lifecycle remain unimplemented after bounded owning audits. This subtotal is not an effort percentage or exhaustive remaining-work denominator. Current whole-source/callers, final integration/artifacts/images, reliability, native-platform and formal gates remain unverified; sourceScopeClosed/exhaustive/sourceDenominatorCertified stay false.",
+    "historicalBeforeBoundaryAcceptance": {
+      "status": "operation-policy-qualified-original-structural-source-gaps-open",
+      "blockingGapIds": [
+        "GAP-source-mcp-request-selection",
+        "GAP-source-broker-lease-physical-cleanup-results",
+        "GAP-source-broker-remaining-semantic-results",
+        "GAP-source-hyper-v-lifecycle-results-native-recipes",
+        "GAP-source-broker-provider-lifecycle-results"
+      ],
+      "reason": "Recording three operation policies accepted at6454 after final QA328 and protected delivery. Current1877 shared/Android/contract cleanup contributes zero operations with actual QA323 and protected63-pin/97-file delivery. Earlier only-recording-remaining claim is historical and superseded by known original MCP request, broker lease/physical/cleanup, remaining broker results, Hyper-V result/native-recipe and bounded provider-lifecycle structural findings. Operation-only218/218 does not mean overall migration100%; sourceScopeClosed/exhaustive/denominator certification remainfalse and native/installed-image/reliability/formal gates remain unverified."
+    },
     "historicalBeforeRecordingAcceptance": {
       "exhaustive": false,
       "status": "bounded-source-acceptance-three-operation-gaps-remain",
@@ -185078,7 +185087,7 @@
       "id": "GAP-source-mcp-request-selection",
       "kind": "source-implementation",
       "reason": "MCP request selection still decodes/constructs MCP content/isError and selects public presentation through required presenter capabilities. Existing five owning files and bounded native presenter decisions require semantic separation; planned MCP cohort is not accepted.",
-      "remediationStatus": "open-confirmed-structural-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [],
       "sourceTrace": [
         {
@@ -185103,13 +185112,23 @@
         }
       ],
       "evidenceScope": "Complete current owning-body audit; pending source implementation. No whole-operation count adjustment or exhaustive universe claim. Zero additional counted operations; original SPEC boundary obligation.",
-      "followupTaskId": "TASK__architecture-mcp-result-selection"
+      "followupTaskId": "TASK__architecture-mcp-result-selection",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-structural-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "958c56c28735d654ba1f9daf19b94b0cc086529f",
+        "status": "independently-source-reconciled",
+        "reason": "Accepted bounded MCP source at958c56c2: opaque core results, semantic catalog selection and finite outward presentation. Actual independent reviews, QA584 and protected14pin/97file delivery passed. Original reason/sourceTrace/evidenceScope remain historical; zero operation credit, no exhaustive/native/formal certification.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/mcp-selection-958c-9bf520_b/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-mcp-selection-inventory-main-delivery-result-20261011.json",
+        "nativeAcceptance": "unverified",
+        "formalAcceptance": "unverified"
+      }
     },
     {
       "id": "GAP-source-broker-lease-physical-cleanup-results",
       "kind": "source-implementation",
       "reason": "Broker physical leases/devices/owner cleanup still use HTTP success and payload.result.lease to drive renewal, admission and compensation; their nine app/domain/ports files and native broker require semantic result boundaries.",
-      "remediationStatus": "open-confirmed-structural-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [],
       "sourceTrace": [
         {
@@ -185128,7 +185147,18 @@
           "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
         }
       ],
-      "evidenceScope": "Complete current owning-family audit confirms this original structural gap; prior functional operation-policy contributions remain accepted, not overall source closure. Zero additional counted operations; original SPEC boundary obligation."
+      "evidenceScope": "Complete current owning-family audit confirms this original structural gap; prior functional operation-policy contributions remain accepted, not overall source closure. Zero additional counted operations; original SPEC boundary obligation.",
+      "followupTaskId": "TASK__architecture-broker-control-outcomes",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-structural-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "a5fbfb6fa45996d12863b92743b1af78879ada14",
+        "status": "independently-source-reconciled",
+        "reason": "Accepted bounded broker lease/physical/cleanup source ata5fbfb6f: semantic outcomes and required finite native effects with captured authority and outward HTTP rendering. Actual independent reviews and ten whole suites/QA385/build1322/package/shipping passed; protected17pin/97file delivery confirmed. Original reason/sourceTrace/evidenceScope remain historical; zero operation credit, no exhaustive/native/formal certification.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-control-a5fb-ee996tiu/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json",
+        "nativeAcceptance": "unverified",
+        "formalAcceptance": "unverified"
+      }
     },
     {
       "id": "GAP-source-broker-remaining-semantic-results",
@@ -185223,7 +185253,11 @@
           "revision": "187743c2dfd1ddf66e161d134f61b482a54d6baa"
         }
       ],
-      "evidenceScope": "Current application/ports findings with explicitly bounded domain reads; full domain/caller inspection remains required. Zero additional counted operations; original SPEC boundary obligation."
+      "evidenceScope": "Historical initial application/ports findings remain above. Subsequent complete bounded fifteen-file application/domain/ports and reached native/planning-consumer audit identifies semantic outcomes and finite prepared effects; implementation/prospective PLAN/review/QA/delivery remain pending. Zero operation credit; no exhaustive/native/formal certification.",
+      "currentAuditDisposition": {
+        "status": "bounded-audit-complete-implementation-pending",
+        "reason": "All fifteen named Android/iOS/macOS/Sandbox lifecycle/create core files and reached broker/planning consumers were inspected. Current semantic/result/native-process repair remains unimplemented; audit completion is not source acceptance."
+      }
     }
   ],
   "distributionBoundaries": {

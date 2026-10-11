@@ -1461,34 +1461,41 @@
       "id": "final-inventory-reconciliation",
       "taskId": "TASK__architecture-final-inventory-reconciliation",
       "coveredOperationIds": [],
-      "status": "Nine bounded reference corrections and prior accepted accounting retained. Current recording three-credit metadata reconciliation pending independent review/QA/delivery. Operation-only218/218 is not overall migration completion; known original structural source gaps and native/reliability/formal/exhaustive gates remain open.",
+      "status": "Recording three credits and accepted1877 accounting reconciled in accepted958c56c2 metadata after actual independent reviews/QA/delivery. Current operation-only218/218 is not overall migration completion. Known original structural groups and whole-source, final artifact, native, reliability and formal gates remain separate; no exhaustive certification.",
       "historicalStatusBeforeRecordingAcceptance": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification."
     },
     {
       "id": "mcp-request-selection-structural",
       "coveredOperationIds": [],
-      "status": "MCP request selection still decodes/constructs MCP content/isError and selects public presentation through required presenter capabilities. Existing five owning files and bounded native presenter decisions require semantic separation; planned MCP cohort is not accepted. Complete current owning-body audit; pending source implementation. No whole-operation count adjustment or exhaustive universe claim. Source/review/QA/delivery pending; zero operation credit.",
-      "taskId": "TASK__architecture-mcp-result-selection"
+      "status": "Accepted bounded source at958c56c2: opaque core request results and semantic catalog selection with finite outward MCP presentation. Actual independent reviews and QA584/package/shipping passed; protected14pins/97userpaths delivered. Zero operation credit; no exhaustive/native/formal Goal certification.",
+      "taskId": "TASK__architecture-mcp-result-selection",
+      "acceptedIntegrationCommit": "958c56c28735d654ba1f9daf19b94b0cc086529f",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/mcp-selection-958c-9bf520_b/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-mcp-selection-inventory-main-delivery-result-20261011.json"
     },
     {
       "id": "broker-lease-physical-cleanup-results-structural",
       "coveredOperationIds": [],
-      "status": "Broker physical leases/devices/owner cleanup still use HTTP success and payload.result.lease to drive renewal, admission and compensation; their nine app/domain/ports files and native broker require semantic result boundaries. Complete current owning-family audit confirms this original structural gap; prior functional operation-policy contributions remain accepted, not overall source closure. Source/review/QA/delivery pending; zero operation credit."
+      "status": "Accepted bounded source ata5fbfb6f: semantic lease renewal/admission/release/restoration, physical outcomes and owner cleanup with finite native effects, captured identity and outward HTTP rendering. Actual independent reviews and QA385/ten whole files/build1322/package/shipping passed; protected17pins/97userpaths delivered. Prior Code failure corrected; formal receipt-empty park retained. Zero operation credit; no exhaustive/native Goal certification.",
+      "taskId": "TASK__architecture-broker-control-outcomes",
+      "acceptedIntegrationCommit": "a5fbfb6fa45996d12863b92743b1af78879ada14",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-control-a5fb-ee996tiu/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json"
     },
     {
       "id": "broker-remaining-semantic-results-structural",
       "coveredOperationIds": [],
-      "status": "Broker Appium, recording, owner resolution and device observation status retain public HTTP/core-envelope coupling; direct recording and accepted shared desktop correction do not implement these separate subfamilies. Complete current owning-family audit; separate original structural gate remains unimplemented. Source/review/QA/delivery pending; zero operation credit."
+      "status": "Implementation pending. Complete bounded owning-family audits identify owner resolution/device status, broker recording and Appium semantic results plus finite native launch/install/recording effects. Existing semantic observations are reused; status recovery depends on Hyper-V repair. No source acceptance or new operation credit; exhaustive/native/formal certification unverified."
     },
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
       "coveredOperationIds": [],
-      "status": "Hyper-V create/start, stop/delete, snapshots, image preparation and network/trust families retain HTTP-driven journal/rollback decisions and builder-to-runner native process recipes. Desktop prepared-leaf correction does not close these five lifecycle families. Complete five-family app/domain/ports and native broker/image-store/network-adapter audit; no native execution or whole source-universe certification. Source/review/QA/delivery pending; zero operation credit."
+      "status": "Audit complete; implementation pending. Five-family app/domain/ports and native broker/image-store/network audit identifies semantic lifecycle/image/network outcomes, journal/recovery dispositions and finite native leaves. Prospective PLAN and required caller/test qualification remain. No source acceptance or new operation credit; exhaustive/native/formal certification unverified."
     },
     {
       "id": "broker-provider-lifecycle-results-structural",
       "coveredOperationIds": [],
-      "status": "Broker Android/iOS/macOS/Sandbox lifecycle application and ports retain transport-shaped results. Full remaining domain and caller inspection is required before implementation; bounded domain reads cannot establish an exhaustive audit. Current application/ports findings with explicitly bounded domain reads; full domain/caller inspection remains required. Source/review/QA/delivery pending; zero operation credit."
+      "status": "Audit complete; implementation pending. All fifteen Android/iOS/macOS/Sandbox lifecycle/create application/domain/ports files and reached native/planning consumers inspected. Semantic outcomes and finite prepared native effects identified; Sandbox create already semantic. Prospective PLAN, implementation, reviews, QA and delivery remain. No source acceptance or new operation credit; exhaustive/native/formal certification unverified."
     },
     {
       "id": "shared-android-contract-cleanup-accepted",

@@ -2,7 +2,7 @@
 
 Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 Current recording source qualified: `6454e788ef3780cb0ccd8d54c6ece31c39ba4e17`.
-Current composed source accepted: `187743c2dfd1ddf66e161d134f61b482a54d6baa`.
+Current composed source accepted: `a5fbfb6fa45996d12863b92743b1af78879ada14`.
 Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
@@ -34,13 +34,18 @@ audit. Later complete owning-body reviews found the following original result
 and native-process boundary defects. Completing the direct recording workflow
 does not resolve the broker recording result contract.
 
-| Remaining original source obligation | Concrete current scope | State |
+| Known original structural source group | Concrete current scope | State |
 | --- | --- | --- |
-| MCP request result selection | Shared request application/domain/ports, native server/flow composition and finite outward presenter | Approved prospective task; implementation and current QA pending |
-| Broker lease, physical and owner cleanup results | Nine `broker-physical-leases`, `broker-physical-devices` and `broker-owner-cleanup` application/domain/ports files plus native broker composition | Complete owning audit confirms HTTP-dependent admission/renewal and nested lease extraction; semantic repair pending |
-| Other broker semantic results | Appium, broker recording, owner resolution and device status | Complete scoped audits confirm public result coupling; separate native conversion and current qualification pending |
-| Hyper-V lifecycle results and native commands | Create/start, stop/delete, snapshots, image preparation and network/trust triplets plus their native adapters | Complete five-family audit confirms HTTP-based journal/recovery policy and command builder/runner seams; repair pending |
-| Broker provider lifecycle results | Android, iOS, macOS and Sandbox lifecycle application/ports | Confirmed coupling; remaining full domain/caller inspection is required before implementation |
+| MCP request result selection | Shared request application/domain/ports, native server/flow composition and finite outward presenter | Accepted `958c56c2`; actual independent reviews, final QA584 and protected delivery |
+| Broker lease, physical and owner cleanup results | Nine core files, native broker composition and finite outward codec | Accepted `a5fbfb6f`; actual independent reviews, ten whole suites/QA385, genuine build1322 and protected delivery |
+| Other broker semantic results | Appium, broker recording, owner resolution and device status | Complete bounded audits; semantic results and finite native launch/install/recording effects remain unimplemented; status recovery depends on Hyper-V repair |
+| Hyper-V lifecycle results and native commands | Create/start, stop/delete, snapshots, image preparation and network/trust triplets plus native adapters | Complete five-family audit; prospective PLAN, implementation and required caller/test qualification pending |
+| Broker provider lifecycle results | All fifteen Android/iOS/macOS/Sandbox lifecycle/create application/domain/ports files plus reached native/planning consumers | Complete bounded audit; prospective PLAN, semantic outcomes and finite prepared native effects pending |
+
+**2/5 identified structural groups are source-accepted.** This is an unweighted
+subtotal of known groups, not an effort percentage or an exhaustive denominator
+for the full migration. The other three groups remain unimplemented. Auditing a
+group does not earn source acceptance.
 
 These findings add no operation IDs or count credit. Their source anchors and
 bounded inspection limits are recorded in the inventory gaps and zero-operation
@@ -51,9 +56,10 @@ desktop result coupling, Android ADB recipe coupling and duplicate compiler
 metatests. These are zero-operation improvements. Hyper-V desktop preparation
 leaves do not complete the remaining Hyper-V lifecycle families.
 
-Current source-universe reconciliation, complete inward dependency and native
-composition coverage, final installed artifacts/images, reliability evidence,
-native platforms and formal acceptance remain separate original gates. Existing
+Current source-universe/exports/caller reconciliation, final type/dependency and
+composition qualification, final package/install/image evidence, reliability
+and resource obligations, native-platform acceptance and formal disposition
+remain six separate original completion gates. Existing
 revision-bound evidence may qualify unchanged inputs; absent or indirect evidence
 does not certify a gate. Source scope closure, exhaustive inventory and
 denominator certification remain false. No overall migration percentage is
@@ -82,6 +88,10 @@ Authoritative local evidence:
   and `/tmp/ccc-direct-recording-main-delivery-result-20261011.json`.
 - Composed source: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/shared-android-cleanup-1877-42owkwhx/final-result.json`
   and `/tmp/ccc-shared-android-cleanup-main-delivery-result-20261011.json`.
+- MCP result selection: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/mcp-selection-958c-9bf520_b/final-result.json`
+  and `/tmp/ccc-mcp-selection-inventory-main-delivery-result-20261011.json`.
+- Broker control outcomes: `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-control-a5fb-ee996tiu/final-result.json`
+  and `/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json`.
 
 Protected deliveries preserve all 97 original user files, status and index.
 Owned QA processes were joined. Automatic review/QA records were absent after

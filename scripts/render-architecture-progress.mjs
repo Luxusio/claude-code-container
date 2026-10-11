@@ -42,16 +42,19 @@ for (const item of items.values()) counts[statusFor(item)]++;
 const total = items.size - counts.excluded;
 const implemented = counts.integrated + counts.candidate;
 const baselineIntegrated = [...items.values()].filter(item => !excluded.has(item.id) && item.implementationStatus === "migrated").length;
+const structuralPlans = progress.planningLanes.filter(lane => lane.id.endsWith("-structural"));
+const acceptedStructuralPlans = structuralPlans.filter(lane => lane.acceptedIntegrationCommit);
 const percent = count => (100 * count / total).toFixed(1);
 const cell = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
     .replace(/[\\`*_{}\[\]()#+.!|~\-]/g, "\\$&").replace(/[\r\n]+/g, " ");
 const names = ["Baseline and inventory", "Core and ports", "State and identity", "Routes and transport", "Sandbox lifecycle", "Hyper-V lifecycle", "Images/network/admin", "Physical/recording/Appium", "Provider capabilities", "Device Lab entrypoints", "Sessions and containers", "Workspace/profiles/credentials/tools", "Host services/tool sessions/remote", "Composition and distribution", "Enforcement and reliability"];
 const label = { integrated: "integrated", candidate: "implemented candidate", partial: "partial", todo: "TODO", excluded: "excluded" };
 const out = ["# Architecture work breakdown and progress", "", `Updated: ${cell(progress.updatedAt)}. Source baseline: \`${inventory.baselineCommit}\`.`, "", "Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).", "",
-    `Known in-scope implementation TODOs: **${total}** (${items.size} inventoried, ${counts.excluded} explicitly excluded).`,
+    `Known in-scope operation cutovers: **${total}** (${items.size} inventoried, ${counts.excluded} explicitly excluded).`,
     `Implemented including unmerged candidates: **${implemented}/${total} (${percent(implemented)}%)**.`,
     `Integrated source: **${counts.integrated}/${total} (${percent(counts.integrated)}%)**; historical baseline: **${baselineIntegrated}**. Candidates: **${counts.candidate}**; partial: **${counts.partial}**; TODO: **${counts.todo}**.`, "",
     "These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.", "",
+    `Known original structural corrections accepted: **${acceptedStructuralPlans.length}/${structuralPlans.length} identified groups**. This separate subtotal is not an effort percentage or an exhaustive remaining-work denominator. Overall migration completion remains unverified.`, "",
     "## 0. Tracking and update rules", "",
     "- One stable OP id counts once; helper files, ports, aliases and equivalent executor bindings do not add TODOs.",
     "- `[x]` means implemented in the recorded baseline or candidate; the status label distinguishes integration. `[ ]` means partial or unimplemented.",
@@ -59,8 +62,10 @@ const out = ["# Architecture work breakdown and progress", "", `Updated: ${cell(
     "- Keep code implementation, review/QA, integration and native/reliability acceptance separate. Missing hook receipts never become a formal close PASS.",
     "- Never launch hosted CI, workflow reruns or pushes without explicit user authorization.", "", "## 0.1 Current candidate lanes", "", "| Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |", "| --- | ---: | ---: | --- | --- | --- |"];
 for (const lane of progress.lanes) out.push(`| ${cell(lane.id)} | ${lane.wholeOperationIds.length} | ${lane.partialOperationIds.length} | \`${lane.commit.slice(0, 8)}\` | ${cell(lane.codeReview)} | ${cell(lane.integration)}${lane.integration === "accepted" ? ` @ ${lane.acceptedIntegrationCommit.slice(0, 8)}` : ""} |`);
-out.push("", "## 0.2 Active next plans", "", "| Lane | Operation ids | State |", "| --- | --- | --- |");
-for (const lane of progress.planningLanes) out.push(`| ${cell(lane.id)} | ${cell(lane.coveredOperationIds.join(", "))} | ${cell(lane.status)} |`);
+out.push("", "## 0.2 Known original structural work", "", "| Group | Accepted source | State |", "| --- | --- | --- |");
+for (const lane of structuralPlans) out.push(`| ${cell(lane.id)} | ${lane.acceptedIntegrationCommit ? `\`${cell(lane.acceptedIntegrationCommit.slice(0, 8))}\`` : "pending"} | ${cell(lane.status)} |`);
+out.push("", "Current whole-source/exports/caller closure, final type/composition integration, final package/install/image qualification, reliability/resource evidence, native-platform acceptance and formal disposition remain separate original completion gates.", "", "## 0.3 Other plans and historical contributions", "", "| Lane | Operation ids | State |", "| --- | --- | --- |");
+for (const lane of progress.planningLanes.filter(lane => !lane.id.endsWith("-structural"))) out.push(`| ${cell(lane.id)} | ${cell(lane.coveredOperationIds.join(", "))} | ${cell(lane.status)} |`);
 for (let index = 0; index < names.length; index++) {
     const packet = `M${String(index).padStart(2, "0")}`;
     const rows = [...items.values()].filter(item => item.countingOwner === packet && !excluded.has(item.id));
@@ -87,7 +92,7 @@ for (let index = 0; index < names.length; index++) {
     out.push(`| ${packet} | ${row.join(" | ")} |`);
 }
 out.push("", `Current packet delivery gates: **${gateTotal}**. See the inventory for revision-bound evidence and exact requirements.`, "", "## 17. Inventory closure blockers", "", "The following locally reconciled gaps still await independent inventory acceptance. This is why the known denominator is provisional.", "", "| Gap | State | Required disposition |", "| --- | --- | --- |");
-for (const gap of inventory.gaps) out.push(`| ${cell(gap.id)} | ${cell(gap.remediationStatus)} | ${cell(gap.reason)} |`);
+for (const gap of inventory.gaps) out.push(`| ${cell(gap.id)} | ${cell(gap.remediationStatus)} | ${cell(gap.currentSourceDisposition?.reason ?? gap.currentAuditDisposition?.reason ?? gap.reason)} |`);
 out.push("", "## 18. Excluded scope", "");
 for (const id of excluded) out.push(`- \`${id}\` — ${cell(items.get(id).operation)}. Retained separately; no implementation or integration without an explicit scope restoration.`);
 out.push("");
