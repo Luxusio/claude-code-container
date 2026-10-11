@@ -32,7 +32,7 @@ export function renderBrokerDeviceStatus(outcome: DeviceStatusOutcome<NativeStat
                 : reason === "provider-unavailable" ? 503 : reason === "deadline" ? 504 : reason === "state-write-failed" ? 500 : reason === "provider-failed" ? 502 : 409;
         const publicPlan = plan ? statusPlan(plan) : undefined;
         return { status, payload: { ok: false, ...facts, ...(leaseFailure ? { leaseError: leaseFailure.error } : {}), ...(outcome.error === "physical-device-not-attached" && !outcome.remedy ? { remedy: "attach the physical device before using host-backed device tools" } : {}),
-                ...(publicPlan ? { plan: plan.backend === "windows-vm" || plan.backend === "linux-vm" ? redactHyperVResultSecrets(publicPlan) : { ...publicPlan, device: redactDevice(plan.device) } } : {}) } };
+                ...(plan && publicPlan ? { plan: plan.backend === "windows-vm" || plan.backend === "linux-vm" ? redactHyperVResultSecrets(publicPlan) : { ...publicPlan, device: redactDevice(plan.device) } } : {}) } };
     }
     const hyperV = outcome.plan.backend === "windows-vm" || outcome.plan.backend === "linux-vm";
     const plan = statusPlan(outcome.plan);

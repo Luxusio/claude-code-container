@@ -3,7 +3,7 @@ import type {BrokerRecordingRefusal, BrokerRecordingRequest, BrokerRecordingTarg
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
 import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
 import type {DeviceStatusPreparation, DeviceStatusPhysicalAdmission} from "./device-lab/domain/broker-observation.js";
-import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVReplay, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
+import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
@@ -6322,11 +6322,6 @@ function clearHyperVOperationJournal(ownerId: string, backend: string, deviceId:
         backend,
         deviceId,
     );
-}
-
-async function reconcileHyperVOperation(ownerId: string, backend: string, deviceId: string, normalized: NormalizedBrokerOptions,
-    deadlineAt = Number.POSITIVE_INFINITY, preserveNetwork = false) {
-    return renderHyperVReplay(await brokerHyperVStopDeleteApplication(normalized).reconcile(ownerId, backend, deviceId, deadlineAt, preserveNetwork));
 }
 
 function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) {
