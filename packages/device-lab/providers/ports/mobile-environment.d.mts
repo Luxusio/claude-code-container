@@ -1,61 +1,61 @@
 export type EnvironmentArguments = import("../domain/mobile-environment.mjs").EnvironmentArguments;
 export type EnvironmentOperation = import("../domain/mobile-environment.mjs").EnvironmentOperation;
+export type BatterySetting = import("../domain/mobile-environment.mjs").BatterySetting;
 export type EnvironmentCommandReceipt = import("./android-control-transfer.mjs").CommandReceipt;
 export type EnvironmentTargetObservation<Target> = import("./android-control-transfer.mjs").TargetObservation<Target>;
-
+export type EnvironmentCommandObservation =
+    | { kind: "succeeded"; command: EnvironmentCommandReceipt }
+    | { kind: "failed"; command: EnvironmentCommandReceipt };
 export interface EnvironmentDevice { id: string }
-export interface AndroidEnvironmentTarget {
-    device: EnvironmentDevice & { serial?: string; port?: number };
-    adb: string;
-}
-export interface AndroidPhysicalEnvironmentPorts<Target extends AndroidEnvironmentTarget = AndroidEnvironmentTarget> {
+export interface EnvironmentLocation { latitude?: number; longitude?: number; altitude?: number }
+export interface AndroidPhysicalEnvironmentPorts<Target = unknown> {
     readonly variant: "physical";
     device(deviceId: string | undefined): EnvironmentDevice | undefined;
     target(deviceId: string | undefined): EnvironmentTargetObservation<Target>;
-    /** Exactly one serial-qualified command, not an airplane/network workflow. */
-    execute(target: Target, args: string[]): EnvironmentCommandReceipt;
+    writeClipboard(target: Target, text: string): EnvironmentCommandObservation;
+    readClipboard(target: Target): EnvironmentCommandObservation;
 }
-export interface AndroidEmulatorEnvironmentPorts<Target extends AndroidEnvironmentTarget = AndroidEnvironmentTarget> {
+export interface AndroidEmulatorEnvironmentPorts<Target = unknown> {
     readonly variant: "emulator";
     target(deviceId: string | undefined): EnvironmentTargetObservation<Target>;
-    execute(target: Target, args: string[]): EnvironmentCommandReceipt;
-    serial(target: Target): string | null | undefined;
-    /** One emulator command; native binding qualifies it with this selected serial. */
-    executeEmulator(target: Target, serial: string, args: string[]): EnvironmentCommandReceipt;
+    setLocation(target: Target, location: EnvironmentLocation): EnvironmentCommandObservation | { kind: "unavailable" };
+    setBattery(target: Target, setting: BatterySetting): EnvironmentCommandObservation;
+    tryAirplaneMode(target: Target, enabled: unknown): EnvironmentCommandObservation;
+    setAirplaneSetting(target: Target, enabled: unknown): EnvironmentCommandObservation;
+    broadcastAirplaneMode(target: Target, enabled: unknown): EnvironmentCommandObservation;
+    setRadio(target: Target, setting: "wifi" | "data", enabled: boolean): EnvironmentCommandObservation;
+    writeClipboard(target: Target, text: string): EnvironmentCommandObservation;
+    readClipboard(target: Target): EnvironmentCommandObservation;
 }
-export type AndroidEnvironmentPorts<Target extends AndroidEnvironmentTarget = AndroidEnvironmentTarget> =
+export type AndroidEnvironmentPorts<Target = unknown> =
     AndroidPhysicalEnvironmentPorts<Target> | AndroidEmulatorEnvironmentPorts<Target>;
-
-export type IosEnvironmentDiscovery =
-    | { available: true; xcrun: string; missing: string[] }
-    | { available: false; xcrun?: string | null; missing: string[] };
-export type IosEnvironmentTarget = { ok: true; target: string } | { ok: false; message: string };
-export interface IosSimulatorEnvironmentPorts<Device extends EnvironmentDevice = EnvironmentDevice> {
+export type IosEnvironmentTargetObservation<Target> =
+    | { kind: "ready"; target: Target }
+    | { kind: "refused"; message: string }
+    | { kind: "missing-prerequisites"; missing: string[] };
+export interface IosSimulatorEnvironmentPorts<Target = unknown, Device extends EnvironmentDevice = EnvironmentDevice> {
     readonly variant: "simulator";
     device(deviceId: string | undefined): Device | undefined;
-    discovery(): IosEnvironmentDiscovery;
-    ownedTarget(xcrun: string, device: Device): IosEnvironmentTarget;
-    execute(xcrun: string, args: string[]): EnvironmentCommandReceipt;
-    executeWithInput(xcrun: string, args: string[], input: string): EnvironmentCommandReceipt;
+    target(device: Device): IosEnvironmentTargetObservation<Target>;
+    setLocation(target: Target, location: Pick<EnvironmentLocation, "latitude" | "longitude">): EnvironmentCommandObservation;
+    writeClipboard(target: Target, text: string): EnvironmentCommandObservation;
+    readClipboard(target: Target): EnvironmentCommandObservation;
 }
 export interface IosPhysicalEnvironmentPorts {
     readonly variant: "physical";
     device(deviceId: string | undefined): EnvironmentDevice | undefined;
 }
-export type IosEnvironmentPorts<Device extends EnvironmentDevice = EnvironmentDevice> =
-    IosSimulatorEnvironmentPorts<Device> | IosPhysicalEnvironmentPorts;
-
-export interface EnvironmentStreams { stdout?: string; stderr?: string; status: number | null }
-export type EnvironmentPayload =
-    | { location: { latitude: number | undefined; longitude: number | undefined; altitude?: number | null }; provider: "adb-emulator" | "simctl"; stdout?: string; stderr?: string; status?: number | null }
-    | { battery: { level: number | null; status: number | null; charging: boolean | null }; results: EnvironmentStreams[]; provider: "adb" }
-    | { airplaneMode: unknown; provider: "adb"; method: "connectivity-shell" | "legacy-broadcast"; stdout?: string; stderr?: string; status: number | null }
-    | { network: { wifi: unknown; data: unknown; airplaneMode: unknown }; provider: "adb" }
-    | { ok: false; error: "android-network-command-failed"; detail: string; applied?: string[]; status: number | null; stderr?: string; stdout?: string }
-    | { clipboard: { set: true }; provider: "adb" | "simctl"; stdout?: string; stderr?: string; status?: number | null }
-    | { text: string | undefined; provider: "adb" | "simctl"; stderr?: string; status: number | null };
+export type IosEnvironmentPorts<Target = unknown, Device extends EnvironmentDevice = EnvironmentDevice> =
+    IosSimulatorEnvironmentPorts<Target, Device> | IosPhysicalEnvironmentPorts;
+export type EnvironmentApplied = "airplane-setting" | "airplane" | "wifi" | "data";
 export type EnvironmentOutcome =
-    | { kind: "json"; payload: EnvironmentPayload }
-    | { kind: "text"; message: string }
+    | { kind: "location-set"; location: { latitude: number | undefined; longitude: number | undefined; altitude?: number }; command: EnvironmentCommandReceipt }
+    | { kind: "battery-set"; battery: { level: number | undefined; status: number | undefined; charging: boolean | undefined }; commands: EnvironmentCommandReceipt[] }
+    | { kind: "airplane-set"; enabled: unknown; route: "modern" | "legacy"; command: EnvironmentCommandReceipt }
+    | { kind: "network-set"; network: { wifi: unknown; data: unknown; airplaneMode: unknown } }
+    | { kind: "network-failure"; stage: "airplane-setting" | "airplane-broadcast" | "wifi" | "data"; command: EnvironmentCommandReceipt; applied?: EnvironmentApplied[] }
+    | { kind: "clipboard-set"; command: EnvironmentCommandReceipt }
+    | { kind: "clipboard-read"; command: EnvironmentCommandReceipt }
+    | { kind: "refused"; message: string }
     | { kind: "command-failure"; command: EnvironmentCommandReceipt }
-    | { kind: "missing-prerequisites"; discovery: IosEnvironmentDiscovery };
+    | { kind: "missing-prerequisites"; missing: string[] };

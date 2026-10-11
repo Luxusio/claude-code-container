@@ -1,6 +1,6 @@
-import { androidAppPlan, androidAppCommandSucceeded } from "../domain/mobile-app-management.mjs";
+import { androidAppPlan } from "../domain/mobile-app-management.mjs";
 
-/** @template {import('../ports/mobile-app-management.mjs').AndroidAppTarget} Target
+/** @template Target
  * @param {import('../ports/mobile-app-management.mjs').AndroidAppManagementPorts<Target>} ports */
 export function createAndroidAppManagement(ports) {
     /** @param {string} name
@@ -9,14 +9,14 @@ export function createAndroidAppManagement(ports) {
     function request(name, args) {
         const observation = ports.target(args.deviceId);
         if (observation.kind === "unknown") return undefined;
-        if (observation.kind === "refused") return { kind: "text", message: observation.message };
+        if (observation.kind === "refused") return { kind: "refused", message: observation.message };
         const plan = androidAppPlan(name, args, ports.variant);
         if (!plan) return undefined;
-        if (!plan.ok) return { kind: "text", message: plan.message };
-        const command = ports.execute(observation.target, plan.args, plan.helperTimeoutMs);
-        return androidAppCommandSucceeded(command, plan.validateLaunch)
-            ? { kind: "json", payload: { ...plan.payload, stdout: command.stdout, stderr: command.stderr, status: command.status } }
-            : { kind: "command-failure", command };
+        if (!plan.ok) return { kind: "refused", message: plan.message };
+        const result = ports.perform(observation.target, plan.effect);
+        return result.kind === "succeeded"
+            ? { kind: "completed", effect: plan.effect, command: result.command }
+            : { kind: "command-failure", command: result.command };
     }
     return { request };
 }

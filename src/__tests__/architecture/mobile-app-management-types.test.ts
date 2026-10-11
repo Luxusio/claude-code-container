@@ -1,20 +1,28 @@
 import { describe, expectTypeOf, it } from "vitest";
 import { createAndroidAppManagement } from "../../../packages/device-lab/providers/application/android-app-management.mjs";
 import { createIosAppManagement } from "../../../packages/device-lab/providers/application/ios-app-management.mjs";
-import type { AndroidAppManagementPorts, AndroidAppOutcome, AndroidAppTarget, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosSimulatorAppDevice, IosPhysicalAppDevice, IosVerifiedAppSession, IosAppOutcome, MobileAppArguments } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
+import type { AndroidAppEffect, AndroidAppManagementPorts, AndroidAppOutcome, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosSimulatorAppDevice, IosPhysicalAppDevice, IosVerifiedAppSession, IosAppOutcome, MobileAppArguments } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
 
-function consumedCapabilities(android: AndroidAppManagementPorts, simulator: IosSimulatorAppManagementPorts, physical: IosPhysicalAppManagementPorts): void {
+function consumedCapabilities(android: AndroidAppManagementPorts<symbol>, simulator: IosSimulatorAppManagementPorts, physical: IosPhysicalAppManagementPorts): void {
     const androidResult: AndroidAppOutcome | undefined = createAndroidAppManagement(android).request("device_install_app", { deviceId: "owned", path: "/Test.apk", replace: false });
     const simulatorResult: Promise<IosAppOutcome<IosSimulatorAppDevice> | undefined> = createIosAppManagement(simulator).request("mobile_clear_app_data", { deviceId: "owned", bundleId: "com.example.App" });
     const physicalResult: Promise<IosAppOutcome<IosPhysicalAppDevice> | undefined> = createIosAppManagement<IosPhysicalAppDevice, IosVerifiedAppSession>(physical).request("mobile_stop_app", { deviceId: "owned", bundleId: "com.example.App" });
     const { target, ...withoutTarget } = android;
     // @ts-expect-error Every ADB effect requires current native target and lease admission.
     createAndroidAppManagement(withoutTarget);
-    const { execute, ...withoutExecution } = android;
-    // @ts-expect-error Target-qualified bounded native command execution is required.
+    const { perform, ...withoutExecution } = android;
+    // @ts-expect-error A target-qualified semantic effect port is required.
     createAndroidAppManagement(withoutExecution);
-    // @ts-expect-error ADB execution is synchronous, not a deferred receipt.
-    createAndroidAppManagement({ ...android, execute: async () => ({ status: 0 }) });
+    // @ts-expect-error Semantic native effects must settle synchronously.
+    createAndroidAppManagement({ ...android, perform: async () => ({ kind: "succeeded" as const, command: { status: 0 } }) });
+    // @ts-expect-error An exit receipt alone cannot replace the finite native observation.
+    createAndroidAppManagement({ ...android, perform: () => ({ status: 0 }) });
+    // @ts-expect-error Native process arrays are not semantic app effects.
+    android.perform(Symbol("opaque"), ["shell", "pm", "clear", "app"]);
+    // @ts-expect-error Helper execution budgets belong only to install effects.
+    const budgetedStop: AndroidAppEffect = { kind: "stop", packageName: "app", helperTimeoutMs: 100 };
+    const launch: AndroidAppEffect = { kind: "launch-component", component: "app/.Main" };
+    android.perform(Symbol("opaque"), launch);
     // @ts-expect-error Target admission cannot defer lease/refusal selection.
     createAndroidAppManagement({ ...android, target: async () => ({ kind: "unknown" as const }) });
     const { containAppContainer, ...withoutContainment } = simulator;
@@ -37,13 +45,13 @@ function consumedCapabilities(android: AndroidAppManagementPorts, simulator: Ios
     createIosAppManagement(withoutRequest);
     // @ts-expect-error Physical terminate cannot use a synchronous unverified session observation.
     createIosAppManagement({ ...physical, session: () => ({ kind: "unknown" as const }) });
-    void [androidResult, simulatorResult, physicalResult, target, execute, containAppContainer, publishAppReset, session, request];
+    void [androidResult, simulatorResult, physicalResult, target, perform, budgetedStop, containAppContainer, publishAppReset, session, request];
 }
 void consumedCapabilities;
 
 describe("mobile app management consumed contracts", () => {
     it("exposes synchronous Android and asynchronous iOS app outcomes", () => {
-        type Android = ReturnType<typeof createAndroidAppManagement<AndroidAppTarget>>;
+        type Android = ReturnType<typeof createAndroidAppManagement<symbol>>;
         type Ios = ReturnType<typeof createIosAppManagement<IosSimulatorAppDevice, IosVerifiedAppSession>>;
         expectTypeOf<Parameters<Android["request"]>>().toEqualTypeOf<[string, MobileAppArguments]>();
         expectTypeOf<ReturnType<Android["request"]>>().toEqualTypeOf<AndroidAppOutcome | undefined>();

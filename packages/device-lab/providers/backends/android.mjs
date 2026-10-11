@@ -721,7 +721,35 @@ const androidControlTransferPorts = {
 };
 const androidControlTransfer = createAndroidControlTransfer(androidControlTransferPorts);
 
-/** @type {import('../ports/mobile-app-management.mjs').AndroidAppManagementPorts} */
+/** @param {import('../ports/mobile-app-management.mjs').AndroidAppEffect} effect */
+function androidAppArguments(effect) {
+    switch (effect.kind) {
+        case "install": return effect.replace ? ["install", "-r", effect.path] : ["install", effect.path];
+        case "launch-component": return ["shell", "am", "start", "-n", effect.component];
+        case "launch-package": return ["shell", "monkey", "-p", effect.packageName, "1"];
+        case "uninstall": return ["uninstall", effect.packageName];
+        case "stop": return ["shell", "am", "force-stop", effect.packageName];
+        case "clear-data": return ["shell", "pm", "clear", effect.packageName];
+        case "permission": return ["shell", "pm", effect.action, effect.packageName, effect.permission];
+        case "open-url": return ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", effect.url];
+    }
+}
+
+/** Shared native recipe; prefix was resolved from the guarded native device.
+ * @param {string} adb @param {string[]} prefix
+ * @param {import('../ports/mobile-app-management.mjs').AndroidAppEffect} effect
+ * @returns {import('../ports/mobile-app-management.mjs').AndroidAppCommandObservation} */
+export function performAndroidAppEffect(adb, prefix, effect) {
+    const args = [...prefix, ...androidAppArguments(effect)];
+    const command = effect.kind === "install" && effect.helperTimeoutMs
+        ? runWithTimeout(adb, args, androidHelperTimeoutMs(effect.helperTimeoutMs))
+        : run(adb, args);
+    const launch = effect.kind === "launch-component" || effect.kind === "launch-package";
+    const launchFailed = launch && /(?:no activities found to run|monkey aborted|error:\s*(?:activity|unable to resolve intent)|activity class .* does not exist)/i.test(`${command.stdout || ""}\n${command.stderr || ""}`);
+    return { kind: command.status === 0 && !launchFailed ? "succeeded" : "failed", command };
+}
+
+/** @type {import('../ports/mobile-app-management.mjs').AndroidAppManagementPorts<Extract<ReturnType<typeof ensureAdbDevice>,{device:unknown}>>} */
 const androidAppManagementPorts = {
     variant: "emulator",
     target(deviceId) {
@@ -730,11 +758,7 @@ const androidAppManagementPorts = {
         if (target.error) return { kind: "refused", message: target.error };
         return { kind: "ready", target };
     },
-    execute(target, args, helperTimeoutMs) {
-        return helperTimeoutMs
-            ? runWithTimeout(target.adb, adbArgsForDevice(target.device, args), androidHelperTimeoutMs(helperTimeoutMs))
-            : run(target.adb, adbArgsForDevice(target.device, args));
-    },
+    perform: (target, effect) => performAndroidAppEffect(target.adb, adbArgsForDevice(target.device, []), effect),
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
 
@@ -773,7 +797,13 @@ function presentAndroidAccessOutcome(outcome) {
     return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
 }
 
-/** @type {import('../ports/mobile-environment.mjs').AndroidEmulatorEnvironmentPorts} */
+/** @param {import('../ports/mobile-environment.mjs').EnvironmentCommandReceipt} command
+ * @returns {import('../ports/mobile-environment.mjs').EnvironmentCommandObservation} */
+export function androidEnvironmentObservation(command) {
+    return { kind: command.status === 0 ? "succeeded" : "failed", command };
+}
+
+/** @type {import('../ports/mobile-environment.mjs').AndroidEmulatorEnvironmentPorts<Extract<ReturnType<typeof ensureAdbDevice>,{device:unknown}>>} */
 const androidEnvironmentPorts = {
     variant: "emulator",
     target(deviceId) {
@@ -782,27 +812,67 @@ const androidEnvironmentPorts = {
         if (target.error) return { kind: "refused", message: target.error };
         return { kind: "ready", target };
     },
-    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
-    serial: target => androidSerial(target.device),
-    executeEmulator: (target, serial, args) => run(target.adb, ["-s", serial, ...args]),
+    setLocation(target, location) {
+        const serial = androidSerial(target.device);
+        if (!serial) return { kind: "unavailable" };
+        const args = ["-s", serial, "emu", "geo", "fix", String(location.longitude), String(location.latitude)];
+        if (location.altitude !== undefined) args.push(String(location.altitude));
+        return androidEnvironmentObservation(run(target.adb, args));
+    },
+    setBattery(target, setting) {
+        const field = setting.setting === "charging" ? "ac" : setting.setting;
+        const value = setting.setting === "charging" ? setting.value ? "1" : "0" : String(setting.value);
+        return androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "dumpsys", "battery", "set", field, value])));
+    },
+    tryAirplaneMode: (target, enabled) => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "cmd", "connectivity", "airplane-mode", enabled ? "enable" : "disable"]))),
+    setAirplaneSetting: (target, enabled) => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "global", "airplane_mode_on", enabled ? "1" : "0"]))),
+    broadcastAirplaneMode: (target, enabled) => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "am", "broadcast", "-a", "android.intent.action.AIRPLANE_MODE", "--ez", "state", enabled ? "true" : "false"]))),
+    setRadio: (target, setting, enabled) => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "svc", setting, enabled ? "enable" : "disable"]))),
+    writeClipboard: (target, text) => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "cmd", "clipboard", "set", text]))),
+    readClipboard: target => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "cmd", "clipboard", "get"]))),
 };
 const androidEnvironment = createAndroidEnvironment(androidEnvironmentPorts);
 
 /** @param {import('../ports/mobile-environment.mjs').EnvironmentOutcome|undefined} outcome */
-function presentAndroidEnvironmentOutcome(outcome) {
+export function presentAndroidEnvironmentOutcome(outcome) {
     if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
+    if (outcome.kind === "refused") return textResult(false, outcome.message);
     if (outcome.kind === "command-failure") return fail(outcome.command);
-    return undefined;
+    switch (outcome.kind) {
+        case "location-set": return jsonResult({ location: { latitude: outcome.location.latitude, longitude: outcome.location.longitude, altitude: outcome.location.altitude ?? null }, provider: "adb-emulator", stdout: outcome.command.stdout, stderr: outcome.command.stderr, status: outcome.command.status });
+        case "battery-set": return jsonResult({ battery: { level: outcome.battery.level ?? null, status: outcome.battery.status ?? null, charging: outcome.battery.charging ?? null }, results: outcome.commands.map(command => ({ stdout: command.stdout, stderr: command.stderr, status: command.status })), provider: "adb" });
+        case "airplane-set": return jsonResult({ airplaneMode: outcome.enabled, provider: "adb", method: outcome.route === "modern" ? "connectivity-shell" : "legacy-broadcast", stdout: outcome.command.stdout, stderr: outcome.command.stderr, status: outcome.command.status });
+        case "network-set": return jsonResult({ network: { wifi: outcome.network.wifi ?? null, data: outcome.network.data ?? null, airplaneMode: outcome.network.airplaneMode ?? null }, provider: "adb" });
+        case "network-failure": {
+            const detail = outcome.stage === "airplane-setting" ? "airplaneMode.setting" : outcome.stage === "airplane-broadcast" ? "airplaneMode.broadcast" : outcome.stage;
+            const applied = outcome.applied?.map(setting => setting === "airplane-setting" ? "airplaneMode.setting" : setting === "airplane" ? "airplaneMode" : setting);
+            return jsonResult({ ok: false, error: "android-network-command-failed", detail, ...(applied === undefined ? {} : { applied }), status: outcome.command.status, stderr: outcome.command.stderr, ...(outcome.stage === "wifi" || outcome.stage === "data" ? { stdout: outcome.command.stdout } : {}) });
+        }
+        case "clipboard-set": return jsonResult({ clipboard: { set: true }, provider: "adb", stdout: outcome.command.stdout, stderr: outcome.command.stderr, status: outcome.command.status });
+        case "clipboard-read": return jsonResult({ text: outcome.command.stdout, stderr: outcome.command.stderr, status: outcome.command.status, provider: "adb" });
+        case "missing-prerequisites": return undefined;
+    }
 }
 
-/** @param {import('../ports/mobile-app-management.mjs').AndroidAppOutcome | undefined} outcome */
-function presentAndroidAppOutcome(outcome) {
+/** @param {import('../ports/mobile-app-management.mjs').AndroidAppOutcome | undefined} outcome
+ * @param {import('../ports/mobile-app-management.mjs').AndroidAppVariant} variant @param {string} name */
+export function presentAndroidAppOutcome(outcome, variant, name) {
     if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
-    return fail(outcome.command);
+    if (outcome.kind === "refused") return textResult(false, outcome.message);
+    if (outcome.kind === "command-failure") return fail(outcome.command);
+    const effect = outcome.effect;
+    let payload;
+    switch (effect.kind) {
+        case "install": payload = { installed: effect.path }; break;
+        case "launch-component": payload = { launched: effect.component }; break;
+        case "launch-package": payload = { launched: effect.packageName }; break;
+        case "uninstall": payload = { uninstalled: effect.packageName }; break;
+        case "stop": payload = variant === "physical" ? { packageName: effect.packageName } : { stopped: effect.packageName }; break;
+        case "clear-data": payload = variant === "physical" && name === "mobile_clear_app_data" ? { packageName: effect.packageName } : { reset: { packageName: effect.packageName } }; break;
+        case "permission": payload = { permission: { packageName: effect.packageName, permission: effect.permission, action: effect.action } }; break;
+        case "open-url": payload = { openedUrl: effect.url }; break;
+    }
+    return jsonResult({ ...payload, provider: "adb", stdout: outcome.command.stdout, stderr: outcome.command.stderr, status: outcome.command.status });
 }
 
 
@@ -866,7 +936,7 @@ async function handleAndroidToolUnlocked(name, args) {
         case "mobile_clear_app_data":
         case "mobile_grant_permission":
         case "mobile_revoke_permission":
-            return presentAndroidAppOutcome(androidAppManagement.request(name, args));
+            return presentAndroidAppOutcome(androidAppManagement.request(name, args), "emulator", name);
 
         case "mobile_session_status":
             return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));

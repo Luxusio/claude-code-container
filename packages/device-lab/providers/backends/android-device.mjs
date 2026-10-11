@@ -14,7 +14,7 @@ import { createWaitBudget } from "../wait-budget.mjs";
 import { createHash, randomUUID } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
-import { androidDiscovery, appiumDiscovery } from "./android.mjs";
+import { androidDiscovery, appiumDiscovery, performAndroidAppEffect, presentAndroidAppOutcome, androidEnvironmentObservation, presentAndroidEnvironmentOutcome } from "./android.mjs";
 import { run, runBuffer, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
@@ -398,7 +398,7 @@ const androidControlTransferPorts = {
 };
 const androidControlTransfer = createAndroidControlTransfer(androidControlTransferPorts);
 
-/** @type {import('../ports/mobile-app-management.mjs').AndroidAppManagementPorts} */
+/** @type {import('../ports/mobile-app-management.mjs').AndroidAppManagementPorts<Extract<ReturnType<typeof ensureAdbDevice>,{device:unknown}>>} */
 const androidAppManagementPorts = {
     variant: "physical",
     target(deviceId) {
@@ -407,11 +407,7 @@ const androidAppManagementPorts = {
         if (target.error) return { kind: "refused", message: target.error };
         return { kind: "ready", target };
     },
-    execute(target, args, helperTimeoutMs) {
-        return helperTimeoutMs
-            ? runWithTimeout(target.adb, adbArgsForDevice(target.device, args), androidHelperTimeoutMs(helperTimeoutMs))
-            : run(target.adb, adbArgsForDevice(target.device, args));
-    },
+    perform: (target, effect) => performAndroidAppEffect(target.adb, adbArgsForDevice(target.device, []), effect),
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
 
@@ -454,7 +450,7 @@ function presentAndroidAccessOutcome(outcome) {
     return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
 }
 
-/** @type {import('../ports/mobile-environment.mjs').AndroidPhysicalEnvironmentPorts} */
+/** @type {import('../ports/mobile-environment.mjs').AndroidPhysicalEnvironmentPorts<Extract<ReturnType<typeof ensureAdbDevice>,{device:unknown}>>} */
 const androidEnvironmentPorts = {
     variant: "physical",
     target(deviceId) {
@@ -463,28 +459,11 @@ const androidEnvironmentPorts = {
         if (target.error) return { kind: "refused", message: target.error };
         return { kind: "ready", target };
     },
-    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    writeClipboard: (target, text) => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "cmd", "clipboard", "set", text]))),
+    readClipboard: target => androidEnvironmentObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "cmd", "clipboard", "get"]))),
     device: deviceId => findAndroidRealDevice(deviceId),
 };
 const androidEnvironment = createAndroidEnvironment(androidEnvironmentPorts);
-
-/** @param {import('../ports/mobile-environment.mjs').EnvironmentOutcome|undefined} outcome */
-function presentAndroidEnvironmentOutcome(outcome) {
-    if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
-    if (outcome.kind === "command-failure") return fail(outcome.command);
-    return undefined;
-}
-
-/** @param {import('../ports/mobile-app-management.mjs').AndroidAppOutcome | undefined} outcome */
-function presentAndroidAppOutcome(outcome) {
-    if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
-    return fail(outcome.command);
-}
-
 
 /** @param {import('../ports/android-control-transfer.mjs').AndroidControlOutcome | undefined} outcome */
 function presentAndroidControlOutcome(outcome) {
@@ -565,7 +544,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
         case "mobile_clear_app_data":
         case "mobile_grant_permission":
         case "mobile_revoke_permission":
-            return presentAndroidAppOutcome(androidAppManagement.request(name, args));
+            return presentAndroidAppOutcome(androidAppManagement.request(name, args), "physical", name);
 
         case "mobile_session_status":
             return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));

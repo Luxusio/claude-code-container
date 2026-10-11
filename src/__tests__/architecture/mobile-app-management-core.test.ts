@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAndroidAppManagement } from "../../../packages/device-lab/providers/application/android-app-management.mjs";
 import { createIosAppManagement } from "../../../packages/device-lab/providers/application/ios-app-management.mjs";
-import type { AndroidAppManagementPorts, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosAppReset, MobileCommandReceipt, MobileTargetObservation } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
+import type { AndroidAppEffect, AndroidAppManagementPorts, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosAppReset, MobileCommandReceipt, MobileTargetObservation } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
 
 function android(variant: "emulator" | "physical" = "emulator") {
-    const target = { device: { id: "owned", serial: "selected-serial" }, adb: "/sdk/adb" };
+    const target = Symbol("native selected target");
     const ports = {
         variant,
         target: vi.fn((_id: unknown): MobileTargetObservation<typeof target> => ({ kind: "ready", target })),
-        execute: vi.fn((_target: typeof target, _args: (string | undefined)[], _timeout: unknown): MobileCommandReceipt => ({ status: 0, stdout: "native output", stderr: "native warning" })),
+        perform: vi.fn((_target: typeof target, _effect: AndroidAppEffect): { kind: "succeeded" | "failed"; command: MobileCommandReceipt } => ({ kind: "succeeded", command: { status: 0, stdout: "native output", stderr: "native warning" } })),
     } satisfies AndroidAppManagementPorts<typeof target>;
     return { target, ports, application: createAndroidAppManagement(ports) };
 }
@@ -54,32 +54,34 @@ describe("mobile app management applications", () => {
     it("preserves unknown target fallthrough and native target refusal before execution", () => {
         const { ports, application } = android();
         ports.target.mockReturnValueOnce({ kind: "unknown" }).mockReturnValueOnce({ kind: "refused", message: "attachment lease lost" });
-        ports.execute.mockImplementation(() => { throw new Error("Refused targets must not execute ADB"); });
+        ports.perform.mockImplementation(() => { throw new Error("Refused targets must not perform effects"); });
         expect(application.request("device_launch_app", { deviceId: "absent" })).toBeUndefined();
-        expect(application.request("device_install_app", { deviceId: "foreign", path: "/app.apk" })).toEqual({ kind: "text", message: "attachment lease lost" });
-        expect(application.request("device_launch_app", { deviceId: "owned" })).toEqual({ kind: "text", message: "Android app launch requires packageName or component" });
+        expect(application.request("device_install_app", { deviceId: "foreign" })).toEqual({ kind: "refused", message: "attachment lease lost" });
+        expect(application.request("device_launch_app", { deviceId: "owned" })).toEqual({ kind: "refused", message: "Android app launch requires packageName or component" });
+        expect(application.request("unhandled_app_action", { deviceId: "owned" })).toBeUndefined();
+        expect(ports.target).toHaveBeenCalledTimes(4);
+        expect(ports.target).toHaveBeenLastCalledWith("owned");
+        expect(ports.perform).not.toHaveBeenCalled();
     });
 
     it("preserves direct replace=false, default replacement, and the mobile alias replacement rule", () => {
         const { ports, application } = android();
-        ports.execute.mockImplementation((_target, args, timeout) => {
-            expect(timeout).toBe(1700);
-            expect(args).toEqual(["install", "/app.apk"]);
-            return { status: 0 };
-        });
-        expect(application.request("device_install_app", { path: "/app.apk", replace: false, helperTimeoutMs: 1700 })).toMatchObject({ kind: "json", payload: { installed: "/app.apk" } });
-        ports.execute.mockImplementation((_target, args) => { expect(args).toEqual(["install", "-r", "/app.apk"]); return { status: 0 }; });
-        application.request("device_install_app", { path: "/app.apk" });
-        application.request("mobile_install_app", { path: "/app.apk", replace: false });
+        const command = { status: 0 };
+        ports.perform.mockReturnValue({ kind: "succeeded", command });
+        const effect = { kind: "install", path: "/app.apk", replace: false, helperTimeoutMs: 1700 };
+        expect(application.request("device_install_app", { path: "/app.apk", replace: false, helperTimeoutMs: 1700 })).toEqual({ kind: "completed", effect, command });
+        expect(ports.perform.mock.calls[0][1]).toEqual(effect);
+        expect(application.request("device_install_app", { path: "/app.apk" })).toMatchObject({ kind: "completed", effect: { kind: "install", path: "/app.apk", replace: true } });
+        expect(application.request("mobile_install_app", { path: "/app.apk", replace: false })).toMatchObject({ kind: "completed", effect: { kind: "install", path: "/app.apk", replace: true } });
     });
 
     it("selects a component before a package and preserves zero-exit launch failure diagnostics", () => {
         const { ports, target, application } = android();
         const failure = { status: 0, stdout: "Error: Activity class com.example/.Missing does not exist.", stderr: "native diagnostic" };
-        ports.execute.mockImplementation((selected, args) => {
+        ports.perform.mockImplementation((selected, effect) => {
             expect(selected).toBe(target);
-            expect(args).toEqual(["shell", "am", "start", "-n", "com.example/.Missing"]);
-            return failure;
+            expect(effect).toEqual({ kind: "launch-component", component: "com.example/.Missing" });
+            return { kind: "failed", command: failure };
         });
         expect(application.request("device_launch_app", { packageName: "unused.package", component: "com.example/.Missing" })).toEqual({ kind: "command-failure", command: failure });
     });
@@ -87,8 +89,67 @@ describe("mobile app management applications", () => {
     it("returns failed ADB commands without claiming successful app mutation", () => {
         const { ports, application } = android("physical");
         const failure = { status: 7, stdout: "partial operation", stderr: "permission denied" };
-        ports.execute.mockReturnValue(failure);
+        ports.perform.mockReturnValue({ kind: "failed", command: failure });
         expect(application.request("mobile_clear_app_data", { packageName: "com.example.App" })).toEqual({ kind: "command-failure", command: failure });
+        expect(ports.perform).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ["device_launch_app", { packageName: "app" }, { kind: "launch-package", packageName: "app" }],
+        ["mobile_launch_app", { component: "app/.Main" }, { kind: "launch-component", component: "app/.Main" }],
+        ["mobile_uninstall_app", { packageName: "app" }, { kind: "uninstall", packageName: "app" }],
+        ["mobile_stop_app", { packageName: "app" }, { kind: "stop", packageName: "app" }],
+        ["device_reset", { packageName: "app" }, { kind: "clear-data", packageName: "app" }],
+        ["mobile_clear_app_data", { packageName: "app" }, { kind: "clear-data", packageName: "app" }],
+        ["mobile_grant_permission", { packageName: "app", permission: "permission" }, { kind: "permission", packageName: "app", permission: "permission", action: "grant" }],
+        ["mobile_revoke_permission", { packageName: "app", permission: "permission" }, { kind: "permission", packageName: "app", permission: "permission", action: "revoke" }],
+        ["mobile_open_url", { url: "custom://app" }, { kind: "open-url", url: "custom://app" }],
+        ["mobile_open_url", {}, { kind: "open-url", url: undefined }],
+    ] as const)("passes semantic data for %s without an install budget", (name, args, effect) => {
+        for (const variant of ["emulator", "physical"] as const) {
+            const { target, ports, application } = android(variant);
+            const command = { status: 0, stdout: "Error: Activity class app/.Main does not exist." };
+            // The native observation owns diagnosis; core must not reinterpret receipt streams.
+            ports.perform.mockReturnValue({ kind: "succeeded", command });
+            expect(application.request(name, { ...args, helperTimeoutMs: 900 })).toEqual({ kind: "completed", effect, command });
+            expect(ports.perform).toHaveBeenCalledExactlyOnceWith(target, effect);
+        }
+    });
+
+    it.each([
+        ["device_launch_app", "emulator", {}, "Android app launch requires packageName or component"],
+        ["mobile_launch_app", "physical", {}, "Android app launch requires packageName or component"],
+        ["mobile_uninstall_app", "emulator", {}, "Android app uninstall requires packageName"],
+        ["mobile_stop_app", "emulator", {}, "Android app stop requires packageName"],
+        ["mobile_stop_app", "physical", {}, "Android mobile_stop_app requires packageName"],
+        ["device_reset", "physical", {}, "Android reset requires packageName to clear app data"],
+        ["mobile_clear_app_data", "emulator", {}, "Android reset requires packageName to clear app data"],
+        ["mobile_clear_app_data", "physical", {}, "Android mobile_clear_app_data requires packageName"],
+        ["mobile_grant_permission", "emulator", { packageName: "app" }, "Android mobile_grant_permission requires packageName and permission"],
+        ["mobile_grant_permission", "physical", { permission: "permission" }, "Android mobile_grant_permission requires packageName and permission"],
+        ["mobile_revoke_permission", "emulator", { packageName: "app" }, "Android mobile_revoke_permission requires packageName and permission"],
+        ["mobile_revoke_permission", "physical", { permission: "permission" }, "Android mobile_revoke_permission requires packageName and permission"],
+    ] as const)("refuses missing requirements for %s on %s before any effect", (name, variant, args, message) => {
+        const { ports, application } = android(variant);
+        expect(application.request(name, args)).toEqual({ kind: "refused", message });
+        expect(ports.target).toHaveBeenCalledTimes(1);
+        expect(ports.perform).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, 0, false, "", "invalid", 1700])("passes install budget %s unchanged without adding path validation", (helperTimeoutMs) => {
+        const { target, ports, application } = android();
+        expect(application.request("device_install_app", { helperTimeoutMs })).toMatchObject({ kind: "completed", effect: { kind: "install", path: undefined, replace: true } });
+        expect(ports.perform).toHaveBeenCalledExactlyOnceWith(target, { kind: "install", path: undefined, replace: true, helperTimeoutMs });
+    });
+
+    it.each([0, 7, null])("retains the original failed mutation receipt at status %s", (status) => {
+        const { ports, application } = android();
+        const command = { status, stdout: "partial operation", stderr: "native diagnosis", signal: "SIGTERM" };
+        ports.perform.mockReturnValue({ kind: "failed", command });
+        const outcome = application.request("mobile_uninstall_app", { packageName: "app" });
+        expect(outcome).toEqual({ kind: "command-failure", command });
+        expect(outcome && "command" in outcome && outcome.command).toBe(command);
+        expect(ports.perform).toHaveBeenCalledTimes(1);
     });
 
     it("bounds simulator install and preserves its provider-free result", async () => {

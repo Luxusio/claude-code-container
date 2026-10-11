@@ -218,9 +218,7 @@ export function listIosRealDevices() { return deviceObservation.owned(); }
 
 async function handleIosRealToolUnlocked(name, args) {
     const environment = iosEnvironment.request(name, args);
-    if (environment?.kind === "json") return jsonResult(environment.payload);
-    if (environment?.kind === "text") return textResult(false, environment.message);
-    if (environment?.kind === "command-failure") return fail(environment.command);
+    if (environment?.kind === "refused") return textResult(false, environment.message);
     const outcome = await appManagement.request(name, args);
     if (outcome?.kind === "json") return jsonResult(outcome.payload);
     if (outcome?.kind === "text") return textResult(false, outcome.message);

@@ -394,11 +394,8 @@ const iosSimulatorLifecycle = createIosSimulatorLifecycle({
 });
 
 async function handleIosToolUnlocked(name, args) {
-    const environment = iosEnvironment.request(name, args);
-    if (environment?.kind === "json") return jsonResult(environment.payload);
-    if (environment?.kind === "text") return textResult(false, environment.message);
-    if (environment?.kind === "command-failure") return fail(environment.command);
-    if (environment?.kind === "missing-prerequisites") return missingPrereqResult(environment.discovery);
+    const environment = presentIosEnvironmentOutcome(iosEnvironment.request(name, args));
+    if (environment !== undefined) return environment;
     if (name !== "device_reset" || !args.eraseSimulator) {
         const outcome = await appManagement.request(name, args);
         if (outcome?.kind === "json") return jsonResult(outcome.payload);
@@ -578,22 +575,42 @@ function controlTransferResult(result) {
     throw new Error("Invalid native iOS transfer result");
 }
 
-const iosEnvironment = createIosEnvironment({
+/** @param {import('../ports/mobile-environment.mjs').EnvironmentCommandReceipt} command
+ * @returns {import('../ports/mobile-environment.mjs').EnvironmentCommandObservation} */
+function iosEnvironmentObservation(command) {
+    return { kind: command.status === 0 ? "succeeded" : "failed", command };
+}
+
+/** @param {import('../ports/mobile-environment.mjs').EnvironmentOutcome|undefined} outcome */
+function presentIosEnvironmentOutcome(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "refused") return textResult(false, outcome.message);
+    if (outcome.kind === "command-failure") return fail(outcome.command);
+    if (outcome.kind === "missing-prerequisites") return missingPrereqResult({ missing: outcome.missing });
+    switch (outcome.kind) {
+        case "location-set": return jsonResult({ location: { latitude: outcome.location.latitude, longitude: outcome.location.longitude }, stdout: outcome.command.stdout, stderr: outcome.command.stderr, provider: "simctl" });
+        case "clipboard-set": return jsonResult({ clipboard: { set: true }, stdout: outcome.command.stdout, stderr: outcome.command.stderr, provider: "simctl" });
+        case "clipboard-read": return jsonResult({ text: outcome.command.stdout, stderr: outcome.command.stderr, status: outcome.command.status, provider: "simctl" });
+    }
+}
+
+/** @type {import('../ports/mobile-environment.mjs').IosSimulatorEnvironmentPorts<{xcrun:string,udid:string},NonNullable<ReturnType<typeof findIosDevice>>>} */
+const iosEnvironmentPorts = {
     variant: "simulator",
     device: id => findIosDevice(id),
-    discovery: () => {
+    target(device) {
         const facts = iosDiscovery();
-        return facts.available && facts.xcrun
-            ? { available: true, xcrun: facts.xcrun, missing: facts.missing }
-            : { available: false, xcrun: facts.xcrun, missing: facts.missing };
+        if (!facts.available || !facts.xcrun) return { kind: "missing-prerequisites", missing: facts.missing };
+        const observed = resolveOwnedSimulatorTarget(facts.xcrun, device);
+        return observed.error
+            ? { kind: "refused", message: observed.error }
+            : { kind: "ready", target: { xcrun: facts.xcrun, udid: observed.target } };
     },
-    ownedTarget: (xcrun, device) => {
-        const observed = resolveOwnedSimulatorTarget(xcrun, device);
-        return observed.error ? { ok: false, message: observed.error } : { ok: true, target: observed.target };
-    },
-    execute: (xcrun, args) => run(xcrun, args),
-    executeWithInput: (xcrun, args, input) => runWithInput(xcrun, args, input),
-});
+    setLocation: (target, location) => iosEnvironmentObservation(run(target.xcrun, ["simctl", "location", target.udid, "set", `${location.latitude},${location.longitude}`])),
+    writeClipboard: (target, text) => iosEnvironmentObservation(runWithInput(target.xcrun, ["simctl", "pbcopy", target.udid], text)),
+    readClipboard: target => iosEnvironmentObservation(run(target.xcrun, ["simctl", "pbpaste", target.udid])),
+};
+const iosEnvironment = createIosEnvironment(iosEnvironmentPorts);
 
 const appManagement = createIosAppManagement({
     variant: "simulator",

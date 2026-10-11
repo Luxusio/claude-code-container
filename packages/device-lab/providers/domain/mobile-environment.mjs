@@ -13,7 +13,8 @@
  * @property {unknown} [text]
  */
 /** @typedef {'mobile_set_location'|'mobile_set_battery'|'mobile_set_network'|'mobile_toggle_airplane_mode'|'mobile_set_clipboard'|'mobile_get_clipboard'} EnvironmentOperation */
-/** @typedef {{setting:'wifi'|'data',args:string[]}} AndroidRadioCommand */
+/** @typedef {{setting:'level'|'status',value:number}|{setting:'charging',value:boolean}} BatterySetting */
+/** @typedef {{setting:'wifi'|'data',enabled:boolean}} AndroidRadioSetting */
 
 /** Network admission precedes native target lookup.
  * @param {EnvironmentArguments} args */
@@ -23,55 +24,23 @@ export function validAndroidNetwork(args) {
         && values.every(value => value === undefined || typeof value === "boolean");
 }
 
-/** @param {EnvironmentArguments} args @returns {string[][]} */
-export function androidBatteryCommands(args) {
+/** @param {EnvironmentArguments} args @returns {BatterySetting[]} */
+export function androidBatterySettings(args) {
+    /** @type {BatterySetting[]} */
     const commands = [];
-    if (args.level !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "level", String(args.level)]);
-    if (args.status !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "status", String(args.status)]);
-    if (args.charging !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "ac", args.charging ? "1" : "0"]);
+    if (args.level !== undefined) commands.push({ setting: "level", value: args.level });
+    if (args.status !== undefined) commands.push({ setting: "status", value: args.status });
+    if (args.charging !== undefined) commands.push({ setting: "charging", value: args.charging });
     return commands;
 }
 
-/** @param {EnvironmentArguments} args @returns {AndroidRadioCommand[]} */
-export function androidRadioCommands(args) {
-    /** @type {AndroidRadioCommand[]} */
+/** @param {EnvironmentArguments} args @returns {AndroidRadioSetting[]} */
+export function androidRadioSettings(args) {
+    /** @type {AndroidRadioSetting[]} */
     const commands = [];
-    if (args.wifi !== undefined) commands.push({ setting: "wifi", args: ["shell", "svc", "wifi", args.wifi ? "enable" : "disable"] });
-    if (args.data !== undefined) commands.push({ setting: "data", args: ["shell", "svc", "data", args.data ? "enable" : "disable"] });
+    if (args.wifi !== undefined) commands.push({ setting: "wifi", enabled: !!args.wifi });
+    if (args.data !== undefined) commands.push({ setting: "data", enabled: !!args.data });
     return commands;
-}
-
-/** Individual commands only; fallback sequencing belongs to the application.
- * @param {unknown} enabled */
-export function androidAirplaneCommands(enabled) {
-    return {
-        modern: ["shell", "cmd", "connectivity", "airplane-mode", enabled ? "enable" : "disable"],
-        setting: ["shell", "settings", "put", "global", "airplane_mode_on", enabled ? "1" : "0"],
-        broadcast: ["shell", "am", "broadcast", "-a", "android.intent.action.AIRPLANE_MODE", "--ez", "state", enabled ? "true" : "false"]
-    };
-}
-
-/** Serial qualification remains native; preserve longitude before latitude.
- * @param {EnvironmentArguments} args */
-export function androidGeoArguments(args) {
-    const command = ["emu", "geo", "fix", String(args.longitude), String(args.latitude)];
-    if (args.altitude !== undefined) command.push(String(args.altitude));
-    return command;
-}
-
-/** @param {string} name @param {string} target @param {EnvironmentArguments} args
- * @returns {{args:string[],input?:string}|undefined} */
-export function iosEnvironmentCommand(name, target, args) {
-    switch (name) {
-        case "mobile_set_location":
-            return { args: ["simctl", "location", target, "set", `${args.latitude},${args.longitude}`] };
-        case "mobile_set_clipboard":
-            return { args: ["simctl", "pbcopy", target], input: String(args.text) };
-        case "mobile_get_clipboard":
-            return { args: ["simctl", "pbpaste", target] };
-        default:
-            return undefined;
-    }
 }
 
 /** @param {'android-physical'|'ios-simulator'|'ios-physical'} variant @param {string} name */

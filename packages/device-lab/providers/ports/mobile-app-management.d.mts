@@ -1,24 +1,22 @@
 export type MobileAppArguments = import("../domain/mobile-app-management.mjs").MobileAppArguments;
 export type AndroidAppVariant = import("../domain/mobile-app-management.mjs").AndroidAppVariant;
 export type MobileCommandReceipt = import("../domain/mobile-app-management.mjs").MobileCommandReceipt;
-export type AndroidAppPayload = import("../domain/mobile-app-management.mjs").AndroidAppPayload;
+export type AndroidAppEffect = import("../domain/mobile-app-management.mjs").AndroidAppEffect;
 export type AndroidAppPlan = import("../domain/mobile-app-management.mjs").AndroidAppPlan;
 export type MobileTargetObservation<Target> = import("./android-control-transfer.mjs").TargetObservation<Target>;
 
-/** Guarded resource handle; full native records retain their identity and extra fields. */
-export interface AndroidAppTarget {
-    device: { id: string; serial?: string; port?: number };
-    adb: string;
-}
-export interface AndroidAppManagementPorts<Target extends AndroidAppTarget = AndroidAppTarget> {
+export type AndroidAppCommandObservation =
+    | { kind: "succeeded"; command: MobileCommandReceipt }
+    | { kind: "failed"; command: MobileCommandReceipt };
+export interface AndroidAppManagementPorts<Target = unknown> {
     readonly variant: AndroidAppVariant;
     target(deviceId: unknown): MobileTargetObservation<Target>;
-    /** Native serial qualification and helper-timeout normalization remain here. */
-    execute(target: Target, args: (string | undefined)[], helperTimeoutMs: unknown): MobileCommandReceipt;
+    /** Native encoding, helper-timeout normalization and command diagnosis remain here. */
+    perform(target: Target, effect: AndroidAppEffect): AndroidAppCommandObservation;
 }
 export type AndroidAppOutcome =
-    | { kind: "json"; payload: AndroidAppPayload & { stdout?: string; stderr?: string; status: number | null } }
-    | { kind: "text"; message: string }
+    | { kind: "completed"; effect: AndroidAppEffect; command: MobileCommandReceipt }
+    | { kind: "refused"; message: string }
     | { kind: "command-failure"; command: MobileCommandReceipt };
 
 export interface IosSimulatorAppDevice { id: string; simulatorName?: string; udid?: string }

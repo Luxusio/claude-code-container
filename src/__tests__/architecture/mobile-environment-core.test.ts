@@ -3,107 +3,157 @@ import { createAndroidEnvironment } from "../../../packages/device-lab/providers
 import { createIosEnvironment } from "../../../packages/device-lab/providers/application/ios-environment.mjs";
 import type { AndroidEmulatorEnvironmentPorts, AndroidPhysicalEnvironmentPorts, IosSimulatorEnvironmentPorts, EnvironmentCommandReceipt } from "../../../packages/device-lab/providers/ports/mobile-environment.mjs";
 
-const success: EnvironmentCommandReceipt = { status: 0, stdout: "ok\n", stderr: "" };
-function androidPorts(execute: (args: string[]) => EnvironmentCommandReceipt): AndroidEmulatorEnvironmentPorts {
-    return {
-        variant: "emulator", target: () => ({ kind: "ready", target: { device: { id: "guest", port: 5580 }, adb: "adb" } }),
-        execute: (_target, args) => execute(args), serial: () => "emulator-5580",
-        executeEmulator: (_target, _serial, args) => execute(args),
-    };
+const command: EnvironmentCommandReceipt = { status: 0, stdout: "ok\n", stderr: "" };
+const failed: EnvironmentCommandReceipt = { status: null, stdout: "partial", stderr: "denied" };
+const success = { kind: "succeeded" as const, command };
+const failure = { kind: "failed" as const, command: failed };
+const forbidden = () => { throw new Error("unexpected native effect"); };
+function android(overrides: Partial<AndroidEmulatorEnvironmentPorts<string>> = {}): AndroidEmulatorEnvironmentPorts<string> {
+    return { variant: "emulator", target: () => ({ kind: "ready", target: "opaque" }), setLocation: forbidden, setBattery: forbidden,
+        tryAirplaneMode: forbidden, setAirplaneSetting: forbidden, broadcastAirplaneMode: forbidden, setRadio: forbidden,
+        writeClipboard: forbidden, readClipboard: forbidden, ...overrides };
 }
-function iosPorts(execute: (args: string[], input?: string) => EnvironmentCommandReceipt): IosSimulatorEnvironmentPorts {
-    return {
-        variant: "simulator", device: () => ({ id: "guest" }),
-        discovery: () => ({ available: true, xcrun: "xcrun", missing: [] }),
-        ownedTarget: () => ({ ok: true, target: "OWNED-UDID" }),
-        execute: (_xcrun, args) => execute(args), executeWithInput: (_xcrun, args, input) => execute(args, input),
-    };
+function ios(overrides: Partial<IosSimulatorEnvironmentPorts> = {}): IosSimulatorEnvironmentPorts {
+    return { variant: "simulator", device: () => ({ id: "guest" }), target: () => ({ kind: "ready", target: "opaque" }),
+        setLocation: forbidden, writeClipboard: forbidden, readClipboard: forbidden, ...overrides };
 }
 
-describe("mobile environment policy", () => {
-    it("stops network fallback before broadcast or radios when the legacy setting fails", () => {
-        const command = { status: 7, stdout: "", stderr: "setting refused" };
-        const app = createAndroidEnvironment(androidPorts((args) => {
-            if (args.includes("connectivity")) return { status: 1, stderr: "old Android" };
-            if (args.includes("settings")) return command;
-            throw new Error("failed-setting-must-not-broadcast-or-change-radios");
-        }));
-        expect(app.request("mobile_set_network", { deviceId: "guest", airplaneMode: true, wifi: false, data: true })).toEqual({
-            kind: "json", payload: { ok: false, error: "android-network-command-failed", detail: "airplaneMode.setting", status: 7, stderr: "setting refused" },
-        });
+describe("mobile environment semantic policy", () => {
+    it("branches on native observations and carries receipts without diagnosing their status", () => {
+        const oddSuccess = { status: 7, stdout: "native success evidence" };
+        const oddFailure = { status: 0, stderr: "native semantic failure" };
+        const app = createAndroidEnvironment(android({ readClipboard: () => ({ kind: "succeeded", command: oddSuccess }), writeClipboard: () => ({ kind: "failed", command: oddFailure }) }));
+        expect(app.request("mobile_get_clipboard", {})).toEqual({ kind: "clipboard-read", command: oddSuccess });
+        expect(app.request("mobile_set_clipboard", { text: "data" })).toEqual({ kind: "command-failure", command: oddFailure });
     });
-
-    it("refuses empty battery settings without executing commands", () => {
-        const app = createAndroidEnvironment(androidPorts(() => { throw new Error("empty-battery-must-not-execute"); }));
-        expect(app.request("mobile_set_battery", { deviceId: "guest" })).toEqual({ kind: "text", message: "Android battery control requires level, status, or charging" });
+    it("rejects invalid networks before admission and leaves unhandled names untouched", () => {
+        const app = createAndroidEnvironment(android({ target: forbidden }));
+        for (const args of [{}, { wifi: "yes" }, { data: 0 }, { airplaneMode: null }]) expect(app.request("mobile_set_network", args)).toEqual({ kind: "refused", message: "Android network control requires boolean wifi, data or airplaneMode" });
+        expect(app.request("unhandled", {})).toBeUndefined();
     });
-
-    it("stops the battery sequence after a level failure instead of changing status or charging", () => {
-        const command = { status: 1, stdout: "", stderr: "battery denied" };
-        const app = createAndroidEnvironment(androidPorts((args) => {
-            if (args.includes("level")) return command;
-            throw new Error("later-battery-setting-must-not-execute");
-        }));
-        expect(app.request("mobile_set_battery", { deviceId: "guest", level: 42, status: 2, charging: false })).toEqual({ kind: "command-failure", command });
+    it("preserves unknown and refused admission without effects", () => {
+        expect(createAndroidEnvironment(android({ target: () => ({ kind: "unknown" }) })).request("mobile_set_battery", {})).toBeUndefined();
+        expect(createAndroidEnvironment(android({ target: () => ({ kind: "refused", message: "lease denied" }) })).request("mobile_set_battery", {})).toEqual({ kind: "refused", message: "lease denied" });
     });
-
-    it("refuses emulator location without a qualified serial", () => {
-        const ports = androidPorts(() => { throw new Error("missing-serial-must-not-execute"); });
-        expect(createAndroidEnvironment({ ...ports, serial: () => null }).request("mobile_set_location", { latitude: 35, longitude: 129 })).toEqual({ kind: "text", message: "Android location requires an emulator serial or port" });
+    it("admits an empty battery request before refusing without effects", () => {
+        const calls: unknown[] = [];
+        const app = createAndroidEnvironment(android({ target: id => { calls.push(id); return { kind: "ready", target: "opaque" }; } }));
+        expect(app.request("mobile_set_battery", { deviceId: "guest" })).toEqual({ kind: "refused", message: "Android battery control requires level, status, or charging" });
+        expect(calls).toEqual(["guest"]);
     });
-
-    it("uses plain physical lookup for unsupported environment controls and preserves unknown fallthrough", () => {
-        const ports: AndroidPhysicalEnvironmentPorts = {
-            variant: "physical", device: (id) => id === "phone" ? { id } : undefined,
-            target: () => { throw new Error("refusal-must-not-acquire-a-lease-or-adb"); },
-            execute: () => { throw new Error("unsupported-physical-control-must-not-execute"); },
-        };
+    it("applies level, status, charging in order with original receipts", () => {
+        const calls: unknown[] = [];
+        const result = createAndroidEnvironment(android({ setBattery: (target, setting) => { calls.push([target, setting]); return success; } })).request("mobile_set_battery", { level: 0, status: 2, charging: false });
+        expect(calls).toEqual([["opaque", { setting: "level", value: 0 }], ["opaque", { setting: "status", value: 2 }], ["opaque", { setting: "charging", value: false }]]);
+        expect(result).toEqual({ kind: "battery-set", battery: { level: 0, status: 2, charging: false }, commands: [command, command, command] });
+        if (result?.kind === "battery-set") expect(result.commands[0]).toBe(command);
+    });
+    it.each(["level", "status", "charging"])("stops battery changes at failed %s", setting => {
+        const calls: string[] = [];
+        const app = createAndroidEnvironment(android({ setBattery: (_t, value) => { calls.push(value.setting); return value.setting === setting ? failure : success; } }));
+        expect(app.request("mobile_set_battery", { level: 42, status: 2, charging: true })).toEqual({ kind: "command-failure", command: failed });
+        expect(calls).toEqual(["level", "status", "charging"].slice(0, ["level", "status", "charging"].indexOf(setting) + 1));
+    });
+    it("passes Android coordinates, preserves unavailable observations and undefined defaults", () => {
+        const calls: unknown[] = [];
+        const app = createAndroidEnvironment(android({ setLocation: (target, value) => { calls.push([target, value]); return success; } }));
+        const location = { latitude: 35, longitude: 129, altitude: 0 };
+        expect(app.request("mobile_set_location", location)).toEqual({ kind: "location-set", location, command });
+        expect(calls).toEqual([["opaque", location]]);
+        expect(app.request("mobile_set_location", {})).toEqual({ kind: "location-set", location: { latitude: undefined, longitude: undefined, altitude: undefined }, command });
+        expect(createAndroidEnvironment(android({ setLocation: () => ({ kind: "unavailable" }) })).request("mobile_set_location", location)).toEqual({ kind: "refused", message: "Android location requires an emulator serial or port" });
+        expect(createAndroidEnvironment(android({ setLocation: () => failure })).request("mobile_set_location", {})).toEqual({ kind: "command-failure", command: failed });
+        expect(createAndroidEnvironment(android({ setBattery: () => success })).request("mobile_set_battery", { charging: false })).toEqual({ kind: "battery-set", battery: { level: undefined, status: undefined, charging: false }, commands: [command] });
+    });
+    it("uses modern airplane success without legacy effects", () => {
+        const calls: unknown[] = [];
+        const app = createAndroidEnvironment(android({ tryAirplaneMode: (_t, enabled) => { calls.push(enabled); return success; } }));
+        expect(app.request("mobile_toggle_airplane_mode", { enabled: true })).toEqual({ kind: "airplane-set", enabled: true, route: "modern", command });
+        expect(calls).toEqual([true]);
+    });
+    it("falls back in order and returns the final broadcast receipt", () => {
+        const calls: unknown[] = [];
+        const broadcast = { status: 0, stdout: "broadcast", stderr: "" };
+        const app = createAndroidEnvironment(android({ tryAirplaneMode: (_t, enabled) => { calls.push(["modern", enabled]); return failure; }, setAirplaneSetting: (_t, enabled) => { calls.push(["setting", enabled]); return success; }, broadcastAirplaneMode: (_t, enabled) => { calls.push(["broadcast", enabled]); return { kind: "succeeded", command: broadcast }; } }));
+        expect(app.request("mobile_toggle_airplane_mode", { enabled: false })).toEqual({ kind: "airplane-set", enabled: false, route: "legacy", command: broadcast });
+        expect(calls).toEqual([["modern", false], ["setting", false], ["broadcast", false]]);
+    });
+    it.each(["setting", "broadcast"])("stops network fallback at %s with accurate partial application", stage => {
+        const app = createAndroidEnvironment(android({ tryAirplaneMode: () => failure, setAirplaneSetting: () => stage === "setting" ? failure : success, broadcastAirplaneMode: stage === "setting" ? forbidden : () => failure }));
+        expect(app.request("mobile_set_network", { airplaneMode: true, wifi: false, data: true })).toEqual(stage === "setting" ? { kind: "network-failure", stage: "airplane-setting", command: failed } : { kind: "network-failure", stage: "airplane-broadcast", command: failed, applied: ["airplane-setting"] });
+    });
+    it.each(["wifi", "data"])("stops at failed %s and retains successful effects", stage => {
+        const calls: unknown[] = [];
+        const app = createAndroidEnvironment(android({ tryAirplaneMode: () => success, setRadio: (_t, setting, enabled) => { calls.push([setting, enabled]); return setting === stage ? failure : success; } }));
+        expect(app.request("mobile_set_network", { airplaneMode: false, wifi: false, data: true })).toEqual({ kind: "network-failure", stage, command: failed, applied: stage === "wifi" ? ["airplane"] : ["airplane", "wifi"] });
+        expect(calls).toEqual(stage === "wifi" ? [["wifi", false]] : [["wifi", false], ["data", true]]);
+    });
+    it("applies wifi then data and keeps omitted network values undefined", () => {
+        const calls: unknown[] = [];
+        const app = createAndroidEnvironment(android({ setRadio: (_t, setting, enabled) => { calls.push([setting, enabled]); return success; } }));
+        expect(app.request("mobile_set_network", { wifi: true, data: false })).toEqual({ kind: "network-set", network: { wifi: true, data: false, airplaneMode: undefined } });
+        expect(calls).toEqual([["wifi", true], ["data", false]]);
+    });
+    it("continues radios after successful legacy fallback and records no omitted airplane effect", () => {
+        const calls: string[] = [];
+        const app = createAndroidEnvironment(android({ tryAirplaneMode: () => { calls.push("modern"); return failure; }, setAirplaneSetting: () => { calls.push("setting"); return success; }, broadcastAirplaneMode: () => { calls.push("broadcast"); return success; }, setRadio: (_t, setting) => { calls.push(setting); return success; } }));
+        expect(app.request("mobile_set_network", { airplaneMode: true, wifi: false, data: true })).toEqual({ kind: "network-set", network: { airplaneMode: true, wifi: false, data: true } });
+        expect(calls).toEqual(["modern", "setting", "broadcast", "wifi", "data"]);
+        expect(createAndroidEnvironment(android({ setRadio: () => failure })).request("mobile_set_network", { wifi: false })).toEqual({ kind: "network-failure", stage: "wifi", command: failed, applied: [] });
+    });
+    it("uses physical Android lookup alone for unsupported controls", () => {
+        const ports: AndroidPhysicalEnvironmentPorts = { variant: "physical", device: id => id === "phone" ? { id } : undefined, target: forbidden, writeClipboard: forbidden, readClipboard: forbidden };
         const app = createAndroidEnvironment(ports);
-        expect(app.request("mobile_set_location", { deviceId: "phone", latitude: 35, longitude: 129 })).toEqual({ kind: "text", message: "Android real devices do not support mobile_set_location safely through the base ADB layer; use an emulator or a dedicated device-farm controller." });
-        expect(app.request("mobile_set_location", { deviceId: "missing" })).toBeUndefined();
+        for (const name of ["mobile_set_location", "mobile_set_battery", "mobile_set_network", "mobile_toggle_airplane_mode"]) {
+            expect(app.request(name, { deviceId: "phone" })).toEqual({ kind: "refused", message: `Android real devices do not support ${name} safely through the base ADB layer; use an emulator or a dedicated device-farm controller.` });
+            expect(app.request(name, { deviceId: "missing" })).toBeUndefined();
+        }
     });
-
-    it("preserves Android clipboard read bytes and coerces write text into command data", () => {
+    it.each(["Android", "iOS"])("preserves %s clipboard bytes and String conversion", platform => {
         const text = "한글 'quote'\nsecond line\n";
-        let written: string | undefined;
-        const app = createAndroidEnvironment(androidPorts((args) => {
-            if (args.includes("set")) { written = args.at(-1); return success; }
-            return { status: 0, stdout: text, stderr: "" };
-        }));
-        expect(app.request("mobile_set_clipboard", { text: 42 })).toMatchObject({ kind: "json", payload: { clipboard: { set: true }, provider: "adb", status: 0 } });
-        expect(written).toBe("42");
-        expect(app.request("mobile_get_clipboard", {})).toEqual({ kind: "json", payload: { text, provider: "adb", stderr: "", status: 0 } });
+        const read = { status: 0, stdout: text, stderr: "" };
+        const written: string[] = [];
+        const leaves = { writeClipboard: (_target: unknown, value: string) => { written.push(value); return success; }, readClipboard: () => ({ kind: "succeeded" as const, command: read }) };
+        const app = platform === "Android" ? createAndroidEnvironment(android(leaves)) : createIosEnvironment(ios(leaves));
+        for (const value of [42, text, undefined]) expect(app.request("mobile_set_clipboard", { text: value })).toEqual({ kind: "clipboard-set", command });
+        expect(written).toEqual(["42", text, "undefined"]);
+        const result = app.request("mobile_get_clipboard", {});
+        expect(result).toEqual({ kind: "clipboard-read", command: read });
+        if (result?.kind === "clipboard-read") expect(result.command).toBe(read);
     });
-
-    it("preserves Simulator clipboard stdin and stdout bytes with distinct status projections", () => {
-        const text = "한글 'quote'\nsecond line\n";
-        let written: string | undefined;
-        const app = createIosEnvironment(iosPorts((args, input) => {
-            if (args.includes("pbcopy")) { written = input; return { status: 0, stdout: "", stderr: "" }; }
-            return { status: 0, stdout: text, stderr: "" };
-        }));
-        expect(app.request("mobile_set_clipboard", { text })).toEqual({ kind: "json", payload: { clipboard: { set: true }, provider: "simctl", stdout: "", stderr: "" } });
-        expect(written).toBe(text);
-        expect(app.request("mobile_get_clipboard", {})).toEqual({ kind: "json", payload: { text, provider: "simctl", stderr: "", status: 0 } });
+    it.each(["Android", "iOS"])("preserves %s clipboard command failures", platform => {
+        const leaves = { writeClipboard: () => failure, readClipboard: () => failure };
+        const app = platform === "Android" ? createAndroidEnvironment(android(leaves)) : createIosEnvironment(ios(leaves));
+        for (const name of ["mobile_set_clipboard", "mobile_get_clipboard"]) expect(app.request(name, {})).toEqual({ kind: "command-failure", command: failed });
     });
-
-    it("preserves a failed Simulator command instead of projecting clipboard success", () => {
-        const command = { status: 1, stdout: "partial", stderr: "pasteboard unavailable" };
-        const app = createIosEnvironment(iosPorts(() => command));
-        expect(app.request("mobile_get_clipboard", {})).toEqual({ kind: "command-failure", command });
+    it("looks up iOS device before target and preserves missing/refused observations", () => {
+        const calls: string[] = [];
+        const app = createIosEnvironment(ios({ device: () => { calls.push("lookup"); return { id: "guest" }; }, target: device => { calls.push(device.id); return { kind: "missing-prerequisites", missing: ["xcrun"] }; } }));
+        expect(app.request("mobile_get_clipboard", {})).toEqual({ kind: "missing-prerequisites", missing: ["xcrun"] });
+        expect(calls).toEqual(["lookup", "guest"]);
+        expect(createIosEnvironment(ios({ target: () => ({ kind: "refused", message: "not owned" }) })).request("mobile_get_clipboard", {})).toEqual({ kind: "refused", message: "not owned" });
+        expect(createIosEnvironment(ios({ device: () => undefined, target: forbidden })).request("mobile_get_clipboard", {})).toBeUndefined();
     });
-
-    it("refuses known Simulator battery controls without discovery and leaves unknown targets untouched", () => {
-        const ports = iosPorts(() => { throw new Error("unsupported-simulator-control-must-not-execute"); });
-        const app = createIosEnvironment({ ...ports, device: (id) => id === "guest" ? { id } : undefined,
-            discovery: () => { throw new Error("unsupported-control-must-not-discover"); } });
-        expect(app.request("mobile_set_battery", { deviceId: "guest", level: 42 })).toEqual({ kind: "text", message: "iOS Simulator does not support mobile_set_battery through base simctl; use Appium/XCUITest support when available." });
-        expect(app.request("mobile_set_battery", { deviceId: "missing" })).toBeUndefined();
+    it("passes iOS coordinates without altitude and retains failures", () => {
+        const calls: unknown[] = [];
+        const app = createIosEnvironment(ios({ setLocation: (_target, value) => { calls.push(value); return success; } }));
+        expect(app.request("mobile_set_location", { latitude: 35, longitude: 129, altitude: 7 })).toEqual({ kind: "location-set", location: { latitude: 35, longitude: 129 }, command });
+        expect(calls).toEqual([{ latitude: 35, longitude: 129 }]);
+        expect(createIosEnvironment(ios({ setLocation: () => failure })).request("mobile_set_location", {})).toEqual({ kind: "command-failure", command: failed });
     });
-
-    it("keeps physical iOS clipboard unsupported while preserving unknown fallthrough", () => {
-        const app = createIosEnvironment({ variant: "physical", device: (id) => id === "phone" ? { id } : undefined });
-        expect(app.request("mobile_get_clipboard", { deviceId: "phone" })).toEqual({ kind: "text", message: "iOS real devices do not support mobile_get_clipboard through CCC because the action is unavailable or unsafe for physical devices." });
+    it("refuses unsupported iOS controls after lookup without discovery", () => {
+        for (const name of ["mobile_set_battery", "mobile_set_network", "mobile_toggle_airplane_mode"]) {
+            expect(createIosEnvironment(ios({ target: forbidden })).request(name, {})).toEqual({ kind: "refused", message: `iOS Simulator does not support ${name} through base simctl; use Appium/XCUITest support when available.` });
+            expect(createIosEnvironment(ios({ device: () => undefined, target: forbidden })).request(name, {})).toBeUndefined();
+        }
+        const app = createIosEnvironment({ variant: "physical", device: (id: string | undefined) => id === "phone" ? { id } : undefined });
+        expect(app.request("mobile_get_clipboard", { deviceId: "phone" })).toEqual({ kind: "refused", message: "iOS real devices do not support mobile_get_clipboard through CCC because the action is unavailable or unsafe for physical devices." });
         expect(app.request("mobile_get_clipboard", { deviceId: "missing" })).toBeUndefined();
+        expect(createIosEnvironment(ios({ device: forbidden })).request("unhandled", {})).toBeUndefined();
+    });
+    it("propagates thrown native errors without replaying fallback", () => {
+        const error = new Error("native programming error");
+        const app = createAndroidEnvironment(android({ tryAirplaneMode: () => { throw error; } }));
+        expect(() => app.request("mobile_toggle_airplane_mode", { enabled: true })).toThrow(error);
     });
 });
