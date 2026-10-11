@@ -157,7 +157,7 @@ function nativeErrorCode(error) {
 /** @type {import('../ports/physical-leases.mjs').PhysicalLeasePorts<ReturnType<typeof setInterval>>} */
 const physicalLeasePorts = {
     owner: () => ownerId(),
-    now: Date.now,
+    now: () => Date.now(),
     timestamp: () => new Date().toISOString(),
     iso: milliseconds => new Date(milliseconds).toISOString(),
     claimId: () => randomUUID(),
