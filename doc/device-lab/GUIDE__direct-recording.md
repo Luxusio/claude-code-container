@@ -12,6 +12,8 @@ macOS start rejects existing recording and resolves its SSH bridge/workspace bef
 
 Sandbox uses helper sessions rather than local recorder PID authority. Status and start reconciliation can publish a completed archive and conditionally clear its exact generation. Helper start/stop/status retain5000/10000/1000ms defaults. Short truthy limits select500ms capture intervals; other limits select1000ms. A failed start CAS stops the newly allocated helper session. Stop failures retain metadata for retry; a failed final CAS reports successor conflict only when a recording remains in the returned record. Archive path/correlation and bounded copy fences stay native.
 
+An OK Sandbox helper response without a recording no longer dereferences missing archive fields. Status reports missing or unsafe output and preserves the recording metadata for retry.
+
 All process exit callbacks call `exited`; identity match or unavailable observations preserve active state, while exited/mismatched observations conditionally publish pending state. Generation checks preserve same-ID successors. The application never claims universal rollback or verified local exit from a remote fallback.
 
 Native composition uses the discriminated `DirectRecordingNative` contract. Common inputs are guarded find/update, default local path and output-path validation. Process variants add recording-directory and concrete target resolution; Android/macOS add individual command receipts, macOS adds workspace preparation. Sandbox adds individual helper request, verified archive path and bounded copy receipts. No complete start/finalize/reconcile callback or application-port bag is accepted.
