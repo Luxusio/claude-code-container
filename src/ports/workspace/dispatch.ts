@@ -1,5 +1,4 @@
 import type { WorktreeResult } from "../../domain/workspace/creation-result.js";
-import type { RemoveResult } from "../../domain/workspace/removal-result.js";
 
 interface WorkspaceDispatchPorts {
     validateBranch(branch: string): void;
@@ -15,13 +14,17 @@ export interface WorkspaceCreationDispatchPorts extends WorkspaceDispatchPorts {
     createMulti(request: { repositoryPath: string; destinationPath: string; branch: string }): WorktreeResult;
 }
 
-export interface WorkspaceRemovalDispatchPorts<Identity, Content> extends WorkspaceDispatchPorts {
+export type WorkspaceRemovalDispatchOutcome<Content, Result> =
+    | { kind: "missing"; destinationPath: string }
+    | { kind: "unmanaged"; paths: Array<{ path: string; content: Content }> }
+    | { kind: "dispatched"; result: Result };
+
+export interface WorkspaceRemovalDispatchPorts<Identity, Content, Result> extends WorkspaceDispatchPorts {
     destinationExists(path: string): boolean;
     assertRequestedBranch(destinationPath: string, branch: string, sourcePath: string): void;
     observeUnreachableRepositories(destinationPath: string, unreachable: string[]): void;
     observePathContent(path: string): Content;
-    formatUnmanagedRefusal(path: string, content: Content): string;
     captureWorkspaceIdentity(path: string): Identity;
-    removeUnified(request: { repositoryPath: string; destinationPath: string; branch: string; options: { force?: boolean } | undefined }, identity: Identity): RemoveResult;
-    removeMulti(request: { repositoryPath: string; destinationPath: string; branch: string; options: { force?: boolean } | undefined }, identity: Identity): RemoveResult;
+    removeUnified(request: { repositoryPath: string; destinationPath: string; branch: string; options: { force?: boolean } | undefined }, identity: Identity): Result;
+    removeMulti(request: { repositoryPath: string; destinationPath: string; branch: string; options: { force?: boolean } | undefined }, identity: Identity): Result;
 }

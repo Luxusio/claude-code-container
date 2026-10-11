@@ -1,6 +1,5 @@
 import type { WorktreeResult } from "../../domain/workspace/creation-result.js";
-import type { RemoveResult } from "../../domain/workspace/removal-result.js";
-import type { WorkspaceCreationDispatchPorts, WorkspaceRemovalDispatchPorts } from "../../ports/workspace/dispatch.js";
+import type { WorkspaceCreationDispatchPorts, WorkspaceRemovalDispatchOutcome, WorkspaceRemovalDispatchPorts } from "../../ports/workspace/dispatch.js";
 
 export function createWorkspaceCreationDispatch(ports: WorkspaceCreationDispatchPorts) {
     function createWorkspace(sourcePath: string, branch: string): WorktreeResult {
@@ -17,25 +16,25 @@ export function createWorkspaceCreationDispatch(ports: WorkspaceCreationDispatch
     return { createWorkspace };
 }
 
-export function createWorkspaceRemovalDispatch<Identity, Content>(ports: WorkspaceRemovalDispatchPorts<Identity, Content>) {
-    function removeWorkspace(sourcePath: string, branch: string, opts?: { force?: boolean }): RemoveResult {
+export function createWorkspaceRemovalDispatch<Identity, Content, Result>(ports: WorkspaceRemovalDispatchPorts<Identity, Content, Result>) {
+    function removeWorkspace(sourcePath: string, branch: string, opts?: { force?: boolean }): WorkspaceRemovalDispatchOutcome<Content, Result> {
         ports.validateBranch(branch);
         const resolved = ports.resolveSource(sourcePath);
         const wsPath = ports.workspacePath(resolved, branch);
-        if (!ports.destinationExists(wsPath)) throw new Error(`Workspace not found: ${wsPath}`);
+        if (!ports.destinationExists(wsPath)) return { kind: "missing", destinationPath: wsPath };
         ports.assertRequestedBranch(wsPath, branch, resolved);
         if (opts?.force !== true) {
             const unreachable: string[] = [];
             ports.observeUnreachableRepositories(wsPath, unreachable);
             if (unreachable.length > 0) {
-                return { removed: [], errors: unreachable.map(path => ports.formatUnmanagedRefusal(path, ports.observePathContent(path))) };
+                return { kind: "unmanaged", paths: unreachable.map(path => ({ path, content: ports.observePathContent(path) })) };
             }
         }
         const workspaceIdentity = ports.captureWorkspaceIdentity(wsPath);
         if (ports.sourceHasGitMetadata(resolved)) {
-            return ports.removeUnified({ repositoryPath: resolved, destinationPath: wsPath, branch, options: opts }, workspaceIdentity);
+            return { kind: "dispatched", result: ports.removeUnified({ repositoryPath: resolved, destinationPath: wsPath, branch, options: opts }, workspaceIdentity) };
         }
-        return ports.removeMulti({ repositoryPath: resolved, destinationPath: wsPath, branch, options: opts }, workspaceIdentity);
+        return { kind: "dispatched", result: ports.removeMulti({ repositoryPath: resolved, destinationPath: wsPath, branch, options: opts }, workspaceIdentity) };
     }
     return { removeWorkspace };
 }

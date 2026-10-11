@@ -6623,7 +6623,7 @@ function fixBrokenWorktreeSanitized(
 }
 
 
-const workspaceRemovalDispatch = createWorkspaceRemovalDispatch({
+const workspaceRemovalDispatch = createWorkspaceRemovalDispatch<DirectoryIdentity, ReturnType<typeof pathContent>, RemoveResult>({
     validateBranch: branch => validateBranchName(branch),
     resolveSource: sourcePath => resolve(sourcePath),
     workspacePath: (sourcePath, branch) => getWorkspacePath(sourcePath, branch),
@@ -6637,7 +6637,6 @@ const workspaceRemovalDispatch = createWorkspaceRemovalDispatch({
         });
     },
     observePathContent: path => pathContent(path),
-    formatUnmanagedRefusal: (path, content) => unmanagedPathRefusal(path, content),
     captureWorkspaceIdentity: path => captureDirectoryIdentity(path),
     sourceHasGitMetadata: sourcePath => hasGitMetadata(sourcePath),
     removeUnified: (request, identity) => removeUnifiedWorkspace(request, identity),
@@ -6656,7 +6655,15 @@ const workspaceRemovalDispatch = createWorkspaceRemovalDispatch({
  *   - Remaining files are deleted
  */
 export function removeWorkspace(sourcePath: string, branch: string, opts?: { force?: boolean }): RemoveResult {
-    return workspaceRemovalDispatch.removeWorkspace(sourcePath, branch, opts);
+    const outcome = workspaceRemovalDispatch.removeWorkspace(sourcePath, branch, opts);
+    switch (outcome.kind) {
+        case "missing":
+            throw new Error(`Workspace not found: ${outcome.destinationPath}`);
+        case "unmanaged":
+            return { removed: [], errors: outcome.paths.map(({ path, content }) => unmanagedPathRefusal(path, content)) };
+        case "dispatched":
+            return outcome.result;
+    }
 }
 
 const removeUnifiedWorkspace = createUnifiedWorkspaceRemoval<
