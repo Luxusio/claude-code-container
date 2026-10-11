@@ -1,3 +1,4 @@
+import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
@@ -16,7 +17,6 @@ import { fail, jsonResult, textResult } from "../responses.mjs";
 import { claimWindowsDevice, findWindowsDevice, readWindowsDevices, transitionWindowsDevice, updateWindowsDevice } from "../state/windows-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
-import { recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
 import { readWindowsSandboxLockStateFile, validateWindowsSandboxLock } from "../state/ownership-state.mjs";
 import { copyFileAtomically, withSharedMutationLock, writeFileAtomically, writeJsonFileAtomically } from "../state/shared-mutation-lock.mjs";
 import { assertDeviceLabPathWithinRoot, readDeviceLabBinaryFile, readDeviceLabTextFile } from "../state/state-file.mjs";
@@ -1419,34 +1419,6 @@ function copyWindowsSandboxFile(source, destination, prefix, limitBytes) {
     }
 }
 
-async function reconcileWindowsRecording(device, helperTimeoutMs = 1000) {
-    if (!device?.recording?.active) return { device, statusCheck: null };
-    const result = await windowsHelperRequest(device, "record_status", { sessionId: device.recording.sessionId }, helperTimeoutMs);
-    if (result.error || !result.response?.ok) return {
-        device,
-        statusCheck: result.error || result.response?.error || "Windows helper recording status failed",
-    };
-    if (!result.response.recording?.active) {
-        if (device.recording?.localPath) {
-            const hostArchivePath = verifiedHelperOutputPath(result.helper, result.response.recording.archivePath || result.response.recording.hostArchivePath, `${device.recording.sessionId}.zip`);
-            if (!hostArchivePath) return { device, statusCheck: "Windows helper recording output is missing or unsafe" };
-            const localPolicy = validateLocalOutputPath(device.recording.localPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return { device, statusCheck: localPolicy.message };
-            mkdirSync(dirname(localPolicy.path), { recursive: true });
-            if (hostArchivePath) {
-                const copied = copyWindowsSandboxFile(hostArchivePath, localPolicy.path, "windows-helper-recording", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES);
-                if (!copied.ok) return { device, statusCheck: copied.error };
-            }
-        }
-        const expected = device.recording;
-        const updated = updateWindowsDevice(device.id, (item) => recordingGenerationMatches(expected, item.recording)
-            ? { ...item, recording: null, updatedAt: new Date().toISOString() }
-            : item);
-        return { device: updated || device, statusCheck: result.response.recording || null };
-    }
-    return { device, statusCheck: result.response.recording };
-}
-
 function windowsLifecycleConflict(deviceId, operation, transition, rollback = null) {
     return textResult(false, JSON.stringify({
         ok: false,
@@ -1596,6 +1568,29 @@ function windowsAccessResult(outcome) {
     return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
 }
 
+/** @type {import('../ports/direct-recording.mjs').DirectRecordingNative} */
+const windowsRecordingNative = {
+    kind: "windows-sandbox",
+    findDevice: id => findWindowsDevice(id),
+    updateDevice: (id, update) => updateWindowsDevice(id, update),
+    localPath: device => windowsRecordingLocalPath(device),
+    validateLocalOutputPath: (path, options) => validateLocalOutputPath(path, options),
+    helperRequest: async (device, action, request, timeoutMs) => {
+        const result = await windowsHelperRequest(device, action, request, timeoutMs);
+        return result.error ? { error: result.error } : { response: result.response, helper: result.helper };
+    },
+    verifiedArchivePath: (helper, path, name) => verifiedHelperOutputPath(helper, path, name),
+    copyFile: (source, destination) => copyWindowsSandboxFile(source, destination, "windows-helper-recording", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES),
+};
+const windowsRecording = createDirectRecording(windowsRecordingNative);
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+function windowsRecordingResult(outcome) {
+    if (!outcome || outcome.kind === "missing") return undefined;
+    if (outcome.kind === "native") return outcome.value;
+    if (outcome.kind === "failure") return textResult(false, outcome.message);
+    return jsonResult(outcome.value);
+}
+
 async function handleWindowsToolUnlocked(name, args) {
     const desktop = await windowsDesktop.handle(name, args);
     if (desktop !== undefined) {
@@ -1636,92 +1631,10 @@ async function handleWindowsToolUnlocked(name, args) {
         case "device_accessibility_snapshot":
             return windowsAccessResult(await windowsAccess.handle(name, args));
 
-        case "device_record_video_status": {
-            const { deviceId, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            const reconciled = await reconcileWindowsRecording(device, helperTimeoutMs || 1000);
-            return jsonResult({
-                deviceId,
-                recording: reconciled.device.recording || null,
-                provider: "windows-helper-frame-archive",
-                helper: reconciled.statusCheck || null,
-            });
-        }
-
-        case "device_record_video_start": {
-            const { deviceId, localPath, timeLimitSec, helperTimeoutMs } = args;
-            let device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (device.recording?.active) {
-                const reconciled = await reconcileWindowsRecording(device, helperTimeoutMs || 1000);
-                device = reconciled.device;
-                if (device.recording?.active) return textResult(false, `Windows Sandbox recording already active for ${deviceId}`);
-            }
-            const sessionId = `recording-${randomUUID()}`;
-            const resolvedLocalPath = localPath || windowsRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const intervalMs = timeLimitSec && timeLimitSec < 30 ? 500 : 1000;
-            const result = await windowsHelperRequest(device, "record_start", { sessionId, intervalMs, timeLimitSec: timeLimitSec || 0 }, helperTimeoutMs || 5000);
-            if (result.error) return textResult(false, result.error);
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper recording start failed");
-            const recording = {
-                active: true,
-                provider: "windows-helper-frame-archive",
-                runtimeId: randomUUID(),
-                sessionId,
-                localPath: safeLocalPath,
-                remotePath: result.response.recording?.frameDir || null,
-                timeLimitSec: timeLimitSec || null,
-                startedAt: new Date().toISOString(),
-            };
-            const committed = transitionRecordingGeneration(updateWindowsDevice, deviceId, device.recording ?? null, recording);
-            if (!committed.committed) {
-                await windowsHelperRequest(device, "record_stop", { sessionId }, helperTimeoutMs || 5000);
-                return textResult(false, `Windows Sandbox recording state changed while starting for ${deviceId}; the new recorder was stopped.`);
-            }
-            return jsonResult({ deviceId, recording: committed.device.recording, helper: result.response.recording || null });
-        }
-
-        case "device_record_video_stop": {
-            const { deviceId, localPath, helperTimeoutMs } = args;
-            const device = findWindowsDevice(deviceId);
-            if (!device) return undefined;
-            if (!device.recording?.active) return textResult(false, `No Windows Sandbox recording active for ${deviceId}`);
-            const previous = device.recording;
-            const resolvedLocalPath = localPath || previous.localPath || windowsRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            const result = await windowsHelperRequest(device, "record_stop", { sessionId: device.recording.sessionId }, helperTimeoutMs || 10000);
-            if (result.error) {
-                return textResult(false, `${result.error}. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
-            }
-            if (!result.response.ok) {
-                return textResult(false, `${result.response.error || "Windows helper recording stop failed"}. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
-            }
-            const hostArchivePath = verifiedHelperOutputPath(result.helper, result.response.recording?.archivePath || result.response.recording?.hostArchivePath, `${previous.sessionId}.zip`);
-            if (!hostArchivePath) return textResult(false, `Windows helper recording output is missing or unsafe. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const copied = copyWindowsSandboxFile(hostArchivePath, safeLocalPath, "windows-helper-recording", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES);
-            if (!copied.ok) return textResult(false, `Windows helper recording output copy failed: ${copied.error}. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
-            const cleared = transitionRecordingGeneration(updateWindowsDevice, deviceId, previous, null);
-            const updated = cleared.device;
-            if (!cleared.committed && updated?.recording) {
-                return textResult(false, `Windows Sandbox recording state changed while stopping for ${deviceId}; successor state was preserved.`);
-            }
-            return jsonResult({
-                deviceId,
-                stopped: true,
-                provider: "windows-helper-frame-archive",
-                recording: { ...previous, active: false, localPath: safeLocalPath, stoppedAt: new Date().toISOString() },
-                device: updated,
-                helper: result.response.recording || null,
-            });
-        }
+        case "device_record_video_status":
+        case "device_record_video_start":
+        case "device_record_video_stop":
+            return windowsRecordingResult(await windowsRecording.request(name, args));
 
         default:
             return undefined;

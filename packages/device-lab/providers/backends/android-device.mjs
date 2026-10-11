@@ -1,3 +1,5 @@
+import { createDirectRecording } from "../adapters/direct-recording.mjs";
+import { recordingInputError } from "../domain/direct-recording.mjs";
 import { createAndroidPhysicalAttachment } from "../adapters/physical-attachment.mjs";
 import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
@@ -9,11 +11,9 @@ import { createAndroidWirelessApplication } from "../application/android-wireles
 import { androidWifiSerial, androidWifiTransport, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
 import { createAndroidDeviceAccess } from "../application/android-device-access.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
-import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
-import { mkdirSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { join } from "path";
 import { androidDiscovery, appiumDiscovery } from "./android.mjs";
 import { run, runBuffer, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
@@ -22,8 +22,7 @@ import { fail, jsonResult, textResult } from "../responses.mjs";
 import { claimAndroidRealDevice, findAndroidRealDevice, readAndroidRealDevices, transitionAndroidRealDevice, updateAndroidRealDevice } from "../state/android-device-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
-import { inspectProcessIdentity, readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
-import { claimRecordingFinalization, recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
+import { signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
@@ -222,21 +221,6 @@ async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForRecorderProcess(child, label) {
-    return new Promise((resolve) => {
-        let settled = false;
-        const done = (result) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(result);
-        };
-        const timer = setTimeout(() => done(null), 150);
-        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
-        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
-    });
-}
-
 function processIsAlive(pid) {
     if (!pid) return false;
     try {
@@ -256,32 +240,37 @@ async function waitForProcessExit(pid, timeoutMs = 3000) {
     return !processIsAlive(pid);
 }
 
-function reconcileAndroidRealRecording(device) {
-    if (!device?.recording?.active || !device.recording.pid) return device;
-    const observation = device.recording.processIdentity
-        ? inspectProcessIdentity(device.recording.processIdentity, device.recording.pid)
-        : null;
-    const recorderIsCurrent = observation
-        ? observation.status === "match" || observation.status === "unavailable"
-        : processIsAlive(device.recording.pid);
-    if (recorderIsCurrent) return device;
-    const expected = device.recording;
-    const pending = { ...expected, active: false, endedAt: now() };
-    return updateAndroidRealDevice(device.id, (item) => recordingGenerationMatches(expected, item.recording)
-        ? { ...item, recording: pending, updatedAt: now() }
-        : item) || device;
-}
+/** @type {import("../ports/direct-recording.mjs").DirectRecordingNative} */
+const androidRealRecordingNative = {
+    kind: "android-device",
+    findDevice: id => findAndroidRealDevice(id),
+    updateDevice: (id, update) => updateAndroidRealDevice(id, update),
+    localPath: device => androidRealRecordingLocalPath(device),
+    validateLocalOutputPath: (path, options) => validateLocalOutputPath(path, options),
+    recordingDirectory: device => androidRealRecordingDir(device),
+    resolveTarget(device) {
+        const selected = ensureAdbDevice(device.id);
+        if (selected.unknown) return { kind: "missing" };
+        if (selected.error) return { kind: "failure", message: selected.error };
+        return {
+            kind: "ready",
+            device: selected.device,
+            target: { kind: "adb", executable: selected.adb, prefix: adbArgsForDevice(selected.device, []) },
+        };
+    },
+    runCommand: command => command.timeoutMs === undefined
+        ? run(command.executable, command.args)
+        : runWithTimeout(command.executable, command.args, command.timeoutMs),
+};
+const androidRealRecording = createDirectRecording(androidRealRecordingNative);
 
-function monitorAndroidRealRecordingExit(deviceId, recording) {
-    return () => {
-        transitionRecordingGeneration(updateAndroidRealDevice, deviceId, recording, {
-            ...recording,
-            active: false,
-            endedAt: now(),
-        }, now());
-    };
+/** @param {import("../domain/direct-recording.mjs").RecordingOutcome|undefined} outcome */
+function presentAndroidRealRecording(outcome) {
+    if (!outcome || outcome.kind === "missing") return undefined;
+    if (outcome.kind === "failure") return textResult(false, outcome.message);
+    if (outcome.kind === "native") return outcome.value;
+    return jsonResult(outcome.value);
 }
-
 
 function stopVolatileProcesses(device, adb) {
     return physicalStop.cleanup(device, adb);
@@ -505,133 +494,10 @@ async function handleAndroidRealToolUnlocked(name, args) {
         case "device_screenshot":
             return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
-        case "device_record_video_status": {
-            const { deviceId } = args;
-            const found = findAndroidRealDevice(deviceId);
-            const device = reconcileAndroidRealRecording(found);
-            if (!device) return undefined;
-            return jsonResult({ deviceId, recording: device.recording || null, provider: "adb-screenrecord" });
-        }
-
-        case "device_record_video_start": {
-            const { deviceId, remotePath, localPath, timeLimitSec = 180 } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const device = reconcileAndroidRealRecording(target.device);
-            if (device.recording) {
-                const state = device.recording.active ? "already active" : "pending finalization";
-                return textResult(false, `Android real-device recording ${state} for ${deviceId}`);
-            }
-
-            const resolvedRemotePath = remotePath || `/sdcard/ccc-${device.id}-recording.mp4`;
-            const resolvedLocalPath = localPath || androidRealRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            mkdirSync(androidRealRecordingDir(device), { recursive: true });
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const child = spawn(target.adb, adbArgsForDevice(device, ["shell", "screenrecord", "--time-limit", String(timeLimitSec), resolvedRemotePath]), {
-                detached: true,
-                stdio: "ignore",
-                env: process.env,
-                windowsHide: true,
-            });
-            let recording = null;
-            const runtimeId = randomUUID();
-            let exited = false;
-            child.once("exit", () => {
-                exited = true;
-                if (recording) monitorAndroidRealRecordingExit(deviceId, recording)();
-            });
-            const startError = await waitForRecorderProcess(child, "Android real-device screenrecord");
-            if (startError) return startError;
-            const processIdentity = readProcessIdentity(child.pid);
-            if (!processIdentity) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                return textResult(false, `Android real-device recorder process identity could not be established for ${deviceId}.`);
-            }
-            recording = {
-                active: true,
-                provider: "adb-screenrecord",
-                runtimeId,
-                pid: child.pid,
-                processIdentity,
-                remotePath: resolvedRemotePath,
-                localPath: safeLocalPath,
-                timeLimitSec,
-                startedAt: now(),
-            };
-            child.unref();
-            const committed = transitionRecordingGeneration(updateAndroidRealDevice, deviceId, device.recording ?? null, recording, now());
-            if (!committed.committed) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                return textResult(false, `Android real-device recording state changed while starting for ${deviceId}; the new recorder was stopped.`);
-            }
-            if (exited || !processIsAlive(child.pid)) {
-                transitionRecordingGeneration(updateAndroidRealDevice, deviceId, recording, null, now());
-                return textResult(false, `Android real-device recorder exited before its state was committed for ${deviceId}.`);
-            }
-            return jsonResult({ deviceId, recording: committed.device.recording });
-        }
-
-        case "device_record_video_stop": {
-            const { deviceId, localPath } = args;
-            const target = ensureAdbDevice(deviceId);
-            const unavailable = adbTargetResult(target);
-            if (unavailable !== null) return unavailable;
-            const device = reconcileAndroidRealRecording(target.device);
-            if (!device.recording) return textResult(false, `No Android real-device recording active for ${deviceId}`);
-
-            const resolvedLocalPath = localPath || device.recording.localPath || androidRealRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            const previous = device.recording;
-            if (previous.active) {
-                const recorderSignal = signalOwnedRuntimeProcess(previous, "SIGINT");
-                run(target.adb, adbArgsForDevice(device, ["shell", "pkill", "-2", "screenrecord"]));
-                if (recorderSignal.signaled) {
-                    const exited = await waitForProcessExit(previous.pid, 3000);
-                    if (!exited) return textResult(false, `Android real-device recording did not exit within 3000ms for ${deviceId}; state remains active.`);
-                }
-            }
-            const claimed = claimRecordingFinalization(updateAndroidRealDevice, deviceId, previous, { localPath: safeLocalPath }, now());
-            if (!claimed.committed || !claimed.device?.recording) {
-                return textResult(false, `Android real-device recording state changed while stopping for ${deviceId}; successor state was preserved.`);
-            }
-            const pending = claimed.device.recording;
-            mkdirSync(androidRealRecordingDir(device), { recursive: true });
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const localStage = createLocalOutputStage(safeLocalPath, { label: "recording-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const pull = runWithTimeout(target.adb, adbArgsForDevice(device, ["pull", pending.remotePath, localStage.stagedPath]), ANDROID_TRANSFER_TIMEOUT_MS);
-                if (pull.status !== 0) {
-                    return textResult(false, `Error: ${pull.stderr || pull.stdout || `exit ${pull.status}`}. Android real-device recording remains pending finalization for ${deviceId}.`);
-                }
-                const committed = commitLocalOutputStage(localStage, { label: "recording-local-path", minBytes: 1 });
-                if (!committed.ok) {
-                    return textResult(false, `${committed.message}. Android real-device recording remains pending finalization for ${deviceId}.`);
-                }
-                const cleared = transitionRecordingGeneration(updateAndroidRealDevice, deviceId, pending, null, now());
-                if (!cleared.committed) {
-                    return textResult(false, `Android real-device recording state changed while stopping for ${deviceId}; successor state and remote artifact were preserved.`);
-                }
-                runWithTimeout(target.adb, adbArgsForDevice(device, ["shell", "rm", "-f", pending.remotePath]), ANDROID_TRANSFER_TIMEOUT_MS);
-                return jsonResult({
-                    deviceId,
-                    provider: "adb-screenrecord",
-                    stopped: true,
-                    recording: { ...pending, active: false, localPath: safeLocalPath, stoppedAt: now() },
-                    stdout: pull.stdout,
-                    stderr: pull.stderr,
-                    status: pull.status,
-                });
-            } finally {
-                localStage.cleanup();
-            }
-        }
+        case "device_record_video_status":
+        case "device_record_video_start":
+        case "device_record_video_stop":
+            return presentAndroidRealRecording(await androidRealRecording.request(name, args));
 
         case "mobile_screenshot": {
             const { deviceId } = args;
@@ -704,9 +570,8 @@ async function handleAndroidRealToolUnlocked(name, args) {
 export async function handleAndroidRealTool(name, args) {
     if (name === "device_record_video_start" && backendHintAllows(args, "android-device")
         && (args?.backend === "android-device" || findAndroidRealDevice(args?.deviceId))
-        && args?.timeLimitSec !== undefined
-        && (!Number.isInteger(args.timeLimitSec) || args.timeLimitSec < 1 || args.timeLimitSec > 180)) {
-        return textResult(false, "Android recording timeLimitSec must be an integer from 1 to 180");
+        && recordingInputError("android-device", args?.timeLimitSec)) {
+        return textResult(false, recordingInputError("android-device", args?.timeLimitSec));
     }
     if (!requiresOwnerDeviceOperation("android-device", name)) return handleAndroidRealToolUnlocked(name, args);
     const attachesDevice = name === "device_attach";

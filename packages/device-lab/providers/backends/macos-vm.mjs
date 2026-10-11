@@ -1,3 +1,4 @@
+import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { macosImageProviderRefusal } from "../domain/macos-image-snapshots.mjs";
 import { createMacosImageSnapshots } from "../application/macos-image-snapshots.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
@@ -16,8 +17,7 @@ import { screenshotFileResult } from "../screenshot-file.mjs";
 import { claimMacosDevice, findMacosDevice, readMacosDevices, transitionMacosDevice, updateMacosDevice } from "../state/macos-state.mjs";
 import { withOwnerDeviceOperation, withOwnerDeviceOperations } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
-import { inspectProcessIdentity, readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
-import { claimRecordingFinalization, recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
+import { inspectProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
@@ -442,21 +442,6 @@ async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForRecorderProcess(child, label) {
-    return new Promise((resolve) => {
-        let settled = false;
-        const done = (result) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(result);
-        };
-        const timer = setTimeout(() => done(null), 150);
-        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
-        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
-    });
-}
-
 async function waitForProviderStart(child, label) {
     return new Promise((resolve) => {
         let settled = false;
@@ -562,40 +547,6 @@ async function waitForOwnedRecordingExit(recording, timeoutMs) {
         await sleep(Math.min(50, Math.max(0, deadline - Date.now())));
     } while (Date.now() <= deadline);
     return false;
-}
-
-async function terminateStartedRecorder(child) {
-    const pid = child.pid;
-    try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-    if (await waitForProcessExit(pid, 1000)) return true;
-    try { child.kill("SIGKILL"); } catch { /* recorder already exited */ }
-    return waitForProcessExit(pid, 1000);
-}
-
-function reconcileMacosRecording(device) {
-    if (!device?.recording?.active || !device.recording.pid) return device;
-    const observation = device.recording.processIdentity
-        ? inspectProcessIdentity(device.recording.processIdentity, device.recording.pid)
-        : null;
-    const recorderIsCurrent = observation
-        ? observation.status === "match" || observation.status === "unavailable"
-        : processIsAlive(device.recording.pid);
-    if (recorderIsCurrent) return device;
-    const expected = device.recording;
-    const pending = { ...expected, active: false, endedAt: new Date().toISOString() };
-    return updateMacosDevice(device.id, (item) => recordingGenerationMatches(expected, item.recording)
-        ? { ...item, recording: pending, updatedAt: new Date().toISOString() }
-        : item) || device;
-}
-
-function monitorMacosRecordingExit(deviceId, recording) {
-    return () => {
-        transitionRecordingGeneration(updateMacosDevice, deviceId, recording, {
-            ...recording,
-            active: false,
-            endedAt: new Date().toISOString(),
-        });
-    };
 }
 
 function scpBaseArgs(device) {
@@ -1033,6 +984,34 @@ function macosDesktopResult(outcome) {
 
 export function listMacosDevices({identityOnly=false}={}) { return deviceObservation.owned({identityOnly}); }
 
+/** @type {import('../ports/direct-recording.mjs').DirectRecordingNative} */
+const macosRecordingNative = {
+    kind: "macos-vm",
+    findDevice: id => findMacosDevice(id),
+    updateDevice: (id, update) => updateMacosDevice(id, update),
+    localPath: device => macosRecordingLocalPath(device),
+    validateLocalOutputPath: (path, options) => validateLocalOutputPath(path, options),
+    recordingDirectory: device => macosRecordingDir(device),
+    resolveTarget: (device, operation) => {
+        const bridge = sshBridge(device, operation);
+        if (bridge.error) return { kind: "native", value: bridge.error };
+        return { kind: "ready", device, target: {
+            kind: "ssh", executable: bridge.discovery.ssh, prefix: sshBaseArgs(device), target: bridge.target,
+            scp: bridge.discovery.scp, scpPrefix: scpBaseArgs(device), env: sshCommandOptions(device).env,
+        } };
+    },
+    runCommand: command => runHelperCommand(command.executable, command.args, command.timeoutMs, { env: command.env }),
+    ensureWorkspace: device => { ensureMacosWorkspace(device); return undefined; },
+};
+const macosRecording = createDirectRecording(macosRecordingNative);
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+function macosRecordingResult(outcome) {
+    if (!outcome || outcome.kind === "missing") return undefined;
+    if (outcome.kind === "native") return outcome.value;
+    if (outcome.kind === "failure") return textResult(false, outcome.message);
+    return jsonResult(outcome.value);
+}
+
 async function handleMacosToolUnlocked(name, args) {
     if (requiresOwnerDeviceOperation("macos", name)) {
         for (const candidate of [args?.deviceId, args?.sourceDeviceId]) {
@@ -1084,145 +1063,10 @@ async function handleMacosToolUnlocked(name, args) {
 
         case "device_accessibility_snapshot": return macosAccessResult(await macosAccess.handle(name, args));
 
-        case "device_record_video_status": {
-            const { deviceId } = args;
-            const device = reconcileMacosRecording(findMacosDevice(deviceId));
-            if (!device) return undefined;
-            return jsonResult({ deviceId, recording: device.recording || null, provider: "ssh-screencapture-video" });
-        }
-
-        case "device_record_video_start": {
-            const { deviceId, remotePath, localPath, timeLimitSec } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (device.recording) {
-                const state = device.recording.active ? "already active" : "pending finalization";
-                return textResult(false, `macOS VM recording ${state} for ${deviceId}`);
-            }
-            const bridge = sshBridge(device, name);
-            if (bridge.error) return bridge.error;
-            ensureMacosWorkspace(device);
-            const resolvedRemotePath = remotePath || `/tmp/ccc-${device.id}-recording.mov`;
-            const resolvedLocalPath = localPath || macosRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const limitPrefix = timeLimitSec ? `sleep ${Number(timeLimitSec)}; pkill -INT -f ${shellQuote(`screencapture.*${resolvedRemotePath}`)}` : "wait";
-            const command = [
-                `rm -f ${shellQuote(resolvedRemotePath)}`,
-                `(screencapture -v ${shellQuote(resolvedRemotePath)} &)`,
-                limitPrefix,
-            ].join("; ");
-            const child = spawn(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, command], {
-                detached: true,
-                stdio: "ignore",
-                env: { ...process.env, ...(sshCommandOptions(device).env || {}) },
-                windowsHide: true,
-            });
-            let recording = null;
-            const runtimeId = randomUUID();
-            let exited = false;
-            child.once("exit", () => {
-                exited = true;
-                if (recording) monitorMacosRecordingExit(deviceId, recording)();
-            });
-            const startError = await waitForRecorderProcess(child, "macOS VM screencapture");
-            if (startError) return startError;
-            const processIdentity = readProcessIdentity(child.pid);
-            if (!processIdentity) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                return textResult(false, `macOS VM recorder process identity could not be established for ${deviceId}.`);
-            }
-            recording = {
-                active: true,
-                provider: "ssh-screencapture-video",
-                runtimeId,
-                pid: child.pid,
-                processIdentity,
-                remotePath: resolvedRemotePath,
-                localPath: safeLocalPath,
-                timeLimitSec: timeLimitSec || null,
-                startedAt: new Date().toISOString(),
-            };
-            child.unref();
-            let committed;
-            try {
-                committed = transitionRecordingGeneration(updateMacosDevice, deviceId, device.recording ?? null, recording);
-            } catch (error) {
-                recording = null;
-                const terminated = await terminateStartedRecorder(child);
-                const detail = error instanceof Error ? error.message : String(error);
-                return textResult(false, `macOS VM recording metadata persistence failed for ${deviceId}; the new recorder was ${terminated ? "stopped" : "sent termination signals"}: ${detail}`);
-            }
-            if (!committed.committed) {
-                recording = null;
-                const terminated = await terminateStartedRecorder(child);
-                return textResult(false, `macOS VM recording state changed while starting for ${deviceId}; the new recorder was ${terminated ? "stopped" : "sent termination signals"}.`);
-            }
-            if (exited || !processIsAlive(child.pid)) {
-                transitionRecordingGeneration(updateMacosDevice, deviceId, recording, null);
-                return textResult(false, `macOS VM recorder exited before its state was committed for ${deviceId}.`);
-            }
-            return jsonResult({ deviceId, recording: committed.device.recording });
-        }
-
-        case "device_record_video_stop": {
-            const { deviceId, localPath, helperTimeoutMs } = args;
-            const device = findMacosDevice(deviceId);
-            if (!device) return undefined;
-            if (!device.recording) return textResult(false, `No macOS VM recording active for ${deviceId}`);
-            const bridge = sshBridge(device, name);
-            if (bridge.error) return bridge.error;
-            const previous = device.recording;
-            const resolvedLocalPath = localPath || previous.localPath || macosRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            if (previous.active) {
-                const recorderSignal = signalOwnedRuntimeProcess(previous, "SIGINT");
-                runHelperCommand(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `pkill -INT -f ${shellQuote(`screencapture.*${previous.remotePath}`)} || true`], helperTimeoutMs, sshCommandOptions(device));
-                if (recorderSignal.signaled) {
-                    const exited = await waitForProcessExit(previous.pid, 3000);
-                    if (!exited) return textResult(false, `macOS VM recording did not exit within 3000ms for ${deviceId}; state remains active.`);
-                }
-            }
-            const claimed = claimRecordingFinalization(updateMacosDevice, deviceId, previous, { localPath: safeLocalPath });
-            if (!claimed.committed || !claimed.device?.recording) {
-                return textResult(false, `macOS VM recording state changed while stopping for ${deviceId}; successor state was preserved.`);
-            }
-            const pending = claimed.device.recording;
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const localStage = createLocalOutputStage(safeLocalPath, { label: "recording-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const copy = runHelperCommand(bridge.discovery.scp, [...scpBaseArgs(device), `${bridge.target}:${pending.remotePath}`, localStage.stagedPath], helperTimeoutMs, sshCommandOptions(device));
-                if (copy.status !== 0) {
-                    return textResult(false, `Error: ${copy.stderr || copy.stdout || `exit ${copy.status}`}. macOS VM recording remains pending finalization for ${deviceId}.`);
-                }
-                const committed = commitLocalOutputStage(localStage, { label: "recording-local-path", minBytes: 1 });
-                if (!committed.ok) {
-                    return textResult(false, `${committed.message}. macOS VM recording remains pending finalization for ${deviceId}.`);
-                }
-                const cleared = transitionRecordingGeneration(updateMacosDevice, deviceId, pending, null);
-                const updated = cleared.device;
-                if (!cleared.committed) {
-                    return textResult(false, `macOS VM recording state changed while stopping for ${deviceId}; successor state and remote artifact were preserved.`);
-                }
-                runHelperCommand(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `rm -f ${shellQuote(pending.remotePath)}`], helperTimeoutMs, sshCommandOptions(device));
-                return jsonResult({
-                    deviceId,
-                    stopped: true,
-                    provider: "ssh-screencapture-video",
-                    recording: { ...pending, active: false, localPath: safeLocalPath, stoppedAt: new Date().toISOString() },
-                    device: updated,
-                    stdout: copy.stdout,
-                    stderr: copy.stderr,
-                });
-            } finally {
-                localStage.cleanup();
-            }
-        }
+        case "device_record_video_status":
+        case "device_record_video_start":
+        case "device_record_video_stop":
+            return macosRecordingResult(await macosRecording.request(name, args));
 
         default:
             return undefined;

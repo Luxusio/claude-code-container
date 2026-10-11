@@ -1,3 +1,4 @@
+import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
 import { iosControlOrientation, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
@@ -21,10 +22,32 @@ import { screenshotFileResult } from "../screenshot-file.mjs";
 import { claimIosDevice, findIosDevice, readIosDevices, transitionIosDevice, updateIosDevice } from "../state/ios-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
-import { inspectProcessIdentity, readProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwnedRuntimeProcess, terminateOwnedRuntimeProcess, waitForProcessIdentity } from "../state/process-identity.mjs";
-import { appiumGenerationMatches, claimRecordingFinalization, recordingGenerationMatches, transitionAppiumGeneration, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
+import { inspectProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwnedRuntimeProcess, terminateOwnedRuntimeProcess, waitForProcessIdentity } from "../state/process-identity.mjs";
+import { appiumGenerationMatches, transitionAppiumGeneration } from "../state/runtime-generation.mjs";
 import { withTargetStatus } from "../status.mjs";
-import { commitLocalOutputStage, copyStagedInputFile, createLocalOutputStage, discardLocalOutputStage, populateLocalOutputStage, restoreLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
+import { commitLocalOutputStage, copyStagedInputFile, createLocalOutputStage, discardLocalOutputStage, populateLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
+
+/** @type {import('../ports/direct-recording.mjs').DirectRecordingNative} */
+const recordingNative = {
+    kind: 'ios-simulator', findDevice: findIosDevice, updateDevice: updateIosDevice,
+    localPath: iosRecordingLocalPath, validateLocalOutputPath, recordingDirectory: iosRecordingDir,
+    resolveTarget(device) {
+        const discovery = iosDiscovery();
+        if (!discovery.available) return { kind: 'native', value: missingPrereqResult(discovery) };
+        const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
+        if (ownedTarget.error) return { kind: 'failure', message: ownedTarget.error };
+        return { kind: 'ready', device, target: { kind: 'simulator', executable: discovery.xcrun, target: ownedTarget.target } };
+    },
+};
+const directRecording = createDirectRecording(recordingNative);
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+function presentRecordingOutcome(outcome) {
+    if (!outcome || outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'failure') return textResult(false, outcome.message);
+    if (outcome.kind === 'native') return outcome.value;
+    return jsonResult(outcome.value);
+}
+
 
 const IOS_APPIUM_HTTP_TIMEOUT_MS = 5000;
 export const IOS_APPIUM_HTTP_MAX_TIMEOUT_MS = 300000;
@@ -99,21 +122,6 @@ async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForRecorderProcess(child, label) {
-    return new Promise((resolve) => {
-        let settled = false;
-        const done = (result) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(result);
-        };
-        const timer = setTimeout(() => done(null), 150);
-        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
-        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
-    });
-}
-
 function processIsAlive(pid) {
     if (!pid) return false;
     try {
@@ -140,32 +148,6 @@ async function terminateOwnedAppiumProcess(appium, label, timeoutMs = 1000) {
 async function deleteAppiumSession(appium) { return observationAccess.deleteSession(appium); }
 
 async function stopOwnedAppium(appium, label) { return observationAccess.stopOwnedAppium(appium, label); }
-
-function reconcileIosRecording(device) {
-    if (!device?.recording?.active || !device.recording.pid) return device;
-    const observation = device.recording.processIdentity
-        ? inspectProcessIdentity(device.recording.processIdentity, device.recording.pid)
-        : null;
-    const recorderIsCurrent = observation
-        ? observation.status === "match" || observation.status === "unavailable"
-        : processIsAlive(device.recording.pid);
-    if (recorderIsCurrent) return device;
-    const expected = device.recording;
-    const pending = { ...expected, active: false, endedAt: now() };
-    return updateIosDevice(device.id, (item) => recordingGenerationMatches(expected, item.recording)
-        ? { ...item, recording: pending, updatedAt: now() }
-        : item) || device;
-}
-
-function monitorIosRecordingExit(deviceId, recording) {
-    return () => {
-        transitionRecordingGeneration(updateIosDevice, deviceId, recording, {
-            ...recording,
-            active: false,
-            endedAt: now(),
-        }, now());
-    };
-}
 
 function boundedIosAppiumErrorText(text, maxBytes = IOS_APPIUM_ERROR_TEXT_LIMIT_BYTES) {
     const bytes = Buffer.from(text, "utf8");
@@ -447,153 +429,10 @@ async function handleIosToolUnlocked(name, args) {
 
 
 
-        case "device_record_video_status": {
-            const { deviceId } = args;
-            const found = findIosDevice(deviceId);
-            const device = reconcileIosRecording(found);
-            if (!device) return undefined;
-            return jsonResult({ deviceId, recording: device.recording || null, provider: "simctl-recordVideo" });
-        }
-
-        case "device_record_video_start": {
-            const { deviceId, localPath } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (device.recording) {
-                const state = device.recording.active ? "already active" : "pending finalization";
-                return textResult(false, `iOS Simulator recording ${state} for ${deviceId}`);
-            }
-
-            const discovery = iosDiscovery();
-            if (!discovery.available) return missingPrereqResult(discovery);
-            const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return textResult(false, ownedTarget.error);
-
-            const resolvedLocalPath = localPath || iosRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            mkdirSync(iosRecordingDir(device), { recursive: true });
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const localStage = createLocalOutputStage(safeLocalPath, {
-                label: "recording-local-path",
-                stageParent: iosRecordingDir(device),
-                stagePrefix: ".recording-stage-",
-            });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            const child = spawn(discovery.xcrun, ["simctl", "io", ownedTarget.target, "recordVideo", localStage.stagedPath], {
-                detached: true,
-                stdio: "ignore",
-                env: process.env,
-                windowsHide: true,
-            });
-            let recording = null;
-            const runtimeId = randomUUID();
-            let exited = false;
-            child.once("exit", () => {
-                exited = true;
-                if (recording) monitorIosRecordingExit(deviceId, recording)();
-            });
-            const startError = await waitForRecorderProcess(child, "iOS Simulator recordVideo");
-            if (startError) {
-                localStage.cleanup();
-                return startError;
-            }
-            const processIdentity = readProcessIdentity(child.pid);
-            if (!processIdentity) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                localStage.cleanup();
-                return textResult(false, `iOS Simulator recorder process identity could not be established for ${deviceId}.`);
-            }
-            recording = {
-                active: true,
-                provider: "simctl-recordVideo",
-                runtimeId,
-                pid: child.pid,
-                processIdentity,
-                localPath: safeLocalPath,
-                stagingPath: localStage.stagedPath,
-                startedAt: now(),
-            };
-            child.unref();
-            const committed = transitionRecordingGeneration(updateIosDevice, deviceId, device.recording ?? null, recording, now());
-            if (!committed.committed) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                localStage.cleanup();
-                return textResult(false, `iOS Simulator recording state changed while starting for ${deviceId}; the new recorder was stopped.`);
-            }
-            if (exited || !processIsAlive(child.pid)) {
-                transitionRecordingGeneration(updateIosDevice, deviceId, recording, null, now());
-                localStage.cleanup();
-                return textResult(false, `iOS Simulator recorder exited before its state was committed for ${deviceId}.`);
-            }
-            return jsonResult({ deviceId, recording: committed.device.recording });
-        }
-
-        case "device_record_video_stop": {
-            const { deviceId, localPath } = args;
-            const device = findIosDevice(deviceId);
-            if (!device) return undefined;
-            if (!device.recording) return textResult(false, `No iOS Simulator recording active for ${deviceId}`);
-
-            const previous = device.recording;
-            const artifactSourcePath = previous.stagingPath || previous.localPath;
-            const resolvedLocalPath = localPath || previous.localPath || iosRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            if (previous.active) {
-                const recorderSignal = signalOwnedRuntimeProcess(previous, "SIGINT");
-                if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
-                    return textResult(false, `iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); state remains active.`);
-                }
-                if (recorderSignal.signaled) {
-                    const exited = await waitForProcessExit(previous.pid, 3000);
-                    if (!exited) return textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; state remains active.`);
-                }
-            }
-            const claimed = claimRecordingFinalization(updateIosDevice, deviceId, previous, { localPath: safeLocalPath }, now());
-            if (!claimed.committed || !claimed.device?.recording) {
-                return textResult(false, `iOS Simulator recording state changed while stopping for ${deviceId}; successor state was preserved.`);
-            }
-            const pending = claimed.device.recording;
-            const persistentStage = typeof pending.stagingPath === "string" && pending.stagingPath.length > 0;
-            const localStage = persistentStage
-                ? restoreLocalOutputStage(safeLocalPath, pending.stagingPath, {
-                    label: "recording-local-path",
-                    stageParent: iosRecordingDir(device),
-                    stagePrefix: ".recording-stage-",
-                })
-                : createLocalOutputStage(safeLocalPath, { label: "recording-local-path" });
-            if (!localStage.ok) return textResult(false, `${localStage.message}. iOS Simulator recording remains pending finalization for ${deviceId}.`);
-            if (!persistentStage) {
-                const populated = populateLocalOutputStage(artifactSourcePath, localStage, { label: "recording-local-path-stage" });
-                if (!populated.ok) {
-                    localStage.cleanup();
-                    return textResult(false, `${populated.message}. iOS Simulator legacy recording remains pending finalization for ${deviceId}.`);
-                }
-            }
-            const committed = commitLocalOutputStage(localStage, { label: "recording-local-path", minBytes: 1 });
-            if (!committed.ok) {
-                if (!persistentStage) localStage.cleanup();
-                return textResult(false, `${committed.message}. iOS Simulator recording remains pending finalization for ${deviceId}.`);
-            }
-            const cleared = transitionRecordingGeneration(updateIosDevice, deviceId, pending, null, now());
-            const updated = cleared.device;
-            if (!cleared.committed) {
-                if (!persistentStage) localStage.cleanup();
-                return textResult(false, `iOS Simulator recording state changed while stopping for ${deviceId}; successor state and staged artifact were preserved.`);
-            }
-            localStage.cleanup();
-            return jsonResult({
-                deviceId,
-                stopped: true,
-                provider: "simctl-recordVideo",
-                recording: { ...pending, active: false, localPath: safeLocalPath, stoppedAt: now() },
-                device: updated,
-            });
-        }
-
+        case "device_record_video_status":
+        case "device_record_video_start":
+        case "device_record_video_stop":
+            return presentRecordingOutcome(await directRecording.request(name, args));
 
 
         case "device_upload":

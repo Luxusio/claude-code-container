@@ -1,3 +1,5 @@
+import { createDirectRecording } from "../adapters/direct-recording.mjs";
+import { recordingInputError } from "../domain/direct-recording.mjs";
 import { androidScreenshotOutcome } from "../domain/android-device-access.mjs";
 import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
@@ -14,7 +16,7 @@ import { once } from "node:events";
 import { createHash, randomUUID } from "crypto";
 import { closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from "fs";
 import { homedir } from "os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 import { commandPath, localBinPath, run, runBuffer, runWithInput, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
@@ -25,10 +27,32 @@ import { readAndroidAvdIdentity } from "../state/android-avd-identity.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
-import { inspectProcessIdentity, readProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwnedRuntimeProcess, terminateOwnedRuntimeProcessTree, waitForProcessIdentity } from "../state/process-identity.mjs";
-import { claimRecordingFinalization, recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
+import { refreshOwnedRuntimeProcessIdentity, signalOwnedRuntimeProcess, terminateOwnedRuntimeProcessTree, waitForProcessIdentity } from "../state/process-identity.mjs";
 import { withTargetStatus } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
+
+/** @type {import('../ports/direct-recording.mjs').DirectRecordingNative} */
+const recordingNative = {
+    kind: 'android-emulator', findDevice: findAndroidDevice, updateDevice: updateAndroidDevice,
+    localPath: androidRecordingLocalPath, validateLocalOutputPath, recordingDirectory: androidRecordingDir,
+    resolveTarget(device) {
+        const discovery = androidDiscovery();
+        if (!discovery.adb) return { kind: 'failure', message: 'Android backend missing prerequisites: adb' };
+        return { kind: 'ready', device, target: { kind: 'adb', executable: discovery.adb, prefix: adbArgsForDevice(device, []) } };
+    },
+    runCommand: command => command.timeoutMs === undefined
+        ? run(command.executable, command.args)
+        : runWithTimeout(command.executable, command.args, command.timeoutMs),
+};
+const directRecording = createDirectRecording(recordingNative);
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+function presentRecordingOutcome(outcome) {
+    if (!outcome || outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'failure') return textResult(false, outcome.message);
+    if (outcome.kind === 'native') return outcome.value;
+    return jsonResult(outcome.value);
+}
+
 
 const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -513,21 +537,6 @@ async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForRecorderProcess(child, label) {
-    return new Promise((resolve) => {
-        let settled = false;
-        const done = (result) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(result);
-        };
-        const timer = setTimeout(() => done(null), 150);
-        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
-        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
-    });
-}
-
 function processIsAlive(pid) {
     if (!pid) return false;
     try {
@@ -582,32 +591,6 @@ async function terminateFreshAndroidEmulatorProcessTree(child) {
         exited = await waitForProcessExit(child.pid, 3000);
     }
     return { ok: exited, exited, method: "process-group", ...(error ? { error } : {}) };
-}
-
-function reconcileAndroidRecording(device) {
-    if (!device?.recording?.active || !device.recording.pid) return device;
-    const observation = device.recording.processIdentity
-        ? inspectProcessIdentity(device.recording.processIdentity, device.recording.pid)
-        : null;
-    const recorderIsCurrent = observation
-        ? observation.status === "match" || observation.status === "unavailable"
-        : processIsAlive(device.recording.pid);
-    if (recorderIsCurrent) return device;
-    const expected = device.recording;
-    const pending = { ...expected, active: false, endedAt: new Date().toISOString() };
-    return updateAndroidDevice(device.id, (item) => recordingGenerationMatches(expected, item.recording)
-        ? { ...item, recording: pending, updatedAt: new Date().toISOString() }
-        : item) || device;
-}
-
-function monitorAndroidRecordingExit(deviceId, recording) {
-    return () => {
-        transitionRecordingGeneration(updateAndroidDevice, deviceId, recording, {
-            ...recording,
-            active: false,
-            endedAt: new Date().toISOString(),
-        });
-    };
 }
 
 
@@ -856,137 +839,11 @@ async function handleAndroidToolUnlocked(name, args) {
         case "device_screenshot":
             return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
-        case "device_record_video_status": {
-            const { deviceId } = args;
-            const found = findAndroidDevice(deviceId);
-            const device = reconcileAndroidRecording(found);
-            if (!device) return undefined;
-            return jsonResult({ deviceId, recording: device.recording || null, provider: "adb-screenrecord" });
-        }
+        case "device_record_video_status":
+        case "device_record_video_start":
+        case "device_record_video_stop":
+            return presentRecordingOutcome(await directRecording.request(name, args));
 
-        case "device_record_video_start": {
-            const { deviceId, remotePath, localPath, timeLimitSec = 180 } = args;
-            const device = findAndroidDevice(deviceId);
-            if (!device) return undefined;
-            if (device.recording) {
-                const state = device.recording.active ? "already active" : "pending finalization";
-                return textResult(false, `Android recording ${state} for ${deviceId}`);
-            }
-
-            const discovery = androidDiscovery();
-            if (!discovery.adb) return textResult(false, "Android backend missing prerequisites: adb");
-
-            const resolvedRemotePath = remotePath || `/sdcard/ccc-${device.id}-recording.mp4`;
-            const resolvedLocalPath = localPath || androidRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            mkdirSync(androidRecordingDir(device), { recursive: true });
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const child = spawn(discovery.adb, adbArgsForDevice(device, ["shell", "screenrecord", "--time-limit", String(timeLimitSec), resolvedRemotePath]), {
-                detached: true,
-                stdio: "ignore",
-                env: process.env,
-                windowsHide: true,
-            });
-            let recording = null;
-            const runtimeId = randomUUID();
-            let exited = false;
-            child.once("exit", () => {
-                exited = true;
-                if (recording) monitorAndroidRecordingExit(deviceId, recording)();
-            });
-            const startError = await waitForRecorderProcess(child, "Android screenrecord");
-            if (startError) return startError;
-            const processIdentity = readProcessIdentity(child.pid);
-            if (!processIdentity) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                return textResult(false, `Android recorder process identity could not be established for ${deviceId}.`);
-            }
-            recording = {
-                active: true,
-                provider: "adb-screenrecord",
-                runtimeId,
-                pid: child.pid,
-                processIdentity,
-                remotePath: resolvedRemotePath,
-                localPath: safeLocalPath,
-                timeLimitSec,
-                startedAt: new Date().toISOString(),
-            };
-            child.unref();
-            const committed = transitionRecordingGeneration(updateAndroidDevice, deviceId, device.recording ?? null, recording);
-            if (!committed.committed) {
-                try { child.kill("SIGINT"); } catch { /* recorder already exited */ }
-                return textResult(false, `Android recording state changed while starting for ${deviceId}; the new recorder was stopped.`);
-            }
-            if (exited || !processIsAlive(child.pid)) {
-                transitionRecordingGeneration(updateAndroidDevice, deviceId, recording, null);
-                return textResult(false, `Android recorder exited before its state was committed for ${deviceId}.`);
-            }
-            return jsonResult({ deviceId, recording: committed.device.recording });
-        }
-
-        case "device_record_video_stop": {
-            const { deviceId, localPath } = args;
-            const device = findAndroidDevice(deviceId);
-            if (!device) return undefined;
-            if (!device.recording) return textResult(false, `No Android recording active for ${deviceId}`);
-
-            const discovery = androidDiscovery();
-            if (!discovery.adb) return textResult(false, "Android backend missing prerequisites: adb");
-
-            const resolvedLocalPath = localPath || device.recording.localPath || androidRecordingLocalPath(device);
-            const localPolicy = validateLocalOutputPath(resolvedLocalPath, { label: "recording-local-path" });
-            if (!localPolicy.ok) return textResult(false, localPolicy.message);
-            const safeLocalPath = localPolicy.path;
-            const previous = device.recording;
-            if (previous.active) {
-                const recorderSignal = signalOwnedRuntimeProcess(previous, "SIGINT");
-                run(discovery.adb, adbArgsForDevice(device, ["shell", "pkill", "-2", "screenrecord"]));
-                if (recorderSignal.signaled) {
-                    const exited = await waitForProcessExit(previous.pid, 3000);
-                    if (!exited) return textResult(false, `Android recording did not exit within 3000ms for ${deviceId}; state remains active.`);
-                }
-            }
-            const claimed = claimRecordingFinalization(updateAndroidDevice, deviceId, previous, { localPath: safeLocalPath });
-            if (!claimed.committed || !claimed.device?.recording) {
-                return textResult(false, `Android recording state changed while stopping for ${deviceId}; successor state was preserved.`);
-            }
-            const pending = claimed.device.recording;
-            mkdirSync(androidRecordingDir(device), { recursive: true });
-            mkdirSync(dirname(safeLocalPath), { recursive: true });
-            const localStage = createLocalOutputStage(safeLocalPath, { label: "recording-local-path" });
-            if (!localStage.ok) return textResult(false, localStage.message);
-            try {
-                const pull = runWithTimeout(discovery.adb, adbArgsForDevice(device, ["pull", pending.remotePath, localStage.stagedPath]), ANDROID_TRANSFER_TIMEOUT_MS);
-                if (pull.status !== 0) {
-                    return textResult(false, `Error: ${pull.stderr || pull.stdout || `exit ${pull.status}`}. Android recording remains pending finalization for ${deviceId}.`);
-                }
-                const committed = commitLocalOutputStage(localStage, { label: "recording-local-path", minBytes: 1 });
-                if (!committed.ok) {
-                    return textResult(false, `${committed.message}. Android recording remains pending finalization for ${deviceId}.`);
-                }
-                const cleared = transitionRecordingGeneration(updateAndroidDevice, deviceId, pending, null);
-                const updated = cleared.device;
-                if (!cleared.committed) {
-                    return textResult(false, `Android recording state changed while stopping for ${deviceId}; successor state and remote artifact were preserved.`);
-                }
-                runWithTimeout(discovery.adb, adbArgsForDevice(device, ["shell", "rm", "-f", pending.remotePath]), ANDROID_TRANSFER_TIMEOUT_MS);
-                return jsonResult({
-                    deviceId,
-                    stopped: true,
-                    provider: "adb-screenrecord",
-                    recording: { ...pending, active: false, localPath: safeLocalPath, stoppedAt: new Date().toISOString() },
-                    device: updated,
-                    stdout: pull.stdout,
-                    stderr: pull.stderr,
-                    status: pull.status,
-                });
-            } finally {
-                localStage.cleanup();
-            }
-        }
 
         case "device_upload":
         case "device_download":
@@ -1060,9 +917,8 @@ export async function handleAndroidTool(name, args) {
     if (name === "device_create" && !backendHintAllows(args, "android-emulator")) return undefined;
     if (name === "device_record_video_start" && backendHintAllows(args, "android-emulator")
         && (args?.backend === "android-emulator" || findAndroidDevice(args?.deviceId))
-        && args?.timeLimitSec !== undefined
-        && (!Number.isInteger(args.timeLimitSec) || args.timeLimitSec < 1 || args.timeLimitSec > 180)) {
-        return textResult(false, "Android recording timeLimitSec must be an integer from 1 to 180");
+        && recordingInputError("android-emulator", args?.timeLimitSec)) {
+        return textResult(false, recordingInputError("android-emulator", args?.timeLimitSec));
     }
     if (!requiresOwnerDeviceOperation("android", name)) return handleAndroidToolUnlocked(name, args);
     const createsDevice = name === "device_create";
