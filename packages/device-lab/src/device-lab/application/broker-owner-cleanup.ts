@@ -1,6 +1,6 @@
-import { cleanupRecord, isPhysicalState, deviceHasRuntimeMetadata, shouldStopOwnerDevice, cleanupFailureCount, ownerCleanupSelection, type PhysicalRecord, type CleanupLeaseGuard, type CleanupOptions, type CleanupDeviceOutcome, type CleanupCommandTarget, type AuxiliaryOutcome, type CleanupRpcResult } from '../domain/broker-owner-cleanup.js';
+import { cleanupRecord, isPhysicalState, deviceHasRuntimeMetadata, shouldStopOwnerDevice, cleanupFailureCount, ownerCleanupSelection, type PhysicalRecord, type CleanupLeaseGuard, type CleanupOptions, type CleanupDeviceOutcome, type CleanupCommandTarget, type AuxiliaryOutcome, type CleanupDeviceReport, type CleanupBackendReport, type OwnerCleanupOutcome } from '../domain/broker-owner-cleanup.js';
 import type { BrokerOwnerCleanupPorts } from '../ports/broker-owner-cleanup.js';
-export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCleanupPorts<Handle>) {
+export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(ports: BrokerOwnerCleanupPorts<Handle, Prepared, Receipt>) {
     function auxiliary(ownerId: string, parsed: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
         const observed = ports.read(ownerId, parsed.stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === parsed.deviceId);
         if (!observed || !ports.equal(observed, expected))
@@ -72,7 +72,7 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
             committed: changed && transition.matched,
         };
     }
-    function cleanupDevice(ownerId: string, stateKey: string, device: unknown, options: CleanupOptions, guard?: CleanupLeaseGuard<Handle>): CleanupDeviceOutcome {
+    function cleanupDevice(ownerId: string, stateKey: string, device: unknown, options: CleanupOptions, guard?: CleanupLeaseGuard<Handle>): CleanupDeviceOutcome<Receipt> {
         if (!cleanupRecord(device))
             return {
                 device, changed: false, result: {
@@ -81,13 +81,13 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
             };
         const id = typeof device.id === 'string' ? device.id : null;
         const backend = ports.stateBackends.get(stateKey) || stateKey;
-        const result: PhysicalRecord = {
+        const result: CleanupDeviceReport<Receipt> = {
             stateKey, backend, deviceId: id, changed: false
         };
         const physical = isPhysicalState(stateKey);
         if (physical && options.detachPhysical && !guard)
             return ports.withLeaseGuard(ownerId, stateKey, device, lease => cleanupDevice(ownerId, stateKey, device, options, lease));
-        if (guard?.preflight && guard.preflight.status !== 404) {
+        if (guard?.admission.kind === 'refused') {
             result.physical = {
                 detached: false, poweredOff: false, disconnected: false, lease: ports.releaseLease(ownerId, guard)
             };
@@ -130,23 +130,23 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
             };
         }
         else if (options.stopDevices && id && shouldStopOwnerDevice(stateKey, device.status)) {
-            const command = ports.planStop(ownerId, {
+            const prepared = ports.prepareStop(ownerId, {
                 backend, stateKey, deviceId: id
             }, device);
-            if ('error' in command)
+            if (prepared.kind === 'unavailable')
                 result.stop = {
-                    attempted: false, ok: false, error: command.error, missing: command.missing
+                    attempted: false, ok: false, error: prepared.error, missing: prepared.missing
                 };
             else {
-                const execution = ports.execute(command);
-                const ok = execution.status === 0 && !execution.error;
+                const observation = ports.runPreparedStop(prepared.handle);
+                const ok = observation.ok;
                 result.stop = {
-                    attempted: true, ok, execution
+                    attempted: true, ok, observation
                 };
                 if (ok) {
                     updated.status = 'stopped';
                     if (stateKey === 'windows')
-                        ports.releaseWindows(ownerId, device, command.sandboxId);
+                        ports.releaseWindows(ownerId, device, observation);
                     changed = true;
                 }
             }
@@ -160,15 +160,15 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
             device: changed ? updated : device, changed, result
         };
     }
-    async function cleanup(ownerId: string, params: unknown): Promise<CleanupRpcResult> {
+    async function cleanup(ownerId: string, params: unknown): Promise<OwnerCleanupOutcome<Receipt>> {
         const selection = ownerCleanupSelection(params, ports.stateKeys, ports.backendAliases);
-        if (!selection.ok) return { status: 400, payload: { ok: false, error: 'invalid-cleanup-backend', allowed: selection.allowed } };
+        if (!selection.ok) return {kind:'invalid-backend',error:'invalid-cleanup-backend',allowed:selection.allowed};
         const { stopDevices, detachPhysical, stateKeys } = selection;
-        const results: PhysicalRecord[] = [];
+        const results: CleanupBackendReport<Receipt>[] = [];
         let changedDevices = 0, failed = 0;
         for (const stateKey of stateKeys) {
             let backendChanged = false;
-            const deviceResults: unknown[] = [];
+            const deviceResults: CleanupDeviceReport<Receipt>[] = [];
             let observedDevices: unknown[];
             try {
                 observedDevices = ports.read(ownerId, stateKey);
@@ -197,7 +197,7 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
                                     stateKey, backend: ports.stateBackends.get(stateKey) || stateKey, deviceId, skipped: true, reason: 'device-no-longer-present'
                                 }
                             };
-                        const cleanupAndPersist = (guard?: CleanupLeaseGuard<Handle>) => {
+                        const cleanupAndPersist = (guard?: CleanupLeaseGuard<Handle>): {changed:boolean;result:CleanupDeviceReport<Receipt>} => {
                             const runtime = cleanupDevice(ownerId, stateKey, latest, {
                                 stopDevices, detachPhysical
                             }, guard);
@@ -209,10 +209,9 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
                                     stateConflict = publication.found && !publication.matched;
                                 }
                                 catch (error) {
-                                    const physical = cleanupRecord(runtime.result.physical) ? runtime.result.physical : null;
-                                    const lease = physical && cleanupRecord(physical.lease) ? physical.lease : null;
-                                    const rollback = guard?.canRestore && lease?.status === 200 ? ports.restoreLease(ownerId, guard) : {
-                                        attempted: false, ok: true
+                                    const lease = runtime.result.physical?.lease;
+                                    const rollback = guard?.canRestore && lease?.kind === 'released' ? ports.restoreLease(ownerId, guard) : {
+                                        kind: 'not-needed' as const, attempted: false as const, ok: true as const
                                     };
                                     return {
                                         changed: false, result: {
@@ -254,13 +253,7 @@ export function createBrokerOwnerCleanupApplication<Handle>(ports: BrokerOwnerCl
                 stateKey, ok: true, changed: backendChanged, devices: deviceResults
             });
         }
-        return {
-            status: 200, payload: {
-                ok: failed === 0, result: {
-                    ownerId, cleaned: true, stopDevices, detachPhysical, changedDevices, failed, results, authority: 'host-broker'
-                }
-            }
-        };
+        return {kind:'cleaned',ownerId,cleaned:true,stopDevices,detachPhysical,changedDevices,failed,results,authority:'host-broker'};
     }
     return {
         cleanup, cleanupDevice, auxiliary

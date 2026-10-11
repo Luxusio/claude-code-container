@@ -1,8 +1,9 @@
 export type PhysicalRecord = Record<string, unknown>;
-export interface CleanupRpcResult {
-    status: number;
-    payload: unknown;
-}
+import type { LeaseFailure, PhysicalLeaseRecord } from './broker-physical-leases.js';
+export type OwnerCleanupOutcome<Receipt> = {kind:'invalid-backend';error:string;allowed:string[]} |
+    {kind:'cleaned';ownerId:string;cleaned:true;stopDevices:boolean;detachPhysical:boolean;changedDevices:number;failed:number;results:CleanupBackendReport<Receipt>[];authority:'host-broker'};
+export type CleanupPreparedStop<Prepared> = {kind:'unavailable';error:string;missing?:string[]} | {kind:'prepared';handle:Prepared};
+export interface CleanupStopObservation<Receipt> {ok:boolean;operationKind:'runtime-stop'|'metadata-only';receipt:Receipt}
 export interface CleanupSignal {
     attempted?: boolean;
     ok: boolean;
@@ -14,22 +15,21 @@ export interface CleanupPublication {
     device: unknown;
 }
 export interface CleanupLeaseGuard<Handle> {
-    handle: Handle;
-    attempted: boolean;
-    preflight: CleanupRpcResult | null;
-    canRestore: boolean;
+    handle:Handle;
+    attempted:boolean;
+    admission:{kind:'exact'}|{kind:'missing';failure:LeaseFailure}|{kind:'no-identity'}|{kind:'refused';failure:LeaseFailure};
+    canRestore:boolean;
 }
-export interface CleanupLeaseResult {
-    attempted: boolean;
-    ok: boolean;
-    status?: number;
-    payload?: unknown;
-}
-export interface CleanupRollback {
-    attempted: boolean;
-    ok: boolean;
-    [key: string]: unknown;
-}
+export type CleanupLeaseResult =
+    {kind:'released';attempted:true;ok:true;lease:PhysicalLeaseRecord} |
+    {kind:'missing';attempted:true;ok:true;failure:LeaseFailure} |
+    {kind:'no-identity';attempted:false;ok:true} |
+    {kind:'refused';attempted:boolean;ok:false;failure:LeaseFailure};
+export type CleanupRollback =
+    {kind:'not-needed';attempted:false;ok:true} |
+    {kind:'restored';attempted:true;ok:true;lease:PhysicalLeaseRecord;heartbeat:unknown} |
+    {kind:'occupied';attempted:true;ok:false;error:string;lease:PhysicalLeaseRecord|null} |
+    {kind:'write-failed';attempted:true;ok:false;error:string;detail:string};
 export interface AuxiliaryCleanup {
     ok: boolean;
     changed: boolean;
@@ -56,10 +56,18 @@ export interface CleanupOptions {
     stopDevices: boolean;
     detachPhysical: boolean;
 }
-export interface CleanupDeviceOutcome {
+export interface CleanupDeviceReport<Receipt> extends PhysicalRecord {
+    stop?: {attempted:false;ok:false;error:string;missing?:string[]} | {attempted:true;ok:boolean;observation:CleanupStopObservation<Receipt>};
+    physical?: {detached:boolean;poweredOff:false;disconnected:false;lease:CleanupLeaseResult};
+    stateWrite?: {ok:false;error:string;detail:string;leaseRollback:CleanupRollback};
+}
+export interface CleanupBackendReport<Receipt> {
+    stateKey:string;ok:boolean;error?:string;changed?:boolean;devices?:CleanupDeviceReport<Receipt>[];
+}
+export interface CleanupDeviceOutcome<Receipt> {
     device: unknown;
     changed: boolean;
-    result: PhysicalRecord;
+    result: CleanupDeviceReport<Receipt>;
 }
 export function cleanupFailureCount(outcome: PhysicalRecord) {
     let failed = 0;

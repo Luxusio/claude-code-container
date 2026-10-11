@@ -1,19 +1,5 @@
-import type { PhysicalRecord, CleanupSignal, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback } from '../domain/broker-owner-cleanup.js';
-export interface OwnerCleanupCommand {
-    mode: 'exec' | 'detached' | 'noop';
-    provider: string;
-    executable?: string;
-    args?: string[];
-    sandboxId?: string;
-    [key: string]: unknown;
-}
-export interface OwnerCleanupExecution {
-    status?: number | null;
-    error?: string;
-    timedOut?: boolean;
-    [key: string]: unknown;
-}
-export interface BrokerOwnerCleanupPorts<Handle> {
+import type { PhysicalRecord, CleanupSignal, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback, CleanupPreparedStop, CleanupStopObservation } from '../domain/broker-owner-cleanup.js';
+export interface BrokerOwnerCleanupPorts<Handle, Prepared, Receipt> {
     stateKeys: readonly string[];
     backendAliases: ReadonlyMap<string, string>;
     stateBackends: ReadonlyMap<string, string>;
@@ -27,16 +13,9 @@ export interface BrokerOwnerCleanupPorts<Handle> {
     terminateAppium(runtime: unknown): CleanupSignal;
     signalRecording(runtime: PhysicalRecord): CleanupSignal;
     cancelWatchdog(ownerId: string, deviceId: string): CleanupSignal;
-    planStop(ownerId: string, target: {
-        backend: string;
-        stateKey: string;
-        deviceId: string;
-    }, device: PhysicalRecord): OwnerCleanupCommand | {
-        error: string;
-        missing?: string[];
-    };
-    execute(command: OwnerCleanupCommand): OwnerCleanupExecution;
-    releaseWindows(ownerId: string, device: PhysicalRecord, sandboxId: string | undefined): undefined;
+    prepareStop(ownerId:string,target:{backend:string;stateKey:string;deviceId:string},device:PhysicalRecord):CleanupPreparedStop<Prepared>;
+    runPreparedStop(handle:Prepared):CleanupStopObservation<Receipt>;
+    releaseWindows(ownerId:string,device:PhysicalRecord,observation:CleanupStopObservation<Receipt>):undefined;
     timestamp(): string;
     stateErrorCode(error: unknown): string | null;
     isDeviceLockTimeout(error: unknown): boolean;

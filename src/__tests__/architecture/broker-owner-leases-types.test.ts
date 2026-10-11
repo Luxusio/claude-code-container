@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createBrokerOwnerApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner.js";
 import { createBrokerPhysicalLeasesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-leases.js";
 import type { BrokerOwnerRegistration, BrokerOwnerResult } from "../../../packages/device-lab/src/device-lab/domain/broker-owner.js";
-import { validateLeaseParams, type LeaseRpcResult, type LeaseWaitBudget } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-leases.js";
+import { validateLeaseParams, type ClaimOutcome, type HeartbeatOutcome, type ReleaseOutcome, type PruneOutcome, type LeaseWaitBudget } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-leases.js";
 import type { BrokerOwnerPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner.js";
 import type { BrokerPhysicalLeasePorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-leases.js";
 
@@ -31,10 +31,10 @@ function ownerContracts(ports: BrokerOwnerPorts) {
 function leaseContracts<Timer>(ports: BrokerPhysicalLeasePorts<Timer>, budget: LeaseWaitBudget) {
     const app = createBrokerPhysicalLeasesApplication(ports);
     const request = { backend: "android-device", hardwareId: "phone", deviceId: "device" };
-    const claim: LeaseRpcResult = app.claim("owner", request);
-    const heartbeat: LeaseRpcResult = app.heartbeat("owner", request, budget);
-    const released: LeaseRpcResult = app.release("owner", request);
-    const pruned: LeaseRpcResult = app.prune("owner", { backend: "android-device" });
+    const claim: ClaimOutcome = app.claim("owner", request);
+    const heartbeat: HeartbeatOutcome = app.heartbeat("owner", request, budget);
+    const released: ReleaseOutcome = app.release("owner", request);
+    const pruned: PruneOutcome = app.prune("owner", { backend: "android-device" });
     const { withHardwareLock, ...withoutLock } = ports;
     // @ts-expect-error each hardware mutation requires its native lock
     createBrokerPhysicalLeasesApplication(withoutLock);
@@ -75,6 +75,6 @@ void [ownerContracts, leaseContracts];
 
 describe("broker owner and lease type consumers", () => {
     it("rejects a lease duration shorter than the physical ownership minimum", () => {
-        expect(validateLeaseParams({ backend: "android-device", hardwareId: "phone", ttlMs: 1 }, "claim")).toEqual({ ok: false, status: 400, error: "invalid-lease-ttl-ms" });
+        expect(validateLeaseParams({ backend: "android-device", hardwareId: "phone", ttlMs: 1 }, "claim")).toEqual({ ok: false, kind: "invalid", error: "invalid-lease-ttl-ms" });
     });
 });

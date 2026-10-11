@@ -5,11 +5,11 @@ import { physicalStopReplacement } from "../../../packages/device-lab/src/device
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
 import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
 
-export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string>, cleanup: BrokerOwnerCleanupPorts<string>): {
-    devices: ReturnType<typeof createBrokerPhysicalDevicesApplication<string>>;
-    owner: ReturnType<typeof createBrokerOwnerCleanupApplication<string>>;
-    releaseLease: BrokerPhysicalDevicesPorts<string>["releaseLease"];
-    publish: BrokerOwnerCleanupPorts<string>["publish"];
+export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string, { observed: boolean }>, cleanup: BrokerOwnerCleanupPorts<string, { deviceId: string }, { observed: boolean }>): {
+    devices: ReturnType<typeof createBrokerPhysicalDevicesApplication<string, { observed: boolean }>>;
+    owner: ReturnType<typeof createBrokerOwnerCleanupApplication<string, { deviceId: string }, { observed: boolean }>>;
+    releaseLease: BrokerPhysicalDevicesPorts<string, { observed: boolean }>["releaseLease"];
+    publish: BrokerOwnerCleanupPorts<string, { deviceId: string }, { observed: boolean }>["publish"];
 } {
     const devices = createBrokerPhysicalDevicesApplication(physical), owner = createBrokerOwnerCleanupApplication(cleanup);
     const { releaseLease, ...missingRelease } = physical;
@@ -24,6 +24,22 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     createBrokerOwnerCleanupApplication(missingPublication);
     // @ts-expect-error synchronous publication cannot defer its guarded decision
     createBrokerOwnerCleanupApplication({ ...cleanup, publish: async () => ({ found: true, matched: true, device: null }) });
+    const { prepareStop, ...withoutPreparation } = cleanup;
+    // @ts-expect-error owner stop admission requires native preparation
+    createBrokerOwnerCleanupApplication(withoutPreparation);
+    const { runPreparedStop, ...withoutRun } = cleanup;
+    // @ts-expect-error one captured native stop effect is required
+    createBrokerOwnerCleanupApplication(withoutRun);
+    // @ts-expect-error native stop preparation settles synchronously
+    createBrokerOwnerCleanupApplication({ ...cleanup, prepareStop: async () => ({ kind: "prepared", handle: { deviceId: "phone" } }) });
+    // @ts-expect-error native stop observations settle synchronously
+    createBrokerOwnerCleanupApplication({ ...cleanup, runPreparedStop: async () => ({ ok: true, operationKind: "metadata-only", receipt: { observed: true } }) });
+    const { observePhysicalStop, ...withoutObservation } = physical;
+    // @ts-expect-error the physical stop observation is required
+    createBrokerPhysicalDevicesApplication(withoutObservation);
+    // @ts-expect-error physical stop observation cannot defer its outcome
+    createBrokerPhysicalDevicesApplication({ ...physical, observePhysicalStop: async () => ({ status: 0, receipt: { observed: true } }) });
+    void [prepareStop, runPreparedStop, observePhysicalStop];
     return { devices, owner, releaseLease, publish };
 }
 

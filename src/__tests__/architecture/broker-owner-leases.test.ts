@@ -113,18 +113,18 @@ describe("broker owner registration and resolution", () => {
 describe("broker physical lease mutations", () => {
     it("creates a claim, refreshes its heartbeat and releases only its owned record", () => {
         const f = leaseFixture();
-        expect(f.app.claim(ownerId, { ...request, claimId: undefined })).toMatchObject({ status: 200, payload: { ok: true, result: { created: true, lease: { claimId: "new-claim", deviceId: "device" } } } });
-        expect(f.app.heartbeat(ownerId, { ...request, claimId: "new-claim" })).toMatchObject({ status: 200, payload: { ok: true, result: { heartbeat: true, lease: { claimId: "new-claim", expiresAt: "2026-10-10T12:01:00.000Z" } } } });
+        expect(f.app.claim(ownerId, { ...request, claimId: undefined })).toMatchObject({ kind: "claimed", created: true, lease: { claimId: "new-claim", deviceId: "device" } });
+        expect(f.app.heartbeat(ownerId, { ...request, claimId: "new-claim" })).toMatchObject({ kind: "renewed", lease: { claimId: "new-claim", expiresAt: "2026-10-10T12:01:00.000Z" } });
         f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {ttlMs: 60000, claimId: "new-claim", claimNonce: "operation"});
-        expect(f.app.release(ownerId, { ...request, claimId: "new-claim" })).toMatchObject({ status: 200, payload: { ok: true, result: { released: true } } });
+        expect(f.app.release(ownerId, { ...request, claimId: "new-claim" })).toMatchObject({ kind: "released" });
         expect(f.records.has("phone")).toBe(false);
         expect(f.cancelled).toEqual([f.timers[0]]);
     });
     it("refuses a foreign owner before refreshing or releasing its lease", () => {
         const f = leaseFixture(), foreign = lease({ ownerId: otherOwner }); f.records.set("phone", foreign);
-        expect(f.app.claim(ownerId, request)).toMatchObject({ status: 409, payload: { error: "physical-lease-conflict" } });
-        expect(f.app.heartbeat(ownerId, request)).toMatchObject({ status: 403, payload: { error: "physical-lease-owned-by-another-owner" } });
-        expect(f.app.release(ownerId, request)).toMatchObject({ status: 403, payload: { error: "physical-lease-owned-by-another-owner" } });
+        expect(f.app.claim(ownerId, request)).toMatchObject({ kind: "conflict", error: "physical-lease-conflict" });
+        expect(f.app.heartbeat(ownerId, request)).toMatchObject({ kind: "forbidden", error: "physical-lease-owned-by-another-owner" });
+        expect(f.app.release(ownerId, request)).toMatchObject({ kind: "forbidden", error: "physical-lease-owned-by-another-owner" });
         expect(f.records.get("phone")).toBe(foreign);
         expect(f.writes).toEqual([]); expect(f.removed).toEqual([]); expect(f.cancelled).toEqual([]);
     });
@@ -132,13 +132,13 @@ describe("broker physical lease mutations", () => {
         const f = leaseFixture(); f.records.set("phone", lease());
         const successor = lease({ claimId: "successor-claim", claimNonce: "successor-operation" });
         f.onLock(() => { f.records.set("phone", successor); });
-        expect(f.app.release(ownerId, request)).toMatchObject({ status: 409, payload: { error: "physical-lease-claim-mismatch" } });
+        expect(f.app.release(ownerId, request)).toMatchObject({ kind: "conflict", error: "physical-lease-claim-mismatch" });
         expect(f.records.get("phone")).toBe(successor);
         expect(f.removed).toEqual([]); expect(f.cancelled).toEqual([]);
     });
     it("replaces expired claims with a new generation and preserves requested connection metadata", () => {
         const f = leaseFixture(); f.records.set("phone", lease({ expiresAt: "2000-01-01T00:00:00.000Z" }));
-        expect(f.app.claim(ownerId, { ...request, claimNonce: "replacement", connection: "wifi", transport: { host: "example", port: 5555 } })).toMatchObject({ status: 200, payload: { result: { created: true, lease: { claimId: "new-claim", claimNonce: "replacement", connection: "wifi", transport: { host: "example", port: 5555 } } } } });
+        expect(f.app.claim(ownerId, { ...request, claimNonce: "replacement", connection: "wifi", transport: { host: "example", port: 5555 } })).toMatchObject({ kind: "claimed", created: true, lease: { claimId: "new-claim", claimNonce: "replacement", connection: "wifi", transport: { host: "example", port: 5555 } } });
     });
     it("passes the heartbeat deadline to the native lock and makes no mutation after lock refusal", () => {
         const f = leaseFixture(), fault = new Error("lease lock deadline"), budget: LeaseWaitBudget = { remaining: () => 0 };
@@ -150,7 +150,7 @@ describe("broker physical lease mutations", () => {
     it("does not attest expiry removal or cancel heartbeat when native removal fails", () => {
         const f = leaseFixture(), expired = lease({ expiresAt: "2000-01-01T00:00:00.000Z" }), fault = new Error("remove denied");
         f.records.set("phone", expired); f.ports.remove = () => { throw fault; };
-        expect(f.app.heartbeat(ownerId, request)).toMatchObject({ status: 404, payload: { error: "physical-lease-expired", pruned: false } });
+        expect(f.app.heartbeat(ownerId, request)).toMatchObject({ kind: "expired", error: "physical-lease-expired", pruned: false });
         expect(f.records.get("phone")).toBe(expired);
         expect(() => f.app.release(ownerId, request)).toThrow(fault);
         expect(f.cancelled).toEqual([]);
@@ -161,7 +161,7 @@ describe("broker physical lease mutations", () => {
         const denied = lease({ hardwareId: "second", expiresAt: "2000-01-01T00:00:00.000Z" }); f.records.set("second", denied);
         const remove = f.ports.remove;
         f.ports.remove = file => { if (file === "second") throw new Error("second removal"); return remove(file); };
-        expect(f.app.prune(ownerId, { backend: "android-device" })).toMatchObject({ status: 200, payload: { result: { pruned: [{ hardwareId: "first", expired: true }] } } });
+        expect(f.app.prune(ownerId, { backend: "android-device" })).toMatchObject({ kind: "pruned", leases: [{ hardwareId: "first", expired: true }] });
         expect(f.records.has("first")).toBe(false); expect(f.records.get("second")).toBe(denied);
     });
     it("preserves prior prune effects when a later hardware lock fails", () => {

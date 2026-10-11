@@ -1,7 +1,8 @@
-import { cleanupRecord, type CleanupRpcResult, type PhysicalRecord } from './broker-owner-cleanup.js';
+import type {LeaseFailure} from './broker-physical-leases.js';
+import { cleanupRecord, type PhysicalRecord, type AuxiliaryCleanup, type CleanupLeaseResult, type CleanupRollback } from './broker-owner-cleanup.js';
 export type PhysicalParamError = {
     ok: false;
-    status: number;
+    kind: 'invalid';
     error: string;
     allowed?: string[];
 };
@@ -32,23 +33,30 @@ export interface AppleHostDevice {
     availability: string;
     raw: string;
 }
-export interface PhysicalCommand {
-    mode: 'noop';
-    provider: string;
-    reason: string;
+export interface AndroidHostDevice {
+    serial:string;state:string;details:PhysicalRecord;connection:string;attachable:boolean;[key:string]:unknown;
 }
-export interface PhysicalExecution {
-    mode?: string;
-    provider?: string;
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-    timedOut?: boolean;
-    executable?: string;
-    args?: string[];
-    [key: string]: unknown;
+export interface AndroidInventory {ok:boolean;devices:AndroidHostDevice[];[key:string]:unknown}
+export interface PhysicalExecution<Receipt> {status?:number|null;stdout?:string;stderr?:string;error?:string;timedOut?:boolean;receipt:Receipt}
+export interface PhysicalContext<Receipt> {
+    error:string; allowed?:string[]; ownerId?:string; backend?:string; deviceId?:string; hardwareId?:string;
+    connection?:string; state?:string; detail?:string; message?:string; existing?:PhysicalRecord|null;
+    inventory?:AndroidInventory; inventoryObservation?:PhysicalExecution<Receipt>; hostDevices?:unknown[]; candidates?:unknown[]; command?:PhysicalExecution<Receipt>;
+    diagnostic?:PhysicalRecord; device?:unknown; auxiliaryCleanup?:AuxiliaryCleanup; detached?:false;
+    release?:CleanupLeaseResult|null; leaseRollback?:CleanupRollback; physicalLeaseCleanup?:CleanupLeaseResult;
+    execution?:PhysicalExecution<Receipt>; invoked?:boolean; dryRun?:boolean; mutatesHost?:boolean; found?:boolean;
 }
+export type AttachOutcome<Receipt> = ({kind:'attached';device:PhysicalRecord;lease:PhysicalRecord;heartbeat:unknown} & ({provider:'adb';inventory:AndroidInventory}|{provider:'xcrun';inventory:PhysicalExecution<Receipt>;command:PhysicalExecution<Receipt>})) |
+    {kind:'attach-refused';category:'invalid'|'missing'|'conflict'|'provider-failed'|'state-write-failed'} & PhysicalContext<Receipt> |
+    {kind:'lease-refused';failure:LeaseFailure};
+export type DetachOutcome<Receipt> = {kind:'detached';deviceId:string;device:unknown;release:CleanupLeaseResult|null;auxiliaryCleanup:AuxiliaryCleanup} |
+    {kind:'detach-refused';category:'invalid'|'missing'|'conflict'|'provider-failed'|'state-write-failed'} & PhysicalContext<Receipt> |
+    {kind:'scope-refused';failure:LeaseFailure};
+export type TrustOutcome<Receipt> = {kind:'trust-observed';diagnostic:PhysicalRecord;inventoryObservation:PhysicalExecution<Receipt>} |
+    {kind:'trust-refused';category:'invalid'|'conflict'|'provider-failed'} & PhysicalContext<Receipt>;
+export type PhysicalStopOutcome<Receipt> = {kind:'stop-preview'} |
+    {kind:'stop-observed';success:boolean;device:unknown;auxiliaryCleanup:AuxiliaryCleanup;release:CleanupLeaseResult|null;execution:PhysicalExecution<Receipt>;invoked:true;dryRun:false;mutatesHost:boolean;publicationMatched:boolean;found?:boolean} |
+    {kind:'stop-refused';category:'missing'|'conflict'|'provider-failed'|'state-write-failed'} & PhysicalContext<Receipt>;
 export interface PhysicalStopRequest {
     backend: string;
     stateKey: string;
@@ -56,21 +64,21 @@ export interface PhysicalStopRequest {
     force: boolean;
     dryRun: boolean;
 }
-export function commandSucceeded(command: PhysicalExecution) { return command.status === 0 && !command.error; }
+export function commandSucceeded(command: PhysicalExecution<unknown>) { return command.status === 0 && !command.error; }
 export function physicalStopReplacement(device: PhysicalRecord, timestamp: string) { return {
     ...device, status: 'detached', leaseClaimId: null, leaseClaimNonce: null, updatedAt: timestamp
 }; }
 export function validateAttachParams(params: unknown, deriveDeviceId: (backend: string, identity: string) => string): PhysicalParamError | AttachParams {
     if (!cleanupRecord(params)) {
         return {
-            ok: false, status: 400, error: "invalid-attach-params"
+            ok: false, kind: "invalid", error: "invalid-attach-params"
         };
     }
     const input = params;
     const backend = typeof input.backend === "string" ? input.backend : "";
     if (!["android-device", "ios-device"].includes(backend)) {
         return {
-            ok: false, status: 400, error: "invalid-attach-backend", allowed: ["android-device", "ios-device"]
+            ok: false, kind: "invalid", error: "invalid-attach-backend", allowed: ["android-device", "ios-device"]
         };
     }
     const stateKey = backend;
@@ -83,14 +91,14 @@ export function validateAttachParams(params: unknown, deriveDeviceId: (backend: 
         : deriveDeviceId(backend, String(identity || name || "real-device"));
     if (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) {
         return {
-            ok: false, status: 400, error: "invalid-device-id"
+            ok: false, kind: "invalid", error: "invalid-device-id"
         };
     }
     const connectionProvided = typeof input.connection === "string";
     const connection = connectionProvided ? String(input.connection) : "usb";
     if (!["usb", "wifi"].includes(connection))
         return {
-            ok: false, status: 400, error: "invalid-connection"
+            ok: false, kind: "invalid", error: "invalid-connection"
         };
     const host = typeof input.host === "string" && input.host.trim() ? input.host.trim() : null;
     const port = Number.isFinite(input.port) ? Number(input.port) : null;
@@ -101,20 +109,20 @@ export function validateAttachParams(params: unknown, deriveDeviceId: (backend: 
 export function validateAppleTrustParams(params: unknown): PhysicalParamError | AppleTrustParams {
     if (!cleanupRecord(params)) {
         return {
-            ok: false, status: 400, error: "invalid-apple-trust-params"
+            ok: false, kind: "invalid", error: "invalid-apple-trust-params"
         };
     }
     const input = params;
     const backend = typeof input.backend === "string" ? input.backend : "ios-device";
     if (backend !== "ios-device") {
         return {
-            ok: false, status: 400, error: "invalid-apple-trust-backend", allowed: ["ios-device"]
+            ok: false, kind: "invalid", error: "invalid-apple-trust-backend", allowed: ["ios-device"]
         };
     }
     const action = typeof input.action === "string" && input.action.trim() ? input.action.trim() : "status";
     if (!["status", "pair", "connect"].includes(action)) {
         return {
-            ok: false, status: 400, error: "invalid-apple-trust-action", allowed: ["status", "pair", "connect"]
+            ok: false, kind: "invalid", error: "invalid-apple-trust-action", allowed: ["status", "pair", "connect"]
         };
     }
     const udid = typeof input.udid === "string" && input.udid.trim() ? input.udid.trim() : null;
@@ -130,7 +138,7 @@ function appleTrustManualSteps() {
         "Re-run device_wireless with backend=ios-device and action=status, then call device_attach when xctrace reports the UDID as USB or Network.",
     ];
 }
-export function appleTrustDiagnostic(action: string, udid: string | null, hostDevice: AppleHostDevice | null, inventory: PhysicalExecution | null) {
+export function appleTrustDiagnostic(action: string, udid: string | null, hostDevice: AppleHostDevice | null) {
     const visible = Boolean(hostDevice);
     const networkVisible = hostDevice?.connection === "wifi";
     const unavailable = hostDevice?.availability === "unavailable";
@@ -161,13 +169,7 @@ export function appleTrustDiagnostic(action: string, udid: string | null, hostDe
             erasesDevice: false,
             disconnectsDevice: false,
         },
-        inventoryCommand: inventory ? {
-            provider: inventory.provider,
-            executable: inventory.executable,
-            args: inventory.args,
-            status: inventory.status,
-            stderr: inventory.stderr,
-        } : null,
+
     };
 }
 export function detachedPhysicalDeviceCanReattach(existing: Record<string, unknown>, deviceId: string, hardwareId: string, hardwareField: "serial" | "udid") {
@@ -175,23 +177,9 @@ export function detachedPhysicalDeviceCanReattach(existing: Record<string, unkno
         && existing[hardwareField] === hardwareId
         && existing.status === "detached";
 }
-export function physicalParamError(parsed: PhysicalParamError): CleanupRpcResult { return {
-    status: parsed.status, payload: {
-        ok: false, error: parsed.error, ...(parsed.allowed ? {
-            allowed: parsed.allowed
-        } : {})
-    }
-}; }
 export function physicalOwnerConflict(devices: unknown[], device: PhysicalRecord, hardwareField: 'serial' | 'udid') {
     const conflicts = devices.filter((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && (candidate.id === device.id || candidate[hardwareField] === device[hardwareField]));
     return {
         conflicts, allowed: conflicts.length === 0 || conflicts.length === 1 && detachedPhysicalDeviceCanReattach(conflicts[0], String(device.id), String(device[hardwareField]), hardwareField)
     };
-}
-export function physicalStopCommand(backend: string): PhysicalCommand { return {
-    mode: 'noop', provider: backend, reason: backend === 'android-device' ? 'physical Android stop/delete does not power off or disconnect the real device' : 'physical iOS stop/delete does not power off, erase, or disconnect the real device'
-}; }
-export function physicalFailureDetail(result: PhysicalExecution): string {
-    const parts = [result.error ? `error: ${result.error}` : '', result.stderr ? `stderr: ${result.stderr}` : '', result.stdout ? `stdout: ${result.stdout}` : ''].filter(Boolean);
-    return (parts.join('\n') || `provider exited with status ${String(result.status)}`).slice(0, 8192);
 }

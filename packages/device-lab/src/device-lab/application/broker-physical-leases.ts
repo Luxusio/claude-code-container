@@ -1,4 +1,4 @@
-import { DEFAULT_PHYSICAL_LEASE_TTL_MS, physicalLeaseHeartbeatKey, physicalLeaseHeartbeatIntervalMs, validateLeaseParams, leaseParamError, type LeaseParamSuccess, type LeaseRpcResult, type LeaseWaitBudget } from "../domain/broker-physical-leases.js";
+import { DEFAULT_PHYSICAL_LEASE_TTL_MS, physicalLeaseHeartbeatKey, physicalLeaseHeartbeatIntervalMs, validateLeaseParams, leaseParamError, type LeaseParamSuccess, type ClaimOutcome, type HeartbeatOutcome, type ReleaseOutcome, type PruneOutcome, type LeaseFailure, type LeaseWaitBudget } from "../domain/broker-physical-leases.js";
 import type { BrokerPhysicalLeasePorts } from "../ports/broker-physical-leases.js";
 import { createLeaseDatePolicy } from "./broker-observation-leases.js";
 
@@ -18,7 +18,7 @@ export function createBrokerPhysicalLeasesApplication<Timer>(ports: BrokerPhysic
         const intervalMs = physicalLeaseHeartbeatIntervalMs(ttlMs);
         const {handle: timer} = ports.schedule(() => {
             const result = heartbeatPhysicalBrokerLease(ownerId, {backend, hardwareId, deviceId, ttlMs, claimId: options.claimId, claimNonce: options.claimNonce});
-            if (result.status !== 200) stopHeartbeat(ownerId, backend, hardwareId, deviceId);
+            if (result.kind !== 'renewed') stopHeartbeat(ownerId, backend, hardwareId, deviceId);
             return undefined;
         }, intervalMs);
         ports.unref(timer);
@@ -51,104 +51,98 @@ function createPhysicalLease(ownerId: string, parsed: LeaseParamSuccess, now: st
     }, parsed.ttlMs, now);
 }
 
-function claimPhysicalLease(ownerId: string, params: unknown): LeaseRpcResult {
+function claimPhysicalLease(ownerId: string, params: unknown): ClaimOutcome {
     const parsed = validateLeaseParams(params, "claim");
     if (!parsed.ok) return leaseParamError(parsed);
     const directory = ports.prepareDirectory(parsed.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
+    if (!directory.ok) return directory.failure;
     const file = ports.leaseFile(parsed.backend, parsed.hardwareId);
     return ports.withHardwareLock(parsed.backend, parsed.hardwareId, () => {
         const now = ports.timestamp();
         const existing = ports.read(file, parsed.backend, parsed.hardwareId);
         if (existing && !leaseExpired(existing) && existing.ownerId === ownerId) {
             if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
-                return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", conflict: existing } };
+                return {kind:'conflict', error: "physical-lease-device-mismatch", conflict: existing};
             }
             if (parsed.claimNonce && existing.claimNonce !== parsed.claimNonce) {
-                return { status: 409, payload: { ok: false, error: "physical-lease-operation-conflict", conflict: existing } };
+                return {kind:'conflict', error: "physical-lease-operation-conflict", conflict: existing};
             }
             const refreshed = withLeaseExpiry(existing, parsed.ttlMs, now);
             ports.write(file, refreshed);
-            return { status: 200, payload: { ok: true, result: { lease: refreshed, created: false, reused: true, heartbeat: true } } };
+            return {kind:'claimed',lease:refreshed,created:false,reused:true,heartbeat:true};
         }
         if (existing && !leaseExpired(existing)) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "physical-lease-conflict",
-                    conflict: existing,
-                },
-            };
+            return {kind:'conflict', error: "physical-lease-conflict",
+                    conflict: existing};
         }
         const lease = createPhysicalLease(ownerId, parsed, now);
         ports.write(file, lease);
-        return { status: 200, payload: { ok: true, result: { lease, created: true } } };
+        return {kind:'claimed',lease,created:true};
     });
 }
 
-function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: LeaseWaitBudget) {
+function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: LeaseWaitBudget): HeartbeatOutcome {
     const parsed = validateLeaseParams(params, "heartbeat");
     if (!parsed.ok) return leaseParamError(parsed);
     const directory = ports.inspectDirectory(parsed.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
-    if (!directory.exists) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
+    if (!directory.ok) return directory.failure;
+    if (!directory.exists) return {kind:'missing', error: "physical-lease-not-found"};
     const file = ports.leaseFile(parsed.backend, parsed.hardwareId);
     return ports.withHardwareLock(parsed.backend, parsed.hardwareId, () => {
         const existing = ports.read(file, parsed.backend, parsed.hardwareId);
-        if (!existing) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
+        if (!existing) return {kind:'missing', error: "physical-lease-not-found"};
         if (existing.ownerId !== ownerId) {
             if (leaseExpired(existing)) {
                 const pruned = pruneExpired(file);
-                return { status: 404, payload: { ok: false, error: "physical-lease-expired", pruned, lease: existing } };
+                return {kind:'expired', error: "physical-lease-expired", pruned, lease: existing};
             }
-            return { status: 403, payload: { ok: false, error: "physical-lease-owned-by-another-owner", conflict: existing } };
+            return {kind:'forbidden', error: "physical-lease-owned-by-another-owner", conflict: existing};
         }
         if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
-            return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", lease: existing } };
+            return {kind:'conflict', error: "physical-lease-device-mismatch", lease: existing};
         }
         if (parsed.claimId && existing.claimId !== parsed.claimId) {
-            return { status: 409, payload: { ok: false, error: "physical-lease-claim-mismatch", lease: existing } };
+            return {kind:'conflict', error: "physical-lease-claim-mismatch", lease: existing};
         }
         if (parsed.claimNonce && existing.claimNonce !== parsed.claimNonce) {
-            return { status: 409, payload: { ok: false, error: "physical-lease-operation-mismatch", lease: existing } };
+            return {kind:'conflict', error: "physical-lease-operation-mismatch", lease: existing};
         }
         if (leaseExpired(existing)) {
             const pruned = pruneExpired(file);
-            return { status: 404, payload: { ok: false, error: "physical-lease-expired", pruned, lease: existing } };
+            return {kind:'expired', error: "physical-lease-expired", pruned, lease: existing};
         }
         const refreshed = withLeaseExpiry(existing, parsed.ttlMs);
         ports.write(file, refreshed);
-        return { status: 200, payload: { ok: true, result: { lease: refreshed, heartbeat: true } } };
+        return {kind:'renewed',lease:refreshed};
     }, waitBudget);
 }
 
-function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess, existing: Record<string, unknown> | null): LeaseRpcResult | null {
-    if (!existing) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
+function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess, existing: Record<string, unknown> | null): LeaseFailure | null {
+    if (!existing) return {kind:'missing', error: "physical-lease-not-found"};
     if (existing.ownerId !== ownerId) {
-        return { status: 403, payload: { ok: false, error: "physical-lease-owned-by-another-owner", conflict: existing } };
+        return {kind:'forbidden', error: "physical-lease-owned-by-another-owner", conflict: existing};
     }
     if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
-        return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", lease: existing } };
+        return {kind:'conflict', error: "physical-lease-device-mismatch", lease: existing};
     }
     if (parsed.claimId && existing.claimId !== parsed.claimId) {
-        return { status: 409, payload: { ok: false, error: "physical-lease-claim-mismatch", lease: existing } };
+        return {kind:'conflict', error: "physical-lease-claim-mismatch", lease: existing};
     }
     if (parsed.claimNonce && existing.claimNonce !== parsed.claimNonce) {
-        return { status: 409, payload: { ok: false, error: "physical-lease-operation-mismatch", lease: existing } };
+        return {kind:'conflict', error: "physical-lease-operation-mismatch", lease: existing};
     }
     return null;
 }
 
-function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): LeaseRpcResult {
+function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): Extract<ReleaseOutcome, {kind:'released'}> {
     ports.remove(file);
     stopHeartbeat(ownerId, parsed.backend, parsed.hardwareId, parsed.deviceId || undefined);
-    return { status: 200, payload: { ok: true, result: { released: true, lease: existing } } };
+    return {kind:'released',lease:existing};
 }
 
 function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>) {
     if (ports.fileExists(file)) {
-        return { attempted: true, ok: false, error: "physical-lease-rollback-path-occupied", lease: ports.read(file, parsed.backend, parsed.hardwareId) };
+        return { kind: "occupied" as const, attempted: true as const, ok: false as const, error: "physical-lease-rollback-path-occupied", lease: ports.read(file, parsed.backend, parsed.hardwareId) };
     }
     try {
         const restored: Record<string, unknown> = withLeaseExpiry(existing);
@@ -161,23 +155,24 @@ function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSu
                 claimNonce: typeof restored.claimNonce === "string" ? restored.claimNonce : undefined,
             })
             : null;
-        return { attempted: true, ok: true, lease: restored, heartbeat };
+        return { kind: "restored" as const, attempted: true as const, ok: true as const, lease: restored, heartbeat };
     } catch (error) {
         return {
-            attempted: true,
-            ok: false,
+            kind: "write-failed" as const,
+            attempted: true as const,
+            ok: false as const,
             error: "physical-lease-rollback-write-failed",
             detail: error instanceof Error ? error.message : String(error),
         };
     }
 }
 
-function releasePhysicalBrokerLease(ownerId: string, params: unknown) {
+function releasePhysicalBrokerLease(ownerId: string, params: unknown): ReleaseOutcome {
     const parsed = validateLeaseParams(params, "release");
     if (!parsed.ok) return leaseParamError(parsed);
     const directory = ports.inspectDirectory(parsed.backend);
-    if (!directory.ok) return { status: directory.status, payload: directory.payload };
-    if (!directory.exists) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
+    if (!directory.ok) return directory.failure;
+    if (!directory.exists) return {kind:'missing', error: "physical-lease-not-found"};
     const file = ports.leaseFile(parsed.backend, parsed.hardwareId);
     return ports.withHardwareLock(parsed.backend, parsed.hardwareId, () => {
         const existing = ports.read(file, parsed.backend, parsed.hardwareId);
@@ -187,12 +182,12 @@ function releasePhysicalBrokerLease(ownerId: string, params: unknown) {
     });
 }
 
-function prunePhysicalBrokerLeases(ownerId: string, params: unknown) {
+function prunePhysicalBrokerLeases(ownerId: string, params: unknown): PruneOutcome {
     const parsed = validateLeaseParams(params, "prune");
     if (!parsed.ok) return leaseParamError(parsed);
     const pruned: Array<Record<string, unknown>> = [];
     const scan = ports.scan(parsed.backend);
-    if (!scan.ok) return { status: scan.status, payload: scan.payload };
+    if (!scan.ok) return scan.failure;
     for (const { file, hardwareId } of scan.entries) {
         ports.withHardwareLock(parsed.backend, hardwareId, () => {
             const lease = ports.read(file, parsed.backend, hardwareId);
@@ -205,7 +200,7 @@ function prunePhysicalBrokerLeases(ownerId: string, params: unknown) {
             }
         });
     }
-    return { status: 200, payload: { ok: true, result: { ownerId, backend: parsed.backend, pruned } } };
+    return {kind:'pruned',ownerId,backend:parsed.backend,leases:pruned};
 }
 
     return {claim: claimPhysicalLease, heartbeat: heartbeatPhysicalBrokerLease, release: releasePhysicalBrokerLease,

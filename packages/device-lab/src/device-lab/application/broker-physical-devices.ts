@@ -1,82 +1,48 @@
-import { validateAttachParams, validateAppleTrustParams, physicalParamError, detachedPhysicalDeviceCanReattach, appleTrustDiagnostic, commandSucceeded, physicalStopCommand, physicalStopReplacement, physicalFailureDetail, type AttachParams, type PhysicalStopRequest } from '../domain/broker-physical-devices.js';
-import { cleanupRecord, type PhysicalRecord, type CleanupRpcResult, type CleanupLeaseGuard, type CleanupPublication } from '../domain/broker-owner-cleanup.js';
+import { validateAttachParams, validateAppleTrustParams, detachedPhysicalDeviceCanReattach, appleTrustDiagnostic, commandSucceeded, physicalStopReplacement, type AttachParams, type PhysicalStopRequest, type AttachOutcome, type DetachOutcome, type TrustOutcome, type PhysicalStopOutcome } from '../domain/broker-physical-devices.js';
+import { cleanupRecord, type PhysicalRecord, type CleanupLeaseGuard, type CleanupPublication, type CleanupLeaseResult } from '../domain/broker-owner-cleanup.js';
 import type { BrokerPhysicalDevicesPorts, AndroidInventory } from '../ports/broker-physical-devices.js';
-export function createBrokerPhysicalDevicesApplication<Handle>(ports: BrokerPhysicalDevicesPorts<Handle>) {
+export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: BrokerPhysicalDevicesPorts<Handle, Receipt>) {
     function existingPhysicalDevice(ownerId: string, stateKey: string, deviceId: string, hardwareId: string, field: 'serial' | 'udid') {
         return ports.read(ownerId, stateKey).find((device): device is PhysicalRecord => cleanupRecord(device) && (device.id === deviceId || device[field] === hardwareId));
     }
-    function resolveSingleUsbAndroidTarget(parsed: AttachParams): {
-        ok: true;
-        target: string;
-        inventory: AndroidInventory;
-    } | {
-        ok: false;
-        status: number;
-        payload: Record<string, unknown>;
-    } {
+    function resolveSingleUsbAndroidTarget(parsed: AttachParams): {ok:true;target:string;inventory:AndroidInventory} | ({ok:false} & Extract<AttachOutcome<Receipt>, {kind:'attach-refused'}>) {
         const inventory = ports.androidInventory();
         if (!inventory.ok)
             return {
-                ok: false, status: 502, payload: {
-                    ok: false, error: "adb-inventory-failed", inventory
-                }
+                ok: false, kind:'attach-refused',category:'provider-failed', error: "adb-inventory-failed", inventory
             };
         const candidates = inventory.devices.filter((device) => device.connection === "usb" && device.attachable);
         if (candidates.length === 1)
             return {
                 ok: true, target: candidates[0].serial, inventory
             };
-        return {
-            ok: false,
-            status: candidates.length === 0 ? 404 : 409,
-            payload: {
-                ok: false,
-                error: candidates.length === 0 ? "android-device-not-visible" : "android-device-selection-required",
-                backend: parsed.backend,
-                connection: parsed.connection,
-                hostDevices: inventory.devices,
-                candidates,
-                message: candidates.length === 0
-                    ? "No attachable USB Android device is visible to host adb."
-                    : "Multiple attachable USB Android devices are visible; pass serial.",
-            },
-        };
+        return {ok:false,kind:'attach-refused',category:candidates.length === 0 ? 'missing' : 'conflict',
+            error:candidates.length === 0 ? 'android-device-not-visible' : 'android-device-selection-required',
+            backend:parsed.backend,connection:parsed.connection,hostDevices:inventory.devices,candidates,
+            message:candidates.length === 0 ? 'No attachable USB Android device is visible to host adb.' : 'Multiple attachable USB Android devices are visible; pass serial.'};
+
     }
-    function brokerAttachAndroid(ownerId: string, parsed: AttachParams) {
+    function brokerAttachAndroid(ownerId: string, parsed: AttachParams): AttachOutcome<Receipt> {
         if (parsed.connection === "wifi" && !parsed.host && !parsed.serial) {
-            return {
-                status: 400, payload: {
-                    ok: false, error: "missing-android-wifi-target"
-                }
-            };
+            return {kind:'attach-refused',category:'invalid',error: "missing-android-wifi-target"};
         }
         let initialInventory: AndroidInventory | null = null;
         const resolvedUsbTarget = parsed.connection === "usb" && !parsed.serial
             ? resolveSingleUsbAndroidTarget(parsed)
             : null;
         if (resolvedUsbTarget && !resolvedUsbTarget.ok)
-            return {
-                status: resolvedUsbTarget.status, payload: resolvedUsbTarget.payload
-            };
+            return resolvedUsbTarget;
         if (resolvedUsbTarget?.ok)
             initialInventory = resolvedUsbTarget.inventory;
         const target = parsed.connection === "wifi"
             ? (parsed.serial?.includes(":") ? parsed.serial : `${parsed.host || parsed.serial}:${parsed.port || 5555}`)
             : (parsed.serial || (resolvedUsbTarget?.ok ? resolvedUsbTarget.target : null));
         if (!target || target.startsWith("emulator-")) {
-            return {
-                status: 400, payload: {
-                    ok: false, error: target?.startsWith("emulator-") ? "android-emulator-not-physical-device" : "missing-android-serial"
-                }
-            };
+            return {kind:'attach-refused',category:'invalid',error: target?.startsWith("emulator-") ? "android-emulator-not-physical-device" : "missing-android-serial"};
         }
         const existing = existingPhysicalDevice(ownerId, parsed.stateKey, parsed.deviceId, target, "serial");
         if (existing && !detachedPhysicalDeviceCanReattach(existing, parsed.deviceId, target, "serial")) {
-            return {
-                status: 409, payload: {
-                    ok: false, error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: target
-                }
-            };
+            return {kind:'attach-refused',category:'conflict',error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: target};
         }
         const leaseClaimNonce = ports.nonce();
         const lease = ports.claimLease(ownerId, {
@@ -91,11 +57,8 @@ export function createBrokerPhysicalDevicesApplication<Handle>(ports: BrokerPhys
                 type: "usb"
             },
         });
-        if (lease.status !== 200)
-            return lease;
-        const leasePayload = cleanupRecord(lease.payload) ? lease.payload : {};
-        const leaseResult = cleanupRecord(leasePayload.result) ? leasePayload.result : {};
-        const leaseRecord = cleanupRecord(leaseResult.lease) ? leaseResult.lease : undefined;
+        if (lease.kind !== 'claimed') return {kind:'lease-refused',failure:lease};
+        const leaseRecord = lease.lease;
         const releaseLease = () => ports.releaseClaim(ownerId, {
             backend: parsed.backend,
             hardwareId: target,
@@ -107,38 +70,22 @@ export function createBrokerPhysicalDevicesApplication<Handle>(ports: BrokerPhys
             const connect = ports.connectAndroid(target);
             if (!commandSucceeded(connect)) {
                 releaseLease();
-                return {
-                    status: 502, payload: {
-                        ok: false, error: "adb-connect-failed", command: connect
-                    }
-                };
+                return {kind:'attach-refused',category:'provider-failed',error: "adb-connect-failed", command: connect};
             }
         }
         const inventory = initialInventory || ports.androidInventory();
         if (!inventory.ok) {
             releaseLease();
-            return {
-                status: 502, payload: {
-                    ok: false, error: "adb-inventory-failed", inventory
-                }
-            };
+            return {kind:'attach-refused',category:'provider-failed',error: "adb-inventory-failed", inventory};
         }
         const hostDevice = inventory.devices.find((device) => device.serial === target);
         if (!hostDevice) {
             releaseLease();
-            return {
-                status: 404, payload: {
-                    ok: false, error: "android-device-not-visible", hardwareId: target, inventory
-                }
-            };
+            return {kind:'attach-refused',category:'missing',error: "android-device-not-visible", hardwareId: target, inventory};
         }
         if (hostDevice.state !== "device") {
             releaseLease();
-            return {
-                status: 409, payload: {
-                    ok: false, error: "android-device-not-attachable", hardwareId: target, state: hostDevice.state
-                }
-            };
+            return {kind:'attach-refused',category:'conflict',error: "android-device-not-attachable", hardwareId: target, state: hostDevice.state};
         }
         const now = ports.timestamp();
         const device = {
@@ -169,72 +116,34 @@ export function createBrokerPhysicalDevicesApplication<Handle>(ports: BrokerPhys
             const claim = ports.claimDevice(ownerId, parsed.stateKey, device, "serial");
             if (!claim.ok) {
                 releaseLease();
-                return {
-                    status: 409, payload: {
-                        ok: false, error: claim.error, existing: claim.existing
-                    }
-                };
+                return {kind:'attach-refused',category:'conflict',error: claim.error, existing: claim.existing};
             }
         }
         catch (error) {
             releaseLease();
-            return {
-                status: 500, payload: {
-                    ok: false, error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error)
-                }
-            };
+            return {kind:'attach-refused',category:'state-write-failed',error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error)};
         }
         const heartbeat = ports.heartbeat(ownerId, parsed.backend, target, parsed.deviceId, leaseRecord, leaseClaimNonce);
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    device, lease: leaseResult.lease, heartbeat, provider: "adb", inventory
-                }
-            }
-        };
+        return {kind:'attached',device, lease: leaseRecord, heartbeat, provider: "adb", inventory};
     }
-    function brokerAttachIos(ownerId: string, parsed: AttachParams) {
+    function brokerAttachIos(ownerId: string, parsed: AttachParams): AttachOutcome<Receipt> {
         if (!parsed.udid)
-            return {
-                status: 400, payload: {
-                    ok: false, error: "missing-ios-udid"
-                }
-            };
+            return {kind:'attach-refused',category:'invalid',error: "missing-ios-udid"};
         const existing = existingPhysicalDevice(ownerId, parsed.stateKey, parsed.deviceId, parsed.udid, "udid");
         if (existing && !detachedPhysicalDeviceCanReattach(existing, parsed.deviceId, parsed.udid, "udid")) {
-            return {
-                status: 409, payload: {
-                    ok: false, error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: parsed.udid
-                }
-            };
+            return {kind:'attach-refused',category:'conflict',error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: parsed.udid};
         }
         const inventory = ports.appleInventory();
         if (!commandSucceeded(inventory))
-            return {
-                status: 502, payload: {
-                    ok: false, error: "xctrace-inventory-failed", command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null, inventory)
-                }
-            };
+            return {kind:'attach-refused',category:'provider-failed',error: "xctrace-inventory-failed", command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null)};
         const hostDevice = ports.appleDevices(inventory.stdout || "").find((device) => device.udid === parsed.udid);
         if (!hostDevice)
-            return {
-                status: 404, payload: {
-                    ok: false, error: "ios-device-not-visible", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null, inventory)
-                }
-            };
+            return {kind:'attach-refused',category:'missing',error: "ios-device-not-visible", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null)};
         if (hostDevice.availability === "unavailable") {
-            return {
-                status: 409, payload: {
-                    ok: false, error: "ios-device-not-attachable", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, hostDevice, inventory)
-                }
-            };
+            return {kind:'attach-refused',category:'conflict',error: "ios-device-not-attachable", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, hostDevice)};
         }
         if (parsed.connection === "wifi" && hostDevice.connection !== "wifi") {
-            return {
-                status: 409, payload: {
-                    ok: false, error: "ios-wifi-device-not-network-visible", hardwareId: parsed.udid, diagnostic: appleTrustDiagnostic("connect", parsed.udid, hostDevice, inventory)
-                }
-            };
+            return {kind:'attach-refused',category:'conflict',error: "ios-wifi-device-not-network-visible", hardwareId: parsed.udid, inventoryObservation:inventory, diagnostic: appleTrustDiagnostic("connect", parsed.udid, hostDevice)};
         }
         const connection = parsed.connectionProvided ? parsed.connection : hostDevice.connection;
         const leaseClaimNonce = ports.nonce();
@@ -248,11 +157,8 @@ export function createBrokerPhysicalDevicesApplication<Handle>(ports: BrokerPhys
                 type: connection, host: connection === "wifi" ? parsed.host : null, port: connection === "wifi" ? parsed.port : null, visibleVia: "xctrace"
             },
         });
-        if (lease.status !== 200)
-            return lease;
-        const leasePayload = cleanupRecord(lease.payload) ? lease.payload : {};
-        const leaseResult = cleanupRecord(leasePayload.result) ? leasePayload.result : {};
-        const leaseRecord = cleanupRecord(leaseResult.lease) ? leaseResult.lease : undefined;
+        if (lease.kind !== 'claimed') return {kind:'lease-refused',failure:lease};
+        const leaseRecord = lease.lease;
         const releaseLease = () => ports.releaseClaim(ownerId, {
             backend: parsed.backend,
             hardwareId: parsed.udid,
@@ -287,251 +193,121 @@ export function createBrokerPhysicalDevicesApplication<Handle>(ports: BrokerPhys
             const claim = ports.claimDevice(ownerId, parsed.stateKey, device, "udid");
             if (!claim.ok) {
                 releaseLease();
-                return {
-                    status: 409, payload: {
-                        ok: false, error: claim.error, existing: claim.existing
-                    }
-                };
+                return {kind:'attach-refused',category:'conflict',error: claim.error, existing: claim.existing};
             }
         }
         catch (error) {
             releaseLease();
-            return {
-                status: 500, payload: {
-                    ok: false, error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error)
-                }
-            };
+            return {kind:'attach-refused',category:'state-write-failed',error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error)};
         }
         const heartbeat = ports.heartbeat(ownerId, parsed.backend, parsed.udid, parsed.deviceId, leaseRecord, leaseClaimNonce);
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    device, lease: leaseResult.lease, heartbeat, provider: "xcrun", inventory
-                }
-            }
-        };
+        return {kind:'attached',device, lease: leaseRecord, heartbeat, provider: "xcrun", inventory, command:inventory};
     }
-    function trust(ownerId: string, params: unknown) {
+    function trust(ownerId: string, params: unknown): TrustOutcome<Receipt> {
         const parsed = validateAppleTrustParams(params);
         if (!parsed.ok)
-            return physicalParamError(parsed);
+            return {kind:'trust-refused',category:'invalid',error:parsed.error,...(parsed.allowed ? {allowed:parsed.allowed} : {})};
         const inventory = ports.appleInventory();
         if (!commandSucceeded(inventory)) {
-            return {
-                status: 502,
-                payload: {
-                    ok: false,
-                    error: inventory.error === "executable-not-found" ? "ios-wireless-missing-xcrun" : "xctrace-inventory-failed",
-                    result: {
+            return {kind:'trust-refused',category:'provider-failed',inventoryObservation:inventory,error: inventory.error === "executable-not-found" ? "ios-wireless-missing-xcrun" : "xctrace-inventory-failed",
+                    diagnostic: {
                         ownerId,
-                        ...appleTrustDiagnostic(parsed.action, parsed.udid, null, inventory),
-                    },
-                },
-            };
+                        ...appleTrustDiagnostic(parsed.action, parsed.udid, null),
+                    },};
         }
         const devices = ports.appleDevices(inventory.stdout || "");
         const selected = parsed.udid ? devices.find((device) => device.udid === parsed.udid) || null : null;
         const diagnostic = {
             ownerId,
-            ...appleTrustDiagnostic(parsed.action, parsed.udid, selected, inventory),
+            ...appleTrustDiagnostic(parsed.action, parsed.udid, selected),
             inventory: {
                 devices,
                 count: devices.length,
             },
         };
         if (parsed.action === "status") {
-            return {
-                status: 200, payload: {
-                    ok: true, result: diagnostic
-                }
-            };
+            return {kind:'trust-observed',inventoryObservation:inventory,diagnostic};
         }
         if (selected?.connection === "wifi" && selected.availability !== "unavailable" && parsed.action === "connect") {
-            return {
-                status: 200, payload: {
-                    ok: true, result: {
-                        ...diagnostic, alreadyNetworkVisible: true, manualRequired: false
-                    }
-                }
-            };
+            return {kind:'trust-observed',inventoryObservation:inventory,diagnostic:{...diagnostic, alreadyNetworkVisible: true, manualRequired: false}};
         }
-        return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "ios-apple-pairing-manual-required",
-                result: diagnostic,
-            },
-        };
+        return {kind:'trust-refused',category:'conflict',inventoryObservation:inventory,error: "ios-apple-pairing-manual-required",
+                diagnostic,};
     }
-    function attach(ownerId: string, params: unknown): CleanupRpcResult {
+    function attach(ownerId: string, params: unknown): AttachOutcome<Receipt> {
         const parsed = validateAttachParams(params, ports.deriveDeviceId);
         if (!parsed.ok)
-            return physicalParamError(parsed);
+            return {kind:'attach-refused',category:'invalid',error:parsed.error,...(parsed.allowed ? {allowed:parsed.allowed} : {})};
         return parsed.backend === 'android-device' ? brokerAttachAndroid(ownerId, parsed) : brokerAttachIos(ownerId, parsed);
     }
-    function detach(ownerId: string, params: unknown): CleanupRpcResult {
+    function detach(ownerId: string, params: unknown): DetachOutcome<Receipt> {
         const parsed = validateAttachParams(params, ports.deriveDeviceId);
-        if (!parsed.ok)
-            return physicalParamError(parsed);
+        if (!parsed.ok) return {kind:'detach-refused',category:'invalid',error:parsed.error,...(parsed.allowed ? {allowed:parsed.allowed} : {})};
         if (!cleanupRecord(params) || typeof params.deviceId !== 'string' || !params.deviceId.trim())
-            return {
-                status: 400, payload: {
-                    ok: false, error: 'invalid-device-id'
-                }
-            };
-        const device = ports.read(ownerId, parsed.stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === parsed.deviceId);
-        if (!device)
-            return {
-                status: 404, payload: {
-                    ok: false, error: 'owner-device-not-found', deviceId: parsed.deviceId
-                }
-            };
-        const request = {
-            backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, force: false, dryRun: false
-        };
-        return ports.withDetachLease(ownerId, parsed, device, guard => {
-            const preflight = guard.preflight;
-            if (preflight && preflight.status !== 200 && preflight.status !== 404)
-                return {
-                    status: preflight.status === 409 ? 409 : 502, payload: {
-                        ok: false, error: 'physical-lease-release-failed', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, release: preflight.payload
-                    }
-                };
+            return {kind:'detach-refused',category:'invalid',error:'invalid-device-id'};
+        const device = ports.read(ownerId, parsed.stateKey).find((candidate):candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === parsed.deviceId);
+        if (!device) return {kind:'detach-refused',category:'missing',error:'owner-device-not-found',deviceId:parsed.deviceId};
+        const request = {backend:parsed.backend,stateKey:parsed.stateKey,deviceId:parsed.deviceId,force:false,dryRun:false};
+        return ports.withDetachLease<DetachOutcome<Receipt>>(ownerId, parsed, device, guard => {
+            if (guard.admission.kind === 'refused') return {kind:'detach-refused',category:guard.admission.failure.kind === 'conflict' ? 'conflict' : 'provider-failed',
+                error:'physical-lease-release-failed',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,
+                release:{kind:'refused',attempted:guard.attempted,ok:false,failure:guard.admission.failure}};
             const auxiliary = ports.auxiliary(ownerId, request, device);
-            if (auxiliary.result.ok === false)
-                return {
-                    status: 502, payload: {
-                        ok: false, error: 'auxiliary-runtime-cleanup-failed', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, result: {
-                            device: ports.redact(auxiliary.device || device), auxiliaryCleanup: auxiliary.result, detached: false
-                        }
-                    }
-                };
+            if (!auxiliary.result.ok) return {kind:'detach-refused',category:'provider-failed',error:'auxiliary-runtime-cleanup-failed',
+                ownerId,backend:parsed.backend,deviceId:parsed.deviceId,device:auxiliary.device || device,auxiliaryCleanup:auxiliary.result,detached:false};
             const cleaned = auxiliary.device || device;
-            const release = guard.canRestore && !preflight ? ports.releaseLease(ownerId, guard) : preflight;
-            try {
-                ports.removeDevice(ownerId, parsed.stateKey, parsed.deviceId);
-            }
+            const release:CleanupLeaseResult|null = guard.canRestore && guard.admission.kind === 'exact' ? ports.releaseLease(ownerId,guard)
+                : guard.admission.kind === 'missing' ? {kind:'missing',attempted:true,ok:true,failure:guard.admission.failure} : null;
+            try { ports.removeDevice(ownerId,parsed.stateKey,parsed.deviceId); }
             catch (error) {
-                const rollback = guard.canRestore && !preflight ? ports.restoreLease(ownerId, guard) : {
-                    attempted: false, ok: true
-                };
-                return {
-                    status: rollback.ok ? 500 : 502, payload: {
-                        ok: false, error: rollback.ok ? 'owner-state-write-failed' : 'physical-lease-rollback-failed', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error), result: {
-                            device: ports.redact(cleaned), detached: false, release: release?.payload || null, leaseRollback: rollback, auxiliaryCleanup: auxiliary.result
-                        }
-                    }
-                };
+                const rollback = guard.canRestore && release?.kind === 'released' ? ports.restoreLease(ownerId,guard)
+                    : {kind:'not-needed' as const,attempted:false as const,ok:true as const};
+                return {kind:'detach-refused',category:rollback.ok ? 'state-write-failed' : 'provider-failed',
+                    error:rollback.ok ? 'owner-state-write-failed' : 'physical-lease-rollback-failed',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,
+                    detail:error instanceof Error ? error.message : String(error),device:cleaned,detached:false,release,leaseRollback:rollback,auxiliaryCleanup:auxiliary.result};
             }
-            return {
-                status: 200, payload: {
-                    ok: true, result: {
-                        detached: parsed.deviceId, device: ports.redact(cleaned), release: release?.payload || null, auxiliaryCleanup: auxiliary.result, physicalDevicePoweredOff: false, disconnected: false
-                    }
-                }
-            };
+            return {kind:'detached',deviceId:parsed.deviceId,device:cleaned,release,auxiliaryCleanup:auxiliary.result};
         });
     }
-    function stop(ownerId: string, parsed: PhysicalStopRequest, plan: PhysicalRecord, expected: unknown): CleanupRpcResult {
-        if (parsed.dryRun)
-            return {
-                status: 200, payload: {
-                    ok: true, result: {
-                        ...plan, invoked: false, dryRun: true, execution: {
-                            mode: 'dry-run', providerExecution: 'available', mutatesHost: false
-                        }
-                    }
-                }
-            };
-        const device = cleanupRecord(plan.device) ? plan.device : null;
-        if (!device)
-            return {
-                status: 404, payload: {
-                    ok: false, error: 'owner-device-not-found', ownerId, backend: parsed.backend, deviceId: parsed.deviceId
-                }
-            };
-        return ports.withLeaseGuard(ownerId, parsed.stateKey, device, guard => stopWithGuard(ownerId, parsed, plan, expected, guard));
+    function stop(ownerId:string, parsed:PhysicalStopRequest, selectedDevice:unknown, expected:unknown):PhysicalStopOutcome<Receipt> {
+        if (parsed.dryRun) return {kind:'stop-preview'};
+        if (!cleanupRecord(selectedDevice)) return {kind:'stop-refused',category:'missing',error:'owner-device-not-found',ownerId,backend:parsed.backend,deviceId:parsed.deviceId};
+        return ports.withLeaseGuard(ownerId,parsed.stateKey,selectedDevice,guard => stopWithGuard(ownerId,parsed,selectedDevice,expected,guard));
     }
-    function stopWithGuard(ownerId: string, parsed: PhysicalStopRequest, plan: PhysicalRecord, expected: unknown, guard: CleanupLeaseGuard<Handle>): CleanupRpcResult {
-        if (guard.preflight && guard.preflight.status !== 404) {
-            const lease = ports.releaseLease(ownerId, guard);
-            return {
-                status: lease.status === 409 ? 409 : 502, payload: {
-                    ok: false, error: 'physical-lease-cleanup-failed', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, result: {
-                        ...plan, physicalLeaseCleanup: lease, invoked: false, dryRun: false
-                    }
-                }
-            };
+    function stopWithGuard(ownerId:string, parsed:PhysicalStopRequest, selectedDevice:PhysicalRecord, expected:unknown, guard:CleanupLeaseGuard<Handle>):PhysicalStopOutcome<Receipt> {
+        if (guard.admission.kind === 'refused') {
+            const lease = ports.releaseLease(ownerId,guard);
+            return {kind:'stop-refused',category:lease.kind === 'refused' && lease.failure.kind === 'conflict' ? 'conflict' : 'provider-failed',
+                error:'physical-lease-cleanup-failed',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,physicalLeaseCleanup:lease,invoked:false,dryRun:false};
         }
-        const auxiliary = ports.auxiliary(ownerId, parsed, expected);
-        if (auxiliary.committed)
-            expected = ports.clone(auxiliary.device);
-        if (!auxiliary.result.ok)
-            return {
-                status: 502, payload: {
-                    ok: false, error: 'auxiliary-runtime-cleanup-failed', result: {
-                        ...plan, device: ports.redact(auxiliary.device), auxiliaryCleanup: auxiliary.result, invoked: false, dryRun: false, execution: {
-                            mode: 'preflight', providerExecution: 'blocked', mutatesHost: auxiliary.result.changed === true || auxiliary.result.appium.cleared === true || auxiliary.result.recording.cleared === true || auxiliary.result.minimizeWatchdog.cleared === true
-                        }
-                    }
-                }
-            };
-        const command = physicalStopCommand(parsed.backend);
-        const execution = ports.execute(command);
+        const auxiliary = ports.auxiliary(ownerId,parsed,expected);
+        if (auxiliary.committed) expected = ports.clone(auxiliary.device);
+        if (!auxiliary.result.ok) return {kind:'stop-refused',category:'provider-failed',error:'auxiliary-runtime-cleanup-failed',
+            device:auxiliary.device,auxiliaryCleanup:auxiliary.result,invoked:false,dryRun:false,
+            mutatesHost:auxiliary.result.changed || auxiliary.result.appium.cleared === true || auxiliary.result.recording.cleared === true || auxiliary.result.minimizeWatchdog.cleared === true};
+        const execution = ports.observePhysicalStop(parsed.backend);
         const success = commandSucceeded(execution);
-        const lease = success ? ports.releaseLease(ownerId, guard) : null;
-        if (lease && !lease.ok)
-            return {
-                status: lease.status === 409 ? 409 : 502, payload: {
-                    ok: false, error: 'physical-lease-cleanup-failed', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, result: {
-                        ...plan, physicalLeaseCleanup: lease, invoked: true, dryRun: false, execution: {
-                            mode: execution.mode, providerExecution: 'executed', mutatesHost: auxiliary.result.changed === true, command: execution
-                        }
-                    }
-                }
-            };
-        let publication: CleanupPublication | null = null;
-        let updatedDevice = plan.device;
+        const lease = success ? ports.releaseLease(ownerId,guard) : null;
+        if (lease && !lease.ok) return {kind:'stop-refused',category:lease.failure.kind === 'conflict' ? 'conflict' : 'provider-failed',
+            error:'physical-lease-cleanup-failed',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,physicalLeaseCleanup:lease,
+            execution,invoked:true,dryRun:false,mutatesHost:auxiliary.result.changed};
+        let publication:CleanupPublication|null = null;
+        let updatedDevice:unknown = selectedDevice;
         try {
             if (success) {
-                publication = ports.publish(ownerId, parsed.stateKey, parsed.deviceId, expected, physicalStopReplacement(cleanupRecord(expected) ? expected : {}, ports.timestamp()));
+                publication = ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,physicalStopReplacement(cleanupRecord(expected) ? expected : {},ports.timestamp()));
                 updatedDevice = publication.device;
             }
+        } catch (error) {
+            if (!guard.canRestore || lease?.kind !== 'released') throw error;
+            const rollback = ports.restoreLease(ownerId,guard);
+            return {kind:'stop-refused',category:rollback.ok ? 'state-write-failed' : 'provider-failed',
+                error:rollback.ok ? 'owner-state-write-failed' : 'physical-lease-rollback-failed',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,
+                detail:'physical-device-state-transition-failed',device:auxiliary.device || selectedDevice,physicalLeaseCleanup:lease,leaseRollback:rollback,
+                auxiliaryCleanup:auxiliary.result,execution,invoked:true,dryRun:false,mutatesHost:auxiliary.result.changed};
         }
-        catch (error) {
-            if (!guard.canRestore || lease?.status !== 200)
-                throw error;
-            const rollback = ports.restoreLease(ownerId, guard);
-            return {
-                status: rollback.ok ? 500 : 502, payload: {
-                    ok: false, error: rollback.ok ? 'owner-state-write-failed' : 'physical-lease-rollback-failed', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: 'physical-device-state-transition-failed', result: {
-                        ...plan, device: ports.redact(auxiliary.device || plan.device), physicalLeaseCleanup: lease, leaseRollback: rollback, invoked: true, dryRun: false, execution: {
-                            mode: execution.mode, providerExecution: 'executed', mutatesHost: auxiliary.result.changed === true, command: execution
-                        }
-                    }
-                }
-            };
-        }
-        return {
-            status: publication && !publication.matched ? 409 : success ? 200 : 502, payload: {
-                ok: success && (!publication || publication.matched), ...(publication && !publication.matched ? {
-                    error: 'owner-device-state-conflict', ownerId, backend: parsed.backend, deviceId: parsed.deviceId, found: publication.found, ...(!success ? {
-                        providerFailure: 'provider-command-failed'
-                    } : {})
-                } : {}), ...(success || publication && !publication.matched ? {} : {
-                    error: 'provider-command-failed', detail: physicalFailureDetail(execution)
-                }), result: {
-                    ...plan, providerCommand: command, device: ports.redact(updatedDevice), auxiliaryCleanup: auxiliary.result, ...(lease ? {
-                        physicalLeaseCleanup: lease
-                    } : {}), invoked: true, dryRun: false, execution: {
-                        mode: execution.mode, providerExecution: 'executed', mutatesHost: success, command: execution
-                    }
-                }
-            }
-        };
+        return {kind:'stop-observed',success,device:updatedDevice,auxiliaryCleanup:auxiliary.result,release:lease,execution,invoked:true,dryRun:false,
+            mutatesHost:success,publicationMatched:!publication || publication.matched,...(publication ? {found:publication.found} : {})};
     }
-    return {
-        attach, detach, trust, stop
-    };
+    return {attach,detach,trust,stop};
 }

@@ -1,3 +1,5 @@
+import { renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
+import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVSecureBootConfiguration} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import type {HyperVPlanResult} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
@@ -26,7 +28,7 @@ import { createBrokerOwnerApplication } from "./device-lab/application/broker-ow
 import type { BrokerOwnerRegistration as DeviceBrokerOwnerRegistration } from "./device-lab/domain/broker-owner.js";
 import type { BrokerAuthQuarantine } from "./device-lab/ports/broker-owner.js";
 import { createBrokerPhysicalLeasesApplication } from "./device-lab/application/broker-physical-leases.js";
-import { validateLeaseParams, leaseParamError, type LeaseParamSuccess } from "./device-lab/domain/broker-physical-leases.js";
+import { validateLeaseParams, type LeaseParamSuccess, type LeaseFailure } from "./device-lab/domain/broker-physical-leases.js";
 import { createBrokerWindowsSandboxLifecycle, planBrokerWindowsSandboxCommand } from "./device-lab/application/lifecycle/windows-sandbox-lifecycle.js";
 import { brokerWindowsSandboxReplacement } from "./device-lab/domain/lifecycle/windows-sandbox-lifecycle.js";
 import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/lifecycle/windows-sandbox-lifecycle.js";
@@ -723,7 +725,7 @@ export type ProviderCommand = {
     env?: NodeJS.ProcessEnv;
     cwd?: string;
 };
-type ProviderCommandResult = {
+export type ProviderCommandResult = {
     mode: string;
     provider: string;
     executable?: string;
@@ -4774,10 +4776,22 @@ const observePhysicalLeases = createLeaseList<string, PhysicalLeaseDirectoryScan
     },
 );
 
+function nativeLeaseFailure(status: number, payload: Record<string, unknown>): LeaseFailure {
+    const error = typeof payload.error === "string" ? payload.error : "physical-lease-directory-invalid";
+    if (status === 400) return { kind: "invalid", error, ...(Array.isArray(payload.allowed) ? { allowed: payload.allowed.filter((item): item is string => typeof item === "string") } : {}) };
+    if (status === 403) return { kind: "forbidden", error, ...(cleanupRecord(payload.conflict) ? { conflict: payload.conflict } : {}) };
+    if (status === 404) return cleanupRecord(payload.lease) && typeof payload.pruned === "boolean"
+        ? { kind: "expired", error, lease: payload.lease, pruned: payload.pruned }
+        : { kind: "missing", error };
+    if (error === "physical-lease-directory-invalid") return { kind: "directory-refused", error, ...(typeof payload.backend === "string" ? { backend: payload.backend } : {}), ...(payload.detail === undefined ? {} : { detail: payload.detail }) };
+    if (typeof payload.limit === "number") return { kind: "scan-limit", error, limit: payload.limit, ...(typeof payload.backend === "string" ? { backend: payload.backend } : {}) };
+    return { kind: "conflict", error, ...(cleanupRecord(payload.lease) ? { lease: payload.lease } : {}), ...(cleanupRecord(payload.conflict) ? { conflict: payload.conflict } : {}) };
+}
 const brokerPhysicalLeases = createBrokerPhysicalLeasesApplication<ReturnType<typeof setInterval>>({
     parse: value => Date.parse(value()), epoch: () => new Date(0).toISOString(), expiryFrom: (updatedAt, ttlMs) => leaseExpiryFrom(updatedAt, ttlMs),
-    prepareDirectory: backend => ensurePhysicalLeaseDirectory(backend), inspectDirectory: backend => inspectPhysicalLeaseDirectory(backend),
-    scan: backend => scanPhysicalLeaseDirectory(backend), leaseFile: (backend, hardwareId) => physicalLeaseLockFile(backend, hardwareId),
+    prepareDirectory: backend => { const observed = ensurePhysicalLeaseDirectory(backend); return observed.ok ? observed : { ok: false, failure: nativeLeaseFailure(observed.status, observed.payload) }; },
+    inspectDirectory: backend => { const observed = inspectPhysicalLeaseDirectory(backend); return observed.ok ? observed : { ok: false, failure: nativeLeaseFailure(observed.status, observed.payload) }; },
+    scan: backend => { const observed = scanPhysicalLeaseDirectory(backend); return observed.ok ? observed : { ok: false, failure: nativeLeaseFailure(observed.status, observed.payload) }; }, leaseFile: (backend, hardwareId) => physicalLeaseLockFile(backend, hardwareId),
     withHardwareLock: (backend, hardwareId, operation, waitBudget) => withSharedMutationLock(physicalLeaseMutationLockFile(backend, hardwareId), operation, {waitBudget}),
     read: (file, backend, hardwareId) => readLeaseFile(file, backend, hardwareId),
     write: (file, lease) => { writeLeaseFile(file, lease); return undefined; },
@@ -4787,13 +4801,13 @@ const brokerPhysicalLeases = createBrokerPhysicalLeasesApplication<ReturnType<ty
     cancel: timer => { clearInterval(timer); return undefined; },
     unref: timer => { timer.unref?.(); return undefined; },
 });
-function claimPhysicalLease(ownerId: string, params: unknown): BrokerRpcResult { return brokerPhysicalLeases.claim(ownerId, params); }
-function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: AppiumRequestBudget) { return brokerPhysicalLeases.heartbeat(ownerId, params, waitBudget); }
-function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess, existing: Record<string, unknown> | null): BrokerRpcResult | null { return brokerPhysicalLeases.releaseConflict(ownerId, parsed, existing); }
-function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): BrokerRpcResult { return brokerPhysicalLeases.completeRelease(ownerId, parsed, file, existing); }
-function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>) { return brokerPhysicalLeases.restoreReleased(ownerId, parsed, file, existing); }
-function releasePhysicalBrokerLease(ownerId: string, params: unknown) { return brokerPhysicalLeases.release(ownerId, params); }
-function prunePhysicalBrokerLeases(ownerId: string, params: unknown) { return brokerPhysicalLeases.prune(ownerId, params); }
+function claimPhysicalLease(ownerId: string, params: unknown): BrokerRpcResult { return renderLeaseOutcome(brokerPhysicalLeases.claim(ownerId, params)); }
+function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: AppiumRequestBudget) { return renderLeaseOutcome(brokerPhysicalLeases.heartbeat(ownerId, params, waitBudget)); }
+function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess, existing: Record<string, unknown> | null): BrokerRpcResult | null { const failure = brokerPhysicalLeases.releaseConflict(ownerId, parsed, existing); return failure ? leaseParamError(failure) : null; }
+function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): BrokerRpcResult { return renderLeaseOutcome(brokerPhysicalLeases.completeRelease(ownerId, parsed, file, existing)); }
+function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>) { return renderCleanupRollback(brokerPhysicalLeases.restoreReleased(ownerId, parsed, file, existing)); }
+function releasePhysicalBrokerLease(ownerId: string, params: unknown) { return renderLeaseOutcome(brokerPhysicalLeases.release(ownerId, params)); }
+function prunePhysicalBrokerLeases(ownerId: string, params: unknown) { return renderLeaseOutcome(brokerPhysicalLeases.prune(ownerId, params)); }
 
 function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
     const parsed = validateLeaseParams(params, "list");
@@ -4814,7 +4828,7 @@ function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
 }
 
 function physicalDeviceId(backend: string, identity: string) { return `${backend}-${createHash("sha256").update(identity).digest("hex").slice(0, 10)}`; }
-function validateAttachParams(params: unknown): AttachParamError | AttachParamSuccess { return validatePhysicalAttachParams(params, physicalDeviceId); }
+function validateAttachParams(params: unknown): AttachParamError | AttachParamSuccess { const parsed = validatePhysicalAttachParams(params, physicalDeviceId); return parsed.ok ? parsed : { ...parsed, status: 400 }; }
 
 function attachParamError(parsed: AttachParamError) {
     return {
@@ -4924,11 +4938,11 @@ function claimOrReattachPhysicalOwnerDevice(
 
 
 
-function appleTrustStatus(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerPhysicalDevicesApplication(normalized).trust(ownerId, params); }
+function appleTrustStatus(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return renderAppleTrustOutcome(brokerPhysicalDevicesApplication(normalized).trust(ownerId, params)); }
 
-function attachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerPhysicalDevicesApplication(normalized).attach(ownerId, params); }
+function attachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return renderPhysicalAttachOutcome(brokerPhysicalDevicesApplication(normalized).attach(ownerId, params)); }
 
-function detachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerPhysicalDevicesApplication(normalized).detach(ownerId, params); }
+function detachPhysicalDevice(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return renderPhysicalDetachOutcome(brokerPhysicalDevicesApplication(normalized).detach(ownerId, params), redactBrokerDeviceSecrets); }
 
 async function withPhysicalDeviceOperation(
     ownerId: string,
@@ -5821,15 +5835,30 @@ function cleanupOwnerPhysicalLease(ownerId: string, guard: PhysicalLeaseReleaseG
 
 
 function cleanupLeaseGuard(guard: PhysicalLeaseReleaseGuard): CleanupLeaseGuard<PhysicalLeaseReleaseGuard> {
-    return { handle: guard, attempted: guard.attempted, preflight: guard.preflight, canRestore: Boolean(guard.parsed && guard.file && guard.existing) };
+    const failure = guard.preflight && cleanupRecord(guard.preflight.payload)
+        ? nativeLeaseFailure(guard.preflight.status, guard.preflight.payload) : null;
+    return {
+        handle: guard, attempted: guard.attempted,
+        admission: failure ? failure.kind === "missing" ? { kind: "missing", failure } : { kind: "refused", failure }
+            : guard.parsed && guard.file && guard.existing ? { kind: "exact" } : { kind: "no-identity" },
+        canRestore: Boolean(guard.parsed && guard.file && guard.existing),
+    };
 }
-function restoreCleanupLease(ownerId: string, envelope: CleanupLeaseGuard<PhysicalLeaseReleaseGuard>) {
+function releaseCleanupLease(ownerId: string, envelope: CleanupLeaseGuard<PhysicalLeaseReleaseGuard>): import('./device-lab/domain/broker-owner-cleanup.js').CleanupLeaseResult {
+    if (envelope.admission.kind === "refused") return { kind: "refused", attempted: envelope.attempted, ok: false, failure: envelope.admission.failure };
+    if (envelope.admission.kind === "missing") return { kind: "missing", attempted: true, ok: true, failure: envelope.admission.failure };
     const guard = envelope.handle;
-    if (!guard.parsed || !guard.file || !guard.existing) return { attempted: false, ok: true };
-    return restorePhysicalBrokerLeaseRelease(ownerId, guard.parsed, guard.file, guard.existing);
+    if (!guard.parsed || !guard.file || !guard.existing) return { kind: "no-identity", attempted: false, ok: true };
+    const released = brokerPhysicalLeases.completeRelease(ownerId, guard.parsed, guard.file, guard.existing);
+    return { kind: "released", attempted: true, ok: true, lease: released.lease };
+}
+function restoreCleanupLease(ownerId: string, envelope: CleanupLeaseGuard<PhysicalLeaseReleaseGuard>): import('./device-lab/domain/broker-owner-cleanup.js').CleanupRollback {
+    const guard = envelope.handle;
+    if (!guard.parsed || !guard.file || !guard.existing) return { kind: "not-needed", attempted: false, ok: true };
+    return brokerPhysicalLeases.restoreReleased(ownerId, guard.parsed, guard.file, guard.existing);
 }
 function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
-    const ports: BrokerOwnerCleanupPorts<PhysicalLeaseReleaseGuard> = {
+    const ports: BrokerOwnerCleanupPorts<PhysicalLeaseReleaseGuard, ProviderCommand, NativePhysicalReceipt> = {
         stateKeys: DEVICE_BROKER_BACKEND_STATE_KEYS,
         backendAliases: DEVICE_BROKER_COMMAND_BACKENDS,
         stateBackends: DEVICE_BROKER_STATE_BACKENDS,
@@ -5838,41 +5867,51 @@ function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
         publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
         withDeviceOperation: withOwnerDeviceOperation,
         withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => operation(cleanupLeaseGuard(guard))),
-        releaseLease: (ownerId, guard) => cleanupOwnerPhysicalLease(ownerId, guard.handle),
+        releaseLease: releaseCleanupLease,
         restoreLease: restoreCleanupLease,
         terminateAppium: runtime => terminateBrokerOwnedAppium(runtime, normalized),
         signalRecording: runtime => signalBrokerOwnedRecording(runtime, normalized, "SIGINT"),
         cancelWatchdog: cancelBrokerWindowsMinimizeWatchdog,
-        planStop: (ownerId, target, record) => providerCommandFor(ownerId, { ok: true, ...target, command: "device_stop", force: true, dryRun: false }, record, normalized),
-        execute: command => normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
-        releaseWindows: (ownerId, record, sandboxId) => { releaseBrokerWindowsSandboxLock(ownerId, record, sandboxId); },
+        prepareStop: (ownerId, target, record) => {
+            const command = providerCommandFor(ownerId, { ok: true, ...target, command: "device_stop", force: true, dryRun: false }, record, normalized);
+            return "error" in command ? { kind: "unavailable", error: command.error, missing: command.missing } : { kind: "prepared", handle: command };
+        },
+        runPreparedStop: command => {
+            const execution = normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+            return { ok: commandSucceeded(execution), operationKind: command.mode === "noop" ? "metadata-only" : "runtime-stop", receipt: { command, execution } };
+        },
+        releaseWindows: (ownerId, record, observed) => { releaseBrokerWindowsSandboxLock(ownerId, record, observed.receipt.command.sandboxId); return undefined; },
         timestamp: () => new Date().toISOString(),
         stateErrorCode: error => ownerDeviceStateErrorCode(error) || null,
         isDeviceLockTimeout: isDeviceOperationLockTimeout,
     };
     return createBrokerOwnerCleanupApplication(ports);
 }
+function observePhysicalCommand(normalized: NormalizedBrokerOptions, command: ProviderCommand) {
+    const execution = normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+    return { status: execution.status, error: execution.error, stdout: execution.stdout, stderr: execution.stderr, timedOut: execution.timedOut, receipt: { command, execution } };
+}
 function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
-    const ports: BrokerPhysicalDevicesPorts<PhysicalLeaseReleaseGuard> = {
+    const ports: BrokerPhysicalDevicesPorts<PhysicalLeaseReleaseGuard, NativePhysicalReceipt> = {
         deriveDeviceId: physicalDeviceId,
         read: readOwnerDevices,
         androidInventory: () => androidHostDeviceInventory(normalized),
-        connectAndroid: target => normalized.commandRunner({ mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["connect", target] }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
-        appleInventory: () => normalized.commandRunner({ mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["xctrace", "list", "devices"] }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        connectAndroid: target => observePhysicalCommand(normalized, { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["connect", target] }),
+        appleInventory: () => observePhysicalCommand(normalized, { mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["xctrace", "list", "devices"] }),
         appleDevices: parseXctraceDevices,
         nonce: () => randomBytes(16).toString("hex"),
         timestamp: () => new Date().toISOString(),
-        claimLease: claimPhysicalLease,
-        releaseClaim: releasePhysicalBrokerLease,
+        claimLease: (owner, request) => brokerPhysicalLeases.claim(owner, request),
+        releaseClaim: (owner, request) => brokerPhysicalLeases.release(owner, request),
         claimDevice: claimOrReattachPhysicalOwnerDevice,
         heartbeat: (ownerId, backend, hardwareId, deviceId, lease, nonce) => startBrokerPhysicalLeaseHeartbeat(ownerId, backend, hardwareId, deviceId, { ttlMs: leaseTtlMs(lease), claimId: typeof lease?.claimId === "string" ? lease.claimId : undefined, claimNonce: nonce }),
         withDetachLease: (ownerId, parsed, device, operation) => {
             const hardwareId = parsed.backend === "android-device" ? String(device.serial || "") : String(device.udid || "");
             const releaseParams = hardwareId ? validateLeaseParams({ backend: parsed.backend, hardwareId, deviceId: parsed.deviceId, claimId: device.leaseClaimId, claimNonce: device.leaseClaimNonce }, "release") : null;
-            if (releaseParams && !releaseParams.ok) return leaseParamError(releaseParams);
+            if (releaseParams && !releaseParams.ok) return { kind: "scope-refused", failure: releaseParams };
             if (!releaseParams || !hardwareId) return operation(cleanupLeaseGuard({ attempted: false, parsed: null, file: null, existing: null, preflight: null }));
             const directory = inspectPhysicalLeaseDirectory(releaseParams.backend);
-            if (!directory.ok) return { status: directory.status, payload: directory.payload };
+            if (!directory.ok) return { kind: "scope-refused", failure: nativeLeaseFailure(directory.status, directory.payload) };
             if (!directory.exists) return operation(cleanupLeaseGuard({ attempted: true, parsed: null, file: null, existing: null, preflight: { status: 404, payload: { ok: false, error: "physical-lease-not-found" } } }));
             const file = physicalLeaseLockFile(releaseParams.backend, releaseParams.hardwareId);
             return withSharedMutationLock(physicalLeaseMutationLockFile(releaseParams.backend, releaseParams.hardwareId), () => {
@@ -5881,19 +5920,21 @@ function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
             });
         },
         withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => operation(cleanupLeaseGuard(guard))),
-        releaseLease: (ownerId, guard) => cleanupOwnerPhysicalLease(ownerId, guard.handle),
+        releaseLease: releaseCleanupLease,
         restoreLease: restoreCleanupLease,
         removeDevice: (ownerId, stateKey, deviceId) => ownerRepository.removeDevice(ownerId, stateKey, deviceId),
         auxiliary: (ownerId, request, expected) => brokerOwnerCleanupApplication(normalized).auxiliary(ownerId, request, expected),
         publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
-        execute: command => normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        observePhysicalStop: backend => {
+            const command: ProviderCommand = { mode: "noop", provider: backend, reason: backend === "android-device" ? "physical Android stop/delete does not power off or disconnect the real device" : "physical iOS stop/delete does not power off, erase, or disconnect the real device" };
+            return observePhysicalCommand(normalized, command);
+        },
         clone: structuredClone,
-        redact: redactBrokerDeviceSecrets,
     };
     return createBrokerPhysicalDevicesApplication(ports);
 }
 
-function cleanupOwnerRuntime(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerOwnerCleanupApplication(normalized).cleanup(ownerId, params); }
+function cleanupOwnerRuntime(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) { return brokerOwnerCleanupApplication(normalized).cleanup(ownerId, params).then(renderOwnerCleanupOutcome); }
 
 function validateAppiumListParams(params: unknown): AppiumParamError | AppiumListParamSuccess {
     if (!params || typeof params !== "object" || Array.isArray(params)) {
@@ -8463,7 +8504,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
     if ((parsed.stateKey === "android-device" || parsed.stateKey === "ios-device") && parsed.command === "device_stop") {
         const planPayload = cleanupRecord(plan.payload) ? plan.payload : {};
         const result = "result" in planPayload && cleanupRecord(planPayload.result) ? planPayload.result : {};
-        return brokerPhysicalDevicesApplication(normalized).stop(ownerId, parsed, result, expectedDevice);
+        return renderPhysicalStopOutcome(brokerPhysicalDevicesApplication(normalized).stop(ownerId, parsed, result.device, expectedDevice), result, redactBrokerDeviceSecrets);
     }
     const payload = plan.payload as {
         result?: {
