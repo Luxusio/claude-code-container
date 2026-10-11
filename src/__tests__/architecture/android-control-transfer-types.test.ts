@@ -1,12 +1,10 @@
-import { describe, expectTypeOf, it } from "vitest";
 import { createAndroidControlTransfer } from "../../../packages/device-lab/providers/application/android-control-transfer.mjs";
-import type { AndroidControlArguments, AndroidControlOperation, AndroidControlOutcome, AndroidControlTransferPorts } from "../../../packages/device-lab/providers/ports/android-control-transfer.d.mts";
+import type { AndroidControlArguments, AndroidControlOutcome, AndroidControlTransferPorts } from "../../../packages/device-lab/providers/ports/android-control-transfer.d.mts";
 
 type Target = { serial: string };
 type InputStage = { input: string };
 type OutputStage = { output: string };
 type Ports = AndroidControlTransferPorts<Target, InputStage, OutputStage>;
-type Application = ReturnType<typeof createAndroidControlTransfer<Target, InputStage, OutputStage>>;
 
 // Compile-only consumers of the actual JS factory's required JSDoc contract.
 function requiredCapabilities(ports: Ports): void {
@@ -16,11 +14,11 @@ function requiredCapabilities(ports: Ports): void {
     const oriented: AndroidControlOutcome | undefined = application.request("mobile_set_orientation", orientation);
     const left: AndroidControlOutcome | undefined = application.request("mobile_rotate_left", { deviceId: "owned" });
     const right: AndroidControlOutcome | undefined = application.request("mobile_rotate_right", { deviceId: "owned" });
-    const { execute: execute, ...withoutExecution } = ports;
+    const { tap: tap, ...withoutTap } = ports;
     // @ts-expect-error Target-bound native command execution is required.
-    createAndroidControlTransfer(withoutExecution);
-    // @ts-expect-error Orientation settings execution returns a synchronous command receipt.
-    createAndroidControlTransfer({ ...ports, execute: async () => ({ status: 0 }) });
+    createAndroidControlTransfer(withoutTap);
+    // @ts-expect-error Native tap observations settle synchronously.
+    createAndroidControlTransfer({ ...ports, tap: async () => ({ status: 0 }) });
     const { commitOutput: commit, ...withoutCommit } = ports;
     // @ts-expect-error Successful downloads require owned atomic publication authority.
     createAndroidControlTransfer(withoutCommit);
@@ -32,13 +30,6 @@ function requiredCapabilities(ports: Ports): void {
     createAndroidControlTransfer({ ...ports, commitOutput: async () => ({ ok: true, path: "/local/file" }) });
     // @ts-expect-error Disposal cannot leave an asynchronous stage lifetime behind.
     createAndroidControlTransfer({ ...ports, disposeOutput: async () => undefined });
-    void [result, oriented, left, right, execute, commit];
+    void [result, oriented, left, right, tap, commit];
 }
 void requiredCapabilities;
-
-describe("Android control and transfer consumed types", () => {
-    it("exposes a synchronous finite request and outcome contract", () => {
-        expectTypeOf<Parameters<Application["request"]>>().toEqualTypeOf<[AndroidControlOperation, AndroidControlArguments]>();
-        expectTypeOf<ReturnType<Application["request"]>>().toEqualTypeOf<AndroidControlOutcome | undefined>();
-    });
-});

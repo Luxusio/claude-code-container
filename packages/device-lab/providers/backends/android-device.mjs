@@ -27,16 +27,48 @@ import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, relea
 import { withTargetStatus } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
 
-// Native leaf steps retain timeout-runner selection before argument coercion.
-const androidWireless = createAndroidWirelessApplication({
-    discover: () => androidDiscovery(),
-    listDevices: (discovery) => run(discovery.adb, ["devices", "-l"]),
-    tcpip: (adb, argv, timeoutMs) => runWithTimeout(adb, argv, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))),
-    pair: (adb, argv, timeoutMs) => runWithTimeout(adb, argv, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))),
-    connect: (adb, argv, timeoutMs) => runWithTimeout(adb, argv, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))),
-    selectJsonPublisher: () => jsonResult,
-    selectTextPublisher: () => textResult,
-});
+/** Produce bounded evidence before any public consumption; pair credentials never enter it.
+ * @param {string[]} args @param {import('../ports/android-wireless.mjs').AndroidWirelessCommandResult} result
+ * @param {string} [pairingCode] @returns {import('../ports/android-wireless.mjs').AndroidWirelessEvidence} */
+function wirelessEvidence(args, result, pairingCode) {
+    /** @param {string|undefined} value */
+    const redact = value => pairingCode ? value?.split(pairingCode).join("[redacted]") : value;
+    return {
+        provider: "adb",
+        args: args.map((value, index) => pairingCode
+            ? index === 2 ? "[redacted]" : value.split(pairingCode).join("[redacted]")
+            : value),
+        status: result.status,
+        stdout: redact(result.stdout),
+        stderr: redact(result.stderr),
+        signal: result.signal || null,
+        error: redact(result.error?.message) || null,
+    };
+}
+/** @type {import('../ports/android-wireless.mjs').AndroidWirelessPorts<{adb:string},ReturnType<typeof jsonResult>|ReturnType<typeof textResult>>} */
+const androidWirelessPorts = {
+    discover() {
+        const discovery = androidDiscovery();
+        return discovery.adb ? { available: true, target: { adb: discovery.adb } } : { available: false };
+    },
+    listDevices: target => run(target.adb, ["devices", "-l"]),
+    tcpip(target, serial, port, timeoutMs) {
+        const args = ["-s", serial, "tcpip", String(port)];
+        return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))));
+    },
+    pair(target, endpoint, code, timeoutMs) {
+        const pairingCode = String(code);
+        const args = ["pair", endpoint, pairingCode];
+        return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))), pairingCode);
+    },
+    connect(target, endpoint, timeoutMs) {
+        const args = ["connect", endpoint];
+        return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))));
+    },
+    jsonResult: value => jsonResult(value),
+    textResult: (ok, text) => textResult(ok, text),
+};
+const androidWireless = createAndroidWirelessApplication(androidWirelessPorts);
 
 const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -329,8 +361,14 @@ const androidControlTransferPorts = {
         if (target.error) return { kind: "refused", message: target.error };
         return { kind: "ready", target };
     },
-    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
-    transfer: (target, args, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, args), timeoutMs),
+    tap: (target, point) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "tap", String(point.x), String(point.y)])),
+    swipe: (target, swipe) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "swipe", String(swipe.x1), String(swipe.y1), String(swipe.x2), String(swipe.y2), String(swipe.durationMs)])),
+    typeText: (target, text) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "text", String(text).replace(/\s/g, "%s")])),
+    key: (target, key) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "keyevent", String(key)])),
+    disableAutoRotation: target => run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "system", "accelerometer_rotation", "0"])),
+    setRotation: (target, rotation) => run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "system", "user_rotation", rotation])),
+    upload: (target, localPath, remotePath, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, ["push", localPath, remotePath]), timeoutMs),
+    download: (target, remotePath, localPath, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, ["pull", remotePath, localPath]), timeoutMs),
     guestPath: (value, label) => {
         const policy = validateGuestPath(value, { label, platform: "posix" });
         return androidControlPathObservation(policy);

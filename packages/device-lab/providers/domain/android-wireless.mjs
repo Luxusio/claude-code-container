@@ -1,4 +1,5 @@
-/** @param {any} text */
+/** @typedef {{status:number|null,stdout?:string,stderr?:string,signal?:string|null,error?:{message?:string}|null}} importReceipt */
+/** @param {unknown} text */
 export function parseAdbDevices(text) {
     return String(text || "")
         .split(/\r?\n/)
@@ -17,8 +18,8 @@ export function parseAdbDevices(text) {
         .filter((device) => device.serial);
 }
 
-/** @param {any} value
- * @param {any} [fallbackPort] */
+/** @param {unknown} value
+ * @param {unknown} [fallbackPort] */
 export function parseAndroidWifiEndpoint(value, fallbackPort = null) {
     const input = String(value || "").trim();
     if (!input) return null;
@@ -38,8 +39,8 @@ export function parseAndroidWifiEndpoint(value, fallbackPort = null) {
     return null;
 }
 
-/** @param {any} host
- * @param {any} [port] */
+/** @param {unknown} host
+ * @param {unknown} [port] */
 export function androidWifiSerial(host, port = 5555) {
     const endpoint = parseAndroidWifiEndpoint(host, port || 5555);
     if (!endpoint) return null;
@@ -47,18 +48,18 @@ export function androidWifiSerial(host, port = 5555) {
     return `${formattedHost}:${endpoint.port}`;
 }
 
-/** @param {any} host
- * @param {any} [port]
- * @param {any} [serial] */
+/** @param {unknown} host
+ * @param {unknown} [port]
+ * @param {unknown} [serial] */
 export function androidWifiTarget(host, port = 5555, serial = "") {
     if (serial) return androidWifiSerial(serial, port);
     if (!host) return null;
     return androidWifiSerial(host, port);
 }
 
-/** @param {any} serial
- * @param {any} host
- * @param {any} port */
+/** @param {unknown} serial
+ * @param {unknown} host
+ * @param {unknown} port */
 export function androidWifiTransport(serial, host, port) {
     const endpoint = parseAndroidWifiEndpoint(serial, port || 5555);
     return {
@@ -68,32 +69,16 @@ export function androidWifiTransport(serial, host, port) {
     };
 }
 
-/** @param {any} backend
- * @param {any} target
- * @param {any} [fallbackPort] */
+/** @param {unknown} backend
+ * @param {unknown} target
+ * @param {unknown} [fallbackPort] */
 export function androidWifiAttachNext(backend, target, fallbackPort = 5555) {
     const endpoint = parseAndroidWifiEndpoint(target, fallbackPort);
     return endpoint ? { tool: "device_attach", arguments: { backend, connection: "wifi", ...endpoint } } : null;
 }
 
-/** @param {any[]} command
- * @param {any} result
- * @param {number[]} [redactedIndices] */
-export function androidWirelessCommandPayload(command, result, redactedIndices = []) {
-    const redacted = new Set(redactedIndices);
-    return {
-        provider: "adb",
-        args: command.map((value, index) => redacted.has(index) ? "[redacted]" : value),
-        status: result.status,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        signal: result.signal || null,
-        error: result.error?.message || null,
-    };
-}
-
 /** Project the existing raw untimed inventory outcome without normalizing it.
- * @param {any} r
+ * @param {importReceipt} r
  */
 export function androidWirelessDeviceList(r) {
     if (r.status !== 0) {

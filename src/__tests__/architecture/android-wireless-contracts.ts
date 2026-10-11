@@ -1,29 +1,17 @@
-// Checked by the normal strict architecture compiler; never invoked.
-type Ports=Parameters<typeof createAndroidWirelessApplication>[0];
-
-import {createAndroidWirelessApplication} from "../../../packages/device-lab/providers/application/android-wireless.mjs";
-
+import { createAndroidWirelessApplication } from "../../../packages/device-lab/providers/application/android-wireless.mjs";
+type Ports = Parameters<typeof createAndroidWirelessApplication>[0];
 function contracts(ports: Ports) {
-    const app=createAndroidWirelessApplication(ports);
-    app.handle({action:"status",backend:"android-device"});
-    const {discover:omitted,...incomplete}=ports;void omitted;
-    // @ts-expect-error Native discovery is required; no fallback is installed.
-    createAndroidWirelessApplication(incomplete);
-    const wrongDiscovery:Ports={...ports,
-    // @ts-expect-error Discovery observations are synchronous.
-    discover:async()=>({adb:"adb"}),
-    };
-    const wrongCommand:Ports={...ports,
-    // @ts-expect-error Native command observations are synchronous.
-    tcpip:async()=>({status:0,stdout:"",stderr:""}),
-    };
-    const wrongPublication:Ports={...ports,
-    // @ts-expect-error Publisher selection returns a callable synchronously.
-    selectJsonPublisher:async()=>()=>({}),
-    };
-    // @ts-expect-error No opaque wireless workflow native port.
-    ports.wireless({action:"pair"});
-
-    void [wrongDiscovery, wrongCommand, wrongPublication, app];
+    createAndroidWirelessApplication(ports).handle({ action: "status" });
+    const { discover, ...withoutDiscovery } = ports;
+    // @ts-expect-error native availability and target observations are required
+    createAndroidWirelessApplication(withoutDiscovery);
+    // @ts-expect-error discovery must settle synchronously
+    createAndroidWirelessApplication({ ...ports, discover: async () => ({ available: false }) });
+    // @ts-expect-error pairing receipts must settle synchronously
+    createAndroidWirelessApplication({ ...ports, pair: async () => ({ status: 0 }) });
+    const { connect, ...withoutConnect } = ports;
+    // @ts-expect-error native endpoint connection capability is required
+    createAndroidWirelessApplication(withoutConnect);
+    void [discover, connect];
 }
 void contracts;

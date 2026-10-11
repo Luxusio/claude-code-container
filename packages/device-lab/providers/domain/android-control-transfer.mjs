@@ -25,12 +25,8 @@
  * | { back: true } | { home: true } | { forward: true } | { recents: true }
  * | { power: true } | { locked: true } | { unlocked: true } | OrientationPayload
  * )} Payload */
-/** @typedef {{ok:false;message:string}|{ok:true;args:string[];payload:Payload;doubleTap:boolean}} Plan */
-
-/** @param {unknown} text */
-export function androidControlText(text) {
-    return String(text).replace(/\s/g, "%s");
-}
+/** @typedef {{kind:"tap",point:Point}|{kind:"swipe",swipe:Swipe}|{kind:"text",text:unknown}|{kind:"key",key:unknown}} Intent */
+/** @typedef {{ok:false;message:string}|{ok:true;intent:Intent;payload:Payload;doubleTap:boolean}} Plan */
 
 /** @param {Operation} operation @param {Arguments} input @param {Variant} variant
  * @returns {Plan | undefined} */
@@ -39,33 +35,33 @@ export function androidActionPlan(operation, input, variant) {
     switch (operation) {
         case "mobile_tap":
         case "mobile_double_tap":
-            return { ok: true, args: ["shell", "input", "tap", String(x), String(y)],
+            return { ok: true, intent: {kind:"tap",point:{x,y}},
                 payload: operation === "mobile_double_tap"
                     ? { doubleTapped: { x, y }, provider: "adb" }
                     : { tapped: { x, y }, provider: "adb" },
                 doubleTap: operation === "mobile_double_tap" };
         case "mobile_long_press": {
             const { durationMs = 700 } = input;
-            return { ok: true, args: ["shell", "input", "swipe", String(x), String(y), String(x), String(y), String(durationMs)],
+            return { ok: true, intent: {kind:"swipe",swipe:{x1:x,y1:y,x2:x,y2:y,durationMs}},
                 payload: { longPressed: { x, y, durationMs }, provider: "adb" }, doubleTap: false };
         }
         case "mobile_swipe":
         case "mobile_drag": {
             const { durationMs = operation === "mobile_drag" ? 700 : 300 } = input;
-            return { ok: true, args: ["shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(durationMs)],
+            return { ok: true, intent: {kind:"swipe",swipe:{x1,y1,x2,y2,durationMs}},
                 payload: operation === "mobile_drag"
                     ? { dragged: { x1, y1, x2, y2, durationMs }, provider: "adb" }
                     : { swiped: { x1, y1, x2, y2, durationMs }, provider: "adb" }, doubleTap: false };
         }
         case "mobile_type_text":
-            return { ok: true, args: ["shell", "input", "text", androidControlText(input.text)],
+            return { ok: true, intent: {kind:"text",text:input.text},
                 payload: { typed: true, provider: "adb" }, doubleTap: false };
         case "mobile_key": {
             const key = input.keyCode ?? input.key;
             if (key === undefined || key === null || key === "") {
                 return { ok: false, message: "mobile_key requires key or keyCode" };
             }
-            return { ok: true, args: ["shell", "input", "keyevent", String(key)],
+            return { ok: true, intent: {kind:"key",key},
                 payload: { key, provider: "adb" }, doubleTap: false };
         }
         case "mobile_back":
@@ -76,7 +72,7 @@ export function androidActionPlan(operation, input, variant) {
         case "mobile_lock":
         case "mobile_unlock": {
             const navigation = androidNavigation(operation);
-            return { ok: true, args: ["shell", "input", "keyevent", String(navigation.key)],
+            return { ok: true, intent: {kind:"key",key:navigation.key},
                 payload: variant === "physical" ? { key: navigation.key, provider: "adb" } : navigation.payload,
                 doubleTap: false };
         }
@@ -100,7 +96,7 @@ function androidNavigation(operation) {
 }
 
 /** @param {Operation} operation @param {Arguments} input
- * @returns {{ok:false,message:string}|{ok:true,firstArgs:string[],args:string[],payload:OrientationPayload}} */
+ * @returns {{ok:false,message:string}|{ok:true,rotation:"0"|"1"|"2"|"3",payload:OrientationPayload}} */
 export function androidOrientationPlan(operation, input) {
     const orientation = operation === "mobile_rotate_left" ? "landscape"
         : operation === "mobile_rotate_right" ? "reverse-landscape" : input.orientation;
@@ -115,8 +111,7 @@ export function androidOrientationPlan(operation, input) {
     }
     return {
         ok: true,
-        firstArgs: ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
-        args: ["shell", "settings", "put", "system", "user_rotation", rotation],
+        rotation,
         payload: { orientation, rotation, provider: "adb" },
     };
 }

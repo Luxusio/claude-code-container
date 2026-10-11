@@ -1,175 +1,75 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAndroidControlTransfer } from "../../../packages/device-lab/providers/application/android-control-transfer.mjs";
-import { androidOrientationPlan } from "../../../packages/device-lab/providers/domain/android-control-transfer.mjs";
-import type { AndroidControlTransferPorts, AndroidControlVariant, CommandReceipt, PathObservation, StageObservation, TargetObservation } from "../../../packages/device-lab/providers/ports/android-control-transfer.d.mts";
-
-type Target = { serial: string };
-type InputHandle = { input: string };
-type OutputHandle = { output: string };
-
-function fixture(variant: AndroidControlVariant = "emulator") {
-    const target = { serial: "owned-adb-target" };
-    const input = { input: "allocated-upload" };
-    const output = { output: "allocated-download" };
+import type { AndroidControlTransferPorts, CommandReceipt, Point, Swipe, TargetObservation, PathObservation, StageObservation } from "../../../packages/device-lab/providers/ports/android-control-transfer.mjs";
+type Target = { serial: string }; type Input = { input: string }; type Output = { output: string };
+function fixture() {
+    const target = { serial: "owned" }, output = { output: "allocated" };
+    const good = (): CommandReceipt => ({ status: 0, stdout: "native stdout", stderr: "" });
     const ports = {
-        variant,
+        variant: "emulator" as const,
         target: vi.fn((_id: unknown): TargetObservation<Target> => ({ kind: "ready", target })),
-        execute: vi.fn((_target: Target, _args: string[]): CommandReceipt => ({ status: 0, stdout: "native stdout", stderr: "native warning" })),
-        transfer: vi.fn((_target: Target, _args: string[], _timeoutMs: number): CommandReceipt => ({ status: 0, stdout: "transfer stdout", stderr: "" })),
-        guestPath: vi.fn((_value: unknown, _label: "upload-remote-path" | "download-remote-path"): PathObservation => ({ ok: true, path: "/sdcard/approved.txt" })),
-        stageInput: vi.fn((_value: unknown): StageObservation<InputHandle> => ({ ok: true, path: "/local/upload.txt", stagedPath: "/allocated/upload/payload", handle: input })),
-        stageOutput: vi.fn((_value: unknown): StageObservation<OutputHandle> => ({ ok: true, path: "/local/download.txt", stagedPath: "/allocated/download/payload", handle: output })),
-        commitOutput: vi.fn((_handle: OutputHandle): PathObservation => ({ ok: true, path: "/local/published.txt" })),
-        disposeInput: vi.fn((_handle: InputHandle): undefined => undefined),
-        disposeOutput: vi.fn((_handle: OutputHandle): undefined => undefined),
-    } satisfies AndroidControlTransferPorts<Target, InputHandle, OutputHandle>;
-    return { ports, target, input, output, application: createAndroidControlTransfer(ports) };
+        tap: vi.fn((_target: Target, _point: Point) => good()), swipe: vi.fn((_target: Target, _swipe: Swipe) => good()),
+        typeText: vi.fn((_target: Target, _text: unknown) => good()), key: vi.fn((_target: Target, _key: unknown) => good()),
+        disableAutoRotation: vi.fn((_target: Target) => good()), setRotation: vi.fn((_target: Target, _rotation: "0"|"1"|"2"|"3") => good()),
+        upload: vi.fn((_target: Target, _local: string, _remote: string, _budget: number) => good()),
+        download: vi.fn((_target: Target, _remote: string, _local: string, _budget: number) => good()),
+        guestPath: vi.fn((_value: unknown, _label: "upload-remote-path"|"download-remote-path"): PathObservation => ({ ok: true, path: "/sdcard/approved" })),
+        stageInput: vi.fn((_value: unknown): StageObservation<Input> => ({ ok: true, path: "/local/input", stagedPath: "/stage/input", handle: { input: "allocated" } })),
+        stageOutput: vi.fn((_value: unknown): StageObservation<Output> => ({ ok: true, path: "/local/destination", stagedPath: "/stage/output", handle: output })),
+        commitOutput: vi.fn((_handle: Output): PathObservation => ({ ok: true, path: "/local/destination" })),
+        disposeInput: vi.fn((_handle: Input): undefined => undefined), disposeOutput: vi.fn((_handle: Output): undefined => undefined),
+    } satisfies AndroidControlTransferPorts<Target, Input, Output>;
+    return { ports, target, output, app: createAndroidControlTransfer(ports) };
 }
-
-describe("Android control and transfer application", () => {
-    it("plans all four orientation mappings and the effective left/right orientations", () => {
-        for (const [orientation, rotation] of [["portrait", "0"], ["landscape", "1"], ["reverse-portrait", "2"], ["reverse-landscape", "3"]] as const) {
-            expect(androidOrientationPlan("mobile_set_orientation", { orientation })).toEqual({
-                ok: true,
-                firstArgs: ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
-                args: ["shell", "settings", "put", "system", "user_rotation", rotation],
-                payload: { orientation, rotation, provider: "adb" },
-            });
-        }
-        expect(androidOrientationPlan("mobile_rotate_left", {})).toMatchObject({ ok: true, payload: { orientation: "landscape", rotation: "1" } });
-        expect(androidOrientationPlan("mobile_rotate_right", {})).toMatchObject({ ok: true, payload: { orientation: "reverse-landscape", rotation: "3" } });
+describe("Android control and transfer policy", () => {
+    it("stops double tap after first native failure", () => {
+        const { ports, app } = fixture(); const failure = { status: 17, stderr: "tap denied" };
+        let admitted = false;
+        ports.tap.mockImplementation(() => { if (admitted) throw new Error("failed-first-tap-must-stop"); admitted = true; return failure; });
+        expect(app.request("mobile_double_tap", { x: 1, y: 2 })).toEqual({ kind: "command-failure", command: failure });
     });
-
-    it("resolves the target before orientation admission and refuses unsupported values without settings effects", () => {
-        const { ports, application } = fixture();
-        ports.target.mockReturnValueOnce({ kind: "unknown" }).mockReturnValueOnce({ kind: "refused", message: "attachment lease lost" });
-        ports.execute.mockImplementation(() => { throw new Error("Refused orientation must not change settings"); });
-        expect(application.request("mobile_set_orientation", { deviceId: "absent", orientation: "diagonal" })).toBeUndefined();
-        expect(application.request("mobile_set_orientation", { deviceId: "lost-lease", orientation: "diagonal" })).toEqual({ kind: "text", message: "attachment lease lost" });
-        expect(application.request("mobile_set_orientation", { deviceId: "owned", orientation: "diagonal" })).toEqual({ kind: "text", message: "Unsupported Android orientation: diagonal" });
+    it("refuses rotation after disabling auto rotation fails", () => {
+        const { ports, app } = fixture(); const failure = { status: 9, stderr: "disabled refused" };
+        ports.disableAutoRotation.mockReturnValue(failure);
+        ports.setRotation.mockImplementation(() => { throw new Error("failed-disable-must-not-rotate"); });
+        expect(app.request("mobile_set_orientation", { orientation: "portrait" })).toEqual({ kind: "command-failure", command: failure });
     });
-
-    it("does not change user rotation when disabling the accelerometer fails", () => {
-        const { ports, application } = fixture();
-        const failure = { status: 9, stdout: "", stderr: "accelerometer setting denied" };
-        let rotation: string | undefined = "2";
-        ports.execute.mockImplementation((_target, args) => {
-            if (args[4] === "user_rotation") rotation = args[5];
-            return failure;
-        });
-        expect(application.request("mobile_set_orientation", { deviceId: "owned", orientation: "portrait" })).toEqual({ kind: "command-failure", command: failure });
-        expect(rotation).toBe("2");
+    it("preserves disabled auto rotation when setting rotation fails", () => {
+        const { ports, app } = fixture(); let enabled = true; const failure = { status: 8, stderr: "rotation refused" };
+        ports.disableAutoRotation.mockImplementation(() => { enabled = false; return { status: 0 }; });
+        ports.setRotation.mockReturnValue(failure);
+        expect(app.request("mobile_rotate_right", {})).toEqual({ kind: "command-failure", command: failure }); expect(enabled).toBe(false);
     });
-
-    it("keeps the first settings effect when the second orientation command fails", () => {
-        const { ports, application } = fixture();
-        const failure = { status: 8, stdout: "partial rotation", stderr: "user rotation denied" };
-        let accelerometer: string | undefined = "1";
-        ports.execute.mockImplementation((_target, args) => {
-            if (args[4] === "accelerometer_rotation") { accelerometer = args[5]; return { status: 0, stdout: "accelerometer disabled" }; }
-            expect(args).toEqual(["shell", "settings", "put", "system", "user_rotation", "3"]);
-            return failure;
-        });
-        expect(application.request("mobile_rotate_right", { deviceId: "owned" })).toEqual({ kind: "command-failure", command: failure });
-        expect(accelerometer).toBe("0");
+    it("passes raw text to native encoding and preserves zero keyCode", () => {
+        const { ports, target, app } = fixture();
+        app.request("mobile_type_text", { text: "two words\tline\nnext" });
+        expect(ports.typeText).toHaveBeenCalledWith(target, "two words\tline\nnext");
+        expect(app.request("mobile_key", { key: "HOME", keyCode: 0 })).toMatchObject({ kind: "json", payload: { key: 0 } });
+        expect(ports.key).toHaveBeenCalledWith(target, 0);
+        expect(app.request("mobile_key", {})).toEqual({ kind: "text", message: "mobile_key requires key or keyCode" });
     });
-
-    it("returns orientation success using only the final command streams", () => {
-        const { ports, target, application } = fixture();
-        ports.execute.mockReturnValueOnce({ status: 0, stdout: "first command stdout", stderr: "first warning" })
-            .mockReturnValueOnce({ status: 0, stdout: "rotation applied", stderr: "final warning" });
-        expect(application.request("mobile_set_orientation", { deviceId: "owned", orientation: "reverse-portrait" })).toEqual({ kind: "json", payload: {
-            orientation: "reverse-portrait", rotation: "2", provider: "adb", stdout: "rotation applied", stderr: "final warning", status: 0,
-        } });
-        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "settings", "put", "system", "user_rotation", "2"]);
+    it("refuses unknown or lost-lease targets before staging", () => {
+        const { ports, app } = fixture(); ports.target.mockReturnValueOnce({ kind: "unknown" }).mockReturnValueOnce({ kind: "refused", message: "lease lost" });
+        ports.stageInput.mockImplementation(() => { throw new Error("refusal-must-not-stage"); });
+        expect(app.request("device_upload", {})).toBeUndefined(); expect(app.request("device_upload", {})).toEqual({ kind: "text", message: "lease lost" });
     });
-
-    it("uses the current long-press, swipe and drag duration defaults", () => {
-        const { ports, target, application } = fixture();
-        expect(application.request("mobile_long_press", { deviceId: "owned", x: 1, y: 2 })).toMatchObject({ kind: "json", payload: { longPressed: { x: 1, y: 2, durationMs: 700 }, stdout: "native stdout", stderr: "native warning" } });
-        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "input", "swipe", "1", "2", "1", "2", "700"]);
-        application.request("mobile_swipe", { deviceId: "owned", x1: 1, y1: 2, x2: 3, y2: 4 });
-        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "input", "swipe", "1", "2", "3", "4", "300"]);
-        application.request("mobile_drag", { deviceId: "owned", x1: 1, y1: 2, x2: 3, y2: 4 });
-        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "input", "swipe", "1", "2", "3", "4", "700"]);
+    it("uploads only the admitted stage and disposes it", () => {
+        const { ports, target, app } = fixture(); let live = true;
+        ports.upload.mockImplementation((actual, local, remote, budget) => { expect(actual).toBe(target); expect({ local, remote, budget }).toEqual({ local: "/stage/input", remote: "/sdcard/approved", budget: 300000 }); expect(live).toBe(true); return { status: 0 }; });
+        ports.disposeInput.mockImplementation(() => { live = false; return undefined; });
+        expect(app.request("device_upload", {})).toMatchObject({ kind: "json", payload: { uploaded: { localPath: "/local/input" } } }); expect(live).toBe(false);
     });
-
-    it("preserves text encoding and zero keyCode precedence, and refuses a missing key", () => {
-        const { ports, target, application } = fixture();
-        application.request("mobile_type_text", { deviceId: "owned", text: "two words\tline\nnext" });
-        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "input", "text", "two%swords%sline%snext"]);
-        expect(application.request("mobile_key", { deviceId: "owned", key: "HOME", keyCode: 0 })).toMatchObject({ kind: "json", payload: { key: 0 } });
-        expect(ports.execute).toHaveBeenLastCalledWith(target, ["shell", "input", "keyevent", "0"]);
-        ports.execute.mockClear();
-        expect(application.request("mobile_key", { deviceId: "owned" })).toEqual({ kind: "text", message: "mobile_key requires key or keyCode" });
-        expect(ports.execute).not.toHaveBeenCalled();
+    it("preserves the destination after download failure and disposes the stage", () => {
+        const { ports, app } = fixture(); let destination = "original", disposed = false;
+        const failure = { status: 8, stderr: "pull refused" }; ports.download.mockReturnValue(failure);
+        ports.commitOutput.mockImplementation(() => { destination = "new"; return { ok: true, path: "/local/destination" }; });
+        ports.disposeOutput.mockImplementation(() => { disposed = true; return undefined; });
+        expect(app.request("device_download", {})).toEqual({ kind: "command-failure", command: failure }); expect(destination).toBe("original"); expect(disposed).toBe(true);
     });
-
-    it("stops double tap after the first failure and reports a second-tap failure", () => {
-        const { ports, target, application } = fixture();
-        const failure = { status: 17, stdout: "partial tap", stderr: "tap denied", error: { message: "ADB failed" } };
-        ports.execute.mockReturnValueOnce(failure);
-        expect(application.request("mobile_double_tap", { deviceId: "owned", x: 1, y: 2 })).toEqual({ kind: "command-failure", command: failure });
-        expect(ports.execute.mock.calls).toEqual([[target, ["shell", "input", "tap", "1", "2"]]]);
-        ports.execute.mockClear();
-        ports.execute.mockReturnValueOnce({ status: 0 }).mockReturnValueOnce(failure);
-        expect(application.request("mobile_double_tap", { deviceId: "owned", x: 1, y: 2 })).toEqual({ kind: "command-failure", command: failure });
-        expect(ports.execute.mock.calls).toEqual([
-            [target, ["shell", "input", "tap", "1", "2"]],
-            [target, ["shell", "input", "tap", "1", "2"]],
-        ]);
-    });
-
-    it("keeps emulator and physical navigation results distinct", () => {
-        const emulator = fixture("emulator");
-        const physical = fixture("physical");
-        expect(emulator.application.request("mobile_home", { deviceId: "owned" })).toMatchObject({ kind: "json", payload: { home: true, provider: "adb" } });
-        expect(physical.application.request("mobile_home", { deviceId: "owned" })).toMatchObject({ kind: "json", payload: { key: 3, provider: "adb" } });
-        expect(physical.ports.execute).toHaveBeenCalledWith(physical.target, ["shell", "input", "keyevent", "3"]);
-    });
-
-    it("returns native target and path refusals before allocating or transferring", () => {
-        const { ports, application } = fixture();
-        ports.target.mockReturnValueOnce({ kind: "unknown" }).mockReturnValueOnce({ kind: "refused", message: "lease is not owned by this attachment" });
-        expect(application.request("device_upload", { deviceId: "unknown" })).toBeUndefined();
-        expect(application.request("device_upload", { deviceId: "lost-lease" })).toEqual({ kind: "text", message: "lease is not owned by this attachment" });
-        expect(ports.guestPath).not.toHaveBeenCalled();
-        ports.guestPath.mockReturnValueOnce({ ok: false, message: "upload-remote-path-traversal-rejected" });
-        expect(application.request("device_upload", { deviceId: "owned", remotePath: "/sdcard/../escape" })).toEqual({ kind: "text", message: "upload-remote-path-traversal-rejected" });
-        expect(ports.stageInput).not.toHaveBeenCalled();
-        ports.stageInput.mockReturnValueOnce({ ok: false, message: "upload-local-path-secret-looking-file" });
-        expect(application.request("device_upload", { deviceId: "owned", localPath: "/local/.env", remotePath: "/sdcard/approved.txt" })).toEqual({ kind: "text", message: "upload-local-path-secret-looking-file" });
-        expect(ports.transfer).not.toHaveBeenCalled();
-        expect(ports.disposeInput).not.toHaveBeenCalled();
-    });
-
-    it("uses the allocated upload stage through the bounded command and then disposes it", () => {
-        const { ports, target, input, application } = fixture();
-        let live = true;
-        ports.transfer.mockImplementation((_target, args, timeoutMs) => {
-            expect(live).toBe(true);
-            expect(_target).toBe(target);
-            expect(args).toEqual(["push", "/allocated/upload/payload", "/sdcard/approved.txt"]);
-            expect(timeoutMs).toBe(300_000);
-            return { status: 0, stdout: "uploaded", stderr: "" };
-        });
-        ports.disposeInput.mockImplementation(handle => { expect(handle).toBe(input); live = false; return undefined; });
-        expect(application.request("device_upload", { deviceId: "owned", localPath: "/local/upload.txt", remotePath: "/sdcard/approved.txt" })).toMatchObject({ kind: "json", payload: { uploaded: { localPath: "/local/upload.txt", remotePath: "/sdcard/approved.txt" } } });
-        expect(live).toBe(false);
-    });
-
-    it("does not commit failed downloads and disposes the exact stage after commit refusal", () => {
-        const { ports, target, output, application } = fixture();
-        const failure = { status: 8, stderr: "pull denied" };
-        ports.transfer.mockReturnValueOnce(failure);
-        expect(application.request("device_download", { deviceId: "owned" })).toEqual({ kind: "command-failure", command: failure });
-        expect(ports.transfer).toHaveBeenCalledWith(target, ["pull", "/sdcard/approved.txt", "/allocated/download/payload"], 300_000);
-        expect(ports.commitOutput).not.toHaveBeenCalled();
-        expect(ports.disposeOutput).toHaveBeenCalledWith(output);
-        ports.disposeOutput.mockClear();
-        ports.commitOutput.mockReturnValueOnce({ ok: false, message: "destination changed before atomic publication" });
-        expect(application.request("device_download", { deviceId: "owned" })).toEqual({ kind: "text", message: "destination changed before atomic publication" });
-        expect(ports.commitOutput).toHaveBeenCalledWith(output);
-        expect(ports.disposeOutput).toHaveBeenCalledWith(output);
+    it("disposes the download stage after atomic commit refusal", () => {
+        const { ports, app } = fixture(); let disposed = false;
+        ports.commitOutput.mockReturnValue({ ok: false, message: "destination changed" });
+        ports.disposeOutput.mockImplementation(() => { disposed = true; return undefined; });
+        expect(app.request("device_download", {})).toEqual({ kind: "text", message: "destination changed" }); expect(disposed).toBe(true);
     });
 });

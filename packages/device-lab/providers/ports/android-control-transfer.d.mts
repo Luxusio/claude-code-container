@@ -18,8 +18,14 @@ export type StageObservation<Stage> =
 export interface AndroidControlTransferPorts<Target, InputStage, OutputStage> {
     readonly variant: AndroidControlVariant;
     target(deviceId: unknown): TargetObservation<Target>;
-    execute(target: Target, args: string[]): CommandReceipt;
-    transfer(target: Target, args: string[], timeoutMs: number): CommandReceipt;
+    tap(target: Target, point: Point): CommandReceipt;
+    swipe(target: Target, swipe: Swipe): CommandReceipt;
+    typeText(target: Target, text: unknown): CommandReceipt;
+    key(target: Target, key: unknown): CommandReceipt;
+    disableAutoRotation(target: Target): CommandReceipt;
+    setRotation(target: Target, rotation: "0"|"1"|"2"|"3"): CommandReceipt;
+    upload(target: Target, localPath: string, remotePath: string, timeoutMs: number): CommandReceipt;
+    download(target: Target, remotePath: string, localPath: string, timeoutMs: number): CommandReceipt;
     guestPath(value: unknown, label: "upload-remote-path" | "download-remote-path"): PathObservation;
     stageInput(value: unknown): StageObservation<InputStage>;
     stageOutput(value: unknown): StageObservation<OutputStage>;
