@@ -27,7 +27,7 @@ import {
     transitionOwnerDeviceRecordWithPhysicalLease,
     withAdminOwnerDeviceOperation,
 } from "./device-lab-cleanup.js";
-import type { Backend, CommandResult, DeviceRecord, OwnerDeviceMatch, PhysicalLeaseRecord } from "./device-lab-cleanup.js";
+import type { Backend, CommandResult, OwnerDeviceMatch, PhysicalLeaseRecord } from "./device-lab-cleanup.js";
 export { DEVICE_BACKENDS, deviceLabOwnerIdentity, deviceLabOwnerId, cleanupOwnerDevices } from "./device-lab-cleanup.js";
 import { existsSync, lstatSync, mkdirSync, realpathSync } from "fs";
 
