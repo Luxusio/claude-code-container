@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **194/218 (89.0%)**.
-Integrated source: **194/218 (89.0%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **20**.
+Implemented including unmerged candidates: **195/218 (89.4%)**.
+Integrated source: **195/218 (89.4%)**; historical baseline: **31**. Candidates: **0**; partial: **4**; TODO: **19**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -59,6 +59,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | installer\-workflows | 4 | 0 | `ab5b5518` | Actual independent full/affected/composed Code, Security and Guide PASS\. Strict architecture compilation consumes actual native installer and synchronous application; installer three whole files35cases0skip PASS\. Same genuine joint build and ten whole files473cases/package7/lint/npm\+materializedUnix module\-chain/startup/CLI proof as Hyper\-V qualify normal4ced local delivery\. Source build precedes installation mutation; User PATH is scoped and best effort, image/cache/partial\-copy outcomes remain truthful\. Private executable PATH prevents disappearing fake Podman from falling through to a host runtime\. No live global installation, Windows User PATH/native runtime certification, formal hook closure or inventory certification is claimed\. | accepted @ 4cedc1fa |
 | mobile\-app\-management | 8 | 0 | `c04cdf6e` | Actual independent full Code/Security/Guide and current affected/composed Code PASS\. Original strict actual inward JavaScript and twelve consumed negative contracts PASS; whole legacy native JavaScript strictness is not claimed\. One genuine current production build65\.192s PASS; nine required whole files225 effective cases with zero skips, lint, seven package semantic cases, actual extracted npm and materialized Unix exports/assets/MCP startup, compiled CLI0/0/1 PASS\. Genuine authenticated default native\-child journeys cover both Android variants, Simulator app/container actions and physical iOS devicectl/verified Appium stop; existing inward request/broker\-Appium peers retain supported other facets\. Normal currentc04 local FF delivery preserves all97 user paths and binary diff;18source/1232artifacts/fixed dependencies/18links authenticated, only generated cache changed and owned actors joined\. Native hardware/hosts, formal hook closure and inventory certification remain unverified\. | accepted @ c04cdf6e |
 | mobile\-environment | 6 | 0 | `11fc4bcd` | Actual independent full DEEP Code/Security/Guide and current affected Code PASS\. Both synchronous inward platform factories and fourteen consumed required/ordinary\-async contracts pass strong architecture compilation; original strong package compile qualifies the one local JSDoc\-only finite radio\-array correction, with original failure log retained\. One genuine current complete build65\.636s PASS; ten required whole files231cases0skip, lint, seven package semantic cases, actual extracted npm and materialized Unix exports/assets/MCP startup, compiled CLI0/0/1 PASS\. Genuine authenticated default native\-child witnesses cover emulator environment6, physical Android clipboard2 and Simulator location/clipboard3; accepted Appium environment recipes and direct physical refusals retain distinct supported bindings\. Normal11fc local FF source delivery preserves all97 user paths and binary diff;19source/1236artifacts/fixeddependencies/18links/locks authenticated, only generated Vitest cache changed, private checkout clean and owned actors joined\. Native hardware/hosts, whole legacy native\-JavaScript strictness, formal hook closure and inventory certification remain unverified\. | accepted @ 11fc4bcd |
+| workspace\-opening | 1 | 0 | `3e13e077` | Actual full DEEP Code/Security, corrected independent Docs and affected Code PASS; strong package/root and architecture contracts PASS\. One genuine complete build67\.14s; ten whole files552PASS/9configured platform/Git skips, lint, package7, actual npm/Unix packaging/MCP startup and compiled CLI0/0/1 PASS\.18source/1242emits/fixeddependencies/18links/locks authenticated; owned processes joined\. Actual normal3e13 source FF preserves all97 user paths and binary diff\. Root metadata delivery pending; native hosts/hardware, whole legacy\-JS strictness, formal hook closure and inventory certification remain unverified\. Claude/Codex effect\-contract correction gives zero unrestricted tool\-setup credit\. | accepted @ 3e13e077 |
 
 ## 0.2 Active next plans
 
@@ -287,7 +288,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-identity-image` — Prepare validated derived container identity image. **integrated**; container\-identity\-image @ 4be2ab3a.
 - [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **integrated**; lab\-state\-ownership @ 75bd30de.
 
-## 12. M11 — Workspace/profiles/credentials/tools (31/33 implemented)
+## 12. M11 — Workspace/profiles/credentials/tools (32/33 implemented)
 
 - [x] `OP-home-migrate` — Migrate legacy home layout. **integrated**; src/application/home\-layout\-migration\.ts.
 - [x] `OP-workspace-unified-create` — Create unified workspace. **integrated**; src/application/workspace/unified\-creation\.ts.
@@ -308,7 +309,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-install-uv` — Ensure container uv installation. **integrated**; src/application/tooling/container\-installation\.ts.
 - [x] `OP-workspace-create-admission` — Admit and dispatch workspace create. **integrated**; workspace\-repair @ d7f578d8.
 - [x] `OP-workspace-remove-admission` — Admit and dispatch workspace remove. **integrated**; workspace\-repair @ d7f578d8.
-- [ ] `OP-workspace-open` — workspace open. **TODO**; src/index\.ts.
+- [x] `OP-workspace-open` — workspace open. **integrated**; workspace\-opening @ 3e13e077.
 - [x] `OP-workspace-content-repair-admission` — workspace content repair admission. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-workspace-cli-remove` — workspace cli remove. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-workspace-nested-repair` — Repair missing or empty nested repository worktrees. **integrated**; workspace\-repair @ d7f578d8.

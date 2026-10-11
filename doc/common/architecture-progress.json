@@ -692,6 +692,21 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "11fc4bcd867ff71f91bdd118e513cf622a897e64"
+    },
+    {
+      "id": "workspace-opening",
+      "branch": "refactor/architecture-workspace-opening-20261011",
+      "commit": "3e13e077843028d530b027de323222057c083d0b",
+      "taskId": "TASK__architecture-workspace-opening",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-workspace-open"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Actual full DEEP Code/Security, corrected independent Docs and affected Code PASS; strong package/root and architecture contracts PASS. One genuine complete build67.14s; ten whole files552PASS/9configured platform/Git skips, lint, package7, actual npm/Unix packaging/MCP startup and compiled CLI0/0/1 PASS.18source/1242emits/fixeddependencies/18links/locks authenticated; owned processes joined. Actual normal3e13 source FF preserves all97 user paths and binary diff. Root metadata delivery pending; native hosts/hardware, whole legacy-JS strictness, formal hook closure and inventory certification remain unverified. Claude/Codex effect-contract correction gives zero unrestricted tool-setup credit.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "3e13e077843028d530b027de323222057c083d0b"
     }
   ],
   "planningLanes": [
