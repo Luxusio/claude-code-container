@@ -105,7 +105,7 @@ describe("Clipboard snapshot actual public facade composition", () => {
             stdout: command === "pngpaste" ? Buffer.from("converted-image") : Buffer.alloc(0), stderr: Buffer.alloc(0) }));
         mod.createClipboardServer("secret", "darwin");
         const result = await request(0, "/clipboard/targets");
-        expect(result.status).toBe(200); expect(result.body).toBe("image/png\ntext/plain");
+        expect(result.status).toBe(200); expect(result.body).toBe("image/png\ntext/plain\n");
         expect(native.spawn.mock.calls.map(([command]) => command)).toEqual(["osascript", "pbpaste"]);
         expect(native.spawnSync).toHaveBeenCalledWith("pngpaste", ["-"], expect.any(Object));
     });

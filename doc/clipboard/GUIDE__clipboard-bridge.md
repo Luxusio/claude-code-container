@@ -35,8 +35,8 @@ before restoring facts or removing fixtures.
 
 The cached-read binding serializes transactions and recovers its queue after
 failure. A generation change repeats a successfully completed stale read before publishing or returning it;
-an already failed read remains failed. Native frame, marker and coherence
-failures become unavailable observations and use the supplied native
+an already failed read remains failed. Native frame and marker failures become
+unavailable observations. Application coherence failures use the supplied native
 ClipboardReadError factory so HTTP remains 503. A successful empty snapshot
 remains distinct; failed Linux target queries retain their empty-data policy.
 Unexpected native exceptions retain HTTP 500 and do not become unavailable or

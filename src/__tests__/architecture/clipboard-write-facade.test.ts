@@ -105,12 +105,12 @@ describe("Clipboard text-write actual public native facade", () => {
     });
     it.each([0, 1])("waits for native exit %i before acknowledging the HTTP write", async exitCode => {
         mod.createClipboardServer("secret", "linux-x11");
-        const req = Object.assign(new EventEmitter(), { url: "/clipboard/text", method: "POST", destroy: vi.fn(),
+        const req = Object.assign(new EventEmitter(), { url: "/clipboard/text", method: "POST", complete: false, destroy: vi.fn(),
             headers: { authorization: "Bearer secret", "content-type": "text/plain;charset=utf-8" } });
         const res = Object.assign(new EventEmitter(), { status: 0, body: undefined as unknown, headersSent: false,
             writeHead(status: number) { this.status = status; this.headersSent = true; }, end(body?: unknown) { this.body = body; } });
         const done = (native.handlers[0] as (req: IncomingMessage, res: ServerResponse) => Promise<void>)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
-        req.emit("data", Buffer.from("private clipboard text")); req.emit("end");
+        req.emit("data", Buffer.from("private clipboard text")); req.complete = true; req.emit("end");
         await Promise.resolve();
         expect(res.status).toBe(0);
         child.emit("exit", exitCode);
