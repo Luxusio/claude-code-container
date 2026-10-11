@@ -152,6 +152,7 @@ COPY --chmod=755 scripts/clipboard-shims/wl-paste /usr/local/bin/wl-paste
 COPY --chmod=755 scripts/clipboard-shims/wl-copy /usr/local/bin/wl-copy
 COPY --chmod=755 scripts/clipboard-shims/pbpaste /usr/local/bin/pbpaste
 COPY --chmod=755 scripts/ccc-x11-bridge /usr/local/bin/ccc-x11-bridge
+RUN install -d -m 755 /usr/local/lib/ccc
 COPY --chmod=644 scripts/lib/clipboard-x11-sync.sh /usr/local/lib/ccc/clipboard-x11-sync.sh
 # Strip Windows CRLF line endings (git on Windows may convert LF→CRLF)
 RUN sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bin/wl-paste /usr/local/bin/wl-copy /usr/local/bin/pbpaste /usr/local/bin/ccc-x11-bridge /usr/local/lib/ccc/clipboard-x11-sync.sh
