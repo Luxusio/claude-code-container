@@ -14,7 +14,12 @@ import {
 } from "@ccc/device-lab/device-lab/hyper-v-images.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { createDeviceAdminSetup } from "../application/device-admin-setup.js";
+import * as setupApplication from "../application/device-admin-setup.js";
 import type { DeviceAdminSetupPorts } from "../ports/device-admin-setup.js";
+import type { HyperVReadiness } from "../domain/device-admin-diagnostics.js";
+import type { SetupObservation, HostNetworkResult } from "../domain/device-admin-setup.js";
+
+vi.mock("../application/device-admin-setup.js", async original => ({ ...await original<typeof import("../application/device-admin-setup.js")>() }));
 
 describe("semantic setup effect ordering", () => {
     function setupTrace() {
@@ -97,6 +102,115 @@ describe("Hyper-V host setup CLI", () => {
     afterEach(() => {
         vi.restoreAllMocks();
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    it("projects native readiness facts into setup policy while retaining the native receipt and public diagnostic", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-projected-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const raw = {
+            available: true, moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true,
+            rebootPending: false, missing: [], ok: true, detail: "native-detail-private",
+            platform: "native-windows-platform", totalMemoryMb: 123456, freeMemoryMb: 654321, logicalProcessors: 73,
+        };
+        let observed: HyperVReadiness | undefined;
+        let receipt: unknown;
+        const originalFactory = setupApplication.createDeviceAdminSetup;
+        vi.spyOn(setupApplication, "createDeviceAdminSetup").mockImplementation(<Evidence>(ports: DeviceAdminSetupPorts<Evidence>) => {
+            const diagnose = ports.diagnose;
+            return originalFactory({ ...ports, diagnose(timeout) {
+                const result = diagnose(timeout);
+                if (result.state === "available") { observed = result.value; receipt = result.evidence; }
+                return result;
+            } });
+        });
+        const execution = { command: "powershell.exe", status: 0, stdout: JSON.stringify(raw), stderr: "" };
+        const runner = vi.fn(() => execution);
+
+        const result = await setupHyperVHost(false, {
+            platform: "win32", powershell: "powershell.exe", stateRoot: root, commandRunner: runner,
+        });
+
+        expect(observed).toMatchObject({ available: true, moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, missing: [] });
+        const outwardOnly = observed as HyperVReadiness & Partial<typeof raw>;
+        expect(outwardOnly.ok).toBeUndefined();
+        expect(outwardOnly.detail).toBeUndefined();
+        expect(outwardOnly.platform).toBeUndefined();
+        expect(outwardOnly.totalMemoryMb).toBeUndefined();
+        expect(outwardOnly.freeMemoryMb).toBeUndefined();
+        expect(outwardOnly.logicalProcessors).toBeUndefined();
+        expect((receipt as { execution: unknown }).execution).toBe(execution);
+        expect(result.ok).toBe(true);
+        expect(result.text).toContain("mode: diagnostic");
+        expect(result.text).toContain("available: true");
+        expect(result.text).toContain("moduleAvailable: true");
+        expect(result.text).not.toContain("native-detail-private");
+        expect(result.text).not.toContain("native-windows-platform");
+        expect(runner).toHaveBeenCalledTimes(1);
+        expect(existsSync(join(root, "host-locks", "hyper-v.mutation.lock"))).toBe(false);
+        expect(existsSync(join(root, "hyper-v-windows-evaluation-license.json"))).toBe(false);
+    });
+
+    it("projects confirmed feature and fabric facts while preserving evidence and manual reboot presentation", async () => {
+        const root = join(tmpdir(), `ccc-hyper-v-confirmed-projected-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const nativeNetwork = {
+            ...setupNetwork, switchId: "12345678-1234-4234-9234-1234567890ab", natName: "CCCDeviceLab",
+            natInstanceId: "native-nat-identity", interfaceIndex: 12, createdSwitch: false, createdNat: false,
+        };
+        const raw = {
+            ok: true, featureName: "Microsoft-Hyper-V-All", beforeState: "Disabled", afterState: "Enabled",
+            changed: true, elevated: true, rebootRequired: true, sessionRefreshRequired: true, network: nativeNetwork,
+        };
+        const execution = { command: "powershell.exe", status: 0, stdout: JSON.stringify(raw), stderr: "" };
+        const runner = vi.fn(() => execution);
+        const ensure = vi.fn(async () => nativeNetwork);
+        let observed: SetupObservation | undefined;
+        let network: Extract<HostNetworkResult, { ok: true }> | undefined;
+        let receipt: unknown;
+        const originalFactory = setupApplication.createDeviceAdminSetup;
+        vi.spyOn(setupApplication, "createDeviceAdminSetup").mockImplementation(<Evidence>(ports: DeviceAdminSetupPorts<Evidence>) => {
+            const enableFeature = ports.enableFeature;
+            const ensureNetwork = ports.ensureHostNetwork;
+            return originalFactory({ ...ports,
+                enableFeature(timeout) {
+                    const result = enableFeature(timeout);
+                    if (result.state === "available") { observed = result.value; receipt = result.evidence; }
+                    return result;
+                },
+                async ensureHostNetwork(deadline) {
+                    const result = await ensureNetwork(deadline);
+                    if (result.ok) network = result;
+                    return result;
+                },
+            });
+        });
+
+        const result = await setupHyperVHost(true, {
+            platform: "win32", powershell: "powershell.exe", stateRoot: root,
+            commandRunner: runner, ensureHostNetwork: ensure,
+        });
+
+        expect(observed).toMatchObject({ ok: true, changed: true, rebootRequired: true, sessionRefreshRequired: true });
+        expect((observed as SetupObservation & { elevated?: boolean }).elevated).toBeUndefined();
+        expect((observed as SetupObservation & { network?: unknown }).network).toBeUndefined();
+        expect(network).toMatchObject({ ok: true, switchName: setupNetwork.switchName, gateway: setupNetwork.gateway });
+        expect((network as Partial<typeof nativeNetwork>).prefix).toBeUndefined();
+        expect((network as Partial<typeof nativeNetwork>).outboundPolicy).toBeUndefined();
+        expect((network as Partial<typeof nativeNetwork>).switchId).toBeUndefined();
+        expect((network as Partial<typeof nativeNetwork>).natInstanceId).toBeUndefined();
+        expect((receipt as { execution: unknown }).execution).toBe(execution);
+        expect(result.ok).toBe(true);
+        expect(result.text).toContain("mode: confirmed");
+        expect(result.text).toContain("rebootRequired: true");
+        expect(result.text).toContain("action: reboot Windows manually");
+        expect(result.text).toContain(`networkSwitch: ${setupNetwork.switchName}`);
+        expect(result.text).toContain(`networkGateway: ${setupNetwork.gateway}`);
+        expect(result.text).toContain("hostRebooted: false");
+        expect(result.text).not.toContain("action: sign out");
+        expect(result.text).not.toContain("native-nat-identity");
+        expect(runner).toHaveBeenCalledTimes(1);
+        expect(ensure).toHaveBeenCalledTimes(1);
+        expect(existsSync(join(root, "host-locks", "hyper-v.mutation.lock"))).toBe(false);
     });
 
     it("converts a verified extended DOS executable path into a spawn-compatible path", async () => {

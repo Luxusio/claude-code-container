@@ -157,6 +157,14 @@ describe("device-lab admin CLI formatters", () => {
         expect(doctor).toContain("android-emulator: missing");
         expect(doctor).toContain("Lab bench health:");
         expect(doctor).toContain("android-device: SKIP - missing adb");
+        const health = deviceLabBenchHealth(cwd);
+        expect(health.backends.find(backend => backend.backend === "android-device")?.devices).toEqual([
+            expect.objectContaining({ deviceId: "android-real", inventoryState: "unknown", status: "lease-ok" }),
+            expect.objectContaining({ deviceId: "android-real-recording", inventoryState: "unknown", status: "lease-ok" }),
+        ]);
+        expect(health.backends.find(backend => backend.backend === "ios-device")?.devices).toEqual([
+            expect.objectContaining({ deviceId: "ios-real", inventoryState: "unknown", status: "lease-ok" }),
+        ]);
     });
 
     it("does not report container wiring warning for host CLI with shared state", () => {
@@ -320,6 +328,10 @@ describe("device-lab admin CLI formatters", () => {
         expect(health.backends.find((backend) => backend.backend === "android-device")).toEqual(expect.objectContaining({
             status: "FAIL",
             detail: "inventory command failed with status 7",
+            devices: [
+                expect.objectContaining({ deviceId: "android-real", inventoryState: "unknown", status: "lease-ok" }),
+                expect.objectContaining({ deviceId: "android-real-recording", inventoryState: "unknown", status: "lease-ok" }),
+            ],
         }));
         expect(healthJson).not.toContain("UNOWNED-SERIAL");
         expect(healthJson).not.toContain("adb-broken-secret");

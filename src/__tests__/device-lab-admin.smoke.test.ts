@@ -409,9 +409,15 @@ describe("device-lab admin smoke diagnostics", () => {
     });
 
     it.each([
-        ["android-device", "CCC_REAL_ANDROID_DEVICE_SERIAL", "R5CREAL123"],
-        ["ios-device", "CCC_REAL_IOS_DEVICE_UDID", "REAL-IOS-UDID"],
-    ])("fails unavailable inventory for an explicit %s target without changing its definition", (backend, targetVariable, target) => {
+        ["android-device", { CCC_REAL_ANDROID_DEVICE_SERIAL: "R5CREAL123" }, "FAIL"],
+        ["android-device", { CCC_REAL_ANDROID_SERIAL: "R5CREAL123" }, "FAIL"],
+        ["android-device", { CCC_REAL_ANDROID_DEVICE_SERIAL: "  R5CREAL123  ", CCC_REAL_ANDROID_SERIAL: "fallback" }, "FAIL"],
+        ["android-device", { CCC_REAL_ANDROID_DEVICE_SERIAL: "", CCC_REAL_ANDROID_SERIAL: "  fallback  " }, "FAIL"],
+        ["android-device", { CCC_REAL_ANDROID_DEVICE_SERIAL: "   ", CCC_REAL_ANDROID_SERIAL: "fallback" }, "SKIP"],
+        ["android-device", { CCC_REAL_ANDROID_SERIAL: "   " }, "SKIP"],
+        ["ios-device", { CCC_REAL_IOS_DEVICE_UDID: "  REAL-IOS-UDID  " }, "FAIL"],
+        ["ios-device", { CCC_REAL_IOS_DEVICE_UDID: "   " }, "SKIP"],
+    ] as const)("preserves %s explicit target precedence and trimming for %j (%s)", (backend, targets, status) => {
         const cwd = "/project/admin-smoke-explicit-inventory-failure";
         const files = fixture.setupFixture(cwd);
         const definition = backend === "android-device" ? files.androidDeviceFile : files.iosDeviceFile;
@@ -421,17 +427,12 @@ describe("device-lab admin smoke diagnostics", () => {
         process.env.PATH = binDir;
         fixture.writeNodeTool(binDir, "adb", "if (args[0] === 'devices') { console.error('inventory unavailable'); process.exit(70); } console.log('ok');");
         fixture.writeNodeTool(binDir, "xcrun", "if (args[0] === 'xctrace') { console.error('inventory unavailable'); process.exit(71); } console.log('ok');");
-        const previous = process.env[targetVariable];
-        try {
-            process.env[targetVariable] = target;
-            const smoke = formatDevicesSmoke(cwd, 5000, undefined, { mode: "real-provider" });
-            expect(smoke).toContain(`${backend}: FAIL -`);
-            expect(smoke).not.toContain(`${backend}: SKIP - physical-device inventory unavailable`);
-            expect(readFileSync(definition, "utf8")).toBe(before);
-        } finally {
-            if (previous === undefined) delete process.env[targetVariable];
-            else process.env[targetVariable] = previous;
-        }
+        Object.assign(process.env, targets);
+        const smoke = formatDevicesSmoke(cwd, 5000, undefined, { mode: "real-provider" });
+        expect(smoke).toContain(`${backend}: ${status} -`);
+        if (status === "FAIL") expect(smoke).not.toContain(`${backend}: SKIP - physical-device inventory unavailable`);
+        expect(smoke).not.toMatch(/command: .*\b(start|boot|stop|delete|claim)\b/);
+        expect(readFileSync(definition, "utf8")).toBe(before);
     });
 
     it("treats unavailable optional physical-device inventory as skipped without explicit device targets", () => {

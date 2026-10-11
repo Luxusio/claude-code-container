@@ -2,9 +2,9 @@ import { createDeviceAdminDelete } from "./application/device-admin-delete.js";
 import type { DeviceAdminDeletePorts } from "./ports/device-admin-delete.js";
 import { createDeviceAdminDiagnostics } from "./application/device-admin-diagnostics.js";
 import { createDeviceAdminSetup } from "./application/device-admin-setup.js";
-import type { DiagnosticProbe, DiagnosticRow } from "./domain/device-admin-diagnostics.js";
+import type { DiagnosticProbe, DiagnosticRow, HyperVReadiness } from "./domain/device-admin-diagnostics.js";
 import type { DeviceAdminDiagnosticsPorts } from "./ports/device-admin-diagnostics.js";
-import type { SetupResult } from "./domain/device-admin-setup.js";
+import type { SetupObservation, SetupResult } from "./domain/device-admin-setup.js";
 import type { DeviceAdminSetupPorts } from "./ports/device-admin-setup.js";
 export type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
 export type SmokeMode = "prerequisite" | "real-provider";
@@ -874,6 +874,23 @@ function deviceLabWiringDiagnostic(_cwd = process.cwd(), _profile?: string): Dev
     return { stateRoot, stateExists, context: process.env.container === "docker" ? "container" : "host",
         environmentRequired: false, ownerResolution: "host-broker-resolve", incomplete: !stateExists };
 }
+function semanticHyperVReadiness(readiness: NonNullable<ReturnType<typeof parseHyperVReadiness>>): HyperVReadiness {
+    return {
+        available: readiness.available,
+        moduleAvailable: readiness.moduleAvailable,
+        hypervisorPresent: readiness.hypervisorPresent,
+        vmmsRunning: readiness.vmmsRunning,
+        rebootPending: readiness.rebootPending,
+        missing: readiness.missing,
+        ...(readiness.hyperVAdministratorsMember !== undefined ? { hyperVAdministratorsMember: readiness.hyperVAdministratorsMember } : {}),
+        ...(readiness.managementAccess !== undefined ? { managementAccess: readiness.managementAccess } : {}),
+        ...(readiness.sessionRefreshRequired !== undefined ? { sessionRefreshRequired: readiness.sessionRefreshRequired } : {}),
+        ...(readiness.qemuImgAvailable !== undefined ? { qemuImgAvailable: readiness.qemuImgAvailable } : {}),
+        ...(readiness.qemuImgTrusted !== undefined ? { qemuImgTrusted: readiness.qemuImgTrusted } : {}),
+        ...(readiness.qemuImgSignatureStatus !== undefined ? { qemuImgSignatureStatus: readiness.qemuImgSignatureStatus } : {}),
+        ...(readiness.linuxImageMissing !== undefined ? { linuxImageMissing: readiness.linuxImageMissing } : {}),
+    };
+}
 function deviceAdminDiagnosticsNative(options: SmokeFormatOptions = {}): DeviceAdminDiagnosticsPorts<Backend, DiagnosticEvidence> {
     function execute(executable: string, args: string[], timeoutMs: number): CommandResult {
         return runCommand(executable, args, timeoutMs) || { command: [executable, ...args].join(" "), status: null, stderr: "command not found" };
@@ -926,7 +943,7 @@ function deviceAdminDiagnosticsNative(options: SmokeFormatOptions = {}): DeviceA
                 : compactSmokeOutput(String(command.stderr || command.stdout || "")) || `command exited ${command.status}` };
             if (command.status !== 0) return { state: "failed", evidence };
             const readiness = parseHyperVReadiness(command.stdout || "");
-            return readiness ? { state: "available", readiness, evidence } : { state: "invalid", evidence: { ...evidence, detail: "invalid Hyper-V readiness response" } };
+            return readiness ? { state: "available", readiness: semanticHyperVReadiness(readiness), evidence } : { state: "invalid", evidence: { ...evidence, detail: "invalid Hyper-V readiness response" } };
         },
         probeInstalledSurface(timeoutMs) {
             const result = installedMcpSurfaceSmoke(timeoutMs, options);
@@ -1190,6 +1207,20 @@ function renderHyperVSetup(result: SetupResult<SetupEvidence>): HyperVSetupHostR
         ].join("\n"),
     };
 }
+function semanticHyperVSetupObservation(observation: NonNullable<ReturnType<typeof parseHyperVSetupObservation>>): SetupObservation {
+    return {
+        ok: observation.ok,
+        featureName: observation.featureName,
+        beforeState: observation.beforeState,
+        afterState: observation.afterState,
+        changed: observation.changed,
+        rebootRequired: observation.rebootRequired,
+        ...(observation.hyperVAdministratorsMember !== undefined ? { hyperVAdministratorsMember: observation.hyperVAdministratorsMember } : {}),
+        ...(observation.membershipChanged !== undefined ? { membershipChanged: observation.membershipChanged } : {}),
+        ...(observation.managementAccess !== undefined ? { managementAccess: observation.managementAccess } : {}),
+        ...(observation.sessionRefreshRequired !== undefined ? { sessionRefreshRequired: observation.sessionRefreshRequired } : {}),
+    };
+}
 export async function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOptions = {}): Promise<HyperVSetupHostResult> {
     let powershell: string;
     let setupRoot: string;
@@ -1225,14 +1256,14 @@ export async function setupHyperVHost(confirm: boolean, options: HyperVSetupHost
             const command = hyperVReadinessCommand(powershell);
             const execution = runner(command.executable, command.args, timeoutMs);
             const readiness = execution?.status === 0 ? parseHyperVReadiness(execution.stdout || "") : null;
-            return readiness ? { state: "available", value: readiness, evidence: { execution } } : { state: "failed", evidence: { execution } };
+            return readiness ? { state: "available", value: semanticHyperVReadiness(readiness), evidence: { execution } } : { state: "failed", evidence: { execution } };
         },
         linuxImage: (ownerId, readiness) => hyperVLinuxImageBlockers(readiness, inspectHyperVUbuntuImageCache(dirname(setupRoot), ownerId)),
         enableFeature(timeoutMs) {
             const command = hyperVSetupCommand(powershell);
             const execution = runner(command.executable, command.args, timeoutMs, command.input);
             const observation = execution?.status === 0 ? parseHyperVSetupObservation(execution.stdout || "") : null;
-            return observation ? { state: "available", value: observation, evidence: { execution } } : { state: "failed", evidence: { execution } };
+            return observation ? { state: "available", value: semanticHyperVSetupObservation(observation), evidence: { execution } } : { state: "failed", evidence: { execution } };
         },
         withMutationLock(operation, lockOptions) {
             mkdirSync(dirname(mutationLockFile), { recursive: true });
@@ -1241,7 +1272,8 @@ export async function setupHyperVHost(confirm: boolean, options: HyperVSetupHost
         },
         ensureHostNetwork: async (deadlineAt) => {
             const network = await (options.ensureHostNetwork || ensureHyperVHostNetworkForSetup)({}, deadlineAt);
-            return network.ok ? network : { ok: false, evidence: { detail: network.detail || network.error } };
+            return network.ok ? { ok: true, switchName: network.switchName, gateway: network.gateway }
+                : { ok: false, evidence: { detail: network.detail || network.error } };
         },
         mutationFailure(error) {
             return { detail: (error as Error & { code?: string }).code === "shared-mutation-lock-timeout"
