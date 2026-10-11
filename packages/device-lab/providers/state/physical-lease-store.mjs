@@ -10,25 +10,29 @@ import { DeviceLabStateFileError } from "./state-file.mjs";
 
 
 
+/** @returns {string} */
 function stateRoot() {
     return join(homedir(), ".ccc/devices");
 }
 
+/** @returns {string} */
 function physicalLeaseRoot() {
     return join(stateRoot(), "physical-leases");
 }
 
-/** @param {string} detail @param {unknown} [cause] */
+/** @param {string} detail @param {unknown} [cause] @returns {DeviceLabStateFileError} */
 function leaseDirectoryError(detail, cause) {
     return new DeviceLabStateFileError(detail, cause ? { cause } : undefined);
 }
 
+/** @param {string} backend @param {boolean} includeLocks @returns {string[]} */
 function leaseDirectoryChain(backend, includeLocks) {
     const directories = [stateRoot(), physicalLeaseRoot()];
     if (includeLocks) directories.push(join(physicalLeaseRoot(), backend), join(physicalLeaseRoot(), backend, "locks"));
     return directories;
 }
 
+/** @param {string} backend @param {boolean} includeLocks @returns {boolean} */
 function inspectLeaseDirectoryChain(backend, includeLocks) {
     for (const directory of leaseDirectoryChain(backend, includeLocks)) {
         let stat;
@@ -45,6 +49,7 @@ function inspectLeaseDirectoryChain(backend, includeLocks) {
     return true;
 }
 
+/** @param {string} backend @param {boolean} includeLocks @returns {undefined} */
 function ensureLeaseDirectoryChain(backend, includeLocks) {
     const root = stateRoot();
     for (const directory of leaseDirectoryChain(backend, includeLocks)) {
@@ -65,18 +70,22 @@ function ensureLeaseDirectoryChain(backend, includeLocks) {
     }
 }
 
+/** @param {string} backend @returns {string} */
 function leaseFile(backend) {
     return join(homedir(), ".ccc/devices/physical-leases", `${backend}.json`);
 }
 
+/** @param {string} backend @param {string} hardwareId @returns {string} */
 function lockFile(backend, hardwareId) {
     return join(homedir(), ".ccc/devices/physical-leases", backend, "locks", `${encodeURIComponent(hardwareId)}.json`);
 }
 
+/** @param {string} backend @param {string} hardwareId @returns {string} */
 function mutationLockFile(backend, hardwareId) {
     return join(homedir(), ".ccc/devices/physical-leases", backend, "locks", `${encodeURIComponent(hardwareId)}.mutation.lock`);
 }
 
+/** @param {string} backend @returns {string} */
 function aggregateMutationLockFile(backend) {
     return join(homedir(), ".ccc/devices/physical-leases", `${backend}.mutation.lock`);
 }
@@ -87,7 +96,7 @@ function nativeReadPhysicalLeases(backend) {
     return readPhysicalLeaseAggregateStateFile(leaseFile(backend), backend);
 }
 
-/** @param {string} backend @param {import('../ports/physical-leases.mjs').PhysicalLease[]} leases */
+/** @param {string} backend @param {import('../ports/physical-leases.mjs').PhysicalLease[]} leases @returns {undefined} */
 function writePhysicalLeasesUnlocked(backend, leases) {
     validatePhysicalLeaseAggregate({ leases }, backend);
     writeJsonFileAtomically(leaseFile(backend), { leases });
@@ -108,7 +117,7 @@ function readLock(lock, backend, hardwareId) {
 
 
 
-/** @param {string} lock @param {import('../ports/physical-leases.mjs').PhysicalLease} lease */
+/** @param {string} lock @param {import('../ports/physical-leases.mjs').PhysicalLease} lease @returns {undefined} */
 function writeLock(lock, lease) {
     validatePhysicalLease(lease);
     writeJsonFileAtomically(lock, lease);
@@ -122,7 +131,7 @@ function writeLock(lock, lease) {
 
 /** @template T @param {string} backend @param {string} hardwareId
  * @param {(state:import('../ports/physical-leases.mjs').PhysicalLeaseTransaction)=>T} operation
- * @param {{waitBudget?:{remaining():number}}} [options] */
+ * @param {{waitBudget?:{remaining():number}}} [options] @returns {T} */
 function withLeaseTransaction(backend, hardwareId, operation, options = {}) {
     ensureLeaseDirectoryChain(backend, true);
     const lock = lockFile(backend, hardwareId);
@@ -141,7 +150,7 @@ function withLeaseTransaction(backend, hardwareId, operation, options = {}) {
         }, options), options);
 }
 
-/** @param {unknown} error */
+/** @param {unknown} error @returns {string|undefined} */
 function nativeErrorCode(error) {
     return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
