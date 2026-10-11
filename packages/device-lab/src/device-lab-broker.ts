@@ -4615,10 +4615,6 @@ function writeLeaseFile(file: string, lease: Record<string, unknown>) {
     writeJsonFileAtomically(file, lease);
 }
 
-function stopBrokerPhysicalLeaseHeartbeat(ownerId: string, backend: string, hardwareId: string, deviceId?: string) {
-    return brokerPhysicalLeases.stopHeartbeat(ownerId, backend, hardwareId, deviceId);
-}
-
 function startBrokerPhysicalLeaseHeartbeat(ownerId: string, backend: string, hardwareId: string, deviceId: string, options: { ttlMs?: number; claimId?: string; claimNonce?: string } = {}) {
     return brokerPhysicalLeases.startHeartbeat(ownerId, backend, hardwareId, deviceId, options);
 }
