@@ -1,3 +1,4 @@
+import { createIosPhysicalAttachment } from "../adapters/physical-attachment.mjs";
 import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
 import { createIosWirelessApplication } from "../application/ios-wireless.mjs";
 import { createIosControlTransfer } from "../application/ios-control-transfer.mjs";
@@ -31,6 +32,26 @@ const physicalStop = createPhysicalStopApplication({
     waitRecordingExit: waitForOwnedRuntimeExit,
     stopOwnedAppium,
 });
+
+const physicalAttachment = createIosPhysicalAttachment({
+    readDevices:readIosRealDevices,findDevice:findIosRealDevice,claimDevice:claimIosRealDevice,transitionDevice:transitionIosRealDevice,
+    owner:ownerId,deviceId:iosRealDeviceId,appiumPort:appiumPortForDevice,now,nonce:randomUUID,stop:physicalStop,
+    claimLease:claimPhysicalLease,releaseLease:releasePhysicalLease,startHeartbeat:startPhysicalLeaseHeartbeat,releaseWithMutation:releasePhysicalLeaseWithMutation,
+    discover:iosRealDiscovery,inventory:hostIosDevices,
+});
+
+/** @param {kind:string} outcome */
+
+
+/** @param {import('../ports/physical-attachment.mjs').AttachmentOutcome} outcome */
+function presentAttachment(outcome) {
+    if (outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'error') return textResult(false,outcome.message);
+    if (outcome.kind === 'command-failure') return fail(outcome.command);
+    if (outcome.kind === 'conflict') return textResult(false,JSON.stringify({ok:false,error:'owner-device-state-conflict',backend:outcome.backend,deviceId:outcome.deviceId,operation:outcome.operation,found:outcome.found}));
+    if (outcome.kind === 'attached') return jsonResult({device:withTargetStatus(outcome.device)});
+    return jsonResult({detached:outcome.deviceId,physicalDevicePoweredOff:false});
+}
 
 const IOS_REAL_CAPABILITIES = [
     "device_inventory", "device_attach", "device_detach", "device_start", "device_stop",
@@ -215,119 +236,10 @@ async function handleIosRealToolUnlocked(name, args) {
             return outcome.kind === "json" ? jsonResult(outcome.payload) : textResult(false, outcome.message);
         }
 
-        case "device_attach": {
-            const { backend, name: deviceName, deviceId, udid, connection, host, port } = args;
-            if (backend !== "ios-device") return undefined;
-            if (!udid) return textResult(false, "iOS real-device attach requires udid");
-            const discovery = iosRealDiscovery();
-            if (!discovery.xcrun) return textResult(false, "iOS real-device backend missing prerequisites: xcrun");
-            const inventory = hostIosDevices(discovery);
-            const hostDevice = inventory.devices.find((device) => device.udid === udid);
-            if (!hostDevice) return textResult(false, `iOS device is not visible to xctrace: ${udid}`);
-            if (connection === "wifi" && hostDevice.connection !== "wifi") {
-                return textResult(false, `iOS Wi-Fi attach requires the device to be paired for network use and visible to xctrace as a network device: ${udid}`);
-            }
-            const resolvedConnection = connection || hostDevice.connection || "usb";
-
-            const id = deviceId || iosRealDeviceId(deviceName || hostDevice.name || udid);
-            const devices = readIosRealDevices();
-            if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
-            if (devices.some((device) => device.udid === udid)) return textResult(false, `iOS UDID already attached for this owner: ${udid}`);
-            const leaseClaimNonce = randomUUID();
-            const lease = claimPhysicalLease("ios-device", udid, id, { claimNonce: leaseClaimNonce });
-            if (!lease.ok) {
-                return textResult(false, `iOS UDID is already attached or an attach is in progress: ${udid}`);
-            }
-
-            const device = {
-                id,
-                name: deviceName || hostDevice.name || udid,
-                backend,
-                kind: "mobile",
-                platform: "ios",
-                physical: true,
-                ownerId: ownerId(),
-                udid,
-                connection: resolvedConnection,
-                transport: {
-                    type: resolvedConnection,
-                    host: resolvedConnection === "wifi" ? host || null : null,
-                    port: resolvedConnection === "wifi" ? port || null : null,
-                    visibleVia: "xctrace",
-                },
-                hostDetails: hostDevice,
-                appiumPort: appiumPortForDevice(id),
-                appium: null,
-                recording: null,
-                leaseClaimId: lease.lease.claimId,
-                leaseClaimNonce,
-                status: "attached",
-                creatable: false,
-                attachable: true,
-                attachedAt: now(),
-                updatedAt: now(),
-            };
-            let claim;
-            try {
-                claim = claimIosRealDevice(device);
-            } catch (error) {
-                releasePhysicalLease("ios-device", udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
-                throw error;
-            }
-            if (!claim.ok) {
-                releasePhysicalLease("ios-device", udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
-            }
-            startPhysicalLeaseHeartbeat("ios-device", udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
-            return jsonResult({ device: withTargetStatus(device) });
-        }
-
-        case "device_detach": {
-            const { deviceId } = args;
-            const devices = readIosRealDevices();
-            const device = devices.find((item) => item.id === deviceId);
-            if (!device) return undefined;
-            const claim = claimIosRealLifecycle(deviceId, device, "detach");
-            if (!claim.transition.matched) return iosRealStateConflict(deviceId, "detach-claim", claim.transition);
-            const stopped = await stopVolatileProcesses(device);
-            if (!stopped.exited) {
-                abortIosRealLifecycle(deviceId, claim.lifecycle, device, stopped.recordingStopped
-                    ? { recording: { ...device.recording, active: false, endedAt: now() } }
-                    : {});
-                return textResult(false, stopped.error);
-            }
-            const current = currentIosRealLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return iosRealStateConflict(deviceId, "detach", { found: Boolean(findIosRealDevice(deviceId)), matched: false });
-            let released;
-            try {
-                released = releasePhysicalLeaseWithMutation("ios-device", device.udid, deviceId, {
-                    claimId: device.leaseClaimId,
-                    claimNonce: device.leaseClaimNonce,
-                }, () => {
-                    const transition = transitionIosRealDevice(deviceId, current, null);
-                    if (!transition.matched) return { ok: false, transition };
-                    return {
-                        ok: true,
-                        transition,
-                        rollback() {
-                            const restored = claimIosRealDevice(current);
-                            if (!restored.ok) throw new Error(`ios-device-detach-state-rollback-failed:${restored.error}`);
-                        },
-                    };
-                });
-            } catch (error) {
-                abortIosRealLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, `iOS physical device detach could not commit lease release; owner state and physical lease were preserved for retry: ${error instanceof Error ? error.message : String(error)}`);
-            }
-            if (!released.ok) {
-                if (released.error === "physical-lease-release-mutation-rejected") {
-                    return iosRealStateConflict(deviceId, "detach", released.mutation?.transition || { found: Boolean(findIosRealDevice(deviceId)), matched: false });
-                }
-                abortIosRealLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, `iOS physical device detach lease release was rejected (${released.error || "lease-conflict"}); owner state and physical lease were preserved for retry.`);
-            }
-            return jsonResult({ detached: deviceId, physicalDevicePoweredOff: false });
-        }
+        case "device_attach":
+            return presentAttachment(physicalAttachment.attach(args));
+        case "device_detach":
+            return presentAttachment(await physicalAttachment.detach(args.deviceId));
 
         case "device_start": {
             const { deviceId } = args;

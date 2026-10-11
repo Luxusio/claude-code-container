@@ -233,6 +233,7 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
         });
         expect(rejectWifiConnect.isError).toBe(true);
         expect((rejectWifiConnect.content as Array<{ text?: string }>)[0].text).toContain("failed to connect");
+        expect(existsSync(join(androidLeaseDir, `${encodeURIComponent("192.168.1.51:5555")}.json`))).toBe(false);
 
         const attach = await client.callTool({
             name: "attach",

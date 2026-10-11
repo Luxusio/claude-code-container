@@ -1,3 +1,4 @@
+import { createAndroidPhysicalAttachment } from "../adapters/physical-attachment.mjs";
 import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
@@ -55,6 +56,26 @@ const physicalStop = createPhysicalStopApplication({
     stopAdbRecording: (adb, serial) => /** @type {import("../ports/physical-stop.mjs").PhysicalCommandResult} */ (run(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"])),
     waitRecordingExit: waitForProcessExit,
 });
+
+const physicalAttachment = createAndroidPhysicalAttachment({
+    readDevices:readAndroidRealDevices,findDevice:findAndroidRealDevice,claimDevice:claimAndroidRealDevice,transitionDevice:transitionAndroidRealDevice,
+    owner:ownerId,deviceId:androidRealDeviceId,appiumPort:appiumPortForDevice,now,nonce:randomUUID,stop:physicalStop,
+    claimLease:claimPhysicalLease,releaseLease:releasePhysicalLease,startHeartbeat:startPhysicalLeaseHeartbeat,releaseWithMutation:releasePhysicalLeaseWithMutation,
+    discover:androidDiscovery,inventory:hostAndroidDevices,wifiSerial:androidWifiSerial,wifiTransport:androidWifiTransport,run,
+});
+
+/** @param {kind:string} outcome */
+
+
+/** @param {import('../ports/physical-attachment.mjs').AttachmentOutcome} outcome */
+function presentAttachment(outcome) {
+    if (outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'error') return textResult(false,outcome.message);
+    if (outcome.kind === 'command-failure') return fail(outcome.command);
+    if (outcome.kind === 'conflict') return textResult(false,JSON.stringify({ok:false,error:'owner-device-state-conflict',backend:outcome.backend,deviceId:outcome.deviceId,operation:outcome.operation,found:outcome.found}));
+    if (outcome.kind === 'attached') return jsonResult({device:withTargetStatus(outcome.device)});
+    return jsonResult({detached:outcome.deviceId,physicalDevicePoweredOff:false});
+}
 
 const ANDROID_REAL_CAPABILITIES = [
     "device_list_files",
@@ -451,151 +472,10 @@ async function handleAndroidRealToolUnlocked(name, args) {
             return androidWireless.handle(args);
         }
 
-        case "device_attach": {
-            const { backend, name: deviceName, deviceId, serial, connection = "usb", host, port = 5555 } = args;
-            if (backend !== "android-device") return undefined;
-            let resolvedSerial = serial;
-            const leaseClaimNonce = randomUUID();
-            let lease = null;
-            const releaseClaimedLease = (hardwareId, id) => lease?.lease && releasePhysicalLease("android-device", hardwareId, id, {
-                claimId: lease.lease.claimId,
-                claimNonce: leaseClaimNonce,
-            });
-
-            const discovery = androidDiscovery();
-            if (!discovery.adb) return textResult(false, "Android real-device backend missing prerequisites: adb");
-            const devices = readAndroidRealDevices();
-            if (connection === "wifi") {
-                resolvedSerial = serial ? androidWifiSerial(serial, port) : androidWifiSerial(host, port);
-                if (!host && !serial) return textResult(false, "Android Wi-Fi attach requires host or serial in host:port form");
-                const connectTarget = resolvedSerial;
-                if (!connectTarget) return textResult(false, "Android Wi-Fi attach requires a valid host and port");
-                const id = deviceId || androidRealDeviceId(deviceName || connectTarget);
-                if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
-                if (devices.some((device) => device.serial === connectTarget)) return textResult(false, `Android serial already attached for this owner: ${connectTarget}`);
-                lease = claimPhysicalLease("android-device", connectTarget, id, { claimNonce: leaseClaimNonce });
-                if (!lease.ok) {
-                    return textResult(false, `Android serial is already attached or an attach is in progress: ${connectTarget}`);
-                }
-                const connect = run(discovery.adb, ["connect", connectTarget]);
-                if (connect.status !== 0) {
-                    releaseClaimedLease(connectTarget, id);
-                    return fail(connect);
-                }
-                resolvedSerial = connectTarget;
-            }
-            if (!resolvedSerial) return textResult(false, "Android real-device attach requires serial");
-            if (String(resolvedSerial).startsWith("emulator-")) return textResult(false, `Refusing to attach emulator serial through android-device backend: ${resolvedSerial}`);
-            const inventory = hostAndroidDevices(discovery);
-            const hostDevice = inventory.devices.find((device) => device.serial === resolvedSerial);
-            if (!hostDevice) {
-                if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || androidRealDeviceId(deviceName || resolvedSerial));
-                return textResult(false, `Android device is not visible to adb: ${resolvedSerial}`);
-            }
-            if (hostDevice.state !== "device") {
-                if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || androidRealDeviceId(deviceName || resolvedSerial));
-                return textResult(false, `Android device ${resolvedSerial} is not attachable; adb state is ${hostDevice.state}`);
-            }
-
-            const id = deviceId || androidRealDeviceId(deviceName || resolvedSerial);
-            if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
-            if (devices.some((device) => device.serial === resolvedSerial)) return textResult(false, `Android serial already attached for this owner: ${resolvedSerial}`);
-            if (connection !== "wifi") {
-                lease = claimPhysicalLease("android-device", resolvedSerial, id, { claimNonce: leaseClaimNonce });
-                if (!lease.ok) {
-                    return textResult(false, `Android serial is already attached or an attach is in progress: ${resolvedSerial}`);
-                }
-            }
-            const resolvedConnection = hostDevice.connection || connection;
-
-            const device = {
-                id,
-                name: deviceName || resolvedSerial,
-                backend,
-                kind: "mobile",
-                platform: "android",
-                physical: true,
-                ownerId: ownerId(),
-                serial: resolvedSerial,
-                connection: resolvedConnection,
-                transport: resolvedConnection === "wifi"
-                    ? androidWifiTransport(resolvedSerial, host, port)
-                    : { type: "usb", host: null, port: null },
-                hostDetails: hostDevice.details,
-                appiumPort: appiumPortForDevice(id),
-                appium: null,
-                recording: null,
-                leaseClaimId: lease.lease.claimId,
-                leaseClaimNonce,
-                status: "attached",
-                creatable: false,
-                attachable: true,
-                attachedAt: now(),
-                updatedAt: now(),
-            };
-            let claim;
-            try {
-                claim = claimAndroidRealDevice(device);
-            } catch (error) {
-                releaseClaimedLease(resolvedSerial, id);
-                throw error;
-            }
-            if (!claim.ok) {
-                releaseClaimedLease(resolvedSerial, id);
-                return textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
-            }
-            startPhysicalLeaseHeartbeat("android-device", resolvedSerial, id, {
-                claimId: lease.lease.claimId,
-                claimNonce: leaseClaimNonce,
-            });
-            return jsonResult({ device: withTargetStatus(device) });
-        }
-
-        case "device_detach": {
-            const { deviceId } = args;
-            const devices = readAndroidRealDevices();
-            const device = devices.find((item) => item.id === deviceId);
-            if (!device) return undefined;
-            const claim = claimAndroidRealLifecycle(deviceId, device, "detach");
-            if (!claim.transition.matched) return androidRealStateConflict(deviceId, "detach-claim", claim.transition);
-            const discovery = androidDiscovery();
-            const stopped = await stopVolatileProcesses(device, discovery.adb);
-            if (!stopped.exited) {
-                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, stopped.error);
-            }
-            const current = currentAndroidRealLifecycleDevice(deviceId, claim.lifecycle);
-            if (!current) return androidRealStateConflict(deviceId, "detach", { found: Boolean(findAndroidRealDevice(deviceId)), matched: false });
-            let released;
-            try {
-                released = releasePhysicalLeaseWithMutation("android-device", device.serial, deviceId, {
-                    claimId: device.leaseClaimId,
-                    claimNonce: device.leaseClaimNonce,
-                }, () => {
-                    const transition = transitionAndroidRealDevice(deviceId, current, null);
-                    if (!transition.matched) return { ok: false, transition };
-                    return {
-                        ok: true,
-                        transition,
-                        rollback() {
-                            const restored = claimAndroidRealDevice(current);
-                            if (!restored.ok) throw new Error(`android-device-detach-state-rollback-failed:${restored.error}`);
-                        },
-                    };
-                });
-            } catch (error) {
-                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, `Android physical device detach could not commit lease release; owner state and physical lease were preserved for retry: ${error instanceof Error ? error.message : String(error)}`);
-            }
-            if (!released.ok) {
-                if (released.error === "physical-lease-release-mutation-rejected") {
-                    return androidRealStateConflict(deviceId, "detach", released.mutation?.transition || { found: Boolean(findAndroidRealDevice(deviceId)), matched: false });
-                }
-                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
-                return textResult(false, `Android physical device detach lease release was rejected (${released.error || "lease-conflict"}); owner state and physical lease were preserved for retry.`);
-            }
-            return jsonResult({ detached: deviceId, physicalDevicePoweredOff: false });
-        }
+        case "device_attach":
+            return presentAttachment(physicalAttachment.attach(args));
+        case "device_detach":
+            return presentAttachment(await physicalAttachment.detach(args.deviceId));
 
         case "device_start": {
             const { deviceId } = args;

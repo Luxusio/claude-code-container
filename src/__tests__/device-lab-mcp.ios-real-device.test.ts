@@ -145,6 +145,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS real-device fl
         });
         expect(rejectWifiNotNetworkVisible.isError).toBe(true);
         expect((rejectWifiNotNetworkVisible.content as Array<{ text?: string }>)[0].text).toContain("requires the device to be paired for network use");
+        expect(existsSync(join(iosLeaseDir, `${encodeURIComponent("00008110-001C195E0E91801E")}.json`))).toBe(false);
 
         const rejectNetworkNamedUsbAsWifi = await client.callTool({
             name: "attach",

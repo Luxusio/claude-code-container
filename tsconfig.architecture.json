@@ -10,6 +10,7 @@
     "packages/device-lab/providers/domain/**/*.mjs",
     "packages/device-lab/providers/ports/**/*.mjs",
     "packages/device-lab/providers/application/**/*.mjs",
+    "packages/device-lab/providers/adapters/physical-attachment.mjs",
     "packages/device-lab/providers/state/physical-lease-store.mjs",
     "device-lab-mcp/src/domain/**/*.mjs",
     "device-lab-mcp/src/ports/**/*.mjs",
