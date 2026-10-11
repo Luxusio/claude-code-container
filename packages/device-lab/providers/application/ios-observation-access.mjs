@@ -255,6 +255,7 @@ export function createIosObservationAccess(ports) {
             if (!root) return ports.commandFailure({ ...command, status: 1, stderr: "simctl get_app_container returned an empty path" });
             const requested = (args.path || "").replace(/^[/\\]+/, "") || ".";
             if (requested.split(/[/\\]/).includes("..")) return ports.jsonResult({ ok: false, error: "list-files-container-escape" });
+            /** @type {ReturnType<typeof ports.pathInContainer>} */
             const path = requested === "." ? { path: root } : ports.pathInContainer(root, requested);
             if (path.error !== undefined) return ports.textResult(false, path.error);
             const contained = ports.guardRead(root, path.path);
