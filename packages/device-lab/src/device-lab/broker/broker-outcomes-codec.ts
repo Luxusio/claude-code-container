@@ -338,11 +338,13 @@ export function renderBrokerSandboxLifecycle(outcome: BrokerWindowsSandboxOutcom
         ...(facts.auxiliaryCleanup ? { auxiliaryCleanup: facts.auxiliaryCleanup } : {}), ...(facts.artifactCleanup ? { windowsDeviceArtifactCleanup: facts.artifactCleanup } : {}),
         ...(!facts.invoked ? { execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: facts.mutatesHost, ...(execution ? { command: renderBrokerLifecycleObservation(execution) } : {}) } } : {}),
         ...(facts.registration && execution ? { execution: { mode: renderBrokerLifecycleObservation(execution).mode, providerExecution: "executed", mutatesHost: facts.mutatesHost, command: { ...renderBrokerLifecycleObservation(execution), registration: sandboxRegistration(facts.registration, context), macosBoot: null, androidBoot: null } } } : {}) } : undefined;
-    if (outcome.kind === "refused")
+    if (outcome.kind === "refused") {
+        const plan = context.plan ? { ...context.plan, device: redactDevice(context.plan.device) } : null;
         return { status: refusalStatus(outcome.category, outcome.error), payload: { ok: false, error: outcome.error,
             ...(outcome.error === "windows-sandbox-config-refresh-failed" || outcome.error === "windows-sandbox-device-artifact-cleanup-failed" || outcome.error === "owner-device-state-conflict" ? {ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId} : {}),
             ...(outcome.error === "owner-device-state-conflict" ? {found: facts?.publication?.found} : {}),
-                ...(outcome.detail ? { detail: outcome.detail } : outcome.error === "windows-sandbox-runtime-snapshot-failed" && execution ? { detail: failureDetail(renderBrokerLifecycleObservation(execution)) } : {}), ...(outcome.missing ? { missing: outcome.missing, plan: context.plan || null } : {}), ...(outcome.lock !== undefined ? { lock: outcome.lock, plan: context.plan || null } : {}), ...(result ? { result } : {}) } };
+                ...(outcome.detail ? { detail: outcome.detail } : outcome.error === "windows-sandbox-runtime-snapshot-failed" && execution ? { detail: failureDetail(renderBrokerLifecycleObservation(execution)) } : {}), ...(outcome.missing ? { missing: outcome.missing, plan } : {}), ...(outcome.lock !== undefined ? { lock: outcome.lock, plan } : {}), ...(result ? { result } : {}) } };
+    }
     return { status: publicationConflict ? 409 : success ? 200 : 502, payload: { ok: success && !publicationConflict,
             ...(publicationConflict ? { error: "owner-device-state-conflict", ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId, found: facts?.publication?.found } : !success ? { error: "provider-command-failed", detail: failureDetail(renderBrokerLifecycleObservation(execution || {})) } : {}), result } };
 }

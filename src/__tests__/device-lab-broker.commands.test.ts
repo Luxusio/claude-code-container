@@ -9077,6 +9077,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             writeBrokerDevices(ownerId, "windows", [
                 { id: "win", configPath: windowsConfigPath, sandboxId: "12345678-1234-4234-9234-1234567890ab" },
                 { id: "win-external", configPath: externalWindowsConfigPath, sandboxId: "12345678-1234-4234-9234-1234567890ac" },
+                { id: "win-missing", status: "running", privateRoot: "private-sandbox-root", ssh: { password: "sandbox-private-password" } },
             ]);
             writeBrokerDevices(ownerId, "macos", [
                 { id: "mac", provider: "tart", providerInstance: "ccc-mac" },
@@ -9138,6 +9139,24 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 missing: ["owner-scoped configPath"],
             }));
             expect(readFileSync(externalWindowsConfigPath, "utf8")).toBe("host-secret-configuration");
+
+            const callsBeforeMissingSandbox = commandRunner.mock.calls.length;
+            const missingSandbox = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "windows-sandbox", command: "device_stop", deviceId: "win-missing", dryRun: false,
+                } }),
+            });
+            expect(missingSandbox.status).toBe(400);
+            const missingSandboxBody = await missingSandbox.json();
+            expect(missingSandboxBody).toMatchObject({
+                ok: false, error: "missing-provider-metadata", missing: ["sandboxId GUID"],
+                plan: { device: { id: "win-missing", ssh: { passwordConfigured: true } } },
+            });
+            expect(JSON.stringify(missingSandboxBody)).not.toContain("sandbox-private-password");
+            expect(JSON.stringify(missingSandboxBody)).not.toContain("private-sandbox-root");
+            expect(commandRunner.mock.calls).toHaveLength(callsBeforeMissingSandbox);
 
             const missing = await fetch(endpoint, {
                 method: "POST",
@@ -9349,7 +9368,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
         writeFileSync(join(secondDeviceRoot, "helper-artifact.txt"), "owned");
         writeBrokerDevices(ownerId, "windows", [
             { id: "win-one", backend: "windows-sandbox", status: "stopped", configPath: firstConfigPath },
-            { id: "win-two", backend: "windows-sandbox", status: "stopped", configPath: secondConfigPath, sandboxId: "12345678-1234-4234-9234-1234567890bb" },
+            { id: "win-two", backend: "windows-sandbox", status: "stopped", configPath: secondConfigPath, sandboxId: "12345678-1234-4234-9234-1234567890bb", privateRoot: "private-busy-sandbox-root", ssh: { password: "busy-sandbox-private-password" } },
         ]);
         const staleLockPath = join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json");
         mkdirSync(dirname(staleLockPath), { recursive: true });
@@ -9397,12 +9416,16 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 }),
             });
             expect(blockedSecondStart.status).toBe(409);
-            expect(await blockedSecondStart.json()).toEqual(expect.objectContaining({
+            const blockedSecondBody = await blockedSecondStart.json();
+            expect(blockedSecondBody).toEqual(expect.objectContaining({
                 ok: false,
                 error: "windows-sandbox-host-busy",
                 detail: expect.stringContaining("Windows Sandbox is already claimed on this host"),
                 lock: expect.objectContaining({ ownerId, deviceId: "win-one" }),
             }));
+            expect(blockedSecondBody.plan.device.ssh).toMatchObject({ passwordConfigured: true });
+            expect(JSON.stringify(blockedSecondBody)).not.toContain("busy-sandbox-private-password");
+            expect(JSON.stringify(blockedSecondBody)).not.toContain("private-busy-sandbox-root");
             expect(commandRunner).toHaveBeenCalledTimes(1);
 
             const firstStop = await fetch(endpoint, {
