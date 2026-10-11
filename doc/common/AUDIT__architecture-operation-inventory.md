@@ -1,41 +1,51 @@
 # Architecture operation inventory
 
 Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
-Current source audited: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
+Current source qualified: `cf7d78369bcdd0caaa54b51d64e34a45437ed9be`.
+Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-Status: **nine bounded current reference corrections are independently accepted;
-confirmed source work remains**. The original nine review findings now have
-source-reconciled ownership/reference corrections. Their historical reasons and
-source observations remain recorded separately. The broader original-scope audit found unfinished
-work in supported direct bindings and shared presentation contracts.
+Status: **nine bounded reference corrections and six subsequent operation
+completions are independently source-qualified; confirmed source work remains**.
+The original review reasons, source observations and twelve-operation retraction
+remain recorded as history. Accepted broker contributions alone did not complete
+the supported direct bindings or shared presentation contracts.
 
 The supported Codex/Claude scope contains 218 existing operations, with one
-retained OpenCode operation excluded. The progress overlay now qualifies
-**206/218 source operations (94.5%)**, with **12 partial**, no unmerged candidates
-and no additional operation IDs. The prior 218/218 overlay incorrectly treated
-accepted broker or bounded source contributions as complete across all required
-bindings. Those accepted commits and actual review/QA results remain valid for
-their recorded scope; their twelve whole-operation credits are withheld.
+retained OpenCode operation excluded. The current progress overlay qualifies
+**212/218 source operations (97.2%)**, with **six partial**, no unmerged candidates
+and no additional operation IDs. Source `bb502909` closes direct lease
+claim/prune/release and legacy admin cleanup; `cf7d7836` closes semantic physical
+stop and device flow. Independent reviews, final functional QA and protected
+local delivery qualify these six credits. Historical accepted contributions and
+retractions are retained separately.
 
-This is a provisional code count, not full architecture acceptance. The bounded
-audit does not certify exhaustive remaining scope. Source scope closure,
+This is a provisional code count, not full architecture acceptance. These bounded
+reviews do not certify exhaustive remaining scope. Source scope closure,
 current production-universe reconciliation and denominator certification remain
 incomplete. Native, installed-image, reliability and formal acceptance remain
 separate from source accounting.
 
-| Confirmed source work | Existing operations | Current scope |
+| Confirmed remaining source work | Existing operations | Current scope |
 | --- | ---: | --- |
-| Direct physical leases | 4 | Claim, heartbeat, prune, release and transaction compensation in `physical-lease-store.mjs` |
+| Broker-managed physical lease renewal | 1 | Direct heartbeat is inward; broker timer registry, activation and cancellation require their own reviewed, verified and delivered cutover under the existing heartbeat operation |
 | Direct physical attachment | 2 | Android/iOS attach and detach sequencing, publication and compensation |
 | Provider recording | 3 | Start, finalization and status in Android, iOS Simulator, macOS and Sandbox; broker desktop routes reach these children |
-| Legacy admin deletion | 1 | Exported synchronous `deleteOwnerDevice` binding under the existing admin-cleanup operation |
-| Shared result separation | 2 | Physical stop and device flow still expose MCP-shaped presentation results in shared applications |
 
-M01/M14 also need the existing dependency graph to cover MCP and installer core
-roots and current checked-MJS composition consumers. These are zero-operation
-obligations. They add no implementation credit or denominator rows. The six
-current source gaps and five prospective source tasks are recorded in the JSON.
+The direct lease policy, legacy synchronous admin deletion, shared physical-stop
+and flow result separation, and five-root graph/compiler enforcement findings
+have bounded source dispositions at the accepted revisions. Enforcement is a
+zero-operation obligation and grants no additional count. Three confirmed source
+gaps remain open: managed heartbeat, direct attachment and provider recording.
+Their closure does not establish exhaustive inventory or native acceptance.
+
+Source20 final QA records 15 whole files and 296 cases; its original CLI
+observation timeouts remain preserved alongside the successful private non-Git
+project command. Source26 final QA records 16 whole files and 696 cases; its two
+removed runtime-compiler suites are authenticated by intentional null absence
+sentinels. Both accepted source deliveries preserve all 97 original user files,
+status and index. Missing automatic receipt records are retained as formal parks,
+without a fabricated task close.
 
 This is an unweighted count of operation cutovers, not an estimate of remaining
 effort or overall Goal acceptance. A small installation policy and a large

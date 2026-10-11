@@ -132,19 +132,16 @@
   },
   "closure": {
     "exhaustive": false,
-    "status": "bounded-reference-corrections-accepted-confirmed-source-gaps-open",
+    "status": "bounded-source-acceptance-six-operation-gaps-remain",
     "blockingGapIds": [
-      "GAP-source-direct-physical-leases",
       "GAP-source-direct-physical-attachment",
       "GAP-source-direct-recording",
-      "GAP-source-legacy-admin-delete",
-      "GAP-source-shared-result-separation",
-      "GAP-source-core-enforcement"
+      "GAP-source-broker-managed-heartbeat"
     ],
     "totals": null,
     "sourceScopeClosed": false,
     "countCertification": "Not certified; confirmed supported-binding gaps and current-universe reconciliation remain open.",
-    "reason": "Historical nine review findings retain their original reasons and now have independently accepted current reference corrections. The separate original-scope audit at59c019 confirms twelve existing operations remain partial across direct workflows or shared-result contracts, plus zero-operation enforcement obligations. No new operation IDs; historical accepted contributions retained. Exhaustive source scope, current-universe reconciliation, native and formal acceptance remain unverified."
+    "reason": "Nine bounded reference corrections remain accepted. Source bb502909 and cf7d independently reviewed, genuinely checked and protected-delivered six formerly partial existing operations. Direct lease, legacy admin deletion, shared semantic results and five-root enforcement gaps are bounded source-resolved; broker-managed heartbeat, direct attachment and recording gaps remain open. Historical twelve-operation retractions retained. Exhaustive source universe, native and formal acceptance remain unverified."
   },
   "provenance": {
     "historicalLedger": {
@@ -11629,15 +11626,23 @@
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
         }
       ],
-      "sourceImplementationRemainingWork": [
-        "The retained exported synchronous deleteOwnerDevice/devicesCli binding still owns delete eligibility, provider cleanup, lease/claim release and conditional removal."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent review of required supported bindings, current genuine QA and protected main delivery accepted this existing operation. Native/formal and exhaustive certification remain unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json"
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "The retained exported synchronous deleteOwnerDevice/devicesCli binding still owns delete eligibility, provider cleanup, lease/claim release and conditional removal.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "The retained exported synchronous deleteOwnerDevice/devicesCli binding still owns delete eligibility, provider cleanup, lease/claim release and conditional removal."
+      ]
     },
     {
       "id": "OP-device-admin-prune",
@@ -25851,15 +25856,23 @@
       "bindingIds": [
         "BIND-lease-claim-broker-lease-claim"
       ],
-      "sourceImplementationRemainingWork": [
-        "Direct provider physical-lease-store.mjs claim/reuse and aggregate/authoritative-lock transaction policy remain outside application."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent review of required supported bindings, current genuine QA and protected main delivery accepted this existing operation. Native/formal and exhaustive certification remain unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json"
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct provider physical-lease-store.mjs claim/reuse and aggregate/authoritative-lock transaction policy remain outside application.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "Direct provider physical-lease-store.mjs claim/reuse and aggregate/authoritative-lock transaction policy remain outside application."
+      ]
     },
     {
       "id": "OP-lease-heartbeat",
@@ -26116,14 +26129,24 @@
         "BIND-lease-heartbeat-broker-lease-heartbeat"
       ],
       "sourceImplementationRemainingWork": [
-        "Direct provider physical-lease-store.mjs expiry, heartbeat eligibility and timer lifecycle policy remain outside application."
+        "Direct physical lease heartbeat policy accepted at bb502909; broker-managed renewal registry, TTL/interval, replacement and cancellation policy remains outside the accepted application boundary pending its separate review, QA and delivery."
       ],
       "currentWholeOperationQualification": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "acceptedDirectSourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "partial",
+        "reason": "Direct physical lease heartbeat policy accepted at bb502909; broker-managed renewal registry, TTL/interval, replacement and cancellation policy remains outside the accepted application boundary pending its separate review, QA and delivery.",
+        "historicalAcceptedContributionRetained": true
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct provider physical-lease-store.mjs expiry, heartbeat eligibility and timer lifecycle policy remain outside application.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "Direct provider physical-lease-store.mjs expiry, heartbeat eligibility and timer lifecycle policy remain outside application."
+      ]
     },
     {
       "id": "OP-lease-prune",
@@ -26366,15 +26389,23 @@
       "bindingIds": [
         "BIND-lease-prune-broker-lease-prune"
       ],
-      "sourceImplementationRemainingWork": [
-        "Direct provider physical-lease-store.mjs prune admission, authoritative reread and compensation policy remain outside application."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent review of required supported bindings, current genuine QA and protected main delivery accepted this existing operation. Native/formal and exhaustive certification remain unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json"
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct provider physical-lease-store.mjs prune admission, authoritative reread and compensation policy remain outside application.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "Direct provider physical-lease-store.mjs prune admission, authoritative reread and compensation policy remain outside application."
+      ]
     },
     {
       "id": "OP-lease-release",
@@ -26617,15 +26648,23 @@
       "bindingIds": [
         "BIND-lease-release-broker-lease-release"
       ],
-      "sourceImplementationRemainingWork": [
-        "Direct provider physical-lease-store.mjs exact release, residue and release-with-mutation/rollback policy remain outside application."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent review of required supported bindings, current genuine QA and protected main delivery accepted this existing operation. Native/formal and exhaustive certification remain unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json"
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Direct provider physical-lease-store.mjs exact release, residue and release-with-mutation/rollback policy remain outside application.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "Direct provider physical-lease-store.mjs exact release, residue and release-with-mutation/rollback policy remain outside application."
+      ]
     },
     {
       "id": "OP-physical-attach",
@@ -94556,15 +94595,23 @@
         "Public device_run_flow -> handleDeviceRunFlow -> handleRunFlow; each admitted step resolves toolOperation, normalizes target/args and runs dispatchTool within withBrokerOperation."
       ],
       "implementationRemainingWork": [],
-      "sourceImplementationRemainingWork": [
-        "Shared device-flow application directly manipulates MCP content/envelopes instead of returning semantic application outcomes."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent review of required supported bindings, current genuine QA and protected main delivery accepted this existing operation. Native/formal and exhaustive certification remain unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/core-enforcement-cf7d-rk9rwo1j/final-result.json"
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Shared device-flow application directly manipulates MCP content/envelopes instead of returning semantic application outcomes.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "Shared device-flow application directly manipulates MCP content/envelopes instead of returning semantic application outcomes."
+      ]
     },
     {
       "id": "OP-physical-stop",
@@ -94808,15 +94855,23 @@
         "OP-appium-server-stop"
       ],
       "implementationRemainingWork": [],
-      "sourceImplementationRemainingWork": [
-        "Shared physical-stop ports/application expose MCP-shaped content/isError presentation results contrary to SPEC shared-result separation."
-      ],
+      "sourceImplementationRemainingWork": [],
       "currentWholeOperationQualification": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "status": "whole-source-qualified",
+        "reason": "Actual independent review of required supported bindings, current genuine QA and protected main delivery accepted this existing operation. Native/formal and exhaustive certification remain unverified.",
+        "historicalAcceptedContributionRetained": true,
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/core-enforcement-cf7d-rk9rwo1j/final-result.json"
+      },
+      "historicalWholeOperationQualificationBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "status": "partial",
         "reason": "Shared physical-stop ports/application expose MCP-shaped content/isError presentation results contrary to SPEC shared-result separation.",
         "historicalAcceptedContributionRetained": true
-      }
+      },
+      "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
+        "Shared physical-stop ports/application expose MCP-shaped content/isError presentation results contrary to SPEC shared-result separation."
+      ]
     },
     {
       "id": "OP-device-reboot",
@@ -184739,7 +184794,7 @@
       "id": "GAP-source-direct-physical-leases",
       "kind": "source-implementation",
       "reason": "Move direct physical lease transaction/expiry/heartbeat/prune/release/compensation policy inward; keep native storage and exact identity authority outward.",
-      "remediationStatus": "open-confirmed-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [
         "OP-lease-claim",
         "OP-lease-heartbeat",
@@ -184754,7 +184809,15 @@
         }
       ],
       "followupTaskId": "TASK__architecture-direct-physical-leases",
-      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification.",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "independently-source-reconciled",
+        "scope": "Only this recorded source gap is resolved by accepted current review/QA/delivery; native/formal and exhaustive source acceptance remain unverified.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json",
+        "remainingWholeOperationGap": "OP-lease-heartbeat remains partial through the separate broker-managed renewal gap; only direct physical lease policy is resolved here."
+      }
     },
     {
       "id": "GAP-source-direct-physical-attachment",
@@ -184799,7 +184862,7 @@
       "id": "GAP-source-legacy-admin-delete",
       "kind": "source-implementation",
       "reason": "Complete retained exported synchronous admin deletion binding without erasing its provider/lease/CAS guards.",
-      "remediationStatus": "open-confirmed-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [
         "OP-device-admin-cleanup"
       ],
@@ -184811,13 +184874,20 @@
         }
       ],
       "followupTaskId": "TASK__architecture-admin-delete-completion",
-      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification.",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+        "status": "independently-source-reconciled",
+        "scope": "Only this recorded source gap is resolved by accepted current review/QA/delivery; native/formal and exhaustive source acceptance remain unverified.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json"
+      }
     },
     {
       "id": "GAP-source-shared-result-separation",
       "kind": "source-implementation",
       "reason": "Return semantic shared application outcomes and translate MCP content/isError envelopes in presentation/composition.",
-      "remediationStatus": "open-confirmed-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [
         "OP-physical-stop",
         "OP-device-flow"
@@ -184830,13 +184900,20 @@
         }
       ],
       "followupTaskId": "TASK__architecture-core-enforcement-closure",
-      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification.",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "status": "independently-source-reconciled",
+        "scope": "Only this recorded source gap is resolved by accepted current review/QA/delivery; native/formal and exhaustive source acceptance remain unverified.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/core-enforcement-cf7d-rk9rwo1j/final-result.json"
+      }
     },
     {
       "id": "GAP-source-core-enforcement",
       "kind": "source-implementation",
       "reason": "Cover MCP/installer migrated core roots in the real dependency graph and include actual checked-MJS composition consumers; zero-operation obligation.",
-      "remediationStatus": "open-confirmed-source-gap",
+      "remediationStatus": "bounded-source-resolved",
       "workItemIds": [],
       "sourceTrace": [
         {
@@ -184846,7 +184923,32 @@
         }
       ],
       "followupTaskId": "TASK__architecture-core-enforcement-closure",
-      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification."
+      "evidenceScope": "Independent static original-scope audit; concrete supported workflow/contract gap, not runtime/native acceptance or exhaustive remaining-scope certification.",
+      "historicalRemediationStatusBeforeSourceAcceptance": "open-confirmed-source-gap",
+      "currentSourceDisposition": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "status": "independently-source-reconciled",
+        "scope": "Only this recorded source gap is resolved by accepted current review/QA/delivery; native/formal and exhaustive source acceptance remain unverified.",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/core-enforcement-cf7d-rk9rwo1j/final-result.json"
+      }
+    },
+    {
+      "id": "GAP-source-broker-managed-heartbeat",
+      "kind": "source-implementation",
+      "reason": "Broker-managed heartbeat registry, identity key, TTL/default interval, replacement and timer cancellation policy remains a separate unaccepted source binding of existing OP-lease-heartbeat.",
+      "remediationStatus": "open-confirmed-source-gap",
+      "workItemIds": [
+        "OP-lease-heartbeat"
+      ],
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "symbol": "startBrokerPhysicalLeaseHeartbeat",
+          "revision": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be"
+        }
+      ],
+      "followupTaskId": "TASK__architecture-broker-managed-heartbeat",
+      "evidenceScope": "Accepted direct lease source does not grant whole heartbeat credit. Separate managed-renewal review/QA/main delivery remains required; no new operation or native/formal/exhaustive claim."
     }
   ],
   "distributionBoundaries": {

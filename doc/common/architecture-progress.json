@@ -192,10 +192,8 @@
       "taskId": "TASK__architecture-device-flow",
       "implementation": "candidate-complete",
       "wholeOperationIds": [],
-      "partialOperationIds": [
-        "OP-device-flow"
-      ],
-      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-device-flow: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "partialOperationIds": [],
+      "codeReview": "Historical accepted contribution and twelve-operation retraction retained. Requalified operations are counted only in the new accepted source-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "19e4b93bebb69eebbcbde94b5a685155fb3cbe1c",
@@ -204,6 +202,15 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "independent code/security/portable QA and actual local delivery PASS; formal hook attestation pending",
       "currentQualificationAudit": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "date": "2026-10-11",
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
+          "OP-device-flow"
+        ],
+        "remainingPartialOperationIds": []
+      },
+      "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "date": "2026-10-11",
         "retractedWholeOperationIds": [
@@ -327,10 +334,8 @@
         "OP-workspace-content-repair-admission",
         "OP-workspace-cli-remove"
       ],
-      "partialOperationIds": [
-        "OP-physical-stop"
-      ],
-      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-physical-stop: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "partialOperationIds": [],
+      "codeReview": "Historical accepted contribution and twelve-operation retraction retained. Requalified operations are counted only in the new accepted source-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "b855553fb7122234176c33f774e766af5824a4c4",
@@ -349,6 +354,15 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs PASS, genuine build36ff, strict/BOTH57 each/full524files12993tests with33 required terminal files/lint/final authentication PASS. Local75byte delivery b855 verified; empty hook receipts parked, no formal close.",
       "currentQualificationAudit": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "date": "2026-10-11",
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
+          "OP-physical-stop"
+        ],
+        "remainingPartialOperationIds": []
+      },
+      "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "date": "2026-10-11",
         "retractedWholeOperationIds": [
@@ -397,10 +411,8 @@
         "OP-qemu-image-import",
         "OP-device-admin-prune"
       ],
-      "partialOperationIds": [
-        "OP-device-admin-cleanup"
-      ],
-      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-device-admin-cleanup: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "partialOperationIds": [],
+      "codeReview": "Historical accepted contribution and twelve-operation retraction retained. Requalified operations are counted only in the new accepted source-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "d24e5ca1aeb194b01cd640ef18a2e50b70f5679a",
@@ -423,6 +435,15 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs PASS; current genuine build, strict contracts, 258 affected cases, seven package cases, actual npm/Unix startup smoke, lint and compiled CLI PASS. Relevant unchanged tests carry. Verified local source delivery; empty automatic receipts parked, no formal close.",
       "currentQualificationAudit": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "date": "2026-10-11",
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
+          "OP-device-admin-cleanup"
+        ],
+        "remainingPartialOperationIds": []
+      },
+      "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "date": "2026-10-11",
         "retractedWholeOperationIds": [
@@ -480,12 +501,9 @@
         "OP-broker-owner-resolve"
       ],
       "partialOperationIds": [
-        "OP-lease-claim",
-        "OP-lease-heartbeat",
-        "OP-lease-prune",
-        "OP-lease-release"
+        "OP-lease-heartbeat"
       ],
-      "codeReview": "Accepted source/review/QA remains a bounded contribution. Final supported-binding audit at59c019 withholds whole credit for OP-lease-claim, OP-lease-heartbeat, OP-lease-prune, OP-lease-release: required direct workflow or shared-result contract remains unfinished. Native/formal and exhaustive scope unverified.",
+      "codeReview": "Historical accepted contribution and twelve-operation retraction retained. Requalified operations are counted only in the new accepted source-closure lanes; remaining partial bindings, native/formal and exhaustive acceptance stay unverified.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "cbea3003ef0340912d348245c18f17428d5c9eef",
@@ -499,6 +517,19 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent Code/Security/Docs and affected correction reviews PASS. Current complete graph/strict source and fresh emitted contracts, genuine build, 103 image cases, 93 focused real-worktree cases, lint, seven package cases, actual npm/Unix smoke and compiled CLI PASS; qualified unchanged owner/lease results carry and deleted metatests are excluded. Actual local source delivery at cbea preserves all97 user changes. Formal hook records and native-host certification remain unverified.",
       "currentQualificationAudit": {
+        "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+        "date": "2026-10-11",
+        "status": "independently-source-reconciled",
+        "requalifiedOperationIds": [
+          "OP-lease-claim",
+          "OP-lease-prune",
+          "OP-lease-release"
+        ],
+        "remainingPartialOperationIds": [
+          "OP-lease-heartbeat"
+        ]
+      },
+      "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "date": "2026-10-11",
         "retractedWholeOperationIds": [
@@ -578,6 +609,16 @@
           "OP-recording-finalize",
           "OP-recording-status"
         ],
+        "status": "independently-source-reconciled-confirmed-partial"
+      },
+      "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-recording-start",
+          "OP-recording-finalize",
+          "OP-recording-status"
+        ],
         "status": "candidate-reconciled-awaiting-independent-current-review"
       }
     },
@@ -649,6 +690,15 @@
       ],
       "historicalCodeReviewBeforeFinalScopeAudit": "Actual independent source/composed/affected Code, Security and Guide PASS; current literal all-binding accounting confirms four whole and twelve partial operations. Genuine original build complete with qualified unchanged prefix and corrected architecture declaration stage; nineteen affected whole files718cases0skip, lint, seven package cases, actual npm/Unix exports/assets/MCP startup and compiled CLI PASS. Source31/artifacts1192/fixeddeps7551/links18/locks authenticated; only generated Vitest cache changed. Actual normal local FF delivery624c preserves all97 user paths and diff bytes. Original failure logs retained. Unrelated legacy native-JS diagnostics, native-host certification and formal hook closure are unverified. These twelve bindings were partial at624c; their remaining supported bindings close in device-interaction-integration atb4b8 and count once there.",
       "currentQualificationAudit": {
+        "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
+        "date": "2026-10-11",
+        "retractedWholeOperationIds": [
+          "OP-physical-attach",
+          "OP-physical-detach"
+        ],
+        "status": "independently-source-reconciled-confirmed-partial"
+      },
+      "historicalCurrentQualificationAuditBeforeSourceAcceptance": {
         "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
         "date": "2026-10-11",
         "retractedWholeOperationIds": [
@@ -930,6 +980,48 @@
         ],
         "nativePodmanCertified": false
       }
+    },
+    {
+      "id": "direct-leases-admin-source-closure",
+      "branch": "refactor/architecture-admin-delete-completion-20261011",
+      "commit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+      "taskId": "TASK__architecture-admin-delete-completion",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-lease-claim",
+        "OP-lease-prune",
+        "OP-lease-release",
+        "OP-device-admin-cleanup"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Independent Code/Security/Guide and required-binding review PASS; current strong compiler, genuine build, 15 whole files/296 cases, package7, npm/materialized Unix startup and protected main delivery qualified. Initial CLI happy-path observation timed out; subsequent private local nonGit profile-list completed exit0. No universal CLI success or native/formal claim.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/leases-admin-bb50-f9qhtga0/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-leases-admin-main-delivery-result-20261011.json",
+      "sourceTaskIds": [
+        "TASK__architecture-direct-physical-leases",
+        "TASK__architecture-admin-delete-completion"
+      ]
+    },
+    {
+      "id": "shared-results-core-enforcement-source-closure",
+      "branch": "refactor/architecture-core-enforcement-closure-20261011",
+      "commit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+      "taskId": "TASK__architecture-core-enforcement-closure",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-physical-stop",
+        "OP-device-flow"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Independent Code/Security/Guide and required-binding review PASS; current strong compiler, genuine build, five-root graph, 16 whole files/696 cases, package7, npm/materialized Unix startup, compiled CLI and protected main delivery qualified. Final current source matches accepted revision; initial null source pins for deleted device-flow/physical-stop type tests are intentional absence sentinels, matching the QA checkout and accepted source. Native/formal/exhaustive acceptance unverified.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/core-enforcement-cf7d-rk9rwo1j/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-core-main-delivery-result-20261011.json"
     }
   ],
   "planningLanes": [
@@ -1287,6 +1379,32 @@
     }
   ],
   "currentSourceQualificationAudit": {
+    "sourceCommit": "cf7d78369bcdd0caaa54b51d64e34a45437ed9be",
+    "acceptedSourceCommits": [
+      "bb502909050ef1b8cafd1f51fd144446ba4c99bb",
+      "cf7d78369bcdd0caaa54b51d64e34a45437ed9be"
+    ],
+    "acceptedOperationIds": [
+      "OP-lease-claim",
+      "OP-lease-prune",
+      "OP-lease-release",
+      "OP-device-admin-cleanup",
+      "OP-physical-stop",
+      "OP-device-flow"
+    ],
+    "confirmedPartialOperationIds": [
+      "OP-lease-heartbeat",
+      "OP-physical-attach",
+      "OP-physical-detach",
+      "OP-recording-start",
+      "OP-recording-finalize",
+      "OP-recording-status"
+    ],
+    "boundedReferenceCorrections": 9,
+    "sourceUniverseCertified": false,
+    "scope": "Six existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery. Six remain partial: broker managed heartbeat, direct attachment/detachment and recording. Historical twelve-operation retraction retained; no exhaustive/native/formal certification."
+  },
+  "historicalSourceQualificationAuditBeforeSixOperationAcceptance": {
     "sourceCommit": "59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f",
     "confirmedPartialOperationIds": [
       "OP-lease-claim",
