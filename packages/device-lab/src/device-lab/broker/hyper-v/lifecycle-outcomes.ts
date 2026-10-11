@@ -1,4 +1,4 @@
-import type { HyperVLifecycleOutcome, HyperVPlannedFacts, HyperVNativeExecution, HyperVRollback } from "../../domain/lifecycle/hyper-v-create-start.js";
+import type { HyperVLifecycleOutcome, HyperVPlannedFacts, HyperVNativeExecution, HyperVRollback, HyperVCreateRecovery, HyperVLifecycleFailureReason } from "../../domain/lifecycle/hyper-v-create-start.js";
 import type { HyperVStopDeleteOutcome, HyperVReplayResult, HyperVNetworkCleanupEvidence } from "../../domain/lifecycle/hyper-v-stop-delete.js";
 import type { SnapshotOutcome, SnapshotRepairResult } from "../../domain/lifecycle/hyper-v-snapshots.js";
 import type { ProviderCommand, ProviderCommandResult } from "../../../device-lab-broker.js";
@@ -17,6 +17,16 @@ export type NativeHyperVConnection = {
 function stateFailureStatus(error: string, fallback: number): number {
     return error === "owner-devices-file-too-large" ? 413 : error === "owner-devices-state-read-failed" ? 503 : fallback;
 }
+function lifecycleFailureStatus(error: string, reason: HyperVLifecycleFailureReason): number {
+    return stateFailureStatus(error, reason === "unsupported" ? 501 : reason === "invalid" ? 400 : reason === "forbidden" ? 403 : reason === "missing" ? 404 : reason === "conflict" ? 409 : reason === "provider-unavailable" ? 503 : reason === "deadline" ? 504 : reason === "state-write-failed" ? 500 : 502);
+}
+
+function renderHyperVCreateRecovery(outcome: HyperVCreateRecovery) {
+    if (outcome.ok) return outcome;
+    const {reason, ...facts} = outcome;
+    return {...facts, status: lifecycleFailureStatus(outcome.error, reason)};
+}
+
 function renderHyperVNetworkCleanup(outcome: HyperVNetworkCleanupEvidence | null | undefined) {
     return publicHyperVNetworkCleanup(outcome ? {
         ...outcome, networkCleanup: renderHyperVNetworkReceipt(outcome.networkCleanup)
@@ -150,7 +160,7 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
             provisioning: renderHyperVExecution(provisioning, outcome.error === "hyper-v-linux-seed-failed" ? "hyper-v-linux-seed-command-failed" : "hyper-v-guest-provision-command-failed")
         } : {}),
         ...(rollback ? {
-            rollback: "attempted" in rollback ? renderHyperVCreateRollback(rollback) : rollback
+            rollback: "attempted" in rollback ? renderHyperVCreateRollback(rollback) : renderHyperVCreateRecovery(rollback)
         } : {}),
         ...(artifactCleanup ? {
             artifactCleanup: publicHyperVArtifactCleanup(artifactCleanup)
@@ -212,7 +222,7 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
             const { reason: _reason, ...failure }: typeof rendered & {
                 reason?: string;
             } = rendered;
-            const status = imageFailure ? hyperVImageResolutionToWire(imageFailure).status : networkFailure && outcome.error === networkFailure.error ? hyperVNetworkFailureToWire(networkFailure).status : stateFailureStatus(outcome.error, outcome.reason === "unsupported" ? 501 : outcome.reason === "invalid" ? 400 : outcome.reason === "forbidden" ? 403 : outcome.reason === "missing" ? 404 : outcome.reason === "conflict" ? 409 : outcome.reason === "provider-unavailable" ? 503 : outcome.reason === "deadline" ? 504 : outcome.reason === "state-write-failed" ? 500 : 502);
+            const status = imageFailure ? hyperVImageResolutionToWire(imageFailure).status : networkFailure && outcome.error === networkFailure.error ? hyperVNetworkFailureToWire(networkFailure).status : lifecycleFailureStatus(outcome.error, outcome.reason);
             return {
                 status, payload: {
                     ok: false, ...(failureExecution ? {
@@ -223,7 +233,7 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
                         } : {}), ...(outcome.nativeErrorCategory !== undefined ? {
                             nativeErrorCategory: outcome.nativeErrorCategory
                         } : {}), ...(rollback ? {
-                            rollback: "attempted" in rollback ? renderHyperVCreateRollback(rollback) : rollback
+                            rollback: "attempted" in rollback ? renderHyperVCreateRollback(rollback) : renderHyperVCreateRecovery(rollback)
                         } : {}), result: publicResult
                     } : execution?.command ? {
                         error: outcome.error, detail: outcome.detail, ...(outcome.found !== undefined ? {

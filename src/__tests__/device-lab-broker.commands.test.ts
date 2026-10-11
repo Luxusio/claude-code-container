@@ -25,7 +25,7 @@ import { createDeviceBrokerServer as createRawDeviceBrokerServer, hiddenChildPro
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "@ccc/device-lab/device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from "@ccc/device-lab/device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
-import { releaseHyperVNetworkAllocationAndCleanup } from "@ccc/device-lab/device-lab/broker/hyper-v/network.js";
+import { releaseHyperVNetworkAllocationAndCleanupOutcome } from "@ccc/device-lab/device-lab/broker/hyper-v/network.js";
 import { renderHyperVCreateStart } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { rememberHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey } from "@ccc/device-lab/device-lab/broker/hyper-v/console.js";
 import { hyperVVmName } from "@ccc/device-lab/host-control/hyper-v/index.js";
@@ -43,7 +43,7 @@ vi.mock("@ccc/device-lab/device-lab/broker/hyper-v/network.js", async (importOri
     const actual = await importOriginal<typeof import("@ccc/device-lab/device-lab/broker/hyper-v/network.js")>();
     return {
         ...actual,
-        releaseHyperVNetworkAllocationAndCleanup: vi.fn(actual.releaseHyperVNetworkAllocationAndCleanup),
+        releaseHyperVNetworkAllocationAndCleanupOutcome: vi.fn(actual.releaseHyperVNetworkAllocationAndCleanupOutcome),
     };
 });
 
@@ -2553,7 +2553,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     writeFileSync(networkStatePath, "{malformed");
                 }
                 if (variant === "allocation-elevation-cancelled") {
-                    vi.mocked(releaseHyperVNetworkAllocationAndCleanup).mockResolvedValueOnce({
+                    vi.mocked(releaseHyperVNetworkAllocationAndCleanupOutcome).mockResolvedValueOnce({
                         ok: false,
                         released: false,
                         statePresent: true,
@@ -2863,7 +2863,7 @@ describe("device-lab host broker lifecycle commands", () => {
             if (providerScript(command).includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'")) {
                 provisioningFailed = true;
                 if (failure === "release") {
-                    vi.mocked(releaseHyperVNetworkAllocationAndCleanup).mockResolvedValueOnce({
+                    vi.mocked(releaseHyperVNetworkAllocationAndCleanupOutcome).mockResolvedValueOnce({
                         ok: false,
                         released: false,
                         statePresent: true,
@@ -2985,7 +2985,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     rmSync(movedRoot, { recursive: true, force: true });
                     renameSync(privateRoot, movedRoot);
                     directorySymlink(movedRoot, privateRoot);
-                    vi.mocked(releaseHyperVNetworkAllocationAndCleanup).mockResolvedValueOnce({
+                    vi.mocked(releaseHyperVNetworkAllocationAndCleanupOutcome).mockResolvedValueOnce({
                         ok: false,
                         released: false,
                         statePresent: true,
