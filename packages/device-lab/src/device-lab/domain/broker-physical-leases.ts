@@ -1,4 +1,10 @@
 export const DEFAULT_PHYSICAL_LEASE_TTL_MS = 60 * 60 * 1000;
+export function physicalLeaseHeartbeatKey(ownerId: string, backend: string, hardwareId: string, deviceId?: string) {
+    return `${ownerId}\0${backend}\0${hardwareId}\0${deviceId || ""}`;
+}
+export function physicalLeaseHeartbeatIntervalMs(ttlMs: number) {
+    return Math.max(10 * 1000, Math.min(5 * 60 * 1000, Math.floor(ttlMs / 3)));
+}
 const MIN_PHYSICAL_LEASE_TTL_MS = 30 * 1000;
 const MAX_PHYSICAL_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
 export const PHYSICAL_LEASE_BACKENDS: readonly string[] = ["android-device", "ios-device"];

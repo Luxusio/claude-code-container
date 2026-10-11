@@ -263,7 +263,6 @@ const DEVICE_BROKER_IDENTITY_PROBE_MAX_DELAY_MS = 200;
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
 const DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS = 3000;
 const DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS = 60 * 60 * 1000;
-const DEVICE_BROKER_PHYSICAL_LEASE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const DEVICE_BROKER_AUTH_LOCK_WAIT_MS = 5000;
 const DEVICE_BROKER_AUTH_LOCK_STALE_MS = 30000;
 const DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS = 30 * 60 * 1000;
@@ -4616,41 +4615,16 @@ function writeLeaseFile(file: string, lease: Record<string, unknown>) {
     writeJsonFileAtomically(file, lease);
 }
 
-const brokerPhysicalLeaseHeartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
-
-function brokerPhysicalLeaseHeartbeatKey(ownerId: string, backend: string, hardwareId: string, deviceId?: string) {
-    return `${ownerId}\0${backend}\0${hardwareId}\0${deviceId || ""}`;
-}
-
-function brokerPhysicalLeaseHeartbeatIntervalMs(ttlMs: number) {
-    return Math.max(10 * 1000, Math.min(DEVICE_BROKER_PHYSICAL_LEASE_HEARTBEAT_INTERVAL_MS, Math.floor(ttlMs / 3)));
-}
-
 function stopBrokerPhysicalLeaseHeartbeat(ownerId: string, backend: string, hardwareId: string, deviceId?: string) {
-    const key = brokerPhysicalLeaseHeartbeatKey(ownerId, backend, hardwareId, deviceId);
-    const timer = brokerPhysicalLeaseHeartbeatTimers.get(key);
-    if (!timer) return false;
-    clearInterval(timer);
-    brokerPhysicalLeaseHeartbeatTimers.delete(key);
-    return true;
+    return brokerPhysicalLeases.stopHeartbeat(ownerId, backend, hardwareId, deviceId);
 }
 
 function startBrokerPhysicalLeaseHeartbeat(ownerId: string, backend: string, hardwareId: string, deviceId: string, options: { ttlMs?: number; claimId?: string; claimNonce?: string } = {}) {
-    const ttlMs = options.ttlMs || DEVICE_BROKER_PHYSICAL_LEASE_TTL_MS;
-    stopBrokerPhysicalLeaseHeartbeat(ownerId, backend, hardwareId, deviceId);
-    const intervalMs = brokerPhysicalLeaseHeartbeatIntervalMs(ttlMs);
-    const timer = setInterval(() => {
-        const result = heartbeatPhysicalBrokerLease(ownerId, { backend, hardwareId, deviceId, ttlMs, claimId: options.claimId, claimNonce: options.claimNonce });
-        if (result.status !== 200) stopBrokerPhysicalLeaseHeartbeat(ownerId, backend, hardwareId, deviceId);
-    }, intervalMs);
-    timer.unref?.();
-    brokerPhysicalLeaseHeartbeatTimers.set(brokerPhysicalLeaseHeartbeatKey(ownerId, backend, hardwareId, deviceId), timer);
-    return { intervalMs, ttlMs };
+    return brokerPhysicalLeases.startHeartbeat(ownerId, backend, hardwareId, deviceId, options);
 }
 
 function stopAllBrokerPhysicalLeaseHeartbeats() {
-    for (const timer of brokerPhysicalLeaseHeartbeatTimers.values()) clearInterval(timer);
-    brokerPhysicalLeaseHeartbeatTimers.clear();
+    brokerPhysicalLeases.stopAllHeartbeats();
 }
 
 type PhysicalLeaseDirectoryScan =
@@ -4761,7 +4735,7 @@ const observePhysicalLeases = createLeaseList<string, PhysicalLeaseDirectoryScan
     },
 );
 
-const brokerPhysicalLeases = createBrokerPhysicalLeasesApplication({
+const brokerPhysicalLeases = createBrokerPhysicalLeasesApplication<ReturnType<typeof setInterval>>({
     parse: value => Date.parse(value()), epoch: () => new Date(0).toISOString(), expiryFrom: (updatedAt, ttlMs) => leaseExpiryFrom(updatedAt, ttlMs),
     prepareDirectory: backend => ensurePhysicalLeaseDirectory(backend), inspectDirectory: backend => inspectPhysicalLeaseDirectory(backend),
     scan: backend => scanPhysicalLeaseDirectory(backend), leaseFile: (backend, hardwareId) => physicalLeaseLockFile(backend, hardwareId),
@@ -4770,8 +4744,9 @@ const brokerPhysicalLeases = createBrokerPhysicalLeasesApplication({
     write: (file, lease) => { writeLeaseFile(file, lease); return undefined; },
     remove: file => { unlinkSync(file); return undefined; }, fileExists: file => existsSync(file),
     timestamp: () => new Date().toISOString(), nowMs: () => Date.now(), newClaimId: () => randomBytes(16).toString("hex"),
-    stopHeartbeat: (owner, backend, hardwareId, deviceId) => stopBrokerPhysicalLeaseHeartbeat(owner, backend, hardwareId, deviceId),
-    startHeartbeat: (owner, backend, hardwareId, deviceId, options) => startBrokerPhysicalLeaseHeartbeat(owner, backend, hardwareId, deviceId, options),
+    schedule: (callback, intervalMs) => ({handle: setInterval(callback, intervalMs)}),
+    cancel: timer => { clearInterval(timer); return undefined; },
+    unref: timer => { timer.unref?.(); return undefined; },
 });
 function claimPhysicalLease(ownerId: string, params: unknown): BrokerRpcResult { return brokerPhysicalLeases.claim(ownerId, params); }
 function heartbeatPhysicalBrokerLease(ownerId: string, params: unknown, waitBudget?: AppiumRequestBudget) { return brokerPhysicalLeases.heartbeat(ownerId, params, waitBudget); }

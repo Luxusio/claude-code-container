@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createBrokerOwnerApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner.js";
 import { createBrokerPhysicalLeasesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-leases.js";
 import type { BrokerOwnerRegistration } from "../../../packages/device-lab/src/device-lab/domain/broker-owner.js";
-import type { PhysicalLeaseRecord, LeaseWaitBudget } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-leases.js";
+import { validateLeaseParams, type PhysicalLeaseRecord, type LeaseWaitBudget } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-leases.js";
 import type { BrokerOwnerPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner.js";
 import type { BrokerPhysicalLeasePorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-leases.js";
 
@@ -32,11 +32,14 @@ function ownerFixture() {
     return { ports, published, app: createBrokerOwnerApplication(ports), setRegistration: (record: BrokerOwnerRegistration | null) => { registration = record; }, read: () => registration, secret: () => secret, quarantined: () => quarantinePresent, authLocked: () => authLocked };
 }
 
+type Timer = { callback: () => undefined; intervalMs: number; active: boolean; unreferenced: boolean };
 function leaseFixture() {
     const records = new Map<string, PhysicalLeaseRecord>();
-    const writes: PhysicalLeaseRecord[] = [], removed: string[] = [], cancelled: string[] = [];
+    const writes: PhysicalLeaseRecord[] = [], removed: string[] = [], cancelled: Timer[] = [];
+    const timers: Timer[] = [];
+    let clock = Date.parse(now);
     let locked = false, beforeLock: (() => void) | undefined;
-    const ports: BrokerPhysicalLeasePorts = {
+    const ports: BrokerPhysicalLeasePorts<Timer> = {
         prepareDirectory: () => ({ ok: true, exists: true }), inspectDirectory: () => ({ ok: true, exists: true }),
         scan: () => ({ ok: true, entries: [...records.keys()].map(hardwareId => ({ hardwareId, file: hardwareId })) }),
         leaseFile: (_backend, hardwareId) => hardwareId,
@@ -44,12 +47,13 @@ function leaseFixture() {
         read: file => { expect(locked).toBe(true); return records.get(file) || null; },
         write: (file, record) => { expect(locked).toBe(true); writes.push(record); records.set(file, record); return undefined; },
         remove: file => { expect(locked).toBe(true); removed.push(file); records.delete(file); return undefined; },
-        fileExists: file => records.has(file), timestamp: () => now, nowMs: () => Date.parse(now), newClaimId: () => "new-claim",
+        fileExists: file => records.has(file), timestamp: () => new Date(clock).toISOString(), nowMs: () => clock, newClaimId: () => "new-claim",
         parse: produce => Date.parse(produce()), epoch: () => "1970-01-01T00:00:00.000Z", expiryFrom: (timestamp, ttl) => new Date(Date.parse(timestamp) + ttl).toISOString(),
-        stopHeartbeat: (_owner, _backend, hardwareId) => { cancelled.push(hardwareId); return true; },
-        startHeartbeat: (_owner, _backend, _hardware, _device, options) => ({ intervalMs: 10000, ttlMs: options.ttlMs }),
+        schedule: (callback, intervalMs) => { const handle: Timer = { callback, intervalMs, active: true, unreferenced: false }; timers.push(handle); return {handle}; },
+        cancel: timer => { timer.active = false; cancelled.push(timer); return undefined; },
+        unref: timer => { timer.unreferenced = true; return undefined; },
     };
-    return { ports, records, writes, removed, cancelled, app: createBrokerPhysicalLeasesApplication(ports), onLock: (operation: () => void) => { beforeLock = operation; } };
+    return { ports, records, writes, removed, cancelled, timers, advance: (ms: number) => { clock += ms; }, app: createBrokerPhysicalLeasesApplication(ports), onLock: (operation: () => void) => { beforeLock = operation; } };
 }
 function lease(overrides: PhysicalLeaseRecord = {}): PhysicalLeaseRecord {
     return { backend: "android-device", hardwareId: "phone", ownerId, deviceId: "device", claimId: "old-claim", claimNonce: "operation", claimedAt: now, heartbeatAt: now, updatedAt: now, expiresAt: "2026-10-10T13:00:00.000Z", ttlMs: 3600000, ...overrides };
@@ -111,9 +115,10 @@ describe("broker physical lease mutations", () => {
         const f = leaseFixture();
         expect(f.app.claim(ownerId, { ...request, claimId: undefined })).toMatchObject({ status: 200, payload: { ok: true, result: { created: true, lease: { claimId: "new-claim", deviceId: "device" } } } });
         expect(f.app.heartbeat(ownerId, { ...request, claimId: "new-claim" })).toMatchObject({ status: 200, payload: { ok: true, result: { heartbeat: true, lease: { claimId: "new-claim", expiresAt: "2026-10-10T12:01:00.000Z" } } } });
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {ttlMs: 60000, claimId: "new-claim", claimNonce: "operation"});
         expect(f.app.release(ownerId, { ...request, claimId: "new-claim" })).toMatchObject({ status: 200, payload: { ok: true, result: { released: true } } });
         expect(f.records.has("phone")).toBe(false);
-        expect(f.cancelled).toEqual(["phone"]);
+        expect(f.cancelled).toEqual([f.timers[0]]);
     });
     it("refuses a foreign owner before refreshing or releasing its lease", () => {
         const f = leaseFixture(), foreign = lease({ ownerId: otherOwner }); f.records.set("phone", foreign);
@@ -166,5 +171,114 @@ describe("broker physical lease mutations", () => {
         f.ports.withHardwareLock = (backend, hardware, operation, budget) => { if (hardware === "second") throw fault; return nativeLock(backend, hardware, operation, budget); };
         expect(() => f.app.prune(ownerId, { backend: "android-device" })).toThrow(fault);
         expect(f.records.has("first")).toBe(false); expect(f.records.has("second")).toBe(true);
+    });
+});
+
+
+describe("broker managed physical lease renewal", () => {
+    it("does not allocate timers for construction, claims or RPC heartbeat", () => {
+        const f = leaseFixture();
+        f.app.claim(ownerId, {...request, claimId: undefined});
+        f.app.heartbeat(ownerId, {...request, claimId: "new-claim"});
+        expect(f.timers).toEqual([]);
+    });
+    it("uses the default TTL and cap, and refreshes the owned lease on its callback", () => {
+        const f = leaseFixture(); f.records.set("phone", lease());
+        expect(f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {claimId: "old-claim", claimNonce: "operation"})).toEqual({ttlMs: 3600000, intervalMs: 300000});
+        expect(f.timers[0].unreferenced).toBe(true);
+        f.advance(300000); f.timers[0].callback();
+        expect(f.records.get("phone")).toMatchObject({ownerId, claimId: "old-claim", claimNonce: "operation", heartbeatAt: "2026-10-10T12:05:00.000Z", expiresAt: "2026-10-10T13:05:00.000Z"});
+        expect(f.timers[0].active).toBe(true);
+    });
+    it("uses custom TTL and the ten-second floor", () => {
+        const f = leaseFixture(); f.records.set("phone", lease());
+        expect(f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {ttlMs: 30000})).toEqual({ttlMs: 30000, intervalMs: 10000});
+        f.advance(10000); f.timers[0].callback();
+        expect(f.records.get("phone")).toMatchObject({ttlMs: 30000, expiresAt: "2026-10-10T12:00:40.000Z"});
+    });
+    it("replaces only the same composite key and stops all independent timers", () => {
+        const f = leaseFixture();
+        f.app.startHeartbeat(ownerId, "android-device", "phone", "device");
+        f.app.startHeartbeat(ownerId, "android-device", "phone", "device");
+        f.app.startHeartbeat(otherOwner, "android-device", "phone", "device");
+        f.app.startHeartbeat(ownerId, "ios-device", "phone", "device");
+        f.app.startHeartbeat(ownerId, "android-device", "second", "device");
+        f.app.startHeartbeat(ownerId, "android-device", "phone", "second");
+        expect(f.timers.map(timer => timer.active)).toEqual([false, true, true, true, true, true]);
+        f.app.stopAllHeartbeats();
+        expect(f.timers.every(timer => !timer.active)).toBe(true);
+        expect(f.app.stopHeartbeat(ownerId, "android-device", "phone", "device")).toBe(false);
+    });
+    it.each<[string, PhysicalLeaseRecord | null]>([
+        ["missing", null],
+        ["foreign", lease({ownerId: otherOwner})],
+        ["device", lease({deviceId: "successor"})],
+        ["claim", lease({claimId: "successor"})],
+        ["nonce", lease({claimNonce: "successor"})],
+    ])("stops a %s renewal without publishing or removing a conflicting lease", (_name, record) => {
+        const f = leaseFixture(); if (record) f.records.set("phone", record);
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {ttlMs: 60000, claimId: "old-claim", claimNonce: "operation"});
+        f.timers[0].callback();
+        expect(f.timers[0].active).toBe(false);
+        expect(f.writes).toEqual([]); expect(f.removed).toEqual([]);
+        expect(f.records.get("phone")).toBe(record || undefined);
+    });
+    it("leaves pruned timer cancellation to the next failed renewal", () => {
+        const f = leaseFixture(); f.records.set("phone", lease({expiresAt: "2000-01-01T00:00:00.000Z"}));
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device");
+        f.app.prune(ownerId, {backend: request.backend});
+        expect(f.records.has("phone")).toBe(false); expect(f.timers[0].active).toBe(true);
+        f.timers[0].callback(); expect(f.timers[0].active).toBe(false);
+    });
+    it("cancels expired renewal even when guarded prune cannot remove the record", () => {
+        const f = leaseFixture(), expired = lease({expiresAt: "2000-01-01T00:00:00.000Z"}); f.records.set("phone", expired);
+        f.ports.remove = () => { throw new Error("native removal"); };
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {claimId: "old-claim", claimNonce: "operation"});
+        f.timers[0].callback();
+        expect(f.records.get("phone")).toBe(expired); expect(f.timers[0].active).toBe(false);
+    });
+    it("retains renewal after failed release and restarts it after successful restoration", () => {
+        const f = leaseFixture(), original = lease(), fault = new Error("native removal"); f.records.set("phone", original);
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device", {claimId: "old-claim", claimNonce: "operation"});
+        const remove = f.ports.remove; f.ports.remove = () => { throw fault; };
+        expect(() => f.app.release(ownerId, request)).toThrow(fault); expect(f.timers[0].active).toBe(true);
+        f.ports.remove = remove; f.app.release(ownerId, request); expect(f.timers[0].active).toBe(false);
+        const parsed = validateLeaseParams(request, "release"); if (!parsed.ok) throw new Error("invalid fixture");
+        f.ports.withHardwareLock(request.backend, "phone", () => {
+            expect(f.app.restoreReleased(ownerId, parsed, "phone", original)).toMatchObject({attempted: true, ok: true, heartbeat: {ttlMs: 3600000, intervalMs: 300000}});
+        });
+        expect(f.timers[1].active).toBe(true); f.timers[1].callback();
+        expect(f.records.get("phone")).toMatchObject({claimId: "old-claim", claimNonce: "operation"});
+    });
+    it("propagates callback faults while retaining the registered renewal", () => {
+        const f = leaseFixture(), fault = new Error("native read");
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device");
+        f.ports.read = () => { throw fault; };
+        expect(() => f.timers[0].callback()).toThrow(fault); expect(f.timers[0].active).toBe(true);
+        expect(f.app.stopHeartbeat(ownerId, request.backend, "phone", "device")).toBe(true);
+    });
+    it("retains registration when cancellation fails and permits a later retry", () => {
+        const f = leaseFixture(), fault = new Error("cancel denied");
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device");
+        const cancel = f.ports.cancel; f.ports.cancel = () => { throw fault; };
+        expect(() => f.app.stopHeartbeat(ownerId, request.backend, "phone", "device")).toThrow(fault);
+        expect(f.timers[0].active).toBe(true);
+        f.ports.cancel = cancel;
+        expect(f.app.stopHeartbeat(ownerId, request.backend, "phone", "device")).toBe(true);
+    });
+    it("preserves replacement cancellation before a failed new allocation", () => {
+        const f = leaseFixture(), fault = new Error("schedule denied");
+        f.app.startHeartbeat(ownerId, request.backend, "phone", "device");
+        f.ports.schedule = () => { throw fault; };
+        expect(() => f.app.startHeartbeat(ownerId, request.backend, "phone", "device")).toThrow(fault);
+        expect(f.timers[0].active).toBe(false);
+        expect(f.app.stopHeartbeat(ownerId, request.backend, "phone", "device")).toBe(false);
+    });
+    it("propagates unref failure without claiming an allocated timer was registered", () => {
+        const f = leaseFixture(), fault = new Error("unref denied");
+        f.ports.unref = () => { throw fault; };
+        expect(() => f.app.startHeartbeat(ownerId, request.backend, "phone", "device")).toThrow(fault);
+        expect(f.timers[0].active).toBe(true);
+        expect(f.app.stopHeartbeat(ownerId, request.backend, "phone", "device")).toBe(false);
     });
 });

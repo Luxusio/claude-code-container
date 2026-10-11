@@ -28,7 +28,7 @@ function ownerContracts(ports: BrokerOwnerPorts) {
     const asynchronous: Promise<unknown> = app.register("/host/project");
     void [registration, resolved, secret, identity, withAuthLock, publishSecret, asynchronous];
 }
-function leaseContracts(ports: BrokerPhysicalLeasePorts, budget: LeaseWaitBudget) {
+function leaseContracts<Timer>(ports: BrokerPhysicalLeasePorts<Timer>, budget: LeaseWaitBudget) {
     const app = createBrokerPhysicalLeasesApplication(ports);
     const request = { backend: "android-device", hardwareId: "phone", deviceId: "device" };
     const claim: LeaseRpcResult = app.claim("owner", request);
@@ -48,6 +48,25 @@ function leaseContracts(ports: BrokerPhysicalLeasePorts, budget: LeaseWaitBudget
     createBrokerPhysicalLeasesApplication({ ...ports, read: async () => null });
     // @ts-expect-error lease removal cannot defer settlement
     createBrokerPhysicalLeasesApplication({ ...ports, remove: async () => undefined });
+    const { schedule, ...withoutSchedule } = ports;
+    // @ts-expect-error native periodic allocation is required
+    createBrokerPhysicalLeasesApplication(withoutSchedule);
+    const { cancel, ...withoutCancel } = ports;
+    // @ts-expect-error native timer cancellation is required
+    createBrokerPhysicalLeasesApplication(withoutCancel);
+    const { unref, ...withoutUnref } = ports;
+    // @ts-expect-error native timer lifetime release is required
+    createBrokerPhysicalLeasesApplication(withoutUnref);
+    // @ts-expect-error native timer allocation must settle synchronously
+    createBrokerPhysicalLeasesApplication({...ports, schedule: async () => ({handle: null})});
+    // @ts-expect-error native cancellation must settle synchronously
+    createBrokerPhysicalLeasesApplication({...ports, cancel: async () => undefined});
+    // @ts-expect-error native unref must settle synchronously
+    createBrokerPhysicalLeasesApplication({...ports, unref: async () => undefined});
+    const renewal: {intervalMs: number; ttlMs: number} = app.startHeartbeat("owner", request.backend, request.hardwareId, request.deviceId);
+    const stopped: boolean = app.stopHeartbeat("owner", request.backend, request.hardwareId, request.deviceId);
+    app.stopAllHeartbeats();
+    void [schedule, cancel, unref, renewal, stopped];
     // @ts-expect-error lease claim completes synchronously
     const asynchronous: Promise<unknown> = app.claim("owner", request);
     void [claim, heartbeat, released, pruned, withHardwareLock, read, remove, asynchronous];

@@ -1,8 +1,34 @@
-import { DEFAULT_PHYSICAL_LEASE_TTL_MS, validateLeaseParams, leaseParamError, type LeaseParamSuccess, type LeaseRpcResult, type LeaseWaitBudget } from "../domain/broker-physical-leases.js";
+import { DEFAULT_PHYSICAL_LEASE_TTL_MS, physicalLeaseHeartbeatKey, physicalLeaseHeartbeatIntervalMs, validateLeaseParams, leaseParamError, type LeaseParamSuccess, type LeaseRpcResult, type LeaseWaitBudget } from "../domain/broker-physical-leases.js";
 import type { BrokerPhysicalLeasePorts } from "../ports/broker-physical-leases.js";
 import { createLeaseDatePolicy } from "./broker-observation-leases.js";
 
-export function createBrokerPhysicalLeasesApplication(ports: BrokerPhysicalLeasePorts) {
+export function createBrokerPhysicalLeasesApplication<Timer>(ports: BrokerPhysicalLeasePorts<Timer>) {
+    const heartbeatTimers = new Map<string, Timer>();
+    function stopHeartbeat(ownerId: string, backend: string, hardwareId: string, deviceId?: string) {
+        const key = physicalLeaseHeartbeatKey(ownerId, backend, hardwareId, deviceId);
+        const timer = heartbeatTimers.get(key);
+        if (!timer) return false;
+        ports.cancel(timer);
+        heartbeatTimers.delete(key);
+        return true;
+    }
+    function startHeartbeat(ownerId: string, backend: string, hardwareId: string, deviceId: string, options: {ttlMs?: number; claimId?: string; claimNonce?: string} = {}) {
+        const ttlMs = options.ttlMs || DEFAULT_PHYSICAL_LEASE_TTL_MS;
+        stopHeartbeat(ownerId, backend, hardwareId, deviceId);
+        const intervalMs = physicalLeaseHeartbeatIntervalMs(ttlMs);
+        const {handle: timer} = ports.schedule(() => {
+            const result = heartbeatPhysicalBrokerLease(ownerId, {backend, hardwareId, deviceId, ttlMs, claimId: options.claimId, claimNonce: options.claimNonce});
+            if (result.status !== 200) stopHeartbeat(ownerId, backend, hardwareId, deviceId);
+            return undefined;
+        }, intervalMs);
+        ports.unref(timer);
+        heartbeatTimers.set(physicalLeaseHeartbeatKey(ownerId, backend, hardwareId, deviceId), timer);
+        return {intervalMs, ttlMs};
+    }
+    function stopAllHeartbeats() {
+        for (const timer of heartbeatTimers.values()) ports.cancel(timer);
+        heartbeatTimers.clear();
+    }
     const dates = createLeaseDatePolicy(ports, DEFAULT_PHYSICAL_LEASE_TTL_MS);
     const leaseTtlMs = dates.ttlMs;
     const leaseExpiresAt = dates.expiresAt;
@@ -116,7 +142,7 @@ function physicalLeaseReleaseConflict(ownerId: string, parsed: LeaseParamSuccess
 
 function completePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSuccess, file: string, existing: Record<string, unknown>): LeaseRpcResult {
     ports.remove(file);
-    ports.stopHeartbeat(ownerId, parsed.backend, parsed.hardwareId, parsed.deviceId || undefined);
+    stopHeartbeat(ownerId, parsed.backend, parsed.hardwareId, parsed.deviceId || undefined);
     return { status: 200, payload: { ok: true, result: { released: true, lease: existing } } };
 }
 
@@ -129,7 +155,7 @@ function restorePhysicalBrokerLeaseRelease(ownerId: string, parsed: LeaseParamSu
         ports.write(file, restored);
         const deviceId = typeof restored.deviceId === "string" ? restored.deviceId : parsed.deviceId;
         const heartbeat = deviceId
-            ? ports.startHeartbeat(ownerId, parsed.backend, parsed.hardwareId, deviceId, {
+            ? startHeartbeat(ownerId, parsed.backend, parsed.hardwareId, deviceId, {
                 ttlMs: leaseTtlMs(restored),
                 claimId: typeof restored.claimId === "string" ? restored.claimId : undefined,
                 claimNonce: typeof restored.claimNonce === "string" ? restored.claimNonce : undefined,
@@ -184,5 +210,6 @@ function prunePhysicalBrokerLeases(ownerId: string, params: unknown) {
 
     return {claim: claimPhysicalLease, heartbeat: heartbeatPhysicalBrokerLease, release: releasePhysicalBrokerLease,
         prune: prunePhysicalBrokerLeases, releaseConflict: physicalLeaseReleaseConflict, completeRelease: completePhysicalBrokerLeaseRelease,
-        restoreReleased: restorePhysicalBrokerLeaseRelease, withExpiry: withLeaseExpiry};
+        restoreReleased: restorePhysicalBrokerLeaseRelease, withExpiry: withLeaseExpiry,
+        startHeartbeat, stopHeartbeat, stopAllHeartbeats};
 }
