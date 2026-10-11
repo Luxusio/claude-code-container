@@ -7656,27 +7656,24 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             port: 5586, serial, bootReady: true, lastBootCheck: { ready: true },
         }]);
         const state = () => JSON.parse(readFileSync(join(stateRoot, "devices.json"), "utf8")).devices[0];
-        const realNow = Date.now.bind(Date);
+        const realNow = performance.now.bind(performance);
         let clockOffset = 0;
-        const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffset);
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + clockOffset);
         let deleting = false;
         let killed = false;
         let serialChecks = 0;
         let processChecks = 0;
+        const observations: Array<{provider: "adb" | "process"; timeoutMs: number; status: string; killed: boolean}> = [];
         const commandRunner = vi.fn((command, options) => {
             const result = { ...command, status: 0, stdout: "", stderr: "" };
             if (command.provider === "adb" && command.args?.at(-1) === "kill") {
-                expect(killed).toBe(false);
                 killed = true;
                 return result;
             }
             if (command.provider === "adb" && command.args?.[0] === "devices") {
                 serialChecks++;
                 if (!deleting) {
-                    expect(killed).toBe(true);
-                    expect(state().status).toBe("running");
-                    expect(options.timeoutMs).toBeGreaterThan(0);
-                    expect(options.timeoutMs).toBeLessThanOrEqual(30000);
+                    observations.push({provider: "adb", timeoutMs: options.timeoutMs, status: state().status, killed});
                     if (scenario === "adb-fails") return { ...result, status: 1, stderr: "inventory unavailable" };
                     if (scenario === "malformed-inventory") return { ...result, stdout: "not an inventory" };
                     if (scenario === "budget-exhausted") clockOffset += 29000;
@@ -7689,12 +7686,9 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             if (command.provider === "process-inventory") {
                 processChecks++;
                 if (!deleting) {
-                    expect(state().status).toBe("running");
-                    expect(options.timeoutMs).toBeGreaterThan(0);
-                    expect(options.timeoutMs).toBeLessThanOrEqual(30000);
+                    observations.push({provider: "process", timeoutMs: options.timeoutMs, status: state().status, killed});
                     if (scenario === "process-fails") return { ...result, status: 1, stderr: "process observation unavailable" };
                     if (scenario === "budget-exhausted") {
-                        expect(options.timeoutMs).toBeLessThanOrEqual(1000);
                         clockOffset += 2000;
                     }
                     if (scenario === "process-stays") clockOffset += 60000;
@@ -7737,6 +7731,18 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 expect(deleted.status).toBe(200);
                 expect((await deleted.json()).ok).toBe(true);
                 expect(existsSync(artifact)).toBe(false);
+            }
+            expect(observations.length).toBeGreaterThan(0);
+            for (const observation of observations) {
+                expect(observation.killed).toBe(true);
+                expect(observation.status).toBe("running");
+                expect(observation.timeoutMs).toBeGreaterThan(0);
+                expect(observation.timeoutMs).toBeLessThanOrEqual(30000);
+            }
+            if (scenario === "budget-exhausted") {
+                const probes = observations.filter(observation => observation.provider === "process");
+                expect(probes).toHaveLength(1);
+                expect(probes[0].timeoutMs).toBeLessThanOrEqual(1000);
             }
             expect(commandRunner.mock.calls.filter(([command]) => command.provider === "adb" && command.args?.at(-1) === "kill")).toHaveLength(1);
         } finally {

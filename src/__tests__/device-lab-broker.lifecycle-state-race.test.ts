@@ -254,10 +254,7 @@ describe.each(["source", "emitted"] as const)("actual authenticated %s broker li
         expect(observed.outcome.status).toBe(200); expect(observed.after).toEqual(observed.protectedSnapshot);
         expect(observed.ownerPublicationsAfterRace).toBe(0); expect(observed.temporaryOwnerWritesAfterRace).toBe(0);
         if (mode !== "status") expect(observed.calls).toEqual([]);
-        // Authenticated frozen ORIGINAL dry-run retains its unredacted plan device.
-        // This packet preserves that existing readonly behavior; conflict replies still redact.
-        if (mode === "dry-run") expect(observed.outcome.body.result?.device).toMatchObject({ssh: {password: "original-private-secret"}});
-        else expect(JSON.stringify(observed.outcome.body)).not.toContain("original-private-secret");
+        expect(JSON.stringify(observed.outcome.body)).not.toContain("original-private-secret");
     });
     it.each([...macRaces, ...hyperVRaces])("refuses exact-record conflicts after real provider invocation: $name", scenario => {
         const observed = executeCurrent(lens, scenario), payload = observed.outcome.body;
