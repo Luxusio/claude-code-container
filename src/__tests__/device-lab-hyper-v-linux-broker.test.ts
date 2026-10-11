@@ -3186,6 +3186,14 @@ describe("device-lab Hyper-V broker", () => {
                 startedAt: new Date().toISOString(),
             };
             writeFileSync(snapshotJournalPath, JSON.stringify({ ...stagedCreateJournal, snapshotId: "99999999-8888-7777-6666-555555555555" }));
+            const pendingSnapshotBytes = readFileSync(snapshotJournalPath, "utf8");
+            const stateBeforeStaleStatus = readFileSync(ownerDevicesPath, "utf8");
+            const staleStatus = await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: "f".repeat(32) });
+            expect(staleStatus.status).toBe(409);
+            expect(await staleStatus.json()).toMatchObject({ ok: false, error: "hyper-v-incarnation-conflict" });
+            expect(readFileSync(snapshotJournalPath, "utf8")).toBe(pendingSnapshotBytes);
+            expect(readFileSync(ownerDevicesPath, "utf8")).toBe(stateBeforeStaleStatus);
+            expect(vmState).toBe("Off");
             const wrongIdRepair = await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: activeIncarnationId });
             expect(wrongIdRepair.status).toBe(409);
             expect(await wrongIdRepair.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-create-outcome-indeterminate" }));

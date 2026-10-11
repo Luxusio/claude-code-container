@@ -140,3 +140,71 @@ export function hyperVLinuxSmokeImageResult(
         detail: `Hyper-V, cached ubuntu-lts base image, SSH, and SCP are ready; ${advisory ? `${advisory}, needed only to re-acquire the image; ` : ""}no VM started`,
     };
 }
+
+export interface DeviceStatusRequest {
+    backend: string;
+    stateKey: string;
+    deviceId: string;
+    command: "device_status";
+    dryRun: boolean;
+    expectedIncarnationId?: string;
+}
+export type DeviceStatusResponse = { status: number; payload: unknown };
+export type DeviceStatusCommand = {
+    mode: "exec" | "detached" | "noop";
+    provider: string;
+    executable?: string;
+    args?: string[];
+    input?: string;
+    reason?: string;
+    env?: Record<string, string | undefined>;
+    cwd?: string;
+};
+export type DeviceStatusExecution = {
+    mode: string; provider: string; executable?: string; args?: string[]; input?: string;
+    status?: number | null; signal?: string | null; stdout?: string; stderr?: string; error?: string;
+    timedOut?: boolean; outputLimitExceeded?: boolean;
+};
+export interface DeviceStatusPlan {
+    device?: unknown;
+    providerCommand?: DeviceStatusCommand | { error: string; missing: string[] } | null;
+}
+export interface DeviceStatusVmObservation {
+    vmId: string; vmName: string; state: string; status: string;
+    snapshots?: { snapshotId: string; snapshotName: string; snapshotType?: string }[];
+    uptimeMs?: number; diskPath?: string;
+}
+export type DeviceStatusReconciliation = { ok: true; reconciled?: boolean } | { ok: false; status: number; error: string; detail?: string };
+export function deviceStatusRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+export function deviceStatusHyperV(backend: string): boolean {
+    return backend === "windows-vm" || backend === "linux-vm";
+}
+export function deviceStatusStoppedAndroid(request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution): boolean {
+    return request.backend === "android-emulator" && deviceStatusRecord(device) && device.status === "stopped" && execution.provider === "adb";
+}
+export function projectDeviceStatus(ownerId: string, request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution,
+    observation: DeviceStatusVmObservation | null, succeeded: boolean, timestamp: () => string): unknown {
+    if (!deviceStatusRecord(device)) return device;
+    if (deviceStatusHyperV(request.backend)) {
+        if (!observation) return device;
+        return {
+            ...device, vmId: observation.vmId, vmName: observation.vmName,
+            status: observation.state.toLowerCase() === "running" ? "running" : "stopped",
+            runtimeState: observation.state, hyperVStatus: observation.status,
+            liveSnapshots: (observation.snapshots || []).filter(snapshot => snapshot.snapshotName.startsWith(`ccc-${ownerId}-`))
+                .map(snapshot => ({ id: snapshot.snapshotId.toLowerCase(), providerName: snapshot.snapshotName,
+                    ...(snapshot.snapshotType ? { snapshotType: snapshot.snapshotType } : {}) })),
+            ...(typeof observation.uptimeMs === "number" ? { uptimeMs: observation.uptimeMs } : {}),
+            ...(observation.diskPath ? { diskPath: observation.diskPath } : {}), updatedAt: timestamp(),
+        };
+    }
+    if (request.backend !== "android-emulator" && request.backend !== "android-device") return device;
+    if (!succeeded && request.backend === "android-emulator" && device.status === "stopped") {
+        return { ...device, runtimeState: "stopped", readiness: { state: "stopped", provider: "adb" } };
+    }
+    const state = String(execution.stdout || "").trim().toLowerCase();
+    if (state !== "device") return { ...device, runtimeState: state || "unknown" };
+    return { ...device, status: request.backend === "android-device" ? "attached" : "running", runtimeState: "running", readiness: { state: "ready", provider: "adb" } };
+}

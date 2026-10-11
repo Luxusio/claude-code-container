@@ -7610,6 +7610,24 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
         const headers = ownerRpcHeaders(ownerId);
         try {
+            const beforeStatusBytes = readFileSync(join(androidRoot, "devices.json"), "utf8");
+            const nativeRunner = commandRunner.getMockImplementation()!;
+            commandRunner.mockImplementation(() => { throw new Error("dry-run status must not execute a provider command"); });
+            try {
+                const preview = await fetch(endpoint, {
+                    method: "POST", headers,
+                    body: JSON.stringify({ method: "broker.command.invoke", params: {
+                        backend: "android-emulator", command: "device_status", deviceId: "android-observed-runtime", dryRun: true,
+                    } }),
+                });
+                expect(preview.status).toBe(200);
+                expect(await preview.json()).toMatchObject({ ok: true, result: {
+                    invoked: false, dryRun: true, execution: { mode: "dry-run", mutatesHost: false },
+                } });
+                expect(readFileSync(join(androidRoot, "devices.json"), "utf8")).toBe(beforeStatusBytes);
+            } finally {
+                commandRunner.mockImplementation(nativeRunner);
+            }
             const status = await fetch(endpoint, {
                 method: "POST",
                 headers,
@@ -7631,6 +7649,7 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
             }));
             const afterStatus = JSON.parse(readFileSync(join(androidRoot, "devices.json"), "utf8")) as { devices: Array<{ status: string }> };
             expect(afterStatus.devices[0].status).toBe("stopped");
+            expect(readFileSync(join(androidRoot, "devices.json"), "utf8")).toBe(beforeStatusBytes);
 
             const stop = await fetch(endpoint, {
                 method: "POST",

@@ -1,0 +1,13 @@
+# Broker device status
+
+`createBrokerDeviceStatus` extends the existing broker observation family; `createBrokerStatus` remains the separate broker-service observation. Its asynchronous `execute(ownerId, request, params, deadline)` handles status admission, execution and response projection. `invoke` accepts the same arguments and selects pending Hyper-V recovery before execution. The deadline defaults to infinity; requests carry finite backend, state key, device identifier, dry-run and expected-incarnation facts.
+
+The application owns status preview and command admission, physical-device admission, typed Hyper-V qualification, execution-result interpretation and response projection. Pure domain decisions describe Android and VM status without acquiring native authority. Required synchronous leaves return guarded records, journal observations and individual command facts; accepted reconciliation peers retain their narrow existing effects. Native adapters retain owner-device locks, physical leases, executable lookup, command decoding and the typed exact-VM executor.
+
+Ordinary status holds the owner-device scope without acquiring the host mutation lock. Pending Hyper-V recovery can require that host lock and can compensate or publish through existing recovery peers. Status projection itself does not publish owner-device state, but the complete status route is not always read-only. A status envelope is not proof that recovery had no partial effects.
+
+Recovery admission is asymmetric. Snapshot-pending status checks the requested expected incarnation against the existing guarded incarnation evidence. Operation-only pending status follows the existing operation reconciliation path without inventing that same guard. Malformed journals, missing metadata, refused reconciliation and retained recovery resources keep their actual errors and partial outcomes. Conditional snapshot repair is not an unconditional recovery callback.
+
+Execution retains the typed Hyper-V deadline and exact VM identity checks before effects. Failed ADB status is tolerated only for an already-stopped emulator. Other provider failures remain truthful failures; physical lease refusal prevents provider execution. Dry-run and missing-command paths keep their current admission and result behavior. Native throws, deadlines and diagnostic bounds remain unchanged, with no catch-all success or extra retry.
+
+This Guide describes the implemented boundary and existing authority rules. Compilation, runtime behavior, native-host acceptance and whole-operation completion remain separate verification work.

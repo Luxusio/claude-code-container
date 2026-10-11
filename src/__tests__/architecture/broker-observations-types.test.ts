@@ -4,6 +4,22 @@ import { describe, expect, it } from "vitest";
 import type { BrokerServicePorts, LifecyclePreviewPorts, MetadataObservationPorts, ProviderPlanObservation } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
 import type { LifecyclePreviewRequest } from "@ccc/device-lab/device-lab/domain/broker-observation-command-plan.js";
 import { coreBoundaryViolations } from "./core-boundary.js";
+import { createBrokerDeviceStatus } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
+import type { BrokerDeviceStatusPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
+import type { DeviceStatusRequest, DeviceStatusResponse } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
+
+function consumedDeviceStatus(ports: BrokerDeviceStatusPorts, request: DeviceStatusRequest): void {
+    const result: Promise<DeviceStatusResponse> = createBrokerDeviceStatus(ports).invoke("owner", request, {}, 1000);
+    const { typedStatus, ...withoutTypedObservation } = ports;
+    // @ts-expect-error Exact typed VM observation is required for status.
+    createBrokerDeviceStatus(withoutTypedObservation);
+    // @ts-expect-error Non-Hyper-V command execution must return a settled result.
+    createBrokerDeviceStatus({ ...ports, execute: async () => ({ mode: "exec", provider: "adb", status: 0 }) });
+    // @ts-expect-error Deadline admission must complete before recovery effects.
+    createBrokerDeviceStatus({ ...ports, assertDeadline: async () => undefined });
+    void [result, typedStatus];
+}
+void consumedDeviceStatus;
 
 function requiredSynchronousContracts(metadata: MetadataObservationPorts,
     service: BrokerServicePorts<object, "status", { supported: boolean; definitionPath: string | null }, { ownerId: string } | null, object, { mode: string; provider: string }, object>,

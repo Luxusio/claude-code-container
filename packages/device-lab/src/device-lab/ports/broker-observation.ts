@@ -1,3 +1,4 @@
+import type { DeviceStatusRequest, DeviceStatusResponse, DeviceStatusCommand, DeviceStatusExecution, DeviceStatusPlan, DeviceStatusVmObservation, DeviceStatusReconciliation } from "../domain/broker-observation.js";
 import type { DiscoveryExecutable, DiscoveryImageCache, DiscoveryReadiness, LeaseDirectoryEntry, LeaseDirectoryInspection, LeaseDirectoryReader, OwnerInventory } from "../domain/broker-observation.js";
 import type { LifecyclePreviewRequest } from "../domain/broker-observation-command-plan.js";
 
@@ -108,4 +109,39 @@ export interface HostBackendDiscoveryPorts {
     readonly hostId: () => string;
     readonly hyperVReadiness: (powershell: string, timeoutMs: number) => Promise<DiscoveryReadiness | null>;
     readonly ubuntuImageCache: (ownerId: string) => DiscoveryImageCache;
+}
+
+export interface BrokerDeviceStatusPorts {
+    preview(owner: string, request: DeviceStatusRequest, params: unknown):
+        { ok: false; response: DeviceStatusResponse } |
+        { ok: true; plan: DeviceStatusPlan };
+    refreshPhysicalLease(owner: string, request: DeviceStatusRequest, device: Record<string, unknown>): DeviceStatusResponse | null;
+    execute(command: DeviceStatusCommand): DeviceStatusExecution;
+    executeHyperV(command: DeviceStatusCommand, deadline: number): Promise<DeviceStatusExecution>;
+    typedStatus(identity: { executable: string; ownerId: string; deviceId: string; incarnationId: string; vmId: string; vmName: string }, deadline: number): Promise<DeviceStatusExecution>;
+    succeeded(execution: DeviceStatusExecution): boolean;
+    parseVm(stdout: string): DeviceStatusVmObservation | null;
+    incarnation(device: Record<string, unknown>): string | null;
+    validIncarnation(value: unknown): value is string;
+    deadlineExpired(deadline: number): boolean;
+    assertDeadline(deadline: number): undefined;
+    timestamp(): string;
+    redactPlan(plan: DeviceStatusPlan): object;
+    redactDevice(device: unknown, hyperV: boolean): unknown;
+    redactExecution(execution: DeviceStatusExecution, fallback?: string): object;
+    failureDetail(execution: DeviceStatusExecution): string;
+    diagnosticCode(execution: DeviceStatusExecution, fallback: string): string | undefined;
+    operationPending(owner: string, backend: string, id: string): boolean;
+    snapshotPending(owner: string, backend: string, id: string): boolean;
+    readDevices(owner: string, state: string): unknown[];
+    readOperationJournal(owner: string, backend: string, id: string): { incarnationId: string } | null;
+    readSnapshotJournal(owner: string, backend: string, id: string): { operationId: string } | null;
+    reconcileOperation(owner: string, backend: string, id: string, deadline: number, preserveNetwork: true): Promise<DeviceStatusReconciliation>;
+    repairSnapshots(owner: string, backend: string, id: string, device: Record<string, unknown>, executable: string): Promise<DeviceStatusReconciliation>;
+    executable(name: string): string | null;
+    stateErrorCode(error: unknown): string | null;
+    stateFailure(error: unknown, request: DeviceStatusRequest): DeviceStatusResponse;
+    errorCode(error: unknown, fallback: string): string;
+    withHostLock(deadline: number, operation: () => Promise<DeviceStatusResponse>): Promise<DeviceStatusResponse>;
+    lockTimedOut(error: unknown): boolean;
 }
