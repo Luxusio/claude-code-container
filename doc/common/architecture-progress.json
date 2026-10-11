@@ -240,7 +240,7 @@
       "partialOperationIds": [
         "OP-state-storage"
       ],
-      "codeReview": "independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending; accepted owner-state-content contribution306723dbb7d6e0674be63b4be4a1ea6e6cd5d584 actual independent reviews, genuine complete build,77 ordinary cases plus qualified graph, shipping and local FF PASS. Broader state-storage remains partial; counted once in this existing partial lane.",
+      "codeReview": "independent source/composed Code/Security and portable QA PASS; both payloads and verified local delivery; formal hook attestation pending; accepted owner-state-content contribution306723dbb7d6e0674be63b4be4a1ea6e6cd5d584 actual independent reviews, genuine complete build,77 ordinary cases plus qualified graph, shipping and local FF PASS. Broader state-storage remains partial; counted once in this existing partial lane. Accepted Source13efa7eabc54832fe2cb7607120459e0c2c5e019 publication/lock and current complete storage source traces now reconciled. Current171 and earlier77/526 ordinary evidence await independent qualification; retain this single partial storage credit until conditional whole accounting.",
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "da5d7d368184aef48ae15ef357be69757688c411"
@@ -836,7 +836,7 @@
       "coveredOperationIds": [
         "OP-state-storage"
       ],
-      "status": "Partial state-read/native-adapter binding accepted; broader atomic/CAS/repository storage remains incomplete; no whole credit. Verified local source delivery da5d7d36; formal hook attestation pending and native acceptance unverified."
+      "status": "Accepted reader/content/provider and broker repository/publication/lock source contributions retained; current complete Source13efa storage traces reconciled. Current171 and earlier77/526 ordinary evidence require independent unchanged-input qualification. Storage stays partial; whole/native/formal credit pending."
     },
     {
       "id": "runtime-capabilities",
@@ -1083,7 +1083,7 @@
       "coveredOperationIds": [
         "OP-device-status"
       ],
-    "status": "Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 and composed parent3e6 retain actual independent review, genuine complete build, four whole files190 cases plus graph, shipping and local delivery evidence. Independent current-parent source/binding review and ordinary-QA evidence qualification permit one whole status credit in supported-binding-source-closure. Native/formal certification unverified.",
+      "status": "Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 and composed parent3e6 retain actual independent review, genuine complete build, four whole files190 cases plus graph, shipping and local delivery evidence. Independent current-parent source/binding review and ordinary-QA evidence qualification permit one whole status credit in supported-binding-source-closure. Native/formal certification unverified.",
       "taskId": "TASK__architecture-broker-device-status"
     },
     {
@@ -1096,7 +1096,23 @@
         "OP-tool-setup",
         "OP-owner-repository"
       ],
-    "status": "Fifteen status/UI/text source-only rows, ten existing broker joins and the accepted broker owner-repository binding recorded. Independent current-parent source/binding review and retained ordinary-QA evidence qualification support five whole source-operation credits, counted once in supported-binding-source-closure. OpenCode excluded and native/formal certification unverified."
+      "status": "Fifteen status/UI/text source-only rows, ten existing broker joins and the accepted broker owner-repository binding recorded. Independent current-parent source/binding review and retained ordinary-QA evidence qualification support five whole source-operation credits, counted once in supported-binding-source-closure. OpenCode excluded and native/formal certification unverified."
+    },
+    {
+      "id": "storage-closure-catalog",
+      "taskId": "TASK__architecture-storage-closure-catalog",
+      "coveredOperationIds": [
+        "OP-state-storage"
+      ],
+      "status": "Current single binding/nine native roles and wildcard publication/lock APIs statically reconciled to accepted Source13efa; no new operation/binding/proof. Independent current metadata review and retained ordinary evidence qualification pending; WBS216 and existing partial storage unchanged."
+    },
+    {
+      "id": "clipboard-x11-sync-catalog",
+      "taskId": "TASK__architecture-storage-closure-catalog",
+      "coveredOperationIds": [
+        "OP-clipboard-x11-sync"
+      ],
+      "status": "Accepted Source9a921 inward synchronization/native bridge and actual676 ordinary QA/build69.603/shipping/local delivery recorded for qualification. Current static traces distinguish canonical CCC exec policy-first staging from Containerfile standalone missing baked asset. X11 remains uncredited; Code/Docs and retained ordinary evidence qualification pending, native/formal acceptance unverified."
     }
   ]
 }

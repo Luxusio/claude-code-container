@@ -8451,11 +8451,11 @@
       ],
       "countingOwner": "M12",
       "operation": "Synchronize X11 and host clipboard",
-      "policyOwner": "scripts/ccc-x11-bridge",
+      "policyOwner": "scripts/lib/clipboard-x11-sync.sh",
       "businessBoundary": "Initialize from host; bounded text TARGETS; image-first poll; digest baselines; re-read local before overwriting.",
       "completionCriteria": "Preserve host-first restart, oversized local refusal, concurrent local copy and no upload echo; isolate policy from curl/xclip/process effects.",
       "implementationStatus": "pending",
-      "statusReason": "Existing workflow remains in legacy/effect-facing implementation; this records required migration, not a missing product feature.",
+      "statusReason": "Accepted Source9a921 inward host-first/digest/re-read synchronization policy and native bridge composition are source eligible; actual676 ordinary QA/build/shipping and delivery evidence require current metadata qualification. Keep X11 uncredited pending Code/Docs and ordinary evidence qualification; native/formal acceptance unverified.",
       "sources": [
         {
           "path": "scripts/ccc-x11-bridge",
@@ -8544,14 +8544,37 @@
             "kind": "sourceDeclaration"
           },
           "normalizedHandler": "bridge_main",
-          "authorityOwner": "existing native facade",
+          "authorityOwner": "Inward shell application owns host-first initialization, digest baselines, local priority/no echo and re-read-before-overwrite. Native bridge retains bounded byte transport/X11 effects, session token, exact PID/start/generation and startup-lock authority.",
           "lockOwner": "FD9 startup.lock flock-w10 serializesreuse/TERMwait/recordpublish/Xserverprobe; Xvfb closesFD9 and bridge releasesbeforeloop. Exit deletesrunning onlyif firstline=$$; no strongerinodefenceinferred.",
           "supportDisposition": "existing-source-binding",
           "workItemIds": [
             "OP-clipboard-x11-sync"
           ],
           "closureStatus": "source-caller-and-export-traced",
-          "scope": "Existing source function binding; not a newly advertised tool/RPC route. Full public aliases/provider-executor matrix remains required for closure.",
+          "scope": "Existing single source binding; accepted9a921 current trace separate from original historical sourceProof/handler. Source-only eligibility is not native/runtime proof. Containerfile standalone policy-asset coverage remains unverified; canonical CCC exec stages policy before bridge.",
+          "callers": [
+            {
+              "path": "src/index.ts",
+              "line": 803,
+              "gitBlob": "869fc2e64c187409ab24ca136f4ccc94cfbb050d",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "src/index.ts",
+              "line": 805,
+              "gitBlob": "869fc2e64c187409ab24ca136f4ccc94cfbb050d",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "line": 221,
+              "gitBlob": "6571c10758453494b17efe32abc1a6ac952b99d3",
+              "kind": "callSiteOrBranch"
+            }
+          ],
+          "proofIds": [
+            "PROOF-reconciled-source-clipboard-x11-sync"
+          ],
           "sourceProof": {
             "sourceTrace": [
               {
@@ -8600,39 +8623,115 @@
               "detail": "Script shipped/staged into container; exact PID/proc token/script SHA256 startup.lock guard FD9, released by loop/Xvfb."
             }
           },
-          "callers": [
-            {
-              "path": "src/index.ts",
-              "line": 803,
-              "gitBlob": "869fc2e64c187409ab24ca136f4ccc94cfbb050d",
-              "kind": "callSiteOrBranch"
-            },
-            {
-              "path": "src/index.ts",
-              "line": 805,
-              "gitBlob": "869fc2e64c187409ab24ca136f4ccc94cfbb050d",
-              "kind": "callSiteOrBranch"
-            },
-            {
-              "path": "scripts/ccc-x11-bridge",
-              "line": 221,
-              "gitBlob": "6571c10758453494b17efe32abc1a6ac952b99d3",
-              "kind": "callSiteOrBranch"
-            }
-          ],
-          "proofIds": [
-            "PROOF-reconciled-source-clipboard-x11-sync"
-          ],
           "authoritySources": [
             {
               "path": "scripts/ccc-x11-bridge",
               "gitBlob": "6571c10758453494b17efe32abc1a6ac952b99d3"
             }
+          ],
+          "sourceTrace": [
+            {
+              "path": "scripts/lib/clipboard-x11-sync.sh",
+              "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+              "symbol": "clipboard_x11_sync_init",
+              "line": 2
+            },
+            {
+              "path": "scripts/lib/clipboard-x11-sync.sh",
+              "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+              "symbol": "clipboard_x11_sync_apply_host",
+              "line": 8
+            },
+            {
+              "path": "scripts/lib/clipboard-x11-sync.sh",
+              "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+              "symbol": "clipboard_x11_sync_cycle",
+              "line": 18
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+              "symbol": "bridge_main",
+              "line": 146
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+              "symbol": "bridge_cycle",
+              "line": 103
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+              "line": 17
+            },
+            {
+              "path": "src/docker.ts",
+              "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+              "symbol": "syncClipboardShims",
+              "line": 1479
+            },
+            {
+              "path": "src/docker.ts",
+              "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+              "line": 1537
+            },
+            {
+              "path": "src/application/container-exec.ts",
+              "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+              "line": 266
+            },
+            {
+              "path": "src/application/container-exec.ts",
+              "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+              "line": 320
+            },
+            {
+              "path": "package.json",
+              "gitBlob": "7ca16947d2b065ead0fcaa1ccabe66e6dabcf69b",
+              "line": 29
+            },
+            {
+              "path": "Dockerfile",
+              "gitBlob": "4a0e960ff2529c0bda0625a309a921dbc656d192",
+              "line": 155
+            },
+            {
+              "path": "Dockerfile.distribution",
+              "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+              "line": 143
+            },
+            {
+              "path": "Dockerfile.distribution",
+              "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+              "line": 145
+            },
+            {
+              "path": "Containerfile",
+              "gitBlob": "b9fc3f4d0d72b3110777d3ccec42170a92df45e3",
+              "line": 154
+            }
           ]
         }
       ],
       "aliases": [],
-      "supportComponents": [],
+      "supportComponents": [
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "role": "Inward shell synchronization application"
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "role": "Native curl/xclip/bytes/process/startup-lock facade and fixed policy loader"
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+          "role": "Canonical CCC exec stages normalized policy before bridge publication"
+        }
+      ],
       "regressionAnchors": [],
       "contractAnchors": [],
       "negativeCases": [
@@ -8694,6 +8793,100 @@
           ],
           "lockCategories": [],
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
+        },
+        {
+          "scope": "Accepted Source9a921 current static policy/native/distribution trace; historical proof remains static and unchanged",
+          "bindingIds": [
+            "BIND-source-clipboard-x11-sync"
+          ],
+          "lockCategories": [
+            "native FD9 startup flock; released before synchronization loop"
+          ],
+          "sourceTrace": [
+            {
+              "path": "scripts/lib/clipboard-x11-sync.sh",
+              "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+              "symbol": "clipboard_x11_sync_init",
+              "line": 2
+            },
+            {
+              "path": "scripts/lib/clipboard-x11-sync.sh",
+              "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+              "symbol": "clipboard_x11_sync_apply_host",
+              "line": 8
+            },
+            {
+              "path": "scripts/lib/clipboard-x11-sync.sh",
+              "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+              "symbol": "clipboard_x11_sync_cycle",
+              "line": 18
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+              "symbol": "bridge_main",
+              "line": 146
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+              "symbol": "bridge_cycle",
+              "line": 103
+            },
+            {
+              "path": "scripts/ccc-x11-bridge",
+              "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+              "line": 17
+            },
+            {
+              "path": "src/docker.ts",
+              "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+              "symbol": "syncClipboardShims",
+              "line": 1479
+            },
+            {
+              "path": "src/docker.ts",
+              "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+              "line": 1537
+            },
+            {
+              "path": "src/application/container-exec.ts",
+              "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+              "line": 266
+            },
+            {
+              "path": "src/application/container-exec.ts",
+              "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+              "line": 320
+            },
+            {
+              "path": "package.json",
+              "gitBlob": "7ca16947d2b065ead0fcaa1ccabe66e6dabcf69b",
+              "line": 29
+            },
+            {
+              "path": "Dockerfile",
+              "gitBlob": "4a0e960ff2529c0bda0625a309a921dbc656d192",
+              "line": 155
+            },
+            {
+              "path": "Dockerfile.distribution",
+              "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+              "line": 143
+            },
+            {
+              "path": "Dockerfile.distribution",
+              "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+              "line": 145
+            },
+            {
+              "path": "Containerfile",
+              "gitBlob": "b9fc3f4d0d72b3110777d3ccec42170a92df45e3",
+              "line": 154
+            }
+          ],
+          "exactBindingSource": "container-exec syncClipboard before bridge launch -> syncClipboardShims policy-first staging -> bridge_main -> bridge_cycle -> clipboard_x11_sync_cycle",
+          "distributionException": "Accepted Containerfile does not bake the policy asset. Canonical CCC exec stages policy before bridge launch; standalone Containerfile baked-policy coverage is unverified and a separate Source fix is queued."
         }
       ]
     },
@@ -14767,11 +14960,11 @@
       ],
       "countingOwner": "M02",
       "operation": "State storage",
-      "policyOwner": "packages/device-lab/src/device-lab-state-file.ts",
-      "businessBoundary": "Classify missing/corrupt/linked/oversized state and publish exact fenced bytes under existing lock ownership.",
-      "completionCriteria": "TS/shared parity and atomic replacement/CAS/successor/unknown process invariants preserved.",
-      "implementationStatus": "pending",
-      "statusReason": "Existing workflow remains in legacy/effect-facing implementation; this records required migration, not a missing product feature.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-publication.mjs",
+      "businessBoundary": "Shared inward bounded-read/content/repository/publication/lock decisions across TS and provider consumers; retain native path/descriptor/process/token/namespace fences, atomic effects and caller-owned operation locks.",
+      "completionCriteria": "All nine retained native roles and reached exported read/content/repository/publication/lock APIs delegate policy inward while preserving missing/corrupt/oversized behavior, successor/CAS, bounded copy, staged cleanup and process/token-fenced lock semantics.",
+      "implementationStatus": "partial",
+      "statusReason": "Accepted Source13efa whole storage source is statically eligible; current171 and retained77/526 ordinary evidence require independent unchanged-input qualification. Existing storage partial credit retained pending current metadata Code/Docs and sole ordinary qualification; no whole/native/formal credit.",
       "sources": [
         {
           "path": "packages/device-lab/src/device-lab-state-file.ts",
@@ -15031,7 +15224,7 @@
           "line": 184,
           "declarationKind": "export"
         },
-        "publicCompatibility": "Retain recorded exported signatures and declared package/CLI/MCP names. publicExportCatalog records source exposure; emitted/package/native acceptance remains separate and unverified."
+        "publicCompatibility": "Existing package ./*.js and ./providers/* wildcard exposures retained. Current two publication/lock factories, six pure domain named exports and returned write/writeJson/copy/rename/readLock/withLock/withLockAsync APIs support OP-state-storage; declarations are type contracts, not extra operations or runtime proof."
       },
       "authority": {
         "executor": "shared direct/provider child and broker TS",
@@ -15098,7 +15291,7 @@
           "backend": "existing operation-specific native or storage boundary",
           "provider": "selected by existing trusted composition; no new provider contract",
           "executor": "shared direct/provider child and broker TS",
-          "route": "Public bounded validated state reader",
+          "route": "Existing TS/provider bounded read/content/repository/publication/shared-lock source APIs and reached native consumers",
           "action": "State storage",
           "entrypoint": {
             "path": "packages/device-lab/src/device-lab-state-file.ts",
@@ -15116,14 +15309,55 @@
             "kind": "sourceDeclaration"
           },
           "normalizedHandler": "readDeviceLabStateFile",
-          "authorityOwner": "existing owner/context/state adapters",
-          "lockOwner": "retained",
+          "authorityOwner": "Inward read/content/repository/publication/lock decisions; native bindings retain path/descriptor/process/token/namespace authority and exact selected owner/state targets.",
+          "lockOwner": "Raw reader/publication APIs do not acquire caller operation locks; repository and shared-lock applications use native owner/state mutation locks and token-fenced claim/reclaim/release leaves.",
           "supportDisposition": "existing-source-binding",
           "workItemIds": [
             "OP-state-storage"
           ],
           "closureStatus": "source-caller-and-export-traced",
-          "scope": "Existing source function binding; not a newly advertised tool/RPC route. Full public aliases/provider-executor matrix remains required for closure.",
+          "scope": "One existing storage source binding; historical handler/sourceProof retained. Current Source13efa traces are static; qualified ordinary evidence and metadata review are still required before whole credit.",
+          "callers": [
+            {
+              "path": "src/device-lab-admin.ts",
+              "line": 268,
+              "gitBlob": "42bd7f45da0bbf3ac2269bf0d2132fff4f1c76c4",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-ownership-state.ts",
+              "line": 33,
+              "gitBlob": "e89ed4aa4f84c1bb653b9bb0fa73a739d007acc0",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "line": 244,
+              "gitBlob": "b99433993d52ba5f92dd05690846ff0bb75d5408",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "line": 873,
+              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
+              "line": 214,
+              "gitBlob": "9f28ec350c21f9154651d099a4f3a9dd70e06f4d",
+              "kind": "callSiteOrBranch"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts",
+              "line": 219,
+              "gitBlob": "6afd06357823d07e3df965b17109e1efe4c3d4a1",
+              "kind": "callSiteOrBranch"
+            }
+          ],
+          "proofIds": [
+            "PROOF-reconciled-source-state-storage"
+          ],
           "sourceProof": {
             "sourceTrace": [
               {
@@ -15203,46 +15437,187 @@
               "detail": "TS and MJS readers distinct source APIs; explicit file/limit/validator and opened/path identity authority; readers no mutation guard."
             }
           },
-          "callers": [
+          "sourceTrace": [
             {
-              "path": "src/device-lab-admin.ts",
-              "line": 268,
-              "gitBlob": "42bd7f45da0bbf3ac2269bf0d2132fff4f1c76c4",
-              "kind": "callSiteOrBranch"
+              "path": "packages/device-lab/src/device-lab-state-file.ts",
+              "gitBlob": "ca1403a123c5f37d9540b12ed3ed90598dac7963",
+              "symbol": "readDeviceLabStateFile",
+              "line": 29
             },
             {
-              "path": "packages/device-lab/src/device-lab-ownership-state.ts",
-              "line": 33,
-              "gitBlob": "e89ed4aa4f84c1bb653b9bb0fa73a739d007acc0",
-              "kind": "callSiteOrBranch"
+              "path": "packages/device-lab/providers/state/state-file.mjs",
+              "gitBlob": "560289c063206c98a3db4c779c79754aabaa1d77",
+              "symbol": "readDeviceLabStateFile",
+              "line": 29
             },
             {
-              "path": "packages/device-lab/src/device-lab-shared-state.ts",
-              "line": 244,
-              "gitBlob": "b99433993d52ba5f92dd05690846ff0bb75d5408",
-              "kind": "callSiteOrBranch"
+              "path": "packages/device-lab/providers/application/state-file-read.mjs",
+              "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+              "symbol": "validateStateFileContent",
+              "line": 10
+            },
+            {
+              "path": "packages/device-lab/providers/application/state-file-read.mjs",
+              "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+              "symbol": "readStateFileText",
+              "line": 45
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-owner-state.ts",
+              "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+              "symbol": "readOwnerDeviceStateFile",
+              "line": 61
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-owner-state.ts",
+              "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+              "symbol": "assertOwnerDeviceStateWritable",
+              "line": 89
+            },
+            {
+              "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+              "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+              "symbol": "readOwnerDeviceStateFile",
+              "line": 45
+            },
+            {
+              "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+              "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+              "symbol": "assertOwnerDeviceStateWritable",
+              "line": 65
+            },
+            {
+              "path": "packages/device-lab/providers/application/owner-state-content.mjs",
+              "gitBlob": "47eda1f732137a57bbf8c957be9bb89d908193cb",
+              "symbol": "createOwnerStateContent",
+              "line": 4
+            },
+            {
+              "path": "packages/device-lab/providers/state/device-store.mjs",
+              "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+              "symbol": "readOwnerDevices",
+              "line": 82
+            },
+            {
+              "path": "packages/device-lab/providers/state/device-store.mjs",
+              "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+              "symbol": "transitionOwnerDeviceRecord",
+              "line": 106
+            },
+            {
+              "path": "packages/device-lab/providers/application/owner-device-repository.mjs",
+              "gitBlob": "daaee00e746e30972155314a95adac372b2a012d",
+              "symbol": "createOwnerDeviceRepository",
+              "line": 29
             },
             {
               "path": "packages/device-lab/src/device-lab-broker.ts",
-              "line": 873,
-              "gitBlob": "e3115099c81e50178ed9fe7e9d0659756a4d5c7b",
-              "kind": "callSiteOrBranch"
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+              "symbol": "ownerRepository",
+              "line": 4044
             },
             {
-              "path": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
-              "line": 214,
-              "gitBlob": "9f28ec350c21f9154651d099a4f3a9dd70e06f4d",
-              "kind": "callSiteOrBranch"
+              "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+              "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e",
+              "symbol": "createBrokerOwnerRepository",
+              "line": 9
             },
             {
-              "path": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts",
-              "line": 219,
-              "gitBlob": "6afd06357823d07e3df965b17109e1efe4c3d4a1",
-              "kind": "callSiteOrBranch"
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "publication",
+              "line": 255
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "locks",
+              "line": 285
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeFileAtomically",
+              "line": 120
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeJsonFileAtomically",
+              "line": 124
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "copyFileAtomically",
+              "line": 128
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLock",
+              "line": 287
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 295
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "publication",
+              "line": 239
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "locks",
+              "line": 270
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeFileAtomically",
+              "line": 103
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeJsonFileAtomically",
+              "line": 107
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "copyFileAtomically",
+              "line": 111
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLock",
+              "line": 272
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 276
+            },
+            {
+              "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+              "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0",
+              "symbol": "createStateFilePublication",
+              "line": 5
+            },
+            {
+              "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+              "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a",
+              "symbol": "createSharedMutationLock",
+              "line": 4
             }
-          ],
-          "proofIds": [
-            "PROOF-reconciled-source-state-storage"
           ]
         }
       ],
@@ -15278,7 +15653,20 @@
       "inventoryGaps": [],
       "delegatedWorkItemIds": [],
       "inspectedComponentPaths": [
-        "packages/device-lab/src/device-lab-state-file.ts"
+        "packages/device-lab/src/device-lab-state-file.ts",
+        "packages/device-lab/providers/state/state-file.mjs",
+        "packages/device-lab/providers/application/state-file-read.mjs",
+        "packages/device-lab/src/device-lab-owner-state.ts",
+        "packages/device-lab/providers/state/owner-device-state.mjs",
+        "packages/device-lab/providers/application/owner-state-content.mjs",
+        "packages/device-lab/providers/state/device-store.mjs",
+        "packages/device-lab/providers/application/owner-device-repository.mjs",
+        "packages/device-lab/src/device-lab-broker.ts",
+        "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+        "packages/device-lab/src/device-lab-shared-state.ts",
+        "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+        "packages/device-lab/providers/application/state-file-publication.mjs",
+        "packages/device-lab/providers/application/shared-mutation-lock.mjs"
       ],
       "sourceRoleIds": [
         "packages/device-lab/providers/state/owner-device-state.mjs",
@@ -15315,6 +15703,334 @@
           ],
           "lockCategories": [],
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
+        },
+        {
+          "scope": "Accepted Source13efa current static storage composition; original baseline and proof observations remain historical, not runtime proof",
+          "bindingIds": [
+            "BIND-source-state-storage"
+          ],
+          "lockCategories": [
+            "native caller operation locks",
+            "shared token-fenced mutation lock"
+          ],
+          "sourceTrace": [
+            {
+              "path": "packages/device-lab/src/device-lab-state-file.ts",
+              "gitBlob": "ca1403a123c5f37d9540b12ed3ed90598dac7963",
+              "symbol": "readDeviceLabStateFile",
+              "line": 29
+            },
+            {
+              "path": "packages/device-lab/providers/state/state-file.mjs",
+              "gitBlob": "560289c063206c98a3db4c779c79754aabaa1d77",
+              "symbol": "readDeviceLabStateFile",
+              "line": 29
+            },
+            {
+              "path": "packages/device-lab/providers/application/state-file-read.mjs",
+              "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+              "symbol": "validateStateFileContent",
+              "line": 10
+            },
+            {
+              "path": "packages/device-lab/providers/application/state-file-read.mjs",
+              "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+              "symbol": "readStateFileText",
+              "line": 45
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-owner-state.ts",
+              "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+              "symbol": "readOwnerDeviceStateFile",
+              "line": 61
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-owner-state.ts",
+              "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+              "symbol": "assertOwnerDeviceStateWritable",
+              "line": 89
+            },
+            {
+              "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+              "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+              "symbol": "readOwnerDeviceStateFile",
+              "line": 45
+            },
+            {
+              "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+              "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+              "symbol": "assertOwnerDeviceStateWritable",
+              "line": 65
+            },
+            {
+              "path": "packages/device-lab/providers/application/owner-state-content.mjs",
+              "gitBlob": "47eda1f732137a57bbf8c957be9bb89d908193cb",
+              "symbol": "createOwnerStateContent",
+              "line": 4
+            },
+            {
+              "path": "packages/device-lab/providers/state/device-store.mjs",
+              "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+              "symbol": "readOwnerDevices",
+              "line": 82
+            },
+            {
+              "path": "packages/device-lab/providers/state/device-store.mjs",
+              "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+              "symbol": "transitionOwnerDeviceRecord",
+              "line": 106
+            },
+            {
+              "path": "packages/device-lab/providers/application/owner-device-repository.mjs",
+              "gitBlob": "daaee00e746e30972155314a95adac372b2a012d",
+              "symbol": "createOwnerDeviceRepository",
+              "line": 29
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+              "symbol": "ownerRepository",
+              "line": 4044
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+              "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e",
+              "symbol": "createBrokerOwnerRepository",
+              "line": 9
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "publication",
+              "line": 255
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "locks",
+              "line": 285
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeFileAtomically",
+              "line": 120
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeJsonFileAtomically",
+              "line": 124
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "copyFileAtomically",
+              "line": 128
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLock",
+              "line": 287
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 295
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "publication",
+              "line": 239
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "locks",
+              "line": 270
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeFileAtomically",
+              "line": 103
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeJsonFileAtomically",
+              "line": 107
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "copyFileAtomically",
+              "line": 111
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLock",
+              "line": 272
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 276
+            },
+            {
+              "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+              "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0",
+              "symbol": "createStateFilePublication",
+              "line": 5
+            },
+            {
+              "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+              "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a",
+              "symbol": "createSharedMutationLock",
+              "line": 4
+            }
+          ],
+          "currentCallers": [
+            {
+              "path": "device-lab-mcp/src/broker.mjs",
+              "gitBlob": "199a3ab9f6571379450f2bacafd4b6a2d746ee23",
+              "symbol": "readBrokerRuntime",
+              "line": 289,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/providers/state/ownership-state.mjs",
+              "gitBlob": "ed25de232098cad197a0b74e3e8397e0b7d62a37",
+              "symbol": "readPhysicalLeaseStateFile",
+              "line": 30,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/providers/state/ownership-state.mjs",
+              "gitBlob": "ed25de232098cad197a0b74e3e8397e0b7d62a37",
+              "symbol": "readPhysicalLeaseAggregateStateFile",
+              "line": 41,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/providers/state/ownership-state.mjs",
+              "gitBlob": "ed25de232098cad197a0b74e3e8397e0b7d62a37",
+              "symbol": "readWindowsSandboxLockStateFile",
+              "line": 59,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "readLock",
+              "line": 115,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+              "symbol": "readHostBrokerRuntime",
+              "line": 831,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+              "symbol": "readDeviceBrokerOwnerRegistration",
+              "line": 1138,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-broker.ts",
+              "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+              "symbol": "readServiceOwner",
+              "line": 2898,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-ownership-state.ts",
+              "gitBlob": "e89ed4aa4f84c1bb653b9bb0fa73a739d007acc0",
+              "symbol": "readPhysicalLeaseStateFile",
+              "line": 32,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-ownership-state.ts",
+              "gitBlob": "e89ed4aa4f84c1bb653b9bb0fa73a739d007acc0",
+              "symbol": "readWindowsSandboxLockStateFile",
+              "line": 49,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "readLock",
+              "line": 136,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
+              "gitBlob": "69b0b6624d0e19c7dde15a93abbadbd040b47282",
+              "symbol": "readKnownPriorAutomaticManifest",
+              "line": 170,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts",
+              "gitBlob": "69b0b6624d0e19c7dde15a93abbadbd040b47282",
+              "symbol": "readHyperVImageManifestMetadata",
+              "line": 458,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts",
+              "gitBlob": "58d971ecb55f2936a8fc5713fb48c2291c5d107a",
+              "symbol": "readState",
+              "line": 130,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts",
+              "gitBlob": "58d971ecb55f2936a8fc5713fb48c2291c5d107a",
+              "symbol": "readIntent",
+              "line": 133,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/operation-journal.ts",
+              "gitBlob": "fb0a55677f709498ca562399116eca0cbec4f4d2",
+              "symbol": "readHyperVSnapshotJournal",
+              "line": 97,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/operation-journal.ts",
+              "gitBlob": "fb0a55677f709498ca562399116eca0cbec4f4d2",
+              "symbol": "readHyperVOperationJournal",
+              "line": 222,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/broker/hyper-v/state.ts",
+              "gitBlob": "e651125a4757d132bd1c1c926846936ea4120e0d",
+              "symbol": "readHyperVIncarnationRecord",
+              "line": 107,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            },
+            {
+              "path": "packages/device-lab/src/device-lab/hyper-v-images.ts",
+              "gitBlob": "542dd3cef520f627cdff55ec7b4d3740268192ad",
+              "symbol": "readHyperVWindowsEvaluationReceipt",
+              "line": 62,
+              "scope": "Current named source consumer; static route observation, not runtime/native acceptance"
+            }
+          ],
+          "exactBindingSource": "TS/provider native read and content facades; provider and broker repositories; publication/lock finite native bindings"
         }
       ]
     },
@@ -144580,14 +145296,14 @@
         "kind": "sourceDeclaration"
       },
       "normalizedHandler": "bridge_main",
-      "authorityOwner": "existing native facade",
+      "authorityOwner": "Inward shell application owns host-first initialization, digest baselines, local priority/no echo and re-read-before-overwrite. Native bridge retains bounded byte transport/X11 effects, session token, exact PID/start/generation and startup-lock authority.",
       "lockOwner": "FD9 startup.lock flock-w10 serializesreuse/TERMwait/recordpublish/Xserverprobe; Xvfb closesFD9 and bridge releasesbeforeloop. Exit deletesrunning onlyif firstline=$$; no strongerinodefenceinferred.",
       "supportDisposition": "existing-source-binding",
       "workItemIds": [
         "OP-clipboard-x11-sync"
       ],
       "closureStatus": "source-caller-and-export-traced",
-      "scope": "Existing source function binding; not a newly advertised tool/RPC route. Full public aliases/provider-executor matrix remains required for closure.",
+      "scope": "Existing single source binding; accepted9a921 current trace separate from original historical sourceProof/handler. Source-only eligibility is not native/runtime proof. Containerfile standalone policy-asset coverage remains unverified; canonical CCC exec stages policy before bridge.",
       "callers": [
         {
           "path": "src/index.ts",
@@ -144663,6 +145379,89 @@
         {
           "path": "scripts/ccc-x11-bridge",
           "gitBlob": "6571c10758453494b17efe32abc1a6ac952b99d3"
+        }
+      ],
+      "sourceTrace": [
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "symbol": "clipboard_x11_sync_init",
+          "line": 2
+        },
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "symbol": "clipboard_x11_sync_apply_host",
+          "line": 8
+        },
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "symbol": "clipboard_x11_sync_cycle",
+          "line": 18
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "symbol": "bridge_main",
+          "line": 146
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "symbol": "bridge_cycle",
+          "line": 103
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "line": 17
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+          "symbol": "syncClipboardShims",
+          "line": 1479
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+          "line": 1537
+        },
+        {
+          "path": "src/application/container-exec.ts",
+          "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+          "line": 266
+        },
+        {
+          "path": "src/application/container-exec.ts",
+          "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+          "line": 320
+        },
+        {
+          "path": "package.json",
+          "gitBlob": "7ca16947d2b065ead0fcaa1ccabe66e6dabcf69b",
+          "line": 29
+        },
+        {
+          "path": "Dockerfile",
+          "gitBlob": "4a0e960ff2529c0bda0625a309a921dbc656d192",
+          "line": 155
+        },
+        {
+          "path": "Dockerfile.distribution",
+          "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+          "line": 143
+        },
+        {
+          "path": "Dockerfile.distribution",
+          "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+          "line": 145
+        },
+        {
+          "path": "Containerfile",
+          "gitBlob": "b9fc3f4d0d72b3110777d3ccec42170a92df45e3",
+          "line": 154
         }
       ]
     },
@@ -146276,7 +147075,7 @@
       "backend": "existing operation-specific native or storage boundary",
       "provider": "selected by existing trusted composition; no new provider contract",
       "executor": "shared direct/provider child and broker TS",
-      "route": "Public bounded validated state reader",
+      "route": "Existing TS/provider bounded read/content/repository/publication/shared-lock source APIs and reached native consumers",
       "action": "State storage",
       "entrypoint": {
         "path": "packages/device-lab/src/device-lab-state-file.ts",
@@ -146294,14 +147093,14 @@
         "kind": "sourceDeclaration"
       },
       "normalizedHandler": "readDeviceLabStateFile",
-      "authorityOwner": "existing owner/context/state adapters",
-      "lockOwner": "retained",
+      "authorityOwner": "Inward read/content/repository/publication/lock decisions; native bindings retain path/descriptor/process/token/namespace authority and exact selected owner/state targets.",
+      "lockOwner": "Raw reader/publication APIs do not acquire caller operation locks; repository and shared-lock applications use native owner/state mutation locks and token-fenced claim/reclaim/release leaves.",
       "supportDisposition": "existing-source-binding",
       "workItemIds": [
         "OP-state-storage"
       ],
       "closureStatus": "source-caller-and-export-traced",
-      "scope": "Existing source function binding; not a newly advertised tool/RPC route. Full public aliases/provider-executor matrix remains required for closure.",
+      "scope": "One existing storage source binding; historical handler/sourceProof retained. Current Source13efa traces are static; qualified ordinary evidence and metadata review are still required before whole credit.",
       "callers": [
         {
           "path": "src/device-lab-admin.ts",
@@ -146421,7 +147220,189 @@
           ],
           "detail": "TS and MJS readers distinct source APIs; explicit file/limit/validator and opened/path identity authority; readers no mutation guard."
         }
-      }
+      },
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab-state-file.ts",
+          "gitBlob": "ca1403a123c5f37d9540b12ed3ed90598dac7963",
+          "symbol": "readDeviceLabStateFile",
+          "line": 29
+        },
+        {
+          "path": "packages/device-lab/providers/state/state-file.mjs",
+          "gitBlob": "560289c063206c98a3db4c779c79754aabaa1d77",
+          "symbol": "readDeviceLabStateFile",
+          "line": 29
+        },
+        {
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "validateStateFileContent",
+          "line": 10
+        },
+        {
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "readStateFileText",
+          "line": 45
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-owner-state.ts",
+          "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+          "symbol": "readOwnerDeviceStateFile",
+          "line": 61
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-owner-state.ts",
+          "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+          "symbol": "assertOwnerDeviceStateWritable",
+          "line": 89
+        },
+        {
+          "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+          "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+          "symbol": "readOwnerDeviceStateFile",
+          "line": 45
+        },
+        {
+          "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+          "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+          "symbol": "assertOwnerDeviceStateWritable",
+          "line": 65
+        },
+        {
+          "path": "packages/device-lab/providers/application/owner-state-content.mjs",
+          "gitBlob": "47eda1f732137a57bbf8c957be9bb89d908193cb",
+          "symbol": "createOwnerStateContent",
+          "line": 4
+        },
+        {
+          "path": "packages/device-lab/providers/state/device-store.mjs",
+          "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+          "symbol": "readOwnerDevices",
+          "line": 82
+        },
+        {
+          "path": "packages/device-lab/providers/state/device-store.mjs",
+          "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+          "symbol": "transitionOwnerDeviceRecord",
+          "line": 106
+        },
+        {
+          "path": "packages/device-lab/providers/application/owner-device-repository.mjs",
+          "gitBlob": "daaee00e746e30972155314a95adac372b2a012d",
+          "symbol": "createOwnerDeviceRepository",
+          "line": 29
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+          "symbol": "ownerRepository",
+          "line": 4044
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+          "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e",
+          "symbol": "createBrokerOwnerRepository",
+          "line": 9
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "publication",
+          "line": 255
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "locks",
+          "line": 285
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "writeFileAtomically",
+          "line": 120
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "writeJsonFileAtomically",
+          "line": 124
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "copyFileAtomically",
+          "line": 128
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "withSharedMutationLock",
+          "line": 287
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "withSharedMutationLockAsync",
+          "line": 295
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "publication",
+          "line": 239
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "locks",
+          "line": 270
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "writeFileAtomically",
+          "line": 103
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "writeJsonFileAtomically",
+          "line": 107
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "copyFileAtomically",
+          "line": 111
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "withSharedMutationLock",
+          "line": 272
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "withSharedMutationLockAsync",
+          "line": 276
+        },
+        {
+          "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+          "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0",
+          "symbol": "createStateFilePublication",
+          "line": 5
+        },
+        {
+          "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+          "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a",
+          "symbol": "createSharedMutationLock",
+          "line": 4
+        }
+      ]
     },
     {
       "id": "BIND-source-device-dispatch",
@@ -229350,10 +230331,93 @@
           "kind": "callSiteOrBranch"
         }
       ],
-      "sourceExportDisposition": "Root package declares ccc -> dist/index.js and ships dist, with no explicit package exports. Root TS export is retained source callable contract; CLI reachability distinct from emitted/package attestation.",
+      "sourceExportDisposition": "Historical concreteCase/trace/sourceCheck remain unchanged static observations. Current accepted9a921 repository-sibling/fixed-installed policy loader, package assets, Dockerfile assets and canonical policy-first staging are traced; Containerfile does not bake policy and standalone acceptance remains unverified.",
       "sourceCheck": "Exact caller/export read-only source observation; checkout bytes match baseline. No emitted/installed/native acceptance.",
       "nativeAcceptance": "unverified",
-      "portableAcceptance": "unverified"
+      "portableAcceptance": "unverified",
+      "sourceTrace": [
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "symbol": "clipboard_x11_sync_init",
+          "line": 2
+        },
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "symbol": "clipboard_x11_sync_apply_host",
+          "line": 8
+        },
+        {
+          "path": "scripts/lib/clipboard-x11-sync.sh",
+          "gitBlob": "a3c289ae5951858a7f2f5095b0be459ea90b2f80",
+          "symbol": "clipboard_x11_sync_cycle",
+          "line": 18
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "symbol": "bridge_main",
+          "line": 146
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "symbol": "bridge_cycle",
+          "line": 103
+        },
+        {
+          "path": "scripts/ccc-x11-bridge",
+          "gitBlob": "6ed4af7f028136beef6f406f3f2fb2ce28df5d66",
+          "line": 17
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+          "symbol": "syncClipboardShims",
+          "line": 1479
+        },
+        {
+          "path": "src/docker.ts",
+          "gitBlob": "3f6310acdddc6d5296d7079bf92239aee8f44f7f",
+          "line": 1537
+        },
+        {
+          "path": "src/application/container-exec.ts",
+          "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+          "line": 266
+        },
+        {
+          "path": "src/application/container-exec.ts",
+          "gitBlob": "d5b11edfc03518ac5ec8a6aca95d4a90001741ac",
+          "line": 320
+        },
+        {
+          "path": "package.json",
+          "gitBlob": "7ca16947d2b065ead0fcaa1ccabe66e6dabcf69b",
+          "line": 29
+        },
+        {
+          "path": "Dockerfile",
+          "gitBlob": "4a0e960ff2529c0bda0625a309a921dbc656d192",
+          "line": 155
+        },
+        {
+          "path": "Dockerfile.distribution",
+          "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+          "line": 143
+        },
+        {
+          "path": "Dockerfile.distribution",
+          "gitBlob": "38725aabd84ddde6d96c5212a997ba2d2146affa",
+          "line": 145
+        },
+        {
+          "path": "Containerfile",
+          "gitBlob": "b9fc3f4d0d72b3110777d3ccec42170a92df45e3",
+          "line": 154
+        }
+      ]
     },
     {
       "id": "PROOF-reconciled-source-clipboard-server-ensure",
@@ -229799,10 +230863,192 @@
           "kind": "callSiteOrBranch"
         }
       ],
-      "sourceExportDisposition": "@ccc/device-lab existing publicExportCatalog source wildcard ./*.js and/or ./providers/* expansion; raw source API does not imply outer broker/provider locks.",
+      "sourceExportDisposition": "Original concreteCase/trace/sourceCheck remain historical static observations. Current accepted Source13efa publication/lock wildcard factories, pure domains and production declarations support this same binding; no new runtime/native proof inferred.",
       "sourceCheck": "Exact caller/export read-only source observation; checkout bytes match baseline. No emitted/installed/native acceptance.",
       "nativeAcceptance": "unverified",
-      "portableAcceptance": "unverified"
+      "portableAcceptance": "unverified",
+      "sourceTrace": [
+        {
+          "path": "packages/device-lab/src/device-lab-state-file.ts",
+          "gitBlob": "ca1403a123c5f37d9540b12ed3ed90598dac7963",
+          "symbol": "readDeviceLabStateFile",
+          "line": 29
+        },
+        {
+          "path": "packages/device-lab/providers/state/state-file.mjs",
+          "gitBlob": "560289c063206c98a3db4c779c79754aabaa1d77",
+          "symbol": "readDeviceLabStateFile",
+          "line": 29
+        },
+        {
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "validateStateFileContent",
+          "line": 10
+        },
+        {
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "readStateFileText",
+          "line": 45
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-owner-state.ts",
+          "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+          "symbol": "readOwnerDeviceStateFile",
+          "line": 61
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-owner-state.ts",
+          "gitBlob": "e9606dab846d6ec2d86dee108eef5d8e57502440",
+          "symbol": "assertOwnerDeviceStateWritable",
+          "line": 89
+        },
+        {
+          "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+          "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+          "symbol": "readOwnerDeviceStateFile",
+          "line": 45
+        },
+        {
+          "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+          "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+          "symbol": "assertOwnerDeviceStateWritable",
+          "line": 65
+        },
+        {
+          "path": "packages/device-lab/providers/application/owner-state-content.mjs",
+          "gitBlob": "47eda1f732137a57bbf8c957be9bb89d908193cb",
+          "symbol": "createOwnerStateContent",
+          "line": 4
+        },
+        {
+          "path": "packages/device-lab/providers/state/device-store.mjs",
+          "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+          "symbol": "readOwnerDevices",
+          "line": 82
+        },
+        {
+          "path": "packages/device-lab/providers/state/device-store.mjs",
+          "gitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+          "symbol": "transitionOwnerDeviceRecord",
+          "line": 106
+        },
+        {
+          "path": "packages/device-lab/providers/application/owner-device-repository.mjs",
+          "gitBlob": "daaee00e746e30972155314a95adac372b2a012d",
+          "symbol": "createOwnerDeviceRepository",
+          "line": 29
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "gitBlob": "c75f209bc1c763115a026dcebf9c78caa2b2e06a",
+          "symbol": "ownerRepository",
+          "line": 4044
+        },
+        {
+          "path": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+          "gitBlob": "83ae508c92e56dbcad1ed6feeceb5dd927aa170e",
+          "symbol": "createBrokerOwnerRepository",
+          "line": 9
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "publication",
+          "line": 255
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "locks",
+          "line": 285
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "writeFileAtomically",
+          "line": 120
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "writeJsonFileAtomically",
+          "line": 124
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "copyFileAtomically",
+          "line": 128
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "withSharedMutationLock",
+          "line": 287
+        },
+        {
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "withSharedMutationLockAsync",
+          "line": 295
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "publication",
+          "line": 239
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "locks",
+          "line": 270
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "writeFileAtomically",
+          "line": 103
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "writeJsonFileAtomically",
+          "line": 107
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "copyFileAtomically",
+          "line": 111
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "withSharedMutationLock",
+          "line": 272
+        },
+        {
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "withSharedMutationLockAsync",
+          "line": 276
+        },
+        {
+          "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+          "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0",
+          "symbol": "createStateFilePublication",
+          "line": 5
+        },
+        {
+          "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+          "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a",
+          "symbol": "createSharedMutationLock",
+          "line": 4
+        }
+      ]
     },
     {
       "id": "PROOF-reconciled-source-device-dispatch",
@@ -231160,9 +232406,9 @@
     },
     {
       "path": "packages/device-lab/providers/state/owner-device-state.mjs",
-      "gitBlob": "7352807c5ddce72cb37dad2ba5105aacfbf54e72",
-      "currentRole": "Bounded validated owner devices.json reader/writability guard",
-      "policyOwner": "packages/device-lab/providers/application/owner-device-repository.mjs",
+      "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+      "currentRole": "Native bounded descriptor/path owner payload adapter; owner-state-content owns payload read/writability decisions.",
+      "policyOwner": "packages/device-lab/providers/application/owner-state-content.mjs",
       "workItemIds": [
         "OP-owner-repository",
         "OP-state-storage"
@@ -231241,17 +232487,32 @@
           "kind": "testCase"
         }
       ],
-      "implementationDisposition": "Supporting source is traced; retain existing owner workflow status until whole workflow cutover/evidence is proven. No effect tests were run.",
-      "inventoryNotes": [],
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
+      "inventoryNotes": [
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
+      ],
       "residualSourceGaps": [],
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/owner-state-content.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-owner-repository",
-          "policyOwner": "packages/device-lab/providers/application/owner-device-repository.mjs"
+          "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+          "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+          "symbol": "readOwnerDeviceStateFile",
+          "line": 45
         },
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/providers/state/owner-device-state.mjs",
+          "gitBlob": "bd2ec953ff1b5a67e7e551d268f6d6313ef6778a",
+          "symbol": "assertOwnerDeviceStateWritable",
+          "line": 65
+        },
+        {
+          "path": "packages/device-lab/providers/application/owner-state-content.mjs",
+          "gitBlob": "47eda1f732137a57bbf8c957be9bb89d908193cb",
+          "symbol": "createOwnerStateContent",
+          "line": 4
         }
       ]
     },
@@ -231336,9 +232597,9 @@
     },
     {
       "path": "packages/device-lab/providers/state/state-file.mjs",
-      "gitBlob": "c16ee8a6c8ce97ec1c1842d7aae6d70323913b2d",
-      "currentRole": "Native bounded file and path-fence adapter shared by existing owner/runtime/file workflows",
-      "policyOwner": "packages/device-lab/src/device-lab-state-file.ts",
+      "gitBlob": "560289c063206c98a3db4c779c79754aabaa1d77",
+      "currentRole": "Native bounded no-follow file/path fence and error carrier; shared state-file-read owns content classification.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-read.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-owner-repository",
@@ -231464,43 +232725,40 @@
           "kind": "testCase"
         }
       ],
-      "implementationDisposition": "Supporting source is traced; retain existing owner workflow status until whole workflow cutover/evidence is proven. No effect tests were run.",
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
       "inventoryNotes": [
-        "Agreed OP-device-{screenshot,upload,download} IDs are coordinator proposals; use existing matching canonical IDs if already merged."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
       ],
       "residualSourceGaps": [],
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/state-file-read.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/providers/state/state-file.mjs",
+          "gitBlob": "560289c063206c98a3db4c779c79754aabaa1d77",
+          "symbol": "readDeviceLabStateFile",
+          "line": 29
         },
         {
-          "workItemId": "OP-owner-repository",
-          "policyOwner": "packages/device-lab/providers/application/owner-device-repository.mjs"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "validateStateFileContent",
+          "line": 10
         },
         {
-          "workItemId": "OP-broker-supervision",
-          "policyOwner": "device-lab-mcp/src/broker.mjs"
-        },
-        {
-          "workItemId": "OP-device-screenshot",
-          "policyOwner": "device-lab-mcp/src/server.mjs"
-        },
-        {
-          "workItemId": "OP-device-upload",
-          "policyOwner": "device-lab-mcp/src/server.mjs"
-        },
-        {
-          "workItemId": "OP-device-download",
-          "policyOwner": "device-lab-mcp/src/server.mjs"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "readStateFileText",
+          "line": 45
         }
       ]
     },
     {
       "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
-      "gitBlob": "ef5b96c0e1aa8480dbf6a8d085b2178c59c48921",
-      "currentRole": "Native atomic replacement/copy and token-fenced synchronous/asynchronous lock adapter",
-      "policyOwner": "packages/device-lab/src/device-lab-shared-state.ts",
+      "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+      "currentRole": "Provider native publication/lock composition; finite filesystem/process/time leaves bind shared publication and token-fenced lock applications.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-publication.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-owner-repository",
@@ -231641,55 +232899,71 @@
           "kind": "testCase"
         }
       ],
-      "implementationDisposition": "Supporting source is traced; retain existing owner workflow status until whole workflow cutover/evidence is proven. No effect tests were run.",
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
       "inventoryNotes": [
-        "Use as noncounted native support of complete OP-state-storage mutation/publication contract, not one extra lock/helper operation. Whole backend mutation policies remain separately owned."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
       ],
       "residualSourceGaps": [],
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/state-file-publication.mjs",
+        "packages/device-lab/providers/application/shared-mutation-lock.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "publication",
+          "line": 239
         },
         {
-          "workItemId": "OP-owner-repository",
-          "policyOwner": "packages/device-lab/providers/application/owner-device-repository.mjs"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "locks",
+          "line": 270
         },
         {
-          "workItemId": "OP-lease-claim",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "writeFileAtomically",
+          "line": 103
         },
         {
-          "workItemId": "OP-lease-heartbeat",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "writeJsonFileAtomically",
+          "line": 107
         },
         {
-          "workItemId": "OP-lease-prune",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "copyFileAtomically",
+          "line": 111
         },
         {
-          "workItemId": "OP-lease-release",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "withSharedMutationLock",
+          "line": 272
         },
         {
-          "workItemId": "OP-windows-sandbox-start",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
+          "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+          "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+          "symbol": "withSharedMutationLockAsync",
+          "line": 276
         },
         {
-          "workItemId": "OP-windows-sandbox-stop",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-delete",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
+          "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+          "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0",
+          "symbol": "createStateFilePublication",
+          "line": 5
         }
       ]
     },
     {
       "path": "packages/device-lab/providers/state/ownership-state.mjs",
       "gitBlob": "ed25de232098cad197a0b74e3e8397e0b7d62a37",
-      "currentRole": "Physical lease and Sandbox singleton payload validators/read adapters",
-      "policyOwner": "packages/device-lab/providers/state/physical-lease-store.mjs and providers/backends/windows-sandbox.mjs",
+      "currentRole": "Physical-lease/Sandbox payload validation and selected native read facade; shared inward bounded content classification retained.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-read.mjs",
       "workItemIds": [
         "OP-lease-claim",
         "OP-lease-heartbeat",
@@ -231799,49 +233073,26 @@
           "kind": "testCase"
         }
       ],
-      "implementationDisposition": "Supporting source is traced; retain existing owner workflow status until whole workflow cutover/evidence is proven. No effect tests were run.",
-      "inventoryNotes": [],
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
+      "inventoryNotes": [
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
+      ],
       "residualSourceGaps": [],
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/state-file-read.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-lease-claim",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "validateStateFileContent",
+          "line": 10
         },
         {
-          "workItemId": "OP-lease-heartbeat",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-prune",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-release",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-physical-attach",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-physical-detach",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-start",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-stop",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-delete",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "readStateFileText",
+          "line": 45
         }
       ]
     },
@@ -233749,8 +235000,8 @@
     {
       "path": "packages/device-lab/src/device-lab-ownership-state.ts",
       "gitBlob": "e89ed4aa4f84c1bb653b9bb0fa73a739d007acc0",
-      "currentRole": "TS physical lease and Sandbox singleton validation/read adapters",
-      "policyOwner": "Complete workflows named in workItemIds; this module is native support",
+      "currentRole": "TS physical-lease/Sandbox typed validation and read facade; native selected-file authority binds inward bounded content classification.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-read.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-lease-claim",
@@ -233888,61 +235139,26 @@
           "kind": "testCase"
         }
       ],
-      "inventoryNotes": [],
+      "inventoryNotes": [
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
+      ],
       "residualSourceGaps": [],
-      "implementationDisposition": "Native support is source-traced; source/test references do not certify whole inward cutover or native execution.",
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/state-file-read.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "validateStateFileContent",
+          "line": 10
         },
         {
-          "workItemId": "OP-lease-claim",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-heartbeat",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-prune",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-release",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-physical-attach",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-physical-detach",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-create",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-start",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-stop",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-windows-sandbox-delete",
-          "policyOwner": "packages/device-lab/providers/backends/windows-sandbox.mjs"
-        },
-        {
-          "workItemId": "OP-device-admin-cleanup",
-          "policyOwner": "src/device-lab-admin.ts"
-        },
-        {
-          "workItemId": "OP-device-admin-prune",
-          "policyOwner": "src/device-lab-admin.ts"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "readStateFileText",
+          "line": 45
         }
       ]
     },
@@ -234097,9 +235313,9 @@
     },
     {
       "path": "packages/device-lab/src/device-lab-shared-state.ts",
-      "gitBlob": "b99433993d52ba5f92dd05690846ff0bb75d5408",
-      "currentRole": "TS native safe-directory, atomic publication/copy and token-fenced mutation-lock adapter",
-      "policyOwner": "packages/device-lab/src/device-lab-state-file.ts (full OP-state-storage authority); caller workflows own scopes",
+      "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+      "currentRole": "TS safe-directory/descriptor/process native leaves bind shared inward atomic publication/copy and mutation-lock policy.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-publication.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-owner-repository",
@@ -234321,106 +235537,62 @@
         }
       ],
       "inventoryNotes": [
-        "Whole OP-state-storage is pending inward cutover; do not count each primitive, each transport, or each caller nested lock as another work item."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
       ],
       "residualSourceGaps": [],
-      "implementationDisposition": "Native support is source-traced; source/test references do not certify whole inward cutover or native execution.",
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/state-file-publication.mjs",
+        "packages/device-lab/providers/application/shared-mutation-lock.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "publication",
+          "line": 255
         },
         {
-          "workItemId": "OP-owner-repository",
-          "policyOwner": "packages/device-lab/providers/application/owner-device-repository.mjs"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "locks",
+          "line": 285
         },
         {
-          "workItemId": "OP-broker-owner-register",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "writeFileAtomically",
+          "line": 120
         },
         {
-          "workItemId": "OP-broker-owner-resolve",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "writeJsonFileAtomically",
+          "line": 124
         },
         {
-          "workItemId": "OP-broker-supervision",
-          "policyOwner": "device-lab-mcp/src/broker.mjs"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "copyFileAtomically",
+          "line": 128
         },
         {
-          "workItemId": "OP-lease-claim",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "withSharedMutationLock",
+          "line": 287
         },
         {
-          "workItemId": "OP-lease-heartbeat",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/src/device-lab-shared-state.ts",
+          "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+          "symbol": "withSharedMutationLockAsync",
+          "line": 295
         },
         {
-          "workItemId": "OP-lease-prune",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-release",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-device-admin-cleanup",
-          "policyOwner": "src/device-lab-admin.ts"
-        },
-        {
-          "workItemId": "OP-device-admin-prune",
-          "policyOwner": "src/device-lab-admin.ts"
-        },
-        {
-          "workItemId": "OP-device-admin-setup",
-          "policyOwner": "src/device-lab-admin.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-image-import",
-          "policyOwner": "packages/device-lab/src/device-lab/hyper-v-images.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-fabric-allocation",
-          "policyOwner": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts"
-        },
-        {
-          "workItemId": "OP-session-acquire",
-          "policyOwner": "src/application/session-acquisition.ts"
-        },
-        {
-          "workItemId": "OP-session-cleanup",
-          "policyOwner": "src/application/session-cleanup.ts"
-        },
-        {
-          "workItemId": "OP-container-create",
-          "policyOwner": "src/application/container-create-lifecycle.ts"
-        },
-        {
-          "workItemId": "OP-container-reuse",
-          "policyOwner": "src/application/container-existing-lifecycle.ts"
-        },
-        {
-          "workItemId": "OP-container-stop",
-          "policyOwner": "src/application/container-destructive-lifecycle.ts"
-        },
-        {
-          "workItemId": "OP-container-remove",
-          "policyOwner": "src/application/container-destructive-lifecycle.ts"
-        },
-        {
-          "workItemId": "OP-home-migrate",
-          "policyOwner": "src/application/home-layout-migration.ts"
-        },
-        {
-          "workItemId": "OP-codex-ordered-preparation",
-          "policyOwner": "src/application/credentials/codex-config-preparation.ts"
-        },
-        {
-          "workItemId": "OP-codex-harness-bootstrap",
-          "policyOwner": "src/codex-harness.ts"
-        },
-        {
-          "workItemId": "OP-mcp-forward",
-          "policyOwner": "src/mcp-forward.ts"
+          "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+          "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0",
+          "symbol": "createStateFilePublication",
+          "line": 5
         }
       ]
     },
@@ -234615,9 +235787,9 @@
     },
     {
       "path": "packages/device-lab/src/device-lab-state-file.ts",
-      "gitBlob": "f7714646f0c2ba4244c16f40107d8b44dece2de8",
-      "currentRole": "TS bounded descriptor I/O and root-fenced read/write native adapter",
-      "policyOwner": "Complete workflows named in workItemIds; this module is native support",
+      "gitBlob": "ca1403a123c5f37d9540b12ed3ed90598dac7963",
+      "currentRole": "TS native binary reader/error compatibility facade binds shared inward content classification and text decoding.",
+      "policyOwner": "packages/device-lab/providers/application/state-file-read.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-broker-owner-register",
@@ -234825,78 +235997,31 @@
         }
       ],
       "inventoryNotes": [
-        "Upload/download public policies remain independently counted actions; file adapter does not absorb them."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
       ],
       "residualSourceGaps": [],
-      "implementationDisposition": "Native support is source-traced; source/test references do not certify whole inward cutover or native execution.",
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/state-file-read.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
+          "path": "packages/device-lab/src/device-lab-state-file.ts",
+          "gitBlob": "ca1403a123c5f37d9540b12ed3ed90598dac7963",
+          "symbol": "readDeviceLabStateFile",
+          "line": 29
         },
         {
-          "workItemId": "OP-broker-owner-register",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "validateStateFileContent",
+          "line": 10
         },
         {
-          "workItemId": "OP-broker-owner-resolve",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-claim",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-heartbeat",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-prune",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-lease-release",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-broker-supervision",
-          "policyOwner": "device-lab-mcp/src/broker.mjs"
-        },
-        {
-          "workItemId": "OP-hyperv-image-import",
-          "policyOwner": "packages/device-lab/src/device-lab/hyper-v-images.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-fabric-allocation",
-          "policyOwner": "packages/device-lab/src/device-lab/broker/hyper-v/network.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-snapshot-create",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-snapshot-restore",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-snapshot-delete",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-hyperv-snapshot-repair",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-device-upload",
-          "policyOwner": "device-lab-mcp/src/server.mjs"
-        },
-        {
-          "workItemId": "OP-device-download",
-          "policyOwner": "device-lab-mcp/src/server.mjs"
-        },
-        {
-          "workItemId": "OP-appium-server-start",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
+          "path": "packages/device-lab/providers/application/state-file-read.mjs",
+          "gitBlob": "129317571f65da90718198449e4181b963be0c83",
+          "symbol": "readStateFileText",
+          "line": 45
         }
       ]
     },
@@ -235126,8 +236251,8 @@
     {
       "path": "packages/device-lab/src/device-lab-process-identity.ts",
       "gitBlob": "3d6d70c95303f8f7b6fb8aacbcde3631de54a68f",
-      "currentRole": "Native TS PID/starttoken/commandhash observation and guarded signal adapter",
-      "policyOwner": "Complete workflows named in workItemIds; this module is native support",
+      "currentRole": "Retained TS native process/start-token/command-hash inspection and signaling authority consumed by inward lock stale-owner decisions.",
+      "policyOwner": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-broker-supervision",
@@ -235340,70 +236465,27 @@
         }
       ],
       "inventoryNotes": [
-        "Exported ForTest helper remains public wildcard compatibility surface and must be inventoried even though test-focused."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
       ],
       "residualSourceGaps": [],
-      "implementationDisposition": "Native support is source-traced; source/test references do not certify whole inward cutover or native execution.",
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/shared-mutation-lock.mjs"
+      ],
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
-        },
-        {
-          "workItemId": "OP-broker-supervision",
-          "policyOwner": "device-lab-mcp/src/broker.mjs"
-        },
-        {
-          "workItemId": "OP-device-dispatch",
-          "policyOwner": "device-lab-mcp/src/server.mjs"
-        },
-        {
-          "workItemId": "OP-recording-start",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-recording-finalize",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-recording-status",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-server-start",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-server-stop",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-session-ensure",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-session-delete",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-request",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-broker-owner-cleanup",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-device-admin-cleanup",
-          "policyOwner": "src/device-lab-admin.ts"
+          "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+          "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a",
+          "symbol": "createSharedMutationLock",
+          "line": 4
         }
       ]
     },
     {
       "path": "packages/device-lab/providers/state/process-identity.mjs",
-      "gitBlob": "ccbf0a32b7452a30a3ca56771278b1c8548edec2",
-      "currentRole": "Native provider PID/starttoken/commandhash observation and exact-runtime signal/escalation/tree adapter",
-      "policyOwner": "Canonical lifecycle/recording/Appium/physical-stop workflows; native adapter has no independent policy count",
+      "gitBlob": "7dcfdd1e24cfd2268a04713d3c0729d60afdbe1d",
+      "currentRole": "Retained provider native process identity/observation/signaling authority consumed by inward lock stale-owner decisions.",
+      "policyOwner": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
       "workItemIds": [
         "OP-state-storage",
         "OP-android-emulator-start",
@@ -235592,101 +236674,19 @@
         }
       ],
       "inventoryNotes": [
-        "Physical stop preserves attachment while detach releases exact lease. OP-physical-stop agreed by coordinator; final binding trace owned device action lane."
+        "Historical declarations/callers remain baseline observations; current source trace independently records accepted native/inward boundaries."
       ],
       "residualSourceGaps": [],
       "businessPolicyOwners": [
+        "packages/device-lab/providers/application/shared-mutation-lock.mjs"
+      ],
+      "implementationDisposition": "Accepted Source13efa retained native authority/composition; current storage whole-operation evidence qualification pending.",
+      "sourceTrace": [
         {
-          "workItemId": "OP-state-storage",
-          "policyOwner": "packages/device-lab/src/device-lab-state-file.ts"
-        },
-        {
-          "workItemId": "OP-android-emulator-start",
-          "policyOwner": "packages/device-lab/providers/backends/android.mjs"
-        },
-        {
-          "workItemId": "OP-android-emulator-stop",
-          "policyOwner": "packages/device-lab/providers/backends/android.mjs"
-        },
-        {
-          "workItemId": "OP-android-emulator-delete",
-          "policyOwner": "packages/device-lab/providers/backends/android.mjs"
-        },
-        {
-          "workItemId": "OP-ios-simulator-stop",
-          "policyOwner": "packages/device-lab/providers/backends/ios-simulator.mjs"
-        },
-        {
-          "workItemId": "OP-ios-simulator-delete",
-          "policyOwner": "packages/device-lab/providers/backends/ios-simulator.mjs"
-        },
-        {
-          "workItemId": "OP-physical-detach",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-physical-stop",
-          "policyOwner": "Canonical coordinator action proposal; current native caller referenced above"
-        },
-        {
-          "workItemId": "OP-recording-start",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-recording-finalize",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-recording-status",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-server-start",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-server-stop",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-session-ensure",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-appium-session-delete",
-          "policyOwner": "packages/device-lab/src/device-lab-broker.ts"
-        },
-        {
-          "workItemId": "OP-macos-vm-stop",
-          "policyOwner": "packages/device-lab/providers/backends/macos-vm.mjs"
-        },
-        {
-          "workItemId": "OP-macos-vm-delete",
-          "policyOwner": "packages/device-lab/providers/backends/macos-vm.mjs"
-        },
-        {
-          "workItemId": "OP-macos-base-image-clone",
-          "policyOwner": "packages/device-lab/providers/backends/macos-vm.mjs"
-        },
-        {
-          "workItemId": "OP-macos-snapshot-create",
-          "policyOwner": "packages/device-lab/providers/backends/macos-vm.mjs"
-        },
-        {
-          "workItemId": "OP-macos-snapshot-restore",
-          "policyOwner": "packages/device-lab/providers/backends/macos-vm.mjs"
-        },
-        {
-          "workItemId": "OP-container-qemu-start",
-          "policyOwner": "packages/device-lab/providers/backends/linux-vm.mjs"
-        },
-        {
-          "workItemId": "OP-container-qemu-stop",
-          "policyOwner": "packages/device-lab/providers/backends/linux-vm.mjs"
-        },
-        {
-          "workItemId": "OP-container-qemu-delete",
-          "policyOwner": "packages/device-lab/providers/backends/linux-vm.mjs"
+          "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+          "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a",
+          "symbol": "createSharedMutationLock",
+          "line": 4
         }
       ]
     },
@@ -251927,6 +252927,606 @@
           ],
           "retainedResponsibility": "Trusted executable :24-50; hidden args :72-89; start token/descendant cleanup :95-173. Concrete Hyper-V lifecycle-adapter :174-200, session-pool :119-128, core :122,130, powershell-assets :61 and broker runner/cleanup :10826-10842,11212,11307-11325,11540-11542,11677-11679. Other Appium/session/clipboard callers remain delegated to their canonical owners; no whole-callee business authority copied here.",
           "exposureScope": "Existing declared package wildcard/exact export; preserve absent in-repo-consumer compatibility. Source export/type erasure does not certify emitted artifact symbols or unknown external consumers.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/application/state-file-publication.mjs",
+            "kind": "publicExportSource",
+            "gitBlob": "a9484a555dd0d8f402d541ad298c34dc223001e0"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/application/state-file-publication.mjs",
+          "expectedShippedTarget": "./providers/application/state-file-publication.mjs",
+          "sourceExports": [
+            {
+              "name": "createStateFilePublication",
+              "line": 5,
+              "kind": "function declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "publication",
+              "line": 255
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "locks",
+              "line": 285
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeFileAtomically",
+              "line": 120
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeJsonFileAtomically",
+              "line": 124
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "copyFileAtomically",
+              "line": 128
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLock",
+              "line": 287
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 295
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "publication",
+              "line": 239
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "locks",
+              "line": 270
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeFileAtomically",
+              "line": 103
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeJsonFileAtomically",
+              "line": 107
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "copyFileAtomically",
+              "line": 111
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLock",
+              "line": 272
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 276
+            }
+          ],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; inward policy/pure functions; factory-returned APIs: write, writeJson, copy, rename. Raw APIs retain caller authority/lock responsibilities.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/application/shared-mutation-lock.mjs",
+            "kind": "publicExportSource",
+            "gitBlob": "53cb3a8f6a317ab9aff424983b5f80fb4903c00a"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/application/shared-mutation-lock.mjs",
+          "expectedShippedTarget": "./providers/application/shared-mutation-lock.mjs",
+          "sourceExports": [
+            {
+              "name": "createSharedMutationLock",
+              "line": 4,
+              "kind": "function declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "publication",
+              "line": 255
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "locks",
+              "line": 285
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeFileAtomically",
+              "line": 120
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeJsonFileAtomically",
+              "line": 124
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "copyFileAtomically",
+              "line": 128
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLock",
+              "line": 287
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 295
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "publication",
+              "line": 239
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "locks",
+              "line": 270
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeFileAtomically",
+              "line": 103
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeJsonFileAtomically",
+              "line": 107
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "copyFileAtomically",
+              "line": 111
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLock",
+              "line": 272
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 276
+            }
+          ],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; inward policy/pure functions; factory-returned APIs: readLock, withLock, withLockAsync. Raw APIs retain caller authority/lock responsibilities.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/domain/state-file-publication.mjs",
+            "kind": "publicExportSource",
+            "gitBlob": "018405694a4f603b7009915ece5cfe9b89073c7c"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/domain/state-file-publication.mjs",
+          "expectedShippedTarget": "./providers/domain/state-file-publication.mjs",
+          "sourceExports": [
+            {
+              "name": "atomicTemporaryWriter",
+              "line": 2,
+              "kind": "function declaration"
+            },
+            {
+              "name": "retryAtomicRename",
+              "line": 8,
+              "kind": "function declaration"
+            },
+            {
+              "name": "assertCopyLimit",
+              "line": 10,
+              "kind": "function declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; inward policy/pure functions; factory-returned APIs: none. Raw APIs retain caller authority/lock responsibilities.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/domain/shared-mutation-lock.mjs",
+            "kind": "publicExportSource",
+            "gitBlob": "91c0a86414f6c6bd0f489e64c8a41e8bb4d95c4a"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/domain/shared-mutation-lock.mjs",
+          "expectedShippedTarget": "./providers/domain/shared-mutation-lock.mjs",
+          "sourceExports": [
+            {
+              "name": "validMutationLockToken",
+              "line": 4,
+              "kind": "function declaration"
+            },
+            {
+              "name": "admitMutationLock",
+              "line": 14,
+              "kind": "function declaration"
+            },
+            {
+              "name": "sameMutationBoot",
+              "line": 33,
+              "kind": "function declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; inward policy/pure functions; factory-returned APIs: none. Raw APIs retain caller authority/lock responsibilities.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/application/state-file-publication.d.mts",
+            "kind": "publicExportSource",
+            "gitBlob": "91140f60529012bedbcb6c40a33b1302f9f9931e"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/application/state-file-publication.d.mts",
+          "expectedShippedTarget": "./providers/application/state-file-publication.d.mts",
+          "sourceExports": [
+            {
+              "name": "createStateFilePublication",
+              "line": 2,
+              "kind": "function declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "publication",
+              "line": 255
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "locks",
+              "line": 285
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeFileAtomically",
+              "line": 120
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeJsonFileAtomically",
+              "line": 124
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "copyFileAtomically",
+              "line": 128
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLock",
+              "line": 287
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 295
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "publication",
+              "line": 239
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "locks",
+              "line": 270
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeFileAtomically",
+              "line": 103
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeJsonFileAtomically",
+              "line": 107
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "copyFileAtomically",
+              "line": 111
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLock",
+              "line": 272
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 276
+            }
+          ],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; production type declarations, no runtime callable.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/application/shared-mutation-lock.d.mts",
+            "kind": "publicExportSource",
+            "gitBlob": "3d289f06cb68e602fe78332bf69ebf7bec78b7b8"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/application/shared-mutation-lock.d.mts",
+          "expectedShippedTarget": "./providers/application/shared-mutation-lock.d.mts",
+          "sourceExports": [
+            {
+              "name": "createSharedMutationLock",
+              "line": 3,
+              "kind": "function declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "publication",
+              "line": 255
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "locks",
+              "line": 285
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeFileAtomically",
+              "line": 120
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "writeJsonFileAtomically",
+              "line": 124
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "copyFileAtomically",
+              "line": 128
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLock",
+              "line": 287
+            },
+            {
+              "path": "packages/device-lab/src/device-lab-shared-state.ts",
+              "gitBlob": "0c8c3dcff034c28dccfc92c46fa9832934ac6df6",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 295
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "publication",
+              "line": 239
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "locks",
+              "line": 270
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeFileAtomically",
+              "line": 103
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "writeJsonFileAtomically",
+              "line": 107
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "copyFileAtomically",
+              "line": 111
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLock",
+              "line": 272
+            },
+            {
+              "path": "packages/device-lab/providers/state/shared-mutation-lock.mjs",
+              "gitBlob": "8e5e8a39af73d4b24cc31d62f7962879deb28281",
+              "symbol": "withSharedMutationLockAsync",
+              "line": 276
+            }
+          ],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; production type declarations, no runtime callable.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/ports/state-file-publication.d.mts",
+            "kind": "publicExportSource",
+            "gitBlob": "349bddb35f5b0261c4642501bc8d70651c03ac81"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/ports/state-file-publication.d.mts",
+          "expectedShippedTarget": "./providers/ports/state-file-publication.d.mts",
+          "sourceExports": [
+            {
+              "name": "PublicationDirectory",
+              "line": 1,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "PublicationStage",
+              "line": 2,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "CopyStream",
+              "line": 3,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "CopyResources",
+              "line": 9,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "StateFilePublicationPorts",
+              "line": 10,
+              "kind": "interface declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; production type declarations, no runtime callable.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
+          "artifactAcceptance": "unverified"
+        },
+        {
+          "source": {
+            "path": "packages/device-lab/providers/ports/shared-mutation-lock.d.mts",
+            "kind": "publicExportSource",
+            "gitBlob": "81ec738975f8d6c754788039ab8bd9e15246e63e"
+          },
+          "exportPattern": "./providers/*",
+          "subpath": "providers/ports/shared-mutation-lock.d.mts",
+          "expectedShippedTarget": "./providers/ports/shared-mutation-lock.d.mts",
+          "sourceExports": [
+            {
+              "name": "LockProcessIdentity",
+              "line": 2,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "LockObservationStatus",
+              "line": 3,
+              "kind": "type declaration"
+            },
+            {
+              "name": "MutationLockRecord",
+              "line": 4,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "MutationLockOptions",
+              "line": 5,
+              "kind": "interface declaration"
+            },
+            {
+              "name": "SharedMutationLockPorts",
+              "line": 6,
+              "kind": "interface declaration"
+            }
+          ],
+          "sourceReexports": [],
+          "trackedConsumers": [],
+          "workItemIds": [
+            "OP-state-storage"
+          ],
+          "retainedResponsibility": "Existing wildcard supporting storage API; production type declarations, no runtime callable.",
+          "exposureScope": "Current source exposure only; original package wildcard scope unchanged; not runtime/native/emitted certification.",
           "artifactAcceptance": "unverified"
         }
       ],
