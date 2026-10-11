@@ -33,6 +33,8 @@ function macosContracts(ports: MacosDeviceAccessPorts<Target, Discovery, Bridge,
     createDesktopDeviceAccess({ ...ports, bridge: async () => ({ ok: true, bridge: { target: "guest" } }) });
     // @ts-expect-error SCP observations settle before image publication
     createDesktopDeviceAccess({ ...ports, copy: async () => ({ status: 0 }) });
+    // @ts-expect-error native screenshot responses must be available synchronously
+    createDesktopDeviceAccess({ ...ports, readScreenshot: async () => ({ content: [{ type: "image", data: "image", mimeType: "image/png" }] }) });
     // @ts-expect-error local disposal must finish synchronously
     createDesktopDeviceAccess({ ...ports, disposeScreenshot: async () => undefined });
     void [result, cleanupRemote, disposeScreenshot];
@@ -57,6 +59,8 @@ function displayContracts(ports: X11DeviceAccessPorts<Target, Stage>) {
     createDisplayDeviceAccess({ ...ports, capture: async () => ({ status: 0 }) });
     // @ts-expect-error native local stage allocation is synchronous
     createDisplayDeviceAccess({ ...ports, stageScreenshot: async () => ({ localPath: "/owned/image.png" }) });
+    // @ts-expect-error native screenshot responses must be available synchronously
+    createDisplayDeviceAccess({ ...ports, readScreenshot: async () => ({ content: [{ type: "image", data: "image", mimeType: "image/png" }] }) });
     // @ts-expect-error owned X11 stage disposal is synchronous
     createDisplayDeviceAccess({ ...ports, disposeScreenshot: async () => undefined });
     void [current, result, disposeScreenshot, owner];

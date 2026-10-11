@@ -5,6 +5,7 @@ export interface DesktopAccessTarget { id:string }
 export interface DesktopAccessDiscovery { available:boolean }
 export interface DesktopAccessBridge { target:string }
 export interface DesktopScreenshotStage { localPath:string }
+export interface DesktopScreenshotResult { content:({type:string;data:string;mimeType:string}|{type:string;text:string})[]; isError?:boolean }
 export type DesktopAccessOutcome = {kind:'json';value:object}|{kind:'text';text:string}|{kind:'native';value:object}|{kind:'command-failure';receipt:CommandReceipt}|{kind:'image';data:string};
 export interface AccessibilityPayload { provider?:string; accessibility?:{provider?:string} }
 export interface WindowsAccessResponse { id?:string; ok?:boolean; error?:string; stdout?:string; stderr?:string; status?:number|null; imagePath?:string; hostImagePath?:string; accessibility?:{provider?:string} }
@@ -25,12 +26,12 @@ export interface MacosDeviceAccessPorts<Target extends DesktopAccessTarget,Disco
     stageScreenshot(target:Target):Stage;
     capture(target:Target,bridge:Bridge,stage:Stage,timeoutMs:number|undefined):CommandReceipt;
     copy(target:Target,bridge:Bridge,stage:Stage,timeoutMs:number|undefined):CommandReceipt;
-    readScreenshot(stage:Stage):object;
+    readScreenshot(stage:Stage):DesktopScreenshotResult;
     cleanupRemote(target:Target,bridge:Bridge,stage:Stage,timeoutMs:number|undefined):CommandReceipt;
     disposeScreenshot(stage:Stage):undefined;
 }
 export interface X11DeviceAccessPorts<Target extends DesktopAccessTarget,Stage extends DesktopScreenshotStage> {
     variant:'x11'; owner():string; display():string; available():boolean; publicTarget(target:X11AccessTarget):Target; stageScreenshot():Stage; capture(stage:Stage):CommandReceipt;
-    readScreenshot(stage:Stage):object; disposeScreenshot(stage:Stage):undefined;
+    readScreenshot(stage:Stage):DesktopScreenshotResult; disposeScreenshot(stage:Stage):undefined;
 }
 export type DesktopDeviceAccessPorts<Target extends DesktopAccessTarget,Helper,Discovery extends DesktopAccessDiscovery,Bridge extends DesktopAccessBridge,Stage extends DesktopScreenshotStage> = WindowsDeviceAccessPorts<Target,Helper>|MacosDeviceAccessPorts<Target,Discovery,Bridge,Stage>;

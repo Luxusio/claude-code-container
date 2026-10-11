@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const fixture = vi.hoisted(() => ({ failure: false, screenshotPath: "" }));
+const fixture = vi.hoisted(() => ({ failure: false, missingOutput: false, screenshotPath: "" }));
 vi.mock("fs", async (original) => {
     const actual = await original<typeof import("fs")>();
     return {
@@ -21,6 +21,7 @@ vi.mock("@ccc/device-lab/providers/commands.mjs", async (original) => {
             expect(timeoutMs).toBe(30_000);
             fixture.screenshotPath = args[2];
             if (fixture.failure) return { status: 7, stdout: "", stderr: "capture unavailable" };
+            if (fixture.missingOutput) return { status: 0, stdout: "", stderr: "" };
             fs.writeFileSync(fixture.screenshotPath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 42]));
             return { status: 0, stdout: "", stderr: "" };
         },
@@ -29,7 +30,7 @@ vi.mock("@ccc/device-lab/providers/commands.mjs", async (original) => {
 import { existsSync } from "node:fs";
 import { currentDisplayTarget, handleDisplayTool } from "@ccc/device-lab/providers/display/x11.mjs";
 
-beforeEach(() => { fixture.failure = false; fixture.screenshotPath = ""; });
+beforeEach(() => { fixture.failure = false; fixture.missingOutput = false; fixture.screenshotPath = ""; });
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("actual X11 display access facade", () => {
@@ -53,6 +54,15 @@ describe("actual X11 display access facade", () => {
         expect(result).toMatchObject({ isError: true });
         expect(JSON.stringify(result)).toContain("capture unavailable");
         expect(fixture.screenshotPath).not.toBe("");
+        expect(existsSync(dirname(fixture.screenshotPath))).toBe(false);
+    });
+
+    it("refuses a successful capture without output and disposes the allocated directory", async () => {
+        fixture.missingOutput = true;
+        const result = await handleDisplayTool("display_screenshot", {});
+        expect(result).toEqual({ isError: true, content: [{ type: "text", text: "x11-screenshot-output-missing" }] });
+        expect(fixture.screenshotPath).not.toBe("");
+        expect(existsSync(fixture.screenshotPath)).toBe(false);
         expect(existsSync(dirname(fixture.screenshotPath))).toBe(false);
     });
 });
