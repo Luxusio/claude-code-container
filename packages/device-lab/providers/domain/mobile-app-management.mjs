@@ -14,8 +14,7 @@
  */
 /** @typedef {'emulator'|'physical'} AndroidAppVariant */
 /** @typedef {{status:number|null,stdout?:string,stderr?:string,error?:{message?:string},signal?:string|null}} MobileCommandReceipt */
-/** @typedef {
- * {kind:'install',path:string|undefined,replace:boolean,helperTimeoutMs?:unknown}
+/** @typedef {{kind:'install',path:string|undefined,replace:boolean,helperTimeoutMs?:unknown}
  * |{kind:'launch-component',component:string}
  * |{kind:'launch-package',packageName:string}
  * |{kind:'uninstall',packageName:string}
