@@ -269,7 +269,7 @@ it("public Claude startup verifies the final container and runs without Codex Ha
     expect(f.command).toHaveBeenCalledOnce();
     expect(f.command.mock.calls[0][1]).toContain("final-id");
     const args = f.command.mock.calls[0][1] as string[];
-    expect(args.slice(args.indexOf("final-id") + 1)).toEqual(["/home/ccc/.local/bin/claude", ...argumentsToClaude]);
+    expect(args.slice(args.indexOf("final-id") + 1)).toEqual(["/home/ccc/.local/bin/claude", "--dangerously-skip-permissions", ...argumentsToClaude]);
     expect(f.harness).not.toHaveBeenCalled();
     expect(f.events.indexOf("command")).toBeGreaterThan(f.events.indexOf("claude"));
 });

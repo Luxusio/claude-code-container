@@ -173,7 +173,7 @@ describe("actual creation application through native composition", () => {
         native.spawn.mockReturnValue(result(0, stdout));
         const f = fixture();
         expect(() => f.lifecycle.run(request)).toThrow("container runtime did not return an exact 64-hex container ID");
-        expect(f.order).toEqual(["lock:mount-physical", "args", "project", "device", "filesystem", "project", "device", "filesystem"]);
+        expect(f.order).toEqual(["lock:mount-physical", "warning-fact", "args", "project", "device", "filesystem", "project", "device", "filesystem"]);
         expect(f.ports.verifyCreated).not.toHaveBeenCalled();
         expect(native.spawn).toHaveBeenCalledTimes(1);
     });

@@ -19,9 +19,12 @@ vi.mock("fs", async original => ({
 vi.mock("os", async original => ({
     ...await original<typeof import("node:os")>(), homedir: () => "/fixture/home",
 }));
-vi.mock("../../container-runtime.js", () => ({
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(),
     runtimeCli: native.runtime, isContainerHostRemote: native.remote,
-    getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false }),
+    getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false, socketPath: "/var/run/docker.sock" }),
+    containerManagerSocketPath: () => "/var/run/docker.sock",
+    containerManagerSocketMountArgs: () => ["-v", "/var/run/docker.sock:/var/run/docker.sock"],
     runtimeExtraRunArgs: () => [],
     bindMountArgs: (host: string, container: string, options?: { readonly?: boolean }) => ["-v", `${host}:${container}${options?.readonly ? ":ro" : ""}`],
 }));
