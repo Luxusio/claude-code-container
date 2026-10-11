@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
-const native = vi.hoisted(() => ({ spawn: vi.fn(), trusted: vi.fn(), snapshotState: undefined as unknown, writeState: undefined as unknown }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), trusted: vi.fn(), snapshotState: undefined as unknown, writeState: undefined as unknown, handlers: [] as unknown[] }));
 vi.mock("child_process", () => ({ spawn: native.spawn, spawnSync: () => { throw new Error("No native command"); } }));
 vi.mock("./../../utils.js", () => ({ CLIPBOARD_FILES_CONTAINER_DIR: "/clipboard-files" }));
 vi.mock("./../../home-layout.js", () => ({ clipboardFilesDir: () => "/private/files", clipboardPortFile: () => "/private/port", clipboardStartingLock: () => "/private/lock", helperBinDir: () => "/private/bin", locksDir: () => "/private/locks" }));
@@ -10,7 +11,7 @@ vi.mock("./../../clipboard-bind-users.js", () => ({ clipboardPortMayHaveBindUser
 vi.mock("./../../session-lock-liveness.js", () => ({ sessionLockLiveness: () => { throw new Error("No native session probe"); } }));
 vi.mock("@ccc/device-lab/windows-system-powershell.js", () => ({ canonicalWindowsPowerShellPath: native.trusted,
     hiddenWindowsPowerShellArgs: (args: string[]) => ["-WindowStyle", "Hidden", ...args] }));
-vi.mock("http", () => ({ request: () => { throw new Error("No actual network"); }, createServer: () => { throw new Error("No actual server"); } }));
+vi.mock("http", () => ({ request: () => { throw new Error("No actual network"); }, createServer: (handler: unknown) => { native.handlers.push(handler); return new EventEmitter(); } }));
 vi.mock("fs", async actual => ({ ...await actual<typeof import("node:fs")>(), readFileSync: (path: string) => {
     if (path.endsWith(".js")) return "fixture-policy"; if (path === "/proc/version") return "fixture linux"; throw new Error("No native read");
 }, existsSync: () => false, mkdirSync: () => { throw new Error("No native mkdir"); }, copyFileSync: () => { throw new Error("No native copy"); } }));
@@ -31,7 +32,7 @@ function writer() {
 }
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(async () => {
-    vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers(); child = writer();
+    vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers(); native.handlers.length = 0; child = writer();
     native.spawn.mockReturnValue(child); native.trusted.mockReturnValue("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
     mod = await import("../../clipboard-server.js");
@@ -39,9 +40,8 @@ beforeEach(async () => {
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); Object.defineProperty(process, "platform", originalPlatform); });
 
 describe("Clipboard text-write actual public native facade", () => {
-    it("exports the direct named async binding and composes the exact snapshot state", () => {
-        expect(mod.writeClipboardText.name).toBe("writeClipboardText"); expect(mod.writeClipboardText.length).toBe(2);
-        expect(mod.writeClipboardText.constructor.name).toBe("AsyncFunction"); expect(native.writeState).toBe(native.snapshotState);
+    it("shares cache generation with the snapshot binding", () => {
+        expect(native.writeState).toBe(native.snapshotState);
     });
     it.each(["linux-x11", "linux-wayland", "darwin"] as const)("preserves fixed command, UTF8 bytes, hidden spawn and native listeners on %s", async platform => {
         const text = "\uFEFF한국 😀\r\n"; const promise = mod.writeClipboardText(text, platform);
@@ -51,7 +51,6 @@ describe("Clipboard text-write actual public native facade", () => {
         const options = native.spawn.mock.calls[0][2]; expect(options).toMatchObject({ stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
         if (platform === "darwin") expect(options.env).toEqual({ ...process.env, LC_CTYPE: "UTF-8" }); else expect(options).not.toHaveProperty("env");
         expect(child.stdin.end).toHaveBeenCalledWith(Buffer.from(text, "utf8"));
-        expect(child.listenerCount("error")).toBe(1); expect(child.listenerCount("exit")).toBe(1); expect(child.stdin.listenerCount("error")).toBe(1);
         child.emit("exit", 0); await expect(promise).resolves.toBeUndefined(); expect(vi.getTimerCount()).toBe(0);
     });
     it("uses the trusted Windows path and ASCII PowerShell with exact UTF8 base64 data", async () => {
@@ -76,12 +75,48 @@ describe("Clipboard text-write actual public native facade", () => {
         expect(child.kill).toHaveBeenCalledWith("SIGKILL"); expect(vi.getTimerCount()).toBe(0);
         expect((native.writeState as { generation: number }).generation).toBe(2);
     });
-    it("bounds timeout with the original 5000ms and propagates raw synchronous spawn failure", async () => {
+    it("bounds timeout at 5000ms and reports synchronous spawn failure without exposing its carrier", async () => {
         const promise = mod.writeClipboardText("text", "linux-wayland"); const caught = promise.catch(e => e);
         await vi.advanceTimersByTimeAsync(4999); expect(child.kill).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(1); expect((await caught).message).toBe("Clipboard write failed"); expect(child.kill).toHaveBeenCalledWith("SIGKILL");
         const raw = { raw: "spawn" }; native.spawn.mockImplementation(() => { throw raw; });
-        await expect(mod.writeClipboardText("text", "linux-x11")).rejects.toBe(raw);
+        await expect(mod.writeClipboardText("text", "linux-x11")).rejects.toThrow("Clipboard write failed");
         expect((native.writeState as { generation: number }).generation).toBe(4);
+    });
+    it.each(["error", "nonzero", "unknown"] as const)("finishes a failed native %s observation and clears its timer", async failure => {
+        const promise = mod.writeClipboardText("text", "linux-x11");
+        const observed = promise.catch(error => error);
+        if (failure === "error") child.emit("error", new Error("native detail"));
+        else child.emit("exit", failure === "nonzero" ? 1 : null);
+        expect((await observed).message).toBe("Clipboard write failed");
+        expect(vi.getTimerCount()).toBe(0);
+        expect((native.writeState as { generation: number }).generation).toBe(2);
+    });
+    it.each(["timeout", "input"] as const)("settles %s failure even when owned writer termination throws", async failure => {
+        child.kill.mockImplementation(() => { throw new Error("signal unavailable"); });
+        const promise = mod.writeClipboardText("text", "linux-x11");
+        const observed = promise.catch(error => error);
+        if (failure === "timeout") await vi.advanceTimersByTimeAsync(5000);
+        else child.stdin.emit("error", new Error("input failed"));
+        expect((await observed).message).toBe("Clipboard write failed");
+        expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+        expect(vi.getTimerCount()).toBe(0);
+        expect((native.writeState as { generation: number }).generation).toBe(2);
+    });
+    it.each([0, 1])("waits for native exit %i before acknowledging the HTTP write", async exitCode => {
+        mod.createClipboardServer("secret", "linux-x11");
+        const req = Object.assign(new EventEmitter(), { url: "/clipboard/text", method: "POST", destroy: vi.fn(),
+            headers: { authorization: "Bearer secret", "content-type": "text/plain;charset=utf-8" } });
+        const res = Object.assign(new EventEmitter(), { status: 0, body: undefined as unknown, headersSent: false,
+            writeHead(status: number) { this.status = status; this.headersSent = true; }, end(body?: unknown) { this.body = body; } });
+        const done = (native.handlers[0] as (req: IncomingMessage, res: ServerResponse) => Promise<void>)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+        req.emit("data", Buffer.from("private clipboard text")); req.emit("end");
+        await Promise.resolve();
+        expect(res.status).toBe(0);
+        child.emit("exit", exitCode);
+        await done;
+        expect(res.status).toBe(exitCode === 0 ? 204 : 500);
+        expect(res.body).toBe(exitCode === 0 ? undefined : "Clipboard upload failed");
+        expect((native.writeState as { generation: number }).generation).toBe(2);
     });
 });

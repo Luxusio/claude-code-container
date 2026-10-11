@@ -12,19 +12,19 @@ const contracts: [State, NoByteMethods] = [true, true]; void contracts;
 function compileContracts(ports: ClipboardSnapshotPorts<Bytes>, bytes: Bytes) {
     const state = createClipboardSnapshotState<Bytes>(); const read = createClipboardSnapshotReader(ports, state);
     const promise: Promise<ClipboardSnapshot<Bytes>> = read("linux-wayland", true);
-    const effect: undefined = invalidateClipboardCache(state);
+    const effect: void = invalidateClipboardCache(state);
     const opaque: Bytes | null = state.cache?.imagePng ?? bytes;
     void [promise, effect, opaque];
     // @ts-expect-error State is explicit and shared by the composition root.
     createClipboardSnapshotReader(ports);
     // @ts-expect-error Native marker reads are asynchronous.
     createClipboardSnapshotReader({ ...ports, readChangeMarker: () => "marker" }, state);
-    // @ts-expect-error A complete native snapshot workflow cannot replace target facts.
-    createClipboardSnapshotReader({ ...ports, readTargets: async () => [] }, state);
+    // @ts-expect-error Capture facts include both normalized file groups.
+    createClipboardSnapshotReader({ ...ports, capture: async () => ({ kind: "captured", snapshot: {} }) }, state);
     // @ts-expect-error File-copy effects retain synchronous byte results.
     createClipboardSnapshotReader({ ...ports, copyImageFile: async () => bytes }, state);
     // @ts-expect-error Concrete bytes stay opaque and cannot silently become strings.
-    createClipboardSnapshotReader({ ...ports, readText: () => "text" }, state);
+    createClipboardSnapshotReader({ ...ports, readImageFile: () => "text" }, state);
     // @ts-expect-error Native read failures must supply the concrete error factory.
     createClipboardSnapshotReader({ ...ports, createReadError: undefined }, state);
     // @ts-expect-error Snapshot platform is a closed public union.
@@ -41,6 +41,6 @@ void compileContracts;
 describe("Clipboard snapshot type contract", () => {
     it("creates one explicit empty state and invalidates it synchronously", () => {
         const state = createClipboardSnapshotState<Bytes>(); expect(state.cache).toBeNull(); expect(state.generation).toBe(0);
-        expect(invalidateClipboardCache(state)).toBeUndefined(); expect(state.generation).toBe(1);
+        invalidateClipboardCache(state); expect(state.generation).toBe(1);
     });
 });

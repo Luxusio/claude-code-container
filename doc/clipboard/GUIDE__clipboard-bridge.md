@@ -11,17 +11,19 @@ deliberate compatibility-version change.
 
 | Seam | Application owns | Native facade owns |
 | --- | --- | --- |
-| snapshot | queue/cache/generation, marker coherence, TTL, platform read selection, Darwin/Linux fallback ordering, two-pass file selection | helper frames/processes, commands, encodings/parsers, individual capture facts, local file read/copy and paths |
-| text write | validation, shared-cache invalidation, write completion/timeout decisions and callback settlement | UTF-8/base64, fixed platform commands/environment, process/listener/input/termination/timer effects |
+| snapshot | queue/cache/generation, marker coherence, TTL, image selection and ordered file-group fallback | helper frames/processes, commands, encodings/parsers, normalized capture/marker facts and file paths, local file read/copy |
+| text write | validation, shared-cache invalidation, five-second budget and completion policy | UTF-8/base64, fixed platform commands/environment, process/listener/input/termination/timer handling and finite completion facts |
 | server lifecycle | authenticated reuse, contention/recovery/grace, upgrade deferral, shutdown acknowledgment, successor polling and synchronous retirement decisions | home/port paths, record parsing, lock identity/authority, native bind observations, HTTP health/shutdown, fixed detached launch/unref |
 
-Domain and ports modules describe Clipboard values and required primitive
+Domain and ports modules describe Clipboard values and finite native
 facts/effects. Application imports domain, ports and its own helpers. It does
 not import OS, fs, child_process or HTTP types, concrete adapters, environment,
 module metadata or real clocks/timers. Bytes are opaque generic values; Buffer
-references and codecs stay at the facade. A narrow Windows read-all capture
-adapter remains native because it performs one framed capture/parse transaction.
-Darwin business fallbacks and cache/coherence decisions execute in application.
+references and codecs stay at the facade. Native capture performs one transaction
+without caching, retrying or reading clocks. Windows framed parsing and
+Darwin helper/legacy/pngpaste selection stay native, as do Linux target queries,
+URI parsing and MIME decoding. Cache, coherence, generation replay and image
+file selection execute in application.
 Do not expose a whole old read/cache/write/ensure/retire flow as a port.
 
 The facade creates one explicit snapshot state and supplies it to both snapshot
@@ -31,29 +33,37 @@ construct explicit byte/fact/clock ports without modifying HOME. Adapter tests
 use private homes and simulated native facts, closing owned servers/children
 before restoring facts or removing fixtures.
 
-The cached-read binding is ordinary/nonasync: it returns the original queue
-`.then` promise and separately stores `.catch` recovery. A generation change
-repeats a successfully completed stale read before publishing or returning it;
+The cached-read binding serializes transactions and recovers its queue after
+failure. A generation change repeats a successfully completed stale read before publishing or returning it;
 an already failed read remains failed. Native frame, marker and coherence
-failures use the supplied native ClipboardReadError factory so the existing HTTP
-`instanceof` mapping remains 503. A successful empty snapshot remains distinct.
+failures become unavailable observations and use the supplied native
+ClipboardReadError factory so HTTP remains 503. A successful empty snapshot
+remains distinct; failed Linux target queries retain their empty-data policy.
+Unexpected native exceptions retain HTTP 500 and do not become unavailable or
+negative-cache entries. An absent Darwin helper uses the legacy capture; a
+present but failed helper does not. A missing Darwin capture marker is accepted
+only when both surrounding marker observations are null.
 Positive marker cache and short negative/no-marker TTL rules retain their exact
 wall-clock checks and capture timestamps.
 
-Image fallback selects both optional read/copy callbacks once in the original
-getter order, invokes them as bare callbacks, and tries every byte read before
-any copy. Custom truthy empty byte objects retain their original behavior;
-default native readers still require nonempty bytes. Preserve target order,
-PNG/BMP read order, markers, byte references and callback counts.
+Direct image bytes have priority. Next resolve the file-reference group, then
+the text-path group; within each group try every byte read before any copy.
+Do not flatten the groups into one pass. Linux selects the first URI target
+with nonempty parsed paths even if those paths later fail. Resolve file
+fallback inside each capture attempt before the final marker observation.
+If all image fallbacks fail, preserve the ordinary captured text. Native
+readers require nonempty file bytes. Linux snapshots retain the initial-read
+timestamp; coherent marker snapshots use their completion timestamp.
 
-The facade directly exports the named async application write and ensure
-bindings. Adding an async forwarding wrapper changes promise identity and is
-not part of this boundary. Writes validate before native writer selection and
-invalidation, invalidate before launch and in finally, and preserve listener/
-timer registration order. A callback's original kill/clear failure can escape;
-do not add rescue or change settled state. Required synchronous ignored-effect
-ports return concrete undefined, rejecting Promise implementations. Native
-adapters discard only returns that the original operation ignored.
+Writer preparation yields unavailable or a ready native effect. Validate text
+before preparation or invalidation; unavailable preparation preserves cache.
+Executed writes invalidate before execution and in finally. Native execution
+returns written or failed and owns its listener, stdin, timer and termination
+handling. Timeout/input failures finish even when termination throws; failure
+does not prove that the child exited. HTTP acknowledges a write only after
+completion, returning 204 for success and the existing 500 for native failure.
+Function/Promise identity, getter ordering and ignored undefined returns are
+not architecture contracts.
 
 Ensure preserves its existing wall-clock deadlines and lock order. Recovery
 grace remains before try/finally: rejection does not release that recovered lock.
@@ -83,9 +93,10 @@ Evidence must identify what executes. Direct core/facade tests with simulated
 native facts prove those contracts; actual private HTTP, shell, X11, emitted
 process and descriptor fixtures prove their exercised boundaries. Replicas,
 export-shape checks, permissive error matchers and skipped suites do not prove
-whole operations. Preserve existing assertions/skips and keep native desktop
-acceptance separate. The task's 42-row source inventory records coverage
-destinations and quality grades without turning an unexecuted row into PASS.
+whole operations. Keep meaningful byte, coherence, cache generation, native
+failure and public HTTP tests, and keep native desktop acceptance separate.
+Use the existing full consumer suites without verifier self-tests or frozen
+implementation baselines.
 
 Rollback restores a coherent facade/import/core/test/doc checkpoint and rebuilds
 and assembles before replacing a payload. A code revert does not stop or revert

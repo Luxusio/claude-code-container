@@ -3,8 +3,8 @@ import { CLIPBOARD_WRITE_TIMEOUT_MS, isValidClipboardText } from "../../domain/c
 import type { ClipboardTextWritePorts } from "../../ports/clipboard/text-write.js";
 import { invalidateClipboardCache } from "./snapshot.js";
 
-export function createClipboardTextWriter<Bytes extends ClipboardBytes, PreparedWriter, Writer, Timer>(
-    ports: ClipboardTextWritePorts<Bytes, PreparedWriter, Writer, Timer>,
+export function createClipboardTextWriter<Bytes extends ClipboardBytes>(
+    ports: ClipboardTextWritePorts<Bytes>,
     state: ClipboardSnapshotState<Bytes>,
 ) {
     async function writeClipboardText(text: string, plat: ClipboardPlatform): Promise<void> {
@@ -13,30 +13,11 @@ export function createClipboardTextWriter<Bytes extends ClipboardBytes, Prepared
             throw new Error("Invalid clipboard text");
         }
         const prepared = ports.prepareWriter(bytes, plat);
+        if (prepared.kind === "unavailable") throw new Error("Clipboard writer unavailable");
         invalidateClipboardCache(state);
         try {
-            await new Promise<void>((resolve, reject) => {
-                const child = ports.launchWriter(prepared, plat);
-                let settled = false;
-                const finish = (success: boolean) => {
-                    if (settled) return;
-                    settled = true;
-                    ports.cancelReadTimer(timer);
-                    if (success) resolve();
-                    else reject(new Error("Clipboard write failed"));
-                };
-                const timer = ports.scheduleTimeout(() => {
-                    ports.killWriter(child);
-                    finish(false);
-                }, CLIPBOARD_WRITE_TIMEOUT_MS);
-                ports.onWriterError(child, () => finish(false));
-                ports.onWriterExit(child, (code) => finish(code === 0));
-                ports.onInputError(child, () => {
-                    ports.killWriter(child);
-                    finish(false);
-                });
-                ports.endInput(child, prepared);
-            });
+            const result = await prepared.write(CLIPBOARD_WRITE_TIMEOUT_MS);
+            if (result.kind === "failed") throw new Error("Clipboard write failed");
         } finally {
             invalidateClipboardCache(state);
         }

@@ -1,93 +1,110 @@
 import { describe, expect, it } from "vitest";
 import { createClipboardTextWriter } from "../../application/clipboard/text-write.js";
 import { createClipboardSnapshotReader, createClipboardSnapshotState } from "../../application/clipboard/snapshot.js";
-import type { ClipboardTextWritePorts } from "../../ports/clipboard/text-write.js";
+import type { ClipboardTextWritePorts, ClipboardTextWriteResult } from "../../ports/clipboard/text-write.js";
 import type { ClipboardSnapshotPorts } from "../../ports/clipboard/snapshot.js";
+import type { CapturedClipboardSnapshot } from "../../domain/clipboard/snapshot.js";
 
 function fixture() {
-    const calls: unknown[] = []; const prepared: { input: Buffer } = { input: Buffer.alloc(0) }; const child = { opaque: "writer" }; const timer = { opaque: "timer" };
-    const state = createClipboardSnapshotState<Buffer>(); state.cache = { timestamp: 0, targets: [], text: null, imagePng: null, imageBmp: null };
-    let timeout!: () => void; let error!: () => void; let exit!: (code: number | null) => void; let inputError!: () => void;
-    const ports: ClipboardTextWritePorts<Buffer, typeof prepared, typeof child, typeof timer> = {
-        encodeText: text => { calls.push("encode"); return Buffer.from(text); }, decodeText: bytes => { calls.push("decode"); return bytes.toString(); },
-        prepareWriter: (bytes, platform) => { calls.push(["prepare", bytes, platform, state.generation]); prepared.input = bytes; return prepared; },
-        launchWriter: (value, platform) => { calls.push(["launch", value, platform, state.generation, state.cache]); return child; },
-        scheduleTimeout: (callback, ms) => { calls.push(["schedule", ms]); timeout = callback; return timer; },
-        cancelReadTimer: value => { calls.push(["clear", value]); return undefined; },
-        onWriterError: (value, callback) => { calls.push(["on-error", value]); error = callback; return undefined; },
-        onWriterExit: (value, callback) => { calls.push(["on-exit", value]); exit = callback; return undefined; },
-        onInputError: (value, callback) => { calls.push(["on-input-error", value]); inputError = callback; return undefined; },
-        endInput: (value, data) => { calls.push(["end", value, data]); return undefined; },
-        killWriter: value => { calls.push(["kill", value]); return undefined; },
+    const calls: unknown[] = [];
+    const state = createClipboardSnapshotState<Buffer>();
+    state.cache = { timestamp: 0, targets: [], text: null, imagePng: null, imageBmp: null };
+    let complete!: (result: ClipboardTextWriteResult) => void;
+    let reject!: (error: unknown) => void;
+    const pending = new Promise<ClipboardTextWriteResult>((resolve, fail) => { complete = resolve; reject = fail; });
+    const ports: ClipboardTextWritePorts<Buffer> = {
+        encodeText: text => { calls.push("encode"); return Buffer.from(text); },
+        decodeText: bytes => { calls.push("decode"); return bytes.toString(); },
+        prepareWriter: (bytes, platform) => {
+            calls.push(["prepare", bytes, platform, state.generation]);
+            return { kind: "ready", write: timeoutMs => {
+                calls.push(["write", timeoutMs, state.generation, state.cache]);
+                return pending;
+            } };
+        },
     };
-    return { calls, ports, state, prepared, child, timer, write: createClipboardTextWriter(ports, state),
-        timeout: () => timeout(), error: () => error(), exit: (code: number | null) => exit(code), inputError: () => inputError() };
+    return { calls, ports, state, complete, reject, write: createClipboardTextWriter(ports, state) };
 }
 
 describe("Clipboard text-write application transaction", () => {
-    it("validates before preparing, invalidates before launch and registers bounded callbacks in order", async () => {
-        const f = fixture(); const text = "\uFEFF한글 😀\r\n"; const result = f.write(text, "darwin");
-        expect(f.write.name).toBe("writeClipboardText"); expect(f.write.length).toBe(2); expect(f.write.constructor.name).toBe("AsyncFunction");
-        expect(f.calls).toEqual(["encode", "decode", ["prepare", Buffer.from(text), "darwin", 0],
-            ["launch", f.prepared, "darwin", 1, null], ["schedule", 5000], ["on-error", f.child], ["on-exit", f.child], ["on-input-error", f.child], ["end", f.child, f.prepared]]);
-        expect(f.state.generation).toBe(1); f.exit(0); await expect(result).resolves.toBeUndefined();
-        expect(f.calls.at(-1)).toEqual(["clear", f.timer]); expect(f.state.generation).toBe(2); expect(f.state.cache).toBeNull();
+    it("admits faithful UTF8 before preparing and invalidates around bounded execution", async () => {
+        const f = fixture(); const text = "\uFEFF한글 😀\r\n";
+        const result = f.write(text, "darwin");
+        expect(f.calls).toEqual(["encode", "decode", ["prepare", Buffer.from(text), "darwin", 0], ["write", 5000, 1, null]]);
+        expect(f.state.generation).toBe(1);
+        f.complete({ kind: "written" }); await result;
+        expect(f.state.generation).toBe(2); expect(f.state.cache).toBeNull();
     });
-    it.each(["nul", "oversize", "lossy"])("rejects %s text before preparation or invalidation", async reason => {
+    it.each(["nul", "oversize", "lossy", "unpaired-surrogate"])("rejects %s text before preparation or invalidation", async reason => {
         const f = fixture(); const cached = f.state.cache;
         if (reason === "lossy") f.ports.decodeText = () => "replacement";
-        const text = reason === "nul" ? "a\0b" : reason === "oversize" ? "x".repeat(1048577) : "valid";
+        const text = reason === "nul" ? "a\0b" : reason === "oversize" ? "x".repeat(1048577) : reason === "unpaired-surrogate" ? "\uD800" : "valid";
         await expect(f.write(text, "linux-x11")).rejects.toThrow("Invalid clipboard text");
-        expect(f.calls.some(call => Array.isArray(call))).toBe(false); expect(f.state.generation).toBe(0); expect(f.state.cache).toBe(cached);
+        expect(f.calls.some(call => Array.isArray(call))).toBe(false);
+        expect(f.state.generation).toBe(0); expect(f.state.cache).toBe(cached);
     });
-    it.each(["", "x".repeat(1048576)])("accepts empty and exactly bounded UTF8 text", async text => {
-        const f = fixture(); const result = f.write(text, "linux-x11"); f.exit(0); await result;
-        expect(f.prepared.input.length).toBe(Buffer.byteLength(text)); expect(f.state.generation).toBe(2);
+    it.each([
+        { name: "empty", text: "" },
+        { name: "ASCII boundary", text: "x".repeat(1048576) },
+        { name: "multibyte boundary", text: "é".repeat(524288) },
+    ])("accepts $name UTF8 text", async ({ text }) => {
+        const f = fixture(); const result = f.write(text, "linux-x11");
+        expect(f.calls).toContainEqual(["prepare", Buffer.from(text), "linux-x11", 0]);
+        f.complete({ kind: "written" }); await result; expect(f.state.generation).toBe(2);
     });
-    it("keeps writer absence before invalidation and preserves raw synchronous launch rejection with final invalidation", async () => {
-        const absent = fixture(); const failure = { raw: "unavailable writer" }; const cached = absent.state.cache;
-        absent.ports.prepareWriter = () => { throw failure; };
-        await expect(absent.write("ok", "unsupported")).rejects.toBe(failure); expect(absent.state.generation).toBe(0); expect(absent.state.cache).toBe(cached);
-        const failed = fixture(); failed.ports.launchWriter = () => { throw failure; };
-        await expect(failed.write("ok", "windows")).rejects.toBe(failure); expect(failed.state.generation).toBe(2); expect(failed.state.cache).toBeNull();
+    it("counts the UTF8 byte bound rather than characters", async () => {
+        const f = fixture(); await expect(f.write("é".repeat(524289), "darwin")).rejects.toThrow("Invalid clipboard text");
+        expect(f.state.generation).toBe(0); expect(f.calls).toEqual(["encode"]);
     });
-    it.each(["writer-error", "exit-one", "exit-null", "input-error", "timeout"])("settles %s once and kills only input failure or timeout", async event => {
-        const f = fixture(); const result = f.write("text", "linux-wayland"); const caught = result.catch(e => e);
-        if (event === "writer-error") f.error(); else if (event === "exit-one") f.exit(1); else if (event === "exit-null") f.exit(null);
-        else if (event === "input-error") f.inputError(); else f.timeout();
-        expect((await caught).message).toBe("Clipboard write failed");
-        const cleared = f.calls.filter(call => Array.isArray(call) && call[0] === "clear"); expect(cleared).toHaveLength(1);
-        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "kill")).toHaveLength(event === "input-error" || event === "timeout" ? 1 : 0);
-        f.exit(0); f.error(); expect(f.calls.filter(call => Array.isArray(call) && call[0] === "clear")).toHaveLength(1);
-        expect(f.state.generation).toBe(2);
+    it("keeps unavailable preparation before invalidation", async () => {
+        const f = fixture(); const cached = f.state.cache;
+        f.ports.prepareWriter = () => ({ kind: "unavailable" });
+        await expect(f.write("ok", "unsupported")).rejects.toThrow("Clipboard writer unavailable");
+        expect(f.state.generation).toBe(0); expect(f.state.cache).toBe(cached);
     });
-    it("lets input kill errors escape the callback without settling, then accepts later writer exit", async () => {
-        const f = fixture(); const failure = new Error("kill failed"); f.ports.killWriter = () => { throw failure; };
-        const result = f.write("text", "linux-x11"); expect(() => f.inputError()).toThrow(failure);
-        expect(f.state.generation).toBe(1); expect(f.calls.filter(call => Array.isArray(call) && call[0] === "clear")).toHaveLength(0);
-        f.exit(0); await result; expect(f.state.generation).toBe(2);
+    it("propagates unexpected preparation failures without invalidation", async () => {
+        const f = fixture(); const cached = f.state.cache; const failure = new Error("preparation fault");
+        f.ports.prepareWriter = () => { throw failure; };
+        await expect(f.write("ok", "windows")).rejects.toBe(failure);
+        expect(f.state.generation).toBe(0); expect(f.state.cache).toBe(cached);
     });
-    it("keeps a clear-timeout throw outside settlement and ignores subsequent exit callbacks", async () => {
-        const f = fixture(); const failure = new Error("clear failed"); f.ports.cancelReadTimer = () => { throw failure; };
-        const result = f.write("text", "linux-x11"); let settled = false; void result.then(() => { settled = true; }, () => { settled = true; });
-        expect(() => f.exit(0)).toThrow(failure); f.exit(1); f.error(); await Promise.resolve();
-        expect(settled).toBe(false); expect(f.state.generation).toBe(1);
-        // No native handle is created by this fixture; the unresolved Promise pins the existing callback contract.
+    it("rejects failed completion and invalidates any intervening cache", async () => {
+        const f = fixture(); const result = f.write("text", "linux-wayland");
+        f.state.cache = { timestamp: 1, targets: ["text/plain"], text: Buffer.from("old"), imagePng: null, imageBmp: null };
+        f.complete({ kind: "failed" }); await expect(result).rejects.toThrow("Clipboard write failed");
+        expect(f.state.generation).toBe(2); expect(f.state.cache).toBeNull();
     });
-    it("invalidates the exact shared read state so an in-flight snapshot cannot publish pre-write bytes", async () => {
-        const f = fixture(); let resolve!: (value: { targets: string[]; text: Buffer; imagePng: null; imageBmp: null; marker: string }) => void;
-        const gate = new Promise<{ targets: string[]; text: Buffer; imagePng: null; imageBmp: null; marker: string }>(yes => { resolve = yes; });
-        let captures = 0; const latest = Buffer.from("new");
-        const forbidden = () => { throw new Error("Unexpected snapshot effect"); };
-        const ports: ClipboardSnapshotPorts<Buffer> = { now: () => 1, readChangeMarker: async () => "m",
-            readWindowsCapture: () => ++captures === 1 ? gate : Promise.resolve({ targets: ["text/plain"], text: latest, imagePng: null, imageBmp: null, marker: "m" }),
-            readDarwinFrame: forbidden, parseDarwinCapture: forbidden, readDarwinLegacyImage: forbidden, readDarwinLegacyText: forbidden,
-            readDarwinPngpaste: forbidden, parseAppleScriptImage: forbidden, readDarwinFileReferenceData: forbidden,
-            readLinuxUriData: forbidden, decodeText: forbidden, parseFileUriList: forbidden, parseImagePathText: forbidden,
-            readTargets: forbidden, readText: forbidden, readImage: forbidden, readImageFile: forbidden, copyImageFile: forbidden, createReadError: forbidden };
-        const read = createClipboardSnapshotReader(ports, f.state)("windows", true); await Promise.resolve(); await Promise.resolve();
-        const write = f.write("new", "windows"); f.exit(0); await write;
-        resolve({ targets: ["text/plain"], text: Buffer.from("old"), imagePng: null, imageBmp: null, marker: "m" });
+    it.each(["synchronous", "asynchronous"])("finally invalidates after an unexpected %s execution failure", async mode => {
+        const f = fixture(); const failure = new Error("execution fault");
+        if (mode === "synchronous") f.ports.prepareWriter = () => ({ kind: "ready", write: () => { throw failure; } });
+        const result = f.write("ok", "windows");
+        if (mode === "asynchronous") f.reject(failure);
+        await expect(result).rejects.toBe(failure);
+        expect(f.state.generation).toBe(2); expect(f.state.cache).toBeNull();
+    });
+    it.each(["written", "failed"] as const)("suppresses an in-flight pre-write snapshot after %s completion", async kind => {
+        const f = fixture(); let release!: (snapshot: CapturedClipboardSnapshot<Buffer>) => void;
+        let started!: () => void;
+        const captureStarted = new Promise<void>(resolve => { started = resolve; });
+        const gate = new Promise<CapturedClipboardSnapshot<Buffer>>(resolve => { release = resolve; });
+        const latest = Buffer.from("new"); let captures = 0;
+        const ports: ClipboardSnapshotPorts<Buffer> = {
+            now: () => 1,
+            readChangeMarker: async () => ({ kind: "observed", marker: "m" }),
+            capture: async () => {
+                captures += 1; started();
+                const snapshot = captures === 1 ? await gate : { targets: ["text/plain"], text: latest, imagePng: null, imageBmp: null, marker: "m" };
+                return { kind: "captured", snapshot, fileReferences: [], textImagePaths: [] };
+            },
+            readImageFile: () => null, copyImageFile: () => null,
+            createReadError: () => new Error("snapshot unavailable"),
+        };
+        const read = createClipboardSnapshotReader(ports, f.state)("windows", true);
+        await captureStarted;
+        const write = f.write("new", "windows"); f.complete({ kind });
+        if (kind === "written") await write;
+        else await expect(write).rejects.toThrow("Clipboard write failed");
+        release({ targets: ["text/plain"], text: Buffer.from("old"), imagePng: null, imageBmp: null, marker: "m" });
         expect((await read).text).toBe(latest); expect(captures).toBe(2); expect(f.state.cache?.text).toBe(latest);
     });
 });

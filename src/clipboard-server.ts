@@ -35,6 +35,8 @@ import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@cc
 
 import { createClipboardSnapshotReader, createClipboardSnapshotState, buildImageFileClipboardFallbackFromPaths as buildImageFileFallback } from "./application/clipboard/snapshot.js";
 import { createClipboardTextWriter } from "./application/clipboard/text-write.js";
+import type { ClipboardCaptureObservation, ClipboardMarkerObservation } from "./ports/clipboard/snapshot.js";
+import type { ClipboardTextWriteResult, PreparedClipboardTextWrite } from "./ports/clipboard/text-write.js";
 import { createClipboardServerLifecycle } from "./application/clipboard/server-lifecycle.js";
 import { CACHE_TTL_MS, shouldReuseClipboardCache, buildImageMimeReadOrder, isSupportedImageTarget, type ClipboardPlatform, type ClipboardSnapshot as PolicyClipboardSnapshot } from "./domain/clipboard/snapshot.js";
 import { MAX_CLIPBOARD_TEXT_BYTES, CLIPBOARD_WRITE_TIMEOUT_MS } from "./domain/clipboard/text-write.js";
@@ -148,7 +150,7 @@ function canRunPowerShellExe(): boolean {
 
 /** Write text as stdin data, never as shell or PowerShell source. */
 interface PreparedClipboardTextWriter { command: string; args: string[]; input: Buffer }
-function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): PreparedClipboardTextWriter {
+function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): PreparedClipboardTextWriter | null {
     let command: string;
     let args: string[];
     let input = bytes;
@@ -168,7 +170,7 @@ function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): Pre
         case "windows":
         case "wsl": {
             const powershell = clipboardPowerShellPath();
-            if (!powershell) throw new Error("Clipboard writer unavailable");
+            if (!powershell) return null;
             command = powershell;
             args = hiddenWindowsPowerShellArgs([
                 "-STA", "-NoProfile", "-NonInteractive", "-Command",
@@ -183,10 +185,53 @@ function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): Pre
             break;
         }
         default:
-            throw new Error("Clipboard writer unavailable");
+            return null;
     }
 
     return { command, args, input };
+}
+
+function prepareNativeClipboardTextWrite(bytes: Buffer, plat: ClipboardPlatform): PreparedClipboardTextWrite {
+    const prepared = prepareClipboardTextWriter(bytes, plat);
+    if (!prepared) return { kind: "unavailable" };
+    return { kind: "ready", write: (timeoutMs) => executeClipboardTextWrite(prepared, plat, timeoutMs) };
+}
+
+function executeClipboardTextWrite(
+    prepared: PreparedClipboardTextWriter,
+    plat: ClipboardPlatform,
+    timeoutMs: number,
+): Promise<ClipboardTextWriteResult> {
+    return new Promise((resolve) => {
+        let child: ChildProcess;
+        try {
+            child = spawn(prepared.command, prepared.args, {
+                stdio: ["pipe", "ignore", "ignore"],
+                windowsHide: true,
+                ...(plat === "darwin" ? { env: { ...process.env, LC_CTYPE: "UTF-8" } } : {}),
+            });
+        } catch {
+            resolve({ kind: "failed" });
+            return;
+        }
+        let settled = false;
+        const finish = (success: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({ kind: success ? "written" : "failed" });
+        };
+        const terminate = () => {
+            if (settled) return;
+            finish(false);
+            try { child.kill("SIGKILL"); } catch { /* Failure still settles; termination is not proven. */ }
+        };
+        const timer = setTimeout(terminate, timeoutMs);
+        child.once("error", () => finish(false));
+        child.once("exit", (code) => finish(code === 0));
+        child.stdin!.on("error", terminate);
+        try { child.stdin!.end(prepared.input); } catch { terminate(); }
+    });
 }
 
 class ClipboardUploadError extends Error {
@@ -934,25 +979,100 @@ function readLinuxClipboardUriData(plat: ClipboardPlatform, target: string): { s
 
 
 
+async function observeClipboardChangeMarker(plat: ClipboardPlatform): Promise<ClipboardMarkerObservation> {
+    try {
+        return { kind: "observed", marker: await readClipboardChangeMarker(plat) };
+    } catch (error) {
+        if (error instanceof ClipboardReadError) return { kind: "unavailable" };
+        throw error;
+    }
+}
+
+function readClipboardFileReferences(plat: ClipboardPlatform, targets: string[]): string[] {
+    if (plat === "darwin") {
+        const result = readDarwinClipboardFileReferenceData();
+        return result.status === 0 ? result.stdout.toString("utf8").split(/\r?\n/).map(line => line.trim()).filter(Boolean) : [];
+    }
+    if (plat !== "linux-x11" && plat !== "linux-wayland") return [];
+    const candidates = [...new Set([
+        ...targets.filter(target => target === "text/uri-list" || target === "x-special/gnome-copied-files"),
+        "text/uri-list", "x-special/gnome-copied-files",
+    ])];
+    for (const target of candidates) {
+        const result = readLinuxClipboardUriData(plat, target);
+        if (result.status !== 0 || result.stdout.length === 0) continue;
+        const paths = parseClipboardFileUriList(result.stdout.toString("utf8"));
+        if (paths.length > 0) return paths;
+    }
+    return [];
+}
+
+async function captureDarwinClipboard(): Promise<Omit<ClipboardSnapshot, "timestamp">> {
+    const output = await runDarwinCommand();
+    let snapshot: Omit<ClipboardSnapshot, "timestamp">;
+    if (output !== null) {
+        const parsed = parseDarwinHelperOutput(output);
+        if (!parsed) throw new ClipboardReadError();
+        snapshot = parsed;
+    } else {
+        const [image, text] = await Promise.all([
+            execCommandAsync("osascript", ["-e", 'try\nset d to the clipboard as «class PNGf»\nreturn d\nend try']),
+            execCommandAsync("pbpaste", []),
+        ]);
+        if (image.status !== 0 || text.status !== 0) throw new ClipboardReadError();
+        const imagePng = image.stdout.length > 0 ? parseAppleScriptImageData(image.stdout) : null;
+        const textBytes = text.stdout.length > 0 ? text.stdout : null;
+        snapshot = { targets: [...(imagePng ? ["image/png"] : []), ...(textBytes ? ["text/plain"] : [])], text: textBytes, imagePng, imageBmp: null };
+    }
+    if (!snapshot.imagePng) {
+        const converted = execCommand("pngpaste", ["-"]);
+        if (converted.status === 0 && converted.stdout.length > 0) {
+            const targets = output === null ? ["image/png", ...snapshot.targets.filter(target => target !== "image/png")]
+                : [...new Set([...snapshot.targets, "image/png"])];
+            snapshot = { ...snapshot, targets, imagePng: converted.stdout };
+        }
+    }
+    return snapshot;
+}
+
+async function captureNativeClipboard(plat: ClipboardPlatform): Promise<ClipboardCaptureObservation<Buffer>> {
+    try {
+        if (plat === "windows" || plat === "wsl") {
+            return { kind: "captured", snapshot: await readAllClipboardWindows(), fileReferences: [], textImagePaths: [] };
+        }
+        let snapshot: Omit<ClipboardSnapshot, "timestamp">;
+        if (plat === "darwin") {
+            snapshot = await captureDarwinClipboard();
+        } else {
+            const targets = readClipboardTargets(plat);
+            const hasImage = targets.some(isSupportedImageTarget);
+            const hasText = targets.some(target => target.includes("text/plain") || target === "STRING" || target === "UTF8_STRING");
+            const text = hasText ? readClipboardText(plat) : null;
+            const imagePng = hasImage ? readClipboardImage(plat, "png", targets) : null;
+            const imageBmp = hasImage ? readClipboardImage(plat, "bmp", targets) : null;
+            snapshot = {
+                marker: null,
+                targets: targets.filter(target => isSupportedImageTarget(target) ? imagePng !== null || imageBmp !== null
+                    : target.includes("text/plain") || target === "STRING" || target === "UTF8_STRING" ? text !== null : true),
+                text, imagePng, imageBmp,
+            };
+        }
+        const needsFallback = !snapshot.imagePng && !snapshot.imageBmp;
+        return {
+            kind: "captured", snapshot,
+            fileReferences: needsFallback ? readClipboardFileReferences(plat, snapshot.targets) : [],
+            textImagePaths: needsFallback && snapshot.text ? parseClipboardImagePathText(snapshot.text.toString("utf8")) : [],
+        };
+    } catch (error) {
+        if (error instanceof ClipboardReadError) return { kind: "unavailable" };
+        throw error;
+    }
+}
+
 const getCachedClipboard = createClipboardSnapshotReader<Buffer>({
     now: () => Date.now(),
-    readChangeMarker: readClipboardChangeMarker,
-    readWindowsCapture: readAllClipboardWindows,
-    readDarwinFrame: () => runDarwinCommand(),
-    parseDarwinCapture: parseDarwinHelperOutput,
-    readDarwinLegacyImage: () => execCommandAsync("osascript", ["-e",
-        'try\nset d to the clipboard as «class PNGf»\nreturn d\nend try']),
-    readDarwinLegacyText: () => execCommandAsync("pbpaste", []),
-    readDarwinPngpaste: () => execCommand("pngpaste", ["-"]),
-    parseAppleScriptImage: parseAppleScriptImageData,
-    readDarwinFileReferenceData: readDarwinClipboardFileReferenceData,
-    readLinuxUriData: readLinuxClipboardUriData,
-    decodeText: (bytes, encoding) => bytes.toString(encoding),
-    parseFileUriList: parseClipboardFileUriList,
-    parseImagePathText: parseClipboardImagePathText,
-    readTargets: readClipboardTargets,
-    readText: readClipboardText,
-    readImage: readClipboardImage,
+    readChangeMarker: observeClipboardChangeMarker,
+    capture: captureNativeClipboard,
     readImageFile: (filePath) => {
         if (!isImageFilePath(filePath)) return null;
         try {
@@ -964,22 +1084,10 @@ const getCachedClipboard = createClipboardSnapshotReader<Buffer>({
     createReadError: () => new ClipboardReadError(),
 }, clipboardState);
 
-const writeClipboardText = createClipboardTextWriter<Buffer, PreparedClipboardTextWriter, ChildProcess, ReturnType<typeof setTimeout>>({
+const writeClipboardText = createClipboardTextWriter<Buffer>({
     encodeText: (text) => Buffer.from(text, "utf8"),
     decodeText: (bytes) => bytes.toString("utf8"),
-    prepareWriter: prepareClipboardTextWriter,
-    launchWriter: (prepared, plat) => spawn(prepared.command, prepared.args, {
-        stdio: ["pipe", "ignore", "ignore"],
-        windowsHide: true,
-        ...(plat === "darwin" ? { env: { ...process.env, LC_CTYPE: "UTF-8" } } : {}),
-    }),
-    scheduleTimeout: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
-    cancelReadTimer: (timer) => { clearTimeout(timer); return undefined; },
-    onWriterError: (child, callback) => { child.once("error", callback); return undefined; },
-    onWriterExit: (child, callback) => { child.once("exit", callback); return undefined; },
-    onInputError: (child, callback) => { child.stdin!.on("error", callback); return undefined; },
-    endInput: (child, prepared) => { child.stdin!.end(prepared.input); return undefined; },
-    killWriter: (child) => { child.kill("SIGKILL"); return undefined; },
+    prepareWriter: prepareNativeClipboardTextWrite,
 }, clipboardState);
 export { writeClipboardText };
 
