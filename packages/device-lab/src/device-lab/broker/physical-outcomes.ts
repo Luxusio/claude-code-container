@@ -121,7 +121,6 @@ function renderCleanupDevice(device: CleanupDeviceReport<NativePhysicalReceipt>)
             stop: {
                 attempted: true,
                 ok: device.stop.ok,
-                command: device.stop.observation.receipt.command,
                 execution: device.stop.observation.receipt.execution,
             },
         } : {}),
@@ -141,5 +140,5 @@ export function renderOwnerCleanupOutcome(outcome: OwnerCleanupOutcome<NativePhy
         ...backend,
         ...(backend.devices ? { devices: backend.devices.map(renderCleanupDevice) } : {}),
     }));
-    return { status: 200, payload: { ok: true, result: { ...report, results } } };
+    return { status: 200, payload: { ok: report.failed === 0, result: { ...report, results } } };
 }
