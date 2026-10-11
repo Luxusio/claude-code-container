@@ -23,7 +23,7 @@ import { runInNewContext } from "vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeviceBrokerServer as createRawDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "@ccc/device-lab/device-lab-owner.js";
-import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
+import { readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from "@ccc/device-lab/device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { releaseHyperVNetworkAllocationAndCleanup } from "@ccc/device-lab/device-lab/broker/hyper-v/network.js";
 import { rememberHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey } from "@ccc/device-lab/device-lab/broker/hyper-v/console.js";
@@ -6741,6 +6741,194 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         } finally {
             await close(server);
             cleanupOwner(ownerId);
+        }
+    });
+
+    it("records Windows helper archives through the authenticated default backend child", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
+        const project = join(fixtureHome!, "windows-recording-project");
+        mkdirSync(project);
+        const privateBin = join(fixtureHome!, "windows-recording-bin"), originalPath = process.env.PATH;
+        mkdirSync(privateBin);
+        const ownerId = deviceLabOwnerId(project), deviceId = "windows-broker-recording";
+        const sibling = { id: "windows-other-recording", backend: "windows-sandbox", status: "stopped", recording: { active: false, sessionId: "unrelated-session" } };
+        const root = writeBrokerDevices(ownerId, "windows", [
+            { id: deviceId, backend: "windows-sandbox", status: "running", sandboxId: "33333333-3333-4333-8333-333333333333" }, sibling,
+        ]);
+        const scratch = join(root, deviceId), inbox = join(scratch, "inbox"), outbox = join(scratch, "outbox"), downloads = join(scratch, "downloads");
+        for (const directory of [inbox, outbox, downloads]) mkdirSync(directory, { recursive: true });
+        writeFileSync(join(downloads, "ccc-guest-helper.ready.txt"), "ready");
+        const destination = join(project, "recording.zip"), archiveBytes = "owned Windows recording archive bytes\n";
+        writeFileSync(destination, "previous destination");
+        let sessionId: string | undefined, archive: string | undefined, responderFailure: unknown;
+        const responder = setInterval(() => {
+            try {
+                for (const name of readdirSync(inbox).filter(name => name.endsWith(".json"))) {
+                    const requestPath = join(inbox, name);
+                    const payload = JSON.parse(readFileSync(requestPath, "utf8")) as { id: string; type: string; sessionId: string; timeLimitSec?: number };
+                    expect(name).toBe(`${payload.id}.json`);
+                    if (payload.type === "record_start") {
+                        expect(sessionId).toBeUndefined();
+                        expect(payload.sessionId).toMatch(/^recording-[0-9a-f-]+$/);
+                        expect(payload.timeLimitSec).toBe(4);
+                        sessionId = payload.sessionId;
+                    } else expect(payload.sessionId).toBe(sessionId);
+                    let recording: Record<string, unknown>;
+                    if (payload.type === "record_start" || payload.type === "record_status") {
+                        recording = { sessionId, active: true, state: "Running", frameDir: `C:\\ccc\\scratch\\downloads\\${sessionId}-frames`, provider: "windows-helper-frame-archive" };
+                    } else if (payload.type === "record_stop") {
+                        archive = join(downloads, `${sessionId}.zip`);
+                        writeFileSync(archive, archiveBytes);
+                        recording = { sessionId, active: false, archivePath: `C:\\ccc\\scratch\\downloads\\${sessionId}.zip`, provider: "windows-helper-frame-archive" };
+                    } else throw new Error(`Unexpected recording helper request: ${payload.type}`);
+                    writeFileSync(join(outbox, name), JSON.stringify({ id: payload.id, type: payload.type, ok: true, recording }));
+                    rmSync(requestPath);
+                }
+            } catch (error) { responderFailure = error; clearInterval(responder); }
+        }, 10);
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            process.env.PATH = privateBin;
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+            const invoke = async (tool: string, args: Record<string, unknown> = {}) => {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "windows-sandbox", deviceId, helperTimeoutMs: 5000, ...args } }) });
+                expect(responderFailure).toBeUndefined();
+                expect(response.status).toBe(200);
+                const body = await response.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "windows-sandbox", provider: "device-lab-backend-child" } });
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                return JSON.parse(body.result.mcpResult.content[0].text);
+            };
+            const started = await invoke("device_record_video_start", { localPath: destination, timeLimitSec: 4 });
+            expect(started.recording).toMatchObject({ active: true, sessionId, runtimeId: expect.any(String), provider: "windows-helper-frame-archive", localPath: destination });
+            expect((await invoke("device_record_video_status")).recording).toMatchObject({ active: true, runtimeId: started.recording.runtimeId, sessionId });
+            const stopped = await invoke("device_record_video_stop");
+            expect(stopped).toMatchObject({ deviceId, stopped: true, recording: { active: false, sessionId, localPath: destination }, device: { id: deviceId, recording: null } });
+            expect(readFileSync(destination, "utf8")).toBe(archiveBytes);
+            if (!archive) throw new Error("Selected helper recording archive was not published");
+            // The current helper channel retains its archive after bounded atomic publication.
+            expect(readFileSync(archive, "utf8")).toBe(archiveBytes);
+            expect(readdirSync(project)).toEqual(["recording.zip"]);
+            const records = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices;
+            expect(records.find((record: { id: string }) => record.id === deviceId)).toMatchObject({ status: "running", recording: null });
+            expect(records.find((record: { id: string }) => record.id === sibling.id)).toEqual(sibling);
+        } finally {
+            try { if (server) await close(server); }
+            finally {
+                clearInterval(responder);
+                if (originalPath === undefined) delete process.env.PATH;
+                else process.env.PATH = originalPath;
+            }
+        }
+    });
+
+    it("records and finalizes macOS video through the authenticated default backend child", { timeout: process.platform === "win32" ? 120000 : 45000 }, async () => {
+        const project = join(fixtureHome!, "macos-recording-project"), binDir = join(fixtureHome!, "macos-recording-bin"), stageParent = join(fixtureHome!, "macos-recording-stages");
+        for (const directory of [project, binDir, stageParent]) mkdirSync(directory);
+        const ownerId = deviceLabOwnerId(project), deviceId = "macos-broker-recording";
+        const sshTarget = "fixture@192.0.2.45", remotePath = "/tmp/owned-broker-recording.mov";
+        const guestArtifact = join(fixtureHome!, "macos-guest-recording.mov"), logPath = join(fixtureHome!, "macos-recording-sdk.jsonl");
+        const videoBytes = "owned macOS video artifact bytes\n", destination = join(project, "recording.mov");
+        const sibling = { id: "macos-other-recording", backend: "macos-vm", status: "stopped", recording: { active: false, runtimeId: "unrelated-runtime" } };
+        const root = writeBrokerDevices(ownerId, "macos", [
+            { id: deviceId, backend: "macos-vm", status: "running", provider: "tart", providerInstance: `ccc-${ownerId}-recording`, ssh: { host: "192.0.2.45", user: "fixture" } }, sibling,
+        ]);
+        writeFileSync(destination, "previous destination");
+        writeFileSync(logPath, "");
+        const startCommand = `rm -f '${remotePath}'; (screencapture -v '${remotePath}' &); wait`;
+        const stopCommand = `pkill -INT -f 'screencapture.*${remotePath}' || true`, removeCommand = `rm -f '${remotePath}'`;
+        const ssh = join(binDir, "ssh"), scp = join(binDir, "scp");
+        writeFileSync(ssh, `#!${process.execPath}
+const fs = require('node:fs'), args = process.argv.slice(2);
+if (JSON.stringify(args.slice(0,5)) !== ${JSON.stringify(JSON.stringify(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", sshTarget]))} || args.length !== 6) throw new Error('Unexpected recording SSH target');
+const command = args[5];
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({tool:'ssh',args,pid:process.pid}) + '\\n');
+if (command === ${JSON.stringify(startCommand)}) {
+    fs.writeFileSync(${JSON.stringify(guestArtifact)}, ${JSON.stringify(videoBytes)});
+    const timer = setTimeout(() => process.exit(0), 30000);
+    process.on('SIGINT', () => { clearTimeout(timer); process.exit(0); });
+    process.on('SIGTERM', () => { clearTimeout(timer); process.exit(0); });
+} else if (command === ${JSON.stringify(removeCommand)}) fs.rmSync(${JSON.stringify(guestArtifact)}, {force:true});
+else if (command !== ${JSON.stringify(stopCommand)}) throw new Error('Unexpected recording SSH operation');
+`);
+        writeFileSync(scp, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), args = process.argv.slice(2);
+if (args.length !== 6 || JSON.stringify(args.slice(0,4)) !== '["-o","BatchMode=yes","-o","StrictHostKeyChecking=no"]' || args[4] !== ${JSON.stringify(`${sshTarget}:${remotePath}`)}) throw new Error('Unexpected recording SCP target');
+const stage = args[5];
+if (path.dirname(path.dirname(stage)) !== ${JSON.stringify(stageParent)} || path.basename(stage) !== 'payload') throw new Error('Unexpected recording output stage');
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({tool:'scp',args,stage}) + '\\n');
+fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
+`);
+        chmodSync(ssh, 0o755); chmodSync(scp, 0o755);
+        const preload = join(fixtureHome!, "macos-recording-routing.cjs");
+        writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "TMPDIR", "TMP", "TEMP"] as const;
+        const originalEnvironment = environmentKeys.map(key => process.env[key]);
+        let restoreRouting: (() => void) | undefined, server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        let recorder: { runtimeId: string; pid: number; processIdentity: NonNullable<ReturnType<typeof readDeviceRuntimeProcessIdentity>> } | undefined;
+        try {
+            process.env.PATH = binDir;
+            process.env.NODE_OPTIONS = `${originalEnvironment[1] || ""} --require=${JSON.stringify(preload)}`.trim();
+            process.env.TMPDIR = process.env.TMP = process.env.TEMP = stageParent;
+            restoreRouting = installNodeProviderFixtureRouting(binDir);
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+            const invoke = async (tool: string, args: Record<string, unknown> = {}) => {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "macos-vm", deviceId, ...args } }) });
+                expect(response.status).toBe(200);
+                const body = await response.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "macos-vm", provider: "device-lab-backend-child" } });
+                expect(body.result.mcpResult.isError).not.toBe(true);
+                return JSON.parse(body.result.mcpResult.content[0].text);
+            };
+            const started = await invoke("device_record_video_start", { remotePath, localPath: destination });
+            recorder = started.recording;
+            expect(started.recording).toMatchObject({ active: true, provider: "ssh-screencapture-video", runtimeId: expect.any(String), remotePath, localPath: destination });
+            expect(Number.isSafeInteger(recorder?.pid)).toBe(true);
+            expect(recorder!.processIdentity).toEqual(readDeviceRuntimeProcessIdentity(recorder!.pid));
+            await expect.poll(() => existsSync(guestArtifact)).toBe(true);
+            expect(readFileSync(guestArtifact, "utf8")).toBe(videoBytes);
+            expect((await invoke("device_record_video_status")).recording).toMatchObject({ active: true, runtimeId: started.recording.runtimeId, pid: recorder!.pid });
+            const stopped = await invoke("device_record_video_stop");
+            expect(stopped).toMatchObject({ deviceId, stopped: true, provider: "ssh-screencapture-video", recording: { active: false, remotePath, localPath: destination }, device: { id: deviceId, recording: null } });
+            expect(readFileSync(destination, "utf8")).toBe(videoBytes);
+            await expect.poll(() => readDeviceRuntimeProcessIdentity(recorder!.pid)).toBeNull();
+            expect(existsSync(guestArtifact)).toBe(false);
+            const calls = readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line) as { tool: string; args: string[]; pid?: number; stage?: string });
+            expect(calls).toEqual(expect.arrayContaining([
+                expect.objectContaining({ tool: "ssh", args: ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", sshTarget, startCommand], pid: recorder!.pid }),
+                expect.objectContaining({ tool: "ssh", args: ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", sshTarget, removeCommand] }),
+            ]));
+            const copied = calls.find(call => call.tool === "scp");
+            if (!copied?.stage) throw new Error("SCP did not observe the allocated recording stage");
+            expect(existsSync(dirname(copied.stage))).toBe(false);
+            expect(readdirSync(stageParent)).toEqual([]);
+            const records = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices;
+            expect(records.find((record: { id: string }) => record.id === deviceId)).toMatchObject({ status: "running", recording: null });
+            expect(records.find((record: { id: string }) => record.id === sibling.id)).toEqual(sibling);
+        } finally {
+            try {
+                if (recorder && readDeviceRuntimeProcessIdentity(recorder.pid)) {
+                    signalDeviceRuntimeProcess(recorder, "SIGKILL");
+                    await expect.poll(() => readDeviceRuntimeProcessIdentity(recorder!.pid)).toBeNull();
+                } else if (!recorder && existsSync(logPath)) {
+                    // A failed start may not publish metadata. The allocated SDK child
+                    // expires itself; wait for it without signaling an unadmitted PID.
+                    const allocation = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean)
+                        .map(line => JSON.parse(line) as { tool: string; args: string[]; pid: number })
+                        .find(call => call.tool === "ssh" && call.args[5] === startCommand);
+                    if (allocation) await expect.poll(() => readDeviceRuntimeProcessIdentity(allocation.pid), { timeout: 32000 }).toBeNull();
+                }
+            } finally {
+                try { if (server) await close(server); }
+                finally {
+                    restoreRouting?.();
+                    environmentKeys.forEach((key, index) => {
+                        if (originalEnvironment[index] === undefined) delete process.env[key];
+                        else process.env[key] = originalEnvironment[index];
+                    });
+                }
+            }
         }
     });
 
