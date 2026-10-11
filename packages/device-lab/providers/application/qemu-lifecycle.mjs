@@ -150,7 +150,7 @@ function reboot(args = {}) {
     if (!stopped.ok) return { ok: false, error: "lab-reboot-stop-failed", stop: stopped };
     const started = start({ labId: loaded.lab.id });
     if (!started.ok) return { ok: false, error: "lab-reboot-start-failed", stop: stopped, start: started };
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(started.lab), rebooted: true, stop: stopped, start: started };
+    return { ok: true, ownerId: ctx.owner, lab: started.lab, rebooted: true, stop: stopped, start: started };
 }
 
 /** @param {QemuLifecycleArguments} [args] */

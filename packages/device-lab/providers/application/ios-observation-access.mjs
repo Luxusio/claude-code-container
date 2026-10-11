@@ -220,7 +220,7 @@ export function createIosObservationAccess(ports) {
                 appium: automationStatus(device, discovery) });
             return ports.jsonResult({ device: ports.targetStatus(ports.reconcileDevice(device, discovery)), backend: ports.backend(discovery), automation: automationStatus(device) });
         }
-        if (name === "mobile_session_status") return ports.jsonResult({ deviceId: args.deviceId, ...automationStatus(device) });
+        if (name === "mobile_session_status") return ports.jsonResult(automationStatus(device));
         if (name === "device_exec") {
             if (ports.kind === "physical") return ports.textResult(false, iosAccessUnsupported("physical", name));
             const discovery = ports.discovery();
