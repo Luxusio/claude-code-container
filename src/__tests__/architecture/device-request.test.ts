@@ -101,8 +101,9 @@ describe("shared device request admission", () => {
         ports.toolOperation = () => "device_delete";
         ports.evaluateDestructivePolicy = () => ({ ok: false, error: "destructive-action-confirmation-required", actions: ["device-delete"] });
         const refused = await application.request("delete", { deviceId: "owned-phone", confirmDestructive: false, broker: true });
-        expect(refused.selection).toBe("json");
-        expect(refused.value).toMatchObject({
+        expect(refused.selection).toBe("text");
+        expect(typeof refused.value).toBe("string");
+        expect(JSON.parse(String(refused.value))).toMatchObject({
             ok: false,
             policy: { error: "destructive-action-confirmation-required", actions: ["device-delete"] },
         });
