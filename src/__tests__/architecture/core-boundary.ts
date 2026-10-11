@@ -4,6 +4,13 @@ import ts from "typescript";
 export type CoreLayer = "domain" | "ports" | "application";
 export interface CoreBoundary { root: string; language: "mjs" | "ts"; }
 const layers: readonly CoreLayer[] = ["domain", "ports", "application"];
+const hyperVDataModules = new Set([
+    "@ccc/hyper-v", "@ccc/hyper-v/index.js",
+    "@ccc/hyper-v/low-level", "@ccc/hyper-v/low-level/index.js",
+    "@ccc/hyper-v/lifecycle", "@ccc/hyper-v/lifecycle/index.js",
+]);
+const hyperVPurePlanningModules = new Set(["@ccc/hyper-v/lifecycle", "@ccc/hyper-v/lifecycle/index.js"]);
+const hyperVPurePlanners = new Set(["reconcileHyperVHostNetwork", "planHyperVHostNetworkCleanup"]);
 const runtimeNames = new Set([
     "process", "Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval",
     "setImmediate", "clearImmediate", "queueMicrotask", "fetch", "globalThis", "global",
@@ -34,7 +41,17 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
         boundary.language === "mjs" ? ts.ScriptKind.JS : ts.ScriptKind.TS);
     const errors: string[] = [];
     const purePathImports = new Set<ts.ImportDeclaration>();
+    const purePlanningImports = new Set<ts.ImportDeclaration>();
     const purePathNames = new Set<string>();
+    if (boundary.language === "ts" && layer !== "ports") for (const statement of tree.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+            || !hyperVPurePlanningModules.has(statement.moduleSpecifier.text)) continue;
+        const clause = statement.importClause;
+        const bindings = clause?.namedBindings;
+        if (clause && !clause.name && bindings && ts.isNamedImports(bindings)
+            && bindings.elements.length > 0 && bindings.elements.every(item => item.isTypeOnly
+                || hyperVPurePlanners.has(item.propertyName?.text ?? item.name.text))) purePlanningImports.add(statement);
+    }
     for (const statement of tree.statements) {
         if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
             || !["path", "node:path"].includes(statement.moduleSpecifier.text)) continue;
@@ -46,7 +63,9 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
         purePathImports.add(statement);
         for (const item of bindings.elements) purePathNames.add(item.name.text);
     }
-    const checkImport = (specifier: ts.Node | undefined, typeOnly: boolean) => {
+    const checkImport = (specifier: ts.Node | undefined, typeOnly: boolean, reexport = false) => {
+        if (!reexport && boundary.language === "ts" && typeOnly && specifier && ts.isStringLiteral(specifier)
+            && hyperVDataModules.has(specifier.text)) return;
         if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith(".")) {
             errors.push("dependency must use a relative core path");
             return;
@@ -64,12 +83,12 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
             const bindings = clause?.namedBindings;
             const typeOnly = clause?.isTypeOnly === true || (!!bindings && ts.isNamedImports(bindings)
                 && !clause?.name && bindings.elements.length > 0 && bindings.elements.every(item => item.isTypeOnly));
-            if (!purePathImports.has(node)) checkImport(node.moduleSpecifier, typeOnly);
+            if (!purePathImports.has(node) && !purePlanningImports.has(node)) checkImport(node.moduleSpecifier, typeOnly);
         }
         if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
             const typeOnly = node.isTypeOnly || (!!node.exportClause && ts.isNamedExports(node.exportClause)
                 && node.exportClause.elements.length > 0 && node.exportClause.elements.every(item => item.isTypeOnly));
-            checkImport(node.moduleSpecifier, typeOnly);
+            checkImport(node.moduleSpecifier, typeOnly, true);
         }
         if (ts.isImportTypeNode(node)) checkImport(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : undefined, true);
         if (ts.isJSDocImportTag(node)) checkImport(node.moduleSpecifier, true);

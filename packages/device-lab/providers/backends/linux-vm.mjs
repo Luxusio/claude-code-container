@@ -799,21 +799,7 @@ export function startLab(args = {}, options = {}) {
 }
 
 export function rebootLab(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    if (loaded.lab.runtimeState !== "running" && args.startIfStopped !== true) {
-        return { ok: false, error: "lab-not-running", ownerId: ctx.owner, lab: publicLab(loaded.lab), hint: "pass startIfStopped=true to start a stopped lab through reboot" };
-    }
-    const status = labProviderStatus(options);
-    if (!status.available) return { ok: false, error: "lab-provider-unsupported", ownerId: ctx.owner, lab: publicLab(loaded.lab), providerStatus: status };
-    const stop = loaded.lab.runtimeState === "running"
-        ? stopLab({ labId: loaded.lab.id, force: args.force === true }, options)
-        : { ok: true, ownerId: ctx.owner, lab: publicLab(loaded.lab), stopped: false };
-    if (!stop.ok) return { ok: false, error: "lab-reboot-stop-failed", stop };
-    const start = startLab({ labId: loaded.lab.id }, options);
-    if (!start.ok) return { ok: false, error: "lab-reboot-start-failed", stop, start };
-    return { ok: true, ownerId: ctx.owner, lab: publicLab(start.lab), rebooted: true, stop, start };
+    return qemuLifecycleApplication(options).reboot(args);
 }
 
 export function listTargets(args = {}, options = {}) {

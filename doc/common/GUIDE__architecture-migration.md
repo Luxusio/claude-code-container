@@ -136,6 +136,18 @@ artifact and native provenance separately; it is not a completion certificate.
 
 ## Current enforced boundary
 
+The broker's Hyper-V core may consume type-only data contracts from the exact
+public `@ccc/hyper-v`, `@ccc/hyper-v/low-level` and `@ccc/hyper-v/lifecycle`
+exports, including their `index.js` forms. This reuses the independent typed
+library without duplicating closed DTOs. The two pure observation-to-plan
+functions `reconcileHyperVHostNetwork` and `planHyperVHostNetworkCleanup` may
+be named imports from the lifecycle export in domain/application code.
+This does not permit native client/error construction, namespace/default
+imports or external re-exports. Native brand parsing, host specification
+construction, effects and error classification remain adapter capabilities.
+The existing whole-product dependency test and actual consumed contract and
+native behavior suites cover this boundary; no validator metatests are needed.
+
 The canonical readiness operation is shared `.mjs` under Device Lab's
 `providers/application/`. Its pure deadline/probe budget rule is in `domain/`;
 the probe, clock and sleep contract is in `ports/`. The MCP adapter still owns

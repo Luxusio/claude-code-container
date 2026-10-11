@@ -1,4 +1,4 @@
-/** @typedef {{[key:string]:unknown,name?:unknown,labId?:unknown,force?:unknown,dryRun?:unknown,baseImageId?:unknown,sourceImage?:unknown,memoryMb?:unknown,cpus?:unknown,timeoutMs?:unknown}} QemuLifecycleArguments */
+/** @typedef {{[key:string]:unknown,name?:unknown,labId?:unknown,force?:unknown,dryRun?:unknown,startIfStopped?:unknown,baseImageId?:unknown,sourceImage?:unknown,memoryMb?:unknown,cpus?:unknown,timeoutMs?:unknown}} QemuLifecycleArguments */
 /** @typedef {{[key:string]:unknown,id?:string,state?:string,ok?:boolean,error?:unknown,status?:unknown}} QemuAgentStatus */
 /** @typedef {{host:string,port:number,user:string,keyPath?:string|null,readinessCommand?:string,keyConfigured?:boolean,readinessCommandConfigured?:boolean}} QemuSsh */
 /** @typedef {{[key:string]:unknown,name?:string,protocol?:string,healthCommand?:string,provisionCommand?:string|null,autoProvision?:boolean,lastProvision?:QemuAgentStatus|null,lastStatus?:QemuAgentStatus|null,provisionHistory?:QemuAgentStatus[]}} QemuAgent */

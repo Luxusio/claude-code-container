@@ -2651,6 +2651,55 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(existsSync(join(root, "owners", ownerId(env), "labs", "reboot-vm", "lab.json"))).toBe(true);
     });
 
+    it("refuses a reboot restart when the owned runtime cannot be stopped", () => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "reboot-stop-failure", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Stop Failure Reboot VM" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        expect(startLab({ labId: created.lab.id }, {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: 7771, processIdentity: { pid: 7771, startToken: "fixture-birth", commandHash: "fixture-command" } }),
+        }).ok).toBe(true);
+        runtimeExitFixture(7771);
+        const statePath = join(created.lab.paths.labDir, "lab.json");
+        const originalState = readFileSync(statePath, "utf8");
+        const failed = rebootLab({ labId: created.lab.id }, {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            killProcess: () => { throw Object.assign(new Error("owned runtime signal denied"), { code: "EACCES" }); },
+            commandRunner: () => { throw new Error("Reboot must not launch after failed stop"); },
+        });
+        expect(failed).toMatchObject({
+            ok: false, error: "lab-reboot-stop-failed", stop: { ok: false, error: "lab-stop-failed", message: "owned runtime signal denied" },
+        });
+        expect(readFileSync(statePath, "utf8")).toBe(originalState);
+        expect(listLabs({ env, stateRoot: root }).labs[0]).toMatchObject({ runtimeState: "running", runtime: { pid: 7771 } });
+    });
+
+    it("keeps the completed stop when the reboot replacement launch fails", () => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "reboot-start-failure", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Start Failure Reboot VM" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        expect(startLab({ labId: created.lab.id }, {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: 7772, processIdentity: { pid: 7772, startToken: "fixture-birth", commandHash: "fixture-command" } }),
+        }).ok).toBe(true);
+        const runtime = runtimeExitFixture(7772);
+        const failed = rebootLab({ labId: created.lab.id }, {
+            env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            killProcess: () => { runtime.exit(); },
+            commandRunner: () => ({ ok: false, stderr: "replacement launch denied" }),
+        });
+        expect(failed).toMatchObject({
+            ok: false, error: "lab-reboot-start-failed",
+            stop: { ok: true, stopped: true, lab: { id: created.lab.id, runtimeState: "stopped", runtime: null } },
+            start: { ok: false, error: "lab-start-failed" },
+        });
+        const state = JSON.parse(readFileSync(join(created.lab.paths.labDir, "lab.json"), "utf8")) as { id: string; runtimeState: string; runtime: unknown };
+        expect(state).toMatchObject({ id: created.lab.id, runtimeState: "stopped", runtime: null });
+        expect(listLabs({ env, stateRoot: root }).labs[0]).toMatchObject({ id: created.lab.id, runtimeState: "stopped", runtime: null });
+    });
+
     it("requires explicit startIfStopped and provider readiness for stopped lab reboot", () => {
         const root = tempRoot();
         const env = {

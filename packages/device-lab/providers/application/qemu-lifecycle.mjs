@@ -135,6 +135,25 @@ function start(args = {}) {
 }
 
 /** @param {QemuLifecycleArguments} [args] */
+function reboot(args = {}) {
+    const ctx = ports.scope();
+    const loaded = ports.readLab(ctx, String(args.labId || ""));
+    if (!loaded.ok) return loaded;
+    if (loaded.lab.runtimeState !== "running" && args.startIfStopped !== true) {
+        return { ok: false, error: "lab-not-running", ownerId: ctx.owner, lab: publicLab(loaded.lab), hint: "pass startIfStopped=true to start a stopped lab through reboot" };
+    }
+    const status = ports.providerStatus();
+    if (!status.available) return { ok: false, error: "lab-provider-unsupported", ownerId: ctx.owner, lab: publicLab(loaded.lab), providerStatus: status };
+    const stopped = loaded.lab.runtimeState === "running"
+        ? stop({ labId: loaded.lab.id, force: args.force === true })
+        : { ok: true, ownerId: ctx.owner, lab: publicLab(loaded.lab), stopped: false };
+    if (!stopped.ok) return { ok: false, error: "lab-reboot-stop-failed", stop: stopped };
+    const started = start({ labId: loaded.lab.id });
+    if (!started.ok) return { ok: false, error: "lab-reboot-start-failed", stop: stopped, start: started };
+    return { ok: true, ownerId: ctx.owner, lab: publicLab(started.lab), rebooted: true, stop: stopped, start: started };
+}
+
+/** @param {QemuLifecycleArguments} [args] */
 function stop(args = {}) {
     const ctx = ports.scope();
     const loaded = ports.readLab(ctx, String(args.labId || ""));
@@ -346,5 +365,5 @@ function buildQemuArgs(lab, options = {}) {
     return args;
 }
 
-    return { create, start, stop, delete: deleteLab, provisionGuestAgent: guestAgentProvision, validateGuestSsh, buildQemuArgs };
+    return { create, start, stop, reboot, delete: deleteLab, provisionGuestAgent: guestAgentProvision, validateGuestSsh, buildQemuArgs };
 }
