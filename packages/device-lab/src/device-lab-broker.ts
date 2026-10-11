@@ -2,7 +2,7 @@ import {planBrokerAndroidCreate, planBrokerAndroidExisting} from "./device-lab/a
 import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCommand as semanticIosExisting} from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExistingCommand as semanticMacosExisting} from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerAndroidPreparationPorts} from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
-import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerMacosBoot, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
+import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
 import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
 import type {BrokerRecordingRefusal, BrokerRecordingRequest, BrokerRecordingTarget} from "./device-lab/domain/broker-recording.js";
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
@@ -8302,20 +8302,12 @@ export function waitForBrokerWindowsMinimizeConfirmation(resultPath: string, tim
     };
 }
 
-type MacosVmBootRegistration =
-    | { ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: ProviderCommandResult; attempts?: ProviderCommandResult[] }
-    | { ok: false; error: ProviderCommandResult; attempts?: ProviderCommandResult[] };
-
-function waitForBrokerMacosVmBoot(parsed: CommandParamSuccess, device: unknown, command: ProviderCommand, normalized: NormalizedBrokerOptions): MacosVmBootRegistration {
-    return renderBrokerMacosBoot(waitForBrokerMacosBoot(parsed, device, nativeLifecyclePreparation(command), brokerMacosLifecyclePorts(normalized)), command);
-}
-
-function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown, macosBoot?: MacosVmBootRegistration | null, _execution?: ProviderCommandResult, _hyperVGuestReady?: ReturnType<typeof parseHyperVGuestReadyObservation> | null) {
+function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown) {
     if (parsed.command === "device_status") return { found: true, matched: true, device };
     if (parsed.backend === "ios-simulator" || parsed.backend === "macos-vm") {
         const kind = parsed.command === "device_start" || parsed.command === "device_reboot" ? "start" : parsed.command === "device_delete" ? "delete" : "stop";
         return transitionOwnerLifecycleDevice(ownerId, parsed.stateKey, parsed.deviceId, device, candidate => {
-            const replacement = parsed.backend === "ios-simulator" ? brokerIosReplacement(candidate, { kind }) : brokerMacosReplacement(candidate, { kind, boot: macosBoot || null });
+            const replacement = parsed.backend === "ios-simulator" ? brokerIosReplacement(candidate, { kind }) : brokerMacosReplacement(candidate, { kind, boot: null });
             return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
         });
     }
@@ -8824,7 +8816,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
                 result: {
                     ...(isHyperVBackend(parsed.backend)
                         ? redactHyperVResultSecrets(payload.result)
-                        : payload.result || {}),
+                        : { ...(payload.result || {}), device: redactBrokerDeviceSecrets(payload.result?.device) }),
                     invoked: false,
                     dryRun: true,
                     execution: {
@@ -9156,13 +9148,6 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
             && observation.vmName === expectedVmName
             && (parsed.command !== "device_delete" || resolve(observation.diskPath || "") === resolve(expectedDiskPath || "")));
     }
-    let macosBoot: MacosVmBootRegistration | null = null;
-    if (success && parsed.backend === "macos-vm" && parsed.command === "device_start") {
-        macosBoot = waitForBrokerMacosVmBoot(parsed, payload.result?.device, providerCommand, normalized);
-        if (!macosBoot.ok) {
-            success = false;
-        }
-    }
     if (success && physicalTeardown) {
         physicalLeaseCleanup = cleanupOwnerPhysicalLease(ownerId, physicalLeaseGuard!);
         if (!physicalLeaseCleanup.ok) {
@@ -9195,7 +9180,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
     let publication: ReturnType<typeof transitionOwnerLifecycleDevice> | undefined;
     try {
         updatedDevice = success
-            ? (publication = mutateDeviceAfterCommand(ownerId, parsed, expectedDevice, macosBoot, execution, null)).device
+            ? (publication = mutateDeviceAfterCommand(ownerId, parsed, expectedDevice)).device
             : publication ? publication.device : updatedDevice || payload.result?.device;
     }
     catch (error) {
@@ -9278,10 +9263,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
                                 ? undefined
                                 : "hyper-v-provider-command-failed"),
                                     }
-                        :
-                            macosBoot && !macosBoot.ok
-                                ? { ...execution, registration: null, macosBoot, androidBoot: null }
-                                : execution,
+                        : execution,
                 },
             },
         },

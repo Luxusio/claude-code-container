@@ -9080,7 +9080,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 { id: "win-missing", status: "running", privateRoot: "private-sandbox-root", ssh: { password: "sandbox-private-password" } },
             ]);
             writeBrokerDevices(ownerId, "macos", [
-                { id: "mac", provider: "tart", providerInstance: "ccc-mac" },
+                { id: "mac", provider: "tart", providerInstance: "ccc-mac", privateRoot: "private-macos-root", ssh: { password: "macos-private-password" } },
                 { id: "mac-missing", provider: "tart" },
                 { id: "mac-unsafe", provider: "/tmp/unsafe-provider", providerInstance: "ccc-mac" },
             ]);
@@ -9156,6 +9156,25 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             });
             expect(JSON.stringify(missingSandboxBody)).not.toContain("sandbox-private-password");
             expect(JSON.stringify(missingSandboxBody)).not.toContain("private-sandbox-root");
+            expect(commandRunner.mock.calls).toHaveLength(callsBeforeMissingSandbox);
+
+            for (const command of ["device_start", "device_status"]) {
+                const preview = await fetch(endpoint, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({ method: "broker.command.invoke", params: {
+                        backend: "macos-vm", command, deviceId: "mac", dryRun: true,
+                    } }),
+                });
+                expect(preview.status).toBe(200);
+                const previewBody = await preview.json();
+                expect(previewBody).toMatchObject({ ok: true, result: {
+                    invoked: false, dryRun: true, device: { id: "mac", ssh: { passwordConfigured: true } },
+                    execution: { mode: "dry-run", mutatesHost: false },
+                } });
+                expect(JSON.stringify(previewBody)).not.toContain("macos-private-password");
+                expect(JSON.stringify(previewBody)).not.toContain("private-macos-root");
+            }
             expect(commandRunner.mock.calls).toHaveLength(callsBeforeMissingSandbox);
 
             const missing = await fetch(endpoint, {

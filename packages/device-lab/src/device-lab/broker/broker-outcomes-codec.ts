@@ -36,7 +36,7 @@ export function renderBrokerDeviceStatus(outcome: DeviceStatusOutcome<NativeStat
     }
     const hyperV = outcome.plan.backend === "windows-vm" || outcome.plan.backend === "linux-vm";
     const plan = statusPlan(outcome.plan);
-    const publicPlan = hyperV ? redactHyperVResultSecrets(plan) : plan;
+    const publicPlan = hyperV ? redactHyperVResultSecrets(plan) : { ...plan, device: redactDevice(plan.device) };
     if (outcome.kind === "preview")
         return { status: 200, payload: { ok: true, result: { ...publicPlan, invoked: false, dryRun: true,
                     execution: { mode: "dry-run", providerExecution: "available", mutatesHost: false } } } };
