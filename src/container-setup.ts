@@ -921,14 +921,14 @@ export function ensureClaudeInContainer(containerName: string): void {
 export function ensureTools(containerName: string, activeTool: ToolDefinition): void {
     if (activeTool.name === "opencode") prepareOpenCodeDataDirectory(containerName);
     createRequestedToolSetup({
-        ensureClaudeLauncher: ensureClaudeInContainer,
-        ensureNpmTool,
+        ensureClaudeLauncher: target => { ensureClaudeInContainer(target); return undefined; },
+        ensureNpmTool: (target, tool) => { ensureNpmTool(target, tool); return undefined; },
         probeLauncher: (target, path) => spawnSync(
             runtimeCli(),
             ["exec", target, "test", "-x", path],
             { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
         ),
-        ensureCodexSandbox: ensureCodexBubblewrap,
+        ensureCodexSandbox: target => { ensureCodexBubblewrap(target); return undefined; },
     }).ensure(containerName, activeTool);
 }
 

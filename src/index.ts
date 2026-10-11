@@ -4,6 +4,7 @@ import { spawnSync } from "child_process";
 import { createContainerExec, ensureContainerExecSetupAvailable, ensureContainerExecTools, containerExecReplacementBlockReason, resolveContainerExecTools, attachContainerExecClipboardImage } from "./application/container-exec.js";
 import { createNativeContainerExecPorts } from "./composition/container-exec.js";
 import type { ContainerExecOptions } from "./ports/container-exec.js";
+import { createWorkspaceOpen } from "./application/workspace/open.js";
 import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";
 import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
@@ -484,196 +485,53 @@ function repairBrokenWorktree(
     return admitWorkspaceContentRepair(cwd, wsPath, name, branch);
 }
 
-async function prepareWorktreeUnlocked(
-    cwd: string,
-    branch: string,
-): Promise<string> {
-    // Validate branch name early (C1 fix)
-    try {
-        validateBranchName(branch);
-    } catch (e) {
-        console.error(`Error: ${(e as Error).message}`);
-        process.exit(1);
-    }
-
-    const wsPath = getWorkspacePath(cwd, branch);
-
-    if (workspaceExists(cwd, branch)) {
-        if (hasGitMetadata(cwd)) {
-            repairWorkspaceRootOwnership(wsPath, cwd, branch);
-            try {
-                assertWorkspaceRootOwnership(wsPath, cwd);
-            } catch (error) {
-                if (!(error instanceof MissingWorkspaceRootRegistrationError)) throw error;
-                console.error(error.message);
-                console.error("");
-                let preflightFence: (() => void) | undefined;
-                if (!canRecreateMissingWorkspaceRootRegistration(
-                    wsPath,
-                    cwd,
-                    branch,
-                    (assertUnchanged) => { preflightFence = assertUnchanged; },
-                )) throw error;
-                const answer = await prompt(
-                    `Recreate the missing Git worktree registration now? (y/N) `,
-                    true,
-                );
-                if (answer !== "y" && answer !== "yes") throw error;
-                let recoveryFailure: string | undefined;
-                const repaired = repairWorkspaceRootOwnership(
-                    wsPath,
-                    cwd,
-                    branch,
-                    {
-                        confirmedMissingRegistration: true,
-                        reportFailure: (reason) => { recoveryFailure = reason; },
-                        preflightFence,
-                    },
-                );
-                if (!repaired) {
-                    throw new Error(
-                        `Could not recreate the missing Git worktree registration for '${wsPath}'. Workspace files were left unchanged.`
-                        + (recoveryFailure
-                            ? ` Reason: ${terminalSafeLiteral(recoveryFailure.slice(0, 500))}`
-                            : " Reason: Git registration conditions changed during recovery."),
-                    );
-                }
-                console.log(`Recreated Git worktree registration: ${wsPath}`);
-                assertWorkspaceRootOwnership(wsPath, cwd);
-            }
-        } else {
-            assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
-        }
-        // Check for branch collision (C2 fix): different branch names can map
-        // to the same workspace path (e.g., feature/login → feature-login)
-        const actualBranch = detectWorktreeWorkspaceBranch(wsPath) ?? "";
-        if (actualBranch && actualBranch !== branch) {
-            console.error(
-                `Error: Workspace exists for branch '${actualBranch}', not '${branch}'.`,
-            );
-            console.error(
-                `Different branches map to the same directory due to '/' → '-' conversion.`,
-            );
-            process.exit(1);
-        }
-        console.log(`Using existing workspace: ${wsPath}`);
-
-        // Repair: create worktrees for nested git repos that are missing
-        const repaired = repairWorkspace(cwd, wsPath, branch);
-        for (const repo of repaired) {
-            console.log(`  ${repo.name}: worktree (repaired)`);
-        }
-
-        // Detect broken worktrees (directories with content but not valid worktrees)
-        const broken = detectBrokenWorktrees(cwd, wsPath);
-        if (broken.length > 0) {
-            console.log(`Found ${broken.length} broken worktree(s):`);
-            for (const entry of broken) {
-                console.log(`  ${entry.name}: has content but is not a valid worktree`);
-            }
-            const answer = await prompt(
-                `Stash content and recreate as proper worktrees? (y/N) `,
-                true,
-            );
-            if (answer === "y" || answer === "yes") {
-                for (const entry of broken) {
-                    await repairBrokenWorktree(cwd, wsPath, entry.name, branch);
-                }
-            }
-        }
-    } else {
-        // Check if submodule setup is needed (not a git repo but has child git repos)
-        const submoduleRepos = needsSubmoduleSetup(cwd);
-        if (submoduleRepos) {
-            console.log(`This directory is not a git repository.`);
-            console.log(`Found git repos: ${submoduleRepos.join(", ")}`);
-            const answer = await prompt(
-                `Initialize as git repo and add them as submodules? (y/N) `,
-                true,
-            );
-            if (answer === "y" || answer === "yes") {
-                try {
-                    initWithSubmodules(cwd);
-                    console.log(`Initialized git repo with submodules.`);
-                } catch (e) {
-                    console.error(`Error: ${(e as Error).message}`);
-                    process.exit(1);
-                }
-            }
-        }
-
-        console.log(`Creating workspace for branch '${branch}'...`);
-        try {
-            const result = createWorkspace(cwd, branch);
-            console.log(`Workspace created: ${result.workspacePath}`);
-
-            for (const repo of result.created) {
-                const actionLabel =
-                    repo.action === "worktree-existing"
-                        ? "existing branch"
-                        : repo.action === "worktree-remote"
-                          ? "from remote"
-                          : "new branch";
-                console.log(`  ${repo.name}: worktree (${actionLabel})`);
-            }
-            for (const name of result.copied) {
-                console.log(`  ${name}: copied`);
-            }
-        } catch (e) {
-            console.error(`Error: ${(e as Error).message}`);
-            process.exit(1);
-        }
-    }
-
-    // `allowTrackedGitlinks` because this runs on both arms of the branch above, including the
-    // one that just opened an existing workspace. Without it, a tracked submodule whose
-    // workspace copy has no `.git` is refused here as "not owned by its source repository" —
-    // after ccc has already printed that it is continuing without it. The skip reached
-    // detection and the mounts and then died one call later, which is the same shape this task
-    // was opened to remove. The flag is not a blanket permission: isNestedTrackedGitlink checks
-    // the entry really is a tracked gitlink of its owner, and `removeWorkspace` already relies
-    // on exactly this. Creation-time protection is elsewhere — repairWorkspace's source scan.
-    assertWorkspaceBranch(wsPath, branch, spawnSync, cwd, { allowTrackedGitlinks: true });
-    return wsPath;
-}
+const workspaceOpen = createWorkspaceOpen({
+    path: (cwd, branch) => getWorkspacePath(cwd, branch),
+    projectId: path => getProjectId(path),
+    family: (projectId, attempt) => withProjectFamilyLifecycleLockAsync(projectId, attempt),
+    validateBranch: branch => { validateBranchName(branch); return undefined; },
+    exists: (cwd, branch) => workspaceExists(cwd, branch),
+    hasGitMetadata: cwd => hasGitMetadata(cwd),
+    repairRoot: (path, cwd, branch) => { repairWorkspaceRootOwnership(path, cwd, branch); return undefined; },
+    assertOwner: (path, cwd) => { assertWorkspaceRootOwnership(path, cwd); return undefined; },
+    missingRegistration: error => error instanceof MissingWorkspaceRootRegistrationError,
+    registrationPreflight: (path, cwd, branch) => {
+        let fence: (() => void) | undefined;
+        const possible = canRecreateMissingWorkspaceRootRegistration(path, cwd, branch, assertUnchanged => { fence = assertUnchanged; });
+        const captured = fence;
+        return possible ? { assertUnchanged: captured ? () => { captured(); return undefined; } : undefined } : null;
+    },
+    recoverRegistration: (path, cwd, branch, preflight) => {
+        let failure: string | undefined;
+        const repaired = repairWorkspaceRootOwnership(path, cwd, branch, {
+            confirmedMissingRegistration: true,
+            reportFailure: reason => { failure = reason; },
+            preflightFence: preflight.assertUnchanged,
+        });
+        return { repaired, failure };
+    },
+    safeLiteral: text => terminalSafeLiteral(text),
+    assertBranch: (path, branch, cwd, allowTrackedGitlinks) => {
+        assertWorkspaceBranch(path, branch, spawnSync, cwd, allowTrackedGitlinks ? { allowTrackedGitlinks: true } : undefined);
+        return undefined;
+    },
+    actualBranch: path => detectWorktreeWorkspaceBranch(path),
+    repairNested: (cwd, path, branch) => repairWorkspace(cwd, path, branch),
+    broken: (cwd, path) => detectBrokenWorktrees(cwd, path),
+    repairContent: (cwd, path, name, branch) => repairBrokenWorktree(cwd, path, name, branch),
+    submoduleRepos: cwd => needsSubmoduleSetup(cwd),
+    initSubmodules: cwd => { initWithSubmodules(cwd); return undefined; },
+    create: (cwd, branch) => createWorkspace(cwd, branch),
+    damage: error => error instanceof DamagedWorkspaceMetadataError ? { message: error.message, repairs: error.repairs } : null,
+    repairRegistration: repair => repairWorkspaceWorktree(repair),
+    prompt: question => prompt(question, true),
+    report: message => { console.log(message); return undefined; },
+    reportError: message => { console.error(message); return undefined; },
+    exit: code => process.exit(code),
+});
 
 async function prepareWorktree(cwd: string, branch: string): Promise<string> {
-    const workspacePath = getWorkspacePath(cwd, branch);
-    const projectId = getProjectId(workspacePath);
-    const run = () => withProjectFamilyLifecycleLockAsync(
-        projectId,
-        () => prepareWorktreeUnlocked(cwd, branch),
-    );
-    try {
-        return await run();
-    } catch (error) {
-        // ccc knows the repository, the checkout and the command. Printing the command and
-        // making the operator retype it is not a remedy — offer to run it.
-        if (!(error instanceof DamagedWorkspaceMetadataError) || error.repairs.length === 0) throw error;
-        console.error((error as Error).message);
-        console.error("");
-        for (const repair of error.repairs) {
-            console.error(`  git worktree repair ${repair.checkoutPath}`);
-            console.error(`    in ${repair.sourcePath}`);
-        }
-        const answer = await prompt(
-            `Run ${error.repairs.length === 1 ? "this" : "these"} now? (y/N) `,
-            true,
-        );
-        if (answer !== "y" && answer !== "yes") throw error;
-        let repairedAny = false;
-        for (const repair of error.repairs) {
-            const outcome = repairWorkspaceWorktree(repair);
-            console.error(outcome.ok
-                ? `  repaired ${repair.checkoutPath}`
-                : `  could not repair ${repair.checkoutPath}${outcome.detail ? `: ${outcome.detail}` : ""}`);
-            repairedAny ||= outcome.ok;
-        }
-        // Retried only when something actually changed, so a failed repair surfaces the
-        // original diagnosis instead of an identical second one.
-        if (!repairedAny) throw error;
-        return await run();
-    }
+    return workspaceOpen.open(cwd, branch);
 }
 
 export function withWorkspaceRemovalLifecycleLock<T>(
