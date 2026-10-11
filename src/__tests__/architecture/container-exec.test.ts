@@ -4,7 +4,8 @@ import type {ContainerExecPorts} from "../../ports/container-exec.js";
 import {createDefaultToolCatalog} from "../../domain/tool-registry.js";
 
 function fixture(options: {running?: boolean; replace?: boolean} = {}) {
-    const catalog = createDefaultToolCatalog(), events: string[] = [], handle = Symbol("owned preparation");
+    const catalog = createDefaultToolCatalog(), events: string[] = [];
+    const handle: symbol = Symbol("owned preparation");
     const forwarded: Array<[string, string]> = [["DUPLICATE", "first"], ["DUPLICATE", "last"]];
     const entries: Array<[string, string]> = [["container", "docker"], ...forwarded, ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["TZ", "Host/Zone"]];
     let first = true;
@@ -34,8 +35,8 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         attachClipboardImage: vi.fn(async (_path, args) => { events.push("attach"); return {args}; }),
         installProjectTools: vi.fn(), startClipboardBridge: vi.fn(() => { events.push("bridge"); }),
         observeCommandEnvironment: vi.fn(() => ({forwarded, skippedKeys: [], containerMarker: ["container", "docker"] as const, hostLangPresent: true, hostTimezone: "Host/Zone", observedTimezone: "Observed/Zone"})),
-        prepareCommand: vi.fn(() => { events.push("prepare"); return handle; }),
-        prepareCodexCommand: vi.fn(() => ({ok: true})),
+        prepareCommand: vi.fn<ContainerExecPorts<symbol>["prepareCommand"]>(() => { events.push("prepare"); return handle; }),
+        prepareCodexCommand: vi.fn<ContainerExecPorts<symbol>["prepareCodexCommand"]>(() => ({ok: true})),
         launchCommand: vi.fn(async () => { events.push("launch"); return 0; }),
         disposeCommand: vi.fn(() => { events.push("dispose"); }),
         reportConversationFiles: vi.fn(), setupFailure: cause => new Error("Container setup failed", {cause}),

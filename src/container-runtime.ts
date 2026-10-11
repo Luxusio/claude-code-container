@@ -362,16 +362,20 @@ function normalizeDockerMountSource(source: string): string {
     return `/run/desktop/mnt/host/${drive}/${rest}`;
 }
 
+/** Socket existence and fallback are native runtime facts. */
+export function containerManagerSocketPath(): string {
+    const info = getRuntimeInfo();
+    if (info.runtime === "docker") {
+        return info.socketPath ?? "/var/run/docker.sock";
+    }
+    const socket = info.socketPath ?? "/run/podman/podman.sock";
+    return existsSync(socket) ? socket : "/var/run/docker.sock";
+}
+
 /** Socket source and namespace are native runtime facts. */
 export function containerManagerSocketMountArgs(): string[] {
     const info = getRuntimeInfo();
-    let source: string;
-    if (info.runtime === "docker") {
-        source = info.socketPath ?? "/var/run/docker.sock";
-    } else {
-        const socket = info.socketPath ?? "/run/podman/podman.sock";
-        source = existsSync(socket) ? socket : "/var/run/docker.sock";
-    }
+    const source = containerManagerSocketPath();
     return bindMountArgs(source, "/var/run/docker.sock", {
         sourceNamespace: info.runtime === "docker" && source !== "/var/run/docker.sock" ? "daemon" : "client",
     });

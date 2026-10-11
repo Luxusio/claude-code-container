@@ -60,6 +60,7 @@ import {
 import {
     runtimeCli,
     containerEngineFailureHint,
+    containerManagerSocketPath,
     containerManagerSocketMountArgs,
     bindMountArgs,
     runtimeExtraRunArgs,
@@ -917,7 +918,7 @@ export function getLabRunnerUnsupportedReason(): string | null {
  * `systemctl --user start podman.socket`).
  */
 function resolveHostSocketPath(): string {
-    return nativeContainerLaunchArguments().resolveHostSocketPath();
+    return containerManagerSocketPath();
 }
 
 // === Container Name ===
