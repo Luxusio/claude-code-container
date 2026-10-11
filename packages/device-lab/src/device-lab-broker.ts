@@ -7117,6 +7117,7 @@ function deviceLabBackendToolArgs(parsed: DeviceToolParamSuccess): Record<string
         "enabled",
         "timeoutMs",
         "intervalMs",
+        "timeLimitSec",
         "helperTimeoutMs",
         "maxDepth",
         "maxNodes",
