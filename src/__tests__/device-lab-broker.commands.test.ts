@@ -26,6 +26,7 @@ import { deviceLabOwnerId, deviceLabProjectMountPath } from "@ccc/device-lab/dev
 import { readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from "@ccc/device-lab/device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { releaseHyperVNetworkAllocationAndCleanup } from "@ccc/device-lab/device-lab/broker/hyper-v/network.js";
+import { renderHyperVCreateStart } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { rememberHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey } from "@ccc/device-lab/device-lab/broker/hyper-v/console.js";
 import { hyperVVmName } from "@ccc/device-lab/host-control/hyper-v/index.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP } from "@ccc/hyper-v/low-level/powershell-transport.js";
@@ -343,6 +344,53 @@ describe("device-lab host broker lifecycle commands", () => {
         expect(redacted).not.toHaveProperty("args");
         expect(redacted).not.toHaveProperty("error");
         expect(JSON.stringify(redacted)).not.toContain("secret");
+    });
+
+    it.each([
+        { command: "device_start", reason: "provider-failed", providerFailure: undefined, status: 502 },
+        { command: "device_reboot", reason: "provider-failed", providerFailure: undefined, status: 502 },
+        { command: "device_start", reason: "conflict", providerFailure: "provider-command-failed", status: 409 },
+    ] as const)("reports a safe diagnostic for failed $command with $reason", ({ command, reason, providerFailure, status }) => {
+        const rendered = renderHyperVCreateStart({
+            kind: "operation-failed", reason, journalDisposition: "retain", recoveryDisposition: "required",
+            ownerId: "owner", backend: "windows-vm", command, deviceId: "owned",
+            error: reason === "conflict" ? "owner-device-state-conflict" : "provider-command-failed",
+            ...(providerFailure ? { providerFailure } : {}),
+            execution: {
+                mode: "exec", providerExecution: "executed", mutatesHost: false,
+                command: {
+                    mode: "exec", provider: "hyper-v", status: 1,
+                    receipt: {
+                        mode: "exec", provider: "hyper-v", executable: "C:\\secret\\powershell.exe",
+                        args: ["-EncodedCommand", "secret-program"], input: "secret-input", status: 1,
+                        stdout: "unrecognized host output", stderr: "localized host failure",
+                        error: "spawn C:\\secret\\powershell.exe failed",
+                    },
+                },
+            },
+        });
+        expect(rendered).toMatchObject({
+            status, payload: { ok: false, result: { execution: { command: {
+                status: 1, diagnosticCode: "hyper-v-provider-command-failed", outputRedacted: true,
+            } } } },
+        });
+        expect(JSON.stringify(rendered)).not.toContain("secret");
+    });
+
+    it.each(["success", "publication-conflict"] as const)("does not report provider failure for a successful start with %s", result => {
+        const facts = {
+            ownerId: "owner", backend: "windows-vm", command: "device_start", deviceId: "owned",
+            device: { id: "owned" }, invoked: true as const, dryRun: false as const,
+            plan: { availability: { kind: "available" as const, connection: { executable: "powershell" } } },
+            execution: { mode: "exec", providerExecution: "executed", mutatesHost: true,
+                command: { mode: "exec", provider: "hyper-v", status: 0, stdout: "{}", stderr: "" } },
+        };
+        const rendered = renderHyperVCreateStart(result === "success"
+            ? { ...facts, kind: "started", journalDisposition: "clear", recoveryDisposition: "already-handled" }
+            : { ...facts, kind: "operation-failed", reason: "conflict", error: "owner-device-state-conflict",
+                journalDisposition: "clear", recoveryDisposition: "required" });
+        expect(rendered).toMatchObject({ status: result === "success" ? 200 : 409 });
+        expect(JSON.stringify(rendered)).not.toContain("diagnosticCode");
     });
 
     let originalHomeRestore: (() => void) | undefined;

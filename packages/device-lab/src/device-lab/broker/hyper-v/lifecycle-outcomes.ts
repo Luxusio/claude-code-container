@@ -124,7 +124,9 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
     const publicExecution = execution ? {
         ...execution, ...(execution.command ? {
             command: {
-                ...renderHyperVExecution(execution.command), ...(execution.command.guestReadiness ? {
+                ...renderHyperVExecution(execution.command,
+                    ("reason" in outcome && outcome.reason === "provider-failed") || outcome.providerFailure !== undefined
+                        ? "hyper-v-provider-command-failed" : undefined), ...(execution.command.guestReadiness ? {
                     guestReadiness: execution.command.guestReadiness
                 } : {})
             }
