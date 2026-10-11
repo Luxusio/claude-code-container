@@ -3028,6 +3028,12 @@ describe("device-lab Hyper-V broker", () => {
             expect(forcedReboot.status, JSON.stringify(await forcedReboot.clone().json())).toBe(200);
             expect(rebootForces.at(-1)).toBe(true);
             const transferRoot = join(privateRoot, "transfers");
+            const refusedUpload = await tool("device_upload", { localPath: uploadPath, remotePath: "relative.txt" });
+            expect(refusedUpload.status).toBe(400);
+            expect(await refusedUpload.json()).toMatchObject({ ok: false, error: "hyper-v-linux-guest-path-invalid" });
+            expect(readFileSync(uploadPath, "utf8")).toBe("upload");
+            // No native effect started, so only the owned temporary stage is removed.
+            expect(readdirSync(transferRoot)).toEqual([]);
             scpFailure = "upload";
             const failedUpload = await tool("device_upload", { localPath: uploadPath, remotePath: "/tmp/upload.txt" });
             expect(failedUpload.status).toBe(502);

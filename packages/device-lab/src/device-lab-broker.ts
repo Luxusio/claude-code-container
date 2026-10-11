@@ -3827,8 +3827,9 @@ function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceI
 
 
 type HyperVDesktopStage = { path: string };
+type HyperVGuestConnection = { executable: string };
 function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOptions) {
-    const ports: HyperVDesktopTransferPorts<ReturnType<typeof createDeviceLabHyperVWindowsClient>, HyperVDesktopStage, Buffer> = {
+    const ports: HyperVDesktopTransferPorts<ReturnType<typeof createDeviceLabHyperVWindowsClient>, HyperVDesktopStage, Buffer, HyperVGuestConnection> = {
         executable: name => providerExecutable(name, normalized),
         incarnation: hyperVDeviceIncarnationId,
         validIncarnation: validHyperVIncarnationId,
@@ -3891,11 +3892,27 @@ function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOpti
         readStage: (stage, maxBytes) => readDeviceLabBinaryFile(stage.path, "hyper-v-guest-download-staging", maxBytes),
         disposeStage: stage => { rmSync(stage.path, { force: true }); },
         writeDestination: (path, bytes, label) => { writeDeviceLabBinaryFile(normalized.cwd, path, bytes, label); },
-        base64Text: text => Buffer.from(text, "utf8").toString("base64"),
         decodeBase64: encoded => Buffer.from(encoded, "base64"),
-        sshCommand: (facts, executable, command) => hyperVLinuxSshExecCommand({ ...facts, executable, guestCommand: command }),
-        uploadCommand: (facts, executable, path, remotePath) => hyperVLinuxScpUploadCommand({ ...facts, executable, localPath: path, remotePath }),
-        execute: async (command, timeoutMs, outputLimit) => hyperVProviderCommandRunner(normalized, command, { timeoutMs, outputLimit }),
+        guestConnection: operation => {
+            const executable = operation === 'upload'
+                ? providerExecutable('scp.exe', normalized) || providerExecutable('scp', normalized)
+                : providerExecutable('ssh.exe', normalized) || providerExecutable('ssh', normalized);
+            return executable ? { executable } : null;
+        },
+        prepareGuestExec: (facts, connection, guestCommand) => {
+            const command = hyperVLinuxSshExecCommand({ ...facts, executable: connection.executable, guestCommand });
+            return budget => hyperVProviderCommandRunner(normalized, command, budget);
+        },
+        prepareUpload: (facts, connection, localPath, remotePath) => {
+            const command = hyperVLinuxScpUploadCommand({ ...facts, executable: connection.executable, localPath, remotePath });
+            return budget => hyperVProviderCommandRunner(normalized, command, budget);
+        },
+        prepareRemoteRead: (facts, connection, remotePath, maxBytes) => {
+            const encodedPath = Buffer.from(remotePath, 'utf8').toString('base64');
+            const guestCommand = `set -o pipefail; p=$(printf %s ${encodedPath} | base64 -d); head -c ${maxBytes + 1} -- "$p" | base64 -w0`;
+            const command = hyperVLinuxSshExecCommand({ ...facts, executable: connection.executable, guestCommand });
+            return budget => hyperVProviderCommandRunner(normalized, command, budget);
+        },
         direct: (executable, timeoutMs, identity, action) => invokeDeviceLabHyperVGuestDirect({ executable, timeoutMilliseconds: timeoutMs, run: (command, options) => hyperVProviderCommandRunner(normalized, command, options), identity, action }),
         stateErrorCode: error => deviceLabStateFileErrorCode(error) || null,
         providerError: error => error instanceof HyperVWindowsError ? { code: error.code, validation: error.category === "validation" } : null,

@@ -27,6 +27,15 @@ and MCP response. Recursive window, focus, type and scroll operations inspect
 semantic success. Screenshot geometry is published before native image rendering.
 Actual guest and native process exit codes retain their original meanings.
 
+Linux guest execution, staged upload and bounded remote reads use finite native
+preparation capabilities with an opaque connection. Preparation validates the
+native command synchronously; the resulting single effect accepts execution
+budgets and returns a command receipt. SSH/SCP executable selection, argv and
+remote-read encoding stay in native composition. The application retains path
+admission, stage lifetime, output limits and publication, with command execution
+outside its invalid-options catch. An upload refused during preparation disposes
+its owned temporary stage before any native command starts.
+
 These changes add no operation to the WBS. They address four confirmed result
 seams; they do not certify every remaining application boundary, native platform
 or reliability requirement. Ordinary source contracts and business regressions

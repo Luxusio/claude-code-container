@@ -1,4 +1,4 @@
-import type { DesktopDevice, DesktopWindowList, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopCommand, DesktopSshFacts, DesktopFailureCategory } from '../domain/hyper-v-desktop-transfer.js';
+import type { DesktopDevice, DesktopWindowList, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopPreparedEffect, DesktopSshFacts, DesktopFailureCategory } from '../domain/hyper-v-desktop-transfer.js';
 export interface DesktopRoots {
     deviceRoot: string;
     privateRoot: string;
@@ -20,7 +20,7 @@ export interface DesktopRepairFailure {
 }
 export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
     readonly length: number;
-}> {
+}, Connection> {
     executable(name: string): string | null;
     incarnation(device: DesktopDevice): string | null;
     validIncarnation(value: unknown): value is string;
@@ -55,11 +55,11 @@ export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
     readStage(stage: Stage, maxBytes: number): Bytes | null;
     disposeStage(stage: Stage): undefined;
     writeDestination(path: string, bytes: Bytes, label: 'hyper-v-linux-guest-download' | 'hyper-v-guest-download'): undefined;
-    base64Text(text: string): string;
     decodeBase64(encoded: string): Bytes;
-    sshCommand(facts: DesktopSshFacts, executable: string, command: string): DesktopCommand;
-    uploadCommand(facts: DesktopSshFacts, executable: string, path: string, remotePath: string): DesktopCommand;
-    execute(command: DesktopCommand, timeoutMs: number, outputLimit: number): Promise<DesktopExecution>;
+    guestConnection(operation: 'exec' | 'upload' | 'read'): Connection | null;
+    prepareGuestExec(facts: DesktopSshFacts, connection: Connection, command: string): DesktopPreparedEffect;
+    prepareUpload(facts: DesktopSshFacts, connection: Connection, stagedPath: string, remotePath: string): DesktopPreparedEffect;
+    prepareRemoteRead(facts: DesktopSshFacts, connection: Connection, remotePath: string, maxBytes: number): DesktopPreparedEffect;
     direct(executable: string, timeoutMs: number, identity: DesktopIdentity & {
         credentialPath: string;
     }, action: DesktopDirectAction): Promise<DesktopDirectResult>;

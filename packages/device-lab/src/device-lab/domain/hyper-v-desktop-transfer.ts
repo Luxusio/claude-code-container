@@ -183,12 +183,8 @@ export type DesktopExecution = {
     error?: string;
     timedOut?: boolean;
 };
-export interface DesktopCommand {
-    mode: 'exec';
-    provider: string;
-    executable: string;
-    args: string[];
-}
+/** One prepared native effect; application selects execution budgets and interprets its observation. */
+export type DesktopPreparedEffect = (budget: { timeoutMs: number; outputLimit: number }) => Promise<DesktopExecution>;
 export interface DesktopSshFacts {
     deviceRoot: string;
     privateRoot: string;

@@ -1,8 +1,8 @@
-import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopCommand, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
+import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopPreparedEffect, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
 import type { HyperVDesktopTransferPorts } from '../ports/hyper-v-desktop-transfer.js';
 export function createHyperVDesktopTransferApplication<Console, Stage, Bytes extends {
     readonly length: number;
-}>(ports: HyperVDesktopTransferPorts<Console, Stage, Bytes>) {
+}, Connection>(ports: HyperVDesktopTransferPorts<Console, Stage, Bytes, Connection>) {
     async function invoke(ownerId: string, parsed: DesktopRequest, match: DesktopTarget): Promise<DesktopOutcome> {
         const deviceId = String(parsed.deviceId);
         let device = match.device;
@@ -323,7 +323,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             const common = {
                 deviceRoot, privateRoot, sshPrivateKeyPath, knownHostsPath, guestUsername, networkAddress, timeoutMs
             };
-            let providerCommand: DesktopCommand;
+            let preparedEffect: DesktopPreparedEffect;
             let localPath: string | null = null;
             let stage: {
                 handle: Stage;
@@ -333,21 +333,21 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             let downloadMaxBytes: number | null = null;
             try {
                 if (parsed.tool === "device_exec") {
-                    const ssh = ports.executable("ssh.exe") || ports.executable("ssh");
-                    if (!ssh)
+                    const connection = ports.guestConnection("exec");
+                    if (!connection)
                         return {
                             kind: 'failure', category: 'unavailable', facts: {
                                 ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
                             }
                         };
-                    providerCommand = ports.sshCommand(common, ssh, typeof parsed.params.command === "string" ? parsed.params.command : "");
+                    preparedEffect = ports.prepareGuestExec(common, connection, typeof parsed.params.command === "string" ? parsed.params.command : "");
                 }
                 else {
                     const rawLocalPath = parsed.localPath || "";
                     localPath = ports.localPath(rawLocalPath, "hyper-v-linux-guest-transfer");
                     if (parsed.tool === "device_upload") {
-                        const scp = ports.executable("scp.exe") || ports.executable("scp");
-                        if (!scp)
+                        const connection = ports.guestConnection("upload");
+                        if (!connection)
                             return {
                                 kind: 'failure', category: 'unavailable', facts: {
                                     ok: false, error: "missing-provider-command", missing: ["scp"], backend: match.backend, deviceId
@@ -356,32 +356,35 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         stage = ports.allocateStage(privateRoot, "upload", "hyper-v-linux-guest-transfer-staging");
                         const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
                         const source = ports.readSource(localPath, "hyper-v-linux-guest-upload", maxBytes);
-                        if (source === null)
+                        if (source === null) {
+                            ports.disposeStage(stage.handle);
                             return {
                                 kind: 'failure', category: 'missing', facts: {
                                     ok: false, error: "hyper-v-linux-guest-upload-source-missing", backend: match.backend, deviceId
                                 }
                             };
+                        }
                         sourceBytes = source.length;
                         ports.writeStage(privateRoot, stage.handle, source, "hyper-v-linux-guest-upload-staging");
-                        providerCommand = ports.uploadCommand(common, scp, stage.path, parsed.remotePath || "");
+                        preparedEffect = ports.prepareUpload(common, connection, stage.path, parsed.remotePath || "");
                     }
                     else {
                         downloadMaxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                        const ssh = ports.executable("ssh.exe") || ports.executable("ssh");
-                        if (!ssh)
+                        const connection = ports.guestConnection("read");
+                        if (!connection)
                             return {
                                 kind: 'failure', category: 'unavailable', facts: {
                                     ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
                                 }
                             };
                         const remotePath = parsed.remotePath || "";
-                        const encodedPath = ports.base64Text(remotePath);
-                        providerCommand = ports.sshCommand(common, ssh, `set -o pipefail; p=$(printf %s ${encodedPath} | base64 -d); head -c ${downloadMaxBytes + 1} -- "$p" | base64 -w0`);
+                        preparedEffect = ports.prepareRemoteRead(common, connection, remotePath, downloadMaxBytes);
                     }
                 }
             }
             catch (error) {
+                if (stage)
+                    ports.disposeStage(stage.handle);
                 return {
                     kind: 'failure', category: 'invalid', facts: {
                         ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-linux-guest-options"), backend: match.backend, deviceId
@@ -391,7 +394,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             const outputLimit = parsed.tool === "device_download" && downloadMaxBytes !== null
                 ? Math.ceil((downloadMaxBytes + 1) / 3) * 4 + 4096
                 : 32 * 1024;
-            const execution = await ports.execute(providerCommand, timeoutMs, outputLimit);
+            const execution = await preparedEffect({ timeoutMs, outputLimit });
             if (!desktopSucceeded(execution)) {
                 if (stage)
                     ports.disposeStage(stage.handle);
