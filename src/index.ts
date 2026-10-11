@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process";
-import { createContainerExec, ensureContainerExecSetupAvailable, ensureContainerExecTools, containerExecReplacementBlockReason, resolveContainerExecTools, attachContainerExecClipboardImage } from "./application/container-exec.js";
-import { createNativeContainerExecPorts } from "./composition/container-exec.js";
+import { createContainerExec, resolveContainerExecTools, attachContainerExecClipboardImage } from "./application/container-exec.js";
+import { createNativeContainerExecPorts, ensureContainerExecSetupAvailable, ensureContainerExecTools, containerExecReplacementBlockReason } from "./composition/container-exec.js";
 import type { ContainerExecOptions } from "./ports/container-exec.js";
 import { createWorkspaceOpen } from "./application/workspace/open.js";
 import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";

@@ -1,58 +1,40 @@
-import { interactiveCommand, type CodexLaunchPreparation } from "../../domain/tool-session/codex-launch.js";
-import { containerEngineFailureHint } from "../../domain/container-runtime.js";
+import { interactiveCommand, type CodexLaunchSemanticPreparation } from "../../domain/tool-session/codex-launch.js";
 import type { CodexLaunchPorts } from "../../ports/tool-session/codex-launch.js";
 
 export function createCodexLaunchPreparation<Start>(ports: CodexLaunchPorts<Start>) {
-    function prepare(command: readonly string[]): CodexLaunchPreparation {
+    function prepare(command: readonly string[]): CodexLaunchSemanticPreparation {
         const original = [...command];
         const unchanged = { ok: true as const, command: original };
         const interactive = interactiveCommand(command);
         if (!interactive) return unchanged;
-        const failure = (error: string, status = 1): CodexLaunchPreparation => ({ ok: false, command: original, status, error });
+        const failure = (reason: "engine-unavailable" | "profile-unsupported" | "initialization-failed", status = 1, cause?: unknown): CodexLaunchSemanticPreparation => ({ ok: false, command: original, status, reason, cause });
         try {
             const executable = ports.probeDaemonExecutable();
-            const engineFailure = executable.status !== 0 ? containerEngineFailureHint(executable.stderr) : undefined;
-            if (engineFailure) return failure(engineFailure);
-            if (executable.error || executable.signal || executable.status !== 1
-                || executable.stdout !== "ccc-codex-daemon-missing\n" || executable.stderr !== "") return unchanged;
+            if (executable.kind === "engine-unavailable") return failure("engine-unavailable", 1, executable.cause);
+            if (executable.kind !== "missing") return unchanged;
         } catch {
             return unchanged;
         }
+        // Preparing the native start remains outside the inconclusive-probe catches.
         const start = ports.prepareStart();
-        let help;
         try {
-            help = ports.probeDaemonStartHelp(start);
-            const engineFailure = help.status !== 0 ? containerEngineFailureHint(help.stderr) : undefined;
-            if (engineFailure) return failure(engineFailure);
+            const help = ports.probeDaemonStartHelp(start);
+            if (help.kind === "engine-unavailable") return failure("engine-unavailable", 1, help.cause);
+            if (help.kind !== "supported") return unchanged;
         } catch {
             return unchanged;
         }
-        if (help.error || help.signal || help.status !== 0
-            || !/Usage:\s+\S+\s+app-server\s+daemon\s+start\b/.test(String(help.stdout))) return unchanged;
-        if (interactive.profile) return failure("Codex daemon is missing; automatic initialization does not support --profile. Start the daemon with the intended configuration before resuming.");
+        if (interactive.profile) return failure("profile-unsupported");
         try {
             const initialized = ports.initializeDaemon(start, interactive.daemonArgs);
-            if (!initialized.error && !initialized.signal && initialized.status !== 0
-                && /Error: daemon executable not found at [^\r\n]+[\/]packages[\/]app-server-daemon[\/]current[\/]bin[\/]codex;/.test(String(initialized.stderr))) {
-                const help = ports.probeDaemonFallbackHelp();
-                if (!help.error && !help.signal && help.status === 0
-                    && /^\s+--no-daemon\s*$/m.test(String(help.stdout))) {
-                    return {
-                        ok: true,
-                        command: [original[0], "--no-daemon", ...original.slice(1)],
-                        notice: "Codex daemon installation is incomplete; running this session without the background server. Session history is preserved.",
-                    };
-                }
+            if (initialized.kind === "success") return unchanged;
+            if (initialized.kind === "installation-incomplete" && ports.probeDaemonFallbackHelp().kind === "supported") {
+                return { ok: true, command: original, reason: "installation-incomplete-fallback" };
             }
-            if (initialized.error || initialized.signal || initialized.status !== 0) {
-                const status = initialized.signal === "SIGINT" ? 130 : initialized.signal === "SIGTERM" ? 143 : initialized.signal === "SIGHUP" ? 129
-                    : typeof initialized.status === "number" && initialized.status > 0 ? initialized.status : 1;
-                const cause = initialized.error?.message || (initialized.signal ? `signal ${initialized.signal}` : String(initialized.stderr || initialized.stdout).trim() || `exit ${initialized.status}`);
-                return failure(`Codex daemon initialization failed: ${cause.slice(0, 1000)}`, status);
-            }
-            return unchanged;
+            return failure("initialization-failed", initialized.status, initialized.cause);
         } catch (error) {
-            return failure(`Codex daemon initialization failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 1000)}`);
+            const observed = ports.describeInitializationFailure(error);
+            return failure("initialization-failed", observed.status, observed.cause);
         }
     }
 

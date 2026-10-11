@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { containerEngineFailureHint, ContainerEngineUnavailableError } from "../domain/container-runtime.js";
+import { ContainerEngineUnavailableError } from "../domain/container-runtime.js";
+import { containerEngineFailureHint } from "../container-runtime.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

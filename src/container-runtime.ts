@@ -27,12 +27,18 @@ import { join } from "path";
 import { parseRuntimeOverride, type RuntimeName } from "./domain/container-runtime.js";
 import { createContainerRuntimeSelector } from "./application/container-runtime-selection.js";
 import { createDockerEndpointResolver } from "./application/docker-endpoint-selection.js";
-import { createContainerMountArguments } from "./application/container-launch-arguments.js";
+import type { BindMountArgumentOptions } from "./domain/container-launch-arguments.js";
 import { createRuntimeCapabilitiesCollector } from "./application/runtime-capabilities.js";
 import { createNativeRuntimeCapabilitiesObservations } from "./adapters/runtime-capabilities.js";
 import type { RuntimeInfo } from "./domain/runtime-capabilities.js";
 
 export type { RuntimeName } from "./domain/container-runtime.js";
+
+/** Transport diagnostics describe an unavailable engine, not a stopped container. */
+export function containerEngineFailureHint(stderr: unknown): string | undefined {
+    if (typeof stderr !== "string" || !/(?:request returned 5\d\d .*for API route and version|cannot connect to the docker daemon|error during connect:|connection refused.*(?:docker|podman)|(?:docker|podman).*connection refused)/i.test(stderr)) return undefined;
+    return "Container engine is unavailable. Docker Desktop returned a transport/server error; CCC stopped without restarting or replacing the container. Check Docker Desktop engine diagnostics, then retry when the engine is healthy. The API-version text alone does not establish a version mismatch.";
+}
 
 export type { RuntimeFlavor, RuntimeInfo } from "./domain/runtime-capabilities.js";
 
@@ -216,39 +222,88 @@ export function isSelinuxEnforcing(): boolean {
  * Whether bind-mounts need the `:Z` (private relabel) suffix.
  * Gated by CCC_SELINUX_RELABEL=auto|force|off (default auto = detect).
  */
-function nativeContainerMountArguments() {
-    return createContainerMountArguments({
-        readSelinuxRelabelMode: () => process.env.CCC_SELINUX_RELABEL,
-        readRuntimeName: () => runtimeCli(),
-        observeSelinuxEnforcing: () => isSelinuxEnforcing(),
-        readContainerMarker: () => process.env.container,
-        isVitestProcess: isVitestProcess,
-        observeCurrentContainerMounts: () => getCurrentContainerMounts(),
-        captureHostJoin: () => join,
-        readRuntimeInfo: () => getRuntimeInfo(),
-        readPodmanCgroups: () => process.env.CCC_PODMAN_CGROUPS,
-    });
-}
-
 export function needsSelinuxRelabel(): boolean {
-    return nativeContainerMountArguments().needsSelinuxRelabel();
+    const mode = (process.env.CCC_SELINUX_RELABEL ?? "auto").toLowerCase();
+    if (mode === "off") return false;
+    if (mode === "force") return true;
+    // auto: only on podman + SELinux enforcing. Docker manages labels itself.
+    if (runtimeCli() !== "podman") return false;
+    return isSelinuxEnforcing();
 }
 
-/**
- * Build a single `-v` bind mount spec, applying :Z / :ro suffixes as needed.
- * Returns ["-v", "<host>:<container>[:ro][:Z]"] argv pair.
- *
- * NOTE: Named volumes (no leading `/`) never get `:Z`. SELinux relabel only
- * applies to host-path bind mounts.
- */
+/** Build a single bind spec; named volumes never receive SELinux relabeling. */
 export function bindMountArgs(
     hostPath: string,
     containerPath: string,
-    opts: { readonly?: boolean; sourceNamespace?: "client" | "daemon" } = {},
+    opts: BindMountArgumentOptions = {},
 ): string[] {
-    return nativeContainerMountArguments().bindMountArgs(hostPath, containerPath, opts);
+    const suffixes: string[] = [];
+    if (opts.readonly) suffixes.push("ro");
+    const translatedHostPath = opts.sourceNamespace === "daemon"
+        ? hostPath
+        : translateCurrentContainerPath(hostPath);
+    const isHostPath = translatedHostPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(translatedHostPath);
+    if (isHostPath && needsSelinuxRelabel()) {
+        suffixes.push("Z");
+    }
+    const suffix = suffixes.length > 0 ? `:${suffixes.join(",")}` : "";
+    return ["-v", `${translatedHostPath}:${containerPath}${suffix}`];
 }
 
+function translateCurrentContainerPath(hostPath: string): string {
+    if (!hostPath.startsWith("/")) return hostPath;
+    if (process.env.container !== "docker" || isVitestProcess()) return hostPath;
+    if (runtimeCli() !== "docker") return hostPath;
+
+    const mounts = getCurrentContainerMounts();
+    let best: { source: string; destination: string } | null = null;
+    for (const mount of mounts) {
+        if (hostPath === mount.destination || hostPath.startsWith(`${mount.destination}/`)) {
+            if (!best || mount.destination.length > best.destination.length) {
+                best = mount;
+            }
+        }
+    }
+    if (!best) return hostPath;
+
+    const source = normalizeDockerMountSource(best.source);
+    const rel = hostPath.slice(best.destination.length).replace(/^\/+/, "");
+    return rel ? join(source, rel) : source;
+}
+
+/**
+ * Extra `run` args that are runtime-specific. On rootless podman we remap the
+ * host user to UID/GID 1000 inside the container — the UID of the image's
+ * `ccc` user. Plain `--userns=keep-id` preserves the host UID, which breaks
+ * when host UID ≠ 1000: the bind-mounted `~/.ccc/claude` and the mise named
+ * volume are both owned by UID 1000 inside the image, and a process running
+ * as the host UID can't chmod/write those paths ("Operation not permitted"
+ * when `claude.ai/install.sh` tries to chmod the downloaded binary).
+ *
+ * The same mapping is required for podman-machine (macOS/Windows): the VM
+ * runs rootless podman internally, so bind mounts coming through the machine
+ * VM land with a subuid that doesn't match container UID 1000 unless we
+ * explicitly remap. Without this, first-run claude install hits the same
+ * "Operation not permitted" chmod failure observed on Linux rootless.
+ *
+ * Requires Podman 4.3+ for the `:uid=,gid=` syntax (released Nov 2022).
+ */
+export function runtimeExtraRunArgs(): string[] {
+    const info = getRuntimeInfo();
+    const extras: string[] = [];
+    const podmanCgroups = (process.env.CCC_PODMAN_CGROUPS ?? "").toLowerCase();
+    if (
+        info.runtime === "podman"
+        && !info.remote
+        && (podmanCgroups === "disabled" || (podmanCgroups !== "enabled" && process.env.container === "docker"))
+    ) {
+        extras.push("--cgroups=disabled");
+    }
+    if (info.flavor === "podman-rootless" || info.flavor === "podman-machine") {
+        extras.push("--userns=keep-id:uid=1000,gid=1000");
+    }
+    return extras;
+}
 
 function isVitestProcess(): boolean {
     return Object.keys(process.env).some((key) => key === "VITEST" || key.startsWith("VITEST_"));
@@ -286,27 +341,6 @@ function getCurrentContainerMounts(): Array<{ source: string; destination: strin
 }
 
 /**
- * Extra `run` args that are runtime-specific. On rootless podman we remap the
- * host user to UID/GID 1000 inside the container — the UID of the image's
- * `ccc` user. Plain `--userns=keep-id` preserves the host UID, which breaks
- * when host UID ≠ 1000: the bind-mounted `~/.ccc/claude` and the mise named
- * volume are both owned by UID 1000 inside the image, and a process running
- * as the host UID can't chmod/write those paths ("Operation not permitted"
- * when `claude.ai/install.sh` tries to chmod the downloaded binary).
- *
- * The same mapping is required for podman-machine (macOS/Windows): the VM
- * runs rootless podman internally, so bind mounts coming through the machine
- * VM land with a subuid that doesn't match container UID 1000 unless we
- * explicitly remap. Without this, first-run claude install hits the same
- * "Operation not permitted" chmod failure observed on Linux rootless.
- *
- * Requires Podman 4.3+ for the `:uid=,gid=` syntax (released Nov 2022).
- */
-export function runtimeExtraRunArgs(): string[] {
-    return nativeContainerMountArguments().runtimeExtraRunArgs();
-}
-
-/**
  * Return a one-line human-readable summary of the detected runtime.
  * Used by `ccc runtime` and `ccc doctor`.
  */
@@ -318,4 +352,27 @@ export function formatRuntimeSummary(info: RuntimeInfo = getRuntimeInfo()): stri
         `socket=${info.socketPath ?? "none"}`,
     ];
     return parts.join(" ");
+}
+
+function normalizeDockerMountSource(source: string): string {
+    const match = source.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (!match) return source;
+    const drive = match[1].toLowerCase();
+    const rest = match[2].replace(/\\/g, "/");
+    return `/run/desktop/mnt/host/${drive}/${rest}`;
+}
+
+/** Socket source and namespace are native runtime facts. */
+export function containerManagerSocketMountArgs(): string[] {
+    const info = getRuntimeInfo();
+    let source: string;
+    if (info.runtime === "docker") {
+        source = info.socketPath ?? "/var/run/docker.sock";
+    } else {
+        const socket = info.socketPath ?? "/run/podman/podman.sock";
+        source = existsSync(socket) ? socket : "/var/run/docker.sock";
+    }
+    return bindMountArgs(source, "/var/run/docker.sock", {
+        sourceNamespace: info.runtime === "docker" && source !== "/var/run/docker.sock" ? "daemon" : "client",
+    });
 }

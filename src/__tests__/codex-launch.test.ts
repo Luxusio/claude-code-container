@@ -3,10 +3,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { transpileModule, ScriptTarget } from "typescript";
 import { prepareCodexLaunch } from "../codex-launch.js";
-
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+import { createContainerExec } from "../application/container-exec.js";
+import { createDefaultToolCatalog } from "../domain/tool-registry.js";
+import type { ContainerExecPorts } from "../ports/container-exec.js";
 
 const prefix = ["exec", "-w", "/project/with spaces", "--env-file", "/tmp/private-env", "ccc-fixture"];
 const bypass = "--dangerously-bypass-approvals-and-sandbox";
@@ -16,37 +16,47 @@ function probe(status: number | null, stdout = "", extra = {}) {
 function missingDaemon() { return probe(1, "ccc-codex-daemon-missing\n"); }
 const startHelp = "Usage: codex app-server daemon start [OPTIONS]\n";
 const ready = (command: string[]) => ({ ok: true, command });
-const envEntries = [["CCC_TEST_MARKER", "generated-nonsecret-fixture"]];
-const launchPrefix = prefix.slice(0, 3);
-function indexLaunchSlice() {
-    const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-    const start = source.indexOf("let preparationStatus:");
-    const end = source.indexOf("if (process.env.DEBUG)", start);
-    expect(start).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    const block = source.slice(start, end);
-    const creation = block.indexOf("const envFile = writeOwnedEnvFile(envEntries);");
-    const protectedStart = block.indexOf("try {");
-    expect(creation).toBeGreaterThan(0);
-    expect(protectedStart).toBeGreaterThan(creation);
-    const js = transpileModule(block + "\nreturn resultStatus;", {
-        compilerOptions: { target: ScriptTarget.ES2022 },
-    }).outputText;
-    const execute = new AsyncFunction("commandTool", "options", "prepareCodexLaunch", "runtimeCli", "execArgs", "containerName", "resolvedCmd", "process", "console", "CLAUDE_BIN_PATH", "cmd", "runContainerCommand", "restoreCodexConfigHostOwnership", "writeOwnedEnvFile", "envEntries", "buildCodexResumeRecoveryCommand", "confirmSessionOwnership", "setSessionCleanupEnabled", "withCodexConfigLock", "profile", "cleanupSession", js);
-    return (...args: unknown[]) => {
-        const output = args[8] as { warn?: (...messages: unknown[]) => void };
-        output.warn ??= vi.fn();
-        return execute(...args, vi.fn(), (operation: () => void, profile: string) => {
-            expect(profile).toBe("work");
-            return operation();
-        }, "work", vi.fn());
+function execFixture() {
+    const catalog = createDefaultToolCatalog(), handle = Symbol("prepared"), events: string[] = [];
+    const ports: ContainerExecPorts<symbol> = {
+        ensureRuntime: vi.fn(), resolveProject: () => "/fixture/project", ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
+        projectId: () => "fixture", debugEnabled: () => false, terminalReady: vi.fn(() => false), runtime: () => "docker",
+        tool: name => catalog.find(tool => tool.name === name), defaultTool: () => catalog[0],
+        detectWorktreeBranch: () => null, assertWorktreeBranch: vi.fn(),
+        async familyLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
+        acquireOwnership: async () => ({ lockFile: "/fixture/session.lock", existingId: "final-id" }),
+        inspectSessionContainer: () => ({ known: true, containerId: "final-id" }),
+        ensureClipboard: async () => null, clipboardPortFile: () => "/fixture/clipboard.port", clipboardConnection: () => ({}),
+        worktreeMounts: () => [], containerName: () => "fixture-container",
+        containerStatus: () => ({ exists: true, running: true, containerId: "final-id", imageId: "image" }),
+        sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
+        lifecycleLock<T>(_id: string, operation: () => T) { return operation(); },
+        async setupLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
+        startContainer: (_path, _directories, _mounts, _port, _profile, _recreate, _replacement, onReady) => {
+            onReady("final-id", { startedByInvocation: false }); return "fixture-container";
+        },
+        setSessionContainer: vi.fn(), setCleanupEnabled: vi.fn(), confirmOwnership: vi.fn(async () => { events.push("confirm"); }),
+        configLock<T>(operation: () => T) { return operation(); },
+        restoreConfig: vi.fn(() => { events.push("restore"); }), ensureUv: vi.fn(), buildMcpConfig: async () => [],
+        setupProxy: vi.fn(), containerRunning: () => true, installTools: vi.fn(), ensureClaude: vi.fn(),
+        prepareCodexConfig: vi.fn(), assertCodexState: vi.fn(), ensureCodexHarness: vi.fn(), syncClipboard: vi.fn(), ensureSocketAccess: vi.fn(),
+        isRestartRequired: () => false, attachClipboardImage: async (_path, args) => { events.push("attach"); return { args }; },
+        installProjectTools: vi.fn(), startClipboardBridge: () => { events.push("bridge"); },
+        observeCommandEnvironment: () => ({
+            forwarded: [["FIXTURE", "nonsecret"]], skippedKeys: [], containerMarker: ["container", "ccc"],
+            hostLangPresent: false, observedTimezone: "UTC",
+        }),
+        prepareCommand: vi.fn(() => { events.push("prepare"); return handle; }),
+        prepareCodexCommand: vi.fn<ContainerExecPorts<symbol>["prepareCodexCommand"]>(() => { events.push("codex"); return { ok: true }; }),
+        launchCommand: vi.fn(async () => { events.push("launch"); return 23; }),
+        disposeCommand: vi.fn(() => { events.push("dispose"); }), reportConversationFiles: vi.fn(),
+        setupFailure: cause => new Error("setup failed", { cause }),
+        setupToolFailure: cause => new Error("tool setup failed", { cause }),
+        handoffFailure: () => new Error("container handoff failed"),
+        invalidRuntimeFailure: () => new Error("invalid container runtime"),
+        cleanupSession: vi.fn(() => { events.push("cleanup"); }), report: vi.fn(),
     };
-}
-function ownedFixture(dispose: () => void) {
-    return vi.fn((entries: string[][]) => {
-        expect(entries).toBe(envEntries);
-        return { path: "/tmp/private-env", dispose };
-    });
+    return { ports, handle, events, exec: createContainerExec(ports).exec };
 }
 function runner(...results: ReturnType<typeof probe>[]) {
     const mock = vi.fn();
@@ -111,7 +121,7 @@ describe("non-destructive Codex launch", () => {
         expect(mock).not.toHaveBeenCalled();
     });
 
-    it.each([probe(0), probe(1), probe(1, "runtime unavailable"), probe(1, "ccc-codex-daemon-missing\n", { stderr: "container failed" }), probe(2), probe(126), probe(null, "", { signal: "SIGTERM" }), probe(null, "", { error: new Error("timeout") })])(
+    it.each([probe(0), probe(1), probe(1, "runtime unavailable"), probe(1, "ccc-codex-daemon-missing"), probe(1, "ccc-codex-daemon-missing\nextra"), probe(1, "ccc-codex-daemon-missing\n", { stderr: "container failed" }), probe(2), probe(126), probe(null, "", { signal: "SIGTERM" }), probe(null, "", { error: new Error("timeout") })])(
         "keeps invocation unchanged unless absence is positively confirmed: %j", result => {
             const command = ["codex", "resume", "session-id"];
             const mock = runner(result);
@@ -223,219 +233,80 @@ describe("non-destructive Codex launch", () => {
         expect(prepare(command, mock)).toEqual(ready(command));
     });
 
-    it("removes the destructive recovery ladder from the real launch entry point", () => {
-        const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-        for (const obsolete of ["offerCodexStateWipe", "CODEX_STATE_WIPE_COMMAND", "forceUpdateCodexInContainer", "isCodexLikelyFailure", "Wipe everything in ~/.codex"]) {
-            expect(source).not.toContain(obsolete);
-        }
-        expect(source).toContain("prepareCodexLaunch");
-    });
-
-    it.each([true, false])("runs common cleanup and launches TUI only after successful preparation (failed=%s)", async failed => {
-        const events: string[] = [];
-        const command = ["codex", "resume", "session-id"];
-        const launch = vi.fn(async () => { events.push("launch"); return 23; });
-        const runtime = vi.fn(() => "docker");
-        const confirm = vi.fn(async () => { events.push("confirmation"); });
-        const execute = indexLaunchSlice();
-        const status = await execute(
-            { name: "codex" }, { interactive: true },
-            () => failed ? { ok: false, command, status: 7, error: "initialization failed" } : ready(command),
-            runtime, [...launchPrefix], "ccc-fixture", command,
-            { stdin: { isTTY: false }, stdout: { isTTY: false } }, { error: vi.fn() }, "unused", command,
-            launch, () => events.push("ownership-cleanup"), ownedFixture(() => events.push("env-cleanup")), envEntries, (args: string[]) => args, confirm,
-        );
-        expect(status).toBe(failed ? 7 : 23);
-        expect(events).toEqual(failed ? ["confirmation", "ownership-cleanup", "env-cleanup"] : ["confirmation", "confirmation", "launch", "ownership-cleanup", "env-cleanup"]);
-        expect(confirm).toHaveBeenCalledTimes(failed ? 1 : 2);
-        expect(launch).toHaveBeenCalledTimes(failed ? 0 : 1);
-        expect(runtime).toHaveBeenCalledTimes(failed ? 1 : 2);
-        if (!failed) expect(launch.mock.calls[0]).toEqual(["docker", [...prefix, ...command], true]);
-    });
-    it.each([true, false])("wraps the prepared resume only with an interactive terminal (TTY=%s)", async tty => {
-        const command = ["codex", "resume", "session-id"];
-        const prepared = ["codex", "--no-daemon", "resume", "session-id"];
-        const wrapped = ["node", "-e", "fixture-supervisor"];
-        const wrapper = vi.fn(() => wrapped);
-        const events: string[] = [];
-        const confirm = vi.fn(async () => { events.push("confirmation"); });
-        const launch = vi.fn(async () => { events.push("launch"); return 19; });
-        const execute = indexLaunchSlice();
-        const status = await execute({ name: "codex" }, { interactive: true }, () => ready(prepared), () => "docker", ["exec"], "ccc-fixture", command,
-            { stdin: { isTTY: tty }, stdout: { isTTY: tty } }, { error: vi.fn() }, "unused", command, launch, vi.fn(), ownedFixture(vi.fn()), envEntries, wrapper, confirm);
-        expect(status).toBe(19);
-        expect(confirm).toHaveBeenCalledTimes(2);
-        expect(events).toEqual(["confirmation", "confirmation", "launch"]);
-        expect(wrapper).toHaveBeenCalledTimes(tty ? 1 : 0);
-        if (tty) expect(wrapper).toHaveBeenCalledWith(prepared);
-        expect(launch).toHaveBeenCalledExactlyOnceWith("docker", ["exec", "--env-file", "/tmp/private-env", ...(tty ? ["-it"] : []), "ccc-fixture", ...(tty ? wrapped : prepared)], true);
-    });
-
-    it.each(["resolve", "reject"] as const)("awaits session ownership confirmation before launch (%s)", async outcome => {
-        let resolveConfirmation!: () => void;
-        let rejectConfirmation!: (error: Error) => void;
-        const confirmation = new Promise<void>((resolve, reject) => {
-            resolveConfirmation = resolve;
-            rejectConfirmation = reject;
-        });
-        const events: string[] = [];
-        const confirm = vi.fn(() => { events.push("confirmation"); return confirmation; });
-        const launch = vi.fn(async () => { events.push("launch"); return 23; });
-        const cleanupOwnership = vi.fn(() => events.push("ownership-cleanup"));
-        const cleanupEnv = vi.fn(() => events.push("env-cleanup"));
-        const command = ["codex", "resume", "session-id"];
-        const execute = indexLaunchSlice();
-        const createEnv = ownedFixture(cleanupEnv);
-        const pending = execute({ name: "codex" }, { interactive: true }, () => ready(command), () => "docker", [...launchPrefix], "ccc-fixture", command,
-            { stdin: { isTTY: false }, stdout: { isTTY: false } }, { error: vi.fn() }, "unused", command, launch,
-            cleanupOwnership, createEnv, envEntries, (args: string[]) => args, confirm);
-        await Promise.resolve();
-        expect(confirm).toHaveBeenCalledExactlyOnceWith();
-        expect(createEnv).toHaveBeenCalledExactlyOnceWith(envEntries);
-        expect(events).toEqual(["confirmation"]);
-        expect(launch).not.toHaveBeenCalled();
-        expect(cleanupOwnership).not.toHaveBeenCalled();
-        expect(cleanupEnv).not.toHaveBeenCalled();
-
-        if (outcome === "reject") {
-            const error = new Error("session ownership confirmation rejected");
-            const rejection = expect(pending).rejects.toBe(error);
-            rejectConfirmation(error);
-            await rejection;
-            expect(launch).not.toHaveBeenCalled();
-            expect(cleanupOwnership).toHaveBeenCalledExactlyOnceWith("ccc-fixture", "work");
-            expect(cleanupEnv).toHaveBeenCalledExactlyOnceWith();
-            expect(events).toEqual(["confirmation", "ownership-cleanup", "env-cleanup"]);
-        } else {
-            resolveConfirmation();
-            expect(await pending).toBe(23);
-            expect(launch).toHaveBeenCalledExactlyOnceWith("docker", [...prefix, ...command], true);
-            expect(events).toEqual(["confirmation", "confirmation", "launch", "ownership-cleanup", "env-cleanup"]);
-        }
-    });
-
-    it.each([
-        "env-arguments", "preparation-runtime", "preparation", "preparation-error",
-        "preparation-notice", "tty-probe", "tty-arguments", "resume-command",
-        "container-arguments", "command-arguments", "confirmation", "launch-runtime",
-        "command", "restoration",
-    ])("disposes the resource and preserves command failure or status across %s", async stage => {
-        const failure = { stage, marker: "generated-nonsecret-failure" };
-        const events: string[] = [];
-        const fail = () => { throw failure; };
-        const command = ["codex", "resume", "session-id"];
-        const execArgs = [...launchPrefix];
-        const tty = stage === "tty-arguments" || stage === "resume-command";
-        const failedPush = stage === "env-arguments" ? "--env-file"
-            : stage === "tty-arguments" ? "-it"
-                : stage === "container-arguments" ? "ccc-fixture"
-                    : stage === "command-arguments" ? "codex" : undefined;
-        const push = vi.spyOn(execArgs, "push").mockImplementation((...args: string[]) => {
-            events.push(`args:${args[0]}`);
-            if (args[0] === failedPush) fail();
-            return Array.prototype.push.apply(execArgs, args);
-        });
-        let runtimeCalls = 0;
-        const runtime = vi.fn(() => {
-            runtimeCalls += 1;
-            events.push("runtime");
-            if (stage === "preparation-runtime" || (stage === "launch-runtime" && runtimeCalls === 2)) fail();
-            return "docker";
-        });
-        const preparation = vi.fn(() => {
-            events.push("preparation");
-            if (stage === "preparation") fail();
-            if (stage === "preparation-error") return { ok: false, command, status: 7, error: "fixture preparation failed" };
-            return { ...ready(command), ...(stage === "preparation-notice" ? { notice: "fixture notice" } : {}) };
-        });
-        const confirm = vi.fn(async () => {
-            events.push("confirmation");
-            if (stage === "confirmation") fail();
-        });
-        const launch = vi.fn(async () => {
-            events.push("launch");
-            if (stage === "command") fail();
-            return 23;
-        });
-        const restore = vi.fn(() => {
-            events.push("ownership-cleanup");
-            if (stage === "restoration") fail();
-        });
-        const dispose = vi.fn(() => { events.push("env-cleanup"); });
-        const create = ownedFixture(dispose);
-        create.mockImplementation(entries => {
-            expect(entries).toBe(envEntries);
-            expect(events).toEqual([]);
-            events.push("create");
-            return { path: "/tmp/private-env", dispose };
-        });
-        const stdin = { get isTTY() { if (stage === "tty-probe") fail(); return tty; } };
-        try {
-            const pending = indexLaunchSlice()(
-                { name: "codex" }, { interactive: true }, preparation, runtime, execArgs,
-                "ccc-fixture", command, { stdin, stdout: { isTTY: tty } },
-                { error: fail }, "unused", command, launch, restore, create, envEntries,
-                stage === "resume-command" ? fail : (args: string[]) => args, confirm,
-            );
-            if (stage === "restoration") await expect(pending).resolves.toBe(23);
-            else await expect(pending).rejects.toBe(failure);
-            expect(create).toHaveBeenCalledExactlyOnceWith(envEntries);
-            expect(dispose).toHaveBeenCalledExactlyOnceWith();
-            expect(events[0]).toBe("create");
-            expect(events.at(-1)).toBe("env-cleanup");
-            expect(launch).toHaveBeenCalledTimes(stage === "command" || stage === "restoration" ? 1 : 0);
-            expect(restore).toHaveBeenCalledTimes(1);
-            expect(confirm).toHaveBeenCalledTimes(stage === "confirmation" ? 1 : ["launch-runtime", "command", "restoration"].includes(stage) ? 2 : 0);
-        } finally {
-            push.mockRestore();
-        }
-    });
-
-    it("preserves a creation failure before any protected launch effect", async () => {
-        const failure = { marker: "generated-nonsecret-creation-failure" };
-        const effect = vi.fn();
-        const create = vi.fn(() => { throw failure; });
-        const args = [...launchPrefix];
-        const command = ["codex", "resume", "session-id"];
-        await expect(indexLaunchSlice()(
-            { name: "codex" }, { interactive: true }, effect, effect, args, "ccc-fixture", command,
-            { stdin: { isTTY: true }, stdout: { isTTY: true } }, { error: effect }, "unused", command,
-            effect, effect, create, envEntries, effect, effect,
-        )).rejects.toBe(failure);
-        expect(create).toHaveBeenCalledExactlyOnceWith(envEntries);
-        expect(args).toEqual(launchPrefix);
-        expect(effect).not.toHaveBeenCalled();
-    });
-
-    it("disposes if Claude argument construction throws before confirmation", async () => {
-        const failure = { marker: "generated-nonsecret-argument-failure" };
-        const command = ["claude", "fixture prompt"];
-        const commandArgs = { slice: vi.fn(() => { throw failure; }) };
-        const dispose = vi.fn();
-        const create = ownedFixture(dispose);
-        const preparation = vi.fn();
-        const launch = vi.fn();
-        const restore = vi.fn();
-        const confirm = vi.fn();
-        await expect(indexLaunchSlice()(
-            { name: "claude" }, { interactive: true }, preparation, () => "docker", [...launchPrefix],
-            "ccc-fixture", command, { stdin: { isTTY: false }, stdout: { isTTY: false } },
-            { error: vi.fn() }, "/fixture/claude", commandArgs, launch, restore, create, envEntries,
-            (args: string[]) => args, confirm,
-        )).rejects.toBe(failure);
-        expect(create).toHaveBeenCalledExactlyOnceWith(envEntries);
-        expect(commandArgs.slice).toHaveBeenCalledExactlyOnceWith(1);
-        expect(dispose).toHaveBeenCalledExactlyOnceWith();
-        expect(preparation).not.toHaveBeenCalled();
-        expect(confirm).not.toHaveBeenCalled();
-        expect(launch).not.toHaveBeenCalled();
-        expect(restore).toHaveBeenCalledExactlyOnceWith("ccc-fixture", "work");
-    });
-
 });
 
 
 const missingStart = () => probe(1, "", { stderr: "Error: daemon executable not found at /home/user/.codex/packages/app-server-daemon/current/bin/codex; run daemon update" });
+describe("actual application Codex preparation lifetime", () => {
+    it.each([false, true])("prepares before terminal observation and recovers only with a terminal (TTY=%s)", async tty => {
+        const f = execFixture();
+        vi.mocked(f.ports.terminalReady).mockImplementation(() => { f.events.push("terminal"); return tty; });
+        expect(await f.exec("/fixture", ["codex", "resume", "session-id"], {}, "work")).toBe(23);
+        expect(f.events.indexOf("attach")).toBeLessThan(f.events.indexOf("bridge"));
+        expect(f.events.indexOf("bridge")).toBeLessThan(f.events.indexOf("prepare"));
+        expect(f.events.indexOf("codex")).toBeLessThan(f.events.indexOf("terminal"));
+        expect(f.ports.prepareCodexCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.ports.launchCommand).toHaveBeenCalledExactlyOnceWith(f.handle, { interactive: true, terminal: tty, codexRecovery: tty });
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+        expect(f.ports.restoreConfig).toHaveBeenLastCalledWith("final-id", "work");
+    });
+    it("bypasses daemon preparation and terminal observation for a noninteractive request", async () => {
+        const f = execFixture(); await f.exec("/fixture", ["codex"], { interactive: false });
+        expect(f.ports.prepareCodexCommand).not.toHaveBeenCalled(); expect(f.ports.terminalReady).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).toHaveBeenCalledExactlyOnceWith(f.handle, { interactive: false, terminal: false, codexRecovery: false });
+    });
+    it("confirms refused preparation ownership, returns its status and disposes without launching", async () => {
+        const f = execFixture();
+        vi.mocked(f.ports.prepareCodexCommand).mockImplementation(() => { f.events.push("codex"); return { ok: false, status: 7, reason: "initialization-failed" }; });
+        expect(await f.exec("/fixture", ["codex"])).toBe(7);
+        expect(f.events.slice(f.events.indexOf("codex")).filter(event => event !== "terminal")).toEqual(["codex", "confirm", "restore", "dispose", "cleanup"]);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+    it.each(["resolve", "reject"] as const)("awaits final ownership confirmation before launch (%s)", async outcome => {
+        const f = execFixture(), cause = new Error("ownership refused");
+        let release!: () => void, reject!: (cause: Error) => void, reached!: () => void;
+        const atConfirmation = new Promise<void>(resolve => { reached = resolve; });
+        const confirmation = new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
+        vi.mocked(f.ports.prepareCommand).mockImplementation(() => {
+            vi.mocked(f.ports.confirmOwnership).mockImplementation(() => { reached(); return confirmation; });
+            return f.handle;
+        });
+        const pending = f.exec("/fixture", ["codex"]);
+        await atConfirmation;
+        expect(f.ports.launchCommand).not.toHaveBeenCalled(); expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+        if (outcome === "reject") {
+            const rejected = expect(pending).rejects.toBe(cause); reject(cause); await rejected;
+            expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        } else { release(); expect(await pending).toBe(23); }
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+    it.each(["codex", "terminal", "launch"] as const)("preserves a prepared operation failure across cleanup (%s)", async stage => {
+        const f = execFixture(), cause = new Error(stage), fail = () => { throw cause; };
+        if (stage === "codex") vi.mocked(f.ports.prepareCodexCommand).mockImplementation(fail);
+        else if (stage === "terminal") vi.mocked(f.ports.terminalReady).mockImplementation(fail);
+        else vi.mocked(f.ports.launchCommand).mockRejectedValue(cause);
+        await expect(f.exec("/fixture", ["codex"])).rejects.toBe(cause);
+        expect(f.ports.disposeCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+    it("launches a qualified fallback exactly once and reports its finite notice", async () => {
+        const f = execFixture();
+        vi.mocked(f.ports.prepareCodexCommand).mockReturnValue({ ok: true, reason: "installation-incomplete-fallback" });
+        expect(await f.exec("/fixture", ["codex", "resume", "old"])).toBe(23);
+        expect(f.ports.report).toHaveBeenCalledWith({ kind: "codex-preparation", result: { ok: true, reason: "installation-incomplete-fallback" } });
+        expect(f.ports.launchCommand).toHaveBeenCalledTimes(1); expect(f.ports.disposeCommand).toHaveBeenCalledTimes(1);
+    });
+    it.each([false, true])("disposes when preparation presentation throws (refused=%s)", async refused => {
+        const f = execFixture(), cause = new Error("presentation failed");
+        vi.mocked(f.ports.prepareCodexCommand).mockReturnValue(refused
+            ? { ok: false, status: 7, reason: "initialization-failed" }
+            : { ok: true, reason: "installation-incomplete-fallback" });
+        vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "codex-preparation") throw cause; });
+        await expect(f.exec("/fixture", ["codex"])).rejects.toBe(cause);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+});
 const fallbackHelp = "Usage: codex [OPTIONS]\n      --no-daemon\n          Run an in-process server\n";
 
 describe("one-session fallback for a positively broken daemon installation", () => {
@@ -494,20 +365,5 @@ describe("one-session fallback for a positively broken daemon installation", () 
             expect(mock).toHaveBeenCalledTimes(4);
             for (const file of files) expect(readFileSync(file, "utf8")).toBe("retain original bytes\n");
         } finally { rmSync(home, { recursive: true, force: true }); }
-    });
-    it("launches the returned fallback command once, prints the notice, and still cleans up", async () => {
-        const events: string[] = [];
-        const command = ["codex", "resume", "session-id"];
-        const fallback = ["codex", "--no-daemon", "resume", "session-id"];
-        const launch = vi.fn(async () => { events.push("launch"); return 0; });
-        const confirm = vi.fn(async () => { events.push("confirmation"); });
-        const execute = indexLaunchSlice();
-        const result = await execute({ name: "codex" }, { interactive: true }, () => ({ ok: true, command: fallback, notice: "daemon fallback" }), () => "docker", [...launchPrefix], "ccc-fixture", command,
-            { stdin: { isTTY: false }, stdout: { isTTY: false } }, { error: (message: string) => events.push(message) }, "unused", command, launch,
-            () => events.push("ownership-cleanup"), ownedFixture(() => events.push("env-cleanup")), envEntries, (args: string[]) => args, confirm);
-        expect(result).toBe(0);
-        expect(confirm).toHaveBeenCalledTimes(2);
-        expect(launch).toHaveBeenCalledExactlyOnceWith("docker", [...prefix, ...fallback], true);
-        expect(events).toEqual(["[ccc] daemon fallback", "confirmation", "confirmation", "launch", "ownership-cleanup", "env-cleanup"]);
     });
 });

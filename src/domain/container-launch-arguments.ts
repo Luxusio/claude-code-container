@@ -1,20 +1,6 @@
-import type { RuntimeName } from "./container-runtime.js";
-
 export interface BindMountArgumentOptions {
     readonly?: boolean;
     sourceNamespace?: "client" | "daemon";
-}
-
-export interface LaunchRuntimeFacts {
-    runtime: RuntimeName;
-    flavor: string;
-    socketPath: string | null;
-    remote: boolean;
-}
-
-export interface CurrentContainerMount {
-    source: string;
-    destination: string;
 }
 
 export interface ContainerLaunchLabConfig {
@@ -70,10 +56,26 @@ export interface ContainerLaunchOptions<Identity> {
     containerHostRemote?: boolean;
 }
 
-export function normalizeDockerMountSource(source: string): string {
-    const match = source.match(/^([A-Za-z]):[\\/](.*)$/);
-    if (!match) return source;
-    const drive = match[1].toLowerCase();
-    const rest = match[2].replace(/\\/g, "/");
-    return `/run/desktop/mnt/host/${drive}/${rest}`;
+export type ContainerLaunchOperation =
+    | { kind: "bind"; source: string; destination: string; readonly?: boolean }
+    | { kind: "socket" }
+    | { kind: "tmpfs"; destination: string; mode: number; noexec: boolean; nosuid: boolean; nodev: boolean }
+    | { kind: "execution"; workdir: string; pidsLimit: string }
+    | { kind: "runtime-extras" }
+    | { kind: "ssh-command" }
+    | { kind: "env"; key: string; value: string }
+    | { kind: "device"; source: string; destination: string }
+    | { kind: "group"; id: number }
+    | { kind: "management-labels"; projectPath: string; profile: string; cliVersion: string }
+    | { kind: "label"; key: string; value: string };
+
+export interface ContainerLaunchPlan {
+    containerName: string;
+    hostname: string;
+    imageName: string;
+    network: "host";
+    init: true;
+    seccomp: "unconfined";
+    capabilities: string[];
+    operations: ContainerLaunchOperation[];
 }

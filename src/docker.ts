@@ -29,7 +29,7 @@ import { createContainerSessionHandoff } from "./application/container-session-h
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
-import { containerEngineFailureHint, ContainerEngineUnavailableError } from "./domain/container-runtime.js";
+import { ContainerEngineUnavailableError } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
 import { createOrderedCodexConfigPreparation } from "./application/credentials/codex-config-preparation.js";
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
@@ -59,6 +59,8 @@ import {
 } from "./utils.js";
 import {
     runtimeCli,
+    containerEngineFailureHint,
+    containerManagerSocketMountArgs,
     bindMountArgs,
     runtimeExtraRunArgs,
     isContainerHostRemote,
@@ -760,24 +762,15 @@ export interface LabRunnerRunConfig {
     unsupportedReason?: string;
 }
 
-// Docker Compose-compatible labels for Docker Desktop grouping.
-// com.docker.compose.* labels are undocumented internals but stable since Compose V2.
-// Podman accepts arbitrary labels as opaque strings.
-const invokeContainerArgumentMethod = Reflect.apply;
-
 function nativeContainerLaunchArguments() {
     return createContainerLaunchArguments<ContainerUserIdentity>({
-        captureBindMountArgs: () => bindMountArgs,
-        captureRuntimeExtraRunArgs: () => runtimeExtraRunArgs,
-        readRuntimeInfo: () => getRuntimeInfo(),
-        captureExistsSync: () => existsSync,
-        captureHostJoin: () => join,
-        captureIdentityLabels: () => getIdentityLabels,
-        captureEntries: () => {
-            const receiver = Object;
-            const entries = receiver.entries;
-            return value => invokeContainerArgumentMethod(entries, receiver, [value]);
-        },
+        observeHostFacts: (opts) => ({
+            ownerDirectory: opts.deviceLabStateHostDir && opts.deviceLabOwnerId
+                ? join(opts.deviceLabStateHostDir, "owners", opts.deviceLabOwnerId)
+                : undefined,
+            clipboardPortFilePresent: !!opts.clipboardPortFile && existsSync(opts.clipboardPortFile),
+        }),
+        identityLabels: (identity) => Object.entries(getIdentityLabels(identity)),
         readCliVersion: () => CLI_VERSION,
         readProjectMountIdentityLabel: () => PROJECT_MOUNT_IDENTITY_LABEL,
         readDeviceLabMountIdentityLabel: () => DEVICE_LAB_MOUNT_IDENTITY_LABEL,
@@ -792,7 +785,66 @@ export const CONTAINER_INIT_UNAVAILABLE_HINT = "[ccc] If the error above mention
     + "the container runtime has no init binary for --init: install docker-init/tini (Docker) or catatonit (Podman).";
 
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
-    return nativeContainerLaunchArguments().buildRunArgs(opts);
+    const plan = nativeContainerLaunchArguments().buildPlan(opts);
+    const args: string[] = ["run", "-d", "--name", plan.containerName,
+        "--hostname", plan.hostname, "--network", plan.network,
+        "--security-opt", `seccomp=${plan.seccomp}`];
+    for (const capability of plan.capabilities) args.push("--cap-add", capability);
+    if (plan.init) args.push("--init");
+    for (const operation of plan.operations) {
+        switch (operation.kind) {
+            case "bind":
+                args.push(...bindMountArgs(operation.source, operation.destination, { readonly: operation.readonly }));
+                break;
+            case "socket":
+                args.push(...containerManagerSocketMountArgs());
+                break;
+            case "tmpfs": {
+                const options = ["rw"];
+                if (operation.noexec) options.push("noexec");
+                if (operation.nosuid) options.push("nosuid");
+                if (operation.nodev) options.push("nodev");
+                options.push(`mode=${operation.mode.toString(8).padStart(4, "0")}`);
+                args.push("--tmpfs", `${operation.destination}:${options.join(",")}`);
+                break;
+            }
+            case "execution":
+                args.push("-w", operation.workdir, "--pids-limit", operation.pidsLimit);
+                break;
+            case "runtime-extras":
+                args.push(...runtimeExtraRunArgs());
+                break;
+            case "ssh-command":
+                args.push("-e", "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519");
+                break;
+            case "env":
+                args.push("-e", `${operation.key}=${operation.value}`);
+                break;
+            case "device":
+                args.push("--device", `${operation.source}:${operation.destination}`);
+                break;
+            case "group":
+                args.push("--group-add", String(operation.id));
+                break;
+            case "management-labels":
+                // Docker Desktop groups these Compose-compatible implementation labels.
+                args.push("--label", "com.docker.compose.project=ccc",
+                    "--label", `com.docker.compose.service=${plan.containerName}`,
+                    "--label", "com.docker.compose.oneoff=False",
+                    "--label", "com.docker.compose.version=2",
+                    "--label", "com.docker.compose.container-number=1",
+                    "--label", "ccc.managed=true",
+                    "--label", `ccc.project.path=${operation.projectPath}`,
+                    "--label", `ccc.profile=${operation.profile}`,
+                    "--label", `ccc.cli.version=${operation.cliVersion}`);
+                break;
+            case "label":
+                args.push("--label", `${operation.key}=${operation.value}`);
+                break;
+        }
+    }
+    args.push(plan.imageName);
+    return args;
 }
 
 export function isLabRunnerProfile(profile?: string): boolean {
@@ -2622,6 +2674,26 @@ function startProjectContainerLocked(
             projectMountSourceIdentity,
             profile,
         ),
+        assertProjectSources: () => { assertPreparedProjectMountSources(); },
+        assertDeviceSources: () => { assertPreparedDeviceLabMountSources(preparedDeviceLabSources); },
+        assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
+        verifyCreated: (id) => {
+            const verification = verifyCreatedContainerBindMounts(
+                id,
+                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"
+                    || (runtimeInfo.runtime === "docker" && mount.sourceProof?.kind === "daemon"
+                        && mount.hostPath !== CONTAINER_MANAGER_SOCKET)),
+                projectMountIdentity,
+            );
+            if (verification.kind === "verified") publishStarted(id);
+            return verification;
+        },
+        syncMcp: (id) => { syncManagedMcpBundles(id); },
+        fixSsh: (id) => { fixSshPermissions(id); },
+        syncGit: (id) => { syncHostGitConfig(id); },
+        finish: (id) => finish(id, true),
+    }, {
+        createCli: cli,
         prepareRunArgs: () => buildDockerRunArgs({
             containerName,
             fullPath,
@@ -2652,26 +2724,6 @@ function startProjectContainerLocked(
             proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
             containerHostRemote: process.platform !== "linux" || isContainerHostRemote(),
         }),
-        assertProjectSources: () => { assertPreparedProjectMountSources(); },
-        assertDeviceSources: () => { assertPreparedDeviceLabMountSources(preparedDeviceLabSources); },
-        assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
-        verifyCreated: (id) => {
-            const verification = verifyCreatedContainerBindMounts(
-                id,
-                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"
-                    || (runtimeInfo.runtime === "docker" && mount.sourceProof?.kind === "daemon"
-                        && mount.hostPath !== CONTAINER_MANAGER_SOCKET)),
-                projectMountIdentity,
-            );
-            if (verification.kind === "verified") publishStarted(id);
-            return verification;
-        },
-        syncMcp: (id) => { syncManagedMcpBundles(id); },
-        fixSsh: (id) => { fixSshPermissions(id); },
-        syncGit: (id) => { syncHostGitConfig(id); },
-        finish: (id) => finish(id, true),
-    }, {
-        createCli: cli,
         beforeCreating: prepareRetainedState,
         createFailureHint: CONTAINER_INIT_UNAVAILABLE_HINT,
         labWarning: () => isLabRunnerProfile(profile) && labRunner.status === "unsupported"

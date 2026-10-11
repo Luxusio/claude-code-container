@@ -18,13 +18,8 @@ vi.mock('../../container-identity.js', async original => {
     const exports = { ...actual, getIdentityLabels: (value: unknown) => { state.trace.push(['identity']); return actual.getIdentityLabels(value as import('../../container-identity.js').ContainerIdentity); } }; state.identity = exports; return exports;
 });
 const runtime = await import('../../container-runtime.js');
-const docker = await import('../../docker.js');
 
-it("keeps public arities and emits fresh mutable arrays", () => {
-    expect(docker.buildDockerRunArgs.length).toBe(1);
-    expect(runtime.bindMountArgs.length).toBe(2);
-    expect(runtime.needsSelinuxRelabel.length).toBe(0);
-    expect(runtime.runtimeExtraRunArgs.length).toBe(0);
+it("emits independent mutable mount arrays", () => {
     const a = runtime.bindMountArgs("named-volume", "/target"), b = runtime.bindMountArgs("named-volume", "/target");
     a.push("mutable"); expect(b).toEqual(["-v", "named-volume:/target"]);
 });

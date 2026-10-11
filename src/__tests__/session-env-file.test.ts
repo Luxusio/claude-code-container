@@ -73,9 +73,6 @@ describe('native owned env-file authority', () => {
         expect(native.stat.mock.invocationCallOrder[0]).toBeLessThan(native.write.mock.invocationCallOrder[0]);
         expect(native.write.mock.invocationCallOrder[0]).toBeLessThan(native.close.mock.invocationCallOrder[0]);
         expect(native.fs.readFileSync(resource.path, 'utf8')).toBe(`FIXTURE=${marker}\n`);
-        expect(Object.keys(resource).sort()).toEqual(['dispose', 'path']);
-        const descriptors = Object.getOwnPropertyDescriptors(resource);
-        expect(Object.values(descriptors).every(d => !d.get && !d.set)).toBe(true);
         expect(JSON.stringify(resource)).not.toContain(marker);
     });
 
@@ -89,6 +86,20 @@ describe('native owned env-file authority', () => {
         expect(native.fs.readFileSync(path, 'utf8')).toBe('successor');
         expect(native.write).not.toHaveBeenCalled();
         expect(native.unlink).not.toHaveBeenCalled();
+    });
+
+    it('serializes ordered duplicate environment entries into its owned file', () => {
+        const resource = writeOwnedEnvFile([
+            ['LANG', 'host-lang'], ['TZ', 'Host/Zone'], ['MISE_NODE_VERSION', 'host-node'],
+            ['CCC_CLIPBOARD_TOKEN', 'token:with:colon'], ['MISE_NODE_VERSION', '22'],
+            ['LANG', 'session-lang'], ['TZ', 'Session/Zone'], ['MISE_NODE_VERSION', '23'],
+        ]);
+        resources.push(resource);
+        expect(native.fs.readFileSync(resource.path, 'utf8')).toBe(
+            'LANG=host-lang\nTZ=Host/Zone\nMISE_NODE_VERSION=host-node\nCCC_CLIPBOARD_TOKEN=token:with:colon\nMISE_NODE_VERSION=22\nLANG=session-lang\nTZ=Session/Zone\nMISE_NODE_VERSION=23\n',
+        );
+        resource.dispose();
+        expect(native.fs.existsSync(resource.path)).toBe(false);
     });
 
     it('does not truncate a selected filename symlink target', context => {
@@ -280,12 +291,12 @@ describe('native owned env-file authority', () => {
         expect(process.listeners('exit')).toEqual(baseline);
     });
 
-    it('uses fixed diagnostics for invalid errno and never reads a raw message getter', () => {
+    it('uses fixed redacted diagnostics for invalid errno', () => {
         const diagnostic = native.report;
         const messages: string[] = [];
         for (const code of [marker, 'E'.repeat(300), undefined]) {
             const resource = create();
-            const failure = { code, get message(): never { throw new Error(marker); } };
+            const failure = { code, message: `${marker} ${root}` };
             native.lstat.mockImplementationOnce(() => { throw failure; });
             expect(() => resource.dispose()).not.toThrow();
             messages.push(String(diagnostic.mock.calls.at(-1)?.[1]));

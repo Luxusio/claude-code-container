@@ -21,10 +21,11 @@ vi.mock("fs", async original => ({
 vi.mock("os", async original => ({
     ...await original<typeof import("node:os")>(), homedir: () => "/fixture/home",
 }));
-vi.mock("../../container-runtime.js", () => ({
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(),
     runtimeCli: native.runtime,
     isContainerHostRemote: native.remote,
-    getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false }),
+    getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false, socketPath: "/var/run/docker.sock" }),
     runtimeExtraRunArgs: () => [],
     bindMountArgs: (host: string, container: string, options?: { readonly?: boolean }) => ["-v", `${host}:${container}${options?.readonly ? ":ro" : ""}`],
 }));
@@ -70,7 +71,6 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
     const ports: SuppliedPorts = {
         withFamilyLock: (prefix, operation) => { order.push(`lock:${prefix}`); return operation(); },
         namespaceExists: vi.fn(() => false), findCollision: vi.fn(() => null),
-        prepareRunArgs: vi.fn(() => { order.push("args"); return args; }),
         assertProjectSources: effect("project"), assertDeviceSources: effect("device"),
         assertFilesystemSources: effect("filesystem"),
         verifyCreated: vi.fn(() => ({ kind: "verified", via: "identity" } as const)),
@@ -80,6 +80,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
     };
     const context: NativeContainerCreateLifecycleContext = {
         createCli: "captured-runtime", createFailureHint: "original-init-hint",
+        prepareRunArgs: vi.fn(() => { order.push("args"); return args; }),
         labWarning: vi.fn(() => { order.push("warning-fact"); return null; }),
         explicitlyNotFound: vi.fn(() => true),
     };
@@ -142,37 +143,39 @@ describe("actual creation application through native composition", () => {
             const f = fixture(override);
             expect(() => f.lifecycle.run(request)).toThrow();
             expect(f.context.labWarning).not.toHaveBeenCalled();
-            expect(f.ports.prepareRunArgs).not.toHaveBeenCalled();
+            expect(f.context.prepareRunArgs).not.toHaveBeenCalled();
             expect(native.spawn).not.toHaveBeenCalled();
         }
         expect(console.log).not.toHaveBeenCalled();
     });
 
-    it.each([1, null])("native status %s does not read stdout or native error", status => {
-        const accesses: string[] = [];
-        native.spawn.mockReturnValue({
-            get status() { accesses.push("status"); return status; },
-            get stdout(): never { accesses.push("stdout"); throw new Error("eager stdout"); },
-            get error(): never { throw new Error("error field read"); },
-        });
+    it.each([1, null])("native status %s fails without compensation", status => {
+        native.spawn.mockReturnValue(result(status, id));
         const f = fixture();
         expect(() => f.lifecycle.run(request)).toThrow("Failed to create container");
-        expect(accesses).toEqual(["status"]);
         expect(console.error).toHaveBeenCalledExactlyOnceWith("original-init-hint");
         expect(native.spawn).toHaveBeenCalledTimes(1);
         expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
     });
 
-    it("status zero ignores the native error field and reads stdout after status", () => {
-        const accesses: string[] = [];
-        native.spawn.mockReturnValue({
-            get status() { accesses.push("status"); return 0; },
-            get stdout() { accesses.push("stdout"); return `pull noise\n${id}\n`; },
-            get error(): never { throw new Error("error field read"); },
-        });
-        expect(fixture().lifecycle.run(request)).toBe("public-name");
-        expect(accesses).toEqual(["status", "stdout"]);
-        expect(console.error).not.toHaveBeenCalled();
+    it.each([
+        ["pull noise\n" + id + "\n", id],
+        ["short 123456789abc x" + id + " " + id + "x " + id + " " + "b".repeat(64), id],
+        ["noise " + "b".repeat(64) + " " + id, "b".repeat(64)],
+    ])("pins the first complete 64hex token from %s", (stdout, expected) => {
+        native.spawn.mockReturnValue({ ...result(0, stdout), error: new Error("ignored native field") });
+        const f = fixture();
+        expect(f.lifecycle.run(request)).toBe("public-name");
+        for (const port of [f.ports.verifyCreated, f.ports.syncMcp, f.ports.fixSsh, f.ports.syncGit, f.ports.finish]) expect(port).toHaveBeenCalledExactlyOnceWith(expected);
+    });
+
+    it.each(["", " \t\n", "123456789abc", "x" + id, id + "x", "g".repeat(64)])("refuses unpinned native output %s", stdout => {
+        native.spawn.mockReturnValue(result(0, stdout));
+        const f = fixture();
+        expect(() => f.lifecycle.run(request)).toThrow("container runtime did not return an exact 64-hex container ID");
+        expect(f.order).toEqual(["lock:mount-physical", "args", "project", "device", "filesystem", "project", "device", "filesystem"]);
+        expect(f.ports.verifyCreated).not.toHaveBeenCalled();
+        expect(native.spawn).toHaveBeenCalledTimes(1);
     });
 
     it("compensates only the exact ID with captured CLI and independent absence classification", () => {
@@ -201,13 +204,13 @@ describe("actual creation application through native composition", () => {
         expect(native.spawn).toHaveBeenCalledTimes(3);
     });
 
-    it.each(["create", "stdout", "remove", "inspect", "classifier"])("propagates native %s throw at original boundary", stage => {
+    it.each(["create", "remove", "inspect", "classifier"])("propagates native %s throw at original boundary", stage => {
         const original = new Error("verification failed"); const failure = { stage };
         const f = fixture({ verifyCreated: () => { throw original; } });
         native.spawn.mockImplementation((_cli, args: string[]) => {
             if (args[0] === "run") {
                 if (stage === "create") throw failure;
-                return { status: 0, get stdout() { if (stage === "stdout") throw failure; return id; } };
+                return result(0, id);
             }
             if (args[0] === "rm" && stage === "remove") throw failure;
             if (args[0] === "inspect" && stage === "inspect") throw failure;
@@ -216,7 +219,7 @@ describe("actual creation application through native composition", () => {
         if (stage === "classifier") f.context.explicitlyNotFound = () => { throw failure; };
         expect(thrown(() => f.lifecycle.run(request))).toBe(failure);
         expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(
-            stage === "create" || stage === "stdout" ? ["run"] : stage === "remove" ? ["run", "rm"] : ["run", "rm", "inspect"],
+            stage === "create" ? ["run"] : stage === "remove" ? ["run", "rm"] : ["run", "rm", "inspect"],
         );
     });
 

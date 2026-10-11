@@ -1,9 +1,9 @@
 import type { ToolDefinition } from "../domain/tool-registry.js";
-import type { ContainerExecOptions, ContainerExecPorts, ContainerExecReadinessPorts, ContainerExecReplacementPorts } from "../ports/container-exec.js";
+import type { ContainerExecOptions, ContainerExecPorts, ContainerExecReadinessPorts, ContainerExecReplacementPorts, ContainerExecReplacementReason } from "../ports/container-exec.js";
 
-export function ensureContainerExecSetupAvailable(containerId: string, restart: () => string, ports: Pick<ContainerExecReadinessPorts, "running" | "log">): string {
+export function ensureContainerExecSetupAvailable(containerId: string, restart: () => string, ports: Pick<ContainerExecReadinessPorts, "running" | "restarted">): string {
     if (ports.running(containerId, "id")) return containerId;
-    ports.log("Container became unavailable during setup, restarting...");
+    ports.restarted();
     return restart();
 }
 
@@ -18,33 +18,33 @@ export function ensureContainerExecTools(containerId: string, setupTool: ToolDef
             lastError = error;
         }
     }
-    throw new Error("Failed to install tools in container", { cause: lastError });
+    throw ports.installFailure(lastError);
 }
 
-export function containerExecReplacementBlockReason(containerName: string, prefix: string, currentLockFile: string, expectedId: string, ports: ContainerExecReplacementPorts): string | null {
+export function containerExecReplacementBlockReason(containerName: string, prefix: string, currentLockFile: string, expectedId: string, ports: ContainerExecReplacementPorts): ContainerExecReplacementReason | null {
     const currentLockName = ports.lockName(currentLockFile);
     const claims = ports.claims(prefix, currentLockFile);
-    if (claims.filter(claim => claim === currentLockName).length !== 1) return "the current session lock ownership could not be verified";
+    if (claims.filter(claim => claim === currentLockName).length !== 1) return { reason: "ownership-unverified" };
     const others = claims.filter(claim => claim !== currentLockName);
-    if (others.length > 0) return `${others.length} live or indeterminate session lock claim(s) remain: ${others.join(", ")}`;
+    if (others.length > 0) return { reason: "other-claims", claims: others };
     const status = ports.status(containerName);
-    if (!status.exists || !status.containerId) return "the container identity could not be verified";
-    if (status.containerId !== expectedId) return "the container identity changed before replacement";
+    if (!status.exists || !status.containerId) return { reason: "identity-absent" };
+    if (status.containerId !== expectedId) return { reason: "identity-changed" };
     return null;
 }
 
-export function resolveContainerExecTools(command: string[], optionsTool: ToolDefinition | undefined, ports: Pick<ContainerExecPorts, "tool" | "defaultTool">): { setupTool: ToolDefinition; commandTool?: ToolDefinition } {
+export function resolveContainerExecTools<Prepared>(command: string[], optionsTool: ToolDefinition | undefined, ports: Pick<ContainerExecPorts<Prepared>, "tool" | "defaultTool">): { setupTool: ToolDefinition; commandTool?: ToolDefinition } {
     const commandTool = optionsTool ?? ports.tool(command[0]);
     return { setupTool: commandTool ?? ports.defaultTool(), commandTool };
 }
 
-export async function attachContainerExecClipboardImage(projectPath: string, command: string[], commandTool: ToolDefinition | undefined, clipboard: { url?: string; token?: string } | undefined, attach: ContainerExecPorts["attachClipboardImage"]): Promise<string[]> {
+export async function attachContainerExecClipboardImage<Prepared>(projectPath: string, command: string[], commandTool: ToolDefinition | undefined, clipboard: { url?: string; token?: string } | undefined, attach: ContainerExecPorts<Prepared>["attachClipboardImage"]): Promise<string[]> {
     if (commandTool?.name !== "codex") return [...command];
     const attached = await attach(projectPath, [...command], { enabled: true, clipboardUrl: clipboard?.url, clipboardToken: clipboard?.token });
     return attached.args;
 }
 
-export function createContainerExec(ports: ContainerExecPorts) {
+export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared>) {
     async function exec(
         projectPath: string,
         cmd: string[],
@@ -69,13 +69,7 @@ export function createContainerExec(ports: ContainerExecPorts) {
         //   Terminal A cleanup checks for other sessions → finds none → stops container
         //   Terminal B is still setting up but hasn't created its lock yet → container dies
         const projectId = ports.projectId(fullPath);
-        if (ports.environment().DEBUG) {
-            ports.error(`[ccc:debug] exec: projectPath=${projectPath}`);
-            ports.error(`[ccc:debug] exec: fullPath=${fullPath}`);
-            ports.error(`[ccc:debug] exec: projectId=${projectId}`);
-            ports.error(`[ccc:debug] exec: mountPath=/project/${projectId}`);
-            ports.error(`[ccc:debug] exec: cmd=${cmd.join(" ")}`);
-        }
+        if (ports.debugEnabled()) ports.report({ kind: "exec-debug", projectPath, fullPath, projectId, command: cmd });
         const { setupTool, commandTool } = resolveContainerExecTools(cmd, options.tool, ports);
         const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
         const worktreeBranch = options.expectedWorktreeBranch ?? ports.detectWorktreeBranch(fullPath);
@@ -84,7 +78,7 @@ export function createContainerExec(ports: ContainerExecPorts) {
             toolName: (commandTool ?? options.tool)?.name ?? "command",
         }, (request) => {
             const runtime = ports.runtime();
-            if (runtime !== "docker" && runtime !== "podman") throw new Error("Invalid session container runtime.");
+            if (runtime !== "docker" && runtime !== "podman") throw ports.invalidRuntimeFailure();
             return { ...ports.inspectSessionContainer(request.projectPath, request.profile), runtime };
         });
         const { lockFile: sessionLockFile } = worktreeBranch
@@ -106,16 +100,11 @@ export function createContainerExec(ports: ContainerExecPorts) {
             worktreeBranch !== null,
             `/project/${projectId}`,
         );
-        if (ports.environment().DEBUG && worktreeMounts.length > 0) {
-            ports.error(`[ccc:debug] worktreeGitMounts (${worktreeMounts.length}):`);
-            for (const m of worktreeMounts) {
-                ports.error(`[ccc:debug]   ${m.hostPath} -> ${m.containerPath}`);
-            }
-        }
+        if (ports.debugEnabled() && worktreeMounts.length > 0) ports.report({ kind: "mounts-debug", mounts: worktreeMounts });
 
         // Single docker inspect to get container status (replaces 3-4 separate docker commands)
         const targetContainer = ports.containerName(fullPath, profile);
-        ports.progress("Checking container...");
+        ports.report({ kind: "progress", phase: "checking" });
         const containerStatus = ports.containerStatus(targetContainer);
         let wasAlreadyRunning = containerStatus.running;
         const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
@@ -124,10 +113,10 @@ export function createContainerExec(ports: ContainerExecPorts) {
         // migration completes, under the startup and existing session guards.
 
         // Start or get container (with extra mounts for worktree workspaces)
-        if (!wasAlreadyRunning) ports.progress("Starting container...");
-        ports.progress("Preparing device broker...");
+        if (!wasAlreadyRunning) ports.report({ kind: "progress", phase: "starting" });
+        ports.report({ kind: "progress", phase: "broker" });
         await ports.prepareDeviceBroker(fullPath, profile).catch((error) => {
-            ports.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
+            ports.report({ kind: "broker-failed", cause: error });
         });
         const recreateInsideLifecycleLock = (recreate: () => void) => {
             const blockedReason = containerExecReplacementBlockReason(
@@ -138,7 +127,7 @@ export function createContainerExec(ports: ContainerExecPorts) {
                 { claims: ports.sessionClaims, status: ports.containerStatus, lockName: ports.lockName },
             );
             if (blockedReason) {
-                if (ports.environment().DEBUG) ports.error(`[ccc] Automatic container replacement blocked: ${blockedReason}.`);
+                if (ports.debugEnabled()) ports.report({ kind: "replacement-blocked", evidence: blockedReason });
                 return false;
             }
             recreate();
@@ -174,30 +163,17 @@ export function createContainerExec(ports: ContainerExecPorts) {
                     },
                 );
                 if (!readyContainerId) {
-                    throw new Error("Container became unavailable before the session handoff.");
+                    throw ports.handoffFailure();
                 }
                 return readyContainerId;
             });
         };
         const projectMountPath = `/project/${projectId}`;
-        const runMiseInstall = (readyContainerName: string) => {
-            // Keep mise's stderr visible — that's where it streams download/build
-            // progress. This remains non-fatal by design, but simultaneous joiners
-            // must not pass the setup lock while the first install is still active.
-            ports.runRuntimeSync(
-                ports.runtime(),
-                [
-                    "exec", "-w", projectMountPath, readyContainerName,
-                    "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true",
-                ],
-                { stdio: "inherit" },
-            );
-        };
         // A running container is not necessarily setup-ready. Hold the distinct
         // setup lock from start/handoff through the complete preparation phase, so
         // a simultaneous joiner cannot exec while the creator is still installing
         // commands or configuring the container.
-        ports.progress("Synchronizing container setup...");
+        ports.report({ kind: "progress", phase: "setup" });
         let containerName = await ports.setupLock(sessionContainerPrefix, async () => {
             let readyContainerName = startContainer();
             await ports.confirmOwnership();
@@ -210,46 +186,46 @@ export function createContainerExec(ports: ContainerExecPorts) {
                 // Setup steps. spawnSync blocks the event loop so wrapping in Promise.all
                 // doesn't actually parallelize — run each step with its own progress line
                 // so the user can see exactly where time is being spent.
-                ports.progress("Ensuring uv...");
+                ports.report({ kind: "progress", phase: "uv" });
                 ports.ensureUv(readyContainerName);
 
-                ports.progress("Building MCP config...");
+                ports.report({ kind: "progress", phase: "mcp" });
                 const forwardedMcp = await ports.buildMcpConfig(profile, () => ports.restoreConfig(readyContainerName, profile));
 
-                ports.progress("Setting up localhost proxy...");
+                ports.report({ kind: "progress", phase: "proxy" });
                 ports.setupProxy(readyContainerName);
 
                 if (forwardedMcp.length > 0) {
-                    ports.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+                    ports.report({ kind: "mcp-forwarded", names: forwardedMcp });
                 }
 
                 // Verify container is still running before exec.
                 readyContainerName = ensureContainerExecSetupAvailable(
                     readyContainerName, () => startContainer(undefined, undefined, undefined),
-                    { running: ports.containerRunning, log: ports.log },
+                    { running: ports.containerRunning, restarted: () => ports.report({ kind: "restarted" }) },
                 );
                 await ports.confirmOwnership();
             } else {
                 // Container already running — only rebuild MCP config (lightweight, may have changed)
                 const forwardedMcp = await ports.buildMcpConfig(profile, () => ports.restoreConfig(readyContainerName, profile));
                 if (forwardedMcp.length > 0) {
-                    ports.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+                    ports.report({ kind: "mcp-forwarded", names: forwardedMcp });
                 }
             }
 
             if (!wasAlreadyRunning) {
-                ports.progress("Installing project tools (mise)...");
-                runMiseInstall(readyContainerName);
+                ports.report({ kind: "progress", phase: "mise" });
+                ports.installProjectTools(readyContainerName, projectMountPath);
             }
 
             // This is deliberately the final restart-capable readiness step. A
             // late setup checkpoint may have returned a replacement container, so
             // prove/install the requested command against that final pinned ID.
             if (shouldEnsureTool) {
-                ports.progress("Checking tools...");
+                ports.report({ kind: "progress", phase: "tools" });
                 readyContainerName = ensureContainerExecTools(
                     readyContainerName, setupTool, () => startContainer(undefined, undefined, undefined),
-                    { running: ports.containerRunning, install: ports.installTools, log: ports.log },
+                    { running: ports.containerRunning, install: ports.installTools, restarted: () => ports.report({ kind: "restarted" }), installFailure: cause => ports.setupToolFailure(cause) },
                 );
                 await ports.confirmOwnership();
             }
@@ -262,8 +238,8 @@ export function createContainerExec(ports: ContainerExecPorts) {
                 ports.assertCodexState(readyContainerName, profile);
                 ports.ensureCodexHarness(readyContainerName, profile);
             }
-            ports.progress("Syncing clipboard shims...");
-            ports.syncClipboard(readyContainerName, ports.assetDirectory);
+            ports.report({ kind: "progress", phase: "clipboard" });
+            ports.syncClipboard(readyContainerName);
             // Runs for new, restarted, reused and deferred containers alike, on the final ID.
             ports.ensureSocketAccess(readyContainerName);
             return readyContainerName;
@@ -274,148 +250,61 @@ export function createContainerExec(ports: ContainerExecPorts) {
                 await ports.confirmOwnership();
             } catch {
                 try {
-                    ports.warn("[ccc] Unable to confirm session ownership after setup failure.");
+                    ports.report({ kind: "ownership-unconfirmed" });
                 } catch { /* A diagnostic must not replace the setup failure. */ }
             }
             if (ports.isRestartRequired(error)) throw error;
-            const detail = error instanceof Error ? `: ${error.message}` : "";
-            throw new Error(`Container setup failed${detail}`, { cause: error });
+            throw ports.setupFailure(error);
         });
 
-        // Build docker exec command
-        const clipboardHost = clipboardPort
-            ? ((ports.platform() === "linux" && !ports.isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal")
-            : null;
-        let clipboardToken: string | null = null;
-        if (clipboardPort) {
-            try {
-                const portFileContent = ports.readClipboardPort(ports.clipboardPortFile()).trim();
-                clipboardToken = portFileContent.split(":").slice(1).join(":") || null;
-            } catch {
-                clipboardToken = null;
-            }
-        }
-
-        const clipboardUrl = clipboardHost && clipboardPort
-            ? `http://${clipboardHost}:${clipboardPort}`
-            : undefined;
-
-        let resolvedCmd = [...cmd];
-        resolvedCmd = await attachContainerExecClipboardImage(
-            fullPath, resolvedCmd, commandTool,
-            { url: clipboardUrl, token: clipboardToken ?? undefined }, ports.attachClipboardImage,
+        const clipboard = ports.clipboardConnection(clipboardPort);
+        const resolvedCmd = await attachContainerExecClipboardImage(
+            fullPath, cmd, commandTool, clipboard, ports.attachClipboardImage,
         );
-
-        // Spin up the in-container X11 clipboard bridge (Xvfb :99 + sync daemon)
-        // on every session. Idle Xvfb is ~15-30MB RAM so running it always is
-        // cheaper than branching per-tool and lets GUI MCPs / Electron apps work
-        // out of the box even if no clipboard server is up (sync loop just idles).
-        // Script is idempotent; reuses an existing bridge.
-        {
-            const bridgeEnv: string[] = [];
-            if (clipboardUrl) bridgeEnv.push("-e", `CCC_CLIPBOARD_URL=${clipboardUrl}`);
-            if (clipboardToken) bridgeEnv.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
-            ports.runRuntimeSync(ports.runtime(), [
-                "exec", "-d", ...bridgeEnv, containerName,
-                "/usr/local/bin/ccc-x11-bridge",
-            ], { stdio: "ignore" });
-        }
-
-        const execArgs = ["exec", "-w", projectMountPath];
-
-        // Collect all env vars into a temp file and pass --env-file to docker exec.
-        // This avoids the OS ARG_MAX limit ("Argument list too long") that occurs when
-        // forwarding many environment variables as repeated -e KEY=VALUE flags.
-        const forwardedEnvPlan = ports.forwardedEnvironment(ports.environment());
-        if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
-            ports.error(
-                `Skipped ${forwardedEnvPlan.skippedDueToLimit.length} host env var(s) to keep exec size bounded; use --env KEY=VALUE for required overrides.`,
-            );
-        }
-
+        ports.startClipboardBridge(containerName, clipboard);
+        const environment = ports.observeCommandEnvironment();
+        if (environment.skippedKeys.length > 0) ports.report({ kind: "environment-skipped", keys: environment.skippedKeys });
         const envEntries: Array<[string, string]> = [
-            // Container marker: enables per-project env separation via mise.toml [env]
-            [...ports.containerEnvironment],
-            ...forwardedEnvPlan.forwarded,
+            [...environment.containerMarker],
+            ...environment.forwarded,
             ["MISE_TRUSTED_CONFIG_PATHS", projectMountPath],
         ];
-
-        // Locale: forward host LANG/LC_* (no longer excluded).
-        // If host has no LANG set, inject en_US.UTF-8 as fallback.
-        if (!ports.environment().LANG) {
-            envEntries.push(["LANG", "en_US.UTF-8"]);
+        if (!environment.hostLangPresent) envEntries.push(["LANG", "en_US.UTF-8"]);
+        envEntries.push(["TZ", environment.hostTimezone || environment.observedTimezone || "UTC"]);
+        if (clipboard.url) {
+            envEntries.push(["CCC_CLIPBOARD_URL", clipboard.url]);
+            if (clipboard.token) envEntries.push(["CCC_CLIPBOARD_TOKEN", clipboard.token]);
         }
-
-        // Timezone: detect host timezone and forward to container.
-        // Priority: TZ env var → Intl API detection → UTC fallback.
-        const hostTz = ports.environment().TZ
-            || ports.timezone()
-            || "UTC";
-        envEntries.push(["TZ", hostTz]);
-
-        // Profile: env vars handled by mise.toml [env], not by ccc
-
-        // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
-        if (clipboardPort) {
-            envEntries.push(["CCC_CLIPBOARD_URL", `http://${clipboardHost}:${clipboardPort}`]);
-            if (clipboardToken) {
-                envEntries.push(["CCC_CLIPBOARD_TOKEN", clipboardToken]);
-            }
-        }
-
-        // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
-        // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
-        // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
+        // Tool compatibility overrides follow host forwarding; explicit session overrides win last.
         if (commandTool?.needsNodeRuntime) {
-            envEntries.push(["MISE_NODE_VERSION", "22"]);
-            envEntries.push(["BASH_ENV", "/home/ccc/.bashrc_hooks"]);
+            envEntries.push(["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"]);
         }
-
-        // options.env: per-session overrides from --env KEY=VALUE CLI flag (applied last)
-        if (options.env) {
-            for (const [key, value] of Object.entries(options.env)) {
-                envEntries.push([key, value]);
-            }
-        }
+        if (options.env) envEntries.push(...Object.entries(options.env));
 
         let preparationStatus: number | null = null;
         let resultStatus: number;
-        const envFile = ports.createEnvironmentFile(envEntries);
+        // Artifact creation failures remain under the outer CLI cleanup authority.
+        const prepared = ports.prepareCommand({
+            runtime: ports.runtime(), target: containerName, workdir: projectMountPath,
+            environment: envEntries,
+            command: commandTool?.name === "claude"
+                ? { kind: "claude", arguments: cmd.slice(1) }
+                : { kind: "command", arguments: resolvedCmd },
+        });
         try {
-            execArgs.push("--env-file", envFile.path);
-
             if (commandTool?.name === "codex" && options.interactive !== false) {
-                const preparation = ports.prepareCodexLaunch(ports.runtime(), [...execArgs, containerName], resolvedCmd);
-                if (!preparation.ok) {
-                    ports.error(`[ccc] ${preparation.error}`);
-                    preparationStatus = preparation.status;
-                } else {
-                    resolvedCmd = preparation.command;
-                    if (preparation.notice) ports.error(`[ccc] ${preparation.notice}`);
-                }
+                const preparation = ports.prepareCodexCommand(prepared);
+                if (!preparation.ok) preparationStatus = preparation.status;
+                if (!preparation.ok || preparation.reason) ports.report({ kind: "codex-preparation", result: preparation });
             }
-
-            if (options.interactive !== false && ports.terminalReady()) {
-                execArgs.push("-it");
-                if (commandTool?.name === "codex" && preparationStatus === null) {
-                    resolvedCmd = ports.recoverCodexCommand(resolvedCmd);
-                }
-            }
-
-            execArgs.push(containerName);
-
-            if (commandTool?.name === "claude") {
-                // Run claude directly (no shell wrapper — avoids mise interception)
-                execArgs.push(ports.claudeBinaryPath, ...cmd.slice(1));
-            } else {
-                execArgs.push(...resolvedCmd);
-            }
+            // Terminal observation follows preparation even for a refused Codex launch.
+            const terminal = options.interactive !== false && ports.terminalReady();
 
             await ports.confirmOwnership();
             if (preparationStatus === null) {
                 ports.setCleanupEnabled(true);
                 await ports.confirmOwnership();
-                resultStatus = await ports.runCommand(ports.runtime(), execArgs, options.interactive !== false);
+                resultStatus = await ports.launchCommand(prepared, { interactive: options.interactive !== false, terminal, codexRecovery: terminal && commandTool?.name === "codex" });
             } else {
                 resultStatus = preparationStatus;
             }
@@ -424,33 +313,24 @@ export function createContainerExec(ports: ContainerExecPorts) {
                 ports.configLock(() => ports.restoreConfig(containerName, profile), profile);
             } catch (error) {
                 try {
-                    ports.warn(`[ccc] Unable to restore Codex config access after command exit: ${error instanceof Error ? error.message : String(error)}`);
+                    ports.report({ kind: "restore-failed", cause: error });
                 } catch { /* A diagnostic must not replace the command outcome. */ }
             } finally {
                 try {
-                    envFile.dispose();
+                    ports.disposeCommand(prepared);
                 } finally {
                     try {
                         ports.cleanupSession();
                     } catch {
                         try {
-                            ports.warn("[ccc] Session cleanup failed after command exit.");
+                            ports.report({ kind: "cleanup-failed" });
                         } catch { /* A diagnostic must not replace the command outcome. */ }
                     }
                 }
             }
         }
 
-        if (ports.environment().DEBUG) {
-            // Check conversation directory state after Claude exits
-            const claudeProjectDir = `/home/ccc/.claude/projects/-project-${projectId}`;
-            const checkResult = ports.runRuntimeSync(ports.runtime(), [
-                "exec", containerName, "sh", "-c",
-                `ls -1 "${claudeProjectDir}"/*.jsonl 2>/dev/null | wc -l; echo "dir:${claudeProjectDir}"`,
-            ], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-            const output = (checkResult.stdout ?? "").trim();
-            ports.error(`[ccc:debug] post-exit conversation check: ${output}`);
-        }
+        if (ports.debugEnabled()) ports.reportConversationFiles(containerName, projectId);
 
         return resultStatus;
     }

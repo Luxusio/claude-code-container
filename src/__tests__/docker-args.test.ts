@@ -38,6 +38,21 @@ function makeOpts(
 // Helper: extract all volume mount strings from args
 // docker run ... -v <mount> ... → collects every <mount> after "-v"
 // ---------------------------------------------------------------------------
+it("preserves duplicate mounts and hostile values as separate native argv", () => {
+    const hostile = "/project/space 'quote' $HOME `touch nope`; suffix";
+    const options = makeOpts({ fullPath: hostile, projectMountPath: hostile,
+        credentialMounts: [{ hostPath: "/duplicate", containerPath: "/target" }, { hostPath: "/duplicate", containerPath: "/target" }],
+        extraMounts: [{ hostPath: "/last", containerPath: "/target" }], imageName: "image; literal" });
+    const args = buildDockerRunArgs(options);
+    expect(extractVolumeMounts(args).slice(0, 3)).toEqual([hostile + ":" + hostile, "/duplicate:/target", "/duplicate:/target"]);
+    expect(args).toContain("MISE_TRUSTED_CONFIG_PATHS=" + hostile);
+    expect(args).toContain("ccc.project.path=" + hostile);
+    expect(args.at(-1)).toBe("image; literal");
+    expect(extractVolumeMounts(args).at(-1)).toBe("/last:/target");
+    args.push("caller mutation");
+    expect(buildDockerRunArgs(options).at(-1)).toBe("image; literal");
+});
+
 function extractVolumeMounts(args: string[]): string[] {
     const mounts: string[] = [];
     for (let i = 0; i < args.length; i++) {

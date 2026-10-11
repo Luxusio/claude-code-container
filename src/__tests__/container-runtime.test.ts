@@ -166,10 +166,7 @@ describe("container-runtime", () => {
         it("respects CCC_SELINUX_RELABEL=force on docker", () => {
             _setRuntimeInfoForTest({ runtime: "docker" });
             process.env.CCC_SELINUX_RELABEL = "force";
-            // auto-branch skips docker; only force should act. But design says force
-            // still applies; the helper currently gates on podman. Accept either.
-            const args = bindMountArgs("/x", "/y");
-            expect(args[0]).toBe("-v");
+            expect(bindMountArgs("/x", "/y", { readonly: true })).toEqual(["-v", "/x:/y:ro,Z"]);
         });
 
         it("translates nested-container bind mount sources to the outer host source", () => {
@@ -206,6 +203,26 @@ describe("container-runtime", () => {
                 "-v",
                 "/outer/codex/auth.json:/auth.json",
             ]);
+        });
+
+        it("keeps the first equal-length match and excludes sibling prefixes", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+            spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
+                { Source: "/first", Destination: "/project" },
+                { Source: "/second", Destination: "/project" },
+            ])));
+            expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/first/file:/target"]);
+            expect(bindMountArgs("/project-other/file", "/target")).toEqual(["-v", "/project-other/file:/target"]);
+        });
+
+        it("preserves daemon namespace sources inside a nested Docker container", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+            expect(bindMountArgs("/configured/socket", "/var/run/docker.sock", { sourceNamespace: "daemon" })).toEqual(["-v", "/configured/socket:/var/run/docker.sock"]);
+            expect(spawnSyncMock).not.toHaveBeenCalled();
         });
 
         it("normalizes Docker Desktop Windows mount sources for nested docker", () => {

@@ -1,71 +1,149 @@
-import {describe,expect,it,vi} from "vitest";
-import {createContainerExec} from "../../application/container-exec.js";
+import {describe, expect, it, vi} from "vitest";
+import {createContainerExec, containerExecReplacementBlockReason} from "../../application/container-exec.js";
 import type {ContainerExecPorts} from "../../ports/container-exec.js";
 import {createDefaultToolCatalog} from "../../domain/tool-registry.js";
 
-function fixture(options:{running?:boolean;replace?:boolean}={}){
-    const catalog=createDefaultToolCatalog(),events:string[]=[],entries:Array<[string,string]>=[],dispose=vi.fn(()=>{events.push("dispose");});
-    let first=true;
-    const ports:ContainerExecPorts={
-        ensureRuntime:vi.fn(),resolveProject:()=>"/project/repo",ensureDirectories:vi.fn(),ensureProjectTools:async()=>{},
-        projectId:()=>"repo-id",environment:()=>({LANG:"host-lang",TZ:"Host/Zone"}),platform:()=>"linux",terminalReady:()=>false,timezone:()=>"Detected/Zone",runtime:()=>"docker",
-        tool:name=>catalog.find(tool=>tool.name===name),defaultTool:()=>catalog[0],
-        detectWorktreeBranch:()=>null,assertWorktreeBranch:vi.fn(),
-        async familyLock<T>(_id:string,operation:()=>Promise<T>|T):Promise<T>{return operation();},
-        acquireOwnership:async()=>({lockFile:"/owned/session.lock",existingId:options.running?"final-id":null}),
-        inspectSessionContainer:()=>({known:true,containerId:options.running?"final-id":null}),
-        ensureClipboard:async()=>null,clipboardPortFile:()=>"/owned/clipboard.port",readClipboardPort:()=>"4321:token",
-        worktreeMounts:()=>[],containerName:()=>"ccc-repo",
-        containerStatus:()=>({exists:true,running:Boolean(options.running),containerId:options.running?"final-id":"setup-id",imageId:"image-id"}),
-        sessionClaims:()=>["session.lock"],lockName:()=>"session.lock",prepareDeviceBroker:async()=>{},
-        lifecycleLock<T>(_prefix:string,operation:()=>T):T{return operation();},
-        async setupLock<T>(_prefix:string,operation:()=>Promise<T>|T):Promise<T>{return operation();},
-        startContainer:(_path,_ensure,_mounts,_port,_profile,_recreate,_replacement,onReady,_expected,onStarted)=>{
-            const id=options.replace&&first?"setup-id":"final-id";first=false;
-            if(!options.running)onStarted(id);onReady(id,{startedByInvocation:!options.running});return "ccc-repo";
+function fixture(options: {running?: boolean; replace?: boolean} = {}) {
+    const catalog = createDefaultToolCatalog(), events: string[] = [], handle = Symbol("owned preparation");
+    const forwarded: Array<[string, string]> = [["DUPLICATE", "first"], ["DUPLICATE", "last"]];
+    const entries: Array<[string, string]> = [["container", "docker"], ...forwarded, ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["TZ", "Host/Zone"]];
+    let first = true;
+    const ports: ContainerExecPorts<typeof handle> = {
+        ensureRuntime: vi.fn(), resolveProject: () => "/project/repo", ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
+        projectId: () => "repo-id", debugEnabled: () => false, terminalReady: () => false, runtime: () => "docker",
+        tool: name => catalog.find(tool => tool.name === name), defaultTool: () => catalog[0],
+        detectWorktreeBranch: () => null, assertWorktreeBranch: vi.fn(),
+        async familyLock<T>(_id: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
+        acquireOwnership: async () => ({lockFile: "/owned/session.lock", existingId: options.running ? "final-id" : null}),
+        inspectSessionContainer: () => ({known: true, containerId: options.running ? "final-id" : null}),
+        ensureClipboard: async () => null, clipboardPortFile: () => "/owned/clipboard.port", clipboardConnection: () => ({}),
+        worktreeMounts: () => [], containerName: () => "ccc-repo",
+        containerStatus: () => ({exists: true, running: Boolean(options.running), containerId: options.running ? "final-id" : "setup-id", imageId: "image-id"}),
+        sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
+        lifecycleLock<T>(_prefix: string, operation: () => T): T { return operation(); },
+        async setupLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
+        startContainer: (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
+            const id = options.replace && first ? "setup-id" : "final-id"; first = false;
+            if (!options.running) onStarted(id); onReady(id, {startedByInvocation: !options.running}); return "ccc-repo";
         },
-        setSessionContainer:vi.fn(),setCleanupEnabled:vi.fn(),confirmOwnership:async()=>{},
-        configLock<T>(operation:()=>T):T{return operation();},
-        restoreConfig:vi.fn(()=>{events.push("restore");}),ensureUv:vi.fn(),buildMcpConfig:vi.fn(async()=>[]),setupProxy:vi.fn(),
-        containerRunning:id=>id!=="setup-id",installTools:vi.fn(),ensureClaude:vi.fn(),prepareCodexConfig:vi.fn(),assertCodexState:vi.fn(),ensureCodexHarness:vi.fn(),
-        syncClipboard:vi.fn(),ensureSocketAccess:vi.fn(),isRestartRequired:()=>false,isDockerDesktop:()=>false,
-        attachClipboardImage:async(_path,args)=>({args}),runRuntimeSync:vi.fn(()=>({stdout:""})),
-        forwardedEnvironment:()=>({forwarded:[["LANG","host-lang"],["TZ","Host/Zone"],["MISE_NODE_VERSION","host-node"]],skippedDueToLimit:[]}),
-        createEnvironmentFile:vi.fn<ContainerExecPorts["createEnvironmentFile"]>(values=>{entries.push(...values);return {path:"/owned/exec.env",dispose};}),
-        prepareCodexLaunch:vi.fn<ContainerExecPorts["prepareCodexLaunch"]>((_runtime,_prefix,command)=>({ok:true,command})),
-        recoverCodexCommand:command=>command,runCommand:vi.fn(async()=>0),cleanupSession:vi.fn(()=>{events.push("cleanup");}),
-        progress:vi.fn(),log:vi.fn(),error:vi.fn(),warn:vi.fn(),assetDirectory:"/native/assets",claudeBinaryPath:"/home/ccc/.local/bin/claude",containerEnvironment:["container","ccc"],
+        setSessionContainer: vi.fn(), setCleanupEnabled: vi.fn(), confirmOwnership: vi.fn(async () => { events.push("confirm"); }),
+        configLock<T>(operation: () => T): T { return operation(); },
+        restoreConfig: vi.fn(() => { events.push("restore"); }), ensureUv: vi.fn(), buildMcpConfig: vi.fn(async () => []), setupProxy: vi.fn(),
+        containerRunning: id => id !== "setup-id", installTools: vi.fn(), ensureClaude: vi.fn(), prepareCodexConfig: vi.fn(), assertCodexState: vi.fn(), ensureCodexHarness: vi.fn(),
+        syncClipboard: vi.fn(), ensureSocketAccess: vi.fn(), isRestartRequired: () => false,
+        attachClipboardImage: vi.fn(async (_path, args) => { events.push("attach"); return {args}; }),
+        installProjectTools: vi.fn(), startClipboardBridge: vi.fn(() => { events.push("bridge"); }),
+        observeCommandEnvironment: vi.fn(() => ({forwarded, skippedKeys: [], containerMarker: ["container", "docker"] as const, hostLangPresent: true, hostTimezone: "Host/Zone", observedTimezone: "Observed/Zone"})),
+        prepareCommand: vi.fn(() => { events.push("prepare"); return handle; }),
+        prepareCodexCommand: vi.fn(() => ({ok: true})),
+        launchCommand: vi.fn(async () => { events.push("launch"); return 0; }),
+        disposeCommand: vi.fn(() => { events.push("dispose"); }),
+        reportConversationFiles: vi.fn(), setupFailure: cause => new Error("Container setup failed", {cause}),
+        setupToolFailure: cause => new Error("Failed to install tools", {cause}),
+        handoffFailure: () => new Error("Container handoff failed"), invalidRuntimeFailure: () => new Error("Invalid runtime"),
+        cleanupSession: vi.fn(() => { events.push("cleanup"); }), report: vi.fn(),
     };
-    return {ports,entries,dispose,events,exec:createContainerExec(ports).exec};
+    return {ports, entries, handle, events, exec: createContainerExec(ports).exec};
 }
-describe("container exec application current behavior",()=>{
-    it("uses the replacement ID for tool setup, clipboard, socket access and launch",async()=>{
-        const f=fixture({replace:true});
-        expect(await f.exec("/repo",["codex","resume","--last"])).toBe(0);
-        expect(f.ports.installTools).toHaveBeenCalledWith("final-id",expect.objectContaining({name:"codex"}));
-        expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith("final-id",undefined);
-        expect(f.ports.syncClipboard).toHaveBeenCalledWith("final-id","/native/assets");expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith("final-id");
-        const args=vi.mocked(f.ports.runCommand).mock.calls[0][1];expect(args).toContain("final-id");expect(args).not.toContain("setup-id");
+
+describe("container exec semantic workflow", () => {
+    it("pins setup, preparation and launch to the final replacement identity", async () => {
+        const f = fixture({replace: true});
+        expect(await f.exec("/repo", ["codex", "resume", "--last"])).toBe(0);
+        expect(f.ports.installTools).toHaveBeenCalledWith("final-id", expect.objectContaining({name: "codex"}));
+        expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith("final-id", undefined);
+        expect(f.ports.syncClipboard).toHaveBeenCalledWith("final-id");
+        expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith("final-id");
+        expect(f.ports.prepareCommand).toHaveBeenCalledWith({runtime: "docker", target: "final-id", workdir: "/project/repo-id", environment: f.entries, command: {kind: "command", arguments: ["codex", "resume", "--last"]}});
+        expect(f.ports.prepareCodexCommand).toHaveBeenCalledWith(f.handle);
+        expect(f.ports.launchCommand).toHaveBeenCalledWith(f.handle, {interactive: true, terminal: false, codexRecovery: false});
+        expect(f.ports.disposeCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
     });
-    it("reused containers rebuild MCP configuration and receive light setup without the heavy installers",async()=>{
-        const f=fixture({running:true});expect(await f.exec("/repo",["codex"])).toBe(0);
-        expect(f.ports.ensureUv).not.toHaveBeenCalled();expect(f.ports.setupProxy).not.toHaveBeenCalled();
-        expect(f.ports.buildMcpConfig).toHaveBeenCalledWith(undefined,expect.any(Function));
-        expect(f.ports.syncClipboard).toHaveBeenCalledWith("final-id","/native/assets");expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith("final-id");
+    it("reused containers rebuild MCP and perform light setup while skipping heavy installers", async () => {
+        const f = fixture({running: true}); await f.exec("/repo", ["codex"]);
+        expect(f.ports.ensureUv).not.toHaveBeenCalled(); expect(f.ports.setupProxy).not.toHaveBeenCalled(); expect(f.ports.installProjectTools).not.toHaveBeenCalled();
+        expect(f.ports.buildMcpConfig).toHaveBeenCalledWith(undefined, expect.any(Function));
+        expect(f.ports.syncClipboard).toHaveBeenCalledWith("final-id"); expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith("final-id");
     });
-    it("returns Codex preparation failure and cleans its owned artifact without launching",async()=>{
-        const f=fixture();vi.mocked(f.ports.prepareCodexLaunch).mockReturnValue({ok:false,command:["codex"],status:9,error:"daemon unavailable"});
-        expect(await f.exec("/repo",["codex"])).toBe(9);expect(f.ports.runCommand).not.toHaveBeenCalled();
-        expect(f.dispose).toHaveBeenCalled();expect(f.events.slice(-3)).toEqual(["restore","dispose","cleanup"]);
+    it("attaches clipboard before preparation and forwards ordered environment intent unchanged", async () => {
+        const f = fixture(), overrides = {LANG: "session-lang", TZ: "Session/Zone"}, connection = {url: "http://clipboard", token: "token"};
+        f.ports.clipboardConnection = () => connection;
+        vi.mocked(f.ports.observeCommandEnvironment).mockReturnValue({forwarded: [["DUPLICATE", "first"], ["DUPLICATE", "last"]], skippedKeys: ["LARGE_A", "LARGE_B"], containerMarker: ["container", "docker"], hostLangPresent: true, hostTimezone: "Host/Zone", observedTimezone: "Observed/Zone"});
+        vi.mocked(f.ports.attachClipboardImage).mockResolvedValue({args: ["codex", "--image", "/tmp/image with spaces.png"]});
+        await f.exec("/repo", ["codex"], {env: overrides});
+        expect(f.ports.observeCommandEnvironment).toHaveBeenCalledOnce();
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledWith("final-id", connection);
+        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0]).toMatchObject({environment: [...f.entries, ["CCC_CLIPBOARD_URL", "http://clipboard"], ["CCC_CLIPBOARD_TOKEN", "token"], ["LANG", "session-lang"], ["TZ", "Session/Zone"]], command: {kind: "command", arguments: ["codex", "--image", "/tmp/image with spaces.png"]}});
+        expect(f.events.indexOf("attach")).toBeLessThan(f.events.indexOf("prepare")); expect(f.events.indexOf("bridge")).toBeLessThan(f.events.indexOf("prepare"));
+        expect(f.ports.report).toHaveBeenCalledWith({kind: "environment-skipped", keys: ["LARGE_A", "LARGE_B"]});
     });
-    it("explicit session environment overrides host forwarding and runtime defaults",async()=>{
-        const f=fixture();await f.exec("/repo",["claude"],{env:{LANG:"session-lang",TZ:"Session/Zone",MISE_NODE_VERSION:"23",MISE_TRUSTED_CONFIG_PATHS:"/session/project"}});
-        expect(Object.fromEntries(f.entries)).toMatchObject({LANG:"session-lang",TZ:"Session/Zone",MISE_NODE_VERSION:"23",MISE_TRUSTED_CONFIG_PATHS:"/session/project"});
-        expect(vi.mocked(f.ports.runCommand).mock.calls[0][1]).toEqual(expect.arrayContaining(["--env-file","/owned/exec.env","final-id","/home/ccc/.local/bin/claude"]));
+    it("preserves original Claude argument intent and requests its Node environment", async () => {
+        const f = fixture(), args = ["literal with spaces", "$(never executed)"];
+        await f.exec("/repo", ["claude", ...args]);
+        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual([...f.entries, ["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"]]);
+        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].command).toEqual({kind: "claude", arguments: args});
+        expect(f.ports.prepareCodexCommand).not.toHaveBeenCalled();
     });
-    it("command failure restores configuration, disposes the owned artifact and cleans the session",async()=>{
-        const f=fixture(),failure=new Error("command failed");vi.mocked(f.ports.runCommand).mockRejectedValue(failure);
-        await expect(f.exec("/repo",["codex"])).rejects.toBe(failure);
-        expect(f.events.slice(-3)).toEqual(["restore","dispose","cleanup"]);expect(f.dispose).toHaveBeenCalled();
+    it.each([
+        {hostTimezone: "Host/Zone", observedTimezone: "Observed/Zone", expected: "Host/Zone"},
+        {hostTimezone: undefined, observedTimezone: "Observed/Zone", expected: "Observed/Zone"},
+        {hostTimezone: undefined, observedTimezone: undefined, expected: "UTC"},
+    ])("owns locale fallback and timezone priority $expected", async ({hostTimezone, observedTimezone, expected}) => {
+        const f = fixture();
+        vi.mocked(f.ports.observeCommandEnvironment).mockReturnValue({forwarded: [], skippedKeys: [], containerMarker: ["container", "docker"], hostLangPresent: false, hostTimezone, observedTimezone});
+        await f.exec("/repo", ["printf"], {interactive: false});
+        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual([["container", "docker"], ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["LANG", "en_US.UTF-8"], ["TZ", expected]]);
+    });
+    it("creation failure stays outside local finally", async () => {
+        const f = fixture(), failure = new Error("prepare denied");
+        vi.mocked(f.ports.prepareCommand).mockImplementation(() => { throw failure; });
+        await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
+        expect(f.ports.restoreConfig).toHaveBeenCalledTimes(1);
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled(); expect(f.ports.cleanupSession).not.toHaveBeenCalled();
+    });
+    it.each(["status", "failure"] as const)("throwing restore/cleanup diagnostics preserve command %s", async outcome => {
+        const f = fixture(), failure = new Error("primary command failure");
+        vi.mocked(f.ports.restoreConfig).mockImplementationOnce(() => {}).mockImplementation(() => { f.events.push("restore"); throw new Error("restore denied"); });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { f.events.push("cleanup"); throw new Error("cleanup denied"); });
+        vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "restore-failed" || report.kind === "cleanup-failed") throw new Error("diagnostic denied"); });
+        if (outcome === "failure") vi.mocked(f.ports.launchCommand).mockRejectedValue(failure); else vi.mocked(f.ports.launchCommand).mockResolvedValue(23);
+        const pending = f.exec("/repo", ["codex"]);
+        if (outcome === "failure") await expect(pending).rejects.toBe(failure); else expect(await pending).toBe(23);
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+    it("disposal failure still cleans the session and retains existing propagation", async () => {
+        const f = fixture(), failure = new Error("dispose denied");
+        vi.mocked(f.ports.disposeCommand).mockImplementation(() => { f.events.push("dispose"); throw failure; });
+        await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+    it.each([true, false])("throwing Codex preparation report still restores/disposes/cleans for success=%s", async ok => {
+        const f = fixture(), failure = new Error("presentation denied");
+        if (ok) vi.mocked(f.ports.prepareCodexCommand).mockReturnValue({ok: true, reason: "installation-incomplete-fallback"});
+        else vi.mocked(f.ports.prepareCodexCommand).mockReturnValue({ok: false, reason: "engine-unavailable", status: 9});
+        vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "codex-preparation") throw failure; });
+        await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+    it("restart-required setup exceptions retain their identity", async () => {
+        const f = fixture(), failure = new Error("restart required");
+        vi.mocked(f.ports.installTools).mockImplementation(() => { throw failure; }); f.ports.isRestartRequired = error => error === failure;
+        await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+    });
+});
+
+describe("replacement ownership observations", () => {
+    it.each([
+        {claims: [], id: "expected", exists: true, result: {reason: "ownership-unverified"}},
+        {claims: ["session.lock", "session.lock"], id: "expected", exists: true, result: {reason: "ownership-unverified"}},
+        {claims: ["session.lock", "other.lock"], id: "expected", exists: true, result: {reason: "other-claims", claims: ["other.lock"]}},
+        {claims: ["session.lock"], id: null, exists: false, result: {reason: "identity-absent"}},
+        {claims: ["session.lock"], id: "changed", exists: true, result: {reason: "identity-changed"}},
+        {claims: ["session.lock"], id: "expected", exists: true, result: null},
+    ])("returns bounded ownership facts for $result", ({claims, id, exists, result}) => {
+        expect(containerExecReplacementBlockReason("name", "prefix", "/owned/session.lock", "expected", {claims: () => claims, lockName: () => "session.lock", status: () => ({exists, containerId: id, running: true, imageId: "image"})})).toEqual(result);
     });
 });

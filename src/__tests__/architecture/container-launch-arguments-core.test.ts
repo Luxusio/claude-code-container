@@ -1,120 +1,79 @@
 import { describe, expect, it } from "vitest";
-import { createContainerLaunchArguments, createContainerMountArguments } from "../../application/container-launch-arguments.js";
-import type { ContainerLaunchOptions, CurrentContainerMount, LaunchRuntimeFacts } from "../../domain/container-launch-arguments.js";
-import type { ContainerLaunchArgumentPorts, ContainerMountArgumentPorts } from "../../ports/container-launch-arguments.js";
+import { createContainerLaunchArguments } from "../../application/container-launch-arguments.js";
+import type { ContainerLaunchOptions } from "../../domain/container-launch-arguments.js";
+import type { ContainerLaunchArgumentPorts } from "../../ports/container-launch-arguments.js";
 
-function mountFixture() {
-    const trace: string[] = [];
-    const state = { mode: undefined as string | undefined, marker: undefined as string | undefined, vitest: false, enforcing: false, cgroups: undefined as string | undefined,
-        facts: { runtime: "docker", flavor: "docker-native", socketPath: "/var/run/docker.sock", remote: false } as LaunchRuntimeFacts, mounts: [] as CurrentContainerMount[] };
-    const ports: ContainerMountArgumentPorts = {
-        readSelinuxRelabelMode: () => { trace.push("mode"); return state.mode; },
-        readRuntimeName: () => { trace.push("runtime"); return state.facts.runtime; },
-        observeSelinuxEnforcing: () => { trace.push("selinux"); return state.enforcing; },
-        readContainerMarker: () => { trace.push("marker"); return state.marker; },
-        isVitestProcess: () => { trace.push("vitest"); return state.vitest; },
-        observeCurrentContainerMounts: () => { trace.push("mounts"); return state.mounts; },
-        captureHostJoin: () => { trace.push("capture-join"); return (...parts) => { trace.push("join"); return parts.join("/"); }; },
-        readRuntimeInfo: () => { trace.push("facts"); return state.facts; },
-        readPodmanCgroups: () => { trace.push("cgroups"); return state.cgroups; },
-    };
-    return { state, trace, ports, app: createContainerMountArguments(ports) };
-}
-
-function launchFixture() {
-    const trace: string[] = [];
-    let facts: LaunchRuntimeFacts = { runtime: "docker", flavor: "docker-native", socketPath: "/var/run/docker.sock", remote: false };
-    const present = new Set<string>();
+function fixture() {
+    const facts = { ownerDirectory: "/native/owner", clipboardPortFilePresent: true };
     const ports: ContainerLaunchArgumentPorts<object> = {
-        captureBindMountArgs: () => { trace.push("capture-bind"); return (source, destination, options) => {
-            trace.push("bind:" + source + ":" + destination + ":" + (options?.sourceNamespace ?? "client"));
-            return ["-v", source + ":" + destination + (options?.readonly ? ":ro" : "")];
-        }; },
-        captureRuntimeExtraRunArgs: () => () => { trace.push("extra"); return []; },
-        readRuntimeInfo: () => { trace.push("facts"); return facts; },
-        captureExistsSync: () => { trace.push("capture-exists"); return path => { trace.push("exists:" + path); return present.has(path); }; },
-        captureHostJoin: () => { trace.push("capture-join"); return (...parts) => parts.join("/"); },
-        captureIdentityLabels: () => { trace.push("capture-labels"); return () => { trace.push("labels"); return { "identity.key": "value" }; }; },
-        captureEntries: () => { trace.push("capture-entries"); return Object.entries; },
-        readCliVersion: () => "fixture-version",
-        readProjectMountIdentityLabel: () => "project.identity",
-        readDeviceLabMountIdentityLabel: () => "device.identity",
-        readCodexPackagesVolumeName: () => "packages",
-        readCodexPackagesContainerDir: () => "/home/ccc/.codex/packages",
-        readBrokerAuthContainerFile: () => "/run/auth/owner.json",
-        readClipboardFilesContainerDir: () => "/run/clipboard-files",
+        observeHostFacts: () => facts, identityLabels: () => [["duplicate", "first"], ["duplicate", "second"]],
+        readCliVersion: () => "version", readProjectMountIdentityLabel: () => "project.identity",
+        readDeviceLabMountIdentityLabel: () => "device.identity", readCodexPackagesVolumeName: () => "packages",
+        readCodexPackagesContainerDir: () => "/packages", readBrokerAuthContainerFile: () => "/auth",
+        readClipboardFilesContainerDir: () => "/clipboard",
     };
-    const options: ContainerLaunchOptions<object> = { containerName: "ccc-fixture", fullPath: "/source", projectMountPath: "/project/fixture", credentialMounts: [], claudeJsonFile: "/claude.json", miseVolumeName: "mise", pidsLimit: "300", imageName: "image", hostSshDir: null, sshAgentSocket: null };
-    return { trace, ports, options, present, setFacts: (value: LaunchRuntimeFacts) => { facts = value; }, app: createContainerLaunchArguments(ports) };
+    const options: ContainerLaunchOptions<object> = {
+        containerName: "x".repeat(80), fullPath: "/project", projectMountPath: "/guest",
+        credentialMounts: [{ hostPath: "/same", containerPath: "/credential" }, { hostPath: "/same", containerPath: "/credential" }],
+        gitIdentityMounts: [{ hostPath: "/git", containerPath: "/git" }],
+        claudeJsonFile: "/claude.json", miseVolumeName: "mise", pidsLimit: "300", imageName: "sha256:pinned",
+        hostSshDir: "/ssh", sshAgentSocket: "/agent",
+    };
+    return { facts, options, app: createContainerLaunchArguments(ports) };
 }
-
-describe("runtime mount decision policy", () => {
-    it("constructs without reading ports or native bindings", () => {
-        const unavailable = new Proxy({}, { get() { throw new Error("eager binding"); } });
-        expect(() => createContainerMountArguments(unavailable as ContainerMountArgumentPorts)).not.toThrow();
-        expect(() => createContainerLaunchArguments(unavailable as ContainerLaunchArgumentPorts<object>)).not.toThrow();
+describe("semantic launch plan", () => {
+    it("retains launch authority and ordered duplicate mounts", () => {
+        const f = fixture(); const plan = f.app.buildPlan(f.options);
+        expect(plan).toMatchObject({ containerName: f.options.containerName, hostname: "x".repeat(63), imageName: "sha256:pinned", network: "host", init: true, seccomp: "unconfined", capabilities: ["NET_ADMIN"] });
+        expect(plan.operations.slice(0, 5)).toEqual([
+            { kind: "bind", source: "/project", destination: "/guest" },
+            { kind: "bind", source: "/same", destination: "/credential" },
+            { kind: "bind", source: "/same", destination: "/credential" },
+            { kind: "bind", source: "/git", destination: "/git", readonly: true },
+            { kind: "bind", source: "/claude.json", destination: "/home/ccc/.claude.json" },
+        ]);
+        expect(plan.operations).toContainEqual({ kind: "execution", workdir: "/guest", pidsLimit: "300" });
+        expect(plan.operations).toContainEqual({ kind: "socket" });
+        expect(plan.operations).toContainEqual({ kind: "ssh-command" });
     });
-    it.each(["off", "OFF", "force", "FORCE"])("mode %s short-circuits runtime and SELinux", mode => {
-        const f = mountFixture(); f.state.mode = mode;
-        expect(f.app.needsSelinuxRelabel()).toBe(mode.toLowerCase() === "force"); expect(f.trace).toEqual(["mode"]);
+    it("preserves owner overlays and readonly auth before persistent volumes", () => {
+        const f = fixture(); Object.assign(f.options, { deviceLabStateHostDir: "/state", deviceLabOwnerId: "owner", deviceLabOwnerAuthFile: "/native/auth" });
+        const ops = f.app.buildPlan(f.options).operations;
+        const start = ops.findIndex(op => op.kind === "bind" && op.source === "/state");
+        expect(ops.slice(start, start + 6)).toEqual([
+            { kind: "bind", source: "/state", destination: "/home/ccc/.ccc/devices", readonly: true },
+            { kind: "tmpfs", destination: "/home/ccc/.ccc/devices/owners", mode: 0o711, noexec: true, nosuid: true, nodev: true },
+            { kind: "bind", source: "/native/owner", destination: "/home/ccc/.ccc/devices/owners/owner" },
+            { kind: "tmpfs", destination: "/home/ccc/.ccc/devices/broker/auth", mode: 0o711, noexec: true, nosuid: true, nodev: true },
+            { kind: "bind", source: "/native/auth", destination: "/auth", readonly: true },
+            { kind: "env", key: "CCC_DEVICE_BROKER_AUTH_FILE", value: "/auth" },
+        ]);
     });
-    it("auto only observes SELinux for Podman", () => {
-        const f = mountFixture(); f.state.enforcing = true;
-        expect(f.app.needsSelinuxRelabel()).toBe(false); expect(f.trace).toEqual(["mode", "runtime"]);
-        f.trace.length = 0; f.state.facts.runtime = "podman";
-        expect(f.app.needsSelinuxRelabel()).toBe(true); expect(f.trace).toEqual(["mode", "runtime", "selinux"]);
+    it("preserves clipboard and duplicate labels after extra mounts", () => {
+        const f = fixture(); Object.assign(f.options, { identity: {}, projectMountIdentity: "physical", deviceLabMountIdentity: "devices", extraMounts: [{ hostPath: "/extra", containerPath: "/extra" }], clipboardPortFile: "/port", clipboardFilesHostDir: "/files", proxyEnabled: true, containerHostRemote: true });
+        const ops = f.app.buildPlan(f.options).operations;
+        expect(ops.slice(-8)).toEqual([
+            { kind: "bind", source: "/extra", destination: "/extra" },
+            { kind: "bind", source: "/port", destination: "/run/ccc/clipboard.port", readonly: true },
+            { kind: "bind", source: "/files", destination: "/clipboard" },
+            { kind: "management-labels", projectPath: "/project", profile: "", cliVersion: "version" },
+            { kind: "label", key: "project.identity", value: "physical" },
+            { kind: "label", key: "duplicate", value: "first" }, { kind: "label", key: "duplicate", value: "second" },
+            { kind: "label", key: "device.identity", value: "devices" },
+        ]);
+        expect(ops).toContainEqual({ kind: "env", key: "CCC_PROXY_ENABLED", value: "1" });
+        expect(ops).toContainEqual({ kind: "env", key: "CCC_CONTAINER_HOST_REMOTE", value: "1" });
+        f.facts.clipboardPortFilePresent = false;
+        expect(f.app.buildPlan(f.options).operations).not.toContainEqual({ kind: "bind", source: "/port", destination: "/run/ccc/clipboard.port", readonly: true });
     });
-    it("named volumes skip namespace environment and relabel observations", () => {
-        const f = mountFixture(); f.state.mode = "force";
-        expect(f.app.bindMountArgs("volume", "/target", { readonly: true })).toEqual(["-v", "volume:/target:ro"]); expect(f.trace).toEqual([]);
-    });
-
-    it.each(["vitest", "podman", "not-nested"])("%s skips mount observation", scenario => {
-        const f = mountFixture(); f.state.mode = "off"; f.state.marker = scenario === "not-nested" ? undefined : "docker";
-        f.state.vitest = scenario === "vitest"; f.state.facts.runtime = scenario === "podman" ? "podman" : "docker";
-        expect(f.app.bindMountArgs("/caller/path", "/target")).toEqual(["-v", "/caller/path:/target"]); expect(f.trace).not.toContain("mounts");
-    });
-    it("uses longest boundary-matching destination and first equal-length winner", () => {
-        const f = mountFixture(); f.state.marker = "docker"; f.state.mode = "off";
-        f.state.mounts = [{ source: "/wrong-boundary", destination: "/project-other" }, { source: "/short", destination: "/project" }, { source: "/first", destination: "/project/nested" }, { source: "/second", destination: "/project/nested" }];
-        expect(f.app.bindMountArgs("/project/nested/file", "/target")).toEqual(["-v", "/first/file:/target"]);
-        expect(f.trace).toEqual(["marker", "vitest", "runtime", "mounts", "capture-join", "join", "mode"]);
-    });
-    it("does not translate a sibling that only shares the mount destination prefix", () => {
-        const f = mountFixture(); f.state.marker = "docker"; f.state.mode = "off";
-        f.state.mounts = [{ source: "/outer/project", destination: "/project" }];
-        expect(f.app.bindMountArgs("/project-other/file", "/target")).toEqual(["-v", "/project-other/file:/target"]);
-        expect(f.trace).toEqual(["marker", "vitest", "runtime", "mounts", "mode"]);
-    });
-    it("normalizes Desktop Windows source and skips join at exact root", () => {
-        const f = mountFixture(); f.state.marker = "docker"; f.state.mode = "off";
-        f.state.mounts = [{ source: "C:\\Users\\fixture", destination: "/project" }];
-        expect(f.app.bindMountArgs("/project", "/target")).toEqual(["-v", "/run/desktop/mnt/host/c/Users/fixture:/target"]); expect(f.trace).not.toContain("capture-join");
-    });
-    it("propagates raw iterator failure without later observations", () => {
-        const f = mountFixture(); const failure = { stage: "mount iterator" }; f.state.marker = "docker";
-        f.state.mounts[Symbol.iterator] = () => { throw failure; };
-        let caught: unknown; try { f.app.bindMountArgs("/project", "/target"); } catch (error) { caught = error; }
-        expect(caught).toBe(failure); expect(f.trace).not.toContain("mode");
-    });
-    it.each([
-        ["docker", false, "docker-native", undefined, [], false],
-        ["podman", false, "podman-rootless", "disabled", ["--cgroups=disabled", "--userns=keep-id:uid=1000,gid=1000"], false],
-        ["podman", false, "podman-rootful", "enabled", [], false],
-        ["podman", false, "podman-rootful", undefined, ["--cgroups=disabled"], true],
-        ["podman", true, "podman-machine", undefined, ["--userns=keep-id:uid=1000,gid=1000"], false],
-    ] as const)("ordered facts/cgroups/marker for %s/%s/%s/%s", (runtime, remote, flavor, cgroups, expected, observesMarker) => {
-        const f = mountFixture(); Object.assign(f.state.facts, { runtime, remote, flavor }); f.state.cgroups = cgroups; f.state.marker = "docker";
-        expect(f.app.runtimeExtraRunArgs()).toEqual(expected); expect(f.trace).toEqual(observesMarker ? ["facts", "cgroups", "marker"] : ["facts", "cgroups"]);
-    });
-});
-
-describe("complete container launch operation", () => {
-
-    it("retains group zero and unsupported/false/absent branches", () => {
-        const f = launchFixture(); f.options.labRunner = { status: "ready", stateVolumeName: "labs", stateContainerDir: "/labs", kvmDevicePath: "/dev/kvm", kvmGroupId: 0, networkMode: "user" };
-        const ready = f.app.buildRunArgs(f.options); expect(ready).toContain("labs:/labs"); expect(ready).toContain("0");
-        f.options.labRunner = { status: "unsupported", stateVolumeName: "labs", stateContainerDir: "/labs", networkMode: "user", unsupportedReason: "fixture" }; f.options.proxyEnabled = false; f.options.containerHostRemote = false;
-        const unsupported = f.app.buildRunArgs(f.options); expect(unsupported).not.toContain("labs:/labs"); expect(unsupported).not.toContain("--device"); expect(unsupported).not.toContain("--privileged"); expect(unsupported).toContain("CCC_LAB_RUNNER_UNSUPPORTED_REASON=fixture"); expect(unsupported).not.toContain("CCC_PROXY_ENABLED=1"); expect(unsupported.at(-1)).toBe("image");
+    it("retains group zero and omits unsupported lab state and devices", () => {
+        const f = fixture(); f.options.labRunner = { status: "ready", stateVolumeName: "labs", stateContainerDir: "/labs", kvmDevicePath: "/dev/kvm", kvmGroupId: 0, networkMode: "user" };
+        const ready = f.app.buildPlan(f.options).operations;
+        expect(ready).toContainEqual({ kind: "group", id: 0 });
+        expect(ready).toContainEqual({ kind: "device", source: "/dev/kvm", destination: "/dev/kvm" });
+        f.options.labRunner = { ...f.options.labRunner, status: "unsupported", unsupportedReason: "unavailable" };
+        const unsupported = f.app.buildPlan(f.options).operations;
+        expect(unsupported.some(op => op.kind === "device" || op.kind === "group" || (op.kind === "bind" && op.source === "labs"))).toBe(false);
+        expect(unsupported).toContainEqual({ kind: "env", key: "CCC_LAB_RUNNER_UNSUPPORTED_REASON", value: "unavailable" });
     });
 });

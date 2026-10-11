@@ -56,3 +56,7 @@ export function interactiveCommand(command: readonly string[]): InteractiveComma
 export type CodexLaunchPreparation =
     | { ok: true; command: string[]; notice?: string }
     | { ok: false; command: string[]; status: number; error: string };
+
+export type CodexLaunchSemanticPreparation =
+    | { ok: true; command: string[]; reason?: "installation-incomplete-fallback" }
+    | { ok: false; command: string[]; status: number; reason: "engine-unavailable" | "profile-unsupported" | "initialization-failed"; cause?: unknown };

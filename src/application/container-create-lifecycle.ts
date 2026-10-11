@@ -3,10 +3,10 @@ import type {
     ContainerCreateLifecycleRequest,
 } from "../ports/container-create-lifecycle.js";
 
-export function createContainerCreateLifecycle(ports: ContainerCreateLifecyclePorts) {
+export function createContainerCreateLifecycle<PreparedCreate>(ports: ContainerCreateLifecyclePorts<PreparedCreate>) {
     for (const name of [
-        "withFamilyLock", "namespaceExists", "findCollision", "reportCreating",
-        "reportLabWarning", "reportCreateFailure", "prepareRunArgs",
+        "failCreate", "withFamilyLock", "namespaceExists", "findCollision", "reportCreating",
+        "reportLabWarning", "reportCreateFailure", "prepareCreate",
         "assertProjectSources", "assertDeviceSources", "assertFilesystemSources",
         "create", "verifyCreated", "removeRejected", "explicitlyAbsent",
         "syncMcp", "fixSsh", "syncGit", "finish",
@@ -20,60 +20,46 @@ export function createContainerCreateLifecycle(ports: ContainerCreateLifecyclePo
         const { containerName, projectMountIdentity, profile, debug } = request;
         return ports.withFamilyLock(`mount-${projectMountIdentity}`, () => {
             if (ports.namespaceExists(containerName)) {
-                throw new Error(
-                    `Container namespace ${containerName} appeared during creation preflight; refusing replacement.`,
-                );
+                ports.failCreate({ kind: "namespace-appeared", containerName });
             }
             const collision = ports.findCollision();
             if (collision) {
-                const profileName = profile ?? "default";
-                throw new Error(
-                    `CCC container ${collision.containerName} already owns this physical project `
-                    + `for profile ${profileName}; refusing duplicate container creation. `
-                    + "The existing container was preserved.",
-                );
+                ports.failCreate({ kind: "collision", containerName: collision.containerName, profile: profile ?? "default" });
             }
             ports.reportCreating(containerName, debug);
             ports.reportLabWarning();
-            const args = ports.prepareRunArgs();
+            const prepared = ports.prepareCreate();
             ports.assertProjectSources();
             ports.assertDeviceSources();
             ports.assertFilesystemSources();
-            const result = ports.create(args);
-            if (result.status !== 0) {
+            const result = ports.create(prepared);
+            if (result.kind === "failed") {
                 ports.reportCreateFailure();
-                throw new Error("Failed to create container");
+                ports.failCreate({ kind: "create-failed" });
             }
-            const createdContainerId = (result.stdout ?? "").trim().split(/\s+/)
-                .find((token) => /^[a-f0-9]{64}$/i.test(token)) ?? null;
+            const createdContainerId = result.containerId;
 
             try {
                 ports.assertProjectSources();
                 ports.assertDeviceSources();
                 ports.assertFilesystemSources();
-                const verification = createdContainerId
-                    ? ports.verifyCreated(createdContainerId)
-                    : { kind: "mismatch", reason: "container runtime did not return an exact 64-hex container ID" } as const;
+                if (!createdContainerId) ports.failCreate({ kind: "missing-id-verification" });
+                const verification = ports.verifyCreated(createdContainerId);
                 if (verification.kind !== "verified") {
-                    throw new Error(
-                        `created container bind mount identity verification failed (${verification.reason})`,
-                    );
+                    ports.failCreate({ kind: "verification-failed", reason: verification.reason });
                 }
             } catch (error) {
                 if (createdContainerId) {
                     ports.removeRejected(createdContainerId);
                     if (!ports.explicitlyAbsent(createdContainerId)) {
-                        throw new Error(
-                            `${(error as Error).message}; failed to remove rejected container ${createdContainerId}`,
-                            { cause: error },
-                        );
+                        ports.failCreate({ kind: "rejected-removal-failed", containerId: createdContainerId, error });
                     }
                 }
                 throw error;
             }
 
             if (!createdContainerId) {
-                throw new Error("Container runtime did not return the created container ID; refusing an unpinned session.");
+                ports.failCreate({ kind: "unpinned-session" });
             }
             ports.syncMcp(createdContainerId);
             ports.fixSsh(createdContainerId);

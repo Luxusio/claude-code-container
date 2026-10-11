@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "../domain/tool-registry.js";
-import type { CodexLaunchPreparation } from "../domain/tool-session/codex-launch.js";
+import type { CodexLaunchSemanticPreparation } from "../domain/tool-session/codex-launch.js";
 import type { SessionAcquisitionRequest, SessionAcquisitionInspection } from "./session-acquisition.js";
 
 export interface ContainerExecOptions {
@@ -19,24 +19,55 @@ export interface ContainerExecMount {
 export interface ContainerExecReadinessPorts {
     running(id: string, target: "id"): boolean;
     install(id: string, tool: ToolDefinition): void;
-    log(message: string): void;
+    restarted(): void;
+    installFailure(cause: unknown): Error;
 }
 export interface ContainerExecReplacementPorts {
     claims(prefix: string, currentLockFile: string): string[];
     status(name: string): ContainerExecStatus;
     lockName(path: string): string;
 }
-export interface ContainerExecPorts {
+export type ContainerExecReplacementReason =
+    | { reason: "ownership-unverified" | "identity-absent" | "identity-changed" }
+    | { reason: "other-claims"; claims: string[] };
+export interface ContainerExecClipboardConnection { url?: string; token?: string; }
+export interface ContainerExecEnvironmentFacts {
+    forwarded: Array<[string, string]>;
+    skippedKeys: string[];
+    containerMarker: readonly [string, string];
+    hostLangPresent: boolean;
+    hostTimezone?: string;
+    observedTimezone?: string;
+}
+export interface ContainerExecCommandIntent {
+    runtime: "docker" | "podman";
+    target: string;
+    workdir: string;
+    environment: Array<[string, string]>;
+    command: { kind: "claude" | "command"; arguments: string[] };
+}
+export type ContainerExecCodexPreparation =
+    | Omit<Extract<CodexLaunchSemanticPreparation, { ok: true }>, "command">
+    | Omit<Extract<CodexLaunchSemanticPreparation, { ok: false }>, "command">;
+export type ContainerExecReport =
+    | { kind: "progress"; phase: "checking" | "starting" | "broker" | "setup" | "uv" | "mcp" | "proxy" | "mise" | "tools" | "clipboard" }
+    | { kind: "exec-debug"; projectPath: string; fullPath: string; projectId: string; command: string[] }
+    | { kind: "mounts-debug"; mounts: ContainerExecMount[] }
+    | { kind: "replacement-blocked"; evidence: ContainerExecReplacementReason }
+    | { kind: "broker-failed" | "restore-failed"; cause: unknown }
+    | { kind: "ownership-unconfirmed" | "cleanup-failed" | "restarted" }
+    | { kind: "mcp-forwarded"; names: string[] }
+    | { kind: "environment-skipped"; keys: string[] }
+    | { kind: "codex-preparation"; result: ContainerExecCodexPreparation };
+export interface ContainerExecPorts<Prepared> {
     ensureRuntime(): void;
     resolveProject(path: string): string;
     ensureDirectories(profile?: string): void;
     ensureProjectTools(path: string): Promise<void>;
     projectId(path: string): string;
-    environment(): Record<string, string | undefined>;
-    platform(): string;
+    debugEnabled(): boolean;
     terminalReady(): boolean;
-    timezone(): string | undefined;
-    runtime(): string;
+    runtime(): "docker" | "podman";
     tool(name: string): ToolDefinition | undefined;
     defaultTool(): ToolDefinition;
     detectWorktreeBranch(path: string): string | null;
@@ -46,7 +77,7 @@ export interface ContainerExecPorts {
     inspectSessionContainer(path: string, profile?: string): { known: boolean; containerId: string | null };
     ensureClipboard(): Promise<number | null>;
     clipboardPortFile(): string;
-    readClipboardPort(path: string): string;
+    clipboardConnection(port: number | null): ContainerExecClipboardConnection;
     worktreeMounts(path: string, required: boolean, mountPath: string): ContainerExecMount[];
     containerName(path: string, profile?: string): string;
     containerStatus(name: string): ContainerExecStatus;
@@ -73,23 +104,22 @@ export interface ContainerExecPorts {
     prepareCodexConfig(id: string, profile?: string): void;
     assertCodexState(id: string, profile?: string): void;
     ensureCodexHarness(id: string, profile?: string): void;
-    syncClipboard(id: string, assetDirectory: string): void;
+    syncClipboard(id: string): void;
     ensureSocketAccess(id: string): void;
     isRestartRequired(error: unknown): boolean;
-    isDockerDesktop(): boolean;
     attachClipboardImage(path: string, command: string[], options: { enabled: boolean; clipboardUrl?: string; clipboardToken?: string }): Promise<{ args: string[] }>;
-    runRuntimeSync(runtime: string, args: string[], options: { stdio: "inherit" | "ignore" | ["pipe", "pipe", "pipe"]; encoding?: "utf-8" }): { stdout: string | null };
-    forwardedEnvironment(environment: Record<string, string | undefined>): { forwarded: Array<[string, string]>; skippedDueToLimit: string[] };
-    createEnvironmentFile(entries: Array<[string, string]>): { path: string; dispose(): void };
-    prepareCodexLaunch(runtime: string, prefix: string[], command: string[]): CodexLaunchPreparation;
-    recoverCodexCommand(command: string[]): string[];
-    runCommand(runtime: string, args: string[], interactive: boolean): Promise<number>;
+    installProjectTools(target: string, workdir: string): void;
+    startClipboardBridge(target: string, connection: ContainerExecClipboardConnection): void;
+    observeCommandEnvironment(): ContainerExecEnvironmentFacts;
+    prepareCommand(intent: ContainerExecCommandIntent): Prepared;
+    prepareCodexCommand(prepared: Prepared): ContainerExecCodexPreparation;
+    launchCommand(prepared: Prepared, interaction: { interactive: boolean; terminal: boolean; codexRecovery: boolean }): Promise<number>;
+    disposeCommand(prepared: Prepared): void;
+    reportConversationFiles(target: string, projectId: string): void;
+    setupFailure(cause: unknown): Error;
+    setupToolFailure(cause: unknown): Error;
+    handoffFailure(): Error;
+    invalidRuntimeFailure(): Error;
     cleanupSession(): void;
-    progress(message: string): void;
-    log(message: string): void;
-    error(message: string): void;
-    warn(message: string): void;
-    assetDirectory: string;
-    claudeBinaryPath: string;
-    containerEnvironment: readonly [string, string];
+    report(report: ContainerExecReport): void;
 }

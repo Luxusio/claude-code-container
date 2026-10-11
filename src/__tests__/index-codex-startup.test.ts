@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const f = vi.hoisted(() => ({
     events: [] as string[], running: false, exists: true, profile: undefined as string | undefined,
     handoffStarted: undefined as boolean | undefined,
-    realCleanup: false, devices: vi.fn(),
+    realCleanup: false, devices: vi.fn(), envCreationFailure: false,
+    forwarded: [] as Array<[string, string]>, envEntries: [] as Array<[string, string]>,
     locked: false, failPostExitLock: false, failTool: false, failState: false, launchFailure: false,
     probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), claude: vi.fn(), confirm: vi.fn(), command: vi.fn(), clipboard: vi.fn(), socket: vi.fn(),
 }));
@@ -18,8 +19,8 @@ vi.mock("fs", async original => {
 });
 vi.mock("../utils.js", async original => ({
     ...await original<typeof import("../utils.js")>(),
-    collectForwardedEnv: () => ({ forwarded: [], skippedDueToLimit: [], totalBytes: 0 }),
-    writeOwnedEnvFile: () => ({ path: "/fixture/exec.env", dispose: () => f.events.push("unlink") }),
+    collectForwardedEnv: () => ({ forwarded: f.forwarded, skippedDueToLimit: [], totalBytes: 0 }),
+    writeOwnedEnvFile: (entries: Array<[string, string]>) => { if (f.envCreationFailure) throw new Error("environment creation denied"); f.envEntries = entries; return { path: "/fixture/exec.env", dispose: () => f.events.push("unlink") }; },
 }));
 vi.mock("../container-command.js", () => ({ runContainerCommand: f.command }));
 vi.mock("../docker.js", () => ({
@@ -73,19 +74,21 @@ vi.mock("../codex-state-ownership.js", () => ({ assertCodexStateAccessible: f.st
 vi.mock("../codex-harness.js", () => ({ ensureCodexHarness: f.harness }));
 vi.mock("../localhost-proxy-setup.js", () => ({ setupLocalhostProxy: () => f.events.push("proxy") }));
 vi.mock("../codex-clipboard-image.js", () => ({ maybeAttachCodexClipboardImage: async (_path: string, args: string[]) => ({ args }) }));
-vi.mock("../codex-launch.js", () => ({ prepareCodexLaunch: (_runtime: string, args: string[], command: string[]) => {
+vi.mock("../codex-launch.js", async original => ({ ...await original<typeof import("../codex-launch.js")>(), prepareCodexLaunchSemantic: (_runtime: string, args: string[], command: string[]) => {
     expect(args).toContain("final-id"); f.events.push("launch-preparation");
-    return f.launchFailure ? { ok: false, status: 9, error: "daemon unavailable" } : { ok: true, command };
+    return f.launchFailure ? { ok: false, status: 9, reason: "engine-unavailable" } : { ok: true, command };
 } }));
 import { clearSession, getCurrentSession } from "../session.js";
 import { main, runCli } from "../index.js";
+import { createNativeContainerExecPorts } from "../composition/container-exec.js";
+import { createContainerExec } from "../application/container-exec.js";
 class Exit extends Error { constructor(readonly status: number) { super(`exit ${status}`); } }
 const originalArgv = process.argv;
 beforeEach(() => {
-    clearSession(); f.realCleanup = false; f.handoffStarted = undefined;
+    clearSession(); f.realCleanup = false; f.envCreationFailure = false; f.handoffStarted = undefined;
     vi.clearAllMocks(); vi.stubEnv("CCC_PROFILE", ""); vi.stubEnv("DEBUG", ""); vi.stubEnv("container", "");
     process.argv = [process.execPath, "ccc", "codex", "resume", "--last"];
-    f.events = []; f.running = false; f.exists = true; f.profile = undefined; f.locked = false; f.failPostExitLock = false; f.failTool = false; f.failState = false; f.launchFailure = false;
+    f.events = []; f.forwarded = []; f.envEntries = []; f.running = false; f.exists = true; f.profile = undefined; f.locked = false; f.failPostExitLock = false; f.failTool = false; f.failState = false; f.launchFailure = false;
     vi.spyOn(process, "exit").mockImplementation(code => { throw new Exit(Number(code)); });
     vi.spyOn(process.stderr, "write").mockReturnValue(true); vi.spyOn(console, "error").mockImplementation(() => {});
     f.probeRunning.mockReturnValue(true);
@@ -259,12 +262,76 @@ it("awaits the captured start acknowledgement before CLI cleanup after a helper 
 
 
 it("public Claude startup verifies the final container and runs without Codex Harness", async () => {
-    process.argv = [process.execPath, "ccc", "claude", "hello"];
+    const argumentsToClaude = ["hello with spaces", "$(never executed)", "quote'\";`literal`", "--permission-mode", "plan"];
+    process.argv = [process.execPath, "ccc", "claude", ...argumentsToClaude];
     await expect(main()).rejects.toMatchObject({ status: 0 });
     expect(f.claude).toHaveBeenCalledWith("final-id");
     expect(f.command).toHaveBeenCalledOnce();
     expect(f.command.mock.calls[0][1]).toContain("final-id");
-    expect(f.command.mock.calls[0][1]).toContain("hello");
+    const args = f.command.mock.calls[0][1] as string[];
+    expect(args.slice(args.indexOf("final-id") + 1)).toEqual(["/home/ccc/.local/bin/claude", ...argumentsToClaude]);
     expect(f.harness).not.toHaveBeenCalled();
     expect(f.events.indexOf("command")).toBeGreaterThan(f.events.indexOf("claude"));
+});
+
+it.each([false, true])("native prepared command preserves literal arguments and adds TTY flags only when terminal=%s", async terminal => {
+    const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
+    const argumentsToCommand = ["printf", "argument with spaces", "$(never executed)", "a'\";`literal`"];
+    const environment: Array<[string, string]> = [["DUPLICATE", "first"], ["DUPLICATE", "last"]];
+    const prepared = ports.prepareCommand({ runtime: "podman", target: "final-id", workdir: "/project/repo-id", environment, command: { kind: "command", arguments: argumentsToCommand } });
+    f.command.mockImplementation(async () => 17);
+    try {
+        expect(await ports.launchCommand(prepared, { interactive: true, terminal, codexRecovery: false })).toBe(17);
+        expect(f.envEntries).toEqual(environment);
+        expect(f.command).toHaveBeenCalledExactlyOnceWith("podman", ["exec", "-w", "/project/repo-id", "--env-file", "/fixture/exec.env", ...(terminal ? ["-it"] : []), "final-id", ...argumentsToCommand], true);
+        expect(f.events).not.toContain("unlink");
+    } finally { ports.disposeCommand(prepared); }
+    expect(f.events).toEqual(["unlink"]);
+});
+
+it("actual application and native preparation preserve environment duplicates and apply session overrides last", async () => {
+    const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
+    vi.stubEnv("LANG", "host-lang"); vi.stubEnv("TZ", "Host/Zone");
+    f.forwarded = [["LANG", "host-lang"], ["TZ", "Host/Zone"], ["MISE_NODE_VERSION", "host-node"]];
+    await createContainerExec({...ports, projectId: () => "repo-id", clipboardConnection: () => ({url: "http://127.0.0.1:4321", token: "token:with:colon"})}).exec("/fixture", ["claude"], {env: { LANG: "session-lang", TZ: "Session/Zone", MISE_NODE_VERSION: "23" }});
+    expect(f.envEntries).toEqual([
+        ["container", "docker"], ...f.forwarded, ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["TZ", "Host/Zone"],
+        ["CCC_CLIPBOARD_URL", "http://127.0.0.1:4321"], ["CCC_CLIPBOARD_TOKEN", "token:with:colon"],
+        ["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"],
+        ["LANG", "session-lang"], ["TZ", "Session/Zone"], ["MISE_NODE_VERSION", "23"],
+    ]);
+});
+
+it("native environment observation supplies host facts without injecting guest defaults", () => {
+    const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
+    vi.stubEnv("LANG", ""); vi.stubEnv("TZ", "Fallback/Zone");
+    expect(ports.observeCommandEnvironment()).toMatchObject({forwarded: [], skippedKeys: [], containerMarker: ["container", "docker"], hostLangPresent: false, hostTimezone: "Fallback/Zone"});
+});
+
+it("outer CLI cleanup settles its started container when environment preparation creation fails", async () => {
+    f.realCleanup = true; f.envCreationFailure = true;
+    await expect(runCli()).rejects.toMatchObject({status: 1});
+    expect(f.command).not.toHaveBeenCalled();
+    expect(f.events).not.toContain("launch-preparation"); expect(f.events).not.toContain("unlink");
+    expect(f.events.filter(event => event === "restore")).toHaveLength(2);
+    expect(f.devices).toHaveBeenCalledOnce();
+    expect(f.spawn).toHaveBeenCalledWith("docker", ["stop", "final-id"], {stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL"});
+    expect(getCurrentSession().lockFile).toBeNull();
+});
+
+it("native project setup and clipboard bridge keep their existing argv and stream policies", () => {
+    const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
+    f.spawn.mockReturnValue({status: 9, stdout: "", stderr: "fixture"});
+    expect(() => ports.installProjectTools("final-id", "/project/path with spaces")).not.toThrow();
+    ports.startClipboardBridge("final-id", {url: "http://127.0.0.1:4321", token: "literal:token $(not shell)"});
+    expect(f.spawn).toHaveBeenNthCalledWith(1, "docker", ["exec", "-w", "/project/path with spaces", "final-id", "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true"], {stdio: "inherit"});
+    expect(f.spawn).toHaveBeenNthCalledWith(2, "docker", ["exec", "-d", "-e", "CCC_CLIPBOARD_URL=http://127.0.0.1:4321", "-e", "CCC_CLIPBOARD_TOKEN=literal:token $(not shell)", "final-id", "/usr/local/bin/ccc-x11-bridge"], {stdio: "ignore"});
+});
+
+it("native post-exit conversation report retains the pinned target and piped UTF-8 recipe", () => {
+    const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
+    f.spawn.mockReturnValue({status: 0, stdout: " 3\ndir:/home/ccc/.claude/projects/-project-repo-id\n", stderr: ""});
+    ports.reportConversationFiles("final-id", "repo-id");
+    expect(f.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["exec", "final-id", "sh", "-c", 'ls -1 "/home/ccc/.claude/projects/-project-repo-id"/*.jsonl 2>/dev/null | wc -l; echo "dir:/home/ccc/.claude/projects/-project-repo-id"'], {encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"]});
+    expect(console.error).toHaveBeenCalledWith("[ccc:debug] post-exit conversation check: 3\ndir:/home/ccc/.claude/projects/-project-repo-id");
 });
