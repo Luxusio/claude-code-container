@@ -5,8 +5,8 @@ Updated: 2026\-10\-11. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
 Known in-scope implementation TODOs: **218** (219 inventoried, 1 explicitly excluded).
-Implemented including unmerged candidates: **211/218 (96.8%)**.
-Integrated source: **211/218 (96.8%)**; historical baseline: **31**. Candidates: **0**; partial: **3**; TODO: **4**.
+Implemented including unmerged candidates: **216/218 (99.1%)**.
+Integrated source: **216/218 (99.1%)**; historical baseline: **31**. Candidates: **0**; partial: **1**; TODO: **1**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
@@ -62,6 +62,7 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | workspace\-opening | 1 | 0 | `3e13e077` | Actual full DEEP Code/Security, corrected independent Docs and affected Code PASS; strong package/root and architecture contracts PASS\. One genuine complete build67\.14s; ten whole files552PASS/9configured platform/Git skips, lint, package7, actual npm/Unix packaging/MCP startup and compiled CLI0/0/1 PASS\.18source/1242emits/fixeddependencies/18links/locks authenticated; owned processes joined\. Actual normal3e13 source FF preserves all97 user paths and binary diff\. Root metadata delivery pending; native hosts/hardware, whole legacy\-JS strictness, formal hook closure and inventory certification remain unverified\. Claude/Codex effect\-contract correction gives zero unrestricted tool\-setup credit\. | accepted @ 3e13e077 |
 | hyper\-v\-lifecycle\-network | 10 | 0 | `fb6e1765` | Independent complete composed and affected Code/Security/Docs passed\. Current strict checks and original genuine build chain passed through authenticated successful\-stage qualification and executed failed/unrun retries\. All24 whole files753PASS0skip; lint, package7, actual npm/Unix exports/assets/MCP startup and compiled CLI0/0/1 passed\. Final55source/1272artifacts/7551dependencies/18links/2locks authenticated, only generated cache changed, private checkout clean and owned processes joined\. Original compile/runtime failures retained and corrected without weakening graph/type/native authority\. Normal local FF fb6e preserves97 original user paths and binary diff\. Ten whole Hyper\-V lifecycle/network operations count once; Android/iOS contributions remain zero global\-operation credits pending supported\-binding completion\. Formal hook closure, native hosts/hardware, PowerShell parser and inventory certification remain unverified\. | accepted @ fb6e1765 |
 | desktop\-qemu\-device\-access\-integration | 6 | 0 | `56eaccbe` | Actual full composed and affected independent Code/Security/Docs PASS\. Corrected strict checks and genuine complete original build65\.794s; thirteen required whole files183cases0skip, lint, seven package cases, actual npm/materialized Unix exports/assets/MCP startup and compiled CLI0/0/1 PASS\. Final25Source/1275genuineartifacts/7551fixeddeps/18links/2locks authentic and owned processes joined\. Normal main FF56eaccbe preserves all97 original user paths/diff bytes\. Retained4cdd first strict failure\. Literal whole\-binding audit qualifies six unambiguous whole operations through accepted mobile/Hyper\-V/request peers and current Desktop/QEMU composition; UI/accessibility and broker text\-wait catalog omissions and Codex/Claude tool\-scope qualification remain uncounted pending metadata repair\. One formal verification zero receipts exact park, no fabricated close\. Native hosts, whole legacy\-JS strict and source denominator certification unverified\. | accepted @ 56eaccbe |
+| supported\-binding\-source\-closure | 5 | 0 | `3e6b9539` | Independent current\-parent Code and Docs PASS qualify all required source bindings\. Independent ordinary\-QA evidence qualification confirms status21, UI15 including two explicit unsupported Hyper\-V accessibility dispositions, text\-wait9, Codex/Claude tool setup1, and provider/broker repository2\. Accepted source commits264d/fb6e/56ea/58b7/3e13/3e6 and their genuine build, whole business\-test, shipping, authentication and joined\-process evidence retained\. Five whole operations counted once; source\-only rows keep empty proofIds and unverified portable/native dispositions\. No formal close, native\-host or source\-denominator certification\. | accepted @ 3e6b9539 |
 
 ## 0.2 Active next plans
 
@@ -95,8 +96,8 @@ These are provisional, unweighted operation counts. Source scope closure and ind
 | ios\-observation\-access | OP\-device\-exec, OP\-device\-list\-files, OP\-device\-reset, OP\-device\-screenshot, OP\-device\-status, OP\-device\-ui, OP\-device\-session\-status, OP\-mobile\-wait\-app, OP\-mobile\-wait\-text | Simulator/physical inward access, session acquisition and waits accepted as a contribution in fb6e after current753\-case combined QA and local delivery\. No whole global credit before actual supported\-binding closure; inventory status/text\-wait omissions require qualification\. Formal/native certification unverified\. |
 | desktop\-device\-access | OP\-device\-exec, OP\-device\-list\-files, OP\-device\-screenshot, OP\-device\-status, OP\-device\-ui | Source contribution normally composed and accepted at56eaccbe after actual full reviews/strict/genuine build13whole183cases/shipping/local delivery\. Six whole operations count once in desktop\-qemu\-device\-access\-integration; UI/text\-wait catalog repairs and Codex/Claude tool\-scope qualification remain pending, native/formal certification unverified\. |
 | qemu\-guest\-execution | OP\-device\-exec, OP\-device\-list\-files | Source contribution normally composed and accepted at56eaccbe after actual full reviews/strict/genuine build13whole183cases/shipping/local delivery\. Six whole operations count once in desktop\-qemu\-device\-access\-integration; UI/text\-wait catalog repairs and Codex/Claude tool\-scope qualification remain pending, native/formal certification unverified\. |
-| broker\-device\-status | OP\-device\-status | Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 after actual independent Code/Security/Docs PASS and sole current genuine complete build, four whole files190 behavior cases plus qualified graph, shipping and local FF PASS\. Twelve supported status rows and eight lifecycle joins now recorded; whole status credit pending independent post\-write all\-binding/evidence qualification\. Native/formal certification unverified\. |
-| binding\-catalog | OP\-device\-status, OP\-device\-ui, OP\-mobile\-wait\-text, OP\-tool\-setup | Fifteen supported source\-only rows and ten existing broker joins recorded; accepted Source provenance retained\. All four whole\-operation credits remain pending independent post\-write source/all\-binding and actual ordinary\-QA evidence qualification; OpenCode separately excluded; native/formal certification unverified\. |
+| broker\-device\-status | OP\-device\-status | Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 and composed parent3e6 retain actual independent review, genuine complete build, four whole files190 cases plus graph, shipping and local delivery evidence\. Independent current\-parent source/binding review and ordinary\-QA evidence qualification permit one whole status credit in supported\-binding\-source\-closure\. Native/formal certification unverified\. |
+| binding\-catalog | OP\-device\-status, OP\-device\-ui, OP\-mobile\-wait\-text, OP\-tool\-setup, OP\-owner\-repository | Fifteen status/UI/text source\-only rows, ten existing broker joins and the accepted broker owner\-repository binding recorded\. Independent current\-parent source/binding review and retained ordinary\-QA evidence qualification support five whole source\-operation credits, counted once in supported\-binding\-source\-closure\. OpenCode excluded and native/formal certification unverified\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 
@@ -106,9 +107,9 @@ No separately counted product operations. This packet's foundation/structural ac
 
 No separately counted product operations. This packet's foundation/structural acceptance obligations remain in the delivery gates below; zero operation rows does not mean completion.
 
-## 3. M02 — State and identity (2/4 implemented)
+## 3. M02 — State and identity (3/4 implemented)
 
-- [ ] `OP-owner-repository` — Owner repository. **partial**; packages/device\-lab/providers/application/owner\-device\-repository\.mjs.
+- [x] `OP-owner-repository` — Owner repository. **integrated**; supported\-binding\-source\-closure @ 3e6b9539.
 - [ ] `OP-state-storage` — State storage. **partial**; state\-access @ 8b74ef39.
 - [x] `OP-broker-owner-register` — Register canonical host project/profile broker owner mapping. **integrated**; broker\-owner\-leases @ cbea3003.
 - [x] `OP-broker-owner-resolve` — Resolve registered canonical owner and ensure broker auth material. **integrated**; broker\-owner\-leases @ cbea3003.
@@ -193,7 +194,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-lease-list` — List active exact\-owner physical hardware leases without claiming, refreshing, pruning or releasing them. **integrated**; broker\-observations @ 3f020650.
 - [x] `OP-physical-list` — Observe owned physical device definitions together with active owned leases and Android native host candidates. **integrated**; broker\-observations @ 3f020650.
 
-## 9. M08 — Provider capabilities (73/76 implemented)
+## 9. M08 — Provider capabilities (76/76 implemented)
 
 - [x] `OP-android-emulator-create` — android\-emulator create. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
 - [x] `OP-android-emulator-start` — android\-emulator start. **integrated**; provider\-workspace\-followup\-integration @ b855553f.
@@ -260,14 +261,14 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-device-screenshot` — Capture device screenshot. **integrated**; desktop\-qemu\-device\-access\-integration @ 56eaccbe.
 - [x] `OP-device-scroll` — Scroll device viewport. **integrated**; device\-interaction\-integration @ b4b8e748.
 - [x] `OP-device-session-status` — Observe mobile automation session. **integrated**; desktop\-qemu\-device\-access\-integration @ 56eaccbe.
-- [ ] `OP-device-status` — Observe device runtime status. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-status` — Observe device runtime status. **integrated**; supported\-binding\-source\-closure @ 3e6b9539.
 - [x] `OP-device-swipe` — Swipe on mobile device. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [x] `OP-device-type` — Type text on device. **integrated**; device\-interaction\-integration @ b4b8e748.
-- [ ] `OP-device-ui` — Observe device UI/accessibility. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-device-ui` — Observe device UI/accessibility. **integrated**; supported\-binding\-source\-closure @ 3e6b9539.
 - [x] `OP-device-unlock` — Unlock mobile screen. **integrated**; mobile\-control\-transfer @ 5122a56a.
 - [x] `OP-device-upload` — Upload bounded project file. **integrated**; device\-interaction\-integration @ b4b8e748.
 - [x] `OP-mobile-wait-app` — Wait boundedly for application. **integrated**; desktop\-qemu\-device\-access\-integration @ 56eaccbe.
-- [ ] `OP-mobile-wait-text` — Wait boundedly for mobile text. **TODO**; device\-lab\-mcp/src/server\.mjs.
+- [x] `OP-mobile-wait-text` — Wait boundedly for mobile text. **integrated**; supported\-binding\-source\-closure @ 3e6b9539.
 - [x] `OP-device-window-list` — List device windows. **integrated**; device\-interaction\-integration @ b4b8e748.
 - [x] `OP-qemu-disk-materialize` — Materialize owned QEMU overlay disk. **integrated**; admin\-qemu\-integration @ b855553f.
 - [x] `OP-qemu-target-list` — List exact owner guest targets. **integrated**; admin\-qemu\-integration @ b855553f.
@@ -296,7 +297,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-container-identity-image` — Prepare validated derived container identity image. **integrated**; container\-identity\-image @ 4be2ab3a.
 - [x] `OP-lab-state-ownership-migration` — prepareLabStateOwnership. **integrated**; lab\-state\-ownership @ 75bd30de.
 
-## 12. M11 — Workspace/profiles/credentials/tools (32/33 implemented)
+## 12. M11 — Workspace/profiles/credentials/tools (33/33 implemented)
 
 - [x] `OP-home-migrate` — Migrate legacy home layout. **integrated**; src/application/home\-layout\-migration\.ts.
 - [x] `OP-workspace-unified-create` — Create unified workspace. **integrated**; src/application/workspace/unified\-creation\.ts.
@@ -304,7 +305,7 @@ No separately counted product operations. This packet's foundation/structural ac
 - [x] `OP-workspace-unified-remove` — Remove unified workspace. **integrated**; src/application/workspace/unified\-removal\.ts.
 - [x] `OP-workspace-multi-remove` — Remove multi\-repository workspace. **integrated**; src/application/workspace/multi\-removal\.ts.
 - [x] `OP-tool-selection` — Select preferred tool and metadata. **integrated**; src/application/tool\-preferences\.ts.
-- [ ] `OP-tool-setup` — Prepare requested tool launcher. **partial**; src/application/requested\-tool\-setup\.ts.
+- [x] `OP-tool-setup` — Prepare requested tool launcher. **integrated**; supported\-binding\-source\-closure @ 3e6b9539.
 - [x] `OP-version-context` — Discover version files and render tool context. **integrated**; src/application/tooling/version\-file\-scanning\.ts.
 - [x] `OP-credential-paths` — Resolve and prepare host credential paths. **integrated**; src/application/credentials/host\-paths\.ts.
 - [x] `OP-credential-ssh-refresh` — Refresh host SSH material. **integrated**; src/application/credentials/host\-refresh\.ts.

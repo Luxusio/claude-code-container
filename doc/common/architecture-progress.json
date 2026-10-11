@@ -749,6 +749,25 @@
       "integration": "accepted",
       "nativeAcceptance": "unverified",
       "acceptedIntegrationCommit": "56eaccbe314a98896bfd74975628fea15bafb267"
+    },
+    {
+      "id": "supported-binding-source-closure",
+      "branch": "refactor/architecture-binding-catalog-20261011",
+      "commit": "3e6b9539ae01577ff1f76038f6b953b43a79fefa",
+      "taskId": "TASK__architecture-binding-catalog",
+      "implementation": "candidate-complete",
+      "wholeOperationIds": [
+        "OP-device-status",
+        "OP-device-ui",
+        "OP-mobile-wait-text",
+        "OP-tool-setup",
+        "OP-owner-repository"
+      ],
+      "partialOperationIds": [],
+      "codeReview": "Independent current-parent Code and Docs PASS qualify all required source bindings. Independent ordinary-QA evidence qualification confirms status21, UI15 including two explicit unsupported Hyper-V accessibility dispositions, text-wait9, Codex/Claude tool setup1, and provider/broker repository2. Accepted source commits264d/fb6e/56ea/58b7/3e13/3e6 and their genuine build, whole business-test, shipping, authentication and joined-process evidence retained. Five whole operations counted once; source-only rows keep empty proofIds and unverified portable/native dispositions. No formal close, native-host or source-denominator certification.",
+      "integration": "accepted",
+      "nativeAcceptance": "unverified",
+      "acceptedIntegrationCommit": "3e6b9539ae01577ff1f76038f6b953b43a79fefa"
     }
   ],
   "planningLanes": [
@@ -1064,7 +1083,7 @@
       "coveredOperationIds": [
         "OP-device-status"
       ],
-      "status": "Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 after actual independent Code/Security/Docs PASS and sole current genuine complete build, four whole files190 behavior cases plus qualified graph, shipping and local FF PASS. Twelve supported status rows and eight lifecycle joins now recorded; whole status credit pending independent post-write all-binding/evidence qualification. Native/formal certification unverified.",
+    "status": "Accepted Source264d7b28e240d592c8510521fa48a6d77b239140 and composed parent3e6 retain actual independent review, genuine complete build, four whole files190 cases plus graph, shipping and local delivery evidence. Independent current-parent source/binding review and ordinary-QA evidence qualification permit one whole status credit in supported-binding-source-closure. Native/formal certification unverified.",
       "taskId": "TASK__architecture-broker-device-status"
     },
     {
@@ -1074,9 +1093,10 @@
         "OP-device-status",
         "OP-device-ui",
         "OP-mobile-wait-text",
-        "OP-tool-setup"
+        "OP-tool-setup",
+        "OP-owner-repository"
       ],
-      "status": "Fifteen supported source-only rows and ten existing broker joins recorded; accepted Source provenance retained. All four whole-operation credits remain pending independent post-write source/all-binding and actual ordinary-QA evidence qualification; OpenCode separately excluded; native/formal certification unverified."
+    "status": "Fifteen status/UI/text source-only rows, ten existing broker joins and the accepted broker owner-repository binding recorded. Independent current-parent source/binding review and retained ordinary-QA evidence qualification support five whole source-operation credits, counted once in supported-binding-source-closure. OpenCode excluded and native/formal certification unverified."
     }
   ]
 }
