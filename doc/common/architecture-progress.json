@@ -1490,7 +1490,11 @@
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
       "coveredOperationIds": [],
-      "status": "Audit complete; implementation pending. Five-family app/domain/ports and native broker/image-store/network audit identifies semantic lifecycle/image/network outcomes, journal/recovery dispositions and finite native leaves. Prospective PLAN and required caller/test qualification remain. No source acceptance or new operation credit; exhaustive/native/formal certification unverified."
+      "status": "Accepted bounded source at c181c0ff: semantic create/start, stop/delete, snapshot, image and network/trust outcomes with finite native effects and outward response rendering. Actual independent Code/Security/Docs and QA527 across19 whole files, genuine build1326, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Earlier compiler and rollback failures corrected and retained as evidence. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
+      "taskId": "TASK__architecture-hyper-v-result-boundaries",
+      "acceptedIntegrationCommit": "c181c0ff11210b7c673b980ad786c69dde101c2b",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/hyperv-results-c181-g4j3wyxs/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-hyper-v-result-boundaries-main-delivery-20261011.json"
     },
     {
       "id": "broker-provider-lifecycle-results-structural",
