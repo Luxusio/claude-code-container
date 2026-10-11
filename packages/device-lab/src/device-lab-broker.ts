@@ -132,7 +132,7 @@ import { discoverDeviceLabHyperVBootstrapNetwork, teardownDeviceLabHyperVBootstr
 import type { HyperVWindowsNetworkClient, HyperVWindowsOperation } from "@ccc/hyper-v/low-level/index.js";
 import { withElevatedHyperVNetworkExecutor, type WithElevatedHyperVNetworkExecutorOptions } from "./device-lab/broker/hyper-v/elevated-network-session.js";
 import { hyperVElevationGateStatus, withHyperVElevationGate } from "./device-lab/broker/hyper-v/elevation-gate.js";
-import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, hyperVTypedErrorCode, hyperVTypedErrorOperation, hyperVTypedNativeDiagnostics, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
+import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, hyperVTypedErrorCode, hyperVTypedErrorOperation, hyperVTypedNativeDiagnostics, publicHyperVCreateConfiguration, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { type DeviceLabHyperVCommandResult, createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";

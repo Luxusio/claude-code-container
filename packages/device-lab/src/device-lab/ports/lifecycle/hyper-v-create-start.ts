@@ -40,7 +40,7 @@ export interface VmCreationPorts {
  getVMBios(selector:VmSelector):Promise<{vmId:string;startupOrder:readonly VmBiosDevice[]}>;
 }
 import type {HyperVCreateStartRequest,HyperVLifecycleRequest,HyperVNativeExecution,VmCreationEffect} from '../../domain/lifecycle/hyper-v-create-start.js';
-export interface HyperVCreateNativePorts<Session,Connection,Receipt,ProvisionMedia> {
+export interface HyperVCreateNativePorts<Session,Connection,Receipt> {
  connection(provider:'powershell'|'ssh'):Connection|null;
  validIncarnation(value:unknown):value is string;
  deviceRoot(owner:string,backend:string,id:string):string;
@@ -92,7 +92,7 @@ import type {HyperVStopDeletePorts} from './hyper-v-stop-delete.js';
 import type {HyperVImageResolution,HyperVImageProfile} from '../../domain/hyper-v-image-preparation.js';
 import type {HyperVReplayResult} from '../../domain/lifecycle/hyper-v-stop-delete.js';
 import type {HyperVLifecycleOutcome,HyperVQuota,HyperVLifecyclePlan} from '../../domain/lifecycle/hyper-v-create-start.js';
-export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedia> extends HyperVCreateNativePorts<Session,Connection,Receipt,ProvisionMedia> {
+export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedia> extends HyperVCreateNativePorts<Session,Connection,Receipt> {
  read(owner:string,state:string):unknown[];
  incarnation(device:Record<string,unknown>):string|null;
  stateErrorCode:HyperVStopDeletePorts<Connection,Receipt>['stateErrorCode'];

@@ -159,16 +159,6 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
             lifecycleFailure: renderHyperVCreateStart(lifecycleFailure).payload
         } : {}),
     };
-    if (kind === "preview")
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    ...renderHyperVPlan(outcome.plan), invoked: false, dryRun: true, execution: {
-                        mode: "dry-run", providerExecution: "available", mutatesHost: false
-                    }
-                }
-            }
-        };
     const publicResult = {
         ...(plan ? renderHyperVPlan(plan) : {}),
         ...redactHyperVResultSecrets(facts),
@@ -187,56 +177,75 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
             }
         } : {}),
     };
-    if (kind === "idempotent")
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    ...publicResult, idempotent: true, execution: {
-                        mode: "idempotent", providerExecution: "not-required", mutatesHost: false
+    switch (outcome.kind) {
+        case "preview":
+            return {
+                status: 200, payload: {
+                    ok: true, result: {
+                        ...renderHyperVPlan(outcome.plan), invoked: false, dryRun: true, execution: {
+                            mode: "dry-run", providerExecution: "available", mutatesHost: false
+                        }
                     }
                 }
-            }
-        };
-    if (kind === "created" || kind === "started" || kind === "rebooted")
-        return {
-            status: 200, payload: {
-                ok: true, result: publicResult
-            }
-        };
-    const { reason: _reason, ...failure }: typeof rendered & {
-        reason?: string;
-    } = rendered;
-    const status = imageFailure ? hyperVImageResolutionToWire(imageFailure).status : networkFailure && outcome.error === networkFailure.error ? hyperVNetworkFailureToWire(networkFailure).status : stateFailureStatus(outcome.error, outcome.reason === "unsupported" ? 501 : outcome.reason === "invalid" ? 400 : outcome.reason === "forbidden" ? 403 : outcome.reason === "missing" ? 404 : outcome.reason === "conflict" ? 409 : outcome.reason === "provider-unavailable" ? 503 : outcome.reason === "deadline" ? 504 : outcome.reason === "state-write-failed" ? 500 : 502);
-    return {
-        status, payload: {
-            ok: false, ...(failureExecution ? {
-                error: outcome.error, detail: renderHyperVExecution(failureExecution, "hyper-v-provider-command-failed").diagnosticCode, ...(outcome.operation ? {
-                    operation: outcome.operation
-                } : {}), ...(outcome.nativeHResult !== undefined ? {
-                    nativeHResult: outcome.nativeHResult
-                } : {}), ...(outcome.nativeErrorCategory !== undefined ? {
-                    nativeErrorCategory: outcome.nativeErrorCategory
-                } : {}), ...(rollback ? {
-                    rollback: "attempted" in rollback ? renderHyperVCreateRollback(rollback) : rollback
-                } : {}), result: publicResult
-            } : execution?.command ? {
-                error: outcome.error, detail: outcome.detail, ...(outcome.found !== undefined ? {
-                    ownerId: outcome.ownerId, backend: outcome.backend, deviceId: outcome.deviceId, found: outcome.found, ...(outcome.providerFailure ? {
-                        providerFailure: outcome.providerFailure
+            };
+        case "idempotent":
+            return {
+                status: 200, payload: {
+                    ok: true, result: {
+                        ...publicResult, idempotent: true, execution: {
+                            mode: "idempotent", providerExecution: "not-required", mutatesHost: false
+                        }
+                    }
+                }
+            };
+        case "created":
+        case "started":
+        case "rebooted":
+            return {
+                status: 200, payload: {
+                    ok: true, result: publicResult
+                }
+            };
+        case "admission-refused":
+        case "operation-failed":
+        case "uncertain": {
+            const { reason: _reason, ...failure }: typeof rendered & {
+                reason?: string;
+            } = rendered;
+            const status = imageFailure ? hyperVImageResolutionToWire(imageFailure).status : networkFailure && outcome.error === networkFailure.error ? hyperVNetworkFailureToWire(networkFailure).status : stateFailureStatus(outcome.error, outcome.reason === "unsupported" ? 501 : outcome.reason === "invalid" ? 400 : outcome.reason === "forbidden" ? 403 : outcome.reason === "missing" ? 404 : outcome.reason === "conflict" ? 409 : outcome.reason === "provider-unavailable" ? 503 : outcome.reason === "deadline" ? 504 : outcome.reason === "state-write-failed" ? 500 : 502);
+            return {
+                status, payload: {
+                    ok: false, ...(failureExecution ? {
+                        error: outcome.error, detail: renderHyperVExecution(failureExecution, "hyper-v-provider-command-failed").diagnosticCode, ...(outcome.operation ? {
+                            operation: outcome.operation
+                        } : {}), ...(outcome.nativeHResult !== undefined ? {
+                            nativeHResult: outcome.nativeHResult
+                        } : {}), ...(outcome.nativeErrorCategory !== undefined ? {
+                            nativeErrorCategory: outcome.nativeErrorCategory
+                        } : {}), ...(rollback ? {
+                            rollback: "attempted" in rollback ? renderHyperVCreateRollback(rollback) : rollback
+                        } : {}), result: publicResult
+                    } : execution?.command ? {
+                        error: outcome.error, detail: outcome.detail, ...(outcome.found !== undefined ? {
+                            ownerId: outcome.ownerId, backend: outcome.backend, deviceId: outcome.deviceId, found: outcome.found, ...(outcome.providerFailure ? {
+                                providerFailure: outcome.providerFailure
+                            } : {})
+                        } : {}), result: publicResult
+                    } : failure), ...(imageFailure ? {
+                        error: imageFailure.error, detail: imageFailure.detail, remedy: imageFailure.remedy
+                    } : {}), ...(networkFailure ? {
+                        detail: networkFailure.detail, ...(networkFailure.receipt ? {
+                            execution: renderHyperVNetworkReceipt(networkFailure.receipt)
+                        } : {})
                     } : {})
-                } : {}), result: publicResult
-            } : failure), ...(imageFailure ? {
-                error: imageFailure.error, detail: imageFailure.detail, remedy: imageFailure.remedy
-            } : {}), ...(networkFailure ? {
-                detail: networkFailure.detail, ...(networkFailure.receipt ? {
-                    execution: renderHyperVNetworkReceipt(networkFailure.receipt)
-                } : {})
-            } : {})
+                }
+            };
         }
-    };
+    }
 }
+
 export function renderHyperVStopDelete(outcome: HyperVStopDeleteOutcome<NativeHyperVConnection, ProviderCommandResult>): HyperVWireResponse {
-    const { kind, journalDisposition: _journalDisposition, preparation, execution, device, networkCleanup, artifactCleanup, auxiliaryCleanup, mutatesHost, ...facts } = outcome;
+    const { kind: _kind, journalDisposition: _journalDisposition, preparation, execution, device, networkCleanup, artifactCleanup, auxiliaryCleanup, mutatesHost, ...facts } = outcome;
     const descriptor = preparation?.kind === "prepared" ? preparation.connection.plannedCommand : undefined;
     const result = {
         ownerId: facts.ownerId, backend: facts.backend, stateKey: facts.stateKey, command: facts.command, deviceId: facts.deviceId, force: facts.force,
@@ -261,92 +270,98 @@ export function renderHyperVStopDelete(outcome: HyperVStopDeleteOutcome<NativeHy
             mode: facts.invoked === false && auxiliaryCleanup ? "preflight" : "idempotent", providerExecution: auxiliaryCleanup ? "blocked" : "not-required", mutatesHost: mutatesHost ?? false
         },
     };
-    if (kind === "preview")
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    ...redactHyperVResultSecrets(result), invoked: false, dryRun: true, execution: {
-                        mode: "dry-run", providerExecution: "available", mutatesHost: false
+    switch (outcome.kind) {
+        case "preview":
+            return {
+                status: 200, payload: {
+                    ok: true, result: {
+                        ...redactHyperVResultSecrets(result), invoked: false, dryRun: true, execution: {
+                            mode: "dry-run", providerExecution: "available", mutatesHost: false
+                        }
                     }
                 }
-            }
-        };
-    if (kind === "already-missing")
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    ...result, idempotent: true, alreadyMissing: true, execution: {
-                        mode: facts.dryRun ? "dry-run" : "idempotent", providerExecution: facts.dryRun ? "available" : "not-required", mutatesHost: false
+            };
+        case "already-missing":
+            return {
+                status: 200, payload: {
+                    ok: true, result: {
+                        ...result, idempotent: true, alreadyMissing: true, execution: {
+                            mode: facts.dryRun ? "dry-run" : "idempotent", providerExecution: facts.dryRun ? "available" : "not-required", mutatesHost: false
+                        }
                     }
                 }
-            }
-        };
-    if (kind === "replayed")
-        return {
-            status: 200, payload: {
-                ok: true, result: {
-                    ownerId: facts.ownerId, backend: facts.backend, deviceId: facts.deviceId, command: facts.command, reconciled: true, device: null, ...(networkCleanup ? {
-                        hyperVNetworkAllocationCleanup: renderHyperVNetworkCleanup(networkCleanup)
-                    } : {}), invoked: true, dryRun: false
-                }
-            }
-        };
-    if (kind === "stopped" || kind === "deleted")
-        return {
-            status: 200, payload: {
-                ok: true, result
-            }
-        };
-    const { reason, error, ownerId, backend, deviceId, detail, missing, found } = outcome;
-    const status = stateFailureStatus(error, reason === "invalid" ? 400 : reason === "missing" ? 404 : reason === "conflict" ? 409 : reason === "provider-unavailable" ? 503 : reason === "deadline" ? 504 : reason === "state-write-failed" ? 409 : 502);
-    if (preparation?.kind === "unavailable")
-        return {
-            status, payload: {
-                ok: false, error, missing, plan: redactHyperVResultSecrets({
-                    ...result, execution: {
-                        mode: "planned", providerExecution: "available", mutatesHost: false
+            };
+        case "replayed":
+            return {
+                status: 200, payload: {
+                    ok: true, result: {
+                        ownerId: facts.ownerId, backend: facts.backend, deviceId: facts.deviceId, command: facts.command, reconciled: true, device: null, ...(networkCleanup ? {
+                            hyperVNetworkAllocationCleanup: renderHyperVNetworkCleanup(networkCleanup)
+                        } : {}), invoked: true, dryRun: false
                     }
-                })
-            }
-        };
-    if (auxiliaryCleanup && !execution)
-        return {
-            status, payload: {
-                ok: false, error, result
-            }
-        };
-    if (execution)
-        return {
-            status, payload: {
-                ok: false, error,
-                ...(error === "owner-device-state-conflict" || error === "hyper-v-device-cleanup-failed" ? {
-                    ownerId, backend, deviceId, ...(found !== undefined ? {
-                        found
-                    } : {})
-                } : {}),
-                ...(detail !== undefined ? {
-                    detail
-                } : {}), result
-            }
-        };
-    return {
-        status, payload: {
-            ok: false, error,
-            ...(ownerId !== undefined ? {
-                ownerId
-            } : {}), ...(backend !== undefined ? {
-                backend
-            } : {}),
-            ...(deviceId !== undefined ? {
-                deviceId
-            } : {}), ...(detail !== undefined ? {
-                detail
-            } : {}),
-            ...(missing ? {
-                missing
-            } : {}), ...(outcome.stateKey ? {
-                stateKey: outcome.stateKey
-            } : {}),
+                }
+            };
+        case "stopped":
+        case "deleted":
+            return {
+                status: 200, payload: {
+                    ok: true, result
+                }
+            };
+        case "refused":
+        case "uncertain": {
+            const { reason, error, ownerId, backend, deviceId, detail, missing, found } = outcome;
+            const status = stateFailureStatus(error, reason === "invalid" ? 400 : reason === "missing" ? 404 : reason === "conflict" ? 409 : reason === "provider-unavailable" ? 503 : reason === "deadline" ? 504 : reason === "state-write-failed" ? 409 : 502);
+            if (preparation?.kind === "unavailable")
+                return {
+                    status, payload: {
+                        ok: false, error, missing, plan: redactHyperVResultSecrets({
+                            ...result, execution: {
+                                mode: "planned", providerExecution: "available", mutatesHost: false
+                            }
+                        })
+                    }
+                };
+            if (auxiliaryCleanup && !execution)
+                return {
+                    status, payload: {
+                        ok: false, error, result
+                    }
+                };
+            if (execution)
+                return {
+                    status, payload: {
+                        ok: false, error,
+                        ...(error === "owner-device-state-conflict" || error === "hyper-v-device-cleanup-failed" ? {
+                            ownerId, backend, deviceId, ...(found !== undefined ? {
+                                found
+                            } : {})
+                        } : {}),
+                        ...(detail !== undefined ? {
+                            detail
+                        } : {}), result
+                    }
+                };
+            return {
+                status, payload: {
+                    ok: false, error,
+                    ...(ownerId !== undefined ? {
+                        ownerId
+                    } : {}), ...(backend !== undefined ? {
+                        backend
+                    } : {}),
+                    ...(deviceId !== undefined ? {
+                        deviceId
+                    } : {}), ...(detail !== undefined ? {
+                        detail
+                    } : {}),
+                    ...(missing ? {
+                        missing
+                    } : {}), ...(outcome.stateKey ? {
+                        stateKey: outcome.stateKey
+                    } : {}),
+                }
+            };
         }
-    };
+    }
 }
