@@ -2271,6 +2271,19 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.stringify(executed)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(executed)).not.toContain("uname -a");
         expect(JSON.stringify(executed)).not.toContain("args");
+        const beforeFailure = readFileSync(join(createdLabDir, "lab.json"), "utf8");
+        const failed = guestExec({ labId: "ssh-exec-vm", command: "false", timeoutMs: 2500 }, {
+            env, stateRoot: root, sshPath: "/usr/bin/ssh",
+            sshCommandRunner: () => ({ ok: false, status: 7, command: "/usr/bin/ssh",
+                stdout: `partial ${keyPath}`, stderr: `failed ${createdLabDir}` }),
+        });
+        expect(failed).toMatchObject({
+            ok: false, labId: "ssh-exec-vm", timeoutMs: 2500,
+            result: { ok: false, status: 7, stdout: "partial <provider-internal>", stderr: "failed <provider-internal>" },
+        });
+        expect(JSON.stringify(failed)).not.toContain(keyPath);
+        expect(JSON.stringify(failed)).not.toContain("/usr/bin/ssh");
+        expect(readFileSync(join(createdLabDir, "lab.json"), "utf8")).toBe(beforeFailure);
     });
 
     it("rejects guest exec when lab state or SSH prerequisites are not available", () => {

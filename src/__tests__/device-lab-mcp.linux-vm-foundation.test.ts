@@ -142,6 +142,13 @@ describe("device-lab Linux VM foundation", () => {
             ok: false,
             error: "lab-not-running",
         }));
+        const execution = await client.callTool({ name: "exec", arguments: {
+            deviceId: "mcp-lab", command: "id", detail: true, implicitBroker: false,
+        } });
+        expect(execution.isError).toBe(true);
+        expect(JSON.parse(((execution.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
+            ok: false, error: "lab-not-running", labId: "mcp-lab",
+        });
 
         const observed = await client.callTool({ name: "status", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
         expect(observed.isError).not.toBe(true);

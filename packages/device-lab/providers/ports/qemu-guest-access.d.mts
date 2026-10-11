@@ -7,6 +7,7 @@ export interface QemuAccessArguments {
     sessionId?: unknown;
     sessionType?: unknown;
     timeoutMs?: unknown;
+    command?: unknown;
 }
 export type QemuProbeObservation = { [key: string]: unknown; then?: never; state?: string; ok?: boolean; ready?: boolean; checks?: unknown[]; diagnostics?: unknown };
 export interface QemuGuestAccessPorts {

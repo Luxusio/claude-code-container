@@ -4,7 +4,7 @@ import { createQemuOwnedDataApplication } from "../application/qemu-owned-data.m
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
-import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicGuestExecResult as qemuLifecyclePublicGuestExecResult, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult, requireRunningLab as qemuLifecycleRequireRunningLab } from "../domain/qemu-lifecycle.mjs";
+import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult } from "../domain/qemu-lifecycle.mjs";
 import { createQemuImageImportApplication } from "../application/qemu-image-import.mjs";
 import { createQemuImageDiskTargetApplication } from "../application/qemu-image-disk-target.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
@@ -33,7 +33,6 @@ const SECRET_CONTENT_PATTERNS = [
 const DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 5;
 const DEFAULT_GUEST_EXEC_TIMEOUT_MS = 30000;
 const PROVIDER_COMMAND_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
-const MAX_GUEST_EXEC_COMMAND_LENGTH = 4096;
 const MAX_GUEST_AGENT_HEALTH_COMMAND_LENGTH = 512;
 const MAX_GUEST_AGENT_PROVISION_COMMAND_LENGTH = 4096;
 
@@ -537,34 +536,12 @@ function preflightGuestTransport(lab, transport, env, options = {}) {
     return { ok: true };
 }
 
-function validateGuestCommand(value) {
-    if (typeof value !== "string" || value.trim().length === 0) return { ok: false, error: "missing-guest-command" };
-    if (value.length > MAX_GUEST_EXEC_COMMAND_LENGTH || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)) {
-        return { ok: false, error: "invalid-guest-command" };
-    }
-    return { ok: true, command: value };
-}
-
 function boundedTimeout(value, fallback = DEFAULT_GUEST_EXEC_TIMEOUT_MS) {
     return qemuCommandTimeout(value, fallback);
 }
 
 function redactProviderString(value, lab, ssh, extraProviderPaths = []){
     return qemuLifecycleRedactProviderString(value, lab, ssh, extraProviderPaths);
-}
-
-function publicGuestExecResult(result, lab, ssh, extraProviderPaths = []){
-    return qemuLifecyclePublicGuestExecResult(result, lab, ssh, extraProviderPaths);
-}
-
-function preflightGuestExec(lab, env, options = {}) {
-    const ssh = lab?.guest?.ssh;
-    if (!ssh) {
-        return { ok: false, error: "guest-exec-unavailable", reason: "guest-ssh-not-configured" };
-    }
-    const paths = sshCommandPaths(env || process.env, options);
-    if (!paths.ssh) return { ok: false, error: "guest-ssh-command-unavailable", missing: ["ssh"] };
-    return { ok: true, ssh, sshPath: paths.ssh };
 }
 
 function defaultProcessExists(pid) {
@@ -853,10 +830,6 @@ function resolveGuestPullDestination(lab, destinationPath) {
     return { ok: true, destinationPath: candidate };
 }
 
-function requireRunningLab(lab){
-    return qemuLifecycleRequireRunningLab(lab);
-}
-
 export function exportArtifacts(args = {}, options = {}) {
     return qemuOwnedDataApplication(options).exportArtifacts(args);
 }
@@ -870,30 +843,7 @@ export function guestPull(args = {}, options = {}) {
 }
 
 export function guestExec(args = {}, options = {}) {
-    const ctx = context(options);
-    const loaded = readLab(ctx, String(args.labId || ""));
-    if (!loaded.ok) return loaded;
-    const running = requireRunningLab(loaded.lab);
-    if (!running.ok) return running;
-    const command = validateGuestCommand(args.command);
-    if (!command.ok) return command;
-    const preflight = preflightGuestExec(loaded.lab, ctx.env, options);
-    if (!preflight.ok) return { ...preflight, ownerId: ctx.owner, labId: loaded.lab.id };
-    const timeoutMs = boundedTimeout(args.timeoutMs);
-    const runner = sshRunner(options);
-    const sshArgs = [...sshBaseArgs(preflight.ssh), sshDestination(preflight.ssh), command.command];
-    const result = runner(preflight.sshPath, sshArgs, {
-        cwd: loaded.lab.paths.labDir,
-        env: ctx.env,
-        timeoutMs,
-    });
-    return {
-        ok: result?.ok === true,
-        ownerId: ctx.owner,
-        labId: loaded.lab.id,
-        timeoutMs,
-        result: publicGuestExecResult(result, loaded.lab, preflight.ssh, [preflight.sshPath, result?.command]),
-    };
+    return qemuGuestAccessApplication(options).guestExec(args);
 }
 
 export function guestAgentStatus(args = {}, options = {}) {
@@ -1144,7 +1094,7 @@ function qemuGuestAccessApplication(options = {}) {
             if (typeof loaded.error === "string") return { ...loaded, ok: false, error: loaded.error };
             return { ok: true, lab: loaded.lab };
         },
-        writeLab: lab => { writeLab(ctx, lab); },
+        writeLab: lab => { writeLab(ctx, lab); return undefined; },
         clock: () => nowIso(options),
         processExists: (pid, lab) => (options.processExists || defaultProcessExists)(pid, lab),
         sshPath: () => sshCommandPaths(ctx.env, options).ssh,

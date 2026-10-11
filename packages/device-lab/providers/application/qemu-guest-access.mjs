@@ -1,6 +1,6 @@
 import { publicLab, publicExecution, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab, sshBaseArgs, sshDestination } from "../domain/qemu-lifecycle.mjs";
 import { qemuCommandTimeout as boundedTimeout } from "../domain/qemu-image-disk-target.mjs";
-import { guestAccessTarget as targetForLab, sessionIdFor, sessionStateFor, publicSessionLab, publicSessionTarget, readinessStateFromProbe, combineReadinessProbes } from "../domain/qemu-guest-access.mjs";
+import { guestAccessTarget as targetForLab, sessionIdFor, sessionStateFor, publicSessionLab, publicSessionTarget, readinessStateFromProbe, combineReadinessProbes, validateGuestCommand } from "../domain/qemu-guest-access.mjs";
 /** @typedef {import('../domain/qemu-guest-access.mjs').QemuAccessLab} Lab */
 /** @typedef {import('../domain/qemu-guest-access.mjs').QemuReadiness} Readiness */
 /** @typedef {import('../ports/qemu-guest-access.mjs').QemuAccessArguments} Args */
@@ -364,5 +364,28 @@ export function createQemuGuestAccessApplication(ports) {
         ports.writeLab(next);
         return { ok: status.state !== "failed", ownerId: ports.ownerId(), lab: publicLab(next), status };
     }
-    return { openSession, probeReadiness, inspectLab, guestAgentStatus };
+    /** @param {Args} [args] */
+    function guestExec(args = {}) {
+        const loaded = ports.readLab(String(args.labId || ""));
+        if (!loaded.ok) return loaded;
+        const running = requireRunningLab(loaded.lab);
+        if (!running.ok) return running;
+        const command = validateGuestCommand(args.command);
+        if (!command.ok) return command;
+        const ssh = loaded.lab.guest?.ssh;
+        if (!ssh) return { ok: false, error: "guest-exec-unavailable", reason: "guest-ssh-not-configured", ownerId: ports.ownerId(), labId: loaded.lab.id };
+        const sshPath = ports.sshPath();
+        if (!sshPath) return { ok: false, error: "guest-ssh-command-unavailable", missing: ["ssh"], ownerId: ports.ownerId(), labId: loaded.lab.id };
+        const timeoutMs = boundedTimeout(args.timeoutMs, 30000);
+        const sshArgs = [...sshBaseArgs(ssh), sshDestination(ssh), command.command];
+        const result = ports.executeSsh(sshPath, sshArgs, loaded.lab, timeoutMs);
+        return {
+            ok: result?.ok === true,
+            ownerId: ports.ownerId(),
+            labId: loaded.lab.id,
+            timeoutMs,
+            result: publicGuestExecResult(result, loaded.lab, ssh, [sshPath, result?.command]),
+        };
+    }
+    return { openSession, probeReadiness, inspectLab, guestAgentStatus, guestExec };
 }

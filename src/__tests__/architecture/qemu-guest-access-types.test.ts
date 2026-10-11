@@ -5,6 +5,7 @@ import type { QemuGuestAccessPorts } from "../../../packages/device-lab/provider
 
 export function requiredGuestAccessCapabilities(ports: QemuGuestAccessPorts): void {
     const application = createQemuGuestAccessApplication(ports);
+    const execution = application.guestExec({ labId: "lab", command: "id", timeoutMs: 2500 });
     const { executeSsh, ...missingSsh } = ports;
     // @ts-expect-error bounded SSH execution is required
     createQemuGuestAccessApplication(missingSsh);
@@ -12,7 +13,9 @@ export function requiredGuestAccessCapabilities(ports: QemuGuestAccessPorts): vo
     createQemuGuestAccessApplication({ ...ports, observeReadiness: async () => ({ ready: true }) });
     // @ts-expect-error guarded history publication must finish before returning
     createQemuGuestAccessApplication({ ...ports, writeLab: async () => undefined });
-    void application; void executeSsh;
+    // @ts-expect-error Guest commands require a settled synchronous SSH result.
+    createQemuGuestAccessApplication({ ...ports, executeSsh: async () => ({ ok: true, status: 0 }) });
+    void application; void executeSsh; void execution;
 }
 
 describe("QEMU session ID admission", () => {

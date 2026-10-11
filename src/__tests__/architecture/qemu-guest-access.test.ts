@@ -15,6 +15,23 @@ function accessPorts(): { ports: QemuGuestAccessPorts; lab: QemuLab } {
 }
 
 describe("QEMU guest access", () => {
+    it("executes configured SSH with the default deadline without readiness probes or state publication", () => {
+        const { ports, lab } = accessPorts();
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" } };
+        ports.sshPath = () => "/usr/bin/ssh";
+        ports.observeReadiness = () => { throw new Error("guest exec must not probe readiness"); };
+        ports.writeLab = () => { throw new Error("guest exec must not publish lab state"); };
+        ports.executeSsh = (_command, args, _lab, timeoutMs) => {
+            expect(args.at(-1)).toBe("id");
+            expect(timeoutMs).toBe(30000);
+            return { ok: true, status: 0, stdout: "guest\n", stderr: "" };
+        };
+        expect(createQemuGuestAccessApplication(ports).guestExec({ labId: "lab", command: "id" })).toMatchObject({
+            ok: true, ownerId: "owner", labId: "lab", timeoutMs: 30000,
+            result: { ok: true, status: 0, stdout: "guest\n", stderr: "" },
+        });
+    });
+
     it("checks guest-agent health without invoking its opted-in provision command", () => {
         const { ports, lab } = accessPorts();
         lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" }, agent: { name: "agent", healthCommand: "health-only", provisionCommand: "install-agent", autoProvision: true } };

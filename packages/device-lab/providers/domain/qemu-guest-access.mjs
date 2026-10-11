@@ -88,3 +88,13 @@ export function guestAccessTarget(lab) {
         readiness: lab.readiness,
     });
 }
+
+/** @param {unknown} value
+ * @returns {{ok:true,command:string}|{ok:false,error:string}} */
+export function validateGuestCommand(value) {
+    if (typeof value !== "string" || value.trim().length === 0) return { ok: false, error: "missing-guest-command" };
+    if (value.length > 4096 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)) {
+        return { ok: false, error: "invalid-guest-command" };
+    }
+    return { ok: true, command: value };
+}
