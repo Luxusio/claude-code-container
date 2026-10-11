@@ -36,16 +36,25 @@ async function invoke(base: string, command: string, extra: Record<string, unkno
 const successfulRunner = (): NonNullable<DeviceBrokerOptions["commandRunner"]> => command => ({ ...command, status: 0, stdout: "", stderr: "" });
 describe("authenticated macOS broker lifecycle", () => {
     it("publishes create/start/stop/delete through the actual HTTP dispatcher", async () => {
-        const runner = vi.fn(successfulRunner()), base = await start(runner);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => ({
+            ...command, status: 0, stdout: command.args?.[0] === "ip" ? "192.0.2.20" : "", stderr: "",
+        }));
+        const base = await start(runner);
         expect((await invoke(base, "device_create", { name: "Unit", provider: "tart", image: "base-image" })).status).toBe(200);
         expect(devices()[0]).toMatchObject({ id: "unit", status: "stopped", provider: "tart" });
-        expect((await invoke(base, "device_start", { waitForBoot: false })).status).toBe(200);
-        expect(devices()[0].status).toBe("running");
+        expect((await invoke(base, "device_start", { waitForBoot: true, bootTimeoutMs: 1000 })).status).toBe(200);
+        expect(devices()[0]).toMatchObject({
+            status: "running", bootReady: true, ssh: { host: "192.0.2.20" },
+            lastBootCheck: { ready: true, ip: "192.0.2.20", result: {
+                provider: "tart", executable: "/fixture/tart", status: 0, stdout: "192.0.2.20",
+            } },
+        });
+        expect(devices()[0]).not.toHaveProperty("lastBootCheck.result.receipt");
         expect((await invoke(base, "device_stop")).status).toBe(200);
         expect(devices()[0]).toMatchObject({ status: "stopped", recording: null });
         expect((await invoke(base, "device_delete", { confirmDestructive: true })).status).toBe(200);
         expect(devices()).toEqual([]);
-        expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone", "run", "stop", "delete"]);
+        expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone", "run", "ip", "stop", "delete"]);
     });
     it("rejects unauthenticated mutation before invoking a provider", async () => {
         writeBrokerDevices(owner, "macos", [device()]);
