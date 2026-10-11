@@ -1,10 +1,20 @@
 export type SnapshotTool = "device_snapshot_list" | "device_snapshot_create" | "device_snapshot_restore" | "device_snapshot_delete";
-export type SnapshotRpcResponse = { status: number; payload: unknown };
+export type SnapshotFailureReason='invalid'|'missing'|'conflict'|'provider-failed';
+export interface SnapshotOutcomeFacts<Receipt> {
+ ownerId?:string;backend?:string|null;stateKey?:string;deviceId?:string;tool?:SnapshotTool;provider?:string;error?:string;detail?:string|null;missing?:unknown[];
+ observedOwnerSnapshotCount?:number;untracked?:unknown[];snapshotName?:string|null;snapshotId?:string|null;found?:boolean;currentDevice?:unknown;
+ snapshots?:SnapshotTracked[];activeSnapshotId?:string|null;snapshot?:SnapshotTracked;device?:unknown;execution?:SnapshotExecution<Receipt>;executionDiagnostic?:string;
+ rollback?:{execution:SnapshotExecution<Receipt>;confirmed:boolean;error?:string};startsDevices?:boolean;
+}
+export type SnapshotOutcome<Receipt>=SnapshotOutcomeFacts<Receipt>&(
+ {kind:'listed';snapshots:SnapshotTracked[];activeSnapshotId:string|null;journalDisposition:'clear'} |
+ {kind:'created'|'restored'|'deleted';snapshot:SnapshotTracked;device:unknown;execution:SnapshotExecution<Receipt>;journalDisposition:'clear'} |
+ {kind:'refused'|'uncertain';error:string;reason:SnapshotFailureReason;journalDisposition:'clear'|'retain'});
 export type SnapshotRequest = { tool: SnapshotTool; deviceId: string | null; params: Record<string, unknown> };
 export type SnapshotOwnerTarget = { backend: string | null; stateKey: string; device: Record<string, unknown> };
-export type SnapshotRepairTarget = { backend: string; deviceId: string; device: Record<string, unknown>; executable: string };
-export type SnapshotRepairResult = { ok: true; device: Record<string, unknown>; reconciled: boolean }
-    | { ok: false; status: number; error: string; detail?: string };
+export type SnapshotRepairTarget<Connection> = { backend: string; deviceId: string; device: Record<string, unknown>;connection:Connection };
+export type SnapshotRepairResult = { ok: true; device: Record<string, unknown>; reconciled: boolean;journalDisposition:'clear'|'retain' }
+    | { ok: false; reason:'conflict'|'provider-failed'; error:string;detail?:string;journalDisposition:'retain' };
 export type SnapshotCheckpointPolicy = "Production" | "ProductionOnly";
 export type SnapshotJournal = {
     version: 1; operationId: string; ownerId: string; deviceId: string; incarnationId: string;
@@ -24,9 +34,9 @@ export type SnapshotMutationObservation = {
     readonly snapshotType?: string; readonly state?: string;
 };
 export type SnapshotDeleteObservation = SnapshotMutationObservation & { readonly deleted: true };
-export type SnapshotExecution = {
+export type SnapshotExecution<Receipt> = {
     mode?: string; provider?: string; status?: number | null; error?: string;
-    stdout?: string; stderr?: string; input?: string; [field: string]: unknown;
+    stdout?: string; stderr?: string; receipt?:Receipt;
 };
 
 export function isSnapshotTool(tool: string): tool is SnapshotTool {

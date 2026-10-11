@@ -21,14 +21,8 @@ export interface HyperVOperationEvidence {
     diskPath: string;
     startedAt: string;
 }
-export interface HyperVCommandDescriptor {
-    mode: "exec" | "detached" | "noop";
-    provider: string;
-    executable?: string;
-    args?: string[];
-    input?: string;
-}
-export type HyperVCommandExecution = {
+export type HyperVCommandExecution<Receipt> = {
+    receipt?:Receipt;
     mode: string;
     provider: string;
     status?: number | null;
@@ -68,6 +62,8 @@ export interface HyperVCleanupEvidence {
     ok: boolean;
     error?: string;
 }
+/** Native cleanup evidence is carried outward; policy reads only release facts. */
+export type HyperVNetworkCleanupEvidence = import('../hyper-v-network-trust.js').HyperVNetworkRelease & {networkCleanup?:unknown};
 export interface HyperVArtifactEvidence extends HyperVCleanupEvidence {
     removed: boolean;
 }
@@ -76,17 +72,29 @@ export interface HyperVPublication {
     matched: boolean;
     device: unknown;
 }
-export interface HyperVStopDeleteResponse {
-    status: number;
-    payload: unknown;
+export interface HyperVStateFailure {reason:'conflict'|'state-write-failed';error:string;backend?:string;stateKey?:string;detail?:string}
+export type HyperVStopDeleteFailureReason='invalid'|'missing'|'conflict'|'provider-unavailable'|'provider-failed'|'deadline'|'state-write-failed';
+export interface HyperVStopDeleteFacts<Connection,Receipt> {
+ ownerId?:string;backend?:string;stateKey?:string;command?:string;deviceId?:string;device?:unknown;force?:boolean;dryRun?:boolean;invoked?:boolean;
+ error?:string;detail?:string;missing?:string[];found?:boolean;idempotent?:boolean;alreadyMissing?:boolean;reconciled?:boolean;
+ auxiliaryCleanup?:import('../broker-owner-cleanup.js').AuxiliaryCleanup;execution?:HyperVCommandExecution<Receipt>;mutatesHost?:boolean;
+ networkCleanup?:HyperVNetworkCleanupEvidence|null;artifactCleanup?:HyperVArtifactEvidence|null;preparation?:HyperVStopDeletePreparation<Connection>;
 }
+export type HyperVStopDeleteOutcome<Connection,Receipt>=HyperVStopDeleteFacts<Connection,Receipt>&(
+ {kind:'preview';preparation:HyperVStopDeletePreparation<Connection>;device:unknown;invoked:false;dryRun:true;journalDisposition:'clear'} |
+ {kind:'already-missing';device:null;idempotent:true;alreadyMissing:true;journalDisposition:'clear'} |
+ {kind:'stopped'|'deleted';device:unknown;execution:HyperVCommandExecution<Receipt>;invoked:true;dryRun:false;journalDisposition:'clear'} |
+ {kind:'replayed';reconciled:true;device:null;journalDisposition:'clear'} |
+ {kind:'refused'|'uncertain';error:string;reason:HyperVStopDeleteFailureReason;journalDisposition:'clear'|'retain'});
+export type HyperVStopDeletePreparation<Connection>={kind:'prepared';connection:Connection}|{kind:'unavailable';error:string;missing:string[]};
 export type HyperVReplayResult = {
     ok: true;
     reconciled: boolean;
-    hyperVNetworkAllocationCleanup?: Record<string, unknown> | null;
+    networkCleanup?: HyperVNetworkCleanupEvidence | null;
 } | {
     ok: false;
-    status: number;
+    reason: HyperVStopDeleteFailureReason;
+    journalDisposition: "retain";
     error: string;
     detail?: string;
 };

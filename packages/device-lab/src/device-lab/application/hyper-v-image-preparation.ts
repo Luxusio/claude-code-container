@@ -1,7 +1,7 @@
 import { join } from "path";
 import { hyperVImageManifest, hyperVImageProfile, inspectHyperVCreateVhd, inspectHyperVAcquiredVhd } from "../domain/hyper-v-image-preparation.js";
-import type { HyperVBaseImageObservation, HyperVImageCommandResult, HyperVImageCreateRequest, HyperVImageManifest, HyperVImageProfile, HyperVImageResolution, HyperVImageVhd } from "../domain/hyper-v-image-preparation.js";
-import type { HyperVAutomaticArtifactIdentity, HyperVImagePreparationPorts } from "../ports/hyper-v-image-preparation.js";
+import type { HyperVBaseImageObservation, HyperVImageNativeObservation, HyperVImageCreateRequest, HyperVImageManifest, HyperVImageProfile, HyperVImageResolution, HyperVImageVhd } from "../domain/hyper-v-image-preparation.js";
+import type { HyperVAutomaticArtifactIdentity, HyperVImagePreparationPorts, HyperVImagePreparationEffects } from "../ports/hyper-v-image-preparation.js";
 
 const HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
 const HYPER_V_IMAGE_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
@@ -11,21 +11,11 @@ function hyperVImageProfileRoot(privateRoot: string, profile: HyperVImageProfile
 function hyperVOwnerImageProfileRoot(privateRoot: string, ownerId: string, profile: HyperVImageProfile): string { return join(privateRoot, "owners", ownerId, "images", "hyper-v", profile); }
 
 export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts) {
-    function commandSucceeded(result: HyperVImageCommandResult): boolean {
-        return result.status === 0 && !result.error;
-    }
-
-    function resolvePowerShell(ports: HyperVImagePreparationPorts): string | null {
-        return ports.resolveExecutable("powershell.exe")
-            || ports.resolveExecutable("pwsh")
-            || ports.resolveExecutable("powershell");
-    }
-
     async function prepareImportedHyperVImage(
         profile: HyperVImageProfile,
         sourceImage: string,
         ownerProfileRoot: string,
-        powershell: string,
+        effects: HyperVImagePreparationEffects,
         deadlineAt: number,
     ): Promise<{ observation: HyperVBaseImageObservation; prepared: boolean }> {
         const imagePath = join(ownerProfileRoot, "base.vhdx");
@@ -38,11 +28,12 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         let manifestTemporaryPath: string | null = null;
         let publishedManifestIdentity: { dev: number; ino: number } | null = null;
         const storage = async (readPartitionStyle: boolean, cleanup = false) => {
-            const { execution, observation } = await ports.storage(
-                powershell, ownerProfileRoot, stagedSource, readPartitionStyle,
+            const stage = await effects.storage(
+                ownerProfileRoot, stagedSource, readPartitionStyle,
                 cleanup ? 30_000 : ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs),
             );
-            if (!commandSucceeded(execution)) throw new Error(`hyper-v-base-image-storage-failed:${ports.diagnosticCode(execution, "hyper-v-powershell-execution-failed")}`);
+            if (stage.kind === "failed") throw new Error(`hyper-v-base-image-storage-failed:${stage.diagnostic}`);
+            const observation = stage.observation;
             if (!observation) throw new Error("hyper-v-base-image-storage-invalid-result");
             return observation;
         };
@@ -57,7 +48,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                 }
                 reused = true;
             }
-            const sourceVhd = await ports.getVhd(powershell, stagedSource, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
+            const sourceVhd = await effects.getVhd(stagedSource, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
             const virtualSizeBytes = inspectHyperVCreateVhd({ kind: "base", path: stagedSource }, sourceVhd);
             if (sourceVhd.vhdType !== "Dynamic" && sourceVhd.vhdType !== "Fixed") throw new Error("hyper-v-base-image-type-unsupported");
             if (sourceVhd.fileSizeBytes !== source.size
@@ -71,7 +62,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
             let mountError: unknown = null;
             removeStagedSource = false;
             try {
-                await ports.mountReadOnly(powershell, stagedSource, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
+                await effects.mountReadOnly(stagedSource, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
                 const mounted = await storage(true);
                 if (!mounted.attached) throw new Error("hyper-v-base-image-not-mounted");
                 partitionStyle = mounted.partitionStyle;
@@ -81,7 +72,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                 // The staged path belongs only to this transaction, so a lost mount response can
                 // safely be followed by a path-based dismount. Keep it if detached readback fails.
                 let dismountError: unknown = null;
-                try { await ports.dismount(powershell, stagedSource, 30_000); } catch (error) { dismountError = error; }
+                try { await effects.dismount(stagedSource, 30_000); } catch (error) { dismountError = error; }
                 try {
                     const detached = await storage(false, true);
                     if (detached.attached) throw new Error("hyper-v-base-image-dismount-failed");
@@ -97,7 +88,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
             if (!generation) throw new Error("hyper-v-base-image-partition-style-unsupported");
 
             if (reused) {
-                const existingVhd = await ports.getVhd(powershell, imagePath, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
+                const existingVhd = await effects.getVhd(imagePath, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
                 if (inspectHyperVCreateVhd({ kind: "base", path: imagePath }, existingVhd) !== virtualSizeBytes
                     || existingVhd.fileSizeBytes !== source.size || existingVhd.vhdType !== sourceVhd.vhdType) throw new Error("hyper-v-base-image-profile-conflict");
             } else {
@@ -107,7 +98,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                     || await ports.hashFile(ownerProfileRoot, partial, "hyper-v-base-image-copy", deadlineAt) !== sourceSha256) {
                     throw new Error("hyper-v-base-image-hash-mismatch");
                 }
-                const copiedVhd = await ports.getVhd(powershell, partial, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
+                const copiedVhd = await effects.getVhd(partial, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
                 if (inspectHyperVCreateVhd({ kind: "base", path: partial }, copiedVhd) !== virtualSizeBytes
                     || copiedVhd.fileSizeBytes !== source.size || copiedVhd.vhdType !== sourceVhd.vhdType) throw new Error("hyper-v-base-image-size-mismatch");
                 ports.assertDeadline(deadlineAt);
@@ -121,7 +112,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                     || await ports.hashFile(ownerProfileRoot, imagePath, "hyper-v-base-image", deadlineAt) !== sourceSha256) {
                     throw new Error("hyper-v-base-image-hash-mismatch");
                 }
-                const finalVhd = await ports.getVhd(powershell, imagePath, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
+                const finalVhd = await effects.getVhd(imagePath, () => ports.remainingTimeout(deadlineAt, ports.limits.prepareTimeoutMs));
                 if (inspectHyperVCreateVhd({ kind: "base", path: imagePath }, finalVhd) !== virtualSizeBytes
                     || finalVhd.fileSizeBytes !== source.size || finalVhd.vhdType !== sourceVhd.vhdType) throw new Error("hyper-v-base-image-size-mismatch");
             }
@@ -176,7 +167,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
     async function acquireAutomaticHyperVImage(
         profile: "windows-server" | "ubuntu-lts",
         globalProfileRoot: string,
-        powershell: string,
+        effects: HyperVImagePreparationEffects,
         acquireDeadlineAt: number,
     ): Promise<HyperVBaseImageObservation> {
         const imageRoot = hyperVImageRoot(ports.privateRoot);
@@ -185,13 +176,13 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         const workPath = join(globalProfileRoot, ".acquire-work");
         const ownedArtifacts = new Map<string, HyperVAutomaticArtifactIdentity>();
         const options = {
-            executable: powershell, profile, imageRoot,
+            profile, imageRoot,
             expectedGeneration: 2 as const,
         } as const;
-        const checkedStage = <T>(stage: { execution: HyperVImageCommandResult; observation: T }): T => {
+        const checkedStage = <T>(stage: HyperVImageNativeObservation<T>): T | null => {
             ports.assertDeadline(acquireDeadlineAt);
-            if (!commandSucceeded(stage.execution)) {
-                throw new Error(`hyper-v-base-image-acquire-failed:${ports.diagnosticCode(stage.execution, "hyper-v-powershell-execution-failed")}`);
+            if (stage.kind === "failed") {
+                throw new Error(`hyper-v-base-image-acquire-failed:${stage.diagnostic}`);
             }
             return stage.observation;
         };
@@ -199,12 +190,12 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
             path: string, format: "VHD" | "VHDX", expectedType?: "Fixed" | "Dynamic",
         ): Promise<HyperVImageVhd> => {
             const file = ports.inspectFile(globalProfileRoot, path, "hyper-v-base-image-vhd");
-            const vhd = await ports.getVhd(powershell, path, () => ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs));
+            const vhd = await effects.getVhd(path, () => ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs));
             inspectHyperVAcquiredVhd(path, vhd, file.size, format, expectedType);
             return vhd;
         };
         try {
-            const prepared = checkedStage(await ports.prepareAcquisition(options, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs)));
+            const prepared = checkedStage(await effects.prepareAcquisition(options, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs)));
             if (!prepared || prepared.profile !== profile
                 || ports.resolvePath(prepared.imagePath) !== ports.resolvePath(imagePath)
                 || ports.resolvePath(prepared.partialPath) !== ports.resolvePath(partialPath)) {
@@ -237,7 +228,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                     throw new Error("hyper-v-base-image-source-mutated");
                 }
                 ports.assertFileIdentity(sourcePath, sourceIdentity, "hyper-v-base-image-source");
-                await ports.convertVhd(powershell, sourcePath, partialPath, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs), () => ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs));
+                await effects.convertVhd(sourcePath, partialPath, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs), () => ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs));
                 const convertedIdentity = ports.artifactIdentity(partialPath);
                 if (convertedIdentity) ownedArtifacts.set(partialPath, convertedIdentity);
                 if (await ports.hashFile(globalProfileRoot, sourcePath, "hyper-v-base-image-source", acquireDeadlineAt) !== sourceHashBefore) {
@@ -251,7 +242,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                 const targetSize = ports.catalog["ubuntu-lts"].virtualSizeBytes;
                 if (partialVhd.virtualSizeBytes > targetSize) throw new Error("hyper-v-base-image-convert-failed");
                 if (partialVhd.virtualSizeBytes < targetSize) {
-                    await ports.resizeVhd(powershell, partialPath, targetSize, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs), () => ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs));
+                    await effects.resizeVhd(partialPath, targetSize, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs), () => ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs));
                     partialVhd = await inspectVhd(partialPath, "VHDX", "Dynamic");
                     ports.assertFileIdentity(partialPath, partialIdentity, "hyper-v-base-image-partial");
                 }
@@ -280,7 +271,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                 expectedVhdType = partialVhd.vhdType as "Fixed" | "Dynamic";
             }
             const finalizeCommon = {
-                executable: powershell, imageRoot, expectedGeneration: 2 as const,
+                imageRoot, expectedGeneration: 2 as const,
                 expectedPartialSha256, expectedPartialFileId, expectedVirtualSizeBytes, expectedVhdType,
             };
             const finalizeRequest = profile === "ubuntu-lts"
@@ -289,7 +280,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                     expectedSourceVhdSha256: expectedSourceVhdSha256!, expectedSourceFileId: expectedSourceFileId!, expectedQemuSha256: expectedQemuSha256!,
                 })
                 : ({ ...finalizeCommon, profile });
-            const observation = checkedStage(await ports.finalizeAcquisition(finalizeRequest, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs)));
+            const observation = checkedStage(await effects.finalizeAcquisition(finalizeRequest, ports.remainingTimeout(acquireDeadlineAt, ports.limits.acquireTimeoutMs)));
             if (!observation || observation.profile !== profile || ports.resolvePath(observation.imagePath) !== ports.resolvePath(imagePath)
                 || observation.generation !== ports.catalog[profile].generation
                 || observation.virtualSizeBytes !== expectedVirtualSizeBytes
@@ -327,7 +318,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         const create = request.create || {};
         const profile = hyperVImageProfile(create.profile || (request.backend === "linux-vm" ? "ubuntu-lts" : "windows-server"));
         if (!profile) {
-            return { ok: false, status: 400, error: "hyper-v-image-profile-invalid", detail: "profile must be windows-11, windows-server, or ubuntu-lts" };
+            return { kind: "refused", reason: "invalid-profile", error: "hyper-v-image-profile-invalid", detail: "profile must be windows-11, windows-server, or ubuntu-lts" };
         }
         const globalProfileRoot = hyperVImageProfileRoot(ports.privateRoot, profile);
         const ownerProfileRoot = hyperVOwnerImageProfileRoot(ports.privateRoot, ownerId, profile);
@@ -342,12 +333,12 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                         ? await ports.readManifest(ports.privateRoot, profile, globalProfileRoot, false, deadlineAt)
                         : (() => { throw new Error("hyper-v-base-image-manifest-path-mismatch"); })();
                 if (ports.resolvePath(create.image) !== ports.resolvePath(manifest.imagePath)) throw new Error("hyper-v-base-image-manifest-path-mismatch");
-                return { ok: true, params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
+                return { kind: "resolved", params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
             } catch (error) {
                 if (ports.isDeadlineError(error)) throw error;
                 return {
-                    ok: false,
-                    status: 409,
+                    kind: "refused",
+                    reason: "not-prepared",
                     error: "hyper-v-base-image-not-prepared",
                     detail: ports.boundedErrorCode(error, "hyper-v-base-image-not-prepared"),
                     remedy: "import the generalized VHDX with --source-image",
@@ -359,8 +350,8 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
         if (request.dryRun) {
             if (sourceImage) {
                 return {
-                    ok: false,
-                    status: 409,
+                    kind: "refused",
+                    reason: "not-prepared",
                     error: "hyper-v-base-image-not-prepared",
                     remedy: "run device_create without --dry-run once to import and validate the source image",
                 };
@@ -373,15 +364,15 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                     manifest = await ports.readManifest(ports.privateRoot, profile, globalProfileRoot, false, deadlineAt);
                 }
                 return {
-                    ok: true,
+                    kind: "resolved",
                     params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes },
                     imagePath: manifest.imagePath,
                     prepared: false,
                 };
             } catch (error) {
                 return {
-                    ok: false,
-                    status: 409,
+                    kind: "refused",
+                    reason: "not-prepared",
                     error: "hyper-v-base-image-not-prepared",
                     detail: ports.boundedErrorCode(error, "hyper-v-base-image-not-prepared"),
                     remedy: "run device_create without --dry-run once to acquire and validate the base image",
@@ -431,7 +422,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                             throw new Error("hyper-v-windows-evaluation-license-not-accepted");
                         }
                         return {
-                            ok: true as const,
+                            kind: "resolved" as const,
                             params: { ...input, profile, image: cachedManifest.imagePath, baseImageSha256: cachedManifest.sha256, baseImageGeneration: cachedManifest.generation, diskMaxBytes: cachedManifest.virtualSizeBytes },
                             imagePath: cachedManifest.imagePath,
                             prepared: false,
@@ -442,8 +433,8 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                     }
                     const automaticProfile = profile === "windows-server" || profile === "ubuntu-lts" ? profile : null;
                     if (!automaticProfile) throw new Error("hyper-v-base-image-profile-not-automatic");
-                    const powershell = resolvePowerShell(ports);
-                    if (!powershell) throw new Error("missing-provider-command:powershell");
+                    const effects = ports.capturePreparation();
+                    if (!effects) throw new Error("missing-provider-command:powershell");
                     const imagePath = join(globalProfileRoot, "base.vhdx");
                     if (ports.artifactIdentity(join(globalProfileRoot, "base.partial.vhdx"))
                         || ports.artifactIdentity(join(globalProfileRoot, ".acquire-work"))) {
@@ -455,7 +446,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                             retiredPrior = { prior: pendingPrior, identities };
                         }
                         const observation = await acquireAutomaticHyperVImage(
-                            automaticProfile, globalProfileRoot, powershell, acquireDeadlineAt,
+                            automaticProfile, globalProfileRoot, effects, acquireDeadlineAt,
                         );
                         if (ports.deadlineExpired(acquireDeadlineAt)) throw ports.deadlineError();
                         if (!observation
@@ -478,7 +469,7 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                             } catch { /* the committed current pair remains valid; retain backups for guarded recovery */ }
                         }
                         return {
-                            ok: true as const,
+                            kind: "resolved" as const,
                             params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
                             imagePath,
                             prepared: !observation.reused,
@@ -493,12 +484,12 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
                 }
 
                 if (!/\.vhdx$/i.test(sourceImage)) throw new Error("hyper-v-base-image-format-unsupported");
-                const powershell = resolvePowerShell(ports);
-                if (!powershell) throw new Error("missing-provider-command:powershell");
+                const effects = ports.capturePreparation();
+                if (!effects) throw new Error("missing-provider-command:powershell");
                 const imagePath = join(ownerProfileRoot, "base.vhdx");
-                const { observation, prepared } = await prepareImportedHyperVImage(profile, sourceImage, ownerProfileRoot, powershell, deadlineAt);
+                const { observation, prepared } = await prepareImportedHyperVImage(profile, sourceImage, ownerProfileRoot, effects, deadlineAt);
                 return {
-                    ok: true as const,
+                    kind: "resolved" as const,
                     params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
                     imagePath,
                     prepared,
@@ -517,8 +508,8 @@ export function createHyperVImagePreparation(ports: HyperVImagePreparationPorts)
             const profileConflict = detail.includes("hyper-v-base-image-profile-conflict") || detail.includes("hyper-v-base-image-unmanaged-existing")
                 || detail.includes("hyper-v-base-image-artifact-owner-unknown");
             return {
-                ok: false,
-                status: licenseMissing || notPrepared || profileConflict ? 409 : 422,
+                kind: "refused",
+                reason: licenseMissing ? "license-required" : notPrepared ? "not-prepared" : profileConflict ? "profile-conflict" : "preparation-failed",
                 error: licenseMissing
                     ? "hyper-v-windows-evaluation-license-not-accepted"
                     : notPrepared

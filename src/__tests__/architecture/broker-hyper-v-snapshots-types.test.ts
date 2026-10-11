@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerHyperVSnapshotApplication } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-snapshots.js";
-import { snapshotCheckpointPolicy, type SnapshotOwnerTarget, type SnapshotRepairResult, type SnapshotRpcResponse } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-snapshots.js";
+import { snapshotCheckpointPolicy, type SnapshotOwnerTarget, type SnapshotRepairResult, type SnapshotOutcome } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import type { BrokerHyperVSnapshotPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-snapshots.js";
 
-function snapshotCapabilityContracts(ports: BrokerHyperVSnapshotPorts, target: SnapshotOwnerTarget): void {
+type Connection = { readonly providerId: string };
+type Receipt = { readonly nativeEvidence: string };
+
+function snapshotCapabilityContracts(ports: BrokerHyperVSnapshotPorts<Connection, Receipt>, target: SnapshotOwnerTarget, connection: Connection): void {
     const application = createBrokerHyperVSnapshotApplication(ports);
-    const operation: Promise<SnapshotRpcResponse> = application.invoke("owner", {
+    const operation: Promise<SnapshotOutcome<Receipt>> = application.invoke("owner", {
         tool: "device_snapshot_create", deviceId: "vm", params: { snapshotName: "baseline", incarnationId: "generation" },
     }, target);
     const repair: Promise<SnapshotRepairResult> = application.repair("owner", {
-        backend: "linux-vm", deviceId: "vm", device: target.device, executable: "/controlled/provider",
+        backend: "linux-vm", deviceId: "vm", device: target.device, connection,
     }, "exact-checkpoint-id");
     const { readJournal, ...withoutJournalRead } = ports;
     // @ts-expect-error Pending operation evidence must be read through a required guarded capability.

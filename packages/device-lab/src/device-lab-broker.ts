@@ -1,8 +1,9 @@
+import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVReplay, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVSecureBootConfiguration} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
-import type {HyperVPlanResult} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type {HyperVLifecycleOutcome, HyperVLifecyclePlan} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import { createHyperVStopDeleteApplication } from "./device-lab/application/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVStopDeletePorts } from "./device-lab/ports/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVOperationEvidence } from "./device-lab/domain/lifecycle/hyper-v-stop-delete.js";
@@ -17,7 +18,6 @@ import { createHyperVDesktopTransferApplication } from "./device-lab/application
 import type { HyperVDesktopTransferPorts } from "./device-lab/ports/hyper-v-desktop-transfer.js";
 import { desktopRecord, type DesktopOutcome, type DesktopFailureCategory } from "./device-lab/domain/hyper-v-desktop-transfer.js";
 import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyper-v-snapshots.js";
-import type { SnapshotExecution } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
 import { isSnapshotTool } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerRecordingApplication } from "./device-lab/application/broker-recording.js";
@@ -78,18 +78,18 @@ import {
     hyperVImageRoot as hyperVImageStoreRoot,
     inspectHyperVUbuntuImageCache,
     readHyperVImageManifestMetadata as readHyperVImageManifestMetadataFromStore,
-    resolveHyperVImageForCreate as resolveHyperVImageForCreateFromStore,
+    resolveHyperVImageForCreateOutcome as resolveHyperVImageForCreateFromStore,
     type HyperVImageProfile,
 } from "./device-lab/broker/hyper-v/image-store.js";
 import { createHostBackendDiscovery } from "./device-lab/application/broker-observation-discovery.js";
 import {
     cachedHyperVOwnerDevicesReader,
     ensureHyperVHostNetworkFabric as ensureHyperVHostNetworkFabricWithRuntime,
-    ensureHyperVNetworkAllocation as ensureHyperVNetworkAllocationWithRuntime,
+    ensureHyperVNetworkAllocationOutcome as ensureHyperVNetworkAllocationWithRuntime,
     hyperVNetworkAllocationReferenced,
     type HyperVNetworkFabricResult,
     reconcileHyperVLinuxSshHostIdentity as reconcileHyperVLinuxSshHostIdentityWithRuntime,
-    releaseHyperVNetworkAllocationAndCleanup as releaseHyperVNetworkAllocationAndCleanupWithRuntime,
+    releaseHyperVNetworkAllocationAndCleanupOutcome as releaseHyperVNetworkAllocationAndCleanupWithRuntime,
     validateHyperVLinuxSshHostIdentity as validateHyperVLinuxSshHostIdentityWithRuntime,
     type HyperVNetworkRuntime,
     type HyperVNetworkStateRuntime,
@@ -134,7 +134,7 @@ import { withElevatedHyperVNetworkExecutor, type WithElevatedHyperVNetworkExecut
 import { hyperVElevationGateStatus, withHyperVElevationGate } from "./device-lab/broker/hyper-v/elevation-gate.js";
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, hyperVTypedErrorCode, hyperVTypedErrorOperation, hyperVTypedNativeDiagnostics, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
-import { createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
+import { type DeviceLabHyperVCommandResult, createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
 import { createHyperVWindowsNetworkClient, HyperVWindowsError, type HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
 import {
@@ -3752,7 +3752,7 @@ function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: 
 }
 
 function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
-    let lastExecution: SnapshotExecution | null = null;
+    let lastExecution: DeviceLabHyperVCommandResult | null = null;
     function recording(executable: string, timeoutMilliseconds: number | (() => number)) {
         return createRecordingDeviceLabHyperVWindowsClient({
             executable, timeoutMilliseconds,
@@ -3760,8 +3760,8 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
             ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
         });
     }
-    const ports: BrokerHyperVSnapshotPorts = {
-        executable: name => providerExecutable(name, normalized),
+    const ports: BrokerHyperVSnapshotPorts<NativeHyperVConnection, DeviceLabHyperVCommandResult> = {
+        connection: provider => nativeHyperVConnection(normalized, provider),
         incarnation: hyperVDeviceIncarnationId,
         validIncarnation: validHyperVIncarnationId,
         providerName: hyperVSnapshotName,
@@ -3772,42 +3772,40 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
         recordCreatedId: (...args) => { recordHyperVSnapshotCreatedId(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
         clearJournal: (...args) => { clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
         removeRepairJournal: (ownerId, backend, deviceId) => { rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true }); return undefined; },
-        status: (identity, deadlineAt, timeoutMs) => hyperVTypedStatusExecution(normalized, identity, deadlineAt, timeoutMs, true),
+        status: async (connection, identity, deadlineAt, timeoutMs) => nativeHyperVObservation(await hyperVTypedStatusExecution(normalized, {executable: connection.executable, ...identity}, deadlineAt, timeoutMs, true)),
         parseStatus: parseHyperVVmObservation,
         observationMismatch: hyperVSnapshotObservationMismatch,
-        create: async (executable, target, options) => {
-            const effect = recording(executable, options.timeoutMilliseconds);
+        create: async (connection, target, options) => {
+            const effect = recording(connection.executable, options.timeoutMilliseconds);
             try { return await createDeviceLabHyperVSnapshot(effect.client, target, options); }
             finally { lastExecution = effect.lastExecution(); }
         },
-        restore: async (executable, target, options) => {
-            const effect = recording(executable, 120000);
+        restore: async (connection, target, options) => {
+            const effect = recording(connection.executable, 120000);
             try { return await restoreDeviceLabHyperVSnapshot(effect.client, target, options); }
             finally { lastExecution = effect.lastExecution(); }
         },
-        delete: async (executable, target) => {
-            const effect = recording(executable, 120000);
+        delete: async (connection, target) => {
+            const effect = recording(connection.executable, 120000);
             try { return await deleteDeviceLabHyperVSnapshot(effect.client, target); }
             finally { lastExecution = effect.lastExecution(); }
         },
-        repairPolicy: async (executable, target) => {
-            const effect = recording(executable, 30000);
+        repairPolicy: async (connection, target) => {
+            const effect = recording(connection.executable, 30000);
             try { return await repairDeviceLabHyperVSnapshotState(effect.client, target); }
             finally { lastExecution = effect.lastExecution(); }
         },
-        lastExecution: () => lastExecution,
+        lastExecution: () => lastExecution ? {mode: lastExecution.mode, provider: lastExecution.provider, status: lastExecution.status, stdout: lastExecution.stdout, stderr: lastExecution.stderr, error: lastExecution.error, receipt: lastExecution} : null,
         isValidationError: error => error instanceof HyperVWindowsError && error.category === "validation",
         providerErrorCode: error => error instanceof HyperVWindowsError ? error.code : undefined,
         errorCode: hyperVBoundedErrorCode,
         diagnosticCode: hyperVProviderDiagnosticCode,
-        redactExecution: redactProviderCommandInput,
-        redactDevice: redactHyperVDeviceSecrets,
         publish: transitionHyperVSnapshotState,
         mergeRepair: (ownerId, backend, deviceId, original, patch) => ownerRepository.mergeSnapshotRepair(ownerId, backend, deviceId, original, patch),
         forgetConsole: (ownerId, backend, deviceId) => { forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId)); return undefined; },
-        sshReady: (executable, target) => hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
-            executable, ...target, timeoutMs: 15000,
-        }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
+        sshReady: async (connection, target) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
+            executable: connection.executable, ...target, timeoutMs: 15000,
+        }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT })),
         remainingTimeout: hyperVRemainingTimeout,
         now: Date.now,
         timestamp: () => new Date().toISOString(),
@@ -3816,8 +3814,12 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
     return createBrokerHyperVSnapshotApplication(ports);
 }
 
+function observeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions, retryRestoreSnapshotId?: string) {
+    return brokerHyperVSnapshotApplication(normalized).repair(ownerId, { backend, deviceId, device, connection: {executable: powershell} }, retryRestoreSnapshotId);
+}
+
 function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions, retryRestoreSnapshotId?: string) {
-    return brokerHyperVSnapshotApplication(normalized).repair(ownerId, { backend, deviceId, device, executable: powershell }, retryRestoreSnapshotId);
+    return observeHyperVSnapshotJournal(ownerId, backend, deviceId, device, powershell, normalized, retryRestoreSnapshotId).then(renderHyperVSnapshotRepair);
 }
 
 
@@ -3946,7 +3948,7 @@ function renderHyperVDesktopOutcome(outcome: DesktopOutcome): BrokerRpcResult {
 }
 
 async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
-    if (isSnapshotTool(parsed.tool)) return brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match);
+    if (isSnapshotTool(parsed.tool)) return renderHyperVSnapshot(await brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match));
     return renderHyperVDesktopOutcome(await brokerHyperVDesktopTransferApplication(normalized).invoke(ownerId, parsed, match));
 }
 
@@ -4347,7 +4349,7 @@ async function rollbackProviderCreateAfterConflict(
         return { attempted: false, ok: true, reason: "no-provider-resource-created" };
     }
     if (parsed.backend === "ios-simulator") return rollbackBrokerIosCreate(brokerIosLifecyclePorts(normalized), device, existing, providerCommand);
-    if(isHyperVBackend(parsed.backend))return brokerHyperVCreateStartApplication(normalized).rollbackCreate(parsed,device,existing,hyperVDeadlineAt);
+    if(isHyperVBackend(parsed.backend))return renderHyperVCreateRollback(await brokerHyperVCreateStartApplication(normalized).rollbackCreate(parsed,device,existing,hyperVDeadlineAt));
 
     if (parsed.backend === "macos-vm") return rollbackBrokerMacosCreate(brokerMacosLifecyclePorts(normalized), device, existing, providerCommand);
     return { attempted: false, ok: true, reason: "create-does-not-provision-a-provider-resource" };
@@ -6306,7 +6308,7 @@ function clearHyperVOperationJournal(ownerId: string, backend: string, deviceId:
 
 async function reconcileHyperVOperation(ownerId: string, backend: string, deviceId: string, normalized: NormalizedBrokerOptions,
     deadlineAt = Number.POSITIVE_INFINITY, preserveNetwork = false) {
-    return brokerHyperVStopDeleteApplication(normalized).reconcile(ownerId, backend, deviceId, deadlineAt, preserveNetwork);
+    return renderHyperVReplay(await brokerHyperVStopDeleteApplication(normalized).reconcile(ownerId, backend, deviceId, deadlineAt, preserveNetwork));
 }
 
 function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) {
@@ -6319,49 +6321,52 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         const selector: {kind: "id"; id: string} = {kind: "id", id: journal.vmId};
         return {selector,expectedName:journal.vmName,expectedNotes:ownershipMarker(owner,journal.deviceId,journal.incarnationId)};
     };
-    const ports: HyperVStopDeletePorts = {
+    const ports: HyperVStopDeletePorts<NativeHyperVConnection, ProviderCommandResult> = {
         read: (owner,state) => readOwnerDevices(owner,state), incarnation: device => hyperVDeviceIncarnationId(device),
-        validIncarnation: validHyperVIncarnationId, executable: name => providerExecutable(name,normalized),
-        descriptor: (owner,request,device) => providerCommandFor(owner,request,device,normalized),
+        validIncarnation: validHyperVIncarnationId, connection: provider => nativeHyperVConnection(normalized,provider),
+        prepareStopDelete: (owner, request, device) => {
+            const command = providerCommandFor(owner, request, device, normalized);
+            if ("error" in command) return {kind: "unavailable", error: command.error, missing: command.missing};
+            return {kind: "prepared", connection: {executable: command.executable || "powershell.exe", plannedCommand: command}};
+        },
         readJournal: readHyperVOperationJournal, writeJournal: (owner,request) => writeHyperVOperationJournal(owner,request),
         clearJournal: (owner,backend,id) => {clearHyperVOperationJournal(owner,backend,id); return undefined;},
         readSnapshotJournal: readHyperVSnapshotJournal,
-        repairSnapshots: (owner,backend,id,device,executable) => reconcileHyperVSnapshotJournal(owner,backend,id,device,executable,normalized),
+        repairSnapshots: (owner,backend,id,device,connection) => observeHyperVSnapshotJournal(owner,backend,id,device,connection.executable,normalized),
         clearSnapshotJournal: (owner,backend,id) => {clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(),owner,backend,id);return undefined;},
-        replayObservation: (executable,owner,journal,media,deadline) => reconcileDeviceLabHyperVOperation(client(executable,deadline,journal.command==="device_delete"?120000:30000),{ownerId:owner,journal,auxiliaryMediaPaths:media}),
-        replayPower: async (executable,owner,journal,action,turnOff,deadline) => {
-            const native=client(executable,deadline,journal.command==="device_delete"?120000:30000);
+        replayObservation: (connection,owner,journal,media,deadline) => reconcileDeviceLabHyperVOperation(client(connection.executable,deadline,journal.command==="device_delete"?120000:30000),{ownerId:owner,journal,auxiliaryMediaPaths:media}),
+        replayPower: async (connection,owner,journal,action,turnOff,deadline) => {
+            const native=client(connection.executable,deadline,journal.command==="device_delete"?120000:30000);
             if(action==="start")await native.startVM(identity(owner,journal));
             else await native.stopVM({...identity(owner,journal),mode:turnOff?"turn-off":"shutdown",force:true});
         },
-        replayRemoveVm: async (executable,owner,journal,media,deadline) => {
-            await client(executable,deadline,120000).removeVM({selector:identity(owner,journal).selector,force:true,guard:{
+        replayRemoveVm: async (connection,owner,journal,media,deadline) => {
+            await client(connection.executable,deadline,120000).removeVM({selector:identity(owner,journal).selector,force:true,guard:{
                 expectedName:journal.vmName,expectedNotes:ownershipMarker(owner,journal.deviceId,journal.incarnationId),
                 expectedDiskPaths:[journal.diskPath],ownedDiskDirectory:win32.dirname(journal.diskPath),expectedDvdPaths:media,
             }});
         },
-        removeHostFiles: async (executable,root,paths,checkpointDirectory,deadline) => {
-            await client(executable,deadline,120000).removeHostFiles({rootDirectory:root,paths,...(checkpointDirectory?{checkpointDiskDirectory:checkpointDirectory}:{})});
+        removeHostFiles: async (connection,root,paths,checkpointDirectory,deadline) => {
+            await client(connection.executable,deadline,120000).removeHostFiles({rootDirectory:root,paths,...(checkpointDirectory?{checkpointDiskDirectory:checkpointDirectory}:{})});
         },
         deviceRoot: hyperVDeviceRoot, windowsDirectory: path => win32.dirname(path),
         replayPublish: (owner,backend,id,replacement) => ownerRepository.replayPublish(owner,backend,id,replacement),
         cleanupAuxiliary: (owner,request,expected) => cleanupLifecycleAuxiliaryRuntime(owner,request,normalized,expected),
         clone: value => structuredClone(value),
-        executeStop: (owner,request,device,executable,deadline) => hyperVTypedPowerExecution(normalized,{
-            executable,ownerId:owner,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
+        executeStop: async (owner,request,device,connection,deadline) => nativeHyperVObservation(await hyperVTypedPowerExecution(normalized,{
+            executable: connection.executable,ownerId:owner,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
             vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",
-        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2}),
-        executeDelete: (owner,request,device,executable,deadline) => hyperVTypedDeleteExecution(normalized,{
-            executable,ownerId:owner,backend:request.backend,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
+        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2})),
+        executeDelete: async (owner,request,device,connection,deadline) => nativeHyperVObservation(await hyperVTypedDeleteExecution(normalized,{
+            executable: connection.executable,ownerId:owner,backend:request.backend,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
             vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",diskPath:field(device,"diskPath")||"",
-        },deadline),
+        },deadline)),
         parseObservation: (stdout,deleting) => deleting?parseHyperVDeleteObservation(stdout):parseHyperVVmObservation(stdout),
         samePath: (left,right) => resolve(left)===resolve(right),
         releaseNetwork: (owner,id,incarnation,deadline,preserve) => releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
-        cleanupArtifacts: cleanupHyperVDeviceArtifacts, publicNetwork: publicHyperVNetworkCleanup, publicArtifacts: publicHyperVArtifactCleanup,
-        publish: transitionOwnerLifecycleDevice, redactDevice: redactHyperVDeviceSecrets, redactResult: redactHyperVResultSecrets,
-        redactExecution: (execution,fallback) => redactProviderCommandInput(execution,true,fallback),
-        stateErrorCode: ownerDeviceStateErrorCode, stateFailure: (error,request)=>ownerDeviceStateFailure(error,{backend:request.backend,stateKey:request.stateKey}),
+        cleanupArtifacts: cleanupHyperVDeviceArtifacts,
+        publish: transitionOwnerLifecycleDevice,
+        stateErrorCode: ownerDeviceStateErrorCode, stateFailure: nativeHyperVStateFailure,
         errorCode: hyperVBoundedErrorCode, diagnosticCode: hyperVProviderDiagnosticCode,
         assertDeadline: deadline=>{assertHyperVOperationDeadline(deadline);return undefined;}, deadlineExpired:hyperVOperationDeadlineExpired,
         timestamp:()=>new Date().toISOString(),
@@ -6380,73 +6385,145 @@ function brokerHyperVCreateSession(normalized:NormalizedBrokerOptions,executable
     };
     return {client:createDeviceLabHyperVWindowsClient(options),networkClient:createDeviceLabHyperVWindowsNetworkClient(options),failed:()=>failed};
 }
+function nativeHyperVParamFailure(parsed: CommandParamError): HyperVLifecycleOutcome<NativeHyperVConnection, ProviderCommandResult> {
+    return {kind: "admission-refused", reason: parsed.status === 403 ? "forbidden" : parsed.status === 404 ? "missing" : parsed.status === 409 ? "conflict" : "invalid", error: parsed.error, allowed: parsed.allowed, detail: parsed.detail, journalDisposition: "clear", recoveryDisposition: "required"};
+}
+
+function nativeHyperVLifecyclePlanning(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions, expected?: {device?: unknown}): HyperVLifecyclePlan<NativeHyperVConnection, ProviderCommandResult> {
+    const parsed = validateCommandParams(params);
+    if (!parsed.ok) return {kind: "plan-refused", failure: nativeHyperVParamFailure(parsed)};
+    const observation = observeLifecyclePreview(ownerId, parsed, normalized, false, expected);
+    const base = {ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
+    const refuse = (reason: "invalid" | "missing" | "conflict" | "provider-unavailable" | "state-write-failed", error: string, facts: {detail?: string; allowed?: string | string[]; conflicts?: string[]; remedy?: string} = {}): HyperVLifecyclePlan<NativeHyperVConnection, ProviderCommandResult> => {
+        if (reason === "state-write-failed") return {kind: "plan-refused", failure: {...base, ...facts, kind: "operation-failed", reason, error, journalDisposition: "clear", recoveryDisposition: "required"}};
+        return {kind: "plan-refused", failure: {...base, ...facts, kind: "admission-refused", reason, error, journalDisposition: "clear", recoveryDisposition: "required"}};
+    };
+    switch (observation.kind) {
+        case "state-failed": return {kind: "plan-refused", failure: {kind: "operation-failed", ...nativeHyperVStateFailure(observation.error, parsed), journalDisposition: "clear", recoveryDisposition: "required"}};
+        case "allocation-failed": return refuse("conflict", observation.evidence.error, {detail: observation.evidence.detail, allowed: observation.evidence.allowed});
+        case "incarnation-required": return refuse("conflict", "hyper-v-incarnation-required");
+        case "incarnation-conflict": return refuse("conflict", "hyper-v-incarnation-conflict");
+        case "configuration-conflict": return refuse("conflict", "hyper-v-create-configuration-conflict", {conflicts: observation.conflicts});
+        case "already-exists": return refuse("conflict", "owner-device-already-exists");
+        case "not-found": return refuse("missing", "owner-device-not-found");
+        case "not-attached": return refuse("conflict", "physical-device-not-attached", {remedy: "attach the physical device before starting it"});
+        case "equivalent-create": return {kind: "planned", ...observation.value, idempotent: true, availability: {kind: "not-required"}};
+        case "missing-delete": return {kind: "planned", ...observation.value, device: null, idempotent: true, availability: {kind: "not-required"}};
+        default: {
+            const {providerPlan, providerAvailable: _providerAvailable, ...value} = observation.value;
+            if (providerPlan === null) return {kind: "planned", ...value, availability: {kind: "not-required"}};
+            if ("error" in providerPlan) return {kind: "planned", ...value, availability: {kind: "unavailable", error: providerPlan.error, missing: providerPlan.missing}};
+            if (providerPlan.mode !== "exec" && providerPlan.mode !== "detached" && providerPlan.mode !== "noop") return {kind: "planned", ...value, availability: {kind: "unavailable", error: "missing-provider-command", missing: []}};
+            if (providerPlan.mode === "noop") return {kind: "planned", ...value, availability: {kind: "not-required"}};
+            if (!("executable" in providerPlan) || typeof providerPlan.executable !== "string" || !providerPlan.executable) return {kind: "planned", ...value, availability: {kind: "unavailable", error: "missing-provider-command", missing: ["powershell"]}};
+            return {kind: "planned", ...value, availability: {kind: "available", connection: {executable: providerPlan.executable, plannedCommand: {...providerPlan, mode: providerPlan.mode}}}};
+        }
+    }
+}
+
+function nativeHyperVStateFailure(error: unknown, request: {backend: string; stateKey: string}) {
+    const code = ownerDeviceStateErrorCode(error);
+    if (!code) throw error;
+    return {reason: code === "owner-devices-file-too-large" || code === "owner-devices-state-read-failed" ? "state-write-failed" as const : "conflict" as const, error: code, backend: request.backend, stateKey: request.stateKey};
+}
+
+type NativeHyperVProvisionMedia = ReturnType<typeof hyperVGuestProvisionMediaCommand>;
+
+function nativeHyperVConnection(normalized: NormalizedBrokerOptions, provider: "powershell" | "ssh"): NativeHyperVConnection | null {
+    const executable = provider === "ssh"
+        ? providerExecutable("ssh", normalized)
+        : providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
+    return executable ? { executable } : null;
+}
+
+function nativeHyperVObservation(receipt: ProviderCommandResult) {
+    return {
+        mode: receipt.mode, provider: receipt.provider, status: receipt.status, signal: receipt.signal,
+        stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error,
+        timedOut: receipt.timedOut, outputLimitExceeded: receipt.outputLimitExceeded,
+        typedCreateInvalidResult: receipt.typedCreateInvalidResult,
+        typedCreateOperation: receipt.typedCreateOperation,
+        typedCreateNativeDiagnostics: receipt.typedCreateNativeDiagnostics,
+        receipt,
+    };
+}
+
 function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) {
-    const ports:HyperVCreateStartPorts<ReturnType<typeof brokerHyperVCreateSession>>={
-        executable:name=>providerExecutable(name,normalized),validIncarnation:validHyperVIncarnationId,
+    const ports:HyperVCreateStartPorts<ReturnType<typeof brokerHyperVCreateSession>, NativeHyperVConnection, ProviderCommandResult, NativeHyperVProvisionMedia>={
+        connection: provider => nativeHyperVConnection(normalized, provider), validIncarnation:validHyperVIncarnationId,
         deviceRoot:hyperVDeviceRoot,privateRoot:hyperVPrivateDeviceRoot,
         ownerImageRoot:owner=>join(brokerPrivateRoot(),"owners",owner,"images","hyper-v"),imageRoot:hyperVImageRoot,
         assertImagePath:(root,path)=>{assertDeviceLabPathWithinRoot(root,path,"hyper-v-base-image");return undefined;},exists:existsSync,
         incarnationRecord:readHyperVIncarnationRecord,vmName:hyperVVmName,marker:ownershipMarker,
-        createSession:(executable,deadline)=>brokerHyperVCreateSession(normalized,executable,deadline),
+        createSession:(connection,deadline)=>brokerHyperVCreateSession(normalized,connection.executable,deadline),
         creationEffects:session=>deviceLabVmCreationPorts(session),executionFailed:session=>session.failed(),
         vhd:(session,path)=>session.client.getVHD(path),vhdError:hyperVCreateVhdReadError,inspectVhd:inspectHyperVCreateVhd,
         hostCapacity:(memoryMb,cpus)=>{assertHyperVHostCapacity({memoryMb,cpus});return undefined;},
-        prologue:(executable,baseImageRoot,baseImagePath,deviceRoot,diskPath)=>hyperVCreatePrologueCommand({executable,baseImageRoot,baseImagePath,deviceRoot,diskPath}),
+        prepareCreateDirectories: async (connection, paths, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVCreatePrologueCommand({executable: connection.executable, baseImageRoot: paths.imageRoot, baseImagePath: paths.imagePath, deviceRoot: paths.deviceRoot, diskPath: paths.diskPath}), {timeoutMs, outputLimit})),
         parsePrologue:parseHyperVCreatePrologueObservation,parsePrologueFailure:parseHyperVCreatePrologueFailure,
         samePath:(left,right)=>resolve(left)===resolve(right),directory:dirname,windowsDirectory:win32.dirname,
         sameWindowsPath:(left,right)=>left!==null&&win32.normalize(left).toLowerCase()===win32.normalize(right).toLowerCase(),
         cloneDisk:async(request,created)=>{await cloneHyperVBaseImage({...request,onDestinationCreated:path=>{created(path);}});},
-        execute:(command,timeoutMs,outputLimit)=>hyperVProviderCommandRunner(normalized,command,{timeoutMs,outputLimit}),
+        observePlannedPower: async (connection, timeoutMs, outputLimit) => {
+            if (!connection.plannedCommand) throw new Error("missing-provider-command");
+            return nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, connection.plannedCommand, {timeoutMs, outputLimit}));
+        },
         remaining:hyperVRemainingTimeout,assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline);return undefined;},deadlineExpired:hyperVOperationDeadlineExpired,
         errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
         typedErrorCode:hyperVTypedErrorCode,typedErrorOperation:error=>hyperVTypedErrorOperation(error)??null,nativeDiagnostics:hyperVTypedNativeDiagnostics,
         diagnosticCode:hyperVProviderDiagnosticCode,boundedErrorCode:hyperVBoundedErrorCode,
-        compensationCommand:(executable,deviceRoot,diskPath,kind,path)=>hyperVCreateCompensationCommand({executable,deviceRoot,diskPath,kind,path}),
+        removeCreateArtifact: async (connection, target, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVCreateCompensationCommand({executable: connection.executable, ...target}), {timeoutMs, outputLimit})),
         compensationOrder:planHyperVVirtualMachineCreationCompensation,vms:(session,id)=>session.client.getVM({kind:"id",id}),disks:(session,id)=>session.client.getVMHardDiskDrives({kind:"id",id}),
         removeVM:(session,request)=>session.client.removeVM(request),
-        recoverVM:async(executable,request,deadline)=>{const client=createDeviceLabHyperVWindowsClient({executable,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,120000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(executable)}:{})});return deleteDeviceLabHyperVVm(client,request);},
+        recoverVM:async(connection,request,deadline)=>{const executable = connection.executable; const client=createDeviceLabHyperVWindowsClient({executable,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,120000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(executable)}:{})});return deleteDeviceLabHyperVVm(client,request);},
         releaseNetwork:(owner,id,incarnation,deadline,preserve)=>releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
-        read:readOwnerDevices,incarnation:hyperVDeviceIncarnationId,stateErrorCode:ownerDeviceStateErrorCode,stateFailure:ownerDeviceStateFailure,
+        read:readOwnerDevices,incarnation:hyperVDeviceIncarnationId,stateErrorCode:ownerDeviceStateErrorCode,stateFailure:nativeHyperVStateFailure,
         readJournal:readHyperVOperationJournal,writeJournal:writeHyperVOperationJournal,
         clearJournal:(owner,backend,id)=>{clearHyperVOperationJournal(owner,backend,id);return undefined;},
-        readSnapshotJournal:readHyperVSnapshotJournal,repairSnapshots:(owner,backend,id,device,executable)=>reconcileHyperVSnapshotJournal(owner,backend,id,device,executable,normalized),
+        readSnapshotJournal:readHyperVSnapshotJournal,repairSnapshots:(owner,backend,id,device,connection)=>observeHyperVSnapshotJournal(owner,backend,id,device,connection.executable,normalized),
         journalPath:hyperVOperationJournalPath,snapshotJournalPath:hyperVSnapshotJournalPath,
         forgetConsole:(owner,backend,id)=>{forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,backend,id));return undefined;},
         reconcileOperation:(owner,backend,id,deadline,preserve)=>brokerHyperVStopDeleteApplication(normalized).reconcile(owner,backend,id,deadline,preserve),
-        planning:(owner,params,expected)=>{
-            const observed=lifecycleCommandPlanning(owner,params,normalized,false,expected);
-            if(!observed.result)return {response:observed.response,result:undefined};
-            const result=observed.result;
-            const command=result.providerCommand;
-            if(command&&!("error" in command)&&command.mode!=="exec"&&command.mode!=="detached"&&command.mode!=="noop")return {response:observed.response,result:{...result,providerCommand:{error:"missing-provider-command",missing:[]}}};
-            const providerCommand:HyperVPlanResult['providerCommand']=command&&!("error" in command)?{...command,mode:command.mode==="exec"?"exec":command.mode==="detached"?"detached":"noop"}:command;
-            return {response:observed.response,result:{...result,providerCommand}};
+        planning: (owner, params, expected) => nativeHyperVLifecyclePlanning(owner, params, normalized, expected),
+        parse: params => {
+            const parsed = validateCommandParams(params);
+            if (!parsed.ok) return {ok: false, failure: nativeHyperVParamFailure(parsed)};
+            if (parsed.command === "device_create" || parsed.command === "device_start" || parsed.command === "device_reboot") return {ok: true, request: {...parsed, command: parsed.command}};
+            return {ok: false, failure: {kind: "admission-refused", reason: "unsupported", error: "unsupported-command", backend: parsed.backend, command: parsed.command, journalDisposition: "clear", recoveryDisposition: "required"}};
         },
-        parse:params=>{const parsed=validateCommandParams(params);if(!parsed.ok)return {ok:false,response:commandParamError(parsed)};if(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot")return {ok:true,request:{...parsed,command:parsed.command}};return {ok:false,response:{status:501,payload:{ok:false,error:"unsupported-command",backend:parsed.backend,command:parsed.command}}};},
         resolveImage:(owner,request,params,deadline)=>resolveHyperVImageForCreate(owner,request,params,normalized,deadline),
         allocateNetwork:(owner,id,incarnation,deadline)=>ensureHyperVNetworkAllocation(owner,id,incarnation,normalized,deadline),
         writeIncarnation:(owner,backend,id,incarnation)=>{writeHyperVIncarnationRecord(owner,backend,id,incarnation);return undefined;},
         newIncarnation:()=>randomBytes(16).toString("hex"),deadlineError:error=>error instanceof HyperVOperationDeadlineError?error.code:null,
-        publicArtifacts:publicHyperVArtifactCleanup,imageProfile:hyperVImageProfile,imageVirtualSize:profile=>readHyperVImageManifestMetadata(profile).virtualSizeBytes,quota:DEVICE_BROKER_HYPER_V_OWNER_QUOTA,
+        imageProfile:hyperVImageProfile,imageVirtualSize:profile=>readHyperVImageManifestMetadata(profile).virtualSizeBytes,quota:DEVICE_BROKER_HYPER_V_OWNER_QUOTA,
         now:()=>Date.now(),timestamp:()=>new Date().toISOString(),sleep,passwordEntropy:()=>randomBytes(24).toString("base64url"),
         ensurePrivateRoot:(owner,backend,id)=>{ensureHyperVPrivateDeviceRoot(owner,backend,id);return undefined;},
         assertPrivateRoot:(owner,backend,id,root)=>{assertHyperVPrivateDeviceRoot(owner,backend,id,root);return undefined;},
         readable:(path,label,limit)=>withDeviceLabReadableFile(path,label,limit,()=>true)===true,
         mediaRetained:path=>{try{assertNoSymlinkPathComponents(path,"hyper-v-guest-provisioning-media");lstatSync(path);return true;}catch(error){return !error||typeof error!=="object"||!("code" in error)||error.code!=="ENOENT";}},
         parseVm:parseHyperVVmObservation,parseProvision:parseHyperVGuestProvisionObservation,parseReady:parseHyperVGuestReadyObservation,parseReadyFailure:parseHyperVGuestReadyFailureObservation,
-        redactResult:redactHyperVResultSecrets,redactDevice:redactHyperVDeviceSecrets,redactExecution:(execution,fallback)=>redactProviderCommandInput(execution,true,fallback),failureDetail:providerFailureDetail,
-        seedFailureCode:linuxSeedFailureCode,seedCommand:hyperVLinuxSeedCommand,provisionCommand:hyperVGuestProvisionMediaCommand,sshReadyCommand:hyperVLinuxSshReadyCommand,networkFinalizeCommand:hyperVLinuxNetworkFinalizeCommand,guiPrepareCommand:hyperVLinuxGuiPrepareCommand,guiReadyCommand:hyperVLinuxGuiReadyCommand,
-        inspectSeed:(request,deadline)=>inspectDeviceLabHyperVLinuxSeedTarget({...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(request.executable)}:{})}),
-        attachSeed:(request,deadline)=>attachDeviceLabHyperVLinuxSeedMedia({...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(request.executable)}:{})}),
-        provision:(request,deadline)=>provisionDeviceLabHyperVWindowsGuest({...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(request.executable)}:{})}),
-        windowsReadiness:(executable,root,mediaPath)=>deviceLabWindowsReadinessPorts({executable,timeoutMilliseconds:1,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),removeProvisioningMedia:()=>{
+        seedFailureCode:linuxSeedFailureCode,
+        prepareLinuxSeed: (connection, request) => {
+            const command = hyperVLinuxSeedCommand({executable: connection.executable, ...request});
+            return async (timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, command, {timeoutMs, outputLimit}));
+        },
+        prepareWindowsProvisionMedia: (connection, request) => hyperVGuestProvisionMediaCommand({executable: connection.executable, ...request}),
+        probeLinuxReadiness: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        finalizeLinuxNetwork: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxNetworkFinalizeCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        probeLinuxGui: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        prepareLinuxGui: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiPrepareCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        inspectSeed:(connection,request,deadline)=>inspectDeviceLabHyperVLinuxSeedTarget({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
+        attachSeed:(connection,request,deadline)=>attachDeviceLabHyperVLinuxSeedMedia({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
+        provision: async (connection, request, deadline) => nativeHyperVObservation(await provisionDeviceLabHyperVWindowsGuest({executable: connection.executable, mediaCommand: request.media, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})})),
+        windowsReadiness:(connection,root,mediaPath)=>deviceLabWindowsReadinessPorts({executable: connection.executable,timeoutMilliseconds:1,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),removeProvisioningMedia:()=>{
             assertDeviceLabPathWithinRoot(root,mediaPath,"hyper-v-guest-provisioning-media");assertNoSymlinkPathComponents(mediaPath,"hyper-v-guest-provisioning-media");
             try{const media=lstatSync(mediaPath);if(!media.isFile()||media.isSymbolicLink())throw new Error("hyper-v-guest-provisioning-media-invalid");}catch(error){if(error&&typeof error==="object"&&"code" in error&&error.code==="ENOENT")return;throw error;}
             rmSync(mediaPath);
         }}),
-        power:(identity,operation,deadline,cap,options)=>hyperVTypedPowerExecution(normalized,identity,operation,deadline,cap,options),
-        bootstrapProbe:request=>hyperVProbeBootstrapNetwork(normalized,request),bootstrapCleanup:(request,mac)=>hyperVCleanupBootstrapNetwork(normalized,request,mac),
-        bootDiagnostic:(request,deadline)=>readDeviceLabHyperVGuestBootDiagnostic({...request,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,15000),run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(request.executable)}:{})}),
+        power: async (connection, identity, operation, deadline, cap, options) => nativeHyperVObservation(await hyperVTypedPowerExecution(normalized, {executable: connection.executable, ...identity}, operation, deadline, cap, options)),
+        bootstrapProbe: async (connection, request) => { const observed = await hyperVProbeBootstrapNetwork(normalized, {executable: connection.executable, ...request}); return {execution: nativeHyperVObservation(observed.execution), observation: observed.observation}; },
+        bootstrapCleanup: async (connection, request, mac) => { const observed = await hyperVCleanupBootstrapNetwork(normalized, {executable: connection.executable, ...request}, mac); return {execution: nativeHyperVObservation(observed.execution), observation: observed.observation}; },
+        bootDiagnostic:(connection,request,deadline)=>readDeviceLabHyperVGuestBootDiagnostic({executable: connection.executable, ...request,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,15000),run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         validateHostIdentity:validateHyperVLinuxSshHostIdentity,
         reconcileHostIdentity:(owner,state,id,hostPath,knownPath,address,expected)=>{const publication:{expected:unknown;committed?:unknown}={expected};const identity=reconcileHyperVLinuxSshHostIdentity(owner,state,id,hostPath,knownPath,address,publication);return {identity,...(publication.committed!==undefined?{committed:publication.committed}:{})};},
         claim:claimOwnerDevice,publish:transitionOwnerLifecycleDevice,maxBootTimeout:DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS,windowsNoProgressTimeout:DEVICE_BROKER_HYPER_V_WINDOWS_NO_PROGRESS_TIMEOUT_MS,linuxGuiTimeout:DEVICE_BROKER_HYPER_V_LINUX_GUI_TIMEOUT_MS,
@@ -8486,9 +8563,9 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
         return commandParamError(parsed);
     if (parsed.command === "device_status") return brokerDeviceStatusApplication(normalized).execute(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt);
     if (isHyperVBackend(parsed.backend) && (parsed.command === "device_stop" || parsed.command === "device_delete")) {
-        return brokerHyperVStopDeleteApplication(normalized).invoke(ownerId, { ...parsed, command: parsed.command }, hyperVDeadlineAt, hyperVCleanupDeadlineAt);
+        return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId, { ...parsed, command: parsed.command }, hyperVDeadlineAt, hyperVCleanupDeadlineAt));
     }
-    if(isHyperVBackend(parsed.backend)&&(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot"))return brokerHyperVCreateStartApplication(normalized).execute(ownerId,{...parsed,command:parsed.command},params,hyperVDeadlineAt,hyperVCleanupDeadlineAt);
+    if(isHyperVBackend(parsed.backend)&&(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot"))return renderHyperVCreateStart(await brokerHyperVCreateStartApplication(normalized).execute(ownerId,{...parsed,command:parsed.command},params,hyperVDeadlineAt,hyperVCleanupDeadlineAt));
     const androidCreateAvdRoot = parsed.backend === "android-emulator"
         && parsed.command === "device_create"
         && parsed.create?.createAvd === true
@@ -9013,9 +9090,9 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
 
 
 async function lifecycleHyperVCommandInvokeLocked(ownerId:string,params:unknown,parsed:CommandParamSuccess,normalized:NormalizedBrokerOptions,deadlineAt=Number.POSITIVE_INFINITY,cleanupDeadlineAt=deadlineAt):Promise<BrokerRpcResult>{
-    if(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot")return brokerHyperVCreateStartApplication(normalized).invoke(ownerId,params,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt);
+    if(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot")return renderHyperVCreateStart(await brokerHyperVCreateStartApplication(normalized).invoke(ownerId,params,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));
     assertHyperVOperationDeadline(deadlineAt);
-    if(parsed.command==="device_stop"||parsed.command==="device_delete"){if(!parsed.dryRun)forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId,parsed.backend,parsed.deviceId));return brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt);}
+    if(parsed.command==="device_stop"||parsed.command==="device_delete"){if(!parsed.dryRun)forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId,parsed.backend,parsed.deviceId));return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));}
     if (parsed.command === "device_status") return brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, deadlineAt);
     return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt);
 }

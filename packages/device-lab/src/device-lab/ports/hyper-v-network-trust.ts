@@ -65,11 +65,11 @@ export type HyperVHostCleanupRequest = {
 };
 import type {
     HyperVNetworkAllocation,
-    HyperVNetworkCommandResult,
-    HyperVProviderCommand,
-    HyperVNetworkOptions,
-    HyperVNetworkCleanupOptions,
-    HyperVNetworkAllocationsOptions,
+    HyperVNetworkEnsureRequest,
+    HyperVNetworkCleanupRequest,
+    HyperVNetworkNativeAttempt,
+    HyperVNetworkNativeObservation,
+    HyperVNetworkAllocationIdentity,
     HyperVNetworkAllocationsObservation,
     HyperVNetworkObservation,
     HyperVNetworkCleanupObservation,
@@ -79,9 +79,9 @@ export type HyperVFabricEffects = {
     readonly host: HyperVHostNetworkPorts;
 } | {
     readonly kind: "legacy-compatibility";
-    ensureCommand(options: HyperVNetworkOptions): HyperVProviderCommand;
-    cleanupCommand(options: HyperVNetworkCleanupOptions): HyperVProviderCommand;
-    inspectAllocationsCommand(options: HyperVNetworkAllocationsOptions): HyperVProviderCommand;
+    ensure(options: HyperVNetworkEnsureRequest, attempt: HyperVNetworkNativeAttempt): Promise<HyperVNetworkNativeObservation<HyperVNetworkObservation>>;
+    cleanup(options: HyperVNetworkCleanupRequest, attempt: HyperVNetworkNativeAttempt): Promise<HyperVNetworkNativeObservation<HyperVNetworkCleanupObservation>>;
+    inspectAllocation(allocations: HyperVNetworkAllocationIdentity[], timeoutMs: number): Promise<HyperVNetworkNativeObservation<HyperVNetworkAllocationsObservation>>;
 } | {
     readonly kind: "unavailable";
 };
@@ -92,7 +92,6 @@ export type HyperVNetworkPorts = Omit<HyperVNetworkStatePorts, "kind"> & {
     readonly prefixLength: number;
     readonly marker: string;
     readonly natName: string;
-    readonly commandOutputBytes: number;
     readonly hostFabric: HyperVFabricEffects;
     readonly references: {
         readonly kind: "unavailable";
@@ -100,12 +99,8 @@ export type HyperVNetworkPorts = Omit<HyperVNetworkStatePorts, "kind"> & {
         readonly kind: "available";
         isReferenced(allocation: HyperVNetworkAllocation): boolean;
     };
-    resolveExecutable(name: string): string | null;
-    resolveElevationExecutable(standardExecutable: string): string;
-    run(command: HyperVProviderCommand, options: {
-        timeoutMs: number;
-        outputLimit: number;
-    }): Promise<HyperVNetworkCommandResult>;
+    available(): boolean;
+    elevationFailure(previousReceipt: unknown, cause: unknown, operation: "ensure" | "cleanup"): Extract<HyperVNetworkNativeObservation<never>, {kind: "failed"}>;
     now(): number;
     timestamp(): string;
     token(): string;
@@ -125,10 +120,7 @@ export type HyperVNetworkPorts = Omit<HyperVNetworkStatePorts, "kind"> & {
     natNameValue(value: string): HyperVNatName;
     natInstanceId(value: string): HyperVNatInstanceId;
     isNativeError(value: unknown): boolean;
-    parseAllocationObservation(stdout: string): HyperVNetworkAllocationsObservation | null;
-    parseNetworkObservation(stdout: string): HyperVNetworkObservation | null;
-    parseCleanupObservation(stdout: string): HyperVNetworkCleanupObservation | null;
     typedError(error: unknown, fallback: string): string;
-    providerDiagnostic(result: HyperVNetworkCommandResult, fallback: string): string | undefined;
-    redactExecution(result: HyperVNetworkCommandResult, diagnostic: string | undefined): Record<string, unknown>;
+    typedDiagnosticReceipt(error: unknown, diagnostic: string): unknown;
+    diagnosticReceipt(receipt: unknown, diagnostic: string | undefined): unknown;
 };

@@ -6,8 +6,11 @@ import {
     type HyperVNetworkIntent,
     type HyperVNetworkIntentOwnershipEvidence,
     type HyperVNetworkAllocation,
-    type HyperVNetworkCommandResult,
-    type HyperVProviderCommand,
+    type HyperVNetworkNativeObservation,
+    type HyperVNetworkNativeAttempt,
+    type HyperVNetworkEnsureRequest,
+    type HyperVNetworkCleanupRequest,
+    type HyperVNetworkAllocationResult,
     type HyperVNetworkObservation,
     type HyperVNetworkCleanupObservation,
     type HyperVNetworkAllocationRequest,
@@ -699,9 +702,6 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             // A later allocation reconciles stale intent against committed state.
         }
     }
-    function commandSucceeded(result: HyperVNetworkCommandResult): boolean {
-        return result.status === 0 && !result.error;
-    }
     function legacyHostFabricCompatibility(runtime: HyperVNetworkPorts) {
         if (runtime.hostFabric.kind !== "legacy-compatibility") {
             throw new Error("hyper-v-network-typed-runtime-missing");
@@ -714,7 +714,6 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
     async function reconcileOrphanedAllocations(
         runtime: HyperVNetworkPorts,
         current: HyperVNetworkState,
-        powershell: string,
         deadlineAt: number,
     ): Promise<HyperVNetworkState> {
         if (runtime.references.kind === "unavailable" || current.allocations.length === 0)
@@ -757,22 +756,14 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 }
                 continue;
             }
-            const execution = await runtime.run(legacyHostFabricCompatibility(runtime).inspectAllocationsCommand({
-                executable: powershell,
-                allocations: batch.map(({ ownerId, deviceId, incarnationId }) => {
-                    if (!incarnationId)
-                        throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
-                    return { ownerId, deviceId, incarnationId };
-                }),
-            }), {
-                timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000),
-                outputLimit: runtime.commandOutputBytes,
-            });
+            const execution = await legacyHostFabricCompatibility(runtime).inspectAllocation(batch.map(({ownerId, deviceId, incarnationId}) => {
+                if (!incarnationId) throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
+                return {ownerId, deviceId, incarnationId};
+            }), hyperVRemainingTimeout(deadlineAt, 120000));
             assertHyperVOperationDeadline(deadlineAt);
-            if (!commandSucceeded(execution)) {
-                throw new Error(ports.providerDiagnostic(execution, "hyper-v-network-allocation-inspection-failed"));
-            }
-            const observation = ports.parseAllocationObservation(execution.stdout || "");
+            if (execution.kind === "preparation-failed") throw execution.cause;
+            if (execution.kind === "failed") throw new Error(execution.diagnostic);
+            const observation = execution.observation;
             if (!observation || observation.allocations.length !== batch.length) {
                 throw new Error("hyper-v-network-allocation-inspection-invalid-result");
             }
@@ -801,39 +792,25 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         runtime.writeState(reconciled);
         return reconciled;
     }
-    function elevationRequired(result: HyperVNetworkCommandResult): boolean {
-        const diagnostic = [result.error, result.stderr, result.stdout].map((value) => String(value || "")).join("\n");
-        return diagnostic.includes("hyper-v-network-elevation-required")
-            || diagnostic.includes("PermissionDenied")
-            || diagnostic.includes("Windows System Error 5")
-            || /access (?:is )?denied/i.test(diagnostic);
+    function elevatedAttempt(deadlineAt: number): HyperVNetworkNativeAttempt {
+        const timeoutMs = hyperVRemainingTimeout(deadlineAt, 180000);
+        return {privilege: "administrator", timeoutMs, deadlineUnixMs: ports.now() + Math.max(1, timeoutMs - HYPER_V_ELEVATED_TERMINATION_GRACE_MS)};
     }
-    async function runWithElevation(
-        runtime: HyperVNetworkPorts,
-        standard: HyperVProviderCommand,
-        elevated: (deadlineUnixMs: number) => HyperVProviderCommand,
-        deadlineAt: number,
-    ): Promise<HyperVNetworkCommandResult> {
-        let execution = await runtime.run(standard, {
-            timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000),
-            outputLimit: runtime.commandOutputBytes,
-        });
-        if (!commandSucceeded(execution) && elevationRequired(execution)) {
-            const timeoutMs = hyperVRemainingTimeout(deadlineAt, 180000);
-            const elevatedDeadlineUnixMs = runtime.now() + Math.max(1, timeoutMs - HYPER_V_ELEVATED_TERMINATION_GRACE_MS);
-            let elevatedCommand: HyperVProviderCommand;
-            try {
-                elevatedCommand = elevated(elevatedDeadlineUnixMs);
-            }
-            catch (error) {
-                return { ...execution, status: 1, error: error instanceof Error ? error.message : String(error) };
-            }
-            execution = await runtime.run(elevatedCommand, {
-                timeoutMs,
-                outputLimit: runtime.commandOutputBytes,
-            });
-        }
-        return execution;
+    async function ensureWithElevation(runtime: HyperVNetworkPorts, request: HyperVNetworkEnsureRequest, deadlineAt: number): Promise<HyperVNetworkNativeObservation<HyperVNetworkObservation>> {
+        const native = legacyHostFabricCompatibility(runtime);
+        const standard = await native.ensure(request, {privilege: "standard", timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000)});
+        if (standard.kind === "preparation-failed") throw standard.cause;
+        if (standard.kind !== "failed" || standard.access !== "administrator-required") return standard;
+        const elevated = await native.ensure(request, elevatedAttempt(deadlineAt));
+        return elevated.kind === "preparation-failed" ? ports.elevationFailure(standard.receipt, elevated.cause, "ensure") : elevated;
+    }
+    async function cleanupWithElevation(runtime: HyperVNetworkPorts, request: HyperVNetworkCleanupRequest, deadlineAt: number): Promise<HyperVNetworkNativeObservation<HyperVNetworkCleanupObservation>> {
+        const native = legacyHostFabricCompatibility(runtime);
+        const standard = await native.cleanup(request, {privilege: "standard", timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000)});
+        if (standard.kind === "preparation-failed") throw standard.cause;
+        if (standard.kind !== "failed" || standard.access !== "administrator-required") return standard;
+        const elevated = await native.cleanup(request, elevatedAttempt(deadlineAt));
+        return elevated.kind === "preparation-failed" ? ports.elevationFailure(standard.receipt, elevated.cause, "cleanup") : elevated;
     }
     function typedHostNetworkSpec(switchName: string, natName: string): HyperVHostNetworkSpec {
         return ports.hostSpec(switchName, natName, HYPER_V_NETWORK_PREFIX, HYPER_V_NETWORK_GATEWAY);
@@ -844,14 +821,8 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
     function typedNetworkDiagnosticCode(error: unknown, fallback: string): string {
         return ports.typedError(error, fallback);
     }
-    function typedNetworkExecutionDiagnostic(error: unknown, fallback: string): Record<string, unknown> {
-        const diagnosticCode = typedNetworkDiagnosticCode(error, fallback);
-        return ports.redactExecution({
-            mode: "exec",
-            provider: "hyper-v",
-            status: null,
-            error: diagnosticCode,
-        }, diagnosticCode);
+    function typedNetworkExecutionDiagnostic(error: unknown, fallback: string): unknown {
+        return ports.typedDiagnosticReceipt(error, typedNetworkDiagnosticCode(error, fallback));
     }
     function typedNetworkAllocationConflict(detail: string): string | null {
         if (detail === "hyper-v-network-conflict-switch-identity-conflict"
@@ -1210,40 +1181,25 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
      */
     async function ensureHyperVHostNetworkFabric(runtime: HyperVNetworkPorts, deadlineAt = Number.POSITIVE_INFINITY): Promise<HyperVNetworkFabricResult> {
         const result = await ensureHyperVNetwork(runtime, null, deadlineAt);
-        if (!result.ok)
+        if (result.kind === "refused")
             return result;
         return {
-            ok: true,
+            kind: "fabric-ready",
             switchName: result.switchName,
             gateway: result.gateway,
             prefix: result.prefix,
             outboundPolicy: "nat",
         };
     }
-    async function ensureHyperVNetworkAllocation(runtime: HyperVNetworkPorts, ownerId: string, deviceId: string, incarnationId: string, deadlineAt = Number.POSITIVE_INFINITY): Promise<{
-        ok: true;
-        switchName: string;
-        address: string;
-        macAddress: string;
-        gateway: string;
-        prefix: string;
-        outboundPolicy: "nat";
-    } | {
-        ok: false;
-        status: number;
-        error: string;
-        detail?: string;
-        execution?: Record<string, unknown>;
-        preserveEvidence?: boolean;
-    }> {
+    async function ensureHyperVNetworkAllocation(runtime: HyperVNetworkPorts, ownerId: string, deviceId: string, incarnationId: string, deadlineAt = Number.POSITIVE_INFINITY): Promise<HyperVNetworkAllocationResult> {
         const result = await ensureHyperVNetwork(runtime, { ownerId, deviceId, incarnationId }, deadlineAt);
-        if (!result.ok)
+        if (result.kind === "refused")
             return result;
         if (typeof result.address !== "string" || typeof result.macAddress !== "string") {
-            return { ok: false, status: 500, error: "hyper-v-network-allocation-failed", detail: "hyper-v-network-allocation-missing" };
+            return { kind: "refused", reason: "allocation-missing", error: "hyper-v-network-allocation-failed", detail: "hyper-v-network-allocation-missing" };
         }
         return {
-            ok: true,
+            kind: "allocated",
             switchName: result.switchName,
             address: result.address,
             macAddress: result.macAddress,
@@ -1253,7 +1209,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         };
     }
     async function ensureHyperVNetwork(runtime: HyperVNetworkPorts, allocationRequest: HyperVNetworkAllocationRequest | null, deadlineAt = Number.POSITIVE_INFINITY): Promise<{
-        ok: true;
+        kind: "network-ready";
         switchName: string;
         address?: string;
         macAddress?: string;
@@ -1261,13 +1217,10 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         prefix: string;
         outboundPolicy: "nat";
     } | HyperVNetworkEnsureFailure> {
-        const powershell = runtime.resolveExecutable("powershell.exe")
-            || runtime.resolveExecutable("pwsh")
-            || runtime.resolveExecutable("powershell");
-        if (!powershell)
-            return { ok: false, status: 503, error: "missing-provider-command", detail: "powershell" };
+        if (!runtime.available())
+            return { kind: "refused", reason: "missing-provider", error: "missing-provider-command", detail: "powershell" };
         if (allocationRequest && !validHyperVIncarnationId(allocationRequest.incarnationId)) {
-            return { ok: false, status: 409, error: "hyper-v-network-incarnation-invalid" };
+            return { kind: "refused", reason: "invalid-incarnation", error: "hyper-v-network-incarnation-invalid" };
         }
         let current: HyperVNetworkState | null;
         let intent: HyperVNetworkIntent | null = null;
@@ -1296,8 +1249,8 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         }
         catch (error) {
             return {
-                ok: false,
-                status: 409,
+                kind: "refused",
+                reason: "state-conflict",
                 error: "hyper-v-network-allocation-failed",
                 detail: ports.boundedError(error, "hyper-v-network-allocation-failed"),
             };
@@ -1305,20 +1258,20 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         const expectedNetworkIdentity = current ?? intent;
         if (!expectedNetworkIdentity) {
             return {
-                ok: false,
-                status: 409,
+                kind: "refused",
+                reason: "state-conflict",
                 error: "hyper-v-network-allocation-failed",
                 detail: "hyper-v-network-intent-missing",
             };
         }
         try {
             if (current)
-                current = await reconcileOrphanedAllocations(runtime, current, powershell, deadlineAt);
+                current = await reconcileOrphanedAllocations(runtime, current, deadlineAt);
         }
         catch (error) {
             return {
-                ok: false,
-                status: 409,
+                kind: "refused",
+                reason: "reconciliation-failed",
                 error: "hyper-v-network-allocation-reconciliation-failed",
                 // The typed inventory read's own code, not the bare category its message starts with:
                 // an unconfirmed absence has to say which native error left the allocation in place.
@@ -1336,7 +1289,6 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         const canReconcileNetworkIdentity = !current
             || (current.allocations.length === 0 && !canRepairPersistedCccIdentity);
         const networkOptions = {
-            executable: powershell,
             switchName: expectedNetworkIdentity.switchName,
             natName: expectedNetworkIdentity.natName,
             marker: expectedNetworkIdentity.marker,
@@ -1364,42 +1316,32 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 const allocationConflict = typedNetworkAllocationConflict(detail);
                 if (allocationConflict) {
                     return {
-                        ok: false,
-                        status: 409,
+                        kind: "refused",
+                        reason: "state-conflict",
                         error: "hyper-v-network-allocation-failed",
                         detail: allocationConflict,
                         preserveEvidence: true,
                     };
                 }
                 return {
-                    ok: false,
-                    status: 502,
+                    kind: "refused",
+                    reason: "provider-failed",
                     error: "hyper-v-network-setup-failed",
                     detail,
-                    execution: typedNetworkExecutionDiagnostic(error, detail),
+                    receipt: typedNetworkExecutionDiagnostic(error, detail),
                     preserveEvidence: true,
                 };
             }
         }
         else {
-            const execution = await runWithElevation(runtime, legacyHostFabricCompatibility(runtime).ensureCommand(networkOptions), (elevatedDeadlineUnixMs) => legacyHostFabricCompatibility(runtime).ensureCommand({
-                ...networkOptions,
-                executable: runtime.resolveElevationExecutable(powershell),
-                elevated: true,
-                elevatedDeadlineUnixMs,
-            }), deadlineAt);
+            const execution = await ensureWithElevation(runtime, networkOptions, deadlineAt);
             assertHyperVOperationDeadline(deadlineAt);
-            if (!commandSucceeded(execution)) {
-                return {
-                    ok: false,
-                    status: 502,
-                    error: "hyper-v-network-setup-failed",
-                    detail: ports.providerDiagnostic(execution, "hyper-v-network-setup-failed"),
-                    execution: ports.redactExecution(execution, "hyper-v-network-setup-failed"),
-                    preserveEvidence: true,
-                };
+            if (execution.kind === "preparation-failed") throw execution.cause;
+            if (execution.kind === "failed") {
+                return {kind: "refused", reason: "provider-failed", error: "hyper-v-network-setup-failed", detail: execution.diagnostic,
+                    receipt: ports.diagnosticReceipt(execution.receipt, "hyper-v-network-setup-failed"), preserveEvidence: true};
             }
-            observation = ports.parseNetworkObservation(execution.stdout || "");
+            observation = execution.observation;
         }
         const observedMarker = observation?.marker || expectedNetworkIdentity.marker;
         const observedIdentityIsCccOwned = isHyperVCccNetworkIdentity(observedMarker, observation?.natName);
@@ -1430,7 +1372,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 : !observedIdentityIsCccOwned)
             || observation.prefix !== HYPER_V_NETWORK_PREFIX
             || observation.gateway !== HYPER_V_NETWORK_GATEWAY) {
-            return { ok: false, status: 502, error: "hyper-v-network-setup-invalid-result", preserveEvidence: true };
+            return { kind: "refused", reason: "invalid-observation", error: "hyper-v-network-setup-invalid-result", preserveEvidence: true };
         }
         try {
             if (current && !canReconcileNetworkIdentity && current.switchId.toLowerCase() !== observation.switchId.toLowerCase()) {
@@ -1463,7 +1405,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                     });
                 }
                 return {
-                    ok: true,
+                    kind: "network-ready",
                     switchName: observation.switchName,
                     address: existing.address,
                     macAddress: existing.macAddress,
@@ -1544,7 +1486,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             runtime.writeState(next);
             removeIntentBestEffort(runtime);
             return {
-                ok: true,
+                kind: "network-ready",
                 switchName: observation.switchName,
                 ...(address ? { address } : {}),
                 ...(macAddress ? { macAddress } : {}),
@@ -1561,7 +1503,6 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 && (observation.createdSwitch || observation.createdGateway === true || observation.createdNat)) {
                 try {
                     const cleanupOptions = {
-                        executable: powershell,
                         switchName: observation.switchName,
                         natName: observation.natName,
                         marker: observedMarker,
@@ -1574,17 +1515,11 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                         expectedSwitchId: observation.switchId,
                         expectedNatInstanceId: observation.createdNat ? observation.natInstanceId : undefined,
                     };
-                    const cleanupExecution = await runWithElevation(runtime, legacyHostFabricCompatibility(runtime).cleanupCommand(cleanupOptions), (elevatedDeadlineUnixMs) => legacyHostFabricCompatibility(runtime).cleanupCommand({
-                        ...cleanupOptions,
-                        executable: runtime.resolveElevationExecutable(powershell),
-                        elevated: true,
-                        elevatedDeadlineUnixMs,
-                    }), deadlineAt);
-                    if (!commandSucceeded(cleanupExecution)) {
-                        cleanupFailure = ports.providerDiagnostic(cleanupExecution, "hyper-v-network-cleanup-failed")
-                            || "hyper-v-network-cleanup-failed";
-                    }
-                    else if (!ports.parseCleanupObservation(cleanupExecution.stdout || "")) {
+                    const cleanupExecution = await cleanupWithElevation(runtime, cleanupOptions, deadlineAt);
+                    if (cleanupExecution.kind === "preparation-failed") throw cleanupExecution.cause;
+                    if (cleanupExecution.kind === "failed") {
+                        cleanupFailure = cleanupExecution.diagnostic || "hyper-v-network-cleanup-failed";
+                    } else if (!cleanupExecution.observation) {
                         cleanupFailure = "hyper-v-network-cleanup-invalid-result";
                     }
                 }
@@ -1594,8 +1529,8 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             }
             const allocationDetail = ports.boundedError(error, "hyper-v-network-allocation-failed");
             return {
-                ok: false,
-                status: cleanupFailure ? 502 : 409,
+                kind: "refused",
+                reason: cleanupFailure ? "cleanup-failed" : "state-conflict",
                 error: cleanupFailure ? "hyper-v-network-allocation-cleanup-failed" : "hyper-v-network-allocation-failed",
                 detail: cleanupFailure || allocationDetail,
                 ...(cleanupFailure || typedEvidencePreserved ? { preserveEvidence: true } : {}),
@@ -1690,13 +1625,9 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         if (release.managedNat === true && !release.natInstanceId) {
             return { ...release, ok: false, error: "hyper-v-network-nat-identity-unproven", networkCleanup: null };
         }
-        const powershell = runtime.resolveExecutable("powershell.exe")
-            || runtime.resolveExecutable("pwsh")
-            || runtime.resolveExecutable("powershell");
-        if (!powershell)
+        if (!runtime.available())
             return { ...release, ok: false, error: "missing-provider-command", networkCleanup: null };
         const cleanupOptions = {
-            executable: powershell,
             switchName: release.switchName,
             natName: release.natName,
             marker: release.marker,
@@ -1728,29 +1659,14 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             }
         }
         else {
-            const execution = await runWithElevation(runtime, legacyHostFabricCompatibility(runtime).cleanupCommand(cleanupOptions), (elevatedDeadlineUnixMs) => legacyHostFabricCompatibility(runtime).cleanupCommand({
-                ...cleanupOptions,
-                executable: runtime.resolveElevationExecutable(powershell),
-                elevated: true,
-                elevatedDeadlineUnixMs,
-            }), deadlineAt);
-            if (!commandSucceeded(execution)) {
-                const diagnosticCode = ports.providerDiagnostic(execution, "hyper-v-network-cleanup-failed");
-                return {
-                    ...release,
-                    ok: false,
-                    error: diagnosticCode,
-                    networkCleanup: ports.redactExecution(execution, diagnosticCode),
-                };
+            const execution = await cleanupWithElevation(runtime, cleanupOptions, deadlineAt);
+            if (execution.kind === "preparation-failed") throw execution.cause;
+            if (execution.kind === "failed") {
+                return {...release, ok: false, error: execution.diagnostic, networkCleanup: ports.diagnosticReceipt(execution.receipt, execution.diagnostic)};
             }
-            observation = ports.parseCleanupObservation(execution.stdout || "");
+            observation = execution.observation;
             if (!observation) {
-                return {
-                    ...release,
-                    ok: false,
-                    error: "hyper-v-network-cleanup-invalid-result",
-                    networkCleanup: ports.redactExecution(execution, "hyper-v-network-cleanup-invalid-result"),
-                };
+                return {...release, ok: false, error: "hyper-v-network-cleanup-invalid-result", networkCleanup: ports.diagnosticReceipt(execution.receipt, "hyper-v-network-cleanup-invalid-result")};
             }
         }
         if (observation.deferred === true) {

@@ -22,17 +22,13 @@ export type HyperVImageManifest = {
 };
 
 export type HyperVImageResolution =
-    | { ok: true; params: Record<string, unknown>; imagePath: string; prepared: boolean }
-    | { ok: false; status: number; error: string; detail?: string; remedy?: string };
+    | { kind: "resolved"; params: Record<string, unknown>; imagePath: string; prepared: boolean }
+    | { kind: "refused"; reason: "invalid-profile" | "license-required" | "not-prepared" | "profile-conflict" | "preparation-failed"; error: string; detail?: string; remedy?: string };
 
-export type HyperVImageCommandResult = {
-    mode: string;
-    provider: string;
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-};
+/** A single native effect observation; diagnostic receipt is only carried outward. */
+export type HyperVImageNativeObservation<T> =
+    | { kind: "completed"; observation: T | null; receipt: unknown }
+    | { kind: "failed"; diagnostic: string | undefined; receipt: unknown };
 
 export type HyperVImageCreateRequest = {
     backend: string;

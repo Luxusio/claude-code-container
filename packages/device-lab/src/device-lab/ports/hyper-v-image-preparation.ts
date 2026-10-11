@@ -1,5 +1,5 @@
 import type {
-    HyperVAutomaticImageCatalogs, HyperVBaseImageObservation, HyperVImageCommandResult,
+    HyperVAutomaticImageCatalogs, HyperVBaseImageObservation, HyperVImageNativeObservation,
     HyperVImageManifest, HyperVImageProfile, HyperVImageVhd,
 } from "../domain/hyper-v-image-preparation.js";
 
@@ -11,7 +11,7 @@ export type HyperVImagePreparedObservation =
     | { ok: true; profile: "windows-server"; imagePath: string; partialPath: string; partialSha256: string; partialSizeBytes: number }
     | { ok: true; profile: "ubuntu-lts"; imagePath: string; partialPath: string; sourceVhdPath: string; sourceVhdSha256: string; sourceVirtualSizeBytes: number; qemuSha256: string };
 export type HyperVImageFinalizeRequest = {
-    executable: string; imageRoot: string; expectedGeneration: 2;
+    imageRoot: string; expectedGeneration: 2;
     expectedPartialSha256: string; expectedPartialFileId: string;
     expectedVirtualSizeBytes: number; expectedVhdType: "Dynamic" | "Fixed";
 } & (
@@ -28,7 +28,7 @@ export interface HyperVImagePreparationPorts {
     now(): number;
     preparedAt(): string;
     resolvePath(...parts: string[]): string;
-    resolveExecutable(name: string): string | null;
+    capturePreparation(): HyperVImagePreparationEffects | null;
     assertDeadline(deadlineAt: number): undefined;
     remainingTimeout(deadlineAt: number, limitMs: number): number;
     deadlineExpired(deadlineAt: number): boolean;
@@ -36,7 +36,6 @@ export interface HyperVImagePreparationPorts {
     deadlineError(): Error;
     boundedErrorCode(error: unknown, fallback: string): string;
     boundedErrorDetail(error: unknown, fallback: string): string;
-    diagnosticCode(result: HyperVImageCommandResult, fallback: string): string | undefined;
     exists(path: string): boolean;
     manifestPresent(path: string): boolean;
     inspectFile(root: string, path: string, label: string): { size: number };
@@ -62,18 +61,16 @@ export interface HyperVImagePreparationPorts {
     recoverPriorImage(root: string, deadlineAt: number): Promise<void>;
     retirePriorImage(root: string, prior: HyperVPriorImage, deadlineAt: number): Promise<HyperVPriorImageIdentities>;
     discardPriorImage(root: string, prior: HyperVPriorImage, identities: HyperVPriorImageIdentities, deadlineAt: number): Promise<void>;
-    getVhd(executable: string, path: string, timeoutMs: () => number): Promise<HyperVImageVhd>;
-    mountReadOnly(executable: string, path: string, timeoutMs: () => number): Promise<void>;
-    dismount(executable: string, path: string, timeoutMs: number): Promise<void>;
-    convertVhd(executable: string, sourcePath: string, destinationPath: string, timeoutMs: number, remainingTimeout: () => number): Promise<void>;
-    resizeVhd(executable: string, path: string, sizeBytes: number, timeoutMs: number, remainingTimeout: () => number): Promise<void>;
-    storage(executable: string, root: string, path: string, readPartitionStyle: boolean, timeoutMs: number): Promise<{
-        execution: HyperVImageCommandResult; observation: { readonly attached: boolean; readonly partitionStyle: string | null } | null;
-    }>;
-    prepareAcquisition(options: { executable: string; profile: "windows-server" | "ubuntu-lts"; imageRoot: string; expectedGeneration: 2 }, timeoutMs: number): Promise<{
-        execution: HyperVImageCommandResult; observation: HyperVImagePreparedObservation | null;
-    }>;
-    finalizeAcquisition(options: HyperVImageFinalizeRequest, timeoutMs: number): Promise<{
-        execution: HyperVImageCommandResult; observation: HyperVBaseImageObservation | null;
-    }>;
+}
+
+/** Captured native connection; no executable or command recipe enters the core. */
+export interface HyperVImagePreparationEffects {
+    getVhd(path: string, timeoutMs: () => number): Promise<HyperVImageVhd>;
+    mountReadOnly(path: string, timeoutMs: () => number): Promise<void>;
+    dismount(path: string, timeoutMs: number): Promise<void>;
+    convertVhd(sourcePath: string, destinationPath: string, timeoutMs: number, remainingTimeout: () => number): Promise<void>;
+    resizeVhd(path: string, sizeBytes: number, timeoutMs: number, remainingTimeout: () => number): Promise<void>;
+    storage(root: string, path: string, readPartitionStyle: boolean, timeoutMs: number): Promise<HyperVImageNativeObservation<{readonly attached: boolean; readonly partitionStyle: string | null}>>;
+    prepareAcquisition(options: {profile: "windows-server" | "ubuntu-lts"; imageRoot: string; expectedGeneration: 2}, timeoutMs: number): Promise<HyperVImageNativeObservation<HyperVImagePreparedObservation>>;
+    finalizeAcquisition(options: HyperVImageFinalizeRequest, timeoutMs: number): Promise<HyperVImageNativeObservation<HyperVBaseImageObservation>>;
 }

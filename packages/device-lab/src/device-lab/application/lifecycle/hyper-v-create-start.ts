@@ -4,7 +4,7 @@ import type {HyperVPublication} from '../../domain/lifecycle/hyper-v-stop-delete
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVCreateField,hyperVCreateNumber,hyperVLinuxGuestReadyTraceFailureCode,hyperVLinuxGuestSignalDeadlineAt,hyperVLinuxGuestSignalTimedOut,compareHyperVLinuxEd25519HostKeyFingerprint} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { SnapshotJournal } from '../../domain/lifecycle/hyper-v-snapshots.js';
 import { hyperVSelectedDevice } from '../../domain/lifecycle/hyper-v-stop-delete.js';
-import { hyperVCreateRecord, hyperVQuotaResource, hyperVQuotaProjection, type HyperVQuotaUsage, type HyperVLifecycleResponse } from '../../domain/lifecycle/hyper-v-create-start.js';
+import { hyperVCreateRecord, hyperVQuotaResource, hyperVQuotaProjection, type HyperVQuotaUsage, type HyperVLifecycleOutcome } from '../../domain/lifecycle/hyper-v-create-start.js';
 import { parseWindowsReadinessProbe, windowsProbeFingerprint, windowsReadinessReason, type WindowsReadinessRequest, type WindowsReadinessIdentity, type WindowsReadinessOutcome } from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { WindowsReadinessPorts } from '../../ports/lifecycle/hyper-v-create-start.js';
 class ReadinessRetry extends Error {
@@ -309,10 +309,10 @@ export async function executeHyperVVmCreation(request: VmCreationRequest, ports:
     };
 }
 import { join } from 'path';
-import { hyperVCreateSucceeded, type HyperVNativeCommand,type HyperVScriptCommand,type HyperVCreateStartRequest,type HyperVLifecycleRequest, type HyperVNativeExecution, type HyperVCreateRecovery } from '../../domain/lifecycle/hyper-v-create-start.js';
+import { hyperVCreateSucceeded, type HyperVPreparedSeed,type HyperVRollback,type HyperVBootDiagnosticFacts,type HyperVCreateStartRequest,type HyperVLifecycleRequest, type HyperVNativeExecution, type HyperVCreateRecovery } from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { HyperVCreateStartPorts } from '../../ports/lifecycle/hyper-v-create-start.js';
-export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateStartPorts<Session>) {
-    async function createVmFromImage(ownerId: string, parsed: HyperVLifecycleRequest, executable: string, deadlineAt: number): Promise<HyperVNativeExecution> {
+export function createHyperVCreateStartApplication<Session,Connection,Receipt,ProvisionMedia>(ports: HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedia>) {
+    async function createVmFromImage(ownerId: string, parsed: HyperVLifecycleRequest, connection: Connection, deadlineAt: number): Promise<HyperVNativeExecution<Receipt>> {
         const create = parsed.create || {};
         const effects: VmCreationEffect[] = [];
         let newVmAttempted = false;
@@ -338,7 +338,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
                 return false;
             }
         });
-        const session = ports.createSession(executable, deadlineAt);
+        const session = ports.createSession(connection, deadlineAt);
         const readCreateVhd = async (kind: "base" | "clone", path: string) => {
             try {
                 return await ports.vhd(session, path);
@@ -359,9 +359,8 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             expectedVmName = ports.vmName(ownerId, parsed.deviceId, incarnationId);
             expectedMarker = ports.marker(ownerId, parsed.deviceId, incarnationId);
             ports.hostCapacity(memoryMb, cpus);
-            const prologueCommand = ports.prologue(executable, imageRoot, imagePath, deviceRoot, diskPath);
             ports.assertDeadline(deadlineAt);
-            const prologue = await ports.execute(prologueCommand, ports.remaining(deadlineAt, 120000), ports.outputLimit);
+            const prologue = await ports.prepareCreateDirectories(connection,{imageRoot,imagePath,deviceRoot,diskPath},ports.remaining(deadlineAt,120000),ports.outputLimit);
             if (!hyperVCreateSucceeded(prologue)) {
                 const partial = ports.parsePrologueFailure(prologue.stdout || "");
                 if (partial && ports.samePath(partial.deviceRoot, deviceRoot)
@@ -448,8 +447,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             if (!newVmAttempted || (expectedVmName && expectedMarker && effects.some((effect) => effect.kind === "vm-created"))) {
                 await compensate(effects, {
                     removePath: async (compensation) => {
-                        const cleanup = ports.compensationCommand(executable, deviceRoot, diskPath, compensation.kind, compensation.path);
-                        const result = await ports.execute(cleanup, ports.remaining(deadlineAt, 30000), ports.outputLimit);
+                        const result = await ports.removeCreateArtifact(connection,{deviceRoot,diskPath,kind:compensation.kind,path:compensation.path},ports.remaining(deadlineAt,30000),ports.outputLimit);
                         if (!hyperVCreateSucceeded(result))
                             throw new Error("hyper-v-create-compensation-failed");
                     },
@@ -514,11 +512,11 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         }
     } }
     async function recoverCreateResidue(ownerId: string, backend: string, deviceId: string, deadlineAt = Number.POSITIVE_INFINITY, incarnationId?: string | null): Promise<HyperVCreateRecovery> {
-        const powershell = ports.executable("powershell.exe") || ports.executable("pwsh") || ports.executable("powershell");
+        const powershell = ports.connection('powershell');
         if (!powershell)
-            return { ok: false, status: 503, error: "missing-provider-command", detail: "powershell" };
+            return { ok: false, reason:'provider-unavailable', error: "missing-provider-command", detail: "powershell" };
         if (backend !== "windows-vm" && backend !== "linux-vm")
-            return { ok: false, status: 400, error: "hyper-v-backend-invalid" };
+            return { ok: false, reason:'invalid', error: "hyper-v-backend-invalid" };
         const privateRoot = ports.privateRoot(ownerId, backend, deviceId);
         let expectedIncarnationId = ports.validIncarnation(incarnationId) ? incarnationId : null;
         if (!expectedIncarnationId) {
@@ -527,8 +525,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             }
             catch (error) {
                 return {
-                    ok: false,
-                    status: 409,
+                    ok: false, reason:'conflict',
                     error: "hyper-v-incarnation-record-invalid",
                     detail: ports.boundedErrorCode(error, "hyper-v-incarnation-record-invalid"),
                 };
@@ -536,13 +533,12 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         }
         if (!expectedIncarnationId) {
             if (ports.exists(privateRoot))
-                return { ok: false, status: 409, error: "hyper-v-incarnation-record-missing" };
+                return { ok: false, reason:'conflict', error: "hyper-v-incarnation-record-missing" };
             const allocation = await ports.releaseNetwork(ownerId, deviceId, null, deadlineAt, false);
             return allocation.ok
                 ? { ok: true, recoveredVm: false, removedDisk: false, releasedAddress: allocation.released }
                 : {
-                    ok: false,
-                    status: 502,
+                    ok: false, reason:'provider-failed',
                     error: "hyper-v-recovery-cleanup-failed",
                     stage: "network-release",
                     detail: typeof allocation.error === "string"
@@ -563,8 +559,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         }
         catch (error) {
             return {
-                ok: false,
-                status: 502,
+                ok: false, reason:'provider-failed',
                 error: "hyper-v-recovery-failed",
                 detail: ports.typedErrorCode(error, "hyper-v-recovery-failed"),
             };
@@ -576,8 +571,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         // code, named by its stage, rather than an artifact cleanup that was never attempted.
         if (!allocation.ok) {
             return {
-                ok: false,
-                status: 502,
+                ok: false, reason:'provider-failed',
                 error: "hyper-v-recovery-cleanup-failed",
                 stage: "network-release",
                 detail: typeof allocation.error === "string"
@@ -589,8 +583,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         const artifacts = ports.cleanupArtifacts(ownerId, backend, deviceId);
         if (!artifacts.ok) {
             return {
-                ok: false,
-                status: 502,
+                ok: false, reason:'provider-failed',
                 error: "hyper-v-recovery-cleanup-failed",
                 detail: "hyper-v-artifact-cleanup-failed",
             };
@@ -626,7 +619,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         }
         return usage;
     }
-    function checkQuota(ownerId: string, parsed: HyperVLifecycleRequest): HyperVLifecycleResponse | null {
+    function checkQuota(ownerId: string, parsed: HyperVLifecycleRequest): HyperVLifecycleOutcome<Connection,Receipt> | null {
         if (parsed.command !== "device_create" && parsed.command !== "device_start" && parsed.command !== "device_reboot")
             return null;
         let devices: unknown[];
@@ -640,18 +633,13 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         catch (error) {
             const stateCode = ports.stateErrorCode(error);
             if (stateCode)
-                return ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
+                return {kind:'operation-failed',journalDisposition:'retain',recoveryDisposition:'required',...ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey })};
             return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "hyper-v-owner-quota-state-invalid",
+                kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-owner-quota-state-invalid",
                     ownerId,
                     backend: parsed.backend,
                     deviceId: parsed.deviceId,
-                    detail: ports.boundedErrorCode(error, "hyper-v-owner-quota-state-invalid"),
-                },
-            };
+                    detail: ports.boundedErrorCode(error, "hyper-v-owner-quota-state-invalid"),};
         }
         const requested = { definedVms: 0, configuredMemoryMb: 0, configuredCpus: 0, configuredDiskBytes: 0, runningVms: 0, runningMemoryMb: 0, runningCpus: 0 };
         if (parsed.command === "device_create") {
@@ -693,10 +681,7 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         if (violations.length === 0)
             return null;
         return {
-            status: 409,
-            payload: {
-                ok: false,
-                error: "hyper-v-owner-quota-exceeded",
+            kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-owner-quota-exceeded",
                 ownerId,
                 backend: parsed.backend,
                 deviceId: parsed.deviceId,
@@ -704,11 +689,9 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
                 usage,
                 requested,
                 projected,
-                quota,
-            },
-        };
+                quota,};
     }
-    async function invoke(ownerId: string, params: unknown, parsed: HyperVCreateStartRequest, deadlineAt = Number.POSITIVE_INFINITY, cleanupDeadlineAt = deadlineAt): Promise<HyperVLifecycleResponse> {
+    async function invoke(ownerId: string, params: unknown, parsed: HyperVCreateStartRequest, deadlineAt = Number.POSITIVE_INFINITY, cleanupDeadlineAt = deadlineAt): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
         ports.assertDeadline(deadlineAt);
         if(parsed.dryRun&&parsed.command!=="device_create")return execute(ownerId,parsed,params,deadlineAt,cleanupDeadlineAt);
         if (!parsed.dryRun && (parsed.command==="device_start"||parsed.command==="device_reboot")) {
@@ -726,25 +709,20 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
                 catch (error) {
                     const stateCode = ports.stateErrorCode(error);
                     if (stateCode)
-                        return ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
+                        return {kind:'operation-failed',journalDisposition:'retain',recoveryDisposition:'required',...ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey })};
                     return {
-                        status: 409,
-                        payload: {
-                            ok: false,
-                            error: "hyper-v-operation-journal-invalid",
+                        kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-operation-journal-invalid",
                             ownerId,
                             backend: parsed.backend,
                             deviceId: parsed.deviceId,
-                            detail: ports.boundedErrorCode(error, "hyper-v-operation-journal-invalid"),
-                        },
-                    };
+                            detail: ports.boundedErrorCode(error, "hyper-v-operation-journal-invalid"),};
                 }
                 if (expectedIncarnationId) {
                     if (!ports.validIncarnation(parsed.expectedIncarnationId)) {
-                        return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-required", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+                        return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-incarnation-required", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
                     }
                     if (parsed.expectedIncarnationId !== expectedIncarnationId) {
-                        return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+                        return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-incarnation-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
                     }
                 }
             }
@@ -752,25 +730,25 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             // delete journal ahead of any other command is compensation and keeps it.
             const reconciliation = await ports.reconcileOperation(ownerId, parsed.backend, parsed.deviceId, deadlineAt, true);
             if (!reconciliation.ok)
-                return { status: reconciliation.status, payload: { ok: false, error: reconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {}) } };
+                return { kind:'operation-failed',reason:reconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: reconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {})};
             if (!parsed.dryRun) {
                 let snapshotJournal: SnapshotJournal | null;
                 try {
                     snapshotJournal = ports.readSnapshotJournal(ownerId, parsed.backend, parsed.deviceId);
                 }
                 catch (error) {
-                    return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-journal-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: ports.boundedErrorCode(error, "hyper-v-snapshot-journal-invalid") } };
+                    return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-snapshot-journal-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: ports.boundedErrorCode(error, "hyper-v-snapshot-journal-invalid")};
                 }
                 if (snapshotJournal) {
                     const current = hyperVSelectedDevice(ports.read(ownerId, parsed.stateKey), parsed.deviceId);
                     if (!current)
-                        return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
-                    const powershell = ports.executable("powershell.exe") || ports.executable("pwsh") || ports.executable("powershell");
+                        return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
+                    const powershell = ports.connection('powershell');
                     if (!powershell)
-                        return { status: 400, payload: { ok: false, error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId } };
+                        return { kind:'admission-refused',reason:'invalid',journalDisposition:'clear',recoveryDisposition:'required',error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId};
                     const snapshotReconciliation = await ports.repairSnapshots(ownerId, parsed.backend, parsed.deviceId, current, powershell);
                     if (!snapshotReconciliation.ok) {
-                        return { status: snapshotReconciliation.status, payload: { ok: false, error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {}) } };
+                        return { kind:'operation-failed',reason:snapshotReconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {})};
                     }
                 }
             }
@@ -780,21 +758,15 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             if (parsed.dryRun)
                 return await execute(ownerId, parsed, params, deadlineAt, cleanupDeadlineAt);
             const plan = ports.planning(ownerId, params);
-            if (plan.response.status !== 200)
-                return plan.response;
-            if (plan.result?.idempotent) {
+            if (plan.kind === 'plan-refused') return plan.failure;
+            if (plan.idempotent) {
                 return await execute(ownerId, parsed, params, deadlineAt, cleanupDeadlineAt);
             }
             const journal = ports.writeJournal(ownerId, parsed);
             if (!journal.ok)
-                return { status: 409, payload: { ok: false, error: "hyper-v-operation-journal-write-failed", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: journal.error } };
+                return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-operation-journal-write-failed", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: journal.error};
             const result = await execute(ownerId, parsed, params, deadlineAt, cleanupDeadlineAt);
-            if (result.status >= 200 && result.status < 300) {
-                ports.clearJournal(ownerId, parsed.backend, parsed.deviceId);
-            }
-            else if (result.status < 500) {
-                ports.clearJournal(ownerId, parsed.backend, parsed.deviceId);
-            }
+            if (result.journalDisposition === 'clear') ports.clearJournal(ownerId,parsed.backend,parsed.deviceId);
             return result;
         }
         const preImportQuotaFailure = checkQuota(ownerId, parsed);
@@ -805,26 +777,26 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             existing = ports.read(ownerId, parsed.stateKey);
         }
         catch (error) {
-            return ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
+            return {kind:'operation-failed',journalDisposition:'retain',recoveryDisposition:'required',...ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey })};
         }
         if (!parsed.dryRun && (existing.some((candidate) => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)
             || ports.exists(ports.journalPath(ownerId, parsed.backend, parsed.deviceId)))) {
             // Journal replay ahead of a create is compensation, so it keeps the shared fabric.
             const operationReconciliation = await ports.reconcileOperation(ownerId, parsed.backend, parsed.deviceId, deadlineAt, true);
             if (!operationReconciliation.ok)
-                return { status: operationReconciliation.status, payload: { ok: false, error: operationReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(operationReconciliation.detail ? { detail: operationReconciliation.detail } : {}) } };
+                return { kind:'operation-failed',reason:operationReconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: operationReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(operationReconciliation.detail ? { detail: operationReconciliation.detail } : {})};
             existing = ports.read(ownerId, parsed.stateKey);
         }
         if (!parsed.dryRun && ports.exists(ports.snapshotJournalPath(ownerId, parsed.backend, parsed.deviceId))) {
             const current = hyperVSelectedDevice(existing, parsed.deviceId);
             if (!current)
-                return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
-            const powershell = ports.executable("powershell.exe") || ports.executable("pwsh") || ports.executable("powershell");
+                return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
+            const powershell = ports.connection('powershell');
             if (!powershell)
-                return { status: 400, payload: { ok: false, error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId } };
+                return { kind:'admission-refused',reason:'invalid',journalDisposition:'clear',recoveryDisposition:'required',error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId};
             const snapshotReconciliation = await ports.repairSnapshots(ownerId, parsed.backend, parsed.deviceId, current, powershell);
             if (!snapshotReconciliation.ok)
-                return { status: snapshotReconciliation.status, payload: { ok: false, error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {}) } };
+                return { kind:'operation-failed',reason:snapshotReconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {})};
             existing = ports.read(ownerId, parsed.stateKey);
         }
         if (existing.some((candidate) => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)) {
@@ -832,32 +804,27 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
         }
         const siblingBackend = parsed.backend === "windows-vm" ? "linux-vm" : "windows-vm";
         if (ports.read(ownerId, siblingBackend).some((candidate) => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-device-id-conflict", ownerId, backend: parsed.backend, conflictingBackend: siblingBackend, deviceId: parsed.deviceId } };
+            return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-device-id-conflict", ownerId, backend: parsed.backend, conflictingBackend: siblingBackend, deviceId: parsed.deviceId};
         }
         try {
             if (!parsed.dryRun) {
                 const recovery = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, deadlineAt);
                 if (!recovery.ok)
-                    return { status: recovery.status, payload: { ok: false, error: recovery.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(recovery.detail ? { detail: recovery.detail } : {}), ...(recovery.stage ? { stage: recovery.stage } : {}) } };
+                    return { kind:'operation-failed',reason:recovery.reason,journalDisposition:'retain',recoveryDisposition:'required',error: recovery.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(recovery.detail ? { detail: recovery.detail } : {}), ...(recovery.stage ? { stage: recovery.stage } : {})};
             }
             const image = await ports.resolveImage(ownerId, parsed, params, deadlineAt);
-            if (!image.ok) {
+            if (image.kind !== 'resolved') {
                 return {
-                    status: image.status,
-                    payload: {
-                        ok: false,
-                        error: image.error,
+                    kind:'operation-failed',reason:'image-refused',imageFailure:image,journalDisposition:'clear',recoveryDisposition:'required',error: image.error,
                         ownerId,
                         backend: parsed.backend,
                         deviceId: parsed.deviceId,
                         ...(image.detail ? { detail: image.detail } : {}),
-                        ...(image.remedy ? { remedy: image.remedy } : {}),
-                    },
-                };
+                        ...(image.remedy ? { remedy: image.remedy } : {}),};
             }
             const parsedImage = ports.parse(image.params);
             if (!parsedImage.ok)
-                return parsedImage.response;
+                return parsedImage.failure;
             const resolved = parsedImage.request;
             const quotaFailure = checkQuota(ownerId, resolved);
             if (quotaFailure)
@@ -874,38 +841,28 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             }
             catch (error) {
                 return {
-                    status: 409,
-                    payload: {
-                        ok: false,
-                        error: "hyper-v-incarnation-record-write-failed",
+                    kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-incarnation-record-write-failed",
                         ownerId,
                         backend: resolved.backend,
                         deviceId: resolved.deviceId,
-                        detail: ports.boundedErrorCode(error, "hyper-v-incarnation-record-write-failed"),
-                    },
-                };
+                        detail: ports.boundedErrorCode(error, "hyper-v-incarnation-record-write-failed"),};
             }
             if (resolved.create?.networking === false) {
                 return await executeParsed(ownerId, withIncarnation(image.params), deadlineAt, cleanupDeadlineAt);
             }
             const allocation = await ports.allocateNetwork(ownerId, resolved.deviceId, incarnationId, deadlineAt);
-            if (!allocation.ok) {
+            if (allocation.kind !== 'allocated') {
                 const artifactCleanup = allocation.preserveEvidence
                     ? { ok: true, removed: false, preserved: true, reason: "hyper-v-network-state-indeterminate" }
                     : ports.cleanupArtifacts(ownerId, resolved.backend, resolved.deviceId);
                 return {
-                    status: artifactCleanup.ok ? allocation.status : 502,
-                    payload: {
-                        ok: false,
-                        error: artifactCleanup.ok ? allocation.error : "hyper-v-allocation-failure-artifact-cleanup-failed",
+                    kind:'operation-failed',reason:artifactCleanup.ok ? 'network-refused' : 'provider-failed',networkFailure:allocation,journalDisposition:'retain',recoveryDisposition:'required',error: artifactCleanup.ok ? allocation.error : "hyper-v-allocation-failure-artifact-cleanup-failed",
                         ownerId,
                         backend: resolved.backend,
                         deviceId: resolved.deviceId,
                         ...(allocation.detail ? { detail: allocation.detail } : {}),
-                        ...(allocation.execution ? { execution: allocation.execution } : {}),
-                        artifactCleanup: ports.publicArtifacts(artifactCleanup),
-                    },
-                };
+
+                        artifactCleanup: artifactCleanup,};
             }
             const networkParams = {
                 ...withIncarnation(image.params),
@@ -917,30 +874,18 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
                 outboundPolicy: allocation.outboundPolicy,
             };
             const result = await executeParsed(ownerId, networkParams, deadlineAt, cleanupDeadlineAt);
-            if (result.status < 200 || result.status >= 300) {
-                const lifecyclePayload = hyperVCreateRecord(result.payload)
-                    ? result.payload
-                    : null;
-                const lifecycleRollback = lifecyclePayload && hyperVCreateRecord(lifecyclePayload.rollback)
-                    ? lifecyclePayload.rollback
-                    : null;
-                if (lifecycleRollback)
-                    return result;
+            if (result.kind === 'admission-refused' || result.kind === 'operation-failed' || result.kind === 'uncertain') {
+                if (result.recoveryDisposition === 'already-handled') return result;
                 const reconciliation = await recoverCreateResidue(ownerId, resolved.backend, resolved.deviceId, cleanupDeadlineAt, incarnationId);
                 if (!reconciliation.ok) {
                     return {
-                        status: 502,
-                        payload: {
-                            ok: false,
-                            error: "hyper-v-create-allocation-cleanup-failed",
+                        kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'required',error: "hyper-v-create-allocation-cleanup-failed",
                             ownerId,
                             backend: resolved.backend,
                             deviceId: resolved.deviceId,
                             detail: reconciliation.detail || reconciliation.error,
                             ...(reconciliation.stage ? { stage: reconciliation.stage } : {}),
-                            lifecycleFailure: result.payload,
-                        },
-                    };
+                            lifecycleFailure: result,};
                 }
             }
             return result;
@@ -952,34 +897,24 @@ export function createHyperVCreateStartApplication<Session>(ports: HyperVCreateS
             const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, cleanupDeadlineAt);
             if (!rollback.ok) {
                 return {
-                    status: 502,
-                    payload: {
-                        ok: false,
-                        error: "hyper-v-create-deadline-cleanup-failed",
+                    kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-create-deadline-cleanup-failed",
                         ownerId,
                         backend: parsed.backend,
                         deviceId: parsed.deviceId,
                         deadlineError: deadlineError,
-                        rollback,
-                    },
-                };
+                        rollback,};
             }
             return {
-                status: 504,
-                payload: {
-                    ok: false,
-                    error: deadlineError,
+                kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: deadlineError,
                     ownerId,
                     backend: parsed.backend,
                     deviceId: parsed.deviceId,
-                    rollback,
-                },
-            };
+                    rollback,};
         }
     }
 function hyperVGuestReadinessFailureDetail(
     backend: "windows-vm" | "linux-vm",
-    result: HyperVNativeExecution,
+    result: HyperVNativeExecution<Receipt>,
 ): HyperVGuestReadinessFailureDetail {
     const diagnosticCode = ports.diagnosticCode(result);
     return {
@@ -994,7 +929,7 @@ function hyperVGuestReadinessFailureDetail(
     };
 }
 
-function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", result: HyperVNativeExecution): string {
+function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", result: HyperVNativeExecution<Receipt>): string {
     if (backend === "windows-vm") {
         const observation = ports.parseReadyFailure(result.stdout || "");
         if (observation) return observation.reason;
@@ -1016,11 +951,11 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
 
     function createRecord(ownerId:string,parsed:HyperVLifecycleRequest):Record<string,unknown>{const create=parsed.create||{};const timestamp=ports.timestamp();const name=String(create.name||parsed.deviceId);const incarnation=String(create.incarnationId||'');const vmName=ports.vmName(ownerId,parsed.deviceId,incarnation);const deviceRoot=ports.deviceRoot(ownerId,parsed.backend,parsed.deviceId);const privateRoot=ports.privateRoot(ownerId,parsed.backend,parsed.deviceId);return hyperVDeviceDefinition(ownerId,parsed,{name,timestamp,vmName,deviceRoot,privateRoot,validIncarnation:ports.validIncarnation(create.incarnationId)});}
 
-    async function rollbackCreate(parsed: HyperVLifecycleRequest, device: Record<string, unknown>, existing: Record<string, unknown> | null, hyperVDeadlineAt: number) {
+    async function rollbackCreate(parsed: HyperVLifecycleRequest, device: Record<string, unknown>, existing: Record<string, unknown> | null, hyperVDeadlineAt: number):Promise<HyperVRollback<Receipt>> {
         if (existing?.vmId === device.vmId || existing?.vmName === device.vmName || existing?.diskPath === device.diskPath) {
             return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
         }
-        const powershell = ports.executable("powershell.exe") || ports.executable("pwsh") || ports.executable("powershell");
+        const powershell = ports.connection('powershell');
         const incarnationId = device && typeof device === "object" && !Array.isArray(device)
             ? ports.incarnation(device)
             : null;
@@ -1038,11 +973,10 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 ],
             }, hyperVDeadlineAt);
             ports.assertDeadline(hyperVDeadlineAt);
-            const result: HyperVNativeExecution = {
+            const result: HyperVNativeExecution<Receipt> = {
                 mode: "exec", provider: "hyper-v", status: 0,
                 stdout: JSON.stringify({ ok: true, recoveredVm: observation.recoveredVm, removedDisk: observation.removedDisk }),
             };
-            const publicResult = redactExecution(result, true, "hyper-v-rollback-command-failed");
             // Compensation, not a delete request: keep the shared fabric so a failed create never
             // needs Administrator to tear it down.
             const allocation = await ports.releaseNetwork(String(device.ownerId), String(device.id), incarnationId, hyperVDeadlineAt, true);
@@ -1053,7 +987,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                     attempted: true,
                     ok: false,
                     stage: "network-release",
-                    result: publicResult,
+                    execution: result,
                     artifacts: { ok: false, attempted: false, removed: false },
                     allocation: {
                         ok: false,
@@ -1070,7 +1004,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 return {
                     attempted: true,
                     ok: false,
-                    result: publicResult,
+                    execution: result,
                     artifacts: { ok: false, removed: artifacts.removed, error: "hyper-v-artifact-cleanup-failed" },
                     allocation: { ok: true, released: allocation.released },
                 };
@@ -1078,7 +1012,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             return {
                 attempted: true,
                 ok: true,
-                result: publicResult,
+                execution: result,
                 observation: {
                     recoveredVm: observation.recoveredVm,
                     removedDisk: observation.removedDisk,
@@ -1098,115 +1032,85 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 ok: false,
                 reason: ports.errorInfo(error)?.category === "protocol"
                     ? "hyper-v-rollback-invalid-result" : "hyper-v-rollback-command-failed",
-                result: redactExecution({ mode: "exec", provider: "hyper-v", status: 1, error: code }, true, "hyper-v-rollback-command-failed"),
+                execution: { mode: "exec", provider: "hyper-v", status: 1, error: code },
             };
         }
     }
-    function redactExecution(execution: HyperVNativeExecution, _redact: boolean, fallback?: string) { return ports.redactExecution(execution, fallback); }
-    function publishStarted(owner: string, request: HyperVLifecycleRequest, expected: unknown, execution: HyperVNativeExecution, ready: HyperVGuestReadyObservation | null) { return ports.publish(owner, request.stateKey, request.deviceId, expected, current => { const observation = ports.parseVm(execution.stdout || ''); return { ...current, status: 'running', ...(observation ? { vmId: observation.vmId, vmName: observation.vmName, runtimeState: observation.state, hyperVStatus: observation.status } : {}), bootReady: Boolean(ready), lastBootCheck: ready ? { ready: true, provider: request.backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v-powershell-direct', computerName: ready.computerName, attempts: ready.attempts } : null, updatedAt: ports.timestamp() }; }); }
-    async function execute(ownerId: string, parsed: HyperVCreateStartRequest, params: unknown, hyperVDeadlineAt: number, hyperVCleanupDeadlineAt: number): Promise<HyperVLifecycleResponse> {
+
+    function publishStarted(owner: string, request: HyperVLifecycleRequest, expected: unknown, execution: HyperVNativeExecution<Receipt>, ready: HyperVGuestReadyObservation | null) { return ports.publish(owner, request.stateKey, request.deviceId, expected, current => { const observation = ports.parseVm(execution.stdout || ''); return { ...current, status: 'running', ...(observation ? { vmId: observation.vmId, vmName: observation.vmName, runtimeState: observation.state, hyperVStatus: observation.status } : {}), bootReady: Boolean(ready), lastBootCheck: ready ? { ready: true, provider: request.backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v-powershell-direct', computerName: ready.computerName, attempts: ready.attempts } : null, updatedAt: ports.timestamp() }; }); }
+    async function execute(ownerId: string, parsed: HyperVCreateStartRequest, params: unknown, hyperVDeadlineAt: number, hyperVCleanupDeadlineAt: number): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
         const expectedObservation: {
             device?: unknown;
         } = {};
         const planned = ports.planning(ownerId, params, expectedObservation);
         let expectedDevice = expectedObservation.device;
-        if (planned.response.status !== 200)
-            return planned.response;
-        const payload = { result: planned.result };
+        if (planned.kind === 'plan-refused') return planned.failure;
+        const {kind: plannedKind,availability: plannedAvailability,...planFacts}=planned;
+        void plannedKind; void plannedAvailability;
         if (parsed.dryRun) {
             return {
-                status: 200,
-                payload: {
-                    ok: true,
-                    result: {
-                        ...(ports.redactResult(payload.result)),
+                kind:'preview',journalDisposition:'clear',recoveryDisposition:'already-handled',plan:planned,...(planFacts),
                         invoked: false,
                         dryRun: true,
                         execution: {
                             mode: "dry-run",
                             providerExecution: "available",
                             mutatesHost: false,
-                        },
-                    },
-                },
-            };
+                        }};
         }
-        if (payload.result?.idempotent) {
+        if (planned.idempotent) {
             return {
-                status: 200,
-                payload: {
-                    ok: true,
-                    result: {
-                        ...(ports.redactResult(payload.result)),
+                kind:'idempotent',journalDisposition:'clear',recoveryDisposition:'already-handled',plan:planned,device:planned.device,...(planFacts),
                         invoked: false,
                         dryRun: false,
-                        execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false },
-                    },
-                },
-            };
+                        execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false }};
         }
     if (parsed.command === "device_create") {
-        const providerCommand = payload.result?.providerCommand;
-        if (providerCommand && "error" in providerCommand) {
+        const availability = planned.availability;
+        if (availability.kind === 'unavailable') {
             return {
-                status: 400,
-                payload: {
-                    ok: false,
-                    error: providerCommand.error,
-                    missing: providerCommand.missing || [],
-                    plan: ports.redactResult(payload.result),
-                },
-            };
+                kind:'admission-refused',reason:'invalid',journalDisposition:'clear',recoveryDisposition:'required',error: availability.error,
+                    missing: availability.missing || [],
+                    plan: planned,};
         }
-        let execution: HyperVNativeExecution = { mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" };
-        let hyperVProvisioningExecution: Record<string, unknown> | null = null;
-        if (providerCommand && providerCommand.mode !== "noop") {
+        let execution: HyperVNativeExecution<Receipt> = { mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" };
+        let hyperVProvisioningExecution: HyperVNativeExecution<Receipt> | null = null;
+        if (availability.kind === 'available') {
+            const createConnection = availability.connection;
             {
                 try {
                     ports.ensurePrivateRoot(ownerId, parsed.backend, parsed.deviceId);
                 }
                 catch (error) {
                     return {
-                        status: 409,
-                        payload: {
-                            ok: false,
-                            error: "hyper-v-private-root-invalid",
+                        kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-private-root-invalid",
                             ownerId,
                             backend: parsed.backend,
                             deviceId: parsed.deviceId,
-                            detail: ports.boundedErrorCode(error, "hyper-v-private-root-invalid"),
-                        },
-                    };
+                            detail: ports.boundedErrorCode(error, "hyper-v-private-root-invalid"),};
                 }
             }
             execution =
-                await createVmFromImage(ownerId, parsed, providerCommand.executable || "powershell.exe", hyperVDeadlineAt);
+                await createVmFromImage(ownerId,parsed,createConnection,hyperVDeadlineAt);
             if (ports.deadlineExpired(hyperVDeadlineAt)) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
                 return {
-                    status: 504,
-                    payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback },
-                };
+                    kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
             if (!hyperVCreateSucceeded(execution)) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
-                const hyperVExecution = redactExecution(execution, true, "hyper-v-provider-command-failed");
                 return {
-                    status: 502,
-                    payload: {
-                        ok: false,
-                        error: execution.typedCreateInvalidResult === true
+                    kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: execution.typedCreateInvalidResult === true
                             ? "hyper-v-create-invalid-result"
                             : "provider-command-failed",
-                        detail: hyperVExecution?.diagnosticCode || ports.failureDetail(execution),
+                        failureExecution:execution,
                         // The typed primitive behind the detail, from the library's closed list.
                         ...(execution.typedCreateOperation
                             ? { operation: execution.typedCreateOperation }
                             : {}),
                         ...(execution.typedCreateNativeDiagnostics),
                         ...(rollback ? { rollback } : {}),
-                        result: {
-                            ...(ports.redactResult(payload.result)),
+                        plan:planned,...(planFacts),
                             invoked: true,
                             dryRun: false,
                             execution: {
@@ -1214,14 +1118,12 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                                 providerExecution: "executed",
                                 mutatesHost: false,
                                 ...({}),
-                            },
-                        },
-                    },
-                };
+                            }};
             }
         }
+        const createConnection = availability.kind === 'available' ? availability.connection : null;
         let persistedParsed = parsed;
-        if (parsed.backend === "linux-vm" && execution.mode !== "noop") {
+        if (parsed.backend === "linux-vm" && execution.mode !== "noop" && createConnection) {
             const observation = ports.parseVm(execution.stdout || "");
             const expectedVmName = ports.vmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const deviceRoot = ports.deviceRoot(ownerId, "linux-vm", parsed.deviceId);
@@ -1234,7 +1136,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 || (observation.generation!==1&&observation.generation!==2)
                 || observation.generation !== parsed.create?.baseImageGeneration) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
-                return { status: 502, payload: { ok: false, error: "hyper-v-create-invalid-result", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-create-invalid-result", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
             const guestUsername = `ccc${ownerId.slice(0, 8)}`;
             const seedDiskPath = join(deviceRoot, "disks", "cidata.iso");
@@ -1250,7 +1152,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             };
             const seedDeadlineAt = Math.min(hyperVDeadlineAt, ports.now() + 180000);
             const seedTarget = {
-                executable: providerCommand?.executable || "powershell.exe",
+
                 vmId: observation.vmId,
                 vmName: expectedVmName,
                 expectedNotes: ports.marker(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || "")),
@@ -1260,22 +1162,22 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 managedMacAddress: String(parsed.create?.macAddress || "")
             };
             try {
-                await ports.inspectSeed(seedTarget, seedDeadlineAt);
+                await ports.inspectSeed(createConnection, seedTarget, seedDeadlineAt);
             }
             catch (cause) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId,
-                        detail: ports.seedFailureCode(cause, "hyper-v-linux-seed-preflight-command-failed"), rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId,
+                        detail: ports.seedFailureCode(cause, "hyper-v-linux-seed-preflight-command-failed"), rollback};
             }
             if (ports.deadlineExpired(seedDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 504, payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
+                return { kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
-            let seedCommand: HyperVNativeCommand;
+            let seedEffect: HyperVPreparedSeed<Receipt>;
             try {
                 ports.assertPrivateRoot(ownerId, "linux-vm", parsed.deviceId, privateRoot);
-                seedCommand = ports.seedCommand({
-                    executable: providerCommand?.executable || "powershell.exe",
+                seedEffect = ports.prepareLinuxSeed(createConnection, {
+
                     ownerId,
                     deviceId: parsed.deviceId,
                     incarnationId: String(parsed.create?.incarnationId || ""),
@@ -1300,26 +1202,21 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             catch (error) {
                 const rollback = await rollbackProvisioning();
                 return {
-                    status: rollback.ok ? 500 : 502,
-                    payload: {
-                        ok: false,
-                        error: "hyper-v-linux-seed-plan-failed",
+                    kind:'operation-failed',reason:rollback.ok ? 'state-write-failed' : 'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-plan-failed",
                         ownerId,
                         deviceId: parsed.deviceId,
                         detail: ports.boundedErrorCode(error, "hyper-v-linux-seed-plan-failed"),
-                        rollback,
-                    },
-                };
+                        rollback,};
             }
-            const seedExecution = await ports.execute(seedCommand, ports.remaining(seedDeadlineAt, 180000), ports.outputLimit);
-            hyperVProvisioningExecution = redactExecution(seedExecution, true, "hyper-v-linux-seed-command-failed");
+            const seedExecution = await seedEffect(ports.remaining(seedDeadlineAt,180000),ports.outputLimit);
+            hyperVProvisioningExecution = seedExecution;
             if (ports.deadlineExpired(seedDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 504, payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
+                return { kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
             if (!hyperVCreateSucceeded(seedExecution)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
             let seedResult: Record<string, unknown> | null = null;
             try {
@@ -1349,23 +1246,23 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             }
             if (!seedResult || seedResult.ok !== true || String(seedResult.vmId).toLowerCase() !== observation.vmId || !ports.samePath(String(seedResult.seedDiskPath || ""), seedDiskPath) || !seedFilesAvailable) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-linux-seed-invalid-result", ownerId, deviceId: parsed.deviceId, rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-invalid-result", ownerId, deviceId: parsed.deviceId, rollback};
             }
             try {
-                await ports.attachSeed(seedTarget, seedDeadlineAt);
+                await ports.attachSeed(createConnection, seedTarget, seedDeadlineAt);
             }
             catch (cause) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId,
-                        detail: ports.seedFailureCode(cause, "hyper-v-linux-seed-media-attach-command-failed"), rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId,
+                        detail: ports.seedFailureCode(cause, "hyper-v-linux-seed-media-attach-command-failed"), rollback};
             }
             if (ports.deadlineExpired(seedDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 504, payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
+                return { kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
             persistedParsed = { ...parsed, create: { ...(parsed.create || {}), vmId: observation.vmId, ...(observation.switchName ? { switchName: observation.switchName } : {}), guestUsername, guestProvisioned: true, sshHostKeyFingerprint } };
         }
-        if (parsed.backend === "windows-vm" && execution.mode !== "noop") {
+        if (parsed.backend === "windows-vm" && execution.mode !== "noop" && createConnection) {
             const observation = ports.parseVm(execution.stdout || "");
             const expectedVmName = ports.vmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const expectedDiskPath = join(ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "root.vhdx");
@@ -1376,9 +1273,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 || observation.generation !== parsed.create?.baseImageGeneration) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
                 return {
-                    status: 502,
-                    payload: { ok: false, error: "hyper-v-create-invalid-result", ownerId, deviceId: parsed.deviceId, rollback },
-                };
+                    kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-create-invalid-result", ownerId, deviceId: parsed.deviceId, rollback};
             }
             const deviceRoot = ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId);
             const privateRoot = ports.privateRoot(ownerId, "windows-vm", parsed.deviceId);
@@ -1391,11 +1286,11 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             const rollbackProvisioning = () => {
                 return rollbackCreate(observedParsed, rollbackDevice, null, hyperVCleanupDeadlineAt);
             };
-            let provisionCommand:HyperVScriptCommand;
+            let provisionMedia:ProvisionMedia;
             try {
                 ports.assertPrivateRoot(ownerId, "windows-vm", parsed.deviceId, privateRoot);
-                provisionCommand = ports.provisionCommand({
-                    executable: providerCommand?.executable || "powershell.exe",
+                provisionMedia = ports.prepareWindowsProvisionMedia(createConnection, {
+
                     ownerId,
                     deviceId: parsed.deviceId,
                     incarnationId: String(parsed.create?.incarnationId || ""),
@@ -1418,21 +1313,15 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             catch (error) {
                 const rollback = await rollbackProvisioning();
                 return {
-                    status: rollback.ok ? 500 : 502,
-                    payload: {
-                        ok: false,
-                        error: "hyper-v-guest-provision-plan-failed",
+                    kind:'operation-failed',reason:rollback.ok ? 'state-write-failed' : 'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-guest-provision-plan-failed",
                         ownerId,
                         deviceId: parsed.deviceId,
                         detail: ports.boundedErrorCode(error, "hyper-v-guest-provision-plan-failed"),
-                        rollback,
-                    },
-                };
+                        rollback,};
             }
             const provisioningDeadlineAt = Math.min(hyperVDeadlineAt, ports.now() + 180000);
-            const rawProvisioningExecution = await ports.provision({
-                executable: provisionCommand.executable,
-                mediaCommand: provisionCommand,
+            const rawProvisioningExecution = await ports.provision(createConnection, {
+                                media: provisionMedia,
                 vmId: observation.vmId,
                 vmName: expectedVmName,
                 expectedNotes: ports.marker(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || "")),
@@ -1443,18 +1332,18 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 guestUsername,
                 outputLimit: ports.outputLimit
             }, provisioningDeadlineAt);
-            hyperVProvisioningExecution = redactExecution(rawProvisioningExecution, true, "hyper-v-guest-provision-command-failed");
+            hyperVProvisioningExecution = rawProvisioningExecution;
             if (ports.deadlineExpired(hyperVDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 504, payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
+                return { kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
             if (ports.deadlineExpired(provisioningDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-guest-provision-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-guest-provision-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
             if (!hyperVCreateSucceeded(rawProvisioningExecution)) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-guest-provision-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-guest-provision-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
             const provisioned = ports.parseProvision(rawProvisioningExecution.stdout || "");
             let credentialAvailable = false;
@@ -1472,7 +1361,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 || !ports.samePath(provisioned.unattendPath, provisioningMediaPath)
                 || !credentialAvailable) {
                 const rollback = await rollbackProvisioning();
-                return { status: 502, payload: { ok: false, error: "hyper-v-guest-provision-invalid-result", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback } };
+                return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-guest-provision-invalid-result", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
             persistedParsed = {
                 ...parsed,
@@ -1496,49 +1385,35 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 const rollback = await rollbackCreate(persistedParsed, device, null, hyperVCleanupDeadlineAt);
                 if (!rollback.ok) {
                     return {
-                        status: 502,
-                        payload: {
-                            ok: false,
-                            error: "owner-device-state-rollback-failed",
+                        kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "owner-device-state-rollback-failed",
                             ownerId,
                             backend: parsed.backend,
                             deviceId: parsed.deviceId,
                             stateError: ports.stateErrorCode(error) || "owner-state-write-failed",
-                            rollback,
-                        },
-                    };
+                            rollback,};
                 }
                 const failure = ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
                 return {
                     ...failure,
-                    payload: { ...(hyperVCreateRecord(failure.payload) ? failure.payload : {}), rollback },
+                    kind:'operation-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',rollback,
                 };
             }
             if (!claim.ok) {
                 const rollback = await rollbackCreate(persistedParsed, device, claim.existing, hyperVCleanupDeadlineAt);
                 return {
-                    status: rollback.ok ? 409 : 502,
-                    payload: {
-                        ok: false,
-                        error: rollback.ok ? claim.error : "owner-device-conflict-rollback-failed",
+                    kind:'operation-failed',reason:rollback.ok ? 'conflict' : 'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: rollback.ok ? claim.error : "owner-device-conflict-rollback-failed",
                         ownerId,
                         backend: parsed.backend,
                         deviceId: parsed.deviceId,
                         field: claim.field,
                         value: claim.value,
-                        existing: ports.redactDevice(claim.existing),
-                        rollback,
-                    },
-                };
+                        existing: claim.existing,
+                        rollback,};
             }
         }
         return {
-            status: 200,
-            payload: {
-                ok: true,
-                result: {
-                    ...(ports.redactResult(payload.result)),
-                    device: ports.redactDevice(device),
+            kind:'created',journalDisposition:'clear',recoveryDisposition:'already-handled',plan:planned,...(planFacts),
+                    device: device,
                     invoked: true,
                     dryRun: false,
                     execution: {
@@ -1551,31 +1426,18 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                                 provider: hyperVProvisioningExecution.provider,
                                 status: hyperVProvisioningExecution.status,
                             } } : {}),
-                    },
-                },
-            },
-        };
+                    }};
     }
-    let providerCommand = payload.result?.providerCommand;
-    if (!providerCommand || "error" in providerCommand) {
-        return {
-            status: 400,
-            payload: {
-                ok: false,
-                error: providerCommand?.error || "missing-provider-command",
-                missing: providerCommand?.missing || [],
-                plan: ports.redactResult(payload.result),
-            },
-        };
-    }
-    let effectiveProviderCommand = providerCommand;
+    const availability = planned.availability;
+    if (availability.kind !== 'available') return {kind:'admission-refused',reason:'invalid',journalDisposition:'clear',recoveryDisposition:'required',error:availability.kind === 'unavailable' ? availability.error : 'missing-provider-command',missing:availability.kind === 'unavailable' ? availability.missing : [],plan:planned};
+    const powerConnection=availability.connection;
     const hyperVPowerDevice = (parsed.command === "device_start" || parsed.command === "device_reboot")
-        && hyperVCreateRecord(payload.result?.device)
-        ? payload.result.device
+        && hyperVCreateRecord(planned.device)
+        ? planned.device
         : null;
     let execution = hyperVPowerDevice
-        ? await ports.power({
-            executable: providerCommand.executable || "powershell.exe",
+        ? await ports.power(powerConnection, {
+
             ownerId, deviceId: parsed.deviceId,
             incarnationId: ports.incarnation(hyperVPowerDevice) || "",
             vmId: hyperVCreateField(hyperVPowerDevice, "vmId") || "",
@@ -1587,7 +1449,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             cpus: hyperVCreateNumber(hyperVPowerDevice, "cpus") || 2,
         })
         :
-            await ports.execute(effectiveProviderCommand, ports.remaining(hyperVDeadlineAt, 120000), ports.outputLimit);
+            await ports.observePlannedPower(powerConnection,ports.remaining(hyperVDeadlineAt,120000),ports.outputLimit);
     const hyperVProviderDeadlineExpired = ports.deadlineExpired(hyperVDeadlineAt);
     // windows-vm joins the carve-out for the same reason the name gives linux: the guest may
     // already be Running and need containing. Start-VM issues its start and only then re-queries,
@@ -1598,9 +1460,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         && (parsed.command === "device_start" || parsed.command === "device_reboot");
     if (hyperVProviderDeadlineExpired && !guestBootstrapMayNeedContainment) {
         return {
-            status: 504,
-            payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId },
-        };
+            kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'required',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
     }
     let success = !hyperVProviderDeadlineExpired && (hyperVCreateSucceeded(execution));
     if (hyperVProviderDeadlineExpired && guestBootstrapMayNeedContainment) {
@@ -1608,18 +1468,18 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
     }
     if (success && true) {
         const observation = ports.parseVm(execution.stdout || "");
-        const expectedVmId = String(hyperVCreateField(payload.result?.device, "vmId") || "").toLowerCase();
-        const expectedVmName = hyperVCreateField(payload.result?.device, "vmName");
+        const expectedVmId = String(hyperVCreateField(planned.device, "vmId") || "").toLowerCase();
+        const expectedVmName = hyperVCreateField(planned.device, "vmName");
         success = Boolean(observation
             && expectedVmId
             && observation.vmId === expectedVmId
             && observation.vmName === expectedVmName
             && (true));
     }
-    let hyperVGuestReadyExecution: HyperVNativeExecution | null = null;
+    let hyperVGuestReadyExecution: HyperVNativeExecution<Receipt> | null = null;
     let hyperVGuestReady: HyperVGuestReadyObservation | null = null;
     let hyperVGuestBootDiagnostic: HyperVWindowsGuestBootDiagnostic | null = null;
-    let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
+    let hyperVGuestBootDiagnosticPublic: HyperVBootDiagnosticFacts | null = null;
     let hyperVGuestBootDiagnosticFailureCode: string | null = null;
     let hyperVGuestReadyFailureCode: string | null = null;
     let hyperVGuestReadyFailureDetail: HyperVGuestReadinessFailureDetail | null = null;
@@ -1627,7 +1487,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
     let hyperVContainedRuntimeState: "Off" | null = null;
     let hyperVScrubContainmentFailed = false;
     if (success && parsed.backend === "windows-vm" && (parsed.command === "device_start" || parsed.command === "device_reboot") && parsed.waitForBoot !== false) {
-        const device = hyperVCreateRecord(payload.result?.device) ? payload.result.device : {};
+        const device = hyperVCreateRecord(planned.device) ? planned.device : {};
         const timeoutMs = Number.isFinite(parsed.bootTimeoutMs)
             ? Math.min(ports.maxBootTimeout, Math.max(1000, Number(parsed.bootTimeoutMs)))
             : 5 * 60 * 1000;
@@ -1655,7 +1515,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 },
                 provisioningMediaPath,
                 expectedNetworkAddress: hyperVCreateField(device, "networkAddress") || ""
-            }, ports.windowsReadiness(providerCommand.executable || "powershell.exe", ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), provisioningMediaPath));
+            }, ports.windowsReadiness(powerConnection, ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), provisioningMediaPath));
             hyperVGuestReadyExecution = {
                 mode: "exec", provider: "hyper-v", status: readiness.ok ? 0 : 1,
                 stdout: JSON.stringify(readiness), stderr: "",
@@ -1686,11 +1546,11 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         }
     }
     if (success && parsed.backend === "linux-vm" && (parsed.command === "device_start" || parsed.command === "device_reboot") && parsed.waitForBoot !== false) {
-        const device = hyperVCreateRecord(payload.result?.device) ? payload.result.device : {};
+        const device = hyperVCreateRecord(planned.device) ? planned.device : {};
         const timeoutMs = Number.isFinite(parsed.bootTimeoutMs)
             ? Math.min(ports.maxBootTimeout, Math.max(1000, Number(parsed.bootTimeoutMs)))
             : 5 * 60 * 1000;
-        const ssh = ports.executable("ssh.exe") || ports.executable("ssh");
+        const ssh = ports.connection('ssh');
         if (!ssh) {
             hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: "missing-provider-command:ssh" };
             success = false;
@@ -1741,7 +1601,6 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                     throw new Error("hyper-v-linux-ssh-host-identity-invalid");
                 }
                 const sshOptions = {
-                    executable: ssh,
                     deviceRoot: hyperVCreateField(device, "deviceRoot") || "",
                     privateRoot,
                     sshPrivateKeyPath: hyperVCreateField(device, "sshPrivateKeyPath") || "",
@@ -1752,20 +1611,19 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 do {
                     let networkFinalizedThisIteration = false;
                     attempts += 1;
-                    const readyCommand = ports.sshReadyCommand({
+                    hyperVGuestReadyExecution = await ports.probeLinuxReadiness(ssh, {
                         ...sshOptions,
                         networkAddress,
                         timeoutMs: Math.min(timeoutMs, 30000),
-                    });
-                    hyperVGuestReadyExecution = await ports.execute(readyCommand, ports.remaining(deadline, 35000), ports.outputLimit);
+                    }, ports.remaining(deadline,35000),ports.outputLimit);
                     if (hyperVCreateSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) {
                         guestSignalObserved = true;
                         break;
                     }
                     if (!bootstrapFinalizationAttempted && ports.now() < deadline) {
                         bootstrapProbeAttempts += 1;
-                        const { execution: bootstrapExecution, observation: bootstrap } = await ports.bootstrapProbe({
-                            executable: providerCommand.executable || "",
+                        const { execution: bootstrapExecution, observation: bootstrap } = await ports.bootstrapProbe(powerConnection, {
+
                             ownerId,
                             deviceId: parsed.deviceId,
                             incarnationId: ports.incarnation(device) || "",
@@ -1791,14 +1649,13 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                             guestSignalObserved = true;
                         for (const bootstrapAddress of bootstrap?.addresses || []) {
                             bootstrapSshAttempts += 1;
-                            const bootstrapReadyCommand = ports.sshReadyCommand({
+                            const bootstrapReadyExecution = await ports.probeLinuxReadiness(ssh, {
                                 ...sshOptions,
                                 networkAddress: bootstrapAddress,
                                 hostKeyAlias: networkAddress,
                                 verboseHostKeyDiagnostics: true,
                                 timeoutMs: Math.min(10000, Math.max(1000, deadline - ports.now())),
-                            });
-                            const bootstrapReadyExecution = await ports.execute(bootstrapReadyCommand, ports.remaining(deadline, 15000), ports.outputLimit);
+                            },ports.remaining(deadline,15000),ports.outputLimit);
                             bootstrapSshLastStatus = typeof bootstrapReadyExecution.status === "number"
                                 ? bootstrapReadyExecution.status
                                 : null;
@@ -1826,7 +1683,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                             }
                             bootstrapHostKeyMatchesExpected = true;
                             bootstrapSshLastError = null;
-                            const finalizeCommand = ports.networkFinalizeCommand({
+                            networkFinalizeAttempts += 1;
+                            const finalizeExecution = await ports.finalizeLinuxNetwork(ssh, {
                                 ...sshOptions,
                                 networkAddress: bootstrapAddress,
                                 hostKeyAlias: networkAddress,
@@ -1835,9 +1693,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                                 managedNetworkAddress: networkAddress,
                                 networkGateway,
                                 networkPrefixLength: Number(networkPrefix.split("/")[1]),
-                            });
-                            networkFinalizeAttempts += 1;
-                            const finalizeExecution = await ports.execute(finalizeCommand, ports.remaining(deadline, 15000), ports.outputLimit);
+                            },ports.remaining(deadline,15000),ports.outputLimit);
                             if (!hyperVCreateSucceeded(finalizeExecution)) {
                                 hyperVGuestReadyExecution = {
                                     ...finalizeExecution,
@@ -1873,8 +1729,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                     networkAddress: hyperVCreateField(device, "networkAddress") || undefined,
                 } : null;
                 if (success) {
-                    const { execution: cleanupExecution, observation: cleanupObservation } = await ports.bootstrapCleanup({
-                        executable: providerCommand.executable || "",
+                    const { execution: cleanupExecution, observation: cleanupObservation } = await ports.bootstrapCleanup(powerConnection, {
+
                         ownerId,
                         deviceId: parsed.deviceId,
                         incarnationId: ports.incarnation(device) || "",
@@ -1899,9 +1755,9 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                         networkAddress,
                         timeoutMs: 30000,
                     };
-                    let guiExecution = await ports.execute(ports.guiReadyCommand(guiOptions), ports.remaining(hyperVDeadlineAt, 35000), ports.outputLimit);
+                    let guiExecution = await ports.probeLinuxGui(ssh,guiOptions,ports.remaining(hyperVDeadlineAt,35000),ports.outputLimit);
                     if (!hyperVCreateSucceeded(guiExecution) || !String(guiExecution.stdout || "").includes("CCC_HYPER_V_GUI_READY")) {
-                        guiExecution = await ports.execute(ports.guiPrepareCommand({ ...guiOptions, timeoutMs: ports.linuxGuiTimeout }), ports.remaining(hyperVDeadlineAt, ports.linuxGuiTimeout), ports.outputLimit);
+                        guiExecution = await ports.prepareLinuxGui(ssh,{...guiOptions,timeoutMs:ports.linuxGuiTimeout},ports.remaining(hyperVDeadlineAt,ports.linuxGuiTimeout),ports.outputLimit);
                     }
                     if (!hyperVCreateSucceeded(guiExecution) || !String(guiExecution.stdout || "").includes("CCC_HYPER_V_GUI_READY")) {
                         const stage = /hyper-v-linux-gui-(?:privilege|apt-update|apt-install|configure|start|ready)-failed/.exec(String(guiExecution.stderr || ""))?.[0];
@@ -1948,11 +1804,11 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         && parsed.backend === "linux-vm"
         && (parsed.command === "device_start" || parsed.command === "device_reboot")
         && parsed.waitForBoot !== false) {
-        const device = hyperVCreateRecord(payload.result?.device) ? payload.result.device : {};
+        const device = hyperVCreateRecord(planned.device) ? planned.device : {};
         let bootstrapContained = false;
         try {
-            const { observation: cleanupObservation } = await ports.bootstrapCleanup({
-                executable: providerCommand.executable || "",
+            const { observation: cleanupObservation } = await ports.bootstrapCleanup(powerConnection, {
+
                 ownerId,
                 deviceId: parsed.deviceId,
                 incarnationId: ports.incarnation(device) || "",
@@ -1967,8 +1823,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         }
         if (!bootstrapContained) {
             try {
-                const stopExecution = await ports.power({
-                    executable: providerCommand.executable || "powershell.exe",
+                const stopExecution = await ports.power(powerConnection, {
+
                     ownerId,
                     deviceId: parsed.deviceId,
                     incarnationId: ports.incarnation(device) || "",
@@ -2008,13 +1864,13 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 hyperVGuestReadyFailureCode = hyperVLinuxGuestReadyTraceFailureCode(hyperVGuestReadyTrace, hyperVGuestReadyFailureCode);
             }
         }
-        const device = hyperVCreateRecord(payload.result?.device) ? payload.result.device : {};
+        const device = hyperVCreateRecord(planned.device) ? planned.device : {};
         try {
             // Preserve enough cleanup time for a required Windows force stop even when a
             // diagnostic reader stalls near the end of the cleanup window.
             const diagnosticDeadlineAt = hyperVCleanupDeadlineAt - 30000;
-            hyperVGuestBootDiagnostic = await ports.bootDiagnostic({
-                executable: providerCommand.executable || "powershell.exe",
+            hyperVGuestBootDiagnostic = await ports.bootDiagnostic(powerConnection, {
+
                 vmId: hyperVCreateField(device, "vmId") || "",
                 vmName: hyperVCreateField(device, "vmName") || "",
                 ownershipNotes: ports.marker(ownerId, parsed.deviceId, ports.incarnation(device) || "")
@@ -2082,7 +1938,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         // rewrite: containment would switch on the pre-rewrite reason and the report carry the
         // post-rewrite one. Null when readiness never ran, which is exactly the case above.
         const containedReason = hyperVGuestReadyFailureCode;
-        const containedDevice = hyperVCreateRecord(payload.result?.device) ? payload.result.device : {};
+        const containedDevice = hyperVCreateRecord(planned.device) ? planned.device : {};
         // Those two reasons PROVE the guest is un-scrubbed, but they both require the PowerShell
         // Direct probe to have landed at least once. When it never lands — a stalled OOBE, a
         // servicing reboot loop, integration services not up — the reason is a transport code and
@@ -2135,8 +1991,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             const device = containedDevice;
             let scrubContained = false;
             try {
-                const stopExecution = await ports.power({
-                    executable: providerCommand.executable || "powershell.exe",
+                const stopExecution = await ports.power(powerConnection, {
+
                     ownerId,
                     deviceId: parsed.deviceId,
                     incarnationId: ports.incarnation(device) || "",
@@ -2235,39 +2091,15 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         updatedDevice = success
             ?
                 (publication = publishStarted(ownerId, parsed, expectedDevice, execution, hyperVGuestReady)).device
-            : publication ? publication.device : updatedDevice || payload.result?.device;
+            : publication ? publication.device : updatedDevice || planned.device;
     }
     catch (error) {
         throw error;
     }
-    return {
-        status: publication && !publication.matched ? 409 : success ? 200 : 502,
-        payload: {
-            ok: success && (!publication || publication.matched),
-            ...(publication && !publication.matched ? {
-                error: "owner-device-state-conflict",
-                ownerId,
-                backend: parsed.backend,
-                deviceId: parsed.deviceId,
-                found: publication.found,
-                ...(!success ? { providerFailure: hyperVGuestReadyExecution ? "hyper-v-guest-not-ready" : "provider-command-failed" } : {}),
-            } : {}),
-            ...(success || (publication && !publication.matched) ? {} : {
-                error: hyperVGuestReadyExecution
-                    ? "hyper-v-guest-not-ready"
-                    : "provider-command-failed",
-                detail: hyperVGuestReadyExecution
-                    ? hyperVGuestReadyFailureCode || "guest-not-ready"
-                    :
-                        ports.diagnosticCode(execution, "hyper-v-provider-command-failed") || "hyper-v-provider-command-failed",
-            }),
-            result: {
-                ...(ports.redactResult(payload.result)),
-                providerCommand: {
-                    mode: effectiveProviderCommand.mode,
-                    provider: effectiveProviderCommand.provider,
-                },
-                device: ports.redactDevice(updatedDevice),
+    const observed = {
+        plan:planned,
+            ...(planFacts),
+                device: updatedDevice,
                 ...(hyperVGuestReadyExecution ? {
                     boot: hyperVGuestReady
                         ? {
@@ -2288,8 +2120,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                             ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                         },
                 } : {}),
-                invoked: true,
-                dryRun: false,
+                invoked: true as const,
+                dryRun: false as const,
                 execution: {
                     mode: execution.mode,
                     providerExecution: "executed",
@@ -2299,9 +2131,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                     // containment work exists to remove, restated in the response envelope.
                     mutatesHost: success || hyperVContainedRuntimeState !== null,
                     command: {
-                        ...redactExecution(execution, true, success
-                            ? undefined
-                            : "hyper-v-provider-command-failed"),
+                        ...execution,
                         ...(hyperVGuestReadyExecution && !hyperVGuestReady ? {
                             guestReadiness: {
                                 provider: parsed.backend === "linux-vm"
@@ -2317,15 +2147,20 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                         } : {}),
                     },
                 },
-            },
-        },
     };
+    if (publication && !publication.matched) return {kind:'operation-failed',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',
+        ...observed,error:'owner-device-state-conflict',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,found:publication.found,
+        ...(!success ? {providerFailure:hyperVGuestReadyExecution ? 'hyper-v-guest-not-ready' : 'provider-command-failed'} : {})};
+    if (!success) return {kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'required',...observed,
+        error:hyperVGuestReadyExecution ? 'hyper-v-guest-not-ready' : 'provider-command-failed',
+        detail:hyperVGuestReadyExecution ? hyperVGuestReadyFailureCode || 'guest-not-ready' : ports.diagnosticCode(execution,'hyper-v-provider-command-failed') || 'hyper-v-provider-command-failed'};
+    return {kind:parsed.command === 'device_reboot' ? 'rebooted' : 'started',journalDisposition:'clear',recoveryDisposition:'already-handled',...observed};
     }
-    async function executeParsed(owner: string, params: unknown, deadline: number, cleanupDeadline: number): Promise<HyperVLifecycleResponse> {
+    async function executeParsed(owner: string, params: unknown, deadline: number, cleanupDeadline: number): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
         const parsed = ports.parse(params);
         return parsed.ok
             ? execute(owner, parsed.request, params, deadline, cleanupDeadline)
-            : parsed.response;
+            : parsed.failure;
     }
     return { createVmFromImage, recoverCreateResidue, rollbackCreate, invoke, execute };
 }

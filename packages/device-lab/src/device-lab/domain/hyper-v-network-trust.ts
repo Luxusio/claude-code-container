@@ -293,66 +293,33 @@ export type HyperVNetworkAllocationsObservation = {
     ok: true;
     allocations: HyperVNetworkAllocationObservation[];
 };
-export type HyperVNetworkAllocationsOptions = {
-    executable: string;
-    allocations: HyperVNetworkAllocationIdentity[];
+/** Semantic native network requests; process preparation stays in the adapter. */
+export type HyperVNetworkEnsureRequest = {
+    switchName: string; natName: string; prefix: string; gateway: string; prefixLength: number; marker: string;
+    allowExistingNat?: boolean; allowCccOwnedNetworkAdoption?: boolean; allowPersistedCccIdentityRepair?: boolean;
+    expectedSwitchId?: string; expectedNatInstanceId?: string;
 };
-export type HyperVNetworkOptions = {
-    executable: string;
-    switchName: string;
-    natName: string;
-    prefix: string;
-    gateway: string;
-    prefixLength: number;
-    marker: string;
-    allowExistingNat?: boolean;
-    allowCccOwnedNetworkAdoption?: boolean;
-    allowPersistedCccIdentityRepair?: boolean;
-    expectedSwitchId?: string;
-    expectedNatInstanceId?: string;
-    elevated?: boolean;
-    elevatedDeadlineUnixMs?: number;
-};
-export type HyperVNetworkCleanupOptions = HyperVNetworkOptions & {
-    removeNat?: boolean;
-    removeSwitch?: boolean;
-    removeGateway?: boolean;
-};
-export type HyperVProviderCommand = {
-    mode: "exec";
-    provider: "hyper-v" | "hyper-v-ssh" | "hyper-v-scp";
-    executable: string;
-    args: string[];
-    input?: string;
-};
-export type HyperVNetworkCommandResult = {
-    mode: string;
-    provider: string;
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-    timedOut?: boolean;
-};
+export type HyperVNetworkCleanupRequest = HyperVNetworkEnsureRequest & {removeNat?: boolean; removeSwitch?: boolean; removeGateway?: boolean};
+export type HyperVNetworkNativeAttempt = {privilege: "standard" | "administrator"; timeoutMs: number; deadlineUnixMs?: number};
+export type HyperVNetworkNativeObservation<T> =
+    | {kind: "completed"; observation: T | null; receipt: unknown}
+    | {kind: "failed"; diagnostic: string | undefined; access: "administrator-required" | "unspecified"; receipt: unknown}
+    | {kind: "preparation-failed"; cause: unknown};
 export type HyperVNetworkAllocationRequest = {
     readonly ownerId: string;
     readonly deviceId: string;
     readonly incarnationId: string;
 };
 export type HyperVNetworkEnsureFailure = {
-    ok: false;
-    status: number;
-    error: string;
-    detail?: string;
-    execution?: Record<string, unknown>;
-    preserveEvidence?: boolean;
+    kind: "refused";
+    reason: "missing-provider" | "invalid-incarnation" | "state-conflict" | "reconciliation-failed" | "provider-failed" | "invalid-observation" | "allocation-missing" | "cleanup-failed";
+    error: string; detail?: string; receipt?: unknown; preserveEvidence?: boolean;
 };
 export type HyperVNetworkFabricResult = {
-    ok: true;
-    switchName: string;
-    gateway: string;
-    prefix: string;
-    outboundPolicy: "nat";
+    kind: "fabric-ready"; switchName: string; gateway: string; prefix: string; outboundPolicy: "nat";
+} | HyperVNetworkEnsureFailure;
+export type HyperVNetworkAllocationResult = {
+    kind: "allocated"; switchName: string; address: string; macAddress: string; gateway: string; prefix: string; outboundPolicy: "nat";
 } | HyperVNetworkEnsureFailure;
 export function validHyperVIncarnationId(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{32}$/.test(value); }
 export function isHyperVCccNetworkIdentity(marker: unknown, natName: unknown): marker is string {

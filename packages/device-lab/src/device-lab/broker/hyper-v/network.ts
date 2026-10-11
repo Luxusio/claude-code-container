@@ -3,8 +3,8 @@ export { hyperVNetworkAllocationReferenced } from "../../domain/hyper-v-network-
 import { createHyperVNetworkTrust } from "../../application/hyper-v-network-trust.js";
 import type { HyperVNetworkStatePorts, HyperVNetworkPorts } from "../../ports/hyper-v-network-trust.js";
 import { createDeviceLabHyperVHostNetworkPorts } from "./network-adapter.js";
-export type { HyperVNetworkRelease, HyperVNetworkReleaseOptions, HyperVNetworkFabricResult } from "../../domain/hyper-v-network-trust.js";
-import type { HyperVNetworkReleaseOptions } from "../../domain/hyper-v-network-trust.js";
+export type { HyperVNetworkRelease, HyperVNetworkReleaseOptions } from "../../domain/hyper-v-network-trust.js";
+import type { HyperVNetworkReleaseOptions, HyperVNetworkEnsureFailure, HyperVNetworkFabricResult as HyperVNetworkFabricOutcome, HyperVNetworkAllocationResult, HyperVNetworkNativeObservation, HyperVNetworkNativeAttempt } from "../../domain/hyper-v-network-trust.js";
 import { createHash, randomBytes } from "crypto";
 import { lstatSync, mkdirSync, rmSync } from "fs";
 import { dirname, join } from "path";
@@ -66,6 +66,32 @@ export type HyperVNetworkCommandResult = {
     error?: string;
     timedOut?: boolean;
 };
+/** Native diagnostic carrier; core policy carries it without inspecting command fields. */
+class HyperVNetworkDiagnosticReceipt {
+    constructor(readonly execution: HyperVNetworkCommandResult, readonly diagnostic?: string) {}
+}
+export function renderHyperVNetworkReceipt(receipt: unknown): unknown {
+    return receipt instanceof HyperVNetworkDiagnosticReceipt ? redactProviderCommandInput(receipt.execution, true, receipt.diagnostic) : receipt;
+}
+function networkNativeObservation<T>(execution: HyperVNetworkCommandResult, observe: () => T | null, fallback: string): HyperVNetworkNativeObservation<T> {
+    if (execution.status === 0 && !execution.error) return {kind: "completed", observation: observe(), receipt: new HyperVNetworkDiagnosticReceipt(execution)};
+    const diagnostic = [execution.error, execution.stderr, execution.stdout].map(value => String(value || "")).join("\n");
+    return {kind: "failed", diagnostic: hyperVProviderDiagnosticCode(execution, fallback),
+        access: diagnostic.includes("hyper-v-network-elevation-required") || diagnostic.includes("PermissionDenied") || diagnostic.includes("Windows System Error 5") || /access (?:is )?denied/i.test(diagnostic) ? "administrator-required" : "unspecified",
+        receipt: new HyperVNetworkDiagnosticReceipt(execution)};
+}
+function networkFailureReceipt(receipt: unknown): Record<string, unknown> {
+    if (!(receipt instanceof HyperVNetworkDiagnosticReceipt)) throw new Error("hyper-v-network-native-receipt-invalid");
+    return redactProviderCommandInput(receipt.execution, true, receipt.diagnostic);
+}
+export function hyperVNetworkFailureToWire(outcome: HyperVNetworkEnsureFailure) {
+    const {kind: _kind, reason, receipt, ...failure} = outcome;
+    const status = reason === "missing-provider" ? 503 : reason === "allocation-missing" ? 500
+        : reason === "provider-failed" || reason === "invalid-observation" || reason === "cleanup-failed" ? 502 : 409;
+    return {ok: false as const, status, ...failure, ...(receipt !== undefined ? {execution: networkFailureReceipt(receipt)} : {})};
+}
+export type HyperVNetworkFabricResult = {ok: true; switchName: string; gateway: string; prefix: string; outboundPolicy: "nat"} | ReturnType<typeof hyperVNetworkFailureToWire>;
+
 export interface HyperVNetworkStateRuntime {
     privateRoot: string;
     assertSafePath(path: string, label: string): void;
@@ -180,6 +206,20 @@ function statePorts(runtime: HyperVNetworkStateRuntime): HyperVNetworkStatePorts
 function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
     const hostFabric = runtime.hostFabric;
     const allocationReferenced = runtime.allocationReferenced;
+    let executable: string | null = null;
+    const capturedExecutable = () => {
+        if (!executable) throw new Error("missing-provider-command");
+        return executable;
+    };
+    const legacy = hostFabric.kind === "legacy-compatibility" ? hostFabric : null;
+    async function runNative<T>(build: () => HyperVProviderCommand, attempt: HyperVNetworkNativeAttempt, observe: (stdout: string) => T | null, fallback: string): Promise<HyperVNetworkNativeObservation<T>> {
+        let command: HyperVProviderCommand;
+        if (attempt.privilege === "administrator") {
+            try { command = build(); } catch (cause) { return {kind: "preparation-failed", cause}; }
+        } else command = build();
+        const execution = await runtime.run(command, {timeoutMs: attempt.timeoutMs, outputLimit: runtime.commandOutputBytes});
+        return networkNativeObservation(execution, () => observe(execution.stdout || ""), fallback);
+    }
     return {
         ...statePorts(runtime),
         kind: "network",
@@ -188,16 +228,29 @@ function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
         marker: HYPER_V_NETWORK_MARKER,
         natName: HYPER_V_NETWORK_NAT,
-        commandOutputBytes: runtime.commandOutputBytes,
         hostFabric: hostFabric.kind === "typed"
             ? { kind: "typed", host: createDeviceLabHyperVHostNetworkPorts(hostFabric.client, hostFabric.withAdministratorClient, Date.now, milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds))) }
-            : hostFabric,
+            : legacy ? {
+                kind: "legacy-compatibility",
+                ensure: (options, attempt) => runNative(() => legacy.ensureCommand({...options,
+                    executable: attempt.privilege === "administrator" ? runtime.resolveElevationExecutable(capturedExecutable()) : capturedExecutable(),
+                    ...(attempt.privilege === "administrator" ? {elevated: true, elevatedDeadlineUnixMs: attempt.deadlineUnixMs} : {}),
+                }), attempt, parseHyperVNetworkObservation, "hyper-v-network-setup-failed"),
+                cleanup: (options, attempt) => runNative(() => legacy.cleanupCommand({...options,
+                    executable: attempt.privilege === "administrator" ? runtime.resolveElevationExecutable(capturedExecutable()) : capturedExecutable(),
+                    ...(attempt.privilege === "administrator" ? {elevated: true, elevatedDeadlineUnixMs: attempt.deadlineUnixMs} : {}),
+                }), attempt, parseHyperVNetworkCleanupObservation, "hyper-v-network-cleanup-failed"),
+                inspectAllocation: (allocations, timeoutMs) => runNative(() => legacy.inspectAllocationsCommand({executable: capturedExecutable(), allocations}), {privilege: "standard", timeoutMs}, parseHyperVNetworkAllocationsObservation, "hyper-v-network-allocation-inspection-failed"),
+            } : {kind: "unavailable"},
         references: allocationReferenced
             ? { kind: "available", isReferenced: allocation => allocationReferenced.call(runtime, allocation) }
             : { kind: "unavailable" },
-        resolveExecutable: name => runtime.resolveExecutable(name),
-        resolveElevationExecutable: executable => runtime.resolveElevationExecutable(executable),
-        run: (command, options) => runtime.run(command, options),
+        available: () => { executable = runtime.resolveExecutable("powershell.exe") || runtime.resolveExecutable("pwsh") || runtime.resolveExecutable("powershell"); return executable !== null; },
+        elevationFailure: (previous, cause, operation) => {
+            if (!(previous instanceof HyperVNetworkDiagnosticReceipt)) throw new Error("hyper-v-network-native-receipt-invalid");
+            const execution = {...previous.execution, status: 1, error: cause instanceof Error ? cause.message : String(cause)};
+            return {kind: "failed", diagnostic: hyperVProviderDiagnosticCode(execution, operation === "ensure" ? "hyper-v-network-setup-failed" : "hyper-v-network-cleanup-failed"), access: "unspecified", receipt: new HyperVNetworkDiagnosticReceipt(execution)};
+        },
         now: Date.now,
         timestamp: () => new Date().toISOString(),
         token: () => randomBytes(12).toString("hex"),
@@ -217,24 +270,24 @@ function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
         natNameValue: parseHyperVNatName,
         natInstanceId: parseHyperVNatInstanceId,
         isNativeError: value => value instanceof HyperVWindowsError,
-        parseAllocationObservation: parseHyperVNetworkAllocationsObservation,
-        parseNetworkObservation: parseHyperVNetworkObservation,
-        parseCleanupObservation: parseHyperVNetworkCleanupObservation,
         typedError: hyperVTypedErrorCode,
-        providerDiagnostic: hyperVProviderDiagnosticCode,
-        redactExecution: (result, diagnostic) => redactProviderCommandInput(result, true, diagnostic),
+        typedDiagnosticReceipt: (_error, diagnostic) => new HyperVNetworkDiagnosticReceipt({mode: "exec", provider: "hyper-v", status: null, error: diagnostic}, diagnostic),
+        diagnosticReceipt: (receipt, diagnostic) => {
+            if (!(receipt instanceof HyperVNetworkDiagnosticReceipt)) throw new Error("hyper-v-network-native-receipt-invalid");
+            return new HyperVNetworkDiagnosticReceipt(receipt.execution, diagnostic);
+        },
     };
 }
-export function ensureHyperVHostNetworkFabric(runtime: HyperVNetworkRuntime, deadlineAt = Number.POSITIVE_INFINITY) {
+export function ensureHyperVHostNetworkFabricOutcome(runtime: HyperVNetworkRuntime, deadlineAt = Number.POSITIVE_INFINITY): Promise<HyperVNetworkFabricOutcome> {
     return createHyperVNetworkTrust(networkPorts(runtime)).ensureFabric(deadlineAt);
 }
-export function ensureHyperVNetworkAllocation(
+export function ensureHyperVNetworkAllocationOutcome(
     runtime: HyperVNetworkRuntime,
     ownerId: string,
     deviceId: string,
     incarnationId: string,
     deadlineAt = Number.POSITIVE_INFINITY,
-) {
+): Promise<HyperVNetworkAllocationResult> {
     return createHyperVNetworkTrust(networkPorts(runtime)).allocate(ownerId, deviceId, incarnationId, deadlineAt);
 }
 export function releaseHyperVNetworkAllocation(
@@ -246,7 +299,7 @@ export function releaseHyperVNetworkAllocation(
 ) {
     return createHyperVNetworkTrust(statePorts(runtime)).release(ownerId, deviceId, incarnationId, options);
 }
-export function releaseHyperVNetworkAllocationAndCleanup(
+export function releaseHyperVNetworkAllocationAndCleanupOutcome(
     runtime: HyperVNetworkRuntime,
     ownerId: string,
     deviceId: string,
@@ -289,4 +342,25 @@ export function adoptHyperVLinuxSshHostIdentity(
     commitFingerprint?: (fingerprint: string) => boolean,
 ) {
     return createHyperVNetworkTrust(statePorts(runtime)).adoptGuestTrust(ownerId, deviceId, observedKnownHostsPath, hostPublicKeyPath, knownHostsPath, networkAddress, commitFingerprint);
+}
+
+/** Compatibility views stay native; converted lifecycle applications consume direct outcomes. */
+export async function ensureHyperVHostNetworkFabric(runtime: HyperVNetworkRuntime, deadlineAt = Number.POSITIVE_INFINITY): Promise<HyperVNetworkFabricResult> {
+    const outcome = await ensureHyperVHostNetworkFabricOutcome(runtime, deadlineAt);
+    if (outcome.kind === "refused") return hyperVNetworkFailureToWire(outcome);
+    const {kind: _kind, ...facts} = outcome;
+    return {ok: true, ...facts};
+}
+export async function ensureHyperVNetworkAllocation(runtime: HyperVNetworkRuntime, ownerId: string, deviceId: string, incarnationId: string, deadlineAt = Number.POSITIVE_INFINITY) {
+    const outcome = await ensureHyperVNetworkAllocationOutcome(runtime, ownerId, deviceId, incarnationId, deadlineAt);
+    if (outcome.kind === "refused") return hyperVNetworkFailureToWire(outcome);
+    const {kind: _kind, ...facts} = outcome;
+    return {ok: true as const, ...facts};
+}
+export function hyperVNetworkReleaseToWire(outcome: Awaited<ReturnType<typeof releaseHyperVNetworkAllocationAndCleanupOutcome>>) {
+    return {...outcome, networkCleanup: renderHyperVNetworkReceipt(outcome.networkCleanup)};
+}
+export async function releaseHyperVNetworkAllocationAndCleanup(runtime: HyperVNetworkRuntime, ownerId: string, deviceId: string, incarnationId: string | null | undefined, deadlineAt = Number.POSITIVE_INFINITY, options: HyperVNetworkReleaseOptions = {}) {
+    const outcome = await releaseHyperVNetworkAllocationAndCleanupOutcome(runtime, ownerId, deviceId, incarnationId, deadlineAt, options);
+    return hyperVNetworkReleaseToWire(outcome);
 }

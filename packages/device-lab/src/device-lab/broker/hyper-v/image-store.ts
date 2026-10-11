@@ -28,10 +28,31 @@ import {
 } from "../../../host-control/hyper-v/index.js";
 import { createDeviceLabHyperVWindowsClient } from "./lifecycle-adapter.js";
 import { createHyperVImagePreparation } from "../../application/hyper-v-image-preparation.js";
-import type { HyperVImageProfile, HyperVImageManifest, HyperVImageResolution, HyperVImageCommandResult, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
+import type { HyperVImageProfile, HyperVImageManifest, HyperVImageResolution as HyperVImageResolutionOutcome, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
 import type { HyperVImagePreparationPorts } from "../../ports/hyper-v-image-preparation.js";
 export { hyperVImageProfile } from "../../domain/hyper-v-image-preparation.js";
-export type { HyperVImageProfile, HyperVImageManifest, HyperVImageResolution, HyperVImageCommandResult, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
+export type { HyperVImageProfile, HyperVImageManifest, HyperVImageCreateRequest } from "../../domain/hyper-v-image-preparation.js";
+
+export type HyperVImageCommandResult = {mode: string; provider: string; status?: number | null; stdout?: string; stderr?: string; error?: string};
+export type HyperVImageResolution =
+    | {ok: true; params: Record<string, unknown>; imagePath: string; prepared: boolean}
+    | {ok: false; status: number; error: string; detail?: string; remedy?: string};
+function imageNativeObservation<T>(execution: HyperVImageCommandResult, observe: () => T | null): import("../../domain/hyper-v-image-preparation.js").HyperVImageNativeObservation<T> {
+    return execution.status === 0 && !execution.error
+        ? {kind: "completed", observation: observe(), receipt: execution}
+        : {kind: "failed", diagnostic: hyperVProviderDiagnosticCode(execution, "hyper-v-powershell-execution-failed"), receipt: execution};
+}
+export function hyperVImageResolutionToWire(outcome: Extract<HyperVImageResolutionOutcome, {kind: "refused"}>): Extract<HyperVImageResolution, {ok: false}>;
+export function hyperVImageResolutionToWire(outcome: Extract<HyperVImageResolutionOutcome, {kind: "resolved"}>): Extract<HyperVImageResolution, {ok: true}>;
+export function hyperVImageResolutionToWire(outcome: HyperVImageResolutionOutcome): HyperVImageResolution;
+export function hyperVImageResolutionToWire(outcome: HyperVImageResolutionOutcome): HyperVImageResolution {
+    if (outcome.kind === "resolved") {
+        const {kind: _kind, ...facts} = outcome;
+        return {ok: true, ...facts};
+    }
+    const {kind: _kind, reason, ...failure} = outcome;
+    return {ok: false, status: reason === "invalid-profile" ? 400 : reason === "preparation-failed" ? 422 : 409, ...failure};
+}
 
 const HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
 const HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES = 64 * 1024 * 1024 * 1024;
@@ -625,13 +646,13 @@ export function inspectHyperVUbuntuImageCache(privateRoot: string, ownerId: stri
 }
 
 
-export async function resolveHyperVImageForCreate(
+export async function resolveHyperVImageForCreateOutcome(
     ownerId: string,
     request: HyperVImageCreateRequest,
     params: unknown,
     runtime: HyperVImageStoreRuntime,
     deadlineAt = Number.POSITIVE_INFINITY,
-): Promise<HyperVImageResolution> {
+): Promise<HyperVImageResolutionOutcome> {
     const client = (executable: string, timeoutMilliseconds: number | (() => number)) => createDeviceLabHyperVWindowsClient({
         executable, timeoutMilliseconds, run: runtime.run,
     });
@@ -640,13 +661,34 @@ export async function resolveHyperVImageForCreate(
         catalog: HYPER_V_IMAGE_CATALOG,
         now: () => Date.now(), preparedAt: () => new Date().toISOString(),
         resolvePath: resolve,
-        resolveExecutable: (name) => runtime.resolveExecutable(name),
+        capturePreparation: () => {
+            const executable = runtime.resolveExecutable("powershell.exe") || runtime.resolveExecutable("pwsh") || runtime.resolveExecutable("powershell");
+            if (!executable) return null;
+            return {
+                getVhd: (path, timeout) => client(executable, timeout).getVHD(path),
+                mountReadOnly: (path, timeout) => client(executable, timeout).mountVHD({path, readOnly: true, noDriveLetter: true}).then(() => undefined),
+                dismount: (path, timeout) => client(executable, timeout).dismountVHD(path).then(() => undefined),
+                convertVhd: (sourcePath, destinationPath, timeout, remainingTimeout) => client(executable, remainingTimeout).convertVHD({sourcePath, destinationPath, vhdType: "Dynamic"}, {timeoutMilliseconds: timeout}).then(() => undefined),
+                resizeVhd: (path, sizeBytes, timeout, remainingTimeout) => client(executable, remainingTimeout).resizeVHD({path, sizeBytes}, {timeoutMilliseconds: timeout}).then(() => undefined),
+                storage: async (root, path, readPartitionStyle, timeoutMs) => {
+                    const execution = await runtime.run(hyperVImportedImageStorageCommand({executable, imageRoot: root, path, readPartitionStyle}), {timeoutMs, outputLimit: runtime.limits.commandOutputBytes});
+                    return imageNativeObservation(execution, () => parseHyperVImportedImageStorage(execution.stdout || "", path));
+                },
+                prepareAcquisition: async (options, timeoutMs) => {
+                    const execution = await runtime.run(hyperVAcquireBaseImagePrepareCommand({...options, executable}), {timeoutMs, outputLimit: runtime.limits.commandOutputBytes});
+                    return imageNativeObservation(execution, () => parseHyperVAcquireBaseImagePrepareObservation(execution.stdout || ""));
+                },
+                finalizeAcquisition: async (options, timeoutMs) => {
+                    const execution = await runtime.run(hyperVAcquireBaseImageFinalizeCommand({...options, executable}), {timeoutMs, outputLimit: runtime.limits.commandOutputBytes});
+                    return imageNativeObservation(execution, () => parseHyperVBaseImageObservation(execution.stdout || ""));
+                },
+            };
+        },
         assertDeadline: (deadline) => { assertHyperVOperationDeadline(deadline); return undefined; },
         remainingTimeout: hyperVRemainingTimeout, deadlineExpired: hyperVOperationDeadlineExpired,
         isDeadlineError: (error) => error instanceof HyperVOperationDeadlineError,
         deadlineError: () => new HyperVOperationDeadlineError(),
         boundedErrorCode: hyperVBoundedErrorCode, boundedErrorDetail: hyperVBoundedErrorDetail,
-        diagnosticCode: hyperVProviderDiagnosticCode,
         exists: existsSync,
         manifestPresent: (path) => {
             try { lstatSync(path); return true; }
@@ -688,23 +730,11 @@ export async function resolveHyperVImageForCreate(
         quarantineUncertainArtifact: quarantineUncertainAutomaticArtifact,
         knownPriorImage: isKnownPriorAutomaticImage, recoverPriorImage: recoverPriorAutomaticImage,
         retirePriorImage: retireKnownPriorAutomaticImage, discardPriorImage: discardRetiredPriorAutomaticImage,
-        getVhd: (executable, path, timeout) => client(executable, timeout).getVHD(path),
-        mountReadOnly: (executable, path, timeout) => client(executable, timeout).mountVHD({ path, readOnly: true, noDriveLetter: true }).then(() => undefined),
-        dismount: (executable, path, timeout) => client(executable, timeout).dismountVHD(path).then(() => undefined),
-        convertVhd: (executable, sourcePath, destinationPath, timeout, remainingTimeout) => client(executable, remainingTimeout).convertVHD({ sourcePath, destinationPath, vhdType: "Dynamic" }, { timeoutMilliseconds: timeout }).then(() => undefined),
-        resizeVhd: (executable, path, sizeBytes, timeout, remainingTimeout) => client(executable, remainingTimeout).resizeVHD({ path, sizeBytes }, { timeoutMilliseconds: timeout }).then(() => undefined),
-        storage: async (executable, root, path, readPartitionStyle, timeoutMs) => {
-            const execution = await runtime.run(hyperVImportedImageStorageCommand({ executable, imageRoot: root, path, readPartitionStyle }), { timeoutMs, outputLimit: runtime.limits.commandOutputBytes });
-            return { execution, observation: execution.status === 0 && !execution.error ? parseHyperVImportedImageStorage(execution.stdout || "", path) : null };
-        },
-        prepareAcquisition: async (options, timeoutMs) => {
-            const execution = await runtime.run(hyperVAcquireBaseImagePrepareCommand(options), { timeoutMs, outputLimit: runtime.limits.commandOutputBytes });
-            return { execution, observation: execution.status === 0 && !execution.error ? parseHyperVAcquireBaseImagePrepareObservation(execution.stdout || "") : null };
-        },
-        finalizeAcquisition: async (options, timeoutMs) => {
-            const execution = await runtime.run(hyperVAcquireBaseImageFinalizeCommand(options), { timeoutMs, outputLimit: runtime.limits.commandOutputBytes });
-            return { execution, observation: execution.status === 0 && !execution.error ? parseHyperVBaseImageObservation(execution.stdout || "") : null };
-        },
     };
     return createHyperVImagePreparation(ports).resolveForCreate(ownerId, request, params, deadlineAt);
+}
+
+/** Legacy native wire compatibility; semantic lifecycle peers use the Outcome export. */
+export async function resolveHyperVImageForCreate(ownerId: string, request: HyperVImageCreateRequest, params: unknown, runtime: HyperVImageStoreRuntime, deadlineAt = Number.POSITIVE_INFINITY): Promise<HyperVImageResolution> {
+    return hyperVImageResolutionToWire(await resolveHyperVImageForCreateOutcome(ownerId, request, params, runtime, deadlineAt));
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHyperVNetworkTrust } from "../../../packages/device-lab/src/device-lab/application/hyper-v-network-trust.js";
-import type { HyperVNetworkRelease } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-network-trust.js";
-import type { HyperVNetworkStatePorts, HyperVHostNetworkPorts, HyperVHostEnsureRequest } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-network-trust.js";
+import type { HyperVNetworkRelease, HyperVNetworkAllocationResult, HyperVNetworkFabricResult } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-network-trust.js";
+import type { HyperVNetworkStatePorts, HyperVHostNetworkPorts, HyperVHostEnsureRequest, HyperVNetworkPorts, HyperVFabricEffects } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-network-trust.js";
 
 function stateContracts(ports: HyperVNetworkStatePorts) {
     const result: HyperVNetworkRelease = createHyperVNetworkTrust(ports).release("owner", "guest", "incarnation");
@@ -38,6 +38,25 @@ function hostContracts(ports: HyperVHostNetworkPorts, request: HyperVHostEnsureR
     void [pending, withAdministrator, execute];
 }
 void [stateContracts, hostContracts];
+
+function allocationContracts(ports: HyperVNetworkPorts, effects: Extract<HyperVFabricEffects, { kind: "legacy-compatibility" }>): void {
+    const application = createHyperVNetworkTrust(ports);
+    const allocated: Promise<HyperVNetworkAllocationResult> = application.allocate("owner", "guest", "incarnation", 100000);
+    const fabric: Promise<HyperVNetworkFabricResult> = application.ensureFabric(100000);
+    const { cleanup, ...withoutCleanup } = effects;
+    // @ts-expect-error Final allocation release requires its individual native cleanup effect.
+    createHyperVNetworkTrust({ ...ports, hostFabric: withoutCleanup });
+    const { inspectAllocation, ...withoutInspection } = effects;
+    // @ts-expect-error Orphan reconciliation requires native allocation identity observations.
+    createHyperVNetworkTrust({ ...ports, hostFabric: withoutInspection });
+    // @ts-expect-error A native ensure effect returns its settled asynchronous observation.
+    createHyperVNetworkTrust({ ...ports, hostFabric: { ...effects, ensure: () => ({ kind: "completed", observation: null, receipt: {} }) } });
+    // @ts-expect-error Provider admission must be decided before effects, not remain pending.
+    createHyperVNetworkTrust({ ...ports, available: async () => true });
+    void [allocated, fabric, cleanup, inspectAllocation];
+}
+void allocationContracts;
+
 
 describe("Hyper-V network trust typed state consumer", () => {
     it("reports an absent allocation state without publishing or removing storage", () => {

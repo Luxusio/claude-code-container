@@ -3,7 +3,7 @@ import type {
     SnapshotExecution, SnapshotJournal, SnapshotMutationObservation, SnapshotTracked, SnapshotVmObservation,
 } from "../../domain/lifecycle/hyper-v-snapshots.js";
 
-export type SnapshotIdentity = { executable: string; ownerId: string; deviceId: string; incarnationId: string; vmName: string; vmId: string };
+export type SnapshotIdentity = { ownerId: string; deviceId: string; incarnationId: string; vmName: string; vmId: string };
 export type SnapshotPublication = { found: boolean; matched: boolean; device: Record<string, unknown> | null };
 export type SnapshotCreateOptions = {
     operationDeadlineAt: number;
@@ -16,8 +16,8 @@ export type SnapshotRepairPatch = {
 };
 
 /** Existing native authorities, scoped to one application invocation. */
-export interface BrokerHyperVSnapshotPorts {
-    executable(name: string): string | null;
+export interface BrokerHyperVSnapshotPorts<Connection,Receipt> {
+    connection(provider:'powershell'|'ssh'):Connection|null;
     incarnation(device: Record<string, unknown>): string | null;
     validIncarnation(value: unknown): value is string;
     providerName(ownerId: string, snapshotName: string): string;
@@ -30,24 +30,22 @@ export interface BrokerHyperVSnapshotPorts {
     recordCreatedId(ownerId: string, backend: string, deviceId: string, incarnationId: string, providerName: string, snapshotId: string): undefined;
     clearJournal(ownerId: string, backend: string, deviceId: string): undefined;
     removeRepairJournal(ownerId: string, backend: string, deviceId: string): undefined;
-    status(identity: SnapshotIdentity, deadlineAt: number, timeoutMs: number): Promise<SnapshotExecution>;
+    status(connection:Connection, identity: SnapshotIdentity, deadlineAt: number, timeoutMs: number): Promise<SnapshotExecution<Receipt>>;
     parseStatus(text: string): SnapshotVmObservation | null;
     observationMismatch(observation: SnapshotVmObservation | null, expected: { vmId: string; vmName: string; diskPath: string }): string | null;
-    create(executable: string, target: SnapshotCheckpointTarget, options: SnapshotCreateOptions): Promise<SnapshotMutationObservation>;
-    restore(executable: string, target: SnapshotCheckpointTarget, options: { force: boolean; startAfterRestore: boolean }): Promise<SnapshotMutationObservation>;
-    delete(executable: string, target: SnapshotCheckpointTarget): Promise<SnapshotDeleteObservation>;
-    repairPolicy(executable: string, target: { vmId: string; vmName: string; expectedNotes: string; providerName: string; expectedCheckpointPolicy: SnapshotCheckpointPolicy }): Promise<{ readonly checkpointPolicy: SnapshotCheckpointPolicy; readonly candidateCount: 0 | 1 }>;
-    lastExecution(): SnapshotExecution | null;
+    create(connection:Connection, target: SnapshotCheckpointTarget, options: SnapshotCreateOptions): Promise<SnapshotMutationObservation>;
+    restore(connection:Connection, target: SnapshotCheckpointTarget, options: { force: boolean; startAfterRestore: boolean }): Promise<SnapshotMutationObservation>;
+    delete(connection:Connection, target: SnapshotCheckpointTarget): Promise<SnapshotDeleteObservation>;
+    repairPolicy(connection:Connection, target: { vmId: string; vmName: string; expectedNotes: string; providerName: string; expectedCheckpointPolicy: SnapshotCheckpointPolicy }): Promise<{ readonly checkpointPolicy: SnapshotCheckpointPolicy; readonly candidateCount: 0 | 1 }>;
+    lastExecution(): SnapshotExecution<Receipt> | null;
     isValidationError(error: unknown): boolean;
     providerErrorCode(error: unknown): string | undefined;
     errorCode(error: unknown, fallback: string): string;
     diagnosticCode(execution: { error?: string; stdout?: string; stderr?: string }, fallback: string): string;
-    redactExecution(execution: SnapshotExecution, secretInput: boolean, fallback?: string): unknown;
-    redactDevice(device: Record<string, unknown> | null): unknown;
     publish(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>): SnapshotPublication;
     mergeRepair(ownerId: string, backend: string, deviceId: string, original: Record<string, unknown>, patch: SnapshotRepairPatch): Record<string, unknown>;
     forgetConsole(ownerId: string, backend: string, deviceId: string): undefined;
-    sshReady(executable: string, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }): Promise<SnapshotExecution>;
+    sshReady(connection:Connection, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }): Promise<SnapshotExecution<Receipt>>;
     remainingTimeout(deadlineAt: number, maximumMs: number): number;
     now(): number;
     timestamp(): string;

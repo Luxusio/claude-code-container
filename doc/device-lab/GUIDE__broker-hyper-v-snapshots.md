@@ -2,7 +2,7 @@
 
 One broker snapshot application owns list, create, restore, delete, and journal repair for Windows VMs and Hyper-V Linux VMs. Authenticated device-tool routing, owner queues, target lookup, and device-operation locks remain in the broker. Snapshot-specific admission, transaction decisions, result classification, and Linux restore readiness live inward.
 
-Native peers retain checkpoint ownership checks, VM identity and terminal disk-chain observation, guarded journal files, PowerShell sessions, SSH commands, and atomic owner-state mutation. The application consumes explicit structural facts and capabilities, never a native client or normalized broker options. Construction does not start providers.
+Native peers retain checkpoint ownership checks, VM identity and terminal disk-chain observation, guarded journal files, PowerShell sessions, SSH commands, and atomic owner-state mutation. The application consumes explicit structural facts and captured native capabilities, never an executable, command recipe, native client or normalized broker options. Construction does not start providers. List, mutation and repair outcomes are semantic; native composition renders public HTTP responses and redacts diagnostic evidence. Lifecycle preflight consumes repair results directly.
 
 List compares owner-tracked snapshots with live inventory and performs at most two bounded resamples inside one deadline. Compatibility exports use the same inward comparison and settling policy. Missing, untracked, or inconsistent snapshots remain conflicts; read failure is not empty success.
 
