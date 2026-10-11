@@ -4,10 +4,10 @@ Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 Current source audited: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-Status: **current reference corrections await independent acceptance; confirmed
-source work remains**. The original nine review findings now have current
-ownership/reference corrections. Their historical reasons and source observations
-remain recorded separately. The broader original-scope audit found unfinished
+Status: **nine bounded current reference corrections are independently accepted;
+confirmed source work remains**. The original nine review findings now have
+source-reconciled ownership/reference corrections. Their historical reasons and
+source observations remain recorded separately. The broader original-scope audit found unfinished
 work in supported direct bindings and shared presentation contracts.
 
 The supported Codex/Claude scope contains 218 existing operations, with one
@@ -87,9 +87,11 @@ results, and those results do not certify subsequent changes.
 | native | 0 | 15 | 0 | 0 |
 | reliability | 0 | 15 | 0 | 0 |
 
-To reproduce historical counts, count `workItems` once by `id` and group by
-`implementationStatus`. For current provisional source counts, apply the
-progress overlay through `node scripts/render-architecture-progress.mjs`.
+The tables retain the historical snapshot; current JSON `implementationStatus`
+values no longer reproduce that snapshot. They currently total 31 migrated,
+17 partial and 171 pending, distinct from the retained historical 31/16/172.
+For current provisional source counts, apply the progress overlay through
+`node scripts/render-architecture-progress.mjs`.
 Partial required bindings receive no whole-operation credit. For packet counts,
 group by `countingOwner`, not `packets`. Acceptance totals group
 `acceptanceItems` by `kind` and `status`; they use a separate denominator.
