@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 export const DISPLAY = ":99";
 export const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.resolve("@ccc/device-lab/providers/context.mjs"))));
 
+/** @param {string|null|undefined} projectPath @returns {string} */
 function projectId(projectPath) {
     if (typeof projectPath === "string" && projectPath.startsWith("/project/")) {
         const normalized = posix.normalize(projectPath);
@@ -19,20 +20,24 @@ function projectId(projectPath) {
     return `${name}-${hash}`;
 }
 
+/** @param {string} [cwd] @param {string} [profile] @returns {string} */
 export function ownerBasis(cwd = process.cwd(), profile = process.env.CCC_PROFILE || undefined) {
     const id = projectId(cwd);
     const containerName = profile ? `ccc-${id}--p--${profile}` : `ccc-${id}`;
     return `${containerName}:${projectMountPath(cwd)}`;
 }
 
+/** @param {string} [cwd] @returns {string} */
 export function projectMountPath(cwd = process.cwd()) {
     return `/project/${projectId(cwd)}`;
 }
 
+/** @param {NodeJS.ProcessEnv} [env] @param {string} [cwd] @returns {string} */
 export function ownerId(env = process.env, cwd = process.cwd()) {
     return createHash("sha256").update(ownerBasis(cwd, env.CCC_PROFILE || undefined)).digest("hex").slice(0, 16);
 }
 
+/** @param {unknown} value @returns {string} */
 export function slug(value) {
     return String(value)
         .toLowerCase()

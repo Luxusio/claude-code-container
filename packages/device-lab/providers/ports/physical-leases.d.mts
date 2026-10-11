@@ -1,7 +1,7 @@
 export interface PhysicalLease {
     backend:string;hardwareId:string;ownerId:string;deviceId?:string|null;
-    claimId?:string;claimNonce?:string;claimedAt?:string;ttlMs?:number;
-    heartbeatAt?:string;updatedAt?:string;expiresAt?:string;
+    claimId?:string;claimNonce?:string;claimedAt?:unknown;ttlMs?:number;
+    heartbeatAt?:unknown;updatedAt?:string;expiresAt?:string;
 }
 export interface PhysicalLeaseOptions {
     ttlMs?:unknown;intervalMs?:unknown;claimId?:string;claimNonce?:string;
