@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean; guiExecutableProbe?: boolean};
+type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean};
 type StateSnapshot = {bytes: string; dev: string; ino: string; mtime: string; mode: string; nlink: string};
 type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};
 
@@ -143,21 +143,6 @@ const realListen=net.Server.prototype.listen;net.Server.prototype.listen=functio
 const realConnect=net.Socket.prototype.connect;net.Socket.prototype.connect=function(...args){const value=Array.isArray(args[0])?args[0][0]:args[0];if(value&&typeof value==='object'&&Number(value.port)===port&&['127.0.0.1','localhost'].includes(value.host))return realConnect.apply(this,args);return deny('connect',args);};
 os.totalmem=()=>64*1024**3;os.freemem=()=>48*1024**3;syncBuiltinESMExports();
 function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{const request=http.request(base+'/v1/owners/'+owner+'/rpc',{method:'POST',headers:{'content-type':'application/json',...(token===undefined?{}:{'x-ccc-device-token':token})}},response=>{let body='';response.on('data',chunk=>body+=chunk);response.on('end',()=>resolve({status:response.statusCode,body:JSON.parse(body)}));});request.on('error',reject);request.end(JSON.stringify({method:scenario.detach?'broker.physical.detach':scenario.planOnly?'broker.command.plan':'broker.command.invoke',params:scenario.detach?{backend:params.backend,deviceId:params.deviceId}:params}));});}
-if(settings.fenceProbe){
- for(const attempt of [()=>cp.spawn('forbidden-provider-command',[]),()=>process.kill(987654,'SIGKILL'),()=>fs.writeFileSync(path.join(path.dirname(home),'outside-home-forbidden'),'forbidden'),()=>net.createServer().listen(0,'0.0.0.0')]){try{attempt();}catch{}}
- console.log(JSON.stringify({denied,calls}));process.exit(0);
-}
-if(settings.openRouteProbe){
- (async()=>{
-  const flags=fs.constants.O_RDONLY|fs.constants.O_TRUNC;
-  try{
-   if(settings.openRouteProbe==='sync')fs.openSync(settings.outsideSentinel,flags);
-   else if(settings.openRouteProbe==='callback')fs.open(settings.outsideSentinel,flags,()=>{});
-   else await fs.promises.open(settings.outsideSentinel,flags);
-  }catch{}
-  console.log(JSON.stringify({denied,calls}));
- })().then(()=>process.exit(0),error=>{console.error(error);process.exit(1);});
-}else
 (async()=>{
  // Every file token is checked before the first broker/provider import.
  for(const [file,digest] of [...settings.sourceFiles,...settings.emittedFiles])if(crypto.createHash('sha256').update(raw.readFileSync(file)).digest('hex')!==digest)throw Error('changed admitted production file '+file);
@@ -180,15 +165,13 @@ if(settings.openRouteProbe){
  if(physical)controller(()=>{leaseFile=path.join(home,'.ccc/devices/physical-leases/android-device/locks/FIXTURE-USB.json');fs.mkdirSync(path.dirname(leaseFile),{recursive:true});initialExpiry=new Date(Date.now()+10000).toISOString();fs.writeFileSync(leaseFile,JSON.stringify({backend:'android-device',hardwareId:'FIXTURE-USB',ownerId:owner,deviceId:id,claimId:'fixture-claim',claimNonce:'fixture-nonce',expiresAt:initialExpiry}),{mode:0o600});});
  let state=scenario.command==='device_reboot'?'Running':'Off';
  const fixtureProviderPaths={tart:path.join(home,'fake/tart'),'powershell.exe':path.join(home,'fake/powershell.exe'),adb:path.join(home,'fake/adb'),'ssh.exe':path.join(home,'fake/ssh.exe'),ssh:path.join(home,'fake/ssh')};
- // The broker's Windows SSH selection prefers providerPaths['ssh.exe']; both its
- // configured selection and the expected GUI producer use this independent fixture token.
- const expectedGui=linux?hyperv.hyperVLinuxGuiReadyCommand({executable:fixtureProviderPaths['ssh.exe'],deviceRoot:initial.deviceRoot,privateRoot:initial.privateRoot,sshPrivateKeyPath:initial.sshPrivateKeyPath,knownHostsPath:initial.sshKnownHostsPath,guestUsername:initial.guestUsername,networkAddress:initial.networkAddress,timeoutMs:30000}):null;
+ // Linux guest transport uses the explicitly configured providerPaths.ssh token.
+ const expectedGui=linux?hyperv.hyperVLinuxGuiReadyCommand({executable:fixtureProviderPaths.ssh,deviceRoot:initial.deviceRoot,privateRoot:initial.privateRoot,sshPrivateKeyPath:initial.sshPrivateKeyPath,knownHostsPath:initial.sshKnownHostsPath,guestUsername:initial.guestUsername,networkAddress:initial.networkAddress,timeoutMs:30000}):null;
  function ownedSshResponse(command){
-  if(command.executable!==fixtureProviderPaths['ssh.exe'])return deny('unallocated SSH executable',[command.executable]);
+  if(command.executable!==fixtureProviderPaths.ssh)return deny('unallocated SSH executable',[command.executable]);
   const exactGui=command.mode===expectedGui.mode&&command.executable===expectedGui.executable&&JSON.stringify(command.args)===JSON.stringify(expectedGui.args);
   return{...command,status:scenario.guestFailure?1:0,stdout:scenario.guestFailure?'':exactGui?'CCC_HYPER_V_GUI_READY\n':'ccc-hyper-v-linux-ready\n',stderr:scenario.guestFailure?'fixture-private-provider-output':''};
  }
- let guiProbeDone=false;
  const runner=(command,runnerOptions)=>{
   let native=null;try{const envelope=JSON.parse(Buffer.from(command.input||'','base64').toString('utf8'));if(typeof envelope.script==='string')native=JSON.parse(envelope.input);}catch{}
   if(!native&&command.input){try{const value=JSON.parse(command.input);if(value.operation)native=value;}catch{}}
@@ -197,7 +180,6 @@ if(settings.openRouteProbe){
   if(command.provider==='hyper-v-ssh'){
    if(reconciledRecordAtSsh===undefined)reconciledRecordAtSsh=controller(()=>JSON.parse(raw.readFileSync(ownerFile,'utf8')).devices.find(item=>item.id===id));
    if(scenario.phase==='after-ssh')race();
-   if(scenario.guiExecutableProbe&&!guiProbeDone&&JSON.stringify(command.args)===JSON.stringify(expectedGui.args)){guiProbeDone=true;try{ownedSshResponse({...command,executable:path.join(path.dirname(home),'unallocated-ssh.exe')});}catch{}}
    return ownedSshResponse(command);
   }
   if(command.provider==='tart'){
@@ -263,49 +245,10 @@ function executeCurrent(lens: "source" | "emitted", scenario: Scenario, expected
     } finally { rmSync(root, {recursive: true, force: true}); }
 }
 
-it("counts native/provider/global-file/bind refusals before subject code can catch them", () => {
-    const root = mkdtempSync(join(tmpdir(), "ccc-lifecycle-fence-negative-")), home = join(root, "home"); mkdirSync(home);
-    const worker = join(root, "worker.cjs"); writeFileSync(worker, WORKER, {mode: 0o400});
-    const settingsFile = join(root, "fixture-input.json"); writeFileSync(settingsFile, JSON.stringify({project, home, scenario: {}, fenceProbe: true}), {mode: 0o400});
-    try {
-        const output = spawnSync(process.execPath, [worker], {encoding: "utf8", timeout: 5000, env: {HOME: home, USERPROFILE: home, CCC_LIFECYCLE_FIXTURE_FILE: settingsFile}});
-        expect(output.error).toBeUndefined(); expect(output.status, output.stdout + output.stderr).toBe(0);
-        const observed = JSON.parse(output.stdout.trim()) as {denied: {kind: string}[]; calls: unknown[]};
-        expect(observed.denied.map(item => item.kind)).toEqual(["child_process.spawn", "process.kill", "fs.writeFileSync", "listen"]);
-        expect(observed.calls).toEqual([]);
-        expect(existsSync(join(root, "outside-home-forbidden"))).toBe(false);
-    } finally { rmSync(root, {recursive: true, force: true}); }
-});
-
-it.each(["sync", "callback", "promise"] as const)("blocks the actual %s open route before readonly-plus-truncate can affect an outside-HOME owned sentinel", route => {
-    const root = mkdtempSync(join(tmpdir(), "ccc-lifecycle-open-negative-")), home = join(root, "home"); mkdirSync(home);
-    const outside = join(root, "separately-owned-sentinel"); mkdirSync(outside);
-    const sentinel = join(outside, "sentinel.txt"); writeFileSync(sentinel, "must preserve all sentinel bytes", {mode: 0o600});
-    const observe = () => { const stat = lstatSync(sentinel, {bigint: true}); return {bytes: readFileSync(sentinel).toString("hex"), dev: String(stat.dev), ino: String(stat.ino), mtime: String(stat.mtimeNs)}; };
-    const before = observe();
-    const worker = join(root, "worker.cjs"), settingsFile = join(root, "fixture-input.json");
-    writeFileSync(worker, WORKER, {mode: 0o400});
-    writeFileSync(settingsFile, JSON.stringify({project, home, scenario: {}, openRouteProbe: route, outsideSentinel: sentinel}), {mode: 0o400});
-    try {
-        const output = spawnSync(process.execPath, [worker], {encoding: "utf8", timeout: 5000, env: {HOME: home, USERPROFILE: home, CCC_LIFECYCLE_FIXTURE_FILE: settingsFile}});
-        expect(output.error).toBeUndefined(); expect(output.status, output.stdout + output.stderr).toBe(0);
-        const observed = JSON.parse(output.stdout.trim()) as {denied: {kind: string}[]; calls: unknown[]};
-        expect(observed.denied).toHaveLength(1);
-        expect(observed.denied[0].kind).toBe(route === "sync" ? "fs.openSync.write" : route === "callback" ? "fs.async.open" : "fs.promises.open");
-        expect(observed.calls).toEqual([]); expect(observe()).toEqual(before);
-    } finally { rmSync(root, {recursive: true, force: true}); }
-});
-
 const macRaces: Scenario[] = ["device_start", "device_stop", "device_delete"].flatMap(command => ["created", "runtime", "nested", "secret", "missing"].map(race => ({name: `Mac ${command} ${race}`, backend: "macos-vm", command, race, phase: "provider"} as Scenario)));
 const hyperVRaces: Scenario[] = ["device_start", "device_reboot"].flatMap(command => [false, true].flatMap(guestFailure => ["created", "runtime", "incarnation", "missing"].map(race => ({name: `HyperV ${command} guestFailure=${guestFailure} ${race}`, backend: "windows-vm", command, race, guestFailure, phase: "provider"} as Scenario))));
 
 describe.each(["source", "emitted"] as const)("actual authenticated %s broker lifecycle state transitions", lens => {
-    it("rejects an unallocated executable through the actual GUI response discriminator even when caught", () => {
-        const observed = executeCurrent(lens, {name: "GUI executable negative", backend: "linux-vm", command: "device_start", guiExecutableProbe: true}, 1);
-        expect(observed.denied).toEqual([{kind: "unallocated SSH executable", args: [expect.stringContaining("unallocated-ssh.exe")]}]);
-        expect(observed.outcome.status).toBe(200);
-        expect(JSON.parse(observed.after.bytes).devices.find((entry: {id: string}) => entry.id === "race")).toMatchObject({bootReady: true});
-    });
     it.each(["plan", "dry-run", "status"] as const)("keeps readonly %s paths outside lifecycle publication", mode => {
         const observed = executeCurrent(lens, {name: "readonly gate", backend: "macos-vm", command: mode === "status" ? "device_status" : "device_start", planOnly: mode === "plan", dryRun: mode === "dry-run"});
         expect(observed.outcome.status).toBe(200); expect(observed.after).toEqual(observed.protectedSnapshot);

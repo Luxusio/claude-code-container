@@ -99,6 +99,7 @@ export function renderBrokerRecording(outcome: BrokerRecordingResponse): WireRes
     if (outcome.kind === "refused" || outcome.kind === "uncertain") {
         const { kind: _kind, reason, unsupportedReason, signal, rollback, execution, executions, ...facts } = outcome;
         return { status: refusalStatus(reason, outcome.error), payload: { ok: false, ...facts,
+                ...(outcome.error === "recording-process-still-running" || outcome.error === "recording-stop-command-failed" ? {startsDevices: false} : {}),
                 ...(unsupportedReason ? { reason: unsupportedReason } : {}), ...(signal ? { signal: recordingSignal(signal) } : {}),
                 ...(rollback ? { rollback: recordingSignal(rollback) } : {}), ...(execution ? { execution: recordingExecution(execution) } : {}),
                 ...(executions ? { executions: executions.map(recordingExecution) } : {}) } };

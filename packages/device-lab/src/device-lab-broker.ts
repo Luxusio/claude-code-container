@@ -9365,6 +9365,7 @@ function brokerAppiumApplication(normalized: NormalizedBrokerOptions) {
             return readDeviceLabTextFile(file, kind === "package" ? "appium-runtime-package" : "appium-runtime-lock", kind === "package" ? DEVICE_BROKER_APPIUM_PACKAGE_MANIFEST_LIMIT_BYTES : DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES);
         },
         stateErrorCode: error => deviceLabStateFileErrorCode(error) || null,
+        isMissingFile: error => error !== null && (typeof error === "object" || typeof error === "function") && "code" in error && error.code === "ENOENT",
         ensureRuntimeDirectory: _runtime => { ensureBrokerAppiumRuntimeDirectory(); return undefined; },
         inspectRuntimeDirectory: _runtime => inspectBrokerAppiumRuntimeDirectory(), inspectNodeModules: _runtime => inspectBrokerAppiumNodeModulesDirectory(),
         entryIsValid: runtime => brokerAppiumRuntimeEntryIsValid(runtime.entry),

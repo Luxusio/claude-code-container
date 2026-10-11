@@ -39,6 +39,7 @@ export interface BrokerAppiumPorts<Runtime> {
     instrumentationReceipt(serial: string): unknown;
     readManifest(runtime: Runtime, kind: "package" | "lock"): string | null;
     stateErrorCode(error: unknown): string | null;
+    isMissingFile(error: unknown): boolean;
     ensureRuntimeDirectory(runtime: Runtime): undefined;
     inspectRuntimeDirectory(runtime: Runtime): boolean;
     inspectNodeModules(runtime: Runtime): boolean;

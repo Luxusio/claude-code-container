@@ -539,7 +539,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
                 try {
                     ports.removeMarker(handle);
                 } catch (error) {
-                    if (ports.stateErrorCode(error) !== "ENOENT") throw new Error("appium-runtime-marker-remove-failed");
+                    if (!ports.isMissingFile(error)) throw new Error("appium-runtime-marker-remove-failed");
                 }
                 const execution = ports.installRuntime(handle, DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS);
                 if (!commandSucceeded(execution) || !inspectBrokerAppiumRuntimeDirectory(handle)
@@ -550,7 +550,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
                 return {ok: true as const, handle, provisioned: true, source: "broker-runtime" as const};
             }, {waitMs: DEVICE_BROKER_APPIUM_INSTALL_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_APPIUM_INSTALL_LOCK_STALE_MS});
         } catch (error) {
-            return {ok: false, error: ports.stateErrorCode(error) === "shared-mutation-lock-timeout"
+            return {ok: false, error: ports.isLockTimeout(error)
                 ? "appium-runtime-install-lock-timeout" : appiumRuntimeOperationError(error, "appium-runtime-install-failed"), receipt};
         }
     }

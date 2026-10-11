@@ -38,7 +38,7 @@ function fixture() {
         http: unexpected, launchServer: unexpected, installRuntime: unexpected,
         captureRuntime: unexpected, runtimeReceipt: unexpected, installAvailable: unexpected,
         instrumentationAvailable: unexpected, resetInstrumentation: unexpected, instrumentationReceipt: unexpected,
-        readManifest: unexpected, stateErrorCode: () => null,
+        readManifest: unexpected, stateErrorCode: () => null, isMissingFile: unexpected,
         ensureRuntimeDirectory: unexpected, inspectRuntimeDirectory: unexpected,
         inspectNodeModules: unexpected, entryIsValid: unexpected, readMarker: unexpected,
         writeManifest: unexpected, removeMarker: unexpected, writeMarker: unexpected,
