@@ -1,3 +1,6 @@
+import { createDeviceAdminPhysicalTransition } from "./application/device-admin-delete.js";
+import type { DeviceAdminPhysicalTransitionPorts } from "./ports/device-admin-delete.js";
+export { physicalLeaseMatchesOwnerDevice } from "./domain/device-admin-delete.js";
 import { createDeviceAdminCleanup } from "./application/device-admin-cleanup.js";
 import type { DeviceAdminCleanupPorts } from "./ports/device-admin-cleanup.js";
 import { serialForAndroid } from "./domain/device-admin-cleanup.js";
@@ -224,16 +227,25 @@ export function hardwareIdForPhysicalDevice(backend: Backend, device: DeviceReco
     return null;
 }
 
-export function physicalLeaseMatchesOwnerDevice(ownerId: string, device: DeviceRecord, lease: PhysicalLeaseRecord | null): boolean {
-    const expectedClaimId = typeof device.leaseClaimId === "string" ? device.leaseClaimId : null;
-    const expectedClaimNonce = typeof device.leaseClaimNonce === "string" ? device.leaseClaimNonce : null;
-    const exactGeneration = expectedClaimId && expectedClaimNonce
-        ? lease?.claimId === expectedClaimId && lease?.claimNonce === expectedClaimNonce
-        : !lease?.claimId && !lease?.claimNonce;
-    return lease?.ownerId === ownerId
-        && (!device.id || !lease.deviceId || lease.deviceId === device.id)
-        && exactGeneration;
-}
+export const deviceAdminPhysicalTransitionNativePorts: DeviceAdminPhysicalTransitionPorts<Backend> = {
+    hardwareId: hardwareIdForPhysicalDevice,
+    withLeaseLock: (_ownerId, backend, _device, hardwareId, operation) => {
+        const leaseFile = physicalLeaseLockFile(backend.stateKey, hardwareId);
+        const aggregateFile = physicalLeaseAggregateFile(backend.stateKey);
+        return withSharedMutationLock(physicalLeaseMutationLockFile(backend.stateKey, hardwareId), () =>
+            withSharedMutationLock(physicalLeaseAggregateMutationLockFile(backend.stateKey), () => operation({
+                readLease: () => readPhysicalLeaseStateFile(leaseFile, backend.stateKey, hardwareId),
+                readAggregate: () => readPhysicalLeaseAggregate(aggregateFile, backend.stateKey),
+                writeAggregate: leases => { writeJsonFileAtomically(aggregateFile, { leases }); return undefined; },
+                writeLease: lease => { writeJsonFileAtomically(leaseFile, lease); return undefined; },
+                removeLease: () => { unlinkSync(leaseFile); return undefined; },
+            })));
+    },
+    sameAggregate: isDeepStrictEqual,
+    missingLease: error => error !== null && (typeof error === "object" || typeof error === "function") && "code" in error && error.code === "ENOENT",
+    transitionRecord: transitionOwnerDeviceRecord,
+};
+const physicalRecordTransition = createDeviceAdminPhysicalTransition(deviceAdminPhysicalTransitionNativePorts);
 
 export function transitionOwnerDeviceRecordWithPhysicalLease(
     ownerId: string,
@@ -241,74 +253,7 @@ export function transitionOwnerDeviceRecordWithPhysicalLease(
     expected: DeviceRecord,
     replacement: DeviceRecord | null,
 ): boolean {
-    const hardwareId = hardwareIdForPhysicalDevice(backend, expected);
-    if (!hardwareId) return transitionOwnerDeviceRecord(ownerId, backend, expected, replacement).matched;
-
-    const leaseFile = physicalLeaseLockFile(backend.stateKey, hardwareId);
-    const aggregateFile = physicalLeaseAggregateFile(backend.stateKey);
-    return withSharedMutationLock(physicalLeaseMutationLockFile(backend.stateKey, hardwareId), () =>
-        withSharedMutationLock(physicalLeaseAggregateMutationLockFile(backend.stateKey), () => {
-            const lease = readPhysicalLeaseStateFile(leaseFile, backend.stateKey, hardwareId) as PhysicalLeaseRecord | null;
-            const previousLeases = readPhysicalLeaseAggregate(aggregateFile, backend.stateKey);
-            const nextLeases = previousLeases.filter((candidate) => candidate.hardwareId !== hardwareId
-                || !physicalLeaseMatchesOwnerDevice(ownerId, expected, candidate));
-            const aggregateChanged = !isDeepStrictEqual(previousLeases, nextLeases);
-            const leaseChanged = physicalLeaseMatchesOwnerDevice(ownerId, expected, lease);
-            if (!aggregateChanged && !leaseChanged) {
-                return transitionOwnerDeviceRecord(ownerId, backend, expected, replacement).matched;
-            }
-            if (aggregateChanged) writeJsonFileAtomically(aggregateFile, { leases: nextLeases });
-
-            if (leaseChanged) {
-                try {
-                    unlinkSync(leaseFile);
-                } catch (error) {
-                    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
-                        if (aggregateChanged) {
-                            try {
-                                writeJsonFileAtomically(aggregateFile, { leases: previousLeases });
-                            } catch (rollbackError) {
-                                throw new AggregateError([error, rollbackError], "physical-lease-aggregate-rollback-failed");
-                            }
-                        }
-                        throw error;
-                    }
-                }
-            }
-
-            let transitionError: unknown;
-            let matched = false;
-            try {
-                matched = transitionOwnerDeviceRecord(ownerId, backend, expected, replacement).matched;
-            } catch (error) {
-                transitionError = error;
-            }
-            if (matched) return true;
-
-            const rollbackErrors: unknown[] = [];
-            if (leaseChanged) {
-                try {
-                    writeJsonFileAtomically(leaseFile, lease);
-                } catch (error) {
-                    rollbackErrors.push(error);
-                }
-            }
-            if (aggregateChanged) {
-                try {
-                    writeJsonFileAtomically(aggregateFile, { leases: previousLeases });
-                } catch (error) {
-                    rollbackErrors.push(error);
-                }
-            }
-            if (rollbackErrors.length > 0) {
-                throw new AggregateError(
-                    transitionError === undefined ? rollbackErrors : [transitionError, ...rollbackErrors],
-                    "physical-lease-owner-state-rollback-failed",
-                );
-            }
-            if (transitionError !== undefined) throw transitionError;
-            return false;
-        }));
+    return physicalRecordTransition.transitionPhysicalRecord(ownerId, backend, expected, replacement);
 }
 
 function windowsSandboxLockFile(): string {

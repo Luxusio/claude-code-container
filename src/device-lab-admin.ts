@@ -1,3 +1,5 @@
+import { createDeviceAdminDelete } from "./application/device-admin-delete.js";
+import type { DeviceAdminDeletePorts } from "./ports/device-admin-delete.js";
 import { createDeviceAdminDiagnostics } from "./application/device-admin-diagnostics.js";
 import { createDeviceAdminSetup } from "./application/device-admin-setup.js";
 import { admitDeviceAdminSmokeArgs, pushDeviceLabWiringDiagnostic, type SmokeOptions, type SmokeFormatOptions, type DeviceLabBenchHealth } from "./domain/device-admin-diagnostics.js";
@@ -7,33 +9,27 @@ export type { HyperVSetupHostResult } from "./domain/device-admin-setup.js";
 import type { HyperVSetupHostResult } from "./domain/device-admin-setup.js";
 import { createDeviceAdminAllProjectCleanup } from "./application/device-admin-cleanup.js";
 import { createDeviceAdminPrune } from "./application/device-admin-prune.js";
-import { macosManagedProviderResources } from "./domain/device-admin-prune.js";
 import { admitDeviceAdminInventoryCommand } from "./domain/device-admin-inventory.js";
 import { createDeviceAdminInventory } from "./application/device-admin-inventory.js";
 import type { DeviceAdminOwnerSnapshot } from "./ports/device-admin-inventory.js";
 import {
     DEVICE_BACKENDS,
     deviceAdminCleanupNativePorts,
+    deviceAdminPhysicalTransitionNativePorts,
     commandPath,
     deviceLabOwnerId,
     hardwareIdForPhysicalDevice,
-    physicalLeaseAggregateFile,
-    physicalLeaseAggregateMutationLockFile,
     physicalLeaseLockFile,
-    physicalLeaseMatchesOwnerDevice,
-    physicalLeaseMutationLockFile,
     readDevices,
-    readPhysicalLeaseAggregate,
     releaseWindowsSandboxLockForOwner,
     runCommand,
     stopOwnerDeviceRecord,
-    transitionOwnerDeviceRecord,
     transitionOwnerDeviceRecordWithPhysicalLease,
     withAdminOwnerDeviceOperation,
 } from "./device-lab-cleanup.js";
 import type { Backend, CommandResult, DeviceRecord, OwnerDeviceMatch, PhysicalLeaseRecord } from "./device-lab-cleanup.js";
 export { DEVICE_BACKENDS, deviceLabOwnerIdentity, deviceLabOwnerId, cleanupOwnerDevices } from "./device-lab-cleanup.js";
-import { existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "fs";
 
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
@@ -54,9 +50,7 @@ import { readPhysicalLeaseStateFile } from "@ccc/device-lab/device-lab-ownership
 import { DeviceLabProjectEnumerationError, enumerateDeviceProjectIds } from "@ccc/device-lab/device-lab-project-state.js";
 export { DeviceLabProjectEnumerationError } from "@ccc/device-lab/device-lab-project-state.js";
 import {
-    withSharedMutationLock,
     withSharedMutationLockAsync,
-    writeJsonFileAtomically,
 } from "@ccc/device-lab/device-lab-shared-state.js";
 
 import {
@@ -582,72 +576,16 @@ function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBro
     return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}`;
 }
 
-function releasePhysicalLeaseForOwner(ownerId: string, backend: Backend, device: DeviceRecord): void {
-    const hardwareId = hardwareIdForPhysicalDevice(backend, device);
-    if (!hardwareId) return;
-    const file = physicalLeaseLockFile(backend.stateKey, hardwareId);
-    withSharedMutationLock(physicalLeaseMutationLockFile(backend.stateKey, hardwareId), () => {
-        withSharedMutationLock(physicalLeaseAggregateMutationLockFile(backend.stateKey), () => {
-            const lease = readPhysicalLeaseStateFile(file, backend.stateKey, hardwareId) as PhysicalLeaseRecord | null;
-            if (!physicalLeaseMatchesOwnerDevice(ownerId, device, lease)) return;
-
-            const aggregateFile = physicalLeaseAggregateFile(backend.stateKey);
-            const previousLeases = readPhysicalLeaseAggregate(aggregateFile, backend.stateKey);
-            const nextLeases = previousLeases.filter((candidate) => candidate.hardwareId !== hardwareId
-                || !physicalLeaseMatchesOwnerDevice(ownerId, device, candidate));
-            const aggregateChanged = !isDeepStrictEqual(previousLeases, nextLeases);
-            if (aggregateChanged) writeJsonFileAtomically(aggregateFile, { leases: nextLeases });
-            try {
-                unlinkSync(file);
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
-                if (aggregateChanged) {
-                    try {
-                        writeJsonFileAtomically(aggregateFile, { leases: previousLeases });
-                    } catch (rollbackError) {
-                        throw new AggregateError([error, rollbackError], "physical-lease-aggregate-rollback-failed");
-                    }
-                }
-                throw error;
-            }
-        });
-    });
-}
-
-function deleteMacosArgs(provider: string, instance: string): string[] | null {
-    if (provider === "tart") return ["delete", instance];
-    if (provider === "vz") return ["delete", instance];
-    if (provider === "utmctl") return ["delete", instance];
-    return null;
-}
-
-function macosProviderDeleteFailure(provider: string, instance: string, stderr: string): CommandResult {
-    return {
-        command: `${provider} delete ${instance}`,
-        status: null,
-        stdout: "",
-        stderr,
-    };
-}
-
-function deleteMacosProviderResources(device: DeviceRecord, timeoutMs?: number): CommandResult[] {
-    const results: CommandResult[] = [];
-    for (const resource of macosManagedProviderResources(device)) {
-        const args = deleteMacosArgs(resource.provider, resource.instance);
-        if (!args) {
-            results.push(macosProviderDeleteFailure(resource.provider, resource.instance, `unsupported macOS VM provider: ${resource.provider}`));
-            continue;
-        }
-        const command = commandPath(resource.provider);
-        if (!command) {
-            results.push(macosProviderDeleteFailure(resource.provider, resource.instance, "command not found"));
-            continue;
-        }
-        const result = runCommand(command, args, timeoutMs);
-        if (result) results.push(result);
-    }
-    return results;
-}
+const deviceAdminDeleteNativePorts: DeviceAdminDeletePorts<Backend> = {
+    ...deviceAdminPhysicalTransitionNativePorts,
+    withRecordLock: withAdminOwnerDeviceOperation,
+    readDevices,
+    sameRecord: isDeepStrictEqual,
+    commandPath,
+    runCommand,
+    releaseWindowsClaim: (ownerId, backend, device) => { releaseWindowsSandboxLockForOwner(ownerId, backend, device); return undefined; },
+};
+const deviceAdminDelete = createDeviceAdminDelete(deviceAdminDeleteNativePorts);
 
 const deviceAdminInventory = createDeviceAdminInventory({
     backends: DEVICE_BACKENDS,
@@ -697,24 +635,7 @@ export function deleteOwnerDevice(deviceId: string, cwd = process.cwd(), profile
     const ownerId = deviceLabOwnerId(cwd, profile);
     const match = findOwnerDevice(ownerId, deviceId);
     if (!match) return { ok: false, text: `Device not found for owner ${ownerId}: ${deviceId}\n` };
-    const deletion = withAdminOwnerDeviceOperation(ownerId, match.backend.stateKey, deviceId, () => {
-        const current = readDevices(ownerId, match.backend.stateKey).find((candidate) => candidate.id === deviceId);
-        if (!current || !isDeepStrictEqual(current, match.device)) return { ok: false as const, reason: "owner-device-state-conflict", commands: [] as CommandResult[] };
-        if (current.status !== "stopped" && current.status !== "detached") {
-            return { ok: false as const, reason: `device-status-${current.status || "unknown"}`, commands: [] as CommandResult[] };
-        }
-        const commands = match.backend.stateKey === "macos" ? deleteMacosProviderResources(current) : [];
-        if (commands.some((command) => command.status !== 0)) return { ok: false as const, reason: "provider-delete-failed", commands };
-        try {
-            releasePhysicalLeaseForOwner(ownerId, match.backend, current);
-        } catch {
-            return { ok: false as const, reason: "physical-lease-release-failed", commands };
-        }
-        releaseWindowsSandboxLockForOwner(ownerId, match.backend, current);
-        const transition = transitionOwnerDeviceRecord(ownerId, match.backend, current, null);
-        if (!transition.matched) return { ok: false as const, reason: "owner-device-state-conflict", commands };
-        return { ok: true as const, commands };
-    });
+    const deletion = deviceAdminDelete.deleteDevice(ownerId, match.backend, deviceId, match.device);
     if (!deletion.ok) {
         if (deletion.reason.startsWith("device-status-")) {
             return { ok: false, text: `Refusing to delete ${deviceId} while status is ${deletion.reason.slice("device-status-".length)}; run 'ccc devices stop ${deviceId}' first.\n` };

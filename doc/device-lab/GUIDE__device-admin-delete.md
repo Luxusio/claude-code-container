@@ -1,0 +1,13 @@
+# Legacy admin device deletion
+
+The exported synchronous `deleteOwnerDevice` and synchronous devices CLI compose `createDeviceAdminDelete`. The application checks the locked current owner record and stopped/detached status, attempts every selected managed macOS resource deletion in its existing order, releases a matching physical lease, releases the Windows claim, then conditionally removes the exact owner record. Native composition supplies individual command, record-CAS and scoped lease effects. Terminal formatting stays in `device-lab-admin.ts`; asynchronous broker routes retain their existing separate applications.
+
+The domain owns the shared physical lease matcher and macOS delete argument/failure decisions. Matching preserves claim ID and nonce generation checks and the existing legacy no-generation rule. Managed macOS resources reuse the prune domain policy without deduplication. Commands retain their optional timeout; this migration adds no timeout default. A provider receipt failure preserves owner metadata, although earlier provider resources may already have been deleted.
+
+`createDeviceAdminPhysicalTransition` supplies the existing cleanup/prune record-plus-lease transition through a separate finite port subset. `device-lab-cleanup.ts` binds lazy lease and aggregate reads inside the existing hardware-then-aggregate native mutation locks. Native file paths, guarded payload reads, atomic writes, unlink, deep equality and exact owner-record CAS remain native. The public cleanup matcher export delegates to the one domain implementation.
+
+Delete release returns before reading an aggregate when the authoritative lease is foreign. Coupled record transition instead may remove matching owned aggregate entries while preserving a foreign authoritative lease. Aggregate publication precedes matching lease unlink. Failed unlink restores the aggregate; failed rollback throws `AggregateError([unlinkError, rollbackError], "physical-lease-aggregate-rollback-failed")`.
+
+A failed or unmatched coupled owner-record CAS restores the lease first, then the aggregate. Compensation failures produce `physical-lease-owner-state-rollback-failed`, with the transition error first when present, followed by compensation errors in effect order. Successful compensation rethrows an original transition error or returns false for an unmatched CAS. Delete alone converts lease-release exceptions into its existing failure result; Windows-claim and final record-transition exceptions keep propagating.
+
+Verification uses existing admin cleanup/prune business suites and consumed native/port contracts. Native platform acceptance and whole-operation qualification remain separate from this source cut.

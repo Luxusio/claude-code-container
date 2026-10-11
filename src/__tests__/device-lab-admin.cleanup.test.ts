@@ -1341,6 +1341,49 @@ describe("device-lab admin cleanup and stop commands", () => {
         expect(readFileSync(aggregateFile, "utf-8")).toBe("{invalid-aggregate");
     });
 
+    it("deletes detached metadata without reading an invalid aggregate belonging to a foreign authoritative lease", () => {
+        const cwd = "/project/admin-delete-foreign-lease-invalid-aggregate-test";
+        const { androidDeviceFile } = fixture.setupFixture(cwd);
+        const devices = fixture.readDevices(androidDeviceFile);
+        devices[0].status = "detached";
+        writeFileSync(androidDeviceFile, JSON.stringify({ devices }));
+        const leaseFile = fixture.physicalLeaseLockPath("android-device", "R5CREAL123");
+        const foreignLease = JSON.stringify({ backend: "android-device", hardwareId: "R5CREAL123", ownerId: "other-owner", deviceId: "foreign-real" });
+        writeFileSync(leaseFile, foreignLease);
+        const aggregateFile = join(fixture.homeDir, ".ccc/devices/physical-leases/android-device.json");
+        writeFileSync(aggregateFile, "{invalid-foreign-aggregate");
+
+        const result = deleteOwnerDevice("android-real", cwd);
+
+        expect(result.ok, result.text).toBe(true);
+        expect(result.text).toContain("deleted: android-real");
+        expect(fixture.readDevices(androidDeviceFile)).toEqual(devices.filter(device => device.id !== "android-real"));
+        expect(readFileSync(leaseFile, "utf-8")).toBe(foreignLease);
+        expect(readFileSync(aggregateFile, "utf-8")).toBe("{invalid-foreign-aggregate");
+    });
+
+    it("preserves a same-owner lease with the same claim id and a different operation nonce during deletion", () => {
+        const cwd = "/project/admin-delete-physical-lease-nonce-mismatch-test";
+        const { owner, androidDeviceFile } = fixture.setupFixture(cwd);
+        const devices = fixture.readDevices(androidDeviceFile);
+        Object.assign(devices[0], { status: "detached", leaseClaimId: "same-claim", leaseClaimNonce: "previous-nonce" });
+        writeFileSync(androidDeviceFile, JSON.stringify({ devices }));
+        const leaseFile = fixture.physicalLeaseLockPath("android-device", "R5CREAL123");
+        const successor = { backend: "android-device", hardwareId: "R5CREAL123", ownerId: owner, deviceId: "android-real", claimId: "same-claim", claimNonce: "successor-nonce" };
+        const leaseBytes = JSON.stringify(successor);
+        const aggregateFile = join(fixture.homeDir, ".ccc/devices/physical-leases/android-device.json");
+        const aggregateBytes = JSON.stringify({ leases: [successor] });
+        writeFileSync(leaseFile, leaseBytes);
+        writeFileSync(aggregateFile, aggregateBytes);
+
+        const result = deleteOwnerDevice("android-real", cwd);
+
+        expect(result.ok, result.text).toBe(true);
+        expect(fixture.readDevices(androidDeviceFile)).toEqual(devices.filter(device => device.id !== "android-real"));
+        expect(readFileSync(leaseFile, "utf-8")).toBe(leaseBytes);
+        expect(readFileSync(aggregateFile, "utf-8")).toBe(aggregateBytes);
+    });
+
     it("prunes physical devices without inverting lease and owner-state locks", () => {
         const cwd = "/project/admin-physical-prune-lock-order-test";
         const { androidDeviceFile } = fixture.setupFixture(cwd);
@@ -1803,6 +1846,33 @@ describe("device-lab admin cleanup and stop commands", () => {
         expect(result.text).toContain("failed: macos-stopped");
         expect(result.text).toContain("-> 7");
         expect(fixture.readDeviceIds(macosFile)).toEqual(["macos-owned:running", "macos-stopped:stopped"]);
+    });
+
+    it.each(["unsupported-provider", "tart"])("retains managed macOS metadata when %s cannot delete its resource", provider => {
+        const cwd = `/project/admin-delete-macos-unavailable-${provider}-test`;
+        const { owner, macosFile } = fixture.setupFixture(cwd);
+        const devices = fixture.readDevices(macosFile);
+        Object.assign(devices.find(device => device.id === "macos-stopped")!, { provider, providerResourceManaged: true });
+        const original = JSON.stringify({ devices });
+        writeFileSync(macosFile, original);
+        const binDir = join(fixture.homeDir, "bin");
+        const commandEffects = join(fixture.homeDir, "unexpected-provider-delete.log");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        fixture.writeNodeTool(binDir, "unsupported-provider", `appendFileSync(${JSON.stringify(commandEffects)}, 'deleted');`);
+
+        const result = deleteOwnerDevice("macos-stopped", cwd);
+
+        expect(result).toEqual({ ok: false, text: [
+            "failed: macos-stopped",
+            "backend: macos-vm",
+            `owner: ${owner}`,
+            "reason: provider-delete-failed",
+            `command: ${provider} delete ccc-mac-stopped -> unknown`,
+            "",
+        ].join("\n") });
+        expect(readFileSync(macosFile, "utf-8")).toBe(original);
+        expect(existsSync(commandEffects)).toBe(false);
     });
 
     it("preserves managed stopped macOS VM provider resources during owner prune", () => {
