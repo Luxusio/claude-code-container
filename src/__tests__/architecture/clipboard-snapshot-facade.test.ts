@@ -20,6 +20,7 @@ vi.mock("./../../application/clipboard/snapshot.js", async actual => {
     return { ...mod, createClipboardSnapshotReader: (...args: Parameters<typeof mod.createClipboardSnapshotReader>) => { native.states.push(args[1]); return mod.createClipboardSnapshotReader(...args); } };
 });
 
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 let mod: typeof import("../../clipboard-server.js"); let image: Buffer | null; let text: Buffer; let targetReads: number;
 beforeEach(async () => {
     vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers(); native.handlers.length = 0; native.states.length = 0;
@@ -36,7 +37,7 @@ beforeEach(async () => {
     });
     mod = await import("../../clipboard-server.js");
 });
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); Object.defineProperty(process, "platform", originalPlatform); });
 async function request(index: number, path: string, token = "secret") {
     const req = Object.assign(new EventEmitter(), { url: path, method: "GET", headers: { authorization: `Bearer ${token}` } });
     const res = Object.assign(new EventEmitter(), { status: 0, body: undefined as unknown, headersSent: false,
@@ -124,6 +125,7 @@ describe("Clipboard snapshot actual public facade composition", () => {
         expect(native.spawn).toHaveBeenCalledTimes(4);
     });
     it("returns 500 for an unexpected Windows capture exception and recovers the read queue", async () => {
+        Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
         native.trusted.mockReturnValue("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
         native.spawn.mockImplementation(() => {
             const stdout = new EventEmitter();
