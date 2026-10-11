@@ -6,7 +6,8 @@ import type { HyperVStopDeletePorts } from "./device-lab/ports/lifecycle/hyper-v
 import type { HyperVOperationEvidence } from "./device-lab/domain/lifecycle/hyper-v-stop-delete.js";
 import { createBrokerPhysicalDevicesApplication } from './device-lab/application/broker-physical-devices.js';
 import { createBrokerOwnerCleanupApplication } from './device-lab/application/broker-owner-cleanup.js';
-import { validateAttachParams as validatePhysicalAttachParams, physicalOwnerConflict } from './device-lab/domain/broker-physical-devices.js';
+import { validateAttachParams as validatePhysicalAttachParams } from './device-lab/domain/broker-physical-devices.js';
+import { createBrokerOwnerRepository } from './device-lab/application/broker-owner-repository.js';
 import { cleanupRecord, type CleanupLeaseGuard } from './device-lab/domain/broker-owner-cleanup.js';
 import type { BrokerPhysicalDevicesPorts } from './device-lab/ports/broker-physical-devices.js';
 import type { BrokerOwnerCleanupPorts } from './device-lab/ports/broker-owner-cleanup.js';
@@ -17,10 +18,9 @@ import type { SnapshotExecution } from "./device-lab/domain/lifecycle/hyper-v-sn
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
 import { isSnapshotTool } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerRecordingApplication } from "./device-lab/application/broker-recording.js";
-import { recordingRuntimeMatches, recordingPublication } from "./device-lab/domain/broker-recording.js";
 import type { BrokerAppiumVerification } from "./device-lab/ports/broker-appium.js";
 import { createBrokerAppiumApplication } from "./device-lab/application/broker-appium.js";
-import { validateAppiumParams, appiumParamError, appiumRuntimeMatches, appiumRecordReplacement, brokerOwnedAppiumPid, brokerOwnedAppiumEndpoint, brokerOwnedAppiumPort, brokerOwnedAppiumRuntime } from "./device-lab/domain/broker-appium.js";
+import { validateAppiumParams, appiumParamError, brokerOwnedAppiumPid, brokerOwnedAppiumEndpoint, brokerOwnedAppiumPort, brokerOwnedAppiumRuntime } from "./device-lab/domain/broker-appium.js";
 import { createBrokerOwnerApplication } from "./device-lab/application/broker-owner.js";
 import type { BrokerOwnerRegistration as DeviceBrokerOwnerRegistration } from "./device-lab/domain/broker-owner.js";
 import type { BrokerAuthQuarantine } from "./device-lab/ports/broker-owner.js";
@@ -38,7 +38,7 @@ import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/m
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord, planBrokerAndroidCreateCommand, planBrokerAndroidExistingCommand } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidEmulatorLifecyclePorts } from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import { createBrokerWindowsSandboxCreate } from "./device-lab/application/lifecycle/windows-sandbox-create.js";
-import { brokerWindowsSandboxRecord, retainAfterWindowsConfigFailure } from "./device-lab/domain/lifecycle/windows-sandbox-create.js";
+import { brokerWindowsSandboxRecord } from "./device-lab/domain/lifecycle/windows-sandbox-create.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { createFocusedInventory, createOwnerInventory } from "./device-lab/application/broker-observation-inventory.js";
 import { createLeaseDatePolicy, createLeaseDirectoryScan, createLeaseList, createPhysicalComposite } from "./device-lab/application/broker-observation-leases.js";
@@ -3617,21 +3617,7 @@ function transitionOwnerRecordingRuntime(
     expected: unknown,
     replacement: Record<string, unknown> | null,
 ) {
-    let found = false;
-    let matched = false;
-    let currentRecording: unknown = null;
-    let updatedDevice: Record<string, unknown> | null = null;
-    mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || (candidate as { id?: unknown }).id !== deviceId) return candidate;
-        found = true;
-        const record = candidate as Record<string, unknown>;
-        currentRecording = record.recording ?? null;
-        if (!recordingRuntimeMatches(expected, currentRecording)) return candidate;
-        matched = true;
-        updatedDevice = recordingPublication(record, replacement, new Date().toISOString());
-        return updatedDevice;
-    }));
-    return { found, matched, currentRecording, device: updatedDevice };
+    return ownerRepository.transitionRecording(ownerId, stateKey, deviceId, expected, replacement);
 }
 
 function brokerDeviceToolSupportedMethods(backend: string | null): Set<string> {
@@ -3815,15 +3801,7 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
         redactExecution: redactProviderCommandInput,
         redactDevice: redactHyperVDeviceSecrets,
         publish: transitionHyperVSnapshotState,
-        mergeRepair: (ownerId, backend, deviceId, original, patch) => {
-            let updated = original;
-            mutateOwnerDevices(ownerId, backend, devices => devices.map(candidate => {
-                if (!candidate || typeof candidate !== "object" || !("id" in candidate) || candidate.id !== deviceId) return candidate;
-                updated = { ...candidate, ...patch, updatedAt: new Date().toISOString() };
-                return updated;
-            }));
-            return updated;
-        },
+        mergeRepair: (ownerId, backend, deviceId, original, patch) => ownerRepository.mergeSnapshotRepair(ownerId, backend, deviceId, original, patch),
         forgetConsole: (ownerId, backend, deviceId) => { forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId)); return undefined; },
         sshReady: (executable, target) => hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
             executable, ...target, timeoutMs: 15000,
@@ -3843,19 +3821,7 @@ function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, device
 
 
 function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>) {
-    let found = false;
-    let matched = false;
-    let current: Record<string, unknown> | null = null;
-    mutateOwnerDevices(ownerId, backend, (devices) => devices.map((candidate) => {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || (candidate as Record<string, unknown>).id !== deviceId) return candidate;
-        found = true;
-        current = candidate as Record<string, unknown>;
-        if (!isDeepStrictEqual(candidate, expected)) return candidate;
-        matched = true;
-        current = replacement;
-        return replacement;
-    }));
-    return { found, matched, device: current };
+    return ownerRepository.transitionSnapshot(ownerId, backend, deviceId, expected, replacement);
 }
 
 
@@ -4075,6 +4041,15 @@ function readOwnerDevices(ownerId: string, stateKey: string) {
     return readOwnerDeviceStateFile(ownerDevicesFile(ownerId, stateKey), DEVICE_BROKER_INVENTORY_FILE_LIMIT);
 }
 
+const ownerRepository = createBrokerOwnerRepository({
+    withLock: (ownerId, stateKey, operation) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), operation),
+    read: readOwnerDevices,
+    validate: devices => { assertOwnerDeviceStateWritable(devices, DEVICE_BROKER_INVENTORY_FILE_LIMIT); return undefined; },
+    publish: (ownerId, stateKey, devices) => { writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices }); return undefined; },
+    equal: isDeepStrictEqual,
+    timestamp: () => new Date().toISOString(),
+});
+
 function ownerDeviceStateFailure(error: unknown, context: { backend?: string; stateKey?: string } = {}): { status: number; payload: Record<string, unknown> } {
     const code = ownerDeviceStateErrorCode(error);
     if (!code) throw error;
@@ -4084,67 +4059,14 @@ function ownerDeviceStateFailure(error: unknown, context: { backend?: string; st
     };
 }
 
-function assertUniqueOwnerDeviceIds(devices: unknown[]) {
-    const ids = new Set<string>();
-    for (const device of devices) {
-        const id = device && typeof device === "object" ? (device as Record<string, unknown>).id : null;
-        if (typeof id !== "string" || !id) continue;
-        if (ids.has(id)) throw new Error(`owner-device-id-conflict:${id}`);
-        ids.add(id);
-    }
-}
-
-function mutateOwnerDevices(ownerId: string, stateKey: string, updater: (devices: unknown[]) => unknown[]) {
-    return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
-        const devices = updater(readOwnerDevices(ownerId, stateKey));
-        assertUniqueOwnerDeviceIds(devices);
-        assertOwnerDeviceStateWritable(devices, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-        writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices });
-        return devices;
-    });
-}
 
 // Selected lifecycle publications share the native owner inventory authority.
 function transitionOwnerLifecycleDevice(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replace: (current: Record<string, unknown>) => unknown) {
-    return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
-        const devices = readOwnerDevices(ownerId, stateKey);
-        const index = devices.findIndex(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string, unknown>).id === deviceId);
-        const current = index < 0 ? null : devices[index] as Record<string, unknown>;
-        if (!current || !isDeepStrictEqual(current, expected)) return { found: index >= 0, matched: false, device: current };
-        const replacement = replace(current);
-        const next = replacement === null ? devices.filter((_, candidateIndex) => candidateIndex !== index) : devices.map((candidate, candidateIndex) => candidateIndex === index ? replacement : candidate);
-        assertUniqueOwnerDeviceIds(next);
-        assertOwnerDeviceStateWritable(next, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-        writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices: next });
-        return { found: true, matched: true, device: replacement };
-    });
+    return ownerRepository.transitionLifecycle(ownerId, stateKey, deviceId, expected, replace);
 }
 
 function claimOwnerDevice(ownerId: string, stateKey: string, device: Record<string, unknown>, uniqueFields: Array<string | string[]>) {
-    return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
-        const devices = readOwnerDevices(ownerId, stateKey);
-        for (const selector of uniqueFields) {
-            const fields = Array.isArray(selector) ? selector : [selector];
-            const values = fields.map((field) => device[field]);
-            if (values.some((value) => value === null || value === undefined || value === "")) continue;
-            const existing = devices.find((candidate) => candidate && typeof candidate === "object" && fields.every((field, index) => (candidate as Record<string, unknown>)[field] === values[index]));
-            if (existing) {
-                const field = fields.join("+");
-                const value = fields.length === 1 ? values[0] : Object.fromEntries(fields.map((key, index) => [key, values[index]]));
-                return {
-                    ok: false as const,
-                    error: field === "id" ? "owner-device-id-conflict" : "owner-device-identity-conflict",
-                    field,
-                    value,
-                    existing: existing as Record<string, unknown>,
-                };
-            }
-        }
-        const next = [...devices, device];
-        assertOwnerDeviceStateWritable(next, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-        writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices: next });
-        return { ok: true as const, device };
-    });
+    return ownerRepository.claim(ownerId, stateKey, device, uniqueFields);
 }
 
 function escapeXml(value: unknown): string {
@@ -4981,23 +4903,7 @@ function claimOrReattachPhysicalOwnerDevice(
     device: Record<string, unknown>,
     hardwareField: "serial" | "udid",
 ) {
-    return withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), () => {
-        const devices = readOwnerDevices(ownerId, stateKey);
-        const { conflicts, allowed } = physicalOwnerConflict(devices, device, hardwareField);
-        if (conflicts.length === 0) {
-            const next = [...devices, device];
-            assertOwnerDeviceStateWritable(next, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-            writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices: next });
-            return { ok: true as const, device, reattached: false };
-        }
-        if (!allowed) {
-            return { ok: false as const, error: "owner-device-already-attached", existing: conflicts[0] || null };
-        }
-        const next = devices.map((candidate) => candidate === conflicts[0] ? device : candidate);
-        assertOwnerDeviceStateWritable(next, DEVICE_BROKER_INVENTORY_FILE_LIMIT);
-        writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices: next });
-        return { ok: true as const, device, reattached: true };
-    });
+    return ownerRepository.claimOrReattachPhysical(ownerId, stateKey, device, hardwareField);
 }
 
 
@@ -5963,7 +5869,7 @@ function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
         withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => operation(cleanupLeaseGuard(guard))),
         releaseLease: (ownerId, guard) => cleanupOwnerPhysicalLease(ownerId, guard.handle),
         restoreLease: restoreCleanupLease,
-        removeDevice: (ownerId, stateKey, deviceId) => { mutateOwnerDevices(ownerId, stateKey, devices => devices.filter(candidate => !(candidate && typeof candidate === "object" && "id" in candidate && candidate.id === deviceId))); },
+        removeDevice: (ownerId, stateKey, deviceId) => ownerRepository.removeDevice(ownerId, stateKey, deviceId),
         auxiliary: (ownerId, request, expected) => brokerOwnerCleanupApplication(normalized).auxiliary(ownerId, request, expected),
         publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
         execute: command => normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }),
@@ -6272,10 +6178,7 @@ function persistHyperVLinuxSshHostIdentity(
         const transition = transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, publication.expected, replace);
         if (transition.matched && persisted) publication.committed = structuredClone(transition.device);
     } else {
-        mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
-            if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== deviceId) return candidate;
-            return replace(candidate as Record<string, unknown>);
-        }));
+        ownerRepository.updateDevice(ownerId, stateKey, deviceId, replace);
     }
     return persisted;
 }
@@ -6386,12 +6289,7 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
             await client(executable,deadline,120000).removeHostFiles({rootDirectory:root,paths,...(checkpointDirectory?{checkpointDiskDirectory:checkpointDirectory}:{})});
         },
         deviceRoot: hyperVDeviceRoot, windowsDirectory: path => win32.dirname(path),
-        replayPublish: (owner,backend,id,replacement) => {
-            mutateOwnerDevices(owner,backend,devices=>replacement===null
-                ?devices.filter(candidate=>!cleanupRecord(candidate)||candidate.id!==id)
-                :devices.map(candidate=>!cleanupRecord(candidate)||candidate.id!==id?candidate:{...candidate,...replacement}));
-            return undefined;
-        },
+        replayPublish: (owner,backend,id,replacement) => ownerRepository.replayPublish(owner,backend,id,replacement),
         cleanupAuxiliary: (owner,request,expected) => cleanupLifecycleAuxiliaryRuntime(owner,request,normalized,expected),
         clone: value => structuredClone(value),
         executeStop: (owner,request,device,executable,deadline) => hyperVTypedPowerExecution(normalized,{
@@ -8689,7 +8587,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
                 claimDefinition: (device: Record<string, unknown>) => claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(persistedParsed)),
                 rollbackAfterClaimFailure: (device: Record<string, unknown>, existing: Record<string, unknown> | null) => rollbackProviderCreateAfterConflict(persistedParsed, device, existing, providerCommand && !("error" in providerCommand) ? providerCommand : null, normalized, hyperVCleanupDeadlineAt),
                 publishConfig: (input: CommandParamSuccess) => writeBrokerWindowsConfig(ownerId, parsed.deviceId, input.create || {}, normalized),
-                removeMatchingClaim: (id: unknown, createdAt: unknown) => mutateOwnerDevices(ownerId, parsed.stateKey, devices => devices.filter(candidate => retainAfterWindowsConfigFailure(candidate, id, createdAt))),
+                removeMatchingClaim: (id: unknown, createdAt: unknown) => ownerRepository.removeMatchingClaim(ownerId, parsed.stateKey, id, createdAt),
                 stateErrorCode: error => ownerDeviceStateErrorCode(error),
             }).create(persistedParsed);
             if (outcome.kind === "claim-exception") {
@@ -9227,22 +9125,7 @@ function transitionOwnerAppiumRuntime(
     expected: unknown,
     replacement: Record<string, unknown> | null,
 ) {
-    let found = false;
-    let matched = false;
-    let currentAppium: unknown = null;
-    let updatedDevice: Record<string, unknown> | null = null;
-    mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || (candidate as { id?: unknown }).id !== deviceId) return candidate;
-        found = true;
-        const record = candidate as Record<string, unknown>;
-        currentAppium = record.appium ?? null;
-        if (!appiumRuntimeMatches(expected, currentAppium)) return candidate;
-        matched = true;
-        const updatedAt = typeof replacement?.updatedAt === "string" ? replacement.updatedAt : new Date().toISOString();
-        updatedDevice = appiumRecordReplacement(record, replacement, updatedAt);
-        return updatedDevice;
-    }));
-    return { found, matched, currentAppium, device: updatedDevice };
+    return ownerRepository.transitionAppium(ownerId, stateKey, deviceId, expected, replacement);
 }
 
 type AppiumRequestBudget = { remaining(): number };
