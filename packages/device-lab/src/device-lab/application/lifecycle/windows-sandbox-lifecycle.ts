@@ -87,6 +87,7 @@ export function createBrokerWindowsSandboxLifecycle<Prepared, Receipt>(ports: Br
         if(artifactCleanup?.ok===false)return {kind:'refused',category:'provider-failed',error:'windows-sandbox-device-artifact-cleanup-failed',facts:{...facts,device:auxiliary?.device||device,artifactCleanup,mutatesHost:true}};
         const publication=success?ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,{kind:parsed.command==='device_start'?'start':parsed.command==='device_stop'?'stop':'delete',minimized:parsed.minimized,runtime,watchdog,confirmation,...(watchdog&&helper?{watchdogCancelPath:helper.minimizeWatchdogCancelPath}:{})}):undefined;
         const finalFacts={...facts,device:success?publication?.device:device,artifactCleanup,publication};
+        if(publication?.matched===false)return {kind:'refused',category:'conflict',error:'owner-device-state-conflict',facts:finalFacts};
         if(!success)return {kind:registration?'indeterminate':'failed',success:false,facts:finalFacts};
         return {kind:'completed',success:true,facts:finalFacts};
     }

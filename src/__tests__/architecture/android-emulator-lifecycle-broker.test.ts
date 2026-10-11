@@ -134,6 +134,26 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
         });
     });
 
+    it("redacts an existing device when a native create races its identity claim", async () => {
+        await withBroker("broker-claim-redaction", async c => {
+            const avdName = `ccc-${c.ownerId}-claim-conflict`, password = "fixture-private-android-password";
+            const existing = { id: "android-retained", backend: "android-emulator", avdName, status: "stopped",
+                privateRoot: join(c.home, "retained-private"), ssh: { user: "guest", password } };
+            c.setRunner(command => {
+                if (command.provider === "avdmanager" && command.args?.[0] === "create") c.write([existing]);
+                return { ...command, status: 0, stdout: command.provider === "adb" ? "List of devices attached\n" : "", stderr: "" };
+            });
+            const result = await c.rpc({ command: "device_create", deviceId: "android-new", name: "New", avdName,
+                port: 5676, createAvd: true, systemImage: ANDROID_SYSTEM_IMAGE });
+            expect(result).toMatchObject({ status: 409, body: { ok: false, error: "owner-device-identity-conflict",
+                existing: { id: existing.id, ssh: { user: "guest", passwordConfigured: true } } } });
+            expect(result.body.existing).not.toHaveProperty("privateRoot");
+            expect(result.body.existing).not.toHaveProperty("ssh.password");
+            expect(JSON.stringify(result.body)).not.toContain(password);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual([existing]);
+        });
+    });
+
     it("complete-record CAS preserves a successor written during successful native stop", async () => {
         await withBroker("broker-successor", async c => {
             const deviceId = "android-broker-successor";
@@ -149,6 +169,27 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
             const stopped = await c.rpc({ command: "device_stop", deviceId });
             expect(injected).toBe(true);
             expect(stopped).toMatchObject({ status: 409, body: { ok: false, error: "owner-device-state-conflict" } });
+            expect(stopped.body).toHaveProperty("result.auxiliaryCleanup.ok", true);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual([successor]);
+        });
+    });
+
+    it("retains successful boot evidence when start cannot publish over a successor", async () => {
+        await withBroker("broker-start-successor", async c => {
+            const deviceId = "android-start-successor";
+            const original = { id: deviceId, backend: "android-emulator", avdName: `ccc-${c.ownerId}-boot-successor`,
+                port: 5678, status: "stopped" };
+            const successor = { ...original, generation: "successor" };
+            c.write([original]);
+            c.setRunner(command => {
+                if (command.provider === "emulator") c.write([successor]);
+                return { ...command, status: 0,
+                    stdout: command.args?.[0] === "devices" ? "List of devices attached\n" : command.args?.includes("sys.boot_completed") ? "1\n" : "",
+                    stderr: "" };
+            });
+            const result = await c.rpc({ command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect(result).toMatchObject({ status: 409, body: { ok: false, error: "owner-device-state-conflict",
+                result: { device: successor, boot: { ready: true, provider: "adb", result: { status: 0, stdout: "1\n" } } } } });
             expect(androidRawState(c.home, c.ownerId).devices).toEqual([successor]);
         });
     });

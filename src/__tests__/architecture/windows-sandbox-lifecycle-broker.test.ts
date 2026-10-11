@@ -119,6 +119,23 @@ describe("broker Windows Sandbox lifecycle application", () => {
         expect(f.read()).toBe(successor);
         expect(f.effects).not.toContain("remove-artifacts");
     });
+    it("reports a final start publication conflict while retaining the launched runtime", async () => {
+        const f = fixture(), request = f.input("device_start");
+        const successor = { id: "sandbox", status: "starting", sandboxId: guid, generation: "successor" };
+        f.ports.publish = (_owner, _key, _id, expected) => {
+            expect(expected).toBe(request.expectedDevice);
+            f.replace(successor);
+            return { found: true, matched: false, device: successor };
+        };
+        expect(await f.app.start(request)).toMatchObject({
+            kind: "refused", category: "conflict", error: "owner-device-state-conflict",
+            facts: { device: successor, invoked: true, mutatesHost: true,
+                runtime: { sandboxId: registeredGuid }, publication: { found: true, matched: false } },
+        });
+        expect(f.read()).toBe(successor);
+        expect(f.locked()).toBe(true);
+        expect(f.effects).not.toContain("release-singleton");
+    });
     it("reports watchdog launch failure while keeping the registered Sandbox running", async () => {
         const f = fixture(), request = f.input("device_start");
         request.parsed.minimized = true;

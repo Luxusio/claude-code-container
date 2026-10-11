@@ -8458,13 +8458,18 @@ function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?:
 function lifecycleCommandPlan(ownerId:string,params:unknown,normalized?:NormalizedBrokerOptions,redactSecrets=true,expected?:{device?:unknown}){return lifecycleCommandPlanning(ownerId,params,normalized,redactSecrets,expected).response;}
 
 
+class NativeLifecyclePreviewPlan {
+    constructor(private readonly command: ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | undefined, private readonly deferredHyperV = false) { }
+    unwrap() {
+        return this.deferredHyperV ? { mode: "powershell", provider: "hyper-v" } : this.command;
+    }
+}
+
 function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions | undefined, redactSecrets: boolean, expected?: {
     device?: unknown;
 }) {
-    const observation = createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, ReturnType<typeof providerCommandForCreate> | ReturnType<typeof providerCommandFor> | {
-        mode: string;
-        provider: string;
-    }, AndroidEmulatorPortAllocation>({
+    const deferredHyperVPlan = new NativeLifecyclePreviewPlan(undefined, true);
+    const observation = createLifecyclePreview<CommandParamSuccess, NormalizedBrokerOptions, NativeLifecyclePreviewPlan, AndroidEmulatorPortAllocation>({
         read: (ownerId, parsed: CommandParamSuccess) => {
             const devices = readOwnerDevices(ownerId, parsed.stateKey);
             if (expected)
@@ -8480,24 +8485,29 @@ function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, n
         androidPort: (ownerId, parsed) => resolveAndroidEmulatorCreatePort(ownerId, parsed),
         createDefinition: (ownerId, parsed) => createOwnerDeviceRecord(ownerId, parsed),
         assertWritable: read => assertOwnerDeviceStateWritable(read(), DEVICE_BROKER_INVENTORY_FILE_LIMIT),
-        createPlan: (ownerId, parsed, normalized: NormalizedBrokerOptions) => redactSecrets && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : providerCommandForCreate(ownerId, parsed, normalized),
-        existingPlan: (ownerId, parsed, device, normalized) => redactSecrets && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : providerCommandFor(ownerId, parsed, device, normalized),
+        createPlan: (ownerId, parsed, normalized: NormalizedBrokerOptions) => redactSecrets && isHyperVBackend(parsed.backend) ? deferredHyperVPlan : new NativeLifecyclePreviewPlan(providerCommandForCreate(ownerId, parsed, normalized)),
+        existingPlan: (ownerId, parsed, device, normalized) => redactSecrets && isHyperVBackend(parsed.backend) ? deferredHyperVPlan : new NativeLifecyclePreviewPlan(providerCommandFor(ownerId, parsed, device, normalized)),
         attachmentMatches: (ownerId, parsed, device) => physicalDeviceLeaseMatches(ownerId, parsed.stateKey, parsed.deviceId, device),
     })(ownerId, parsed, normalized);
+    const unwrapped = observation.kind === "create"
+        ? { ...observation, value: { ...observation.value, providerPlan: observation.value.providerPlan ? observation.value.providerPlan.unwrap() : null } }
+        : observation.kind === "existing"
+            ? { ...observation, value: { ...observation.value, providerPlan: observation.value.providerPlan ? observation.value.providerPlan.unwrap() : null } }
+            : observation;
     if (!redactSecrets)
-        return observation;
-    if (observation.kind === "equivalent-create")
-        return { ...observation, value: { ...observation.value, device: redactHyperVDeviceSecrets(observation.value.device) } };
-    if (observation.kind === "create")
-        return { ...observation, value: { ...observation.value,
-                device: redactBrokerDeviceSecrets(observation.value.device),
-                create: isHyperVBackend(parsed.backend) ? publicHyperVCreateConfiguration({ ...observation.value.create, ...hyperVSecureBootConfiguration(parsed.backend) }) : redactBrokerCreateSecrets(observation.value.create),
-                providerPlan: normalized && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : observation.value.providerPlan } };
-    if (observation.kind === "existing")
-        return { ...observation, value: { ...observation.value,
-                device: isHyperVBackend(parsed.backend) ? redactHyperVDeviceSecrets(observation.value.device) : redactBrokerDeviceSecrets(observation.value.device),
-                providerPlan: normalized && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : observation.value.providerPlan } };
-    return observation;
+        return unwrapped;
+    if (unwrapped.kind === "equivalent-create")
+        return { ...unwrapped, value: { ...unwrapped.value, device: redactHyperVDeviceSecrets(unwrapped.value.device) } };
+    if (unwrapped.kind === "create")
+        return { ...unwrapped, value: { ...unwrapped.value,
+                device: redactBrokerDeviceSecrets(unwrapped.value.device),
+                create: isHyperVBackend(parsed.backend) ? publicHyperVCreateConfiguration({ ...unwrapped.value.create, ...hyperVSecureBootConfiguration(parsed.backend) }) : redactBrokerCreateSecrets(unwrapped.value.create),
+                providerPlan: normalized && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : unwrapped.value.providerPlan } };
+    if (unwrapped.kind === "existing")
+        return { ...unwrapped, value: { ...unwrapped.value,
+                device: isHyperVBackend(parsed.backend) ? redactHyperVDeviceSecrets(unwrapped.value.device) : redactBrokerDeviceSecrets(unwrapped.value.device),
+                providerPlan: normalized && isHyperVBackend(parsed.backend) ? { mode: "powershell", provider: "hyper-v" } : unwrapped.value.providerPlan } };
+    return unwrapped;
 }
 
 type NativeAndroidRuntime = {adb: string; emulator: string};
@@ -8592,7 +8602,7 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
                 return { kind: "unavailable", error: command.error, missing: command.missing };
             return { kind: "ready", handle: new NativeProviderLifecycleEffect(command), operationKind: command.mode === "noop" ? "metadata-only" : "runtime", sandboxId: command.sandboxId, minimized: command.windowStyle === "minimized" };
         },
-        run: (handle, options) => nativeLifecycleObservation(normalized.commandRunner(handle.command, options)),
+        run: (handle, options) => nativeLifecycleObservation(normalized.commandRunner(handle.command, options), handle.command),
         listRuntime: (handle, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options)),
         isCanonicalConfig: (ownerId, deviceId, path) => resolve(path) === resolve(brokerWindowsConfigPath(ownerId, deviceId)),
         writeConfig: (ownerId, deviceId, device) => { writeBrokerWindowsConfig(ownerId, deviceId, device, normalized); return undefined; },
@@ -8631,11 +8641,11 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
     };
 }
 
-function nativeLifecycleObservation(receipt: ProviderCommandResult) {
-    return { mode: receipt.mode, provider: receipt.provider, status: receipt.status, signal: receipt.signal,
+function nativeLifecycleObservation(receipt: ProviderCommandResult, preparedCommand?: ProviderCommand) {
+    return { mode: receipt.mode, provider: receipt.provider, status: receipt.status, signal: receipt.signal, pid: receipt.pid,
         stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error, timedOut: receipt.timedOut,
         outputLimitExceeded: receipt.outputLimitExceeded, typedCreateInvalidResult: receipt.typedCreateInvalidResult,
-        receipt: new NativeBrokerExecutionReceipt(receipt) };
+        receipt: new NativeBrokerExecutionReceipt(receipt, preparedCommand) };
 }
 function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts<NativeProviderLifecycleEffect> {
     return {

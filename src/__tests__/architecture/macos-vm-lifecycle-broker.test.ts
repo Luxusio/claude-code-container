@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeviceBrokerServer, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
@@ -53,6 +53,27 @@ describe("authenticated macOS broker lifecycle", () => {
         expect((await invoke(base, "device_start", {}, false)).status).toBe(401);
         expect(devices()[0].status).toBe("stopped");
         expect(runner).not.toHaveBeenCalled();
+    });
+    it("keeps create credentials private when claiming the cloned device fails", async () => {
+        writeBrokerDevices(owner, "macos", []);
+        const password = "fixture-private-macos-password";
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => {
+            if (command.args?.[0] === "clone") writeFileSync(stateFile(), "{");
+            return { ...command, status: 0, stdout: "", stderr: "" };
+        });
+        const base = await start(runner);
+        const result = await invoke(base, "device_create", {
+            name: "Unit", provider: "tart", image: "base-image",
+            sshHost: "127.0.0.1", sshUser: "guest", sshPassword: password,
+        });
+        expect(result).toMatchObject({ status: 409, body: {
+            ok: false, error: "owner-devices-state-invalid", backend: "macos-vm", stateKey: "macos",
+            rollback: { attempted: true, ok: true },
+        } });
+        expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone", "delete"]);
+        expect(result.body).not.toHaveProperty("plan");
+        expect(result.body).not.toHaveProperty("cause");
+        expect(JSON.stringify(result.body)).not.toContain(password);
     });
     it("keeps the current record when the provider refuses start", async () => {
         writeBrokerDevices(owner, "macos", [device()]);
