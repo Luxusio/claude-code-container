@@ -26,7 +26,7 @@ function macosFixture() {
         stageScreenshot: () => ({ localPath: "/owned/stage/screenshot.png", remotePath: "/tmp/owned-screenshot.png" }),
         capture: () => ({ status: 0, stdout: "", stderr: "" }), copy: () => ({ status: 0, stdout: "", stderr: "" }),
         readScreenshot: () => ({ content: [{ type: "image", data: "native-image", mimeType: "image/png" }] }),
-        cleanupRemote: () => { state.remoteCleaned = true; return { status: 0 }; },
+        cleanupRemote: () => { state.remoteCleaned = true; return { status: 0, stdout: "", stderr: "" }; },
         disposeScreenshot: () => { expect(state.remoteCleaned, "remote cleanup must precede local disposal").toBe(true); state.disposed = true; return undefined; },
     };
     return { ports, state };

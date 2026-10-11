@@ -384,7 +384,7 @@ export function createQemuGuestAccessApplication(ports) {
             ownerId: ports.ownerId(),
             labId: loaded.lab.id,
             timeoutMs,
-            result: publicGuestExecResult(result, loaded.lab, ssh, [sshPath, result?.command]),
+            result: publicGuestExecResult(result, loaded.lab, ssh, [sshPath, typeof result?.command === "string" ? result.command : undefined]),
         };
     }
     return { openSession, probeReadiness, inspectLab, guestAgentStatus, guestExec };
