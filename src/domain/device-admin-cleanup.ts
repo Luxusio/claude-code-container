@@ -3,30 +3,14 @@ export type CleanupRecord = Record<string, unknown> & { id?: string; status?: st
 export type CleanupCommandResult = { command: string; status: number | null; stderr?: string; stdout?: string };
 export type CleanupDeviceResult = { id: string; backend: string; previousStatus: string; status: "stopped" | "skipped" | "failed"; commands: CleanupCommandResult[]; reason?: string };
 export type OwnedCleanupRuntime = { label: "appium" | "recording" | "runtime"; runtime: Record<string, unknown>; signal: "SIGINT" | "SIGTERM"; signalDirectly: boolean };
-export function isGuid(value: unknown): value is string {
-    return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-}
-
-export function serialForAndroid(device: CleanupRecord): string | null {
-    if (typeof device.serial === "string" && device.serial) return device.serial;
-    if (typeof device.port === "number") return `emulator-${device.port}`;
-    return null;
-}
-
-export function simctlTarget(device: CleanupRecord): string | null {
-    for (const key of ["udid", "simulatorName", "name", "id"]) {
-        const value = device[key];
-        if (typeof value === "string" && value) return value;
-    }
-    return null;
-}
-
-export function stopMacosArgs(provider: string, instance: string): string[] | null {
-    if (provider === "tart") return ["stop", instance];
-    if (provider === "vz") return ["stop", instance];
-    if (provider === "utmctl") return ["stop", instance];
-    return null;
-}
+export type CleanupStopEffect =
+    | { kind: "android-recording-stop"; device: CleanupRecord }
+    | { kind: "android-emulator-stop"; device: CleanupRecord }
+    | { kind: "ios-simulator-stop"; device: CleanupRecord }
+    | { kind: "windows-sandbox-stop"; device: CleanupRecord }
+    | { kind: "macos-instance-stop"; device: CleanupRecord };
+export type CleanupStopEffectsResult = { ok: boolean; commands: CleanupCommandResult[] };
+export type CleanupAllProjectsResult = { ok: boolean; projects: { ownerId: string; results: CleanupDeviceResult[] }[] };
 
 export function lifecycleActive(device: CleanupRecord): boolean {
     return ["running", "starting", "booted"].includes(device.status || "");
@@ -85,11 +69,6 @@ export function lifecycleStopRequired(backend: CleanupBackend, device: CleanupRe
     if (!lifecycleActive(device)) return false;
     if (backend.stateKey === "android-device" || backend.stateKey === "ios-device") return false;
     return true;
-}
-
-export function lifecycleStopFailed(backend: CleanupBackend, device: CleanupRecord, commands: CleanupCommandResult[]): boolean {
-    if (!lifecycleStopRequired(backend, device)) return false;
-    return commands.length === 0 || commands.some((command) => command.status !== 0);
 }
 
 export function stoppedDevice(device: CleanupRecord): CleanupRecord {

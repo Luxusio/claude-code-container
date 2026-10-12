@@ -1,5 +1,5 @@
-import type { DeviceArguments, ActiveAppObservation } from '../domain/device-request.mjs';
-export type { DeviceArguments, ActiveAppObservation };
+import type { DeviceArguments, ActiveAppObservation, MobileEffect } from '../domain/device-request.mjs';
+export type { DeviceArguments, ActiveAppObservation, MobileEffect };
 export interface DeviceRecord { id: string; backend?: string; [key: string]: unknown }
 export interface BrokerBackendObservation { name?: string; host?: string; provider?: string; stateKey?: string; devices?: DeviceRecord[]; error?: string; [key: string]: unknown }
 export interface BackendDescription extends BrokerBackendObservation { name: string }
@@ -7,11 +7,22 @@ export interface DisplayTarget extends DeviceRecord { available: boolean; capabi
 export interface BrokerPayload { backends?: BrokerBackendObservation[]; devices?: DeviceRecord[]; response?: { body?: AppiumBody }; [key: string]: unknown }
 export interface AppiumBody { value?: unknown; screenshot?: string; bundleId?: string; bundleID?: string; [key: string]: unknown }
 export interface BrokerResult { ok: boolean; result?: BrokerPayload; body?: BrokerPayload; selected?: {host: string; port: number}; [key: string]: unknown }
+export interface BrokerObservation { ok:boolean; selection?:{host:string;port:number}; receipt:unknown }
+export interface BrokerStatusObservation extends BrokerObservation { available:boolean }
+export interface BrokerBackendsObservation extends BrokerObservation { backends:BrokerBackendObservation[]|null; payloadReceipt:unknown }
+export interface BrokerInventoryObservation extends BrokerBackendsObservation { devices:DeviceRecord[]|null }
+export type MobileObservation =
+ | {kind:'completed';receipt:unknown;source?:unknown;sourceText?:string;clipboardText?:unknown;screenshotData?:string}
+ | {kind:'failed';localBudgetExhausted:boolean;receipt:unknown};
+export type SourceWaitOutcome =
+ | {kind:'matched';text:string;source:string;backend:string;receipt:unknown}
+ | {kind:'unmatched';text:string;source:string;backend:string;timeoutMs:number}
+ | {kind:'deadline-before'}
+ | {kind:'deadline-during'};
+export interface BrokerToolPresentation { routedBy?:string; payload?:boolean }
+export interface BrokerLifecyclePresentation { routedBy:string;implicit:boolean;deleted?:string;avdDeleted?:boolean;simulatorDeleted?:boolean }
 export type BackendInference = {ok: true; backend: string; error?: undefined; matches?: string[]}|{ok:false; backend?: undefined; error: string; matches?: string[]};
-export type PhysicalInference<Result> = {ok:true; backend:string; inventory:BrokerResult|null; response?:undefined; handled?:undefined}|{ok:false; backend?:undefined; inventory?:undefined; response:Result; handled:true};
-export interface MobileRequestItem {method: string; path: string; body: Record<string,unknown>; error?:undefined}
-export interface MobileRequestSuccess {requests?:MobileRequestItem[]; method?:string; path?:string; body?:Record<string,unknown>; error?:undefined}
-export type MobileRequest = {error:string; requests?:undefined; method?:undefined; path?:undefined; body?:undefined}|MobileRequestSuccess;
+export type PhysicalInference<Result> = {ok:true; backend:string; inventory:BrokerInventoryObservation|null; response?:undefined; handled?:undefined}|{ok:false; backend?:undefined; inventory?:undefined; response:Result; handled:true};
 export interface DeviceRequest {publicName:string; operation:string; arguments:DeviceArguments; detail:boolean}
 export interface DeviceRequestOptions { detail?: boolean; toolName?: string; toolAllowed?: (name: string) => boolean }
 export interface DestructiveDecision { ok: boolean; [key: string]: unknown }
@@ -44,8 +55,6 @@ export interface DeviceRequestPorts<Result> {
  OPERATION_TOOLS: readonly {name: string; inputSchema?: {required?: readonly string[]}}[];
  DEVICE_FLOW_TOOL_NAMES: readonly string[];
  now(): number;
- encodeBase64(text: string): string;
- decodeBase64(text: string): string;
  ownerId(): string;
  readOwnerDevices(stateKey: string): DeviceRecord[];
  currentDisplayTarget(): DisplayTarget;
@@ -77,16 +86,18 @@ export interface DeviceRequestPorts<Result> {
  handleLinuxVmTool: ProviderRequest<Result>;
  handleWindowsTool: ProviderRequest<Result>;
  handleDisplayTool: ProviderRequest<Result>;
- brokerStatus(args: DeviceArguments): Promise<BrokerResult>;
- brokerCommand(args: DeviceArguments): Promise<BrokerResult>;
- brokerDeviceTool(args: DeviceArguments): Promise<BrokerResult>;
- brokerPhysical(args: DeviceArguments): Promise<BrokerResult>;
+ observeBrokerStatus(args:DeviceArguments):Promise<BrokerStatusObservation>;
+ observeBrokerBackends(args:DeviceArguments):Promise<BrokerBackendsObservation>;
+ observeBrokerInventory(args:DeviceArguments):Promise<BrokerInventoryObservation>;
+ invokeBrokerLifecycle(args:DeviceArguments):Promise<BrokerObservation>;
+ brokerDeviceTool(args:DeviceArguments):Promise<BrokerObservation>;
+ brokerPhysical(args:DeviceArguments):Promise<BrokerObservation>;
+ ensureMobileSession(args:DeviceArguments):Promise<BrokerObservation>;
+ observeMobileSessionStatus(args:DeviceArguments):Promise<BrokerObservation>;
+ executeMobileEffect(args:DeviceArguments & {backend:string;deviceId:string},effect:MobileEffect):Promise<MobileObservation>;
  observeActiveApp(args: ActiveAppObservationInput): Promise<ActiveAppObservation>;
  presentActiveAppWait(outcome: ActiveAppWaitOutcome): Result;
- brokerAppium(args: DeviceArguments): Promise<BrokerResult>;
- brokerRpc(args: DeviceArguments): Promise<BrokerResult>;
  implicitBrokerProbeOptions(args: DeviceArguments, behavior?: {allowDefault?: boolean}): DeviceArguments|null;
- isLocalObservationBudgetExhaustion(result: BrokerResult): boolean;
  withBrokerOperation<T>(operation: () => Promise<T>): Promise<T>;
  normalizeToolArgs(args: unknown, name: string): DeviceArguments;
  normalizePublicToolArgs(name: string, args: unknown): DeviceArguments;
@@ -95,14 +106,19 @@ export interface DeviceRequestPorts<Result> {
  flowOperationAllowed(name: string, args?: unknown): boolean;
  flowStepArguments(tool: string, flowArgs: DeviceArguments, stepArgs: DeviceArguments): DeviceArguments;
  evaluateDestructivePolicy(name: string, args: unknown): DestructiveDecision;
- presentBrokerTool(receipt: BrokerResult, selectedFallbackValue: unknown): Result;
- imageResult(image: {data: string; mimeType: "image/png"}): Result;
+ presentBrokerReceipt(receipt:unknown,extra:Record<string,unknown>):Result;
+ presentBrokerTool(receipt:unknown,options:BrokerToolPresentation):Result;
+ presentBrokerLifecycle(receipt:unknown,options:BrokerLifecyclePresentation):Result;
+ presentBackendCatalog(value:import('../domain/device-request.mjs').BackendCatalogValue):Result;
+ presentMobileObservation(name:string,backend:string,observation:Extract<MobileObservation,{kind:'completed'}>,extra:Record<string,unknown>):Result;
+ presentSourceWait(outcome:SourceWaitOutcome):Result;
  jsonResult(value: unknown): Result;
  textResult(ok: boolean, text: string): Result;
  flowJsonResult(value: unknown, options: {detail: boolean}): Result;
  compactToolValue(toolName: string, value: unknown): unknown;
  actionResult(publicName: string, operation: string, result: Result, options: DeviceRequestOptions): Result;
- buildListFilesCommand(backend: string, args: DeviceArguments): string;
+ invokeBrokerListFiles(args:DeviceArguments,backend:string):Promise<BrokerObservation>;
+ listDirectDeviceFiles(args:DeviceArguments,backend:string):Promise<Result>;
  listFilesFromExecResult(result: Result, args: DeviceArguments): Result;
  availableDevices(dispatch: (backend: string) => Promise<Result>, options: DeviceRequestOptions): Promise<Result>;
  startBootTimeoutMs(args: DeviceArguments): number;

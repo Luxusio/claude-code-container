@@ -78,3 +78,12 @@ export function iosAppContainerType(value) {
 export function physicalIosUnsupportedAppMessage(name) {
     return `iOS real devices do not support ${name} through CCC because the action is unavailable or unsafe for physical devices.`;
 }
+
+/** @typedef {{kind:'install',path:string|undefined}
+ * |{kind:'launch',bundleId:string|undefined}
+ * |{kind:'stop',bundleId:string}
+ * |{kind:'uninstall',bundleId:string}
+ * |{kind:'permission',bundleId:string,service:string,action:'grant'|'revoke'}
+ * |{kind:'open-url',url:string|undefined}
+ * } IosSimulatorAppEffect */
+/** @typedef {{kind:'install',path:string}|{kind:'launch',bundleId:string}} IosPhysicalAppEffect */

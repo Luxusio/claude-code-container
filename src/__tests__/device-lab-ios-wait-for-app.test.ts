@@ -58,6 +58,13 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("iOS Simulator app observation", () => {
+    it("preserves the native minimum allowance for a zero requested timeout", async () => {
+        fixture.observe = () => { vi.setSystemTime(Date.now() + 1); return failed(); };
+        expect(await wait(0)).toHaveProperty("error");
+        expect(fixture.allowances).toEqual([1]);
+        expect(fixture.calls).toHaveLength(1);
+    });
+
     it("reduces subprocess allowance across fallbacks and skips work after exhaustion", async () => {
         fixture.observe = () => { vi.setSystemTime(Date.now() + 30); return failed(); };
         const observed = await wait(100);

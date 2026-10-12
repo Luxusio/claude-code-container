@@ -20,7 +20,7 @@ import { inspectProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwned
 import { appiumGenerationMatches, transitionAppiumGeneration } from "../state/runtime-generation.mjs";
 import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus } from "../status.mjs";
-import { fetchIosAppiumJson, iosAppiumDiscovery, iosDiscovery } from "./ios-simulator.mjs";
+import { fetchIosAppiumJson, performIosAppiumEffect, iosAppiumDiscovery, iosDiscovery } from "./ios-simulator.mjs";
 
 const physicalStop = createPhysicalStopApplication({
     backend: "ios-device",
@@ -219,7 +219,7 @@ export function listIosRealDevices() { return deviceObservation.owned(); }
 async function handleIosRealToolUnlocked(name, args) {
     const environment = iosEnvironment.request(name, args);
     if (environment?.kind === "refused") return textResult(false, environment.message);
-    const outcome = await appManagement.request(name, args);
+    const outcome = await createAppManagement().request(name, args);
     if (outcome?.kind === "json") return jsonResult(outcome.payload);
     if (outcome?.kind === "text") return textResult(false, outcome.message);
     if (outcome?.kind === "command-failure") return fail(outcome.command);
@@ -329,25 +329,39 @@ const iosEnvironment = createIosEnvironment({
     device: id => findIosRealDevice(id),
 });
 
-const appManagement = createIosAppManagement({
-    variant: "physical",
-    device: id => findIosRealDevice(id),
-    xcrun: () => iosRealDiscovery().xcrun,
-    execute: (xcrun, args, timeoutMs) => timeoutMs === undefined ? run(xcrun, args) : runWithTimeout(xcrun, args, timeoutMs),
-    session: async id => {
-        let session;
-        try {
-            session = await withOwnerDeviceOperation("ios-device", id, () => ensureIosRealAppiumSession(id));
-        } catch (error) {
-            if (!error || typeof error !== "object" || !("code" in error) || error.code !== "shared-mutation-lock-timeout") throw error;
-            return { kind: "refused", message: `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
-        }
-        if (session.unknown) return { kind: "unknown" };
-        if (session.error) return { kind: "refused", message: session.error };
-        return { kind: "ready", session };
-    },
-    request: (session, path, body) => fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, { method: "POST", body: JSON.stringify(body) }),
-});
+function createAppManagement() {
+    /** @type {string|null} */
+    let xcrun = null;
+    return createIosAppManagement({
+        variant: "physical",
+        device: id => findIosRealDevice(id),
+        available: () => { xcrun = iosRealDiscovery().xcrun; return Boolean(xcrun); },
+        perform: (device, effect) => {
+            const args = effect.kind === "install" ? ["devicectl", "device", "install", "app", "--device", device.udid, effect.path]
+                : ["devicectl", "device", "process", "launch", "--device", device.udid, effect.bundleId];
+            const command = effect.kind === "install" ? runWithTimeout(xcrun, args, 300000) : run(xcrun, args);
+            return { kind: command.status === 0 ? "succeeded" : "failed", command };
+        },
+        session: async id => {
+            let session;
+            try {
+                session = await withOwnerDeviceOperation("ios-device", id, () => ensureIosRealAppiumSession(id));
+            } catch (error) {
+                if (!error || typeof error !== "object" || !("code" in error) || error.code !== "shared-mutation-lock-timeout") throw error;
+                return { kind: "refused", message: `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
+            }
+            if (session.unknown) return { kind: "unknown" };
+            if (session.error) return { kind: "refused", message: session.error };
+            return { kind: "ready", session };
+        },
+        terminateApp: async (session, bundleId) => {
+            try {
+                await fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}/execute/sync`, { method: "POST", body: JSON.stringify({ script: "mobile: terminateApp", args: [{ bundleId }] }) });
+                return { kind: "succeeded" };
+            } catch (error) { return { kind: "failed", message: error !== null && typeof error === "object" && "message" in error ? String(error.message) : String(error) }; }
+        },
+    });
+}
 
 const controlTransfer = createIosControlTransfer({
     kind: "physical",
@@ -397,7 +411,7 @@ const observationPorts = {
     targetStatus: device => withTargetStatus(device),
     withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios-device", id, operation),
     waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
-    requestHttp: (url, options) => fetchIosAppiumJson(url, options),
+    appiumEffect: performIosAppiumEffect,
     spawnServer: spawnObservationAppium,
     inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
     waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
@@ -409,6 +423,7 @@ const observationPorts = {
         ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
     timestamp: () => now(),
     runtimeId: () => randomUUID(),
+    serverUrlForPort: port => `http://127.0.0.1:${port}`,
     portForDevice: id => appiumPortForDevice(id),
     pause: milliseconds => sleep(milliseconds),
     diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),

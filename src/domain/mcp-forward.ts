@@ -5,20 +5,6 @@ export interface McpServerConfig {
     [key: string]: unknown;
 }
 
-// Chrome DevTools MCP config (always included, managed by ccc)
-const CHROME_DEVTOOLS_CONFIG: McpServerConfig = {
-    command: "mise",
-    args: [
-        "--no-config", "exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp",
-        "--headless", "--isolated",
-        "--executablePath=/usr/bin/chromium",
-        "--chromeArg=--no-sandbox",
-        "--chromeArg=--disable-setuid-sandbox",
-        "--chromeArg=--disable-dev-shm-usage",
-    ],
-};
-
-const OPT_DEVICE_LAB_MCP_SERVER = "/opt/ccc/dist/device-lab-mcp/server.mjs";
 export const RETIRED_X11_MCP_SERVERS = new Set([
     "/opt/ccc/x11-mcp/server.mjs",
     "/opt/ccc/dist/x11-mcp/server.mjs",
@@ -27,13 +13,6 @@ export const RETIRED_X11_MCP_SERVERS = new Set([
 function usesRetiredX11Server(server: McpServerConfig): boolean {
     return (typeof server.command === "string" && RETIRED_X11_MCP_SERVERS.has(server.command))
         || (Array.isArray(server.args) && server.args.some((arg) => RETIRED_X11_MCP_SERVERS.has(arg)));
-}
-
-function managedMcpServerConfig(serverPath: string): McpServerConfig {
-    return {
-        command: "mise",
-        args: ["--no-config", "exec", "node@22", "--", "node", serverPath],
-    };
 }
 
 export function rewriteLocalhostUrl(url: string): string {
@@ -60,16 +39,6 @@ export function selectHostMcpServers(parsed: unknown): Record<string, McpServerC
     const config = parsed as {mcpServers?: Record<string, McpServerConfig>} | null;
     if (config?.mcpServers && typeof config.mcpServers === "object") return config.mcpServers;
     return {};
-}
-
-export function freshManagedMcpServers(): Record<string, McpServerConfig> {
-    const mcpServers: Record<string, McpServerConfig> = {};
-    mcpServers["chrome-devtools"] = CHROME_DEVTOOLS_CONFIG;
-    mcpServers["device-lab"] = {
-        ...managedMcpServerConfig(OPT_DEVICE_LAB_MCP_SERVER),
-        env: { CCC_DEVICE_BROKER_AUTH_FILE: "/run/ccc-device-broker-auth/owner.json" },
-    };
-    return mcpServers;
 }
 
 export function forwardHostMcpServers(mcpServers: Record<string, McpServerConfig>, hostServers: Record<string, McpServerConfig>): string[] {

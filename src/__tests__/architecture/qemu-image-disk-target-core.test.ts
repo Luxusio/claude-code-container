@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createQemuImageDiskTargetApplication } from "../../../packages/device-lab/providers/application/qemu-image-disk-target.mjs";
-import { qemuCommandTimeout, qemuOverlayArguments, qemuTargetForLab } from "../../../packages/device-lab/providers/domain/qemu-image-disk-target.mjs";
+import { qemuCommandTimeout, qemuTargetForLab } from "../../../packages/device-lab/providers/domain/qemu-image-disk-target.mjs";
 
 // No task directory, current source hash, or candidate-derived expected output.
 type Ports = Parameters<typeof createQemuImageDiskTargetApplication>[0];
 function fixture() {
-    const trace: string[] = [], fault = { native: "sentinel" }, environment={SENTINEL:"native environment"};
+    const trace: string[] = [], fault = { native: "sentinel" };
     const lab = { id: "unit", name: "Unit", runtimeState: "stopped", provider: "container-qemu",
         ownerId: "owner", paths: { labDir: "/owned/unit", workspaceDir: "/owned/unit/workspace", artifactsDir: "/owned/unit/artifacts" },
         image: { sourceImage: "/owned/base.raw", format: "raw", diskImage: "/owned/unit/disks/root.qcow2" }, extra: { raw: true } };
@@ -27,11 +27,14 @@ function fixture() {
         validateDiskPath: () => { observe("disk-path"); return state.disk; },
         diskExists: () => { observe("disk-exists"); return state.exists; },
         providerStatus: () => { observe("provider"); return state.status; },
-        ensureDiskParent: () => { observe("mkdir"); return undefined; },
-        qemuImageRunner: () => { observe("runner"); return (command, args, options) => { observe("run"); expect(command).toBe("/bin/qemu-img");
-            expect(args).toEqual(["create","-f","qcow2","-F","raw","-b","/owned/base.raw",lab.image.diskImage]);
-            expect(options).toEqual({cwd:lab.paths.labDir,env:environment,timeoutMs:120000}); return state.execution; }; },
-        commandEnvironment: () => { observe("env"); return environment; },
+        createOverlay: (input, providerStatus) => {
+            observe(input.dryRun ? "plan-overlay" : "run");
+            expect(input).toEqual({ sourcePath: source.path, sourceFormat: source.format, diskPath: disk.diskPath,
+                labDirectory: lab.paths.labDir, dryRun: input.dryRun, timeoutMs: 120000 });
+            expect(providerStatus).toBe(state.status);
+            if (!state.execution.ok) return { ok: false, error: "qemu-img-create-failed", result: state.execution };
+            return { ok: true, command: "opaque-native-command", args: ["opaque-native-receipt"], result: state.execution };
+        },
         now: () => { observe("now"); return "frozen-time"; },
         writeLab: value => { observe("write"); state.published=value; return undefined; },
         presentLab: value => { observe("present-lab"); return value; },
@@ -77,10 +80,11 @@ describe("QEMU whole inward image/disk/target policy", () => {
     });
     it("dry-run plans after repeated canonical disk validation and never executes or publishes",()=>{
         const f=fixture();const value=f.app.materializeDisk({labId:"unit",dryRun:true});
-        expect(value).toMatchObject({ok:true,dryRun:true,materialized:false,plan:{command:"/bin/qemu-img"}});
+        expect(value).toMatchObject({ok:true,dryRun:true,materialized:false,plan:{command:"opaque-native-command"}});
+        expect(f.trace).toContain("plan-overlay");expect(f.trace).not.toContain("run");
         expect(f.trace).not.toContain("mkdir");expect(f.trace).not.toContain("now");expect(f.trace).not.toContain("write");
     });
-    it("strict force executes exact argv and publishes only after success and clock observation",()=>{
+    it("strict force requests an overlay and publishes only after success and clock observation",()=>{
         const f=fixture();f.state.exists=true;
         const value=f.app.materializeDisk({labId:"unit",force:true});
         expect(value).toMatchObject({ok:true,materialized:true,disk:{forced:true,backingFormat:"raw",materializedAt:"frozen-time"}});
@@ -107,10 +111,9 @@ describe("QEMU whole inward image/disk/target policy", () => {
         expect(target.runtime).not.toHaveProperty("secret");expect(f.trace).toEqual([]);
         expect(qemuTargetForLab({...lab,runtimeState:"running",readiness:{latest:{state:"failed"}},guest:{ssh:{},agent:{}}})).toMatchObject({attachable:false,sessionState:"unavailable",sessionHints:{guestSsh:"bounded-guest-ssh-session-available",guestAgent:"bounded-guest-agent-session-available"}});
     });
-    it("preserves command timeout bounds and exact overlay planning",()=>{
+    it("preserves command timeout bounds",()=>{
         for(const [value,expected] of [[undefined,120000],[null,120000],["",120000],[-1,120000],[1.5,120000],["1500",1500],[900000,600000]] as const)
             expect(qemuCommandTimeout(value,120000)).toBe(expected);
-        const f=fixture();expect(qemuOverlayArguments(f.state.source,f.lab.image.diskImage)).toEqual(["create","-f","qcow2","-F","raw","-b","/owned/base.raw",f.lab.image.diskImage]);
     });
 });
 

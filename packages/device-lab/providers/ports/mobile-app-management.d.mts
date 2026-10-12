@@ -21,9 +21,15 @@ export type AndroidAppOutcome =
 
 export interface IosSimulatorAppDevice { id: string; simulatorName?: string; udid?: string }
 export interface IosPhysicalAppDevice { id: string; udid: string }
-export type IosSimulatorDiscovery =
-    | { available: true; xcrun: string; missing: string[] }
-    | { available: false; xcrun?: string | null; missing: string[] };
+export type IosSimulatorAppEffect = import("../domain/mobile-app-management.mjs").IosSimulatorAppEffect;
+export type IosPhysicalAppEffect = import("../domain/mobile-app-management.mjs").IosPhysicalAppEffect;
+export type IosAppCommandObservation =
+    | { kind: "succeeded"; command: MobileCommandReceipt }
+    | { kind: "failed"; command: MobileCommandReceipt };
+export type IosAppTerminationObservation =
+    | { kind: "succeeded" }
+    | { kind: "failed"; message: string };
+export type IosSimulatorDiscovery = { available: boolean; missing: string[] };
 export type IosOwnedTarget = { ok: true; target: string } | { ok: false; message: string };
 export type IosAppContainerObservation =
     | { ok: true; containerRoot: string }
@@ -39,9 +45,9 @@ export interface IosSimulatorAppManagementPorts<Device extends IosSimulatorAppDe
     readonly variant: "simulator";
     device(deviceId: unknown): Device | undefined;
     discovery(): IosSimulatorDiscovery;
-    ownedTarget(xcrun: string, device: Device): IosOwnedTarget;
-    execute(xcrun: string, args: (string | undefined)[], timeoutMs: number | undefined): MobileCommandReceipt;
-    resolveAppContainer(xcrun: string, target: string, bundleId: string, containerType: string): IosAppContainerObservation;
+    ownedTarget(device: Device): IosOwnedTarget;
+    perform(target: string, effect: IosSimulatorAppEffect): IosAppCommandObservation;
+    resolveAppContainer(target: string, bundleId: string, containerType: string): IosAppContainerObservation;
     containAppContainer(containerRoot: string): IosAppContainment;
     clearAppContainer(containerRoot: string): undefined;
     publishAppReset(deviceId: unknown, reset: IosAppReset, updatedAt: string): Device | undefined;
@@ -52,19 +58,15 @@ export type IosAppSessionObservation<Session extends IosVerifiedAppSession> =
     | { kind: "unknown" }
     | { kind: "refused"; message: string }
     | { kind: "ready"; session: Session };
-export interface IosTerminateAppRequest {
-    script: "mobile: terminateApp";
-    args: [{ bundleId: string }];
-}
 export interface IosPhysicalAppManagementPorts<Device extends IosPhysicalAppDevice = IosPhysicalAppDevice, Session extends IosVerifiedAppSession = IosVerifiedAppSession> {
     readonly variant: "physical";
     device(deviceId: unknown): Device | undefined;
-    xcrun(): string | null;
-    execute(xcrun: string, args: (string | undefined)[], timeoutMs: number | undefined): MobileCommandReceipt;
+    available(): boolean;
+    perform(device: Device, effect: IosPhysicalAppEffect): IosAppCommandObservation;
     /** Preserve actual owner/lease/process/session selection and its lock/refusal handling. */
     session(deviceId: unknown): Promise<IosAppSessionObservation<Session>>;
-    /** Exactly one native POST; application supplies terminate body and owns success policy. */
-    request(session: Session, path: "/execute/sync", body: IosTerminateAppRequest): Promise<unknown>;
+    /** Exactly one native termination request using the selected owned session. */
+    terminateApp(session: Session, bundleId: string): Promise<IosAppTerminationObservation>;
 }
 export type IosAppManagementPorts<Device extends IosSimulatorAppDevice = IosSimulatorAppDevice, Session extends IosVerifiedAppSession = IosVerifiedAppSession> =
     IosSimulatorAppManagementPorts<Device> | IosPhysicalAppManagementPorts<Device & IosPhysicalAppDevice, Session>;

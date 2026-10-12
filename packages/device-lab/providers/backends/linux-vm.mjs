@@ -4,7 +4,7 @@ import { createQemuOwnedDataApplication } from "../application/qemu-owned-data.m
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
-import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult } from "../domain/qemu-lifecycle.mjs";
+import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult, publicGuestExecResult } from "../domain/qemu-lifecycle.mjs";
 import { createQemuImageImportApplication } from "../application/qemu-image-import.mjs";
 import { createQemuImageDiskTargetApplication } from "../application/qemu-image-disk-target.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
@@ -584,18 +584,24 @@ function qemuImageDiskTargetApplication(options) {
         validateDiskPath: (lab) => validateLabDiskPath(lab),
         diskExists: (diskPath) => existsSync(diskPath),
         providerStatus: () => labProviderStatus(options),
-        ensureDiskParent: (diskPath) => { mkdirSync(dirname(diskPath), { recursive: true }); },
-        qemuImageRunner: () => options.commandRunner || ((command, commandArgs, runOptions) => {
-            const result = spawnSync(command, commandArgs, {
-                cwd: runOptions.cwd,
-                env: runOptions.env,
-                encoding: "utf8",
-                timeout: runOptions.timeoutMs,
-                maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
+        createOverlay: (input, status) => {
+            const args = ["create", "-f", "qcow2", "-F", input.sourceFormat, "-b", input.sourcePath, input.diskPath];
+            if (input.dryRun) return { ok: true, dryRun: true, command: status.qemuImg || "qemu-img", args, providerStatus: status };
+            mkdirSync(dirname(input.diskPath), { recursive: true });
+            const runner = options.commandRunner || ((command, commandArgs, runOptions) => {
+                const result = spawnSync(command, commandArgs, {
+                    cwd: runOptions.cwd,
+                    env: runOptions.env,
+                    encoding: "utf8",
+                    timeout: runOptions.timeoutMs,
+                    maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
+                });
+                return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args: commandArgs };
             });
-            return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args: commandArgs };
-        }),
-        commandEnvironment: () => options.env || process.env,
+            const result = runner(status.qemuImg, args, { cwd: input.labDirectory, env: options.env || process.env, timeoutMs: input.timeoutMs });
+            if (!result?.ok) return { ok: false, error: "qemu-img-create-failed", result: publicExecution(result) };
+            return { ok: true, command: status.qemuImg, args, result: publicExecution(result) };
+        },
         now: () => nowIso(options),
         writeLab: (lab) => writeLab(ctx, lab),
         presentLab: publicLab,
@@ -694,7 +700,15 @@ function qemuLifecycleApplication(options = {}) {
         diskExists: (file) => existsSync(file),
         imageDiskTargetApplication: () => qemuImageDiskTargetApplication(options),
         providerStatus: () => labProviderStatus(options),
-        launchRunner: () => options.commandRunner || defaultCommandRunner,
+        launch: (input, ctx, status) => {
+            const args = nativeQemuArgs(input);
+            if (input.dryRun) return { ok: true, presentation: {}, preview: { command: status.qemu || "qemu-system-x86_64", args: publicQemuArgs(args) } };
+            const runner = options.commandRunner || defaultCommandRunner;
+            const result = runner(status.qemu, args, { cwd: input.labDirectory, env: ctx.env });
+            const presentation = publicExecution(result);
+            if (!result?.ok) return { ok: false, presentation };
+            return { ok: true, runtime: { pid: result.pid || null, processIdentity: result.processIdentity || null, command: status.qemu, args }, presentation };
+        },
         clock: () => nowIso(options),
         runtimeId: () => randomUUID(),
         inspectRuntime: (runtime) => inspectQemuRuntime(runtime),
@@ -702,13 +716,26 @@ function qemuLifecycleApplication(options = {}) {
         legacyKillAvailable: () => typeof options.killProcess === "function",
         legacyKill: (pid) => { options.killProcess(pid); },
         signalRuntime: (runtime, signal) => signalOwnedRuntimeProcess(runtime, signal),
-        bindProvisionLeaves: (timeoutMs, env) => {
-            const scopedOptions = { ...options, env, guestAgentProvisionTimeoutMs: timeoutMs };
+        provisionGuestAgent: ({ lab, timeoutMs }, ctx) => {
+            const ssh = lab.guest.ssh;
+            const agent = lab.guest.agent;
+            const paths = sshCommandPaths(ctx.env, options);
+            if (!paths.ssh) return {
+                ok: false,
+                provisioned: false,
+                checks: [{ name: "guest-agent-provision", status: "fail", reason: "ssh-command-missing", agent: agent.name }],
+                diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
+            };
+            const result = sshRunner(options)(paths.ssh, [...sshBaseArgs(ssh), sshDestination(ssh), agent.provisionCommand], {
+                cwd: lab.paths.labDir,
+                env: ctx.env,
+                timeoutMs: boundedTimeout(timeoutMs || options.sshTimeoutMs || 30000, 30000),
+            });
             return {
-                commandPaths: () => sshCommandPaths(scopedOptions.env || process.env, scopedOptions),
-                commandRunner: () => sshRunner(scopedOptions),
-                environment: () => scopedOptions.env || process.env,
-                timeoutMs: () => boundedTimeout(scopedOptions.guestAgentProvisionTimeoutMs || scopedOptions.sshTimeoutMs || 30000, 30000),
+                ok: result?.ok === true,
+                provisioned: result?.ok === true,
+                checks: [{ name: "guest-agent-provision", status: result?.ok === true ? "pass" : "fail", agent: agent.name, exitStatus: result?.status ?? null }],
+                diagnostics: { kind: "guest-agent-provision", available: true, agent: agent.name, result: publicGuestExecResult(result, lab, ssh, [paths.ssh, agent.healthCommand, agent.provisionCommand]) },
             };
         },
     });
@@ -723,7 +750,30 @@ export function materializeDisk(args = {}, options = {}) {
 }
 
 export function buildQemuArgs(lab, options = {}) {
-    return qemuLifecycleApplication().buildQemuArgs(lab, options);
+    const materializedDisk = lab.image?.disk?.path || null;
+    const disk = options.preferDiskImage && materializedDisk
+        ? materializedDisk
+        : materializedDisk && existsSync(materializedDisk)
+            ? materializedDisk
+            : existsSync(lab.image.diskImage)
+                ? lab.image.diskImage
+                : lab.image.sourceImage;
+    return nativeQemuArgs({ ownerId: lab.ownerId, labId: lab.id, memoryMb: lab.resources.memoryMb, cpus: lab.resources.cpus, labDirectory: lab.paths.labDir, diskImage: disk || null });
+}
+
+/** @param {Omit<import('../ports/qemu-lifecycle.mjs').QemuLaunchInput, 'dryRun'>} input */
+function nativeQemuArgs(input) {
+    const args = [
+        "-machine", "q35,accel=kvm:tcg",
+        "-m", String(input.memoryMb),
+        "-smp", String(input.cpus),
+        "-name", `ccc-${input.ownerId}-${input.labId}`,
+        "-display", "none",
+        "-monitor", `unix:${join(input.labDirectory, "qemu-monitor.sock")},server,nowait`,
+        "-pidfile", join(input.labDirectory, "qemu.pid"),
+    ];
+    if (input.diskImage) args.push("-drive", `file=${input.diskImage},if=virtio,format=qcow2`);
+    return args;
 }
 
 function targetForLab(lab) {

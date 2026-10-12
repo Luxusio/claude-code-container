@@ -25,6 +25,7 @@ function contracts(c: Claude, d: Codex) {
     resolveClaudeProfile: () => c,
     readClaudeProfileDocument: binding => { const typed: Claude = binding; void typed; return undefined; },
     readHostMcpDocument: () => undefined,
+    createManagedMcpServers: () => ({ chromeDevtools: { command: 'browser' }, deviceLab: { command: 'device' } }),
     withCodexProfileLock: <T>(_profile: string | undefined, operation: () => T): T => operation(),
     prepareCodexProfile: () => ({binding:d, existingText:''}),
     publishCodexProfile: (binding, _text) => { const typed: Codex = binding; void typed; return undefined; },
@@ -32,6 +33,13 @@ function contracts(c: Claude, d: Codex) {
     };
     const generated: string[] = createMcpConfigRegenerator(ports).build('work', () => {});
     const generic: number = ports.withCodexProfileLock(undefined, () => 1);
+    const managed: { chromeDevtools: McpServerConfig; deviceLab: McpServerConfig } = ports.createManagedMcpServers();
+    // @ts-expect-error managed config construction remains synchronous
+    const badManagedAsync: McpConfigRegenerationPorts<Claude, Codex>['createManagedMcpServers'] = async () => managed;
+    // @ts-expect-error both managed server configurations are required
+    const badManagedMissing: McpConfigRegenerationPorts<Claude, Codex>['createManagedMcpServers'] = () => ({ chromeDevtools: {} });
+    // @ts-expect-error managed capability returns finite configurations rather than arbitrary named entries
+    const badManagedNames: McpConfigRegenerationPorts<Claude, Codex>['createManagedMcpServers'] = () => ({ 'chrome-devtools': {}, 'device-lab': {} });
     // @ts-expect-error publication cannot become asynchronous
     const badPublication: McpConfigRegenerationPorts<Claude, Codex>['publishCodexProfile'] = async () => {};
     // @ts-expect-error Claude publication cannot become asynchronous
@@ -47,6 +55,6 @@ function contracts(c: Claude, d: Codex) {
     // @ts-expect-error synchronous build cannot become Promise
     const badBuild: Promise<string[]> = createMcpConfigRegenerator(ports).build();
 
-    void [bare, profiled, explicit, host, url, server, promise, ports, generated, generic, badPublication, badClaudePublication, badRead, badCapability, badPrepare, badBuild];
+    void [bare, profiled, explicit, host, url, server, promise, ports, generated, generic, managed, badManagedAsync, badManagedMissing, badManagedNames, badPublication, badClaudePublication, badRead, badCapability, badPrepare, badBuild];
 }
 void contracts;

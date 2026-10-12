@@ -1,14 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
-import type { DeviceArguments, DeviceRequestPorts } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
+import type { DeviceArguments, DeviceRequestPorts, MobileEffect } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
 
-import { presentBrokerTool, imageResult, presentActiveAppWait } from "../../../device-lab-mcp/src/device-request-presenter.mjs";
+import { presentBrokerTool, presentBackendCatalog, presentMobileObservation, presentSourceWait, imageResult, presentActiveAppWait } from "../../../device-lab-mcp/src/device-request-presenter.mjs";
 type OpaqueResult = { selection: "json" | "text" | "image"; value: unknown };
 function jsonReply(value: unknown): OpaqueResult { return { selection: "json", value }; }
+const nativeJson = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+const nativeText = (_ok: boolean, text: string) => ({ content: [{ type: "text", text }] });
+function opaqueJson(result: { content: { text?: string }[] }): OpaqueResult { return jsonReply(JSON.parse(result.content[0].text ?? "null")); }
 
 function requestPorts(operation: string, normalized: DeviceArguments = {}): DeviceRequestPorts<OpaqueResult> {
     const unexpected = (): never => { throw new Error("Request reached work before admission"); };
-    const brokerCommand = vi.fn(unexpected);
+    const invokeBrokerLifecycle = vi.fn(unexpected);
     const handleAndroidTool = vi.fn(unexpected);
     const ports = {
         OWNER_DEVICE_ID_PATTERN: /^owned-/,
@@ -19,8 +22,6 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
         ],
         DEVICE_FLOW_TOOL_NAMES: ["screenshot"],
         now: () => 0,
-        encodeBase64: unexpected,
-        decodeBase64: unexpected,
         ownerId: unexpected,
         readOwnerDevices: unexpected,
         currentDisplayTarget: unexpected,
@@ -52,11 +53,15 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
         handleLinuxVmTool: unexpected,
         handleWindowsTool: unexpected,
         handleDisplayTool: unexpected,
-        brokerStatus: unexpected,
-        brokerCommand,
+        observeBrokerStatus: unexpected,
+        observeBrokerBackends: unexpected,
+        observeBrokerInventory: unexpected,
+        invokeBrokerLifecycle,
         brokerDeviceTool: unexpected,
         brokerPhysical: unexpected,
-        brokerAppium: unexpected,
+        ensureMobileSession: unexpected,
+        observeMobileSessionStatus: unexpected,
+        executeMobileEffect: unexpected,
         observeActiveApp: unexpected,
         presentActiveAppWait: outcome => {
             let selected: OpaqueResult = jsonReply(null);
@@ -65,9 +70,7 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
                 (_ok, text) => { selected = { selection: "text", value: text }; return { content: [] }; });
             return selected;
         },
-        brokerRpc: unexpected,
         implicitBrokerProbeOptions: unexpected,
-        isLocalObservationBudgetExhaustion: unexpected,
         withBrokerOperation: operation => operation(),
         normalizeToolArgs: () => normalized,
         normalizePublicToolArgs: () => normalized,
@@ -78,12 +81,27 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
         evaluateDestructivePolicy: () => ({ ok: true }),
         jsonResult: jsonReply,
         textResult: (_ok, text) => ({ selection: "text", value: text }),
-        presentBrokerTool: (_receipt, value) => jsonReply(value),
-        imageResult: value => ({ selection: "image", value }),
+        presentBrokerReceipt: (receipt, extra) => jsonReply({ ...(receipt as Record<string, unknown>), ...extra }),
+        presentBrokerTool: (receipt, selection) => opaqueJson(presentBrokerTool(receipt, selection, nativeJson)),
+        presentBrokerLifecycle: (receipt, selection) => jsonReply({ ...(receipt as Record<string, unknown>), ...selection }),
+        presentBackendCatalog: value => opaqueJson(presentBackendCatalog(value, nativeJson)),
+        presentMobileObservation: (name, backend, observation, extra) => {
+            const result = presentMobileObservation(name, backend, observation, extra, nativeJson, nativeText);
+            if (name === "mobile_screenshot") return observation.screenshotData
+                ? { selection: "image", value: { data: result.content[0].data, mimeType: result.content[0].mimeType } }
+                : { selection: "text", value: result.content[0].text };
+            return opaqueJson(result);
+        },
+        presentSourceWait: outcome => {
+            const result = presentSourceWait(outcome, nativeJson, nativeText);
+            return outcome.kind === "deadline-before" || outcome.kind === "deadline-during"
+                ? { selection: "text", value: result.content[0].text } : opaqueJson(result);
+        },
         flowJsonResult: jsonReply,
         compactToolValue: (_name, value) => value,
         actionResult: (_name, _operation, result) => result,
-        buildListFilesCommand: unexpected,
+        invokeBrokerListFiles: unexpected,
+        listDirectDeviceFiles: unexpected,
         listFilesFromExecResult: unexpected,
         availableDevices: unexpected,
         startBootTimeoutMs: unexpected,
@@ -115,7 +133,7 @@ describe("shared device request admission", () => {
             ok: false,
             policy: { error: "destructive-action-confirmation-required", actions: ["device-delete"] },
         });
-        expect(ports.brokerCommand).not.toHaveBeenCalled();
+        expect(ports.invokeBrokerLifecycle).not.toHaveBeenCalled();
         expect(ports.handleAndroidTool).not.toHaveBeenCalled();
     });
 
@@ -171,7 +189,7 @@ function catalogPorts(normalized: DeviceArguments): DeviceRequestPorts<OpaqueRes
     ports.windowsVmBackend = () => ({ name: "windows-vm", host: "local" });
     ports.macosBackend = () => ({ name: "macos-vm", host: "local" });
     ports.linuxVmBackend = () => ({ name: "linux-vm", host: "container" });
-    ports.brokerStatus = async () => ({ ok: true, available: true });
+    ports.observeBrokerStatus = async () => ({ ok: true, available: true, receipt: { ok: true, available: true } });
     return ports;
 }
 
@@ -182,12 +200,13 @@ describe("opaque request selection and actual native presenters", () => {
     });
     it("filters successful broker catalogs while retaining their metadata", async () => {
         const ports = catalogPorts({ broker: true, backend: "android-device" });
-        ports.brokerRpc = async () => ({ ok: true, result: { backends: [{ name: "android-device" }, { name: "windows-vm" }], startsDevices: false } });
+        const backends = [{ name: "android-device" }, { name: "windows-vm" }];
+        ports.observeBrokerBackends = async () => ({ ok: true, backends, payloadReceipt: { backends, startsDevices: false }, receipt: { ok: true } });
         const result = await createDeviceRequest(ports).dispatch("device_backends", { broker: true, backend: "android-device" });
         expect(result).toMatchObject({ selection: "json", value: { source: "host-broker-provider-discovery", backends: [{ name: "android-device" }], hostBackends: { startsDevices: false, backends: [{ name: "android-device" }] } } });
     });
     it("retains unfiltered local diagnostics when broker discovery fails", async () => {
-        const ports = catalogPorts({ broker: true, backend: "android-device" }); ports.brokerRpc = async () => ({ ok: false, error: "discovery refused" });
+        const ports = catalogPorts({ broker: true, backend: "android-device" }); ports.observeBrokerBackends = async () => ({ ok: false, backends: null, devices: null, payloadReceipt: null, receipt: { ok: false, error: "discovery refused" } });
         const result = await createDeviceRequest(ports).dispatch("device_backends", { broker: true, backend: "android-device" }, { detail: true });
         expect(result).toMatchObject({ selection: "json", value: { ok: false, backends: expect.arrayContaining([{ name: "linux-vm", host: "container" }]), localBackends: expect.arrayContaining([{ name: "windows-vm", host: "local" }]) } });
     });
@@ -195,14 +214,14 @@ describe("opaque request selection and actual native presenters", () => {
         const renderJson = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }], isError: true });
         const image = imageResult({ data: "image-bytes", mimeType: "image/png" });
         expect(image).toEqual({ content: [{ type: "image", data: "image-bytes", mimeType: "image/png" }] });
-        expect(presentBrokerTool({ ok: true, result: { mcpResult: image } }, { fallback: true }, renderJson)).toEqual(image);
+        expect(presentBrokerTool({ ok: true, result: { mcpResult: image } }, {}, renderJson)).toEqual(image);
         const failure = { content: [{ type: "text", text: "native refusal" }], isError: true };
         expect(presentBrokerTool({ ok: true, result: { mcpResult: failure } }, {}, renderJson)).toEqual(failure);
-        expect(presentBrokerTool({ ok: false, result: { mcpResult: image } }, { ok: false, error: "broker refused" }, renderJson)).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("broker refused") }] });
+        expect(presentBrokerTool({ ok: false, error: "broker refused", result: { mcpResult: image } }, {}, renderJson)).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("broker refused") }] });
     });
     it("passes selected broker fallback facts to the opaque presenter", async () => {
         const ports = requestPorts("device_inventory", { backend: "windows-sandbox", broker: true });
-        ports.brokerDeviceTool = async () => ({ ok: false, error: "inventory refused" });
+        ports.brokerDeviceTool = async () => ({ ok: false, receipt: { ok: false, error: "inventory refused" } });
         await expect(createDeviceRequest(ports).dispatch("device_inventory", {})).resolves.toEqual({
             selection: "json", value: { ok: false, error: "inventory refused", routedBy: "device-readonly-broker" },
         });
@@ -210,7 +229,8 @@ describe("opaque request selection and actual native presenters", () => {
     it("admits Appium image facts through the private mobile dispatch and rejects missing data", async () => {
         const ports = requestPorts("mobile_screenshot", { backend: "android-device", deviceId: "owned-phone", broker: true });
         let data: unknown = "image-bytes";
-        ports.brokerAppium = async args => args.action === "ensure-session" ? { ok: true } : { ok: true, result: { response: { body: { value: data } } } };
+        ports.ensureMobileSession = async () => ({ ok: true, receipt: { ok: true } });
+        ports.executeMobileEffect = async () => ({ kind: "completed", receipt: { ok: true }, screenshotData: String(data) });
         const app = createDeviceRequest(ports);
         const args = { backend: "android-device", deviceId: "owned-phone", broker: true };
         await expect(app.dispatch("mobile_screenshot", args)).resolves.toEqual({ selection: "image", value: { data: "image-bytes", mimeType: "image/png" } });
@@ -219,27 +239,26 @@ describe("opaque request selection and actual native presenters", () => {
     });
 });
 
-function requiredPresenters(ports: DeviceRequestPorts<OpaqueResult>) {
-    const { presentBrokerTool: broker, ...withoutBroker } = ports;
-    // @ts-expect-error native broker presentation is a required capability
-    createDeviceRequest<OpaqueResult>(withoutBroker);
-    const { imageResult: image, ...withoutImage } = ports;
-    // @ts-expect-error native image presentation is a required capability
-    createDeviceRequest<OpaqueResult>(withoutImage);
-    // @ts-expect-error opaque broker results are presented synchronously
-    createDeviceRequest<OpaqueResult>({ ...ports, presentBrokerTool: async () => ({ selection: "json", value: null }) });
-    // @ts-expect-error opaque image results are presented synchronously
-    createDeviceRequest<OpaqueResult>({ ...ports, imageResult: async () => ({ selection: "image", value: null }) });
-    void [broker, image];
+function finiteMobileContract(ports: DeviceRequestPorts<OpaqueResult>) {
+    const target = { backend: "android-emulator", deviceId: "owned-phone" };
+    void ports.executeMobileEffect(target, { kind: "set-clipboard", text: "semantic text" });
+    // @ts-expect-error arbitrary native requests are outside the mobile effect contract
+    const recipe: MobileEffect = { kind: "request", method: "POST", path: "/execute/sync", body: {} };
+    // @ts-expect-error shell scripts are not finite semantic effects
+    void ports.executeMobileEffect(target, { kind: "shell", command: "settings", args: ["put", "system", "user_rotation", "3"] });
+    const { executeMobileEffect: effect, ...withoutEffect } = ports;
+    // @ts-expect-error finite mobile execution is a required capability
+    createDeviceRequest<OpaqueResult>(withoutEffect);
+    void [recipe, effect];
 }
-void requiredPresenters;
+void finiteMobileContract;
 
 describe("semantic active-app waits", () => {
     function waiting(backend = "ios-simulator") {
         const args = { backend, deviceId: "owned-phone", broker: true, bundleId: "com.example.Test", packageName: "com.example.Test", timeoutMs: 100, intervalMs: 10 };
         const ports = requestPorts("mobile_wait_for_app", args);
         let remaining = 100;
-        ports.brokerAppium = vi.fn(async () => ({ ok: true, selected: { host: "selected-broker", port: 43123 } }));
+        ports.ensureMobileSession = vi.fn(async () => ({ ok: true, selection: { host: "selected-broker", port: 43123 }, receipt: { ok: true } }));
         ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => remaining, requestTimeout: maximum => Math.min(maximum, remaining), pause: async () => { remaining = 0; } });
         const broker = { ok: true, result: { diagnostic: "opaque-native-receipt" } };
         ports.observeActiveApp = vi.fn(async () => ({ kind: "observed" as const, activeAppId: "com.example.Test", foreground: false, receipt: { broker, appState: { bundleID: "com.example.Test" } } }));
@@ -250,7 +269,7 @@ describe("semantic active-app waits", () => {
         const fixture = waiting();
         await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { found: true, bundleId: "com.example.Test", activeApp: { bundleID: "com.example.Test" }, provider: "broker-appium", backend: "ios-simulator", broker: fixture.broker } });
         expect(fixture.ports.observeActiveApp).toHaveBeenCalledWith(expect.objectContaining({ backend: "ios-simulator", expectedAppId: "com.example.Test", hostCandidates: ["selected-broker"], port: 43123, autolaunch: false, requestTimeoutMs: 100 }));
-        expect(fixture.ports.brokerAppium).toHaveBeenCalledTimes(1);
+        expect(fixture.ports.ensureMobileSession).toHaveBeenCalledTimes(1);
         expect(fixture.ports.handleAndroidTool).not.toHaveBeenCalled();
     });
 
@@ -305,7 +324,7 @@ describe("semantic active-app waits", () => {
 
     it("returns session refusal before active-app observation", async () => {
         const fixture = waiting();
-        fixture.ports.brokerAppium = async () => ({ ok: false, error: "session-refused" });
+        fixture.ports.ensureMobileSession = async () => ({ ok: false, receipt: { ok: false, error: "session-refused" } });
         await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { ok: false, error: "session-refused", routedBy: "mobile-broker-appium" } });
         expect(fixture.ports.observeActiveApp).not.toHaveBeenCalled();
     });
@@ -314,5 +333,76 @@ describe("semantic active-app waits", () => {
         const fixture = waiting();
         fixture.ports.observeActiveApp = async () => { fixture.expire(); return { kind: "observed", activeAppId: "com.example.Test", foreground: true, receipt: { broker: fixture.broker, appState: { bundleId: "com.example.Test" } } }; };
         await expect(fixture.run()).resolves.toEqual({ selection: "text", value: "Appium wait deadline exhausted during observation" });
+    });
+});
+
+describe("finite mobile effect admission and sequencing", () => {
+    function mobile(operation: string, additional: DeviceArguments = {}) {
+        const args = { backend: "android-emulator", deviceId: "owned-phone", broker: true, ...additional };
+        const ports = requestPorts(operation, args);
+        ports.ensureMobileSession = vi.fn(async () => ({ ok: true, selection: { host: "authenticated-broker", port: 43210 }, receipt: { ok: true } }));
+        ports.executeMobileEffect = vi.fn(async () => ({ kind: "completed" as const, receipt: { ok: true } }));
+        return { args, ports, run: () => createDeviceRequest(ports).dispatch(operation, args) };
+    }
+
+    it("rejects unsupported orientation before opening a session", async () => {
+        const fixture = mobile("mobile_set_orientation", { orientation: "diagonal" });
+        await expect(fixture.run()).resolves.toMatchObject({ selection: "text", value: expect.stringContaining("Unsupported Android orientation") });
+        expect(fixture.ports.ensureMobileSession).not.toHaveBeenCalled();
+        expect(fixture.ports.executeMobileEffect).not.toHaveBeenCalled();
+    });
+
+    it("executes both rotation effects against the selected authenticated broker", async () => {
+        const fixture = mobile("mobile_set_orientation", { orientation: "reverse-landscape" });
+        await expect(fixture.run()).resolves.toMatchObject({ selection: "json", value: { requests: 2 } });
+        expect(fixture.ports.executeMobileEffect).toHaveBeenNthCalledWith(1, expect.objectContaining({ hostCandidates: ["authenticated-broker"], port: 43210, autolaunch: false }), { kind: "set-automatic-rotation", enabled: false });
+        expect(fixture.ports.executeMobileEffect).toHaveBeenNthCalledWith(2, expect.objectContaining({ hostCandidates: ["authenticated-broker"], port: 43210, autolaunch: false }), { kind: "set-display-rotation", orientation: "reverse-landscape" });
+    });
+
+    it("stops after a failed first effect and preserves its diagnostic receipt", async () => {
+        const fixture = mobile("mobile_set_orientation", { orientation: "reverse-landscape" });
+        fixture.ports.executeMobileEffect = vi.fn(async () => ({ kind: "failed" as const, localBudgetExhausted: false, receipt: { ok: false, error: "rotation-setting-refused", diagnostic: "native receipt" } }));
+        await expect(fixture.run()).resolves.toMatchObject({ selection: "json", value: { ok: false, error: "rotation-setting-refused", diagnostic: "native receipt" } });
+        expect(fixture.ports.executeMobileEffect).toHaveBeenCalledTimes(1);
+        expect(fixture.ports.handleAndroidTool).not.toHaveBeenCalled();
+    });
+
+    it("returns session refusal before executing any finite effect", async () => {
+        const fixture = mobile("mobile_set_clipboard", { text: "héllo 📋" });
+        fixture.ports.ensureMobileSession = vi.fn(async () => ({ ok: false, receipt: { ok: false, error: "owner-session-refused" } }));
+        await expect(fixture.run()).resolves.toMatchObject({ selection: "json", value: { ok: false, error: "owner-session-refused" } });
+        expect(fixture.ports.executeMobileEffect).not.toHaveBeenCalled();
+    });
+
+    it("keeps dump source facts opaque while text waits use normalized source text", async () => {
+        const dump = mobile("mobile_dump_ui");
+        const source = { tree: ["Welcome"] };
+        dump.ports.executeMobileEffect = vi.fn(async () => ({ kind: "completed" as const, source, sourceText: "Welcome", receipt: { ok: true } }));
+        await expect(dump.run()).resolves.toMatchObject({ selection: "json", value: { source } });
+
+        const wait = mobile("mobile_wait_for_text", { text: "Welcome", timeoutMs: 100, intervalMs: 10 });
+        wait.ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => 100, requestTimeout: maximum => Math.min(maximum, 100), pause: async () => {} });
+        wait.ports.executeMobileEffect = vi.fn(async () => ({ kind: "completed" as const, source, sourceText: "Welcome", receipt: { ok: true } }));
+        await expect(wait.run()).resolves.toMatchObject({ selection: "json", value: { found: true, source: "Welcome" } });
+        expect(wait.ports.executeMobileEffect).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not read source with a zero request budget", async () => {
+        const fixture = mobile("mobile_wait_for_text", { text: "Welcome", timeoutMs: 100 });
+        fixture.ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => 1, requestTimeout: () => 0, pause: async () => {} });
+        await expect(fixture.run()).resolves.toEqual({ selection: "text", value: "Appium wait deadline exhausted before observation" });
+        expect(fixture.ports.executeMobileEffect).not.toHaveBeenCalled();
+    });
+
+    it("gives a source observation deadline precedence over a late text match", async () => {
+        const fixture = mobile("mobile_wait_for_text", { text: "Welcome", timeoutMs: 100 });
+        let remaining = 100;
+        fixture.ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => remaining, requestTimeout: maximum => Math.min(maximum, remaining), pause: async () => {} });
+        fixture.ports.executeMobileEffect = vi.fn(async () => {
+            remaining = 0;
+            return { kind: "completed" as const, sourceText: "Welcome", receipt: { ok: true } };
+        });
+        await expect(fixture.run()).resolves.toEqual({ selection: "text", value: "Appium wait deadline exhausted during observation" });
+        expect(fixture.ports.executeMobileEffect).toHaveBeenCalledTimes(1);
     });
 });

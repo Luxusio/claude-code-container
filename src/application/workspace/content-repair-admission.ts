@@ -9,36 +9,25 @@ export function createWorkspaceContentRepairAdmission(ports: WorkspaceContentRep
     ): Promise<void> {
         try {
             const fixed = ports.repairConfirmed(cwd, wsPath, name, branch, true);
-            ports.selectLog()(fixed
-                ? `  ${name}: fixed (content preserved)`
-                : `  ${name}: failed to fix (content unchanged)`);
+            ports.report({ kind: "outcome", name, fixed: Boolean(fixed), afterSetAside: false });
             return;
         } catch (error) {
             if (!ports.isContentConflict(error)) {
-                ports.selectLog()(`  ${name}: failed to fix (content unchanged) - ${(error as { message: unknown }).message}`);
+                ports.report({ kind: "failure", name, cause: error });
                 return;
             }
-            const relativeConflicts = error.conflicts.map((path) => ports.selectRelative()(error.worktreeRoot, path));
-            ports.selectLog()(`  ${name}: cannot merge - these files differ between your copy and branch '${branch}':`);
-            for (const conflict of relativeConflicts) ports.selectLog()(`      ${conflict}`);
-            ports.selectLog()("      Nothing was changed or lost; the directory is exactly as it was.");
-            ports.selectLog()("      ccc can move your versions aside so the branch's versions can be checked out.");
-            ports.selectLog()("      Your versions stay on disk and can be moved back or merged by hand.");
-            const answer = await ports.prompt("  Move them aside and repair? (y/N) ", true);
-            if (answer !== "y" && answer !== "yes") {
-                ports.selectLog()(`  ${name}: left unrepaired (content unchanged)`);
+            ports.report({ kind: "conflicts", name, branch, cause: error });
+            if (!await ports.confirmConflictRepair()) {
+                ports.report({ kind: "refusal", name });
                 return;
             }
-            const preserved = ports.selectSetAside()(error.worktreeRoot, error.conflicts);
-            ports.selectLog()(`  ${name}: your versions moved to ${preserved}`);
+            const preserved = ports.setAsideConflicts(error.worktreeRoot, error.conflicts);
+            ports.report({ kind: "set-aside", name, preserved });
             try {
                 const fixed = ports.repairConfirmed(cwd, wsPath, name, branch, true);
-                ports.selectLog()(fixed
-                    ? `  ${name}: fixed (remaining content preserved)`
-                    : `  ${name}: failed to fix (content unchanged)`);
+                ports.report({ kind: "outcome", name, fixed: Boolean(fixed), afterSetAside: true });
             } catch (retryError) {
-                ports.selectLog()(`  ${name}: failed to fix (content unchanged) - ${(retryError as { message: unknown }).message}`);
-                ports.selectLog()(`      Your set-aside versions remain in ${preserved}`);
+                ports.report({ kind: "retry-failure", name, cause: retryError, preserved });
             }
         }
     };

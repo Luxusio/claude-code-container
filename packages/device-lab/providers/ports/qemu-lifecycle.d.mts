@@ -11,12 +11,9 @@ export interface QemuExecution { [key:string]:unknown; ok?:unknown; status?:unkn
 export interface QemuMaterializedResult { [key:string]:unknown; ok:boolean; lab?:QemuLab; materialized?:boolean; }
 export interface QemuLifecycleResult { [key:string]:unknown; ok?:boolean; lab?:QemuLab; }
 export interface QemuProvisionProbe { [key:string]:unknown; ok?:unknown; provisioned?:unknown; checks?:unknown[]; diagnostics?:unknown; }
-export interface QemuGuestProvisionPorts {
-    commandPaths(): {ssh:string|null;scp:string|null};
-    commandRunner(): (command:string,args:string[],options:{cwd:string;env:Record<string,string|undefined>;timeoutMs:number})=>QemuExecution|null|undefined;
-    environment(): Record<string,string|undefined>;
-    timeoutMs(): number;
-}
+export interface QemuLaunchInput { ownerId:string; labId:string; memoryMb:unknown; cpus:unknown; labDirectory:string; diskImage:string|null; dryRun:boolean; }
+export interface QemuNativeRuntimeReceipt { pid:unknown; processIdentity:unknown; command:unknown; args:unknown; }
+export type QemuLaunchResult = {ok:true;runtime?:QemuNativeRuntimeReceipt;presentation:QemuExecution;preview?:{command:string;args:string[]}} | {ok:false;presentation:QemuExecution|null|undefined};
 export interface QemuLifecyclePorts {
     providerName: string;
     scope(): QemuScope;
@@ -35,7 +32,7 @@ export interface QemuLifecyclePorts {
     diskExists(path:string): boolean;
     imageDiskTargetApplication(): {materializeDisk(args:{labId:string;dryRun?:boolean}):QemuMaterializedResult};
     providerStatus(): { [key:string]:unknown;available:boolean;qemu:string|null };
-    launchRunner(): (command:string|null,args:string[],options:{cwd:string;env:Record<string,string|undefined>})=>QemuExecution|null|undefined;
+    launch(input:QemuLaunchInput,scope:QemuScope,status:{available:boolean;qemu:string|null}):QemuLaunchResult;
     clock(): unknown;
     runtimeId(): string;
     inspectRuntime(runtime:QemuRuntime|null|undefined): {status:"match"|"mismatch"|"exited"|"unavailable"};
@@ -43,5 +40,5 @@ export interface QemuLifecyclePorts {
     legacyKillAvailable(): boolean;
     legacyKill(pid:unknown): undefined;
     signalRuntime(runtime:QemuRuntime,signal:string): {signaled:boolean;reason?:string};
-    bindProvisionLeaves(timeoutMs:number,env:Record<string,string|undefined>): QemuGuestProvisionPorts;
+    provisionGuestAgent(input:{lab:QemuLab;timeoutMs:number},scope:QemuScope): QemuProvisionProbe;
 }

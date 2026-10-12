@@ -1,66 +1,36 @@
-import { ownedCleanupRuntimes, serialForAndroid, lifecycleActive, simctlTarget, isGuid, stopMacosArgs, lifecycleStopFailed, cleanedDevice, shouldCleanupDevice } from "../domain/device-admin-cleanup.js";
-import type { CleanupBackend, CleanupRecord as DeviceRecord, CleanupCommandResult as CommandResult, CleanupDeviceResult } from "../domain/device-admin-cleanup.js";
+import { ownedCleanupRuntimes, lifecycleActive, lifecycleStopRequired, cleanedDevice, shouldCleanupDevice } from "../domain/device-admin-cleanup.js";
+import type { CleanupBackend, CleanupRecord as DeviceRecord, CleanupCommandResult as CommandResult, CleanupDeviceResult, CleanupStopEffect, CleanupAllProjectsResult } from "../domain/device-admin-cleanup.js";
 import type { DeviceAdminCleanupPorts, DeviceAdminAllProjectCleanupPorts } from "../ports/device-admin-cleanup.js";
 export function createDeviceAdminCleanup<Backend extends CleanupBackend>(ports: DeviceAdminCleanupPorts<Backend>) {
-    function stopOwnedDevice(match: { backend: Backend; device: DeviceRecord }, timeoutMs = 5000): { commands: CommandResult[]; reason?: string } {
+    function stopOwnedDevice(match: { backend: Backend; device: DeviceRecord }, timeoutMs = 5000): { commands: CommandResult[]; ok: boolean; reason?: string } {
         const results: CommandResult[] = [];
         const runtimes = ownedCleanupRuntimes(match.device);
         for (const runtime of runtimes) {
             if (!runtime.signalDirectly || ports.runtimeExited(runtime)) continue;
             const signal = ports.signalRuntime(runtime.runtime, runtime.signal);
-            if (!signal.ok) return { commands: results, reason: `${runtime.label}-process-signal-failed` };
+            if (!signal.ok) return { commands: results, ok: false, reason: `${runtime.label}-process-signal-failed` };
         }
 
-        if (match.backend.stateKey === "android") {
-            const adb = ports.commandPath("adb");
-            const serial = serialForAndroid(match.device);
-            if (adb && serial && match.device.recording) {
-                const result = ports.runCommand(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"], timeoutMs);
-                if (result) results.push(result);
-            }
-            if (adb && serial && lifecycleActive(match.device)) {
-                const result = ports.runCommand(adb, ["-s", serial, "emu", "kill"], timeoutMs);
-                if (result) results.push(result);
-            }
-        } else if (match.backend.stateKey === "android-device") {
-            const adb = ports.commandPath("adb");
-            const serial = serialForAndroid(match.device);
-            if (adb && serial && match.device.recording) {
-                const result = ports.runCommand(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"], timeoutMs);
-                if (result) results.push(result);
-            }
-        } else if (match.backend.stateKey === "ios") {
-            const xcrun = ports.commandPath("xcrun");
-            const target = simctlTarget(match.device);
-            if (xcrun && target && lifecycleActive(match.device)) {
-                const result = ports.runCommand(xcrun, ["simctl", "shutdown", target], timeoutMs);
-                if (result) results.push(result);
-            }
-        } else if (match.backend.stateKey === "ios-device") {
-            // Physical iOS devices are never powered off or disconnected by cleanup.
-        } else if (match.backend.stateKey === "windows") {
-            if (lifecycleActive(match.device)) {
-                const sandboxId = isGuid(match.device.sandboxId) ? match.device.sandboxId : null;
-                const result = sandboxId ? ports.runCommand(ports.commandPath("wsb"), ["stop", "--id", sandboxId], timeoutMs) : null;
-                if (result) results.push(result);
-            }
-        } else if (match.backend.stateKey === "macos") {
-            const provider = typeof match.device.provider === "string" ? match.device.provider : null;
-            const instance = typeof match.device.providerInstance === "string" ? match.device.providerInstance : null;
-            if (provider && instance && lifecycleActive(match.device)) {
-                const args = stopMacosArgs(provider, instance);
-                if (args) {
-                    const result = ports.runCommand(ports.commandPath(provider), args, timeoutMs);
-                    if (result) results.push(result);
-                }
-            }
+        const effects: CleanupStopEffect[] = [];
+        const active = lifecycleActive(match.device);
+        if (match.backend.stateKey === "android" || match.backend.stateKey === "android-device") {
+            if (match.device.recording) effects.push({ kind: "android-recording-stop", device: match.device });
+            if (match.backend.stateKey === "android" && active) effects.push({ kind: "android-emulator-stop", device: match.device });
+        } else if (match.backend.stateKey === "ios" && active) {
+            effects.push({ kind: "ios-simulator-stop", device: match.device });
+        } else if (match.backend.stateKey === "windows" && active) {
+            effects.push({ kind: "windows-sandbox-stop", device: match.device });
+        } else if (match.backend.stateKey === "macos" && active) {
+            effects.push({ kind: "macos-instance-stop", device: match.device });
         }
+        const stopped = ports.executeStopEffects(effects, timeoutMs);
+        results.push(...stopped.commands);
         for (const runtime of runtimes) {
             if (!ports.waitForRuntimeExit(runtime, timeoutMs)) {
-                return { commands: results, reason: `${runtime.label}-process-still-active` };
+                return { commands: results, ok: stopped.ok, reason: `${runtime.label}-process-still-active` };
             }
         }
-        return { commands: results };
+        return { commands: results, ok: stopped.ok };
     }
 
     function commitCleanedDevice(
@@ -106,7 +76,7 @@ export function createDeviceAdminCleanup<Backend extends CleanupBackend>(ports: 
             if (stopped.reason) {
                 return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands, reason: stopped.reason };
             }
-            if (lifecycleStopFailed(backend, current, commands)) {
+            if (lifecycleStopRequired(backend, current) && !stopped.ok) {
                 return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands, reason: "provider-stop-failed" };
             }
             if (!commitCleanedDevice(ownerId, backend, current, releaseWindowsClaim)) {
@@ -142,40 +112,31 @@ export function createDeviceAdminCleanup<Backend extends CleanupBackend>(ports: 
 }
 export function createDeviceAdminAllProjectCleanup<Backend extends CleanupBackend>(ports: DeviceAdminAllProjectCleanupPorts<Backend>) {
      const cleanup = createDeviceAdminCleanup(ports);
-    function allProjects(timeoutMs = 5000): { ok: boolean; text: string } {
-        const lines = ["projects: stop --all-projects"];
-        let stopped = 0;
-        let skipped = 0;
-        let failed = 0;
+    function allProjects(timeoutMs = 5000): CleanupAllProjectsResult {
+        const projects: CleanupAllProjectsResult["projects"] = [];
+        let ok = true;
         for (const ownerId of ports.enumerateOwnerIds()) {
-            lines.push(`project: ${ownerId}`);
+            const results: CleanupDeviceResult[] = [];
             for (const backend of ports.backends) {
-                const devices = ports.readDevices(ownerId, backend.stateKey);
-                devices.forEach((device) => {
+                for (const device of ports.readDevices(ownerId, backend.stateKey)) {
                     if (!device.id || !shouldCleanupDevice(backend, device)) {
-                        skipped += 1;
-                        lines.push(`skipped: ${device.id || "(unknown)"}  backend=${backend.name}  status=${device.status || "unknown"}`);
-                        return;
+                        results.push({
+                            id: device.id || "(unknown)",
+                            backend: backend.name,
+                            previousStatus: device.status || "unknown",
+                            status: "skipped",
+                            commands: [],
+                        });
+                        continue;
                     }
-
                     const result = cleanup.stopRecord(ownerId, backend, device, timeoutMs);
-                    if (result.status !== "stopped") {
-                        failed += 1;
-                        lines.push(`failed: ${device.id}  backend=${backend.name}  previous=${device.status || "unknown"}  reason=${result.reason || "device-stop-failed"}`);
-                        for (const command of result.commands) lines.push(`command: ${command.command} -> ${command.status ?? "unknown"}`);
-                        return;
-                    }
-
-                    stopped += 1;
-                    lines.push(`stopped: ${device.id}  backend=${backend.name}  previous=${device.status || "unknown"}`);
-                    for (const command of result.commands) lines.push(`command: ${command.command} -> ${command.status ?? "unknown"}`);
-                });
+                    if (result.status !== "stopped") ok = false;
+                    results.push(result);
+                }
             }
+            projects.push({ ownerId, results });
         }
-        if (stopped === 0) lines.push("stopped: 0");
-        if (failed > 0) lines.push(`failed: ${failed}`);
-        lines.push(`skipped: ${skipped}`);
-        return { ok: failed === 0, text: `${lines.join("\n")}\n` };
+        return { ok, projects };
     }
 
     return { allProjects };

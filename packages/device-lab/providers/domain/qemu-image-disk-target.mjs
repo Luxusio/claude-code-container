@@ -37,7 +37,6 @@ export function inferQemuImageFormat(args = {}, sourcePath = "") {
     if (!SUPPORTED_IMAGE_FORMATS.has(/** @type {string} */ (format))) return null;
     return /** @type {"qcow2" | "raw"} */ (format);
 }
-
 /** @param {unknown} value @param {number} fallback @returns {number} */
 export function qemuCommandTimeout(value, fallback) {
     if (value === undefined || value === null || value === "") return fallback;
@@ -97,9 +96,4 @@ function publicRuntime(runtime) {
         command: record.command || null,
         startedAt: record.startedAt || null,
     };
-}
-
-/** @param {QemuImageSource} source @param {string} diskPath @returns {string[]} */
-export function qemuOverlayArguments(source, diskPath) {
-    return ["create", "-f", "qcow2", "-F", source.format, "-b", source.path, diskPath];
 }

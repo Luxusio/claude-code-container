@@ -53,6 +53,35 @@ export interface IosAccessCommand {
     signal?: string | null;
     error?: { code?: unknown; message?: string };
 }
+export type IosAccessAppiumEffect =
+    | { kind: "server-status"; serverUrl: string; timeoutMs?: number }
+    | { kind: "session-status" | "delete-session"; serverUrl: string; sessionId: string }
+    | { kind: "create-session"; serverUrl: string; target: string | undefined; deviceName: string; physical: boolean }
+    | { kind: "source" | "screenshot" | "active-app"; serverUrl: string; sessionId: string; timeoutMs?: number };
+export type IosAccessAppiumResult<Effect extends IosAccessAppiumEffect> =
+    Effect extends { kind: "server-status" | "session-status" | "delete-session" } ? undefined :
+    Effect extends { kind: "create-session" } ? { sessionId: string | null } :
+    Effect extends { kind: "source" } ? { source: unknown } :
+    Effect extends { kind: "screenshot" } ? { data: unknown } :
+    Effect extends { kind: "active-app" } ? { bundleIds: readonly string[]; activeApp: unknown } :
+    Effect extends { kind: "source" | "screenshot" | "active-app" } ? { source: unknown } | { data: unknown } | { bundleIds: readonly string[]; activeApp: unknown } : undefined;
+export type IosAccessProbe = "bundle-process" | "name-process" | "user-services" | "gui-services" | "system-services";
+export type IosAccessSimulatorEffect =
+    | { kind: "exec"; target: string; command: string | undefined }
+    | { kind: "screenshot"; target: string; path: string }
+    | { kind: "erase"; target: string }
+    | { kind: "app-container"; target: string; bundleId: string; containerType: string }
+    | { kind: "app-probe"; target: string; bundleId: string; probe: IosAccessProbe; timeoutMs: number };
+export interface IosAccessProbeObservation {
+    kind: "present" | "absent" | "failed";
+    receipt: IosAccessCommand;
+    pid?: string | null;
+    observedBy?: string;
+}
+export type IosAccessSimulatorResult<Effect extends IosAccessSimulatorEffect> =
+    Effect extends { kind: "app-probe" } ? IosAccessProbeObservation :
+    Effect extends { kind: "app-container" } ? IosAccessCommand & { ok: boolean; path: string } :
+    IosAccessCommand & { ok: boolean };
 export interface IosAccessRuntime {
     runtimeId?: string;
     serverPid?: number | null;
@@ -99,7 +128,7 @@ export interface IosAccessCommonPorts<Device extends IosAccessDevice, Result> {
     targetStatus(device: Device): object;
     withDeviceOperation<T>(id: string | undefined, operation: () => T | Promise<T>): Promise<T>;
     waitBudget(timeoutMs?: number, intervalMs?: number): IosAccessBudget;
-    requestHttp(url: string, options: { method: "GET" | "POST" | "DELETE"; timeoutMs?: number; body?: string }): Promise<unknown>;
+    appiumEffect<Effect extends IosAccessAppiumEffect>(effect: Effect): Promise<IosAccessAppiumResult<Effect>>;
     spawnServer(executable: string | null, port: number): IosAccessChild;
     inspectRuntime(runtime: IosAccessRuntime): { status: string };
     waitIdentity(pid: number, timeoutMs: number): Promise<unknown | null>;
@@ -113,6 +142,7 @@ export interface IosAccessCommonPorts<Device extends IosAccessDevice, Result> {
     timestamp(): string;
     runtimeId(): string;
     portForDevice(id: string): number;
+    serverUrlForPort(port: number): string;
     pause(milliseconds: number): Promise<void>;
     diagnostic(text: string, maximumBytes: number): string;
     jsonResult(value: object): Result;
@@ -123,10 +153,9 @@ export interface IosAccessCommonPorts<Device extends IosAccessDevice, Result> {
 export interface IosSimulatorAccessPorts<Device extends IosAccessDevice, Result> extends IosAccessCommonPorts<Device, Result> {
     kind: "simulator";
     verifyTarget(xcrun: string | null, device: Device): { target: string; error?: never } | { error: string; target?: never };
-    execute(xcrun: string | null, args: (string | undefined)[], timeoutMs?: number): IosAccessCommand;
+    simulatorEffect<Effect extends IosAccessSimulatorEffect>(effect: Effect): IosAccessSimulatorResult<Effect>;
     missingPrerequisites(discovery: IosAccessDiscovery): Result;
     reconcileDevice(device: Device, discovery: IosAccessDiscovery): Device;
-    appContainer(xcrun: string | null, target: string, bundleId: string, type: string): IosAccessCommand;
     pathInContainer(root: string, requested: string): { path: string; error?: never } | { error: string; path?: never };
     guardRead(root: string, path: string): { error?: string };
     listArgumentError(args: IosAccessArgs): string | null;

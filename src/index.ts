@@ -461,20 +461,43 @@ function handleWorktreeList(cwd: string): void {
  * it can do is move the local versions somewhere safe so the branch's versions can be checked
  * out, which loses nothing and is undone by moving them back.
  */
-// Capture invocation once; message/getter evaluation must not introduce a new
-// mutable .call/.apply lookup after the native console method was selected.
-const invokeWorkspaceContentRepairLog = Reflect.apply;
 const admitWorkspaceContentRepair = createWorkspaceContentRepairAdmission({
     repairConfirmed: (cwd, wsPath, name, branch, confirmed) => fixBrokenWorktree(cwd, wsPath, name, branch, confirmed),
     isContentConflict: (cause): cause is WorktreeContentConflictError => cause instanceof WorktreeContentConflictError,
-    selectLog: () => {
-        const receiver = console;
-        const log = receiver.log;
-        return (message) => invokeWorkspaceContentRepairLog(log, receiver, [message]);
+    report: event => {
+        switch (event.kind) {
+            case "outcome":
+                console.log(event.fixed
+                    ? `  ${event.name}: fixed (${event.afterSetAside ? "remaining content" : "content"} preserved)`
+                    : `  ${event.name}: failed to fix (content unchanged)`);
+                break;
+            case "failure":
+                console.log(`  ${event.name}: failed to fix (content unchanged) - ${(event.cause as { message: unknown }).message}`);
+                break;
+            case "conflicts":
+                console.log(`  ${event.name}: cannot merge - these files differ between your copy and branch '${event.branch}':`);
+                for (const path of event.cause.conflicts) console.log(`      ${relative(event.cause.worktreeRoot, path)}`);
+                console.log("      Nothing was changed or lost; the directory is exactly as it was.");
+                console.log("      ccc can move your versions aside so the branch's versions can be checked out.");
+                console.log("      Your versions stay on disk and can be moved back or merged by hand.");
+                break;
+            case "refusal":
+                console.log(`  ${event.name}: left unrepaired (content unchanged)`);
+                break;
+            case "set-aside":
+                console.log(`  ${event.name}: your versions moved to ${event.preserved}`);
+                break;
+            case "retry-failure":
+                console.log(`  ${event.name}: failed to fix (content unchanged) - ${(event.cause as { message: unknown }).message}`);
+                console.log(`      Your set-aside versions remain in ${event.preserved}`);
+                break;
+        }
     },
-    selectRelative: () => relative,
-    prompt: (question, normalize) => prompt(question, normalize),
-    selectSetAside: () => setAsideConflictingContent,
+    confirmConflictRepair: async () => {
+        const answer = await prompt("  Move them aside and repair? (y/N) ", true);
+        return answer === "y" || answer === "yes";
+    },
+    setAsideConflicts: (root, conflicts) => setAsideConflictingContent(root, conflicts),
 });
 
 function repairBrokenWorktree(

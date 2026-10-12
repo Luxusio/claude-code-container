@@ -35,17 +35,43 @@ function consumedCapabilities(android: AndroidAppManagementPorts<symbol>, simula
     createIosAppManagement({ ...simulator, clearAppContainer: async () => undefined });
     // @ts-expect-error Owner-state publication cannot remain pending on success.
     createIosAppManagement({ ...simulator, publishAppReset: async () => undefined });
-    // @ts-expect-error simctl command execution cannot defer its receipt.
-    createIosAppManagement({ ...simulator, execute: async () => ({ status: 0 }) });
+    // @ts-expect-error Simulator semantic effects must settle synchronously.
+    createIosAppManagement({ ...simulator, perform: async () => ({ kind: "succeeded" as const, command: { status: 0 } }) });
+    const { perform: simulatorPerform, ...withoutSimulatorPerform } = simulator;
+    // @ts-expect-error Simulator mutations require semantic native effects.
+    createIosAppManagement(withoutSimulatorPerform);
+    const { ownedTarget, ...withoutOwnedTarget } = simulator;
+    // @ts-expect-error Simulator effects require actual owned target admission.
+    createIosAppManagement(withoutOwnedTarget);
+    // @ts-expect-error An exit receipt cannot replace the finite observation.
+    createIosAppManagement({ ...simulator, perform: () => ({ status: 0 }) });
+    // @ts-expect-error Owned target admission settles synchronously.
+    createIosAppManagement({ ...simulator, ownedTarget: async () => ({ ok: true as const, target: "owned" }) });
+    // @ts-expect-error Container lookup settles before containment and clearing.
+    createIosAppManagement({ ...simulator, resolveAppContainer: async () => ({ ok: true as const, containerRoot: "/owned" }) });
+    // @ts-expect-error Native argv cannot cross the simulator semantic effect port.
+    simulator.perform("owned", ["simctl", "launch", "owned", "app"]);
     const { session, ...withoutSession } = physical;
     // @ts-expect-error Physical stop requires actual verified session authority.
     createIosAppManagement(withoutSession);
-    const { request, ...withoutRequest } = physical;
-    // @ts-expect-error Physical stop requires a bounded native Appium request.
-    createIosAppManagement(withoutRequest);
+    const { terminateApp, ...withoutTermination } = physical;
+    // @ts-expect-error Physical stop requires semantic native termination.
+    createIosAppManagement(withoutTermination);
+    const { available, ...withoutAvailability } = physical;
+    // @ts-expect-error Physical install and launch require prerequisite authority.
+    createIosAppManagement(withoutAvailability);
+    const { perform: physicalPerform, ...withoutPhysicalPerform } = physical;
+    // @ts-expect-error Physical install and launch require semantic execution.
+    createIosAppManagement(withoutPhysicalPerform);
+    // @ts-expect-error Physical command observations settle synchronously.
+    createIosAppManagement({ ...physical, perform: async () => ({ kind: "succeeded" as const, command: { status: 0 } }) });
+    // @ts-expect-error Native termination must normalize failure into a message.
+    createIosAppManagement({ ...physical, terminateApp: async () => ({ kind: "failed" as const, value: false }) });
+    // @ts-expect-error Raw Appium request bodies cannot cross the termination port.
+    physical.terminateApp({ serverUrl: "http://localhost", sessionId: "owned" }, { script: "mobile: terminateApp", args: [{ bundleId: "app" }] });
     // @ts-expect-error Physical terminate cannot use a synchronous unverified session observation.
     createIosAppManagement({ ...physical, session: () => ({ kind: "unknown" as const }) });
-    void [androidResult, simulatorResult, physicalResult, target, perform, budgetedStop, containAppContainer, publishAppReset, session, request];
+    void [androidResult, simulatorResult, physicalResult, target, perform, budgetedStop, containAppContainer, publishAppReset, simulatorPerform, ownedTarget, session, terminateApp, available, physicalPerform];
 }
 void consumedCapabilities;
 

@@ -2421,3 +2421,96 @@ export async function brokerStatus(options = {}) {
         note: "Device backends remain lazy. Host ccc starts only the broker process for containers; it does not start emulators, simulators, sandboxes, VMs, Appium, or provider tools.",
     };
 }
+
+/** @param {import('./ports/device-request.mjs').BrokerResult} receipt
+ * @returns {import('./ports/device-request.mjs').BrokerObservation} */
+export function brokerObservation(receipt) {
+    return {ok:receipt.ok === true, ...(receipt.selected ? {selection:receipt.selected} : {}), receipt};
+}
+export async function observeBrokerStatus(args) {
+    const receipt = await brokerStatus(args);
+    return {...brokerObservation(receipt), available:receipt.available};
+}
+export async function observeBrokerBackends(args) {
+    const receipt = await brokerRpc({...args, method:'broker.backends'});
+    const payload = receipt.result;
+    return {...brokerObservation(receipt),backends:Array.isArray(payload?.backends) ? payload.backends : null,payloadReceipt:payload};
+}
+export async function observeBrokerInventory(args) {
+    const receipt = await brokerRpc({...args, method:'broker.inventory'});
+    const payload = receipt.result;
+    return {...brokerObservation(receipt),backends:Array.isArray(payload?.backends) ? payload.backends : null,
+        devices:Array.isArray(payload?.devices) ? payload.devices : null,payloadReceipt:payload};
+}
+export async function invokeBrokerLifecycle(args) { return brokerObservation(await brokerCommand(args)); }
+export async function ensureMobileSession(args) { return brokerObservation(await brokerAppium({...args,action:'ensure-session'})); }
+export async function observeMobileSessionStatus(args) { return brokerObservation(await brokerAppium({...args,action:'status'})); }
+
+/** @param {unknown} value */
+function decodeClipboardText(value) {
+    if (typeof value !== 'string') return value;
+    const normalized = value.trim();
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 === 1) return value;
+    try {
+        const decoded = Buffer.from(normalized,'base64').toString('utf8');
+        return Buffer.from(decoded,'utf8').toString('base64').replace(/=+$/, '') === normalized.replace(/=+$/, '') ? decoded : value;
+    } catch { return value; }
+}
+/** Native frames for one admitted effect; sequencing and budgets remain in application.
+ * @param {import('./ports/device-request.mjs').DeviceArguments & {backend:string,deviceId:string}} args
+ * @param {import('./domain/device-request.mjs').MobileEffect} effect
+ * @returns {Promise<import('./ports/device-request.mjs').MobileObservation>} */
+export async function executeMobileEffect(args, effect) {
+    const post = (path,body) => ({method:'POST',path,body});
+    const shell = (command,values) => post('/execute/sync',{script:'mobile: shell',args:[{command,args:values}]});
+    const keycode = code => post('/appium/device/press_keycode',{keycode:code});
+    const android = args.backend.startsWith('android');
+    let frame;
+    switch (effect.kind) {
+    case 'read-source': frame={method:'GET',path:'/source'}; break;
+    case 'capture-screenshot': frame={method:'GET',path:'/screenshot'}; break;
+    case 'tap': case 'double-tap': case 'long-press': case 'swipe': case 'drag': {
+        const move = {type:'pointerMove',duration:0,x:'x' in effect ? effect.x : effect.x1,y:'y' in effect ? effect.y : effect.y1};
+        const down={type:'pointerDown',button:0}, up={type:'pointerUp',button:0};
+        const steps=[move,down];
+        if (effect.kind === 'long-press') steps.push({type:'pause',duration:effect.durationMs});
+        if (effect.kind === 'swipe' || effect.kind === 'drag') steps.push({type:'pointerMove',duration:effect.durationMs,x:effect.x2,y:effect.y2});
+        steps.push(up);
+        if (effect.kind === 'double-tap') steps.push({type:'pause',duration:80},down,up);
+        const id=effect.kind === 'double-tap' ? 'doubleTap' : effect.kind === 'long-press' ? 'longPress' : effect.kind;
+        frame=post('/actions',{actions:[{type:'pointer',id,parameters:{pointerType:'touch'},actions:steps}]}); break;
+    }
+    case 'type-text': frame=post('/keys',{text:effect.text,value:[...effect.text]}); break;
+    case 'send-key': frame=post('/keys',{text:effect.key,value:[effect.key]}); break;
+    case 'send-key-code': frame=keycode(effect.keyCode); break;
+    case 'back': frame=post('/back',{}); break;
+    case 'home': frame=android ? keycode(3) : post('/execute/sync',{script:'mobile: pressButton',args:[{name:'home'}]}); break;
+    case 'forward': frame=keycode(125); break;
+    case 'recents': frame=keycode(187); break;
+    case 'power': frame=keycode(26); break;
+    case 'lock': case 'unlock': frame=android ? keycode(effect.kind === 'lock' ? 223 : 224) : post('/execute/sync',{script:'mobile: '+effect.kind,args:[]}); break;
+    case 'set-orientation': frame=post('/orientation',{orientation:effect.orientation.toUpperCase()}); break;
+    case 'set-automatic-rotation': frame=shell('settings',['put','system','accelerometer_rotation',effect.enabled ? '1' : '0']); break;
+    case 'set-display-rotation': frame=shell('settings',['put','system','user_rotation',({'portrait':'0','landscape':'1','reverse-portrait':'2','reverse-landscape':'3'})[effect.orientation]]); break;
+    case 'open-url': frame=post('/url',{url:effect.url}); break;
+    case 'install-app': frame=post('/appium/device/install_app',{appPath:effect.path}); break;
+    case 'launch-component': frame=shell('am',['start','-n',effect.component]); break;
+    case 'launch-app': case 'uninstall-app': case 'stop-app': frame=post('/appium/device/'+({'launch-app':'activate_app','uninstall-app':'remove_app','stop-app':'terminate_app'})[effect.kind],{appId:effect.appId}); break;
+    case 'clear-app-data': frame=shell('pm',['clear',effect.appId]); break;
+    case 'set-location': frame=post('/location',{location:{latitude:effect.latitude,longitude:effect.longitude,altitude:effect.altitude}}); break;
+    case 'set-airplane-mode-setting': frame=shell('settings',['put','global','airplane_mode_on',effect.enabled ? '1' : '0']); break;
+    case 'announce-airplane-mode': frame=shell('am',['broadcast','-a','android.intent.action.AIRPLANE_MODE','--ez','state',effect.enabled ? 'true' : 'false']); break;
+    case 'set-clipboard': frame=post('/appium/device/set_clipboard',{content:Buffer.from(effect.text,'utf8').toString('base64'),contentType:'plaintext',label:'text'}); break;
+    case 'read-clipboard': frame=post('/appium/device/get_clipboard',{contentType:'plaintext'}); break;
+    }
+    const receipt=await brokerAppium({...args,action:'request',...frame});
+    if (!receipt.ok) return {kind:'failed',localBudgetExhausted:isLocalObservationBudgetExhaustion(receipt),receipt};
+    const body=receipt.result?.response?.body;
+    const value=body?.value ?? body;
+    const screenshot=body?.value ?? body?.screenshot;
+    return {kind:'completed',receipt,
+        ...(effect.kind === 'read-source' ? {source:value,sourceText:String(body?.value ?? '')} : {}),
+        ...(effect.kind === 'read-clipboard' ? {clipboardText:decodeClipboardText(value)} : {}),
+        ...(effect.kind === 'capture-screenshot' && screenshot ? {screenshotData:String(screenshot)} : {}),
+    };
+}

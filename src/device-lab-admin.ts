@@ -40,6 +40,7 @@ export type DeviceLabWiringDiagnostic = {
 
 export type HyperVSetupHostResult = { ok: boolean; text: string };
 import { createDeviceAdminAllProjectCleanup } from "./application/device-admin-cleanup.js";
+import type { CleanupAllProjectsResult } from "./domain/device-admin-cleanup.js";
 import { createDeviceAdminPrune } from "./application/device-admin-prune.js";
 import { admitDeviceAdminInventoryCommand } from "./domain/device-admin-inventory.js";
 import { createDeviceAdminInventory } from "./application/device-admin-inventory.js";
@@ -709,13 +710,43 @@ export function pruneOwnerDevices(cwd = process.cwd(), profile?: string): { ok: 
     return deviceAdminPrune().owner(cwd, profile);
 }
 
+function formatAllProjectCleanup(result: CleanupAllProjectsResult): string {
+    const lines = ["projects: stop --all-projects"];
+    let stopped = 0;
+    let skipped = 0;
+    let failed = 0;
+    for (const project of result.projects) {
+        lines.push(`project: ${project.ownerId}`);
+        for (const device of project.results) {
+            if (device.status === "skipped") {
+                skipped += 1;
+                lines.push(`skipped: ${device.id}  backend=${device.backend}  status=${device.previousStatus}`);
+                continue;
+            }
+            if (device.status === "failed") {
+                failed += 1;
+                lines.push(`failed: ${device.id}  backend=${device.backend}  previous=${device.previousStatus}  reason=${device.reason || "device-stop-failed"}`);
+            } else {
+                stopped += 1;
+                lines.push(`stopped: ${device.id}  backend=${device.backend}  previous=${device.previousStatus}`);
+            }
+            for (const command of device.commands) lines.push(`command: ${command.command} -> ${command.status ?? "unknown"}`);
+        }
+    }
+    if (stopped === 0) lines.push("stopped: 0");
+    if (failed > 0) lines.push(`failed: ${failed}`);
+    lines.push(`skipped: ${skipped}`);
+    return `${lines.join("\n")}\n`;
+}
+
 export function stopAllProjectDevices(timeoutMs = 5000): { ok: boolean; text: string } {
  const native = deviceAdminCleanupNativePorts();
- return createDeviceAdminAllProjectCleanup({
+ const result = createDeviceAdminAllProjectCleanup({
   ...native,
   get backends() { return DEVICE_BACKENDS; },
   enumerateOwnerIds: () => allOwnerIds(),
  }).allProjects(timeoutMs);
+ return { ok: result.ok, text: formatAllProjectCleanup(result) };
 }
 
 export function pruneAllProjectDevices(): { ok: boolean; text: string } {

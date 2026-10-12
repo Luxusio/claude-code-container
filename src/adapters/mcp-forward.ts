@@ -35,6 +35,24 @@ export function createNativeMcpConfigPorts(): McpConfigRegenerationPorts<string,
         resolveClaudeProfile: profile => getClaudeJsonFile(profile),
         readClaudeProfileDocument: file => readOptionalDocument(file),
         readHostMcpDocument: () => readHostMcpDocument(),
+        createManagedMcpServers: () => ({
+            chromeDevtools: {
+                command: "mise",
+                args: [
+                    "--no-config", "exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp",
+                    "--headless", "--isolated",
+                    "--executablePath=/usr/bin/chromium",
+                    "--chromeArg=--no-sandbox",
+                    "--chromeArg=--disable-setuid-sandbox",
+                    "--chromeArg=--disable-dev-shm-usage",
+                ],
+            },
+            deviceLab: {
+                command: "mise",
+                args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/device-lab-mcp/server.mjs"],
+                env: { CCC_DEVICE_BROKER_AUTH_FILE: "/run/ccc-device-broker-auth/owner.json" },
+            },
+        }),
         withCodexProfileLock: (profile, operation) => withCodexConfigLock(operation, profile),
         prepareCodexProfile: profile => {
             const codexConfigFile = getCodexConfigFile(profile);

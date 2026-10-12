@@ -3,8 +3,7 @@ import type { DeviceAdminPhysicalTransitionPorts } from "./ports/device-admin-de
 export { physicalLeaseMatchesOwnerDevice } from "./domain/device-admin-delete.js";
 import { createDeviceAdminCleanup } from "./application/device-admin-cleanup.js";
 import type { DeviceAdminCleanupPorts } from "./ports/device-admin-cleanup.js";
-import { serialForAndroid } from "./domain/device-admin-cleanup.js";
-import type { OwnedCleanupRuntime, CleanupDeviceResult } from "./domain/device-admin-cleanup.js";
+import type { OwnedCleanupRuntime, CleanupDeviceResult, CleanupStopEffect, CleanupStopEffectsResult } from "./domain/device-admin-cleanup.js";
 export { shouldCleanupDevice } from "./domain/device-admin-cleanup.js";
 // Cohesive native cleanup authority. Legacy admin imports and reexports shared bindings.
 import { existsSync, readdirSync, unlinkSync } from "fs";
@@ -218,6 +217,66 @@ export function now(): string {
     return new Date().toISOString();
 }
 
+function serialForAndroid(device: DeviceRecord): string | null {
+    if (typeof device.serial === "string" && device.serial) return device.serial;
+    if (typeof device.port === "number") return `emulator-${device.port}`;
+    return null;
+}
+
+function simctlTarget(device: DeviceRecord): string | null {
+    for (const key of ["udid", "simulatorName", "name", "id"]) {
+        const value = device[key];
+        if (typeof value === "string" && value) return value;
+    }
+    return null;
+}
+
+function executeStopEffects(effects: readonly CleanupStopEffect[], timeoutMs: number): CleanupStopEffectsResult {
+    const commands: CommandResult[] = [];
+    let adb: string | null | undefined;
+    for (const effect of effects) {
+        const device = effect.device;
+        let result: CommandResult | null = null;
+        switch (effect.kind) {
+        case "android-recording-stop":
+        case "android-emulator-stop": {
+            if (adb === undefined) adb = commandPath("adb");
+            const serial = serialForAndroid(device);
+            if (adb && serial) {
+                const args = effect.kind === "android-recording-stop"
+                    ? ["-s", serial, "shell", "pkill", "-2", "screenrecord"]
+                    : ["-s", serial, "emu", "kill"];
+                result = runCommand(adb, args, timeoutMs);
+            }
+            break;
+        }
+        case "ios-simulator-stop": {
+            const xcrun = commandPath("xcrun");
+            const target = simctlTarget(device);
+            if (xcrun && target) result = runCommand(xcrun, ["simctl", "shutdown", target], timeoutMs);
+            break;
+        }
+        case "windows-sandbox-stop": {
+            const sandboxId = typeof device.sandboxId === "string"
+                && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(device.sandboxId)
+                ? device.sandboxId : null;
+            if (sandboxId) result = runCommand(commandPath("wsb"), ["stop", "--id", sandboxId], timeoutMs);
+            break;
+        }
+        case "macos-instance-stop": {
+            const provider = typeof device.provider === "string" ? device.provider : null;
+            const instance = typeof device.providerInstance === "string" ? device.providerInstance : null;
+            if (provider && instance && ["tart", "vz", "utmctl"].includes(provider)) {
+                result = runCommand(commandPath(provider), ["stop", instance], timeoutMs);
+            }
+            break;
+        }
+        }
+        if (result) commands.push(result);
+    }
+    return { ok: commands.length > 0 && commands.every(command => command.status === 0), commands };
+}
+
 export function hardwareIdForPhysicalDevice(backend: Backend, device: DeviceRecord): string | null {
     if (backend.stateKey === "android-device") return serialForAndroid(device);
     if (backend.stateKey === "ios-device") {
@@ -327,8 +386,7 @@ export function deviceAdminCleanupNativePorts(): DeviceAdminCleanupPorts<Backend
   runtimeExited: runtime => runtimeExited(runtime),
   signalRuntime: (runtime, signal) => signalDeviceRuntimeProcess(runtime, signal),
   waitForRuntimeExit: (runtime, timeoutMs) => waitForRuntimeExit(runtime, timeoutMs),
-  commandPath: command => commandPath(command),
-  runCommand: (command, args, timeoutMs) => runCommand(command, args, timeoutMs),
+  executeStopEffects,
   timestamp: () => now(),
   hardwareId: (backend, device) => hardwareIdForPhysicalDevice(backend, device),
   transitionRecord: (ownerId, backend, expected, replacement) => transitionOwnerDeviceRecord(ownerId, backend, expected, replacement),

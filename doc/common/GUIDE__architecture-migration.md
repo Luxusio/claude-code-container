@@ -35,6 +35,34 @@ changes. Native, installed-package and reliability acceptance remain separate.
 Hosted CI, workflow reruns and CI-triggering pushes require explicit user
 authorization. Use local review and the checks appropriate to the current diff.
 
+## Finite native boundaries
+
+Application code decides which operation is allowed, its sequence and budget,
+and whether an observed effect permits publication. Existing native compositions
+encode commands, HTTP requests and configuration, decode responses, and present
+the result. Ports carry specific operations and semantic observations; native
+diagnostic or persisted runtime receipts may pass through opaquely.
+
+The current structural wave applies this rule to MCP mobile and broker requests,
+workspace content repair, device cleanup, managed MCP configuration, iOS app
+management, iOS observation and QEMU image/lifecycle operations. Shared iOS
+backends bind app and observation contracts together under one file owner.
+Workspace repair reports finite events and asks for a boolean confirmation;
+the CLI supplies the prompt and path display. Cleanup returns ordered project
+outcomes for the CLI to format. QEMU owns its launch preview and persisted native
+command metadata in the Linux adapter.
+
+Verify actual ownership, CAS, leases, file bytes, staging cleanup, partial effects
+and deadline behavior through existing composed tests. Getter or receiver
+capture, function arity, source layout and implementation-only evaluation order
+are not migration requirements. Older accepted extraction records below are
+historical evidence, not instructions to reproduce incidental capture machinery.
+Preserve command sequencing where it governs real effects and publication.
+
+Structural implementation becomes accepted only after current independent review,
+QA and delivery. Native hosts, exhaustive source coverage, reliability and formal
+Goal completion retain their separate evidence requirements.
+
 ## Parallel implementation waves
 
 Implement independent operations in separate branches and worktrees from one

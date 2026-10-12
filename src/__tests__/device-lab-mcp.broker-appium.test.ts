@@ -593,6 +593,15 @@ describe("device-lab MCP broker Appium routing", () => {
                 text: "hello",
                 value: ["h", "e", "l", "l", "o"],
             });
+            const clipboardText = "héllo 📋\n第二行";
+            const clipboardSet = await client.callTool({ name: "clipboard", arguments: { ...baseArgs, text: clipboardText } });
+            expect(clipboardSet.isError).not.toBe(true);
+            expect(fakeAppium.requests.find(entry => entry.url === "/session/MCP-HIGH-LEVEL-SESSION-1/appium/device/set_clipboard")?.body).toEqual({
+                content: Buffer.from(clipboardText, "utf8").toString("base64"), contentType: "plaintext", label: "text",
+            });
+            const clipboardGet = await client.callTool({ name: "clipboard", arguments: baseArgs });
+            expect(clipboardGet.isError).not.toBe(true);
+            expect(JSON.parse(((clipboardGet.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ text: "hello broker", provider: "broker-appium" });
         } finally {
             await fakeAppium.close();
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

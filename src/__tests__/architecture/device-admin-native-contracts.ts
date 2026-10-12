@@ -71,3 +71,29 @@ async function consumedSetupCapabilities<Evidence>(ports: DeviceAdminSetupPorts<
     void withMutationLock;
 }
 void consumedSetupCapabilities;
+
+import { createDeviceAdminCleanup, createDeviceAdminAllProjectCleanup } from "../../application/device-admin-cleanup.js";
+import type { DeviceAdminAllProjectCleanupPorts } from "../../ports/device-admin-cleanup.js";
+import type { CleanupBackend, CleanupStopEffect, CleanupDeviceResult } from "../../domain/device-admin-cleanup.js";
+
+function consumedCleanupCapabilities<Backend extends CleanupBackend>(ports: DeviceAdminAllProjectCleanupPorts<Backend>): void {
+    const effects: readonly CleanupStopEffect[] = [{ kind: "android-emulator-stop", device: { id: "owned", serial: "emulator-5554" } }];
+    const stopped = ports.executeStopEffects(effects, 5_000);
+    const ok: boolean = stopped.ok;
+    const commands: CleanupDeviceResult["commands"] = stopped.commands;
+    const report = createDeviceAdminAllProjectCleanup(ports).allProjects(5_000);
+    for (const project of report.projects) {
+        const ownerId: string = project.ownerId;
+        const outcomes: CleanupDeviceResult[] = project.results;
+        void [ownerId, outcomes];
+    }
+    const { executeStopEffects, ...withoutEffects } = ports;
+    // @ts-expect-error Cleanup requires a finite native stop effect capability.
+    createDeviceAdminCleanup(withoutEffects);
+    // @ts-expect-error Native effect facts must settle before process waits and publication.
+    createDeviceAdminCleanup({ ...ports, executeStopEffects: async () => ({ ok: true, commands: [] }) });
+    // @ts-expect-error Arbitrary executable recipes are outside the finite cleanup vocabulary.
+    ports.executeStopEffects([{ kind: "command", device: { id: "owned" }, command: "adb", args: [] }], 5_000);
+    void [ok, commands, executeStopEffects];
+}
+void consumedCleanupCapabilities;

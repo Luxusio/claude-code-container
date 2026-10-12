@@ -145,9 +145,9 @@ async function terminateOwnedAppiumProcess(appium, label, timeoutMs = 1000) {
     return terminateOwnedRuntimeProcess({ ...appium, pid: appium?.serverPid }, label, { timeoutMs });
 }
 
-async function deleteAppiumSession(appium) { return observationAccess.deleteSession(appium); }
+async function deleteAppiumSession(appium) { return createObservationAccess().deleteSession(appium); }
 
-async function stopOwnedAppium(appium, label) { return observationAccess.stopOwnedAppium(appium, label); }
+async function stopOwnedAppium(appium, label) { return createObservationAccess().stopOwnedAppium(appium, label); }
 
 function boundedIosAppiumErrorText(text, maxBytes = IOS_APPIUM_ERROR_TEXT_LIMIT_BYTES) {
     const bytes = Buffer.from(text, "utf8");
@@ -236,9 +236,31 @@ export async function fetchIosAppiumJson(url, options = {}) {
     }
 }
 
-export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) { return observationAccess.waitForApp(xcrun, target, bundleId, timeoutMs, intervalMs); }
+/** @template {import('../ports/ios-observation-access.mjs').IosAccessAppiumEffect} Effect
+ * @param {Effect} effect
+ * @returns {Promise<import('../ports/ios-observation-access.mjs').IosAccessAppiumResult<Effect>>} */
+export async function performIosAppiumEffect(effect) {
+    const sessionUrl = "sessionId" in effect ? `${effect.serverUrl}/session/${effect.sessionId}` : `${effect.serverUrl}/session`;
+    const url = effect.kind === "server-status" ? `${effect.serverUrl}/status`
+        : effect.kind === "source" || effect.kind === "screenshot" ? `${sessionUrl}/${effect.kind}`
+        : effect.kind === "active-app" ? `${sessionUrl}/execute/sync` : sessionUrl;
+    const options = effect.kind === "create-session" ? { method: "POST", body: JSON.stringify({ capabilities: { alwaysMatch: {
+        platformName: "iOS", "appium:automationName": "XCUITest", "appium:deviceName": effect.deviceName,
+        "appium:udid": effect.target, ...(effect.physical ? { "appium:realDevice": true } : {}),
+    } } }) } : effect.kind === "active-app" ? { method: "POST", body: JSON.stringify({ script: "mobile: activeAppInfo", args: [] }), timeoutMs: effect.timeoutMs }
+        : { method: effect.kind === "delete-session" ? "DELETE" : "GET", ...("timeoutMs" in effect ? { timeoutMs: effect.timeoutMs } : {}) };
+    const response = await fetchIosAppiumJson(url, options);
+    const value = response?.value ?? response;
+    const result = effect.kind === "create-session" ? { sessionId: typeof value?.sessionId === "string" && value.sessionId ? value.sessionId : typeof response?.sessionId === "string" && response.sessionId ? response.sessionId : null }
+        : effect.kind === "source" ? { source: response?.value ?? response?.source ?? response }
+        : effect.kind === "screenshot" ? { data: response?.value || response?.screenshot || undefined }
+        : effect.kind === "active-app" ? { bundleIds: [value?.bundleId, value?.bundleID].filter((bundleId) => typeof bundleId === "string"), activeApp: value } : undefined;
+    return /** @type {import('../ports/ios-observation-access.mjs').IosAccessAppiumResult<Effect>} */ (result);
+}
 
-async function ensureIosAppiumSession(deviceId) { return observationAccess.ensureSession(deviceId); }
+export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) { return createObservationAccess(xcrun).waitForApp(xcrun, target, bundleId, timeoutMs, intervalMs); }
+
+async function ensureIosAppiumSession(deviceId) { return createObservationAccess().ensureSession(deviceId); }
 
 function guardIosObservation(deviceId, original, session) {
     const current = findIosDevice(deviceId);
@@ -397,13 +419,13 @@ async function handleIosToolUnlocked(name, args) {
     const environment = presentIosEnvironmentOutcome(iosEnvironment.request(name, args));
     if (environment !== undefined) return environment;
     if (name !== "device_reset" || !args.eraseSimulator) {
-        const outcome = await appManagement.request(name, args);
+        const outcome = await createAppManagement().request(name, args);
         if (outcome?.kind === "json") return jsonResult(outcome.payload);
         if (outcome?.kind === "text") return textResult(false, outcome.message);
         if (outcome?.kind === "command-failure") return fail(outcome.command);
         if (name === "device_reset") return undefined;
     }
-    const access = await observationAccess.request(name, args);
+    const access = await createObservationAccess().request(name, args);
     if (access !== undefined) return access;
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
@@ -612,32 +634,44 @@ const iosEnvironmentPorts = {
 };
 const iosEnvironment = createIosEnvironment(iosEnvironmentPorts);
 
-const appManagement = createIosAppManagement({
-    variant: "simulator",
-    device: id => findIosDevice(id),
-    discovery: () => {
-        const facts = iosDiscovery();
-        return facts.available && facts.xcrun
-            ? { available: true, xcrun: facts.xcrun, missing: facts.missing }
-            : { available: false, xcrun: facts.xcrun, missing: facts.missing };
-    },
-    ownedTarget: (xcrun, device) => {
-        const observed = resolveOwnedSimulatorTarget(xcrun, device);
-        return observed.error ? { ok: false, message: observed.error } : { ok: true, target: observed.target };
-    },
-    execute: (xcrun, args, timeoutMs) => timeoutMs === undefined ? run(xcrun, args) : runWithTimeout(xcrun, args, timeoutMs),
-    resolveAppContainer: (xcrun, target, bundleId, type) => {
-        const observed = resolveIosAppContainer(xcrun, target, bundleId, type);
-        return observed.error ? { ok: false, command: observed.error } : { ok: true, containerRoot: observed.containerRoot };
-    },
-    containAppContainer: root => {
-        const observed = ensureContainerPathForRead(root, root);
-        return observed.error ? { ok: false, message: observed.error } : { ok: true };
-    },
-    clearAppContainer: root => { clearDirectoryContents(root); return undefined; },
-    publishAppReset: (id, reset, updatedAt) => updateIosDevice(id, item => ({ ...item, lastReset: reset, updatedAt })),
-    clock: () => now(),
-});
+function createAppManagement() {
+    /** @type {string|null} */
+    let xcrun = null;
+    return createIosAppManagement({
+        variant: "simulator",
+        device: id => findIosDevice(id),
+        discovery: () => {
+            const facts = iosDiscovery();
+            xcrun = facts.xcrun;
+            return { available: Boolean(facts.available && xcrun), missing: facts.missing };
+        },
+        ownedTarget: device => {
+            const observed = resolveOwnedSimulatorTarget(xcrun, device);
+            return observed.error ? { ok: false, message: observed.error } : { ok: true, target: observed.target };
+        },
+        perform: (target, effect) => {
+            const args = effect.kind === "install" ? ["simctl", "install", target, effect.path]
+                : effect.kind === "launch" ? ["simctl", "launch", target, effect.bundleId]
+                : effect.kind === "stop" ? ["simctl", "terminate", target, effect.bundleId]
+                : effect.kind === "uninstall" ? ["simctl", "uninstall", target, effect.bundleId]
+                : effect.kind === "permission" ? ["simctl", "privacy", target, effect.action, effect.service, effect.bundleId]
+                : ["simctl", "openurl", target, effect.url];
+            const command = effect.kind === "install" ? runWithTimeout(xcrun, args, 300000) : run(xcrun, args);
+            return { kind: command.status === 0 ? "succeeded" : "failed", command };
+        },
+        resolveAppContainer: (target, bundleId, type) => {
+            const observed = resolveIosAppContainer(xcrun, target, bundleId, type);
+            return observed.error ? { ok: false, command: observed.error } : { ok: true, containerRoot: observed.containerRoot };
+        },
+        containAppContainer: root => {
+            const observed = ensureContainerPathForRead(root, root);
+            return observed.error ? { ok: false, message: observed.error } : { ok: true };
+        },
+        clearAppContainer: root => { clearDirectoryContents(root); return undefined; },
+        publishAppReset: (id, reset, updatedAt) => updateIosDevice(id, item => ({ ...item, lastReset: reset, updatedAt })),
+        clock: () => now(),
+    });
+}
 
 const controlTransfer = createIosControlTransfer({
     kind: "simulator",
@@ -698,52 +732,89 @@ function spawnObservationAppium(executable, port) {
     };
 }
 
-/** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../responses.mjs').IosAccessNativeResult>} */
-const observationPorts = {
-    kind: "simulator",
-    findDevice: id => findIosDevice(id),
-    discovery: () => iosDiscovery(),
-    appiumDiscovery: discovery => iosAppiumDiscovery(discovery),
-    backend: discovery => iosBackend(discovery),
-    targetStatus: device => withTargetStatus(device),
-    withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios", id, operation),
-    waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
-    requestHttp: (url, options) => fetchIosAppiumJson(url, options),
-    spawnServer: spawnObservationAppium,
-    inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
-    waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
-    refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
-    terminateRuntime: (runtime, label) => terminateOwnedAppiumProcess(runtime, label),
-    isAlive: pid => processIsAlive(pid),
-    publishAppium: (id, expected, replacement, timestamp) => transitionAppiumGeneration(updateIosDevice, id, expected, replacement, timestamp),
-    updateAppiumPort: (id, runtimeId, port, timestamp) => updateIosDevice(id, item => item.appium?.runtimeId === runtimeId
-        ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
-    timestamp: () => now(),
-    runtimeId: () => randomUUID(),
-    portForDevice: id => appiumPortForIosDevice(id),
-    pause: milliseconds => sleep(milliseconds),
-    diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
-    jsonResult: value => jsonResult(value),
-    textResult: (ok, message) => textResult(ok, message),
-    commandFailure: command => fail(command),
-    imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
-    verifyTarget: (xcrun, device) => resolveOwnedSimulatorTarget(xcrun, device),
-    execute: (xcrun, args, timeoutMs) => timeoutMs === undefined ? run(xcrun, args) : run(xcrun, args, { timeout: timeoutMs }),
-    missingPrerequisites: discovery => missingPrereqResult(discovery),
-    reconcileDevice: (device, discovery) => reconcileIosDevice(device, discovery),
-    appContainer: (xcrun, target, bundleId, type) => run(xcrun, ["simctl", "get_app_container", target, bundleId, type]),
-    pathInContainer: (root, requested) => pathInsideContainer(root, requested),
-    guardRead: (root, path) => ensureContainerPathForRead(root, path),
-    listArgumentError: args => validateListFilesArgs(args),
-    listDirectory: (root, requested, limit) => listContainedDirectory(root, requested, limit),
-    stageScreenshot: () => {
-        const root = mkdtempSync(join(tmpdir(), "ccc-ios-screenshot-"));
-        return { path: join(root, "screenshot.png"), dispose: () => { rmSync(root, { recursive: true, force: true }); return undefined; } };
-    },
-    readScreenshot: path => screenshotFileResult(path, "ios-simulator-screenshot"),
-    publishErased: (id, change) => updateIosDevice(id, item => ({ ...item, ...change })),
-    guardObservation: (id, original, session) => { guardIosObservation(id, original, session); return undefined; },
-    checkObservation: (id, original, session) => { guardIosObservation(id, original, session); return undefined; },
-};
+/** @template {import('../ports/ios-observation-access.mjs').IosAccessSimulatorEffect} Effect
+ * @param {string|null} xcrun @param {Effect} effect
+ * @returns {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */
+function performSimulatorEffect(xcrun, effect) {
+    const target = effect.target;
+    let command;
+    if (effect.kind === "app-probe") {
+        const processProbe = effect.probe === "bundle-process" || effect.probe === "name-process";
+        const domain = effect.probe === "user-services" ? "user/501" : effect.probe === "gui-services" ? "gui/501" : "system";
+        const hint = String(effect.bundleId).split(".").filter(Boolean).at(-1) || String(effect.bundleId);
+        const args = processProbe ? ["simctl", "spawn", target, "pgrep", ...(effect.probe === "name-process" ? ["-i"] : []), "-f", effect.probe === "name-process" ? hint : effect.bundleId]
+            : ["simctl", "spawn", target, "launchctl", "print", domain];
+        command = run(xcrun, args, { timeout: effect.timeoutMs });
+        const clean = !command.error && !command.signal && (command.status === 0 || (processProbe && command.status === 1 && !command.stdout && !command.stderr));
+        const present = clean && command.status === 0 && (processProbe ? Boolean(command.stdout.trim()) : String(command.stdout || "").toLowerCase().includes(String(effect.bundleId).toLowerCase()));
+        const cause = [command.error?.code, command.error?.message, command.signal ? `signal ${command.signal}` : "", command.status != null ? `exit ${command.status}` : "", command.stderr || command.stdout].filter(Boolean).join(": ");
+        const result = { kind: present ? "present" : clean ? "absent" : "failed", receipt: !clean ? { ...command, stderr: cause || "command failed" } : present && !processProbe ? { ...command, stdout: "" } : command,
+            ...(present ? { pid: processProbe ? command.stdout.trim() : null, ...(!processProbe ? { observedBy: `launchctl-${domain}` } : {}) } : {}) };
+        return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ (result);
+    }
+    const args = effect.kind === "exec" ? ["simctl", "spawn", target, "/bin/sh", "-lc", effect.command]
+        : effect.kind === "screenshot" ? ["simctl", "io", target, "screenshot", effect.path]
+        : effect.kind === "erase" ? ["simctl", "erase", target]
+        : ["simctl", "get_app_container", target, effect.bundleId, effect.containerType];
+    command = effect.kind === "screenshot" ? run(xcrun, args, { timeout: 30000 }) : run(xcrun, args);
+    if (effect.kind === "app-container") {
+        const path = command.stdout.trim();
+        if (command.status === 0 && !path) command = { ...command, status: 1, stderr: "simctl get_app_container returned an empty path" };
+        return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ ({ ...command, ok: command.status === 0, path });
+    }
+    return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ ({ ...command, ok: command.status === 0 });
+}
 
-const observationAccess = createIosObservationAccess(observationPorts);
+/** @param {string|null} [initialXcrun] */
+function createObservationAccess(initialXcrun = null) {
+    let xcrun = initialXcrun;
+    /** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../responses.mjs').IosAccessNativeResult>} */
+    const observationPorts = {
+        kind: "simulator",
+        findDevice: id => findIosDevice(id),
+        discovery: () => iosDiscovery(),
+        appiumDiscovery: discovery => iosAppiumDiscovery(discovery),
+        backend: discovery => iosBackend(discovery),
+        targetStatus: device => withTargetStatus(device),
+        withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios", id, operation),
+        waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+        appiumEffect: performIosAppiumEffect,
+        spawnServer: spawnObservationAppium,
+        inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
+        waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
+        refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
+        terminateRuntime: (runtime, label) => terminateOwnedAppiumProcess(runtime, label),
+        isAlive: pid => processIsAlive(pid),
+        publishAppium: (id, expected, replacement, timestamp) => transitionAppiumGeneration(updateIosDevice, id, expected, replacement, timestamp),
+        updateAppiumPort: (id, runtimeId, port, timestamp) => updateIosDevice(id, item => item.appium?.runtimeId === runtimeId
+            ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
+        timestamp: () => now(),
+        runtimeId: () => randomUUID(),
+        serverUrlForPort: port => `http://127.0.0.1:${port}`,
+        portForDevice: id => appiumPortForIosDevice(id),
+        pause: milliseconds => sleep(milliseconds),
+        diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
+        jsonResult: value => jsonResult(value),
+        textResult: (ok, message) => textResult(ok, message),
+        commandFailure: command => fail(command),
+        imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
+        verifyTarget: (executable, device) => { xcrun = executable; return resolveOwnedSimulatorTarget(executable, device); },
+        simulatorEffect: effect => performSimulatorEffect(xcrun, effect),
+        missingPrerequisites: discovery => missingPrereqResult(discovery),
+        reconcileDevice: (device, discovery) => reconcileIosDevice(device, discovery),
+        pathInContainer: (root, requested) => pathInsideContainer(root, requested),
+        guardRead: (root, path) => ensureContainerPathForRead(root, path),
+        listArgumentError: args => validateListFilesArgs(args),
+        listDirectory: (root, requested, limit) => listContainedDirectory(root, requested, limit),
+        stageScreenshot: () => {
+            const root = mkdtempSync(join(tmpdir(), "ccc-ios-screenshot-"));
+            return { path: join(root, "screenshot.png"), dispose: () => { rmSync(root, { recursive: true, force: true }); return undefined; } };
+        },
+        readScreenshot: path => screenshotFileResult(path, "ios-simulator-screenshot"),
+        publishErased: (id, change) => updateIosDevice(id, item => ({ ...item, ...change })),
+        guardObservation: (id, original, session) => { guardIosObservation(id, original, session); return undefined; },
+        checkObservation: (id, original, session) => { guardIosObservation(id, original, session); return undefined; },
+    };
+
+    return createIosObservationAccess(observationPorts);
+}

@@ -1,4 +1,4 @@
-import { presentBrokerTool, presentActiveAppWait, imageResult } from "./device-request-presenter.mjs";
+import { presentBrokerReceipt, presentBrokerTool, presentBrokerLifecycle, presentBackendCatalog, presentMobileObservation, presentSourceWait, presentActiveAppWait } from "./device-request-presenter.mjs";
 import { availableDevices } from "./available-devices.mjs";
 import { cropScreenshotResult } from "./screenshot-region.mjs";
 import { finishStartReadiness, startBootTimeoutMs } from "./start-readiness.mjs";
@@ -14,7 +14,7 @@ import { handleMacosTool, listMacosDevices, macosBackend } from "@ccc/device-lab
 import { handleLinuxVmManagementTool, handleLinuxVmTool, linuxVmBackend, listLinuxVmDevices } from "@ccc/device-lab/providers/backends/linux-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "@ccc/device-lab/providers/backends/windows-sandbox.mjs";
 import { listWindowsVmDevices, windowsVmBackend } from "@ccc/device-lab/providers/backends/windows-vm.mjs";
-import { brokerAppium, observeActiveApp, brokerCommand, brokerDeviceTool, brokerPhysical, brokerRpc, brokerStatus, implicitBrokerProbeOptions, isLocalObservationBudgetExhaustion, withBrokerOperation } from "./broker.mjs";
+import { brokerObservation, observeBrokerStatus, observeBrokerBackends, observeBrokerInventory, invokeBrokerLifecycle, ensureMobileSession, observeMobileSessionStatus, executeMobileEffect, observeActiveApp, brokerDeviceTool, brokerPhysical, implicitBrokerProbeOptions, withBrokerOperation } from "./broker.mjs";
 import { ownerId } from "@ccc/device-lab/providers/context.mjs";
 import { currentDisplayTarget, handleDisplayTool } from "@ccc/device-lab/providers/display/x11.mjs";
 import { evaluateDestructivePolicy } from "./policy/destructive.mjs";
@@ -36,8 +36,22 @@ const deviceRequest = createDeviceRequest({
     cropScreenshotResult,
     finishStartReadiness,
     startBootTimeoutMs,
-    buildListFilesCommand,
     listFilesFromExecResult,
+    invokeBrokerListFiles: async (args, backend) => {
+        const command = buildListFilesCommand(backend, args);
+        const {path, limit, bundleId, containerType, ...execArgs} = args;
+        return brokerObservation(await brokerDeviceTool({...execArgs,backend,tool:'device_exec',command}));
+    },
+    listDirectDeviceFiles: async (args, backend) => {
+        const command = buildListFilesCommand(backend, args);
+        const execute = backend === 'android-emulator' ? handleAndroidTool
+            : backend === 'android-device' ? handleAndroidRealTool
+            : backend === 'linux-vm' ? handleLinuxVmTool
+            : backend === 'windows-sandbox' || backend === 'windows-vm' ? handleWindowsTool
+            : handleMacosTool;
+        const result = await execute('device_exec', {...args,command});
+        return listFilesFromExecResult(result || textResult(false, JSON.stringify({ok:false,error:'device-tool-unsupported',tool:'device_exec',deviceId:args.deviceId,backend})), args);
+    },
     androidBackend,
     androidDiscovery,
     handleAndroidTool,
@@ -65,15 +79,17 @@ const deviceRequest = createDeviceRequest({
     windowsBackend,
     listWindowsVmDevices,
     windowsVmBackend,
-    brokerAppium,
+    observeBrokerStatus,
+    observeBrokerBackends,
+    observeBrokerInventory,
+    invokeBrokerLifecycle,
+    ensureMobileSession,
+    observeMobileSessionStatus,
+    executeMobileEffect,
     observeActiveApp,
-    brokerCommand,
-    brokerDeviceTool,
-    brokerPhysical,
-    brokerRpc,
-    brokerStatus,
+    brokerDeviceTool: async args => brokerObservation(await brokerDeviceTool(args)),
+    brokerPhysical: async args => brokerObservation(await brokerPhysical(args)),
     implicitBrokerProbeOptions,
-    isLocalObservationBudgetExhaustion,
     withBrokerOperation,
     ownerId,
     currentDisplayTarget,
@@ -81,9 +97,13 @@ const deviceRequest = createDeviceRequest({
     evaluateDestructivePolicy,
     flowJsonResult,
     jsonResult,
+    presentBrokerReceipt: (receipt, extra) => presentBrokerReceipt(receipt, extra, jsonResult),
+    presentBrokerLifecycle: (receipt, value) => presentBrokerLifecycle(receipt, value, jsonResult),
+    presentBackendCatalog: value => presentBackendCatalog(value, jsonResult),
+    presentMobileObservation: (name, backend, observation, extra) => presentMobileObservation(name, backend, observation, extra, jsonResult, textResult),
+    presentSourceWait: outcome => presentSourceWait(outcome, jsonResult, textResult),
     presentBrokerTool: (receipt, value) => presentBrokerTool(receipt, value, jsonResult),
     presentActiveAppWait: outcome => presentActiveAppWait(outcome, jsonResult, textResult),
-    imageResult,
     textResult,
     compactToolValue,
     OWNER_DEVICE_ID_PATTERN,
@@ -100,8 +120,6 @@ const deviceRequest = createDeviceRequest({
     OPERATION_TOOLS,
     DEVICE_FLOW_TOOL_NAMES,
     now: () => Date.now(),
-    encodeBase64: text => Buffer.from(text, "utf8").toString("base64"),
-    decodeBase64: text => Buffer.from(text, "base64").toString("utf8"),
 });
 
 export function brokerLifecycleExecutionTimeout(args) {

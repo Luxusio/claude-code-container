@@ -4,7 +4,6 @@
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuRuntime} QemuRuntime */
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuExecution} QemuExecution */
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuMaterializedResult} QemuMaterializedResult */
-/** @import {QemuGuestProvisionPorts as QemuGuestProvisionPortsDeclaration, QemuLifecyclePorts as QemuLifecyclePortsDeclaration} from './qemu-lifecycle.mjs' */
-/** @typedef {QemuGuestProvisionPortsDeclaration} QemuGuestProvisionPorts */
+/** @import {QemuLifecyclePorts as QemuLifecyclePortsDeclaration} from './qemu-lifecycle.mjs' */
 /** @typedef {QemuLifecyclePortsDeclaration} QemuLifecyclePorts */
 export {};

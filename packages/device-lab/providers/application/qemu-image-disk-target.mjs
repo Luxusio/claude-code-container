@@ -1,4 +1,4 @@
-import { inferQemuImageFormat, qemuCommandTimeout, qemuOverlayArguments, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
+import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
 /** @typedef {import("../ports/qemu-image-disk-target.mjs").QemuLab} QemuLab */
 /** @typedef {import("../ports/qemu-image-disk-target.mjs").QemuImageSource} QemuImageSource */
 
@@ -71,19 +71,16 @@ export function createQemuImageDiskTargetApplication(ports) {
         const disk = ports.validateDiskPath(lab);
         if (!disk.ok) return disk;
         const status = ports.providerStatus();
-        const args = qemuOverlayArguments(source, disk.diskPath);
-        if (dryRun) return { ok: true, dryRun: true, command: status.qemuImg || "qemu-img", args, providerStatus: status };
-        if (!status.available) return { ok: false, error: "lab-provider-unsupported", providerStatus: status };
-        if (!status.qemuImg) return { ok: false, error: "qemu-img-unavailable", providerStatus: status };
-        ports.ensureDiskParent(disk.diskPath);
-        const runner = ports.qemuImageRunner();
-        const result = runner(status.qemuImg, args, {
-            cwd: lab.paths.labDir,
-            env: ports.commandEnvironment(),
+        if (!dryRun && !status.available) return { ok: false, error: "lab-provider-unsupported", providerStatus: status };
+        if (!dryRun && !status.qemuImg) return { ok: false, error: "qemu-img-unavailable", providerStatus: status };
+        return ports.createOverlay({
+            sourcePath: source.path,
+            sourceFormat: source.format,
+            diskPath: disk.diskPath,
+            labDirectory: lab.paths.labDir,
+            dryRun,
             timeoutMs: qemuCommandTimeout(ports.providerCommandTimeoutMs, 120000),
-        });
-        if (!result?.ok) return { ok: false, error: "qemu-img-create-failed", result: ports.presentExecution(result) };
-        return { ok: true, command: status.qemuImg, args, result: ports.presentExecution(result) };
+        }, status);
     }
 
     /** @param {import("../ports/qemu-image-disk-target.mjs").QemuTargetArguments} [args] @returns {import("../ports/qemu-image-disk-target.mjs").QemuTargetResult} */

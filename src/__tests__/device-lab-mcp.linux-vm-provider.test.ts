@@ -680,12 +680,14 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         assert.ok(createdLab);
         expect(created.ok).toBe(true);
 
+        const beforePlan = readFileSync(join(createdLab.paths.labDir, "lab.json"), "utf8");
         const dryRun = startLab({ labId: "ready-vm", dryRun: true }, {
             env,
             stateRoot: root,
             qemuPath: "/usr/bin/qemu-system-x86_64",
             qemuImgPath: "/usr/bin/qemu-img",
             kvmAvailable: true,
+            commandRunner: () => { throw new Error("dry-run must not execute native commands"); },
         });
         expect(dryRun).toEqual(expect.objectContaining({
             ok: true,
@@ -695,6 +697,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             args: expect.arrayContaining(["-machine", "q35,accel=kvm:tcg", `file=${createdLab.image.diskImage},if=virtio,format=qcow2`]),
         }));
         expect(JSON.stringify(dryRun)).not.toContain("qemu-monitor.sock");
+        expect(existsSync(createdLab.image.diskImage)).toBe(false);
+        expect(readFileSync(join(createdLab.paths.labDir, "lab.json"), "utf8")).toBe(beforePlan);
 
         const calls: unknown[] = [];
         const started = startLab({ labId: "ready-vm" }, {
@@ -718,6 +722,10 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(started.ok).toBe(true);
         expect(startedLab.runtimeState).toBe("running");
         expect(startedLab.runtime.pid).toBe(4242);
+        expect(JSON.parse(readFileSync(join(createdLab.paths.labDir, "lab.json"), "utf8")).runtime).toMatchObject({
+            pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" },
+            command: "/usr/bin/qemu-system-x86_64",
+        });
         const reused = startLab({ labId: "ready-vm" }, {
             env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
             commandRunner: () => { throw new Error("running reuse must not launch"); },
@@ -1074,6 +1082,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         };
         const created = createLab({ name: "Start Failure VM" }, { env, stateRoot: root });
         expect(created.ok).toBe(true);
+        assert.ok(created.lab);
+        const beforeLaunch = readFileSync(join(created.lab.paths.labDir, "lab.json"), "utf8");
 
         const failed = startLab({ labId: "start-failure-vm" }, {
             env,
@@ -1091,6 +1101,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
         expect(JSON.stringify(failed)).not.toContain("qemu-monitor.sock");
+        expect(readFileSync(join(created.lab.paths.labDir, "lab.json"), "utf8")).toBe(beforeLaunch);
     });
 
     it("lists targets without starting labs and records bounded sessions", () => {

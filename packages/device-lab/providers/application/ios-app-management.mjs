@@ -24,20 +24,16 @@ export function createIosAppManagement(ports) {
                 const resolved = await ports.session(args.deviceId);
                 if (resolved.kind === "unknown") return undefined;
                 if (resolved.kind === "refused") return { kind: "text", message: resolved.message };
-                try {
-                    await ports.request(resolved.session, "/execute/sync", { script: "mobile: terminateApp", args: [{ bundleId: args.bundleId }] });
-                } catch (error) {
-                    const message = error !== null && (typeof error === "object" || typeof error === "function") && "message" in error ? error.message : undefined;
-                    return { kind: "text", message: `iOS real-device Appium request failed: ${message}` };
-                }
+                const terminated = await ports.terminateApp(resolved.session, args.bundleId);
+                if (terminated.kind === "failed") return { kind: "text", message: `iOS real-device Appium request failed: ${terminated.message}` };
                 return { kind: "json", payload: { stopped: args.bundleId, provider: "appium-xcuitest", physical: true } };
             }
-            const xcrun = ports.xcrun();
-            if (!xcrun) return { kind: "text", message: "iOS real-device backend missing prerequisites: xcrun" };
-            const command = ports.execute(xcrun, install
-                ? ["devicectl", "device", "install", "app", "--device", device.udid, args.path]
-                : ["devicectl", "device", "process", "launch", "--device", device.udid, args.bundleId], install ? 300000 : undefined);
-            if (command.status !== 0) return { kind: "command-failure", command };
+            if (!ports.available()) return { kind: "text", message: "iOS real-device backend missing prerequisites: xcrun" };
+            const observed = ports.perform(device, install
+                ? { kind: "install", path: /** @type {string} */ (args.path) }
+                : { kind: "launch", bundleId: /** @type {string} */ (args.bundleId) });
+            const command = observed.command;
+            if (observed.kind === "failed") return { kind: "command-failure", command };
             return { kind: "json", payload: install
                 ? { installed: args.path, udid: device.udid, provider: "xcrun-devicectl", stdout: command.stdout, stderr: command.stderr }
                 : { launched: args.bundleId, udid: device.udid, provider: "xcrun-devicectl", stdout: command.stdout, stderr: command.stderr } };
@@ -51,11 +47,11 @@ export function createIosAppManagement(ports) {
         const discovery = ports.discovery();
         if (!discovery.available) return { kind: "text", message: `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}` };
         if (reset && !args.bundleId) return { kind: "text", message: "iOS Simulator reset requires bundleId or eraseSimulator=true" };
-        const owned = ports.ownedTarget(discovery.xcrun, device);
+        const owned = ports.ownedTarget(device);
         if (!owned.ok) return { kind: "text", message: owned.message };
         if (reset && args.bundleId) {
             const type = args.containerType || "data";
-            const container = ports.resolveAppContainer(discovery.xcrun, owned.target, args.bundleId, type);
+            const container = ports.resolveAppContainer(owned.target, args.bundleId, type);
             if (!container.ok) return { kind: "command-failure", command: container.command };
             const contained = ports.containAppContainer(container.containerRoot);
             if (!contained.ok) return { kind: "text", message: contained.message };
@@ -64,13 +60,14 @@ export function createIosAppManagement(ports) {
             return { kind: "json", payload: { reset: { bundleId: args.bundleId, containerType: type }, containerRoot: container.containerRoot, device: updated, provider: "simctl-app-container" } };
         }
         const action = name === "mobile_grant_permission" ? "grant" : "revoke";
-        const command = ports.execute(discovery.xcrun, install ? ["simctl", "install", owned.target, args.path]
-            : launch ? ["simctl", "launch", owned.target, args.bundleId]
-            : stop ? ["simctl", "terminate", owned.target, args.bundleId]
-            : uninstall ? ["simctl", "uninstall", owned.target, args.bundleId]
-            : permission ? ["simctl", "privacy", owned.target, action, args.service, args.bundleId]
-            : ["simctl", "openurl", owned.target, args.url], install ? 300000 : undefined);
-        if (command.status !== 0) return { kind: "command-failure", command };
+        const observed = ports.perform(owned.target, install ? { kind: "install", path: args.path }
+            : launch ? { kind: "launch", bundleId: args.bundleId }
+            : stop ? { kind: "stop", bundleId: /** @type {string} */ (args.bundleId) }
+            : uninstall ? { kind: "uninstall", bundleId: /** @type {string} */ (args.bundleId) }
+            : permission ? { kind: "permission", action, service: /** @type {string} */ (args.service), bundleId: /** @type {string} */ (args.bundleId) }
+            : { kind: "open-url", url: args.url });
+        const command = observed.command;
+        if (observed.kind === "failed") return { kind: "command-failure", command };
         const output = { stdout: command.stdout, stderr: command.stderr };
         if (install) return { kind: "json", payload: { installed: args.path, ...output } };
         if (launch) return { kind: "json", payload: { launched: args.bundleId, ...output } };

@@ -38,6 +38,30 @@ function lockPath(profile?: string) {
 
 describe("private native facade, real lock and direct filesystem publication", () => {
 
+    it("restores native managed commands and authentication after prior configuration edits", () => {
+        const { claude, codex } = prepare();
+        api.buildMcpConfig();
+        const document = JSON.parse(readFileSync(claude, "utf8"));
+        document.mcpServers["chrome-devtools"].args.push("--fixture-stale-argument");
+        document.mcpServers["device-lab"].env.CCC_DEVICE_BROKER_AUTH_FILE = "/fixture/stale-auth";
+        writeFileSync(claude, JSON.stringify(document));
+        api.buildMcpConfig();
+        const servers = JSON.parse(readFileSync(claude, "utf8")).mcpServers;
+        expect(servers["chrome-devtools"].command).toBe("mise");
+        expect(servers["chrome-devtools"].args.slice(0, 7)).toEqual(["--no-config", "exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp"]);
+        expect(servers["chrome-devtools"].args).toContain("--executablePath=/usr/bin/chromium");
+        expect(servers["chrome-devtools"].args).not.toContain("--fixture-stale-argument");
+        expect(servers["device-lab"]).toEqual({
+            command: "mise",
+            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/device-lab-mcp/server.mjs"],
+            env: { CCC_DEVICE_BROKER_AUTH_FILE: "/run/ccc-device-broker-auth/owner.json" },
+        });
+        const codexText = readFileSync(codex, "utf8");
+        expect(codexText).toContain('"/run/ccc-device-broker-auth/owner.json"');
+        expect(codexText).not.toContain("stale-auth");
+        expect(codexText).not.toContain("stale-argument");
+    });
+
     it.each([undefined, "work"])("publishes both consumers under profile %s and invokes restore within the actual fence", profile => {
         const { claude, codex } = prepare(profile);
         expect(api.buildMcpConfig(profile, () => { expect(existsSync(lockPath(profile))).toBe(true); expect(existsSync(codex)).toBe(false); })).toEqual(["host"]);

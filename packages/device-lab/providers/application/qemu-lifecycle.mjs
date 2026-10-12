@@ -1,4 +1,4 @@
-import { safeSshText, guestSshInput, validateGuestAgent, sshBaseArgs, sshDestination, publicLab, publicMaterializedResult, publicQemuArgs, publicExecution, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab, qemuLifecycleSlug, validQemuLabId } from "../domain/qemu-lifecycle.mjs";
+import { safeSshText, guestSshInput, validateGuestAgent, publicLab, publicMaterializedResult, publicReadinessProbeResult, requireRunningLab, qemuLifecycleSlug, validQemuLabId } from "../domain/qemu-lifecycle.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout } from "../domain/qemu-image-disk-target.mjs";
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuLifecycleArguments} QemuLifecycleArguments */
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuLab} QemuLab */
@@ -99,8 +99,9 @@ function start(args = {}) {
                 },
             }
             : loaded.lab;
-        const qemuArgs = buildQemuArgs(planLab, { preferDiskImage: needsMaterialize });
-        return { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(planLab), command: status.qemu || "qemu-system-x86_64", args: publicQemuArgs(qemuArgs), providerStatus: status, materialized };
+        const planned = launch(planLab, ctx, status, true, needsMaterialize);
+        if (!planned.ok) return { ok: false, error: "lab-start-failed", result: planned.presentation };
+        return { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(planLab), ...planned.preview, providerStatus: status, materialized };
     }
     if (!status.available) return { ok: false, error: "lab-provider-unsupported", providerStatus: status };
     if (loaded.lab.runtimeState === "running") return { ownerId: ctx.owner, reused: true, ...prepareStartedLab(loaded.lab, true) };
@@ -112,10 +113,8 @@ function start(args = {}) {
         : ports.imageDiskTargetApplication().materializeDisk({ labId: loaded.lab.id });
     if (!materialized.ok) return { ok: false, error: "lab-disk-materialize-failed", materialized };
     const startLabState = materialized.lab || loaded.lab;
-    const startArgs = buildQemuArgs(startLabState, { preferDiskImage: materialized.materialized === true });
-    const runner = ports.launchRunner();
-    const started = runner(status.qemu, startArgs, { cwd: startLabState.paths.labDir, env: ctx.env });
-    if (!started?.ok) return { ok: false, error: "lab-start-failed", result: publicExecution(started) };
+    const started = launch(startLabState, ctx, status, false, materialized.materialized === true);
+    if (!started.ok) return { ok: false, error: "lab-start-failed", result: started.presentation };
     const timestamp = ports.clock();
     const lab = {
         ...startLabState,
@@ -123,15 +122,12 @@ function start(args = {}) {
         updatedAt: timestamp,
         runtime: {
             runtimeId: ports.runtimeId(),
-            pid: started.pid || null,
-            processIdentity: started.processIdentity || null,
-            command: status.qemu,
-            args: startArgs,
+            ...started.runtime,
             startedAt: timestamp,
         },
     };
     ports.writeLab(ctx, lab);
-    return { ownerId: ctx.owner, ...prepareStartedLab(lab), materialized: publicMaterializedResult(materialized), started: publicExecution(started) };
+    return { ownerId: ctx.owner, ...prepareStartedLab(lab), materialized: publicMaterializedResult(materialized), started: started.presentation };
 }
 
 /** @param {QemuLifecycleArguments} [args] */
@@ -213,7 +209,9 @@ function guestAgentProvision(args = {}) {
     if (!agent) return { ok: false, error: "guest-agent-not-configured", ownerId: ctx.owner, labId: loaded.lab.id };
     if (!agent.provisionCommand) return { ok: false, error: "guest-agent-provision-not-configured", ownerId: ctx.owner, labId: loaded.lab.id };
     const timeoutMs = qemuCommandTimeout(args.timeoutMs, 30000);
-    const probe = runSshGuestAgentProvision(loaded.lab, ports.bindProvisionLeaves(timeoutMs, ctx.env));
+    const probe = !loaded.lab.guest?.ssh
+        ? { ok: false, provisioned: false, checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-ssh-not-configured", agent: agent.name }], diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name } }
+        : ports.provisionGuestAgent({ lab: loaded.lab, timeoutMs }, ctx);
     const checkedAt = /** @type {string} */ (ports.clock());
     const status = publicReadinessProbeResult({
         id: `guest-agent-provision-${checkedAt.replace(/[^0-9A-Za-z._-]+/g, "-").replace(/-+$/g, "")}`,
@@ -294,76 +292,26 @@ function validateGuestSsh(ctx, args = {}) {
     };
 }
 
-/** @param {QemuLab} lab @param {import('../ports/qemu-lifecycle.mjs').QemuGuestProvisionPorts} leaves */
-function runSshGuestAgentProvision(lab, leaves) {
-    const ssh = lab.guest?.ssh;
-    const agent = lab.guest?.agent;
-    if (!agent) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-agent-not-configured" }],
-            diagnostics: { kind: "guest-agent-provision", available: false },
-        };
-    }
-    if (!agent.provisionCommand) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-agent-provision-not-configured", agent: agent.name }],
-            diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
-        };
-    }
-    if (!ssh) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "guest-ssh-not-configured", agent: agent.name }],
-            diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
-        };
-    }
-    const paths = leaves.commandPaths();
-    if (!paths.ssh) {
-        return {
-            ok: false,
-            provisioned: false,
-            checks: [{ name: "guest-agent-provision", status: "fail", reason: "ssh-command-missing", agent: agent.name }],
-            diagnostics: { kind: "guest-agent-provision", available: false, agent: agent.name },
-        };
-    }
-    const runner = leaves.commandRunner();
-    const args = [...sshBaseArgs(ssh), sshDestination(ssh), agent.provisionCommand];
-    const result = runner(paths.ssh, args, { cwd: lab.paths.labDir, env: leaves.environment(), timeoutMs: leaves.timeoutMs() });
-    return {
-        ok: result?.ok === true,
-        provisioned: result?.ok === true,
-        checks: [{ name: "guest-agent-provision", status: result?.ok === true ? "pass" : "fail", agent: agent.name, exitStatus: result?.status ?? null }],
-        diagnostics: { kind: "guest-agent-provision", available: true, agent: agent.name, result: publicGuestExecResult(result, lab, ssh, [paths.ssh, agent.healthCommand, agent.provisionCommand]) },
-    };
-}
-
-/** @param {QemuLab} lab @param {{preferDiskImage?:boolean}} [options] */
-function buildQemuArgs(lab, options = {}) {
-    const args = [
-        "-machine", "q35,accel=kvm:tcg",
-        "-m", String(lab.resources.memoryMb),
-        "-smp", String(lab.resources.cpus),
-        "-name", `ccc-${lab.ownerId}-${lab.id}`,
-        "-display", "none",
-        "-monitor", `unix:${ports.allocatedPath(lab.paths.labDir, "qemu-monitor.sock")},server,nowait`,
-        "-pidfile", ports.allocatedPath(lab.paths.labDir, "qemu.pid"),
-    ];
+/** @param {QemuLab} lab @param {import('../ports/qemu-lifecycle.mjs').QemuScope} ctx @param {{available:boolean,qemu:string|null}} status @param {boolean} dryRun @param {boolean} preferDiskImage */
+function launch(lab, ctx, status, dryRun, preferDiskImage) {
     const materializedDisk = lab.image?.disk?.path || null;
-    const disk = options.preferDiskImage && materializedDisk
+    const disk = preferDiskImage && materializedDisk
         ? materializedDisk
         : materializedDisk && ports.diskExists(materializedDisk)
             ? materializedDisk
             : ports.diskExists(lab.image.diskImage)
                 ? lab.image.diskImage
                 : lab.image.sourceImage;
-    if (disk) args.push("-drive", `file=${disk},if=virtio,format=qcow2`);
-    return args;
+    return ports.launch({
+        ownerId: lab.ownerId,
+        labId: lab.id,
+        memoryMb: lab.resources.memoryMb,
+        cpus: lab.resources.cpus,
+        labDirectory: lab.paths.labDir,
+        diskImage: disk || null,
+        dryRun,
+    }, ctx, status);
 }
 
-    return { create, start, stop, reboot, delete: deleteLab, provisionGuestAgent: guestAgentProvision, validateGuestSsh, buildQemuArgs };
+    return { create, start, stop, reboot, delete: deleteLab, provisionGuestAgent: guestAgentProvision, validateGuestSsh };
 }

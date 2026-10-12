@@ -6,14 +6,18 @@ export interface WorkspaceContentRepairConflict {
     readonly worktreeRoot: string;
 }
 
+export type WorkspaceContentRepairReport =
+    | { kind: "outcome"; name: string; fixed: boolean; afterSetAside: boolean }
+    | { kind: "failure"; name: string; cause: unknown }
+    | { kind: "conflicts"; name: string; branch: string; cause: WorkspaceContentRepairConflict }
+    | { kind: "refusal"; name: string }
+    | { kind: "set-aside"; name: string; preserved: string }
+    | { kind: "retry-failure"; name: string; cause: unknown; preserved: string };
+
 export interface WorkspaceContentRepairAdmissionPorts {
     repairConfirmed(cwd: string, workspacePath: string, name: string, branch: string, confirmed: true): WorktreeRepoResult | null;
     isContentConflict(cause: unknown): cause is WorkspaceContentRepairConflict;
-    /** Capture only this statement's native console method and receiver. */
-    selectLog(): (message: string) => void;
-    /** Capture the bare native callee before application argument evaluation. */
-    selectRelative(): (root: string, path: string) => string;
-    prompt(question: string, normalize: true): Promise<string>;
-    /** Capture before the original cause's fields are read again after the prompt. */
-    selectSetAside(): (root: string, conflicts: readonly string[]) => string;
+    report(event: WorkspaceContentRepairReport): void;
+    confirmConflictRepair(): Promise<boolean>;
+    setAsideConflicts(root: string, conflicts: readonly string[]): string;
 }

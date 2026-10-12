@@ -10,7 +10,7 @@ const ports:QemuImageDiskTargetPorts={
     ownerId:"owner",imagesRootExists:()=>false,imageEntries:()=>[],readImageMetadata:()=>({id:"base",raw:[1,null]}),
     readLab:()=>({ok:true,lab}),validateImageSource:()=>({ok:true,path:"/owned/base.raw",format:"raw"}),
     validateDiskPath:()=>({ok:true,diskPath:"/owned/unit/root.qcow2"}),diskExists:()=>false,providerStatus:()=>({available:false}),
-    ensureDiskParent:()=>undefined,qemuImageRunner:()=>()=>({ok:true,args:[]}),commandEnvironment:()=>({RAW:"kept"}),
+    createOverlay:()=>({ok:true,command:"opaque-native-command",args:[]}),
     now:()=>"frozen-time",writeLab:()=>undefined,presentLab:value=>value,presentExecution:value=>value,ownerLabs:()=>[lab],
 };
 type RequiredSteps=Omit<QemuImageDiskTargetPorts,"providerCommandTimeoutMs">;
@@ -30,12 +30,12 @@ function contractNegatives(){
     const weakDisk:QemuImageDiskTargetPorts={...ports,validateDiskPath:()=>({ok:true})};
     // @ts-expect-error provider status must carry the availability decision
     const weakProvider:QemuImageDiskTargetPorts={...ports,providerStatus:()=>({qemuImg:"qemu-img"})};
-    // @ts-expect-error directory creation must complete synchronously before command dispatch
-    const asyncParent:QemuImageDiskTargetPorts={...ports,ensureDiskParent:async()=>undefined};
-    // @ts-expect-error qemu image execution is an immediate native observation
-    const asyncRunner:QemuImageDiskTargetPorts={...ports,qemuImageRunner:()=>async()=>({ok:true})};
-    // @ts-expect-error command environment is immediate and preserves native string values
-    const asyncEnvironment:QemuImageDiskTargetPorts={...ports,commandEnvironment:async()=>({RAW:"kept"})};
+    // @ts-expect-error overlay completion must be a synchronous normalized observation
+    const asyncOverlay:QemuImageDiskTargetPorts={...ports,createOverlay:async()=>({ok:true,command:"native",args:[]})};
+    // @ts-expect-error normalized overlay success requires the opaque native receipt
+    const weakOverlay:QemuImageDiskTargetPorts={...ports,createOverlay:()=>({ok:true})};
+    // @ts-expect-error generic command execution is not an inward capability
+    const recipeRunner:QemuImageDiskTargetPorts={...ports,qemuImageRunner:()=>()=>({ok:true})};
     // @ts-expect-error publication must finish synchronously before returning materialized success
     const asyncWrite:QemuImageDiskTargetPorts={...ports,writeLab:async()=>undefined};
     // @ts-expect-error passive owner-lab inventory is synchronous
@@ -44,8 +44,8 @@ function contractNegatives(){
     const malformed:QemuLab={...lab,id:8};
     // @ts-expect-error materialization has a synchronous discriminated public result
     const promised:Promise<QemuDiskResult>=createQemuImageDiskTargetApplication(ports).materializeDisk({labId:"unit"});
-    void asyncMetadata;void asyncEntries;void asyncSource;void weakDisk;void weakProvider;void asyncParent;
-    void asyncRunner;void asyncEnvironment;void asyncWrite;void asyncLabs;void malformed;void promised;
+    void asyncMetadata;void asyncEntries;void asyncSource;void weakDisk;void weakProvider;void asyncOverlay;
+    void weakOverlay;void recipeRunner;void asyncWrite;void asyncLabs;void malformed;void promised;
 }
 void contractNegatives;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAndroidAppManagement } from "../../../packages/device-lab/providers/application/android-app-management.mjs";
 import { createIosAppManagement } from "../../../packages/device-lab/providers/application/ios-app-management.mjs";
-import type { AndroidAppEffect, AndroidAppManagementPorts, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosAppReset, MobileCommandReceipt, MobileTargetObservation } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
+import type { AndroidAppEffect, AndroidAppManagementPorts, IosSimulatorAppManagementPorts, IosPhysicalAppManagementPorts, IosSimulatorAppEffect, IosPhysicalAppEffect, IosAppCommandObservation, IosAppTerminationObservation, IosAppSessionObservation, IosOwnedTarget, IosAppContainerObservation, IosAppReset, MobileCommandReceipt, MobileTargetObservation } from "../../../packages/device-lab/providers/ports/mobile-app-management.d.mts";
 
 function android(variant: "emulator" | "physical" = "emulator") {
     const target = Symbol("native selected target");
@@ -20,10 +20,10 @@ function simulator() {
     const ports = {
         variant: "simulator",
         device: vi.fn((_id: unknown): typeof device | undefined => device),
-        discovery: () => ({ available: true as const, xcrun: "/sdk/xcrun", missing: [] }),
-        ownedTarget: () => ({ ok: true as const, target: "OWNED-UDID" }),
-        execute: vi.fn((_xcrun: string, _args: (string | undefined)[], _timeout: number | undefined): MobileCommandReceipt => ({ status: 0, stdout: "native output", stderr: "" })),
-        resolveAppContainer: () => ({ ok: true as const, containerRoot: "/owned/container" }),
+        discovery: vi.fn(() => ({ available: true, missing: [] as string[] })),
+        ownedTarget: vi.fn((_device: typeof device): IosOwnedTarget => ({ ok: true, target: "OWNED-UDID" })),
+        perform: vi.fn((_target: string, _effect: IosSimulatorAppEffect): IosAppCommandObservation => ({ kind: "succeeded", command: { status: 0, stdout: "native output", stderr: "" } })),
+        resolveAppContainer: vi.fn((_target: string, _bundleId: string, _type: string): IosAppContainerObservation => ({ ok: true, containerRoot: "/owned/container" })),
         containAppContainer: vi.fn((_root: string): { ok: true } | { ok: false; message: string } => ({ ok: true })),
         clearAppContainer: (_root: string): undefined => { cleared = true; },
         publishAppReset: vi.fn((_id: unknown, reset: IosAppReset, _updatedAt: string) => {
@@ -42,10 +42,10 @@ function physical() {
     const ports = {
         variant: "physical",
         device: vi.fn((_id: unknown): typeof device | undefined => device),
-        xcrun: () => "/sdk/xcrun",
-        execute: vi.fn((_xcrun: string, _args: (string | undefined)[], _timeout: number | undefined): MobileCommandReceipt => ({ status: 0, stdout: "", stderr: "" })),
-        session: vi.fn(async (_id: unknown): Promise<{ kind: "ready"; session: typeof session } | { kind: "refused"; message: string }> => ({ kind: "ready", session })),
-        request: vi.fn(async (_session: typeof session, _path: "/execute/sync", _body: { script: "mobile: terminateApp"; args: [{ bundleId: string }] }): Promise<unknown> => ({ value: true })),
+        available: vi.fn(() => true),
+        perform: vi.fn((_device: typeof device, _effect: IosPhysicalAppEffect): IosAppCommandObservation => ({ kind: "succeeded", command: { status: 0, stdout: "", stderr: "" } })),
+        session: vi.fn(async (_id: unknown): Promise<IosAppSessionObservation<typeof session>> => ({ kind: "ready", session })),
+        terminateApp: vi.fn(async (_session: typeof session, _bundleId: string): Promise<IosAppTerminationObservation> => ({ kind: "succeeded" })),
     } satisfies IosPhysicalAppManagementPorts<typeof device, typeof session>;
     return { device, session, ports, application: createIosAppManagement(ports) };
 }
@@ -152,13 +152,12 @@ describe("mobile app management applications", () => {
         expect(ports.perform).toHaveBeenCalledTimes(1);
     });
 
-    it("bounds simulator install and preserves its provider-free result", async () => {
+    it("passes simulator install semantics and preserves its provider-free result", async () => {
         const { ports, application } = simulator();
-        ports.execute.mockImplementation((xcrun, args, timeout) => {
-            expect(xcrun).toBe("/sdk/xcrun");
-            expect(args).toEqual(["simctl", "install", "OWNED-UDID", "/Test.app"]);
-            expect(timeout).toBe(300_000);
-            return { status: 0, stdout: "installed", stderr: "warning" };
+        ports.perform.mockImplementation((target, effect) => {
+            expect(target).toBe("OWNED-UDID");
+            expect(effect).toEqual({ kind: "install", path: "/Test.app" });
+            return { kind: "succeeded", command: { status: 0, stdout: "installed", stderr: "warning" } };
         });
         expect(await application.request("device_install_app", { deviceId: "owned", path: "/Test.app" })).toEqual({ kind: "json", payload: { installed: "/Test.app", stdout: "installed", stderr: "warning" } });
     });
@@ -166,14 +165,60 @@ describe("mobile app management applications", () => {
     it("preserves unknown iOS targets and physical missing-argument refusal before discovery", async () => {
         const sim = simulator();
         sim.ports.device.mockReturnValueOnce(undefined);
-        sim.ports.execute.mockImplementation(() => { throw new Error("Unknown simulator must not execute"); });
+        sim.ports.perform.mockImplementation(() => { throw new Error("Unknown simulator must not execute"); });
         expect(await sim.application.request("device_install_app", { deviceId: "absent", path: "/Test.app" })).toBeUndefined();
         const real = physical();
         real.ports.device.mockReturnValueOnce(undefined);
-        real.ports.xcrun = () => { throw new Error("Missing app arguments must be refused before discovery"); };
+        real.ports.available.mockImplementation(() => { throw new Error("Missing app arguments must be refused before discovery"); });
         expect(await real.application.request("device_launch_app", { deviceId: "absent" })).toBeUndefined();
         expect(await real.application.request("device_install_app", { deviceId: "owned" })).toEqual({ kind: "text", message: "iOS real-device device_install_app requires path" });
         expect(await real.application.request("mobile_launch_app", { deviceId: "owned" })).toEqual({ kind: "text", message: "iOS real-device mobile_launch_app requires bundleId" });
+    });
+
+    it("requires simulator prerequisites and an owned target before any mutation", async () => {
+        const f = simulator();
+        f.ports.discovery.mockReturnValueOnce({ available: false, missing: ["simctl"] });
+        expect(await f.application.request("mobile_launch_app", { bundleId: "app" })).toEqual({ kind: "text", message: "iOS Simulator backend missing prerequisites: simctl" });
+        f.ports.ownedTarget.mockReturnValue({ ok: false, message: "simulator belongs to another owner" });
+        expect(await f.application.request("mobile_launch_app", { bundleId: "app" })).toEqual({ kind: "text", message: "simulator belongs to another owner" });
+        expect(f.ports.perform).not.toHaveBeenCalled();
+        expect(f.cleared()).toBe(false);
+    });
+
+    it.each([
+        ["mobile_launch_app", { bundleId: "app" }, { kind: "launch", bundleId: "app" }],
+        ["mobile_stop_app", { bundleId: "app" }, { kind: "stop", bundleId: "app" }],
+        ["mobile_uninstall_app", { bundleId: "app" }, { kind: "uninstall", bundleId: "app" }],
+        ["mobile_grant_permission", { bundleId: "app", service: "camera" }, { kind: "permission", bundleId: "app", service: "camera", action: "grant" }],
+        ["mobile_revoke_permission", { bundleId: "app", service: "camera" }, { kind: "permission", bundleId: "app", service: "camera", action: "revoke" }],
+        ["mobile_open_url", { url: "custom://app" }, { kind: "open-url", url: "custom://app" }],
+    ] as const)("preserves normalized simulator failure for %s", async (name, args, effect) => {
+        const f = simulator();
+        const command = { status: 0, stdout: "partial", stderr: "native failure" };
+        f.ports.perform.mockReturnValue({ kind: "failed", command });
+        expect(await f.application.request(name, args)).toEqual({ kind: "command-failure", command });
+        expect(f.ports.perform).toHaveBeenCalledExactlyOnceWith("OWNED-UDID", effect);
+    });
+
+    it("requires physical prerequisites and preserves normalized command failures", async () => {
+        const f = physical();
+        f.ports.available.mockReturnValueOnce(false);
+        expect(await f.application.request("device_install_app", { path: "/Test.app" })).toEqual({ kind: "text", message: "iOS real-device backend missing prerequisites: xcrun" });
+        expect(f.ports.perform).not.toHaveBeenCalled();
+        const command = { status: 0, stderr: "native launch failed" };
+        f.ports.perform.mockReturnValue({ kind: "failed", command });
+        expect(await f.application.request("mobile_launch_app", { bundleId: "app" })).toEqual({ kind: "command-failure", command });
+        expect(f.ports.perform).toHaveBeenCalledExactlyOnceWith(f.device, { kind: "launch", bundleId: "app" });
+    });
+
+    it("retains failed container lookup without clearing or publishing", async () => {
+        const f = simulator();
+        const command = { status: 1, stderr: "container unavailable" };
+        f.ports.resolveAppContainer.mockReturnValue({ ok: false, command });
+        expect(await f.application.request("device_reset", { bundleId: "app", containerType: "groups" })).toEqual({ kind: "command-failure", command });
+        expect(f.ports.resolveAppContainer).toHaveBeenCalledExactlyOnceWith("OWNED-UDID", "app", "groups");
+        expect(f.cleared()).toBe(false);
+        expect(f.published()).toBeUndefined();
     });
 
     it("refuses a container outside native containment without clearing or publishing", async () => {
@@ -203,8 +248,8 @@ describe("mobile app management applications", () => {
 
     it("preserves physical unsupported controls and clear-data fallthrough without native effects", async () => {
         const { ports, application } = physical();
-        ports.execute.mockImplementation(() => { throw new Error("Unsupported physical control must not execute"); });
-        ports.request.mockImplementation(async () => { throw new Error("Unsupported physical control must not contact Appium"); });
+        ports.perform.mockImplementation(() => { throw new Error("Unsupported physical control must not execute"); });
+        ports.terminateApp.mockImplementation(async () => { throw new Error("Unsupported physical control must not contact Appium"); });
         expect(await application.request("mobile_uninstall_app", { deviceId: "owned", bundleId: "com.example.App" })).toEqual({ kind: "text", message: "iOS real devices do not support mobile_uninstall_app through CCC because the action is unavailable or unsafe for physical devices." });
         expect(await application.request("mobile_clear_app_data", { deviceId: "owned", bundleId: "com.example.App" })).toBeUndefined();
     });
@@ -212,13 +257,22 @@ describe("mobile app management applications", () => {
     it("requires a verified physical session and translates native terminate request failures", async () => {
         const { ports, session, application } = physical();
         ports.session.mockResolvedValueOnce({ kind: "refused", message: "session belongs to a successor" });
-        ports.request.mockImplementation(async (selected, path, body) => {
+        ports.terminateApp.mockImplementation(async (selected, bundleId) => {
             expect(selected).toBe(session);
-            expect(path).toBe("/execute/sync");
-            expect(body).toEqual({ script: "mobile: terminateApp", args: [{ bundleId: "com.example.App" }] });
-            throw new Error("session connection closed");
+            expect(bundleId).toBe("com.example.App");
+            return { kind: "failed", message: "session connection closed" };
         });
         expect(await application.request("mobile_stop_app", { deviceId: "owned", bundleId: "com.example.App" })).toEqual({ kind: "text", message: "session belongs to a successor" });
+        expect(ports.terminateApp).not.toHaveBeenCalled();
         expect(await application.request("mobile_stop_app", { deviceId: "owned", bundleId: "com.example.App" })).toEqual({ kind: "text", message: "iOS real-device Appium request failed: session connection closed" });
+    });
+
+    it("falls through an unknown physical session and completes verified termination", async () => {
+        const f = physical();
+        f.ports.session.mockResolvedValueOnce({ kind: "unknown" });
+        expect(await f.application.request("mobile_stop_app", { deviceId: "owned", bundleId: "app" })).toBeUndefined();
+        expect(f.ports.terminateApp).not.toHaveBeenCalled();
+        expect(await f.application.request("mobile_stop_app", { deviceId: "owned", bundleId: "app" })).toEqual({ kind: "json", payload: { stopped: "app", provider: "appium-xcuitest", physical: true } });
+        expect(f.ports.terminateApp).toHaveBeenCalledExactlyOnceWith(f.session, "app");
     });
 });

@@ -182,13 +182,17 @@ function cleanupTrace( initial: CleanupRows, options: CleanupTraceOptions = {}) 
         runtimeExited(runtime) { trace.push(["exited", runtime.label]); return options.exited === true; },
         signalRuntime(runtime, signal) { trace.push(["signal", runtime.runtimeId, signal]); return { ok: options.signalOk !== false }; },
         waitForRuntimeExit(runtime, timeout) { trace.push(["wait", runtime.label, timeout]); return options.waitOk !== false; },
-        commandPath(name) { trace.push(["lookup", name]); return options.unavailable?.includes(name) ? null : "/allocated/" + name; },
-        runCommand(command, args, timeout) {
-            trace.push(["command", command, [...args], timeout]);
+        executeStopEffects(effects, timeout) {
+            trace.push(["effects", structuredClone(effects), timeout]);
             if (Object.hasOwn(options, "commandFault")) throw options.commandFault;
-            if (!command || options.commandNull) return null;
-            const status = options.failedTarget && args.includes(options.failedTarget) ? 17 : Object.hasOwn(options, "commandStatus") ? options.commandStatus! : 0;
-            return { command: [command, ...args].join(" "), status, stdout: "raw stdout", stderr: "raw stderr", absent: undefined } as CleanupCommandResult;
+            const commands: CleanupCommandResult[] = effects.flatMap(effect => {
+                if (options.commandNull) return [];
+                const status = options.failedTarget && options.failedTarget === effect.device.serial ? 17
+                    : Object.hasOwn(options, "commandStatus") ? options.commandStatus!
+                    : options.unavailable?.length ? null : 0;
+                return [{ command: effect.kind, status, stdout: "raw stdout", stderr: "raw stderr", absent: undefined } as CleanupCommandResult];
+            });
+            return { ok: commands.length > 0 && commands.every(command => command.status === 0), commands };
         },
         timestamp() { trace.push(["time"]); return "raw-time"; },
         hardwareId(_backend, record) { trace.push(["hardware", record.id]); return options.hardwareId || null; },
@@ -238,10 +242,8 @@ function requiredSynchronousCleanupPortTypes(
     accept(without("signalRuntime"));
     // @ts-expect-error waitForRuntimeExit is a required native leaf
     accept(without("waitForRuntimeExit"));
-    // @ts-expect-error commandPath is a required native leaf
-    accept(without("commandPath"));
-    // @ts-expect-error runCommand is a required native leaf
-    accept(without("runCommand"));
+    // @ts-expect-error finite stop execution is required
+    accept(without("executeStopEffects"));
     // @ts-expect-error timestamp is a required native leaf
     accept(without("timestamp"));
     // @ts-expect-error hardwareId is a required native leaf
@@ -276,10 +278,8 @@ function requiredSynchronousCleanupPortTypes(
     accept({ ...valid, signalRuntime: async () => ({ ok: true }) });
     // @ts-expect-error waitForRuntimeExit must remain synchronous
     accept({ ...valid, waitForRuntimeExit: async () => true });
-    // @ts-expect-error commandPath must remain synchronous
-    accept({ ...valid, commandPath: async () => "/allocated/tool" });
-    // @ts-expect-error runCommand must remain synchronous
-    accept({ ...valid, runCommand: async () => null });
+    // @ts-expect-error semantic stop results must settle before lifecycle publication
+    accept({ ...valid, executeStopEffects: async () => ({ ok: true, commands: [] }) });
     // @ts-expect-error timestamp must remain synchronous
     accept({ ...valid, timestamp: async () => "raw-time" });
     // @ts-expect-error hardwareId must remain synchronous
@@ -308,15 +308,41 @@ vi.mock("child_process", async (importOriginal) => ({
 
 
 describe("device-admin cleanup current policy traces", () => {
-    it("constructs both factories without observations and resolves identity/enumeration before backend lookup", () => {
-        const f = cleanupTrace({}, { owners: [] });
-        expect(f.trace).toEqual([]);
-        Object.defineProperty(f.ports, "backends", { get() { f.trace.push(["backends"]); return []; } });
+    it("returns empty semantic owner and all-project reports", () => {
+        const f = cleanupTrace({}, { owners: [], backends: [] });
         expect(f.policy.owner("/chosen", 17, "profile")).toEqual({ ownerId: "owner", results: [] });
-        expect(f.trace).toEqual([["owner", "/chosen", "profile"], ["backends"]]);
-        f.trace.length = 0;
-        expect(f.policy.allProjects()).toEqual({ ok: true, text: "projects: stop --all-projects\nstopped: 0\nskipped: 0\n" });
-        expect(f.trace).toEqual([["owners"]]);
+        expect(f.policy.allProjects()).toEqual({ ok: true, projects: [] });
+    });
+
+    it.each([{ commands: [] }, { commands: [{ command: "opaque successful diagnostic", status: 0 }] }])("refuses active lifecycle publication when the semantic aggregate fails (%j)", ({ commands }) => {
+        const record = { id: "unit", status: "running", serial: "owned" };
+        const f = cleanupTrace({ "owner/android": [record] });
+        f.ports.executeStopEffects = () => ({ ok: false, commands });
+        const result = f.policy.owner("/chosen").results[0];
+        expect(result).toEqual({
+            id: "unit", backend: "android-emulator", previousStatus: "running", status: "failed",
+            reason: "provider-stop-failed", commands,
+        });
+        expect(f.rows["owner/android"]).toEqual([record]);
+        expect(f.trace.filter(event => ["publish", "physical-publish", "release"].includes(String(event[0])))).toEqual([]);
+    });
+
+    it("accepts semantic stop success while carrying opaque diagnostic status unchanged", () => {
+        const record = { id: "unit", status: "running", serial: "owned" };
+        const f = cleanupTrace({ "owner/android": [record] });
+        const commands = [{ command: "opaque native receipt", status: null, stderr: "native diagnostic" }];
+        f.ports.executeStopEffects = () => ({ ok: true, commands });
+        expect(f.policy.owner("/chosen").results[0]).toEqual({
+            id: "unit", backend: "android-emulator", previousStatus: "running", status: "stopped", commands,
+        });
+        expect(f.rows["owner/android"][0].status).toBe("stopped");
+    });
+
+    it("cleans inactive auxiliary metadata even when no lifecycle command succeeds", () => {
+        const record = { id: "unit", status: "stopped", pid: 99 };
+        const f = cleanupTrace({ "owner/android": [record] }, { commandNull: true });
+        expect(f.policy.owner("/chosen").results).toEqual([cleanupOutcome("android-emulator", "stopped", "stopped")]);
+        expect(f.rows["owner/android"][0].pid).toBeNull();
     });
 
     it("cleans stopped auxiliary metadata in signal/provider/wait/publication order while preserving open carriers", () => {
@@ -325,20 +351,17 @@ describe("device-admin cleanup current policy traces", () => {
         const runtime = { runtimeId: "runtime", pid: 43, processIdentity: { raw: "birth" } };
         const record = { id: "unit", status: "stopped", serial: "emulator-7", pid: 99, recording, appium, runtime, absent: undefined, nested: new Map([["raw", new Set([1])]]) };
         const replacement = { ...record, status: "stopped", pid: null, recording: null, appium: null, updatedAt: "raw-time" };
-        const command = { command: "/allocated/adb -s emulator-7 shell pkill -2 screenrecord", status: 0, stdout: "raw stdout", stderr: "raw stderr", absent: undefined };
+        const command = { command: "android-recording-stop", status: 0, stdout: "raw stdout", stderr: "raw stderr", absent: undefined };
         const pair = cleanupFixtures({ "owner/android": [record] });
         for (const f of pair) {
             expect(f.policy.owner("/chosen", 37, "profile")).toEqual({
                 ownerId: "owner", results: [{ id: "unit", backend: "android-emulator", previousStatus: "stopped", status: "stopped", commands: [command] }],
             });
-            expect(f.trace).toEqual([
-                ["owner", "/chosen", "profile"], ["read", "owner", "android"], ["lock", "owner", "android", "unit"], ["read", "owner", "android"], ["same", "unit"],
-                ["appium-block", "unit"], ["runtime-block", "unit"], ["exited", "recording"], ["signal", "recording", "SIGINT"],
-                ["exited", "appium"], ["signal", "appium", "SIGTERM"], ["lookup", "adb"],
-                ["command", "/allocated/adb", ["-s", "emulator-7", "shell", "pkill", "-2", "screenrecord"], 37],
-                ["wait", "recording", 37], ["wait", "appium", 37], ["wait", "runtime", 37],
-                ["hardware", "unit"], ["time"], ["publish", "owner", "android", record, replacement], ["release", "owner", "android", "unit"],
-            ]);
+            expect(f.trace.filter(event => event[0] === "signal")).toEqual([["signal", "recording", "SIGINT"], ["signal", "appium", "SIGTERM"]]);
+            expect(f.trace.filter(event => event[0] === "effects")).toEqual([["effects", [{ kind: "android-recording-stop", device: record }], 37]]);
+            expect(f.trace.filter(event => event[0] === "wait")).toEqual([["wait", "recording", 37], ["wait", "appium", 37], ["wait", "runtime", 37]]);
+            expect(f.trace.findIndex(event => event[0] === "effects")).toBeLessThan(f.trace.findIndex(event => event[0] === "wait"));
+            expect(f.trace.findIndex(event => event[0] === "wait")).toBeLessThan(f.trace.findIndex(event => event[0] === "publish"));
             expect(f.rows["owner/android"]).toEqual([replacement]);
             expect(Object.hasOwn(f.rows["owner/android"][0], "absent")).toBe(true);
             expect(f.rows["owner/android"][0].nested).toBeInstanceOf(Map);
@@ -360,7 +383,6 @@ describe("device-admin cleanup current policy traces", () => {
                 "owner/android": [{ ...record, pid: null, appium: null, recording: null, updatedAt: "raw-time" }],
                 "owner/ios-device": [{ id: "later", status: "attached" }],
             });
-            expect(f.trace.map(row => row[0])).toEqual(["owner", "read", "lock", "read", "same", "appium-block", "runtime-block", "lookup", "hardware", "time", "publish", "release", "read"]);
             expect(f.trace.at(-1)).toEqual(["read", "owner", "ios-device"]);
         }
     });
@@ -392,7 +414,7 @@ describe("device-admin cleanup current policy traces", () => {
         const pair = cleanupFixtures({ "owner/android": [record] }, { successor });
         for (const f of pair) {
             expect(f.policy.owner("/chosen").results).toEqual([cleanupOutcome("android-emulator", "running", "failed", "owner-device-state-conflict")]);
-            expect(f.trace.filter(row => ["lookup", "signal", "wait", "publish", "physical-publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.trace.filter(row => ["effects", "signal", "wait", "publish", "physical-publish", "release"].includes(String(row[0])))).toEqual([]);
             expect(f.rows["owner/android"]).toEqual(successor === null ? [] : [successor]);
         }
     });
@@ -406,7 +428,7 @@ describe("device-admin cleanup current policy traces", () => {
         for (const f of pair) {
             expect(f.policy.owner("/chosen").results).toEqual([cleanupOutcome("android-emulator", "running", "failed", reason)]);
             expect(f.rows["owner/android"]).toEqual([record]);
-            expect(f.trace.filter(row => ["lookup", "exited", "signal", "wait", "hardware", "publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.trace.filter(row => ["effects", "exited", "signal", "wait", "hardware", "publish", "release"].includes(String(row[0])))).toEqual([]);
             expect(f.trace.some(row => row[0] === "runtime-block")).toBe(leaf !== "appium");
         }
     });
@@ -426,7 +448,7 @@ describe("device-admin cleanup current policy traces", () => {
             expect(result.reason).toBe(reason);
             expect(f.rows["owner/android"]).toEqual([record]);
             expect(f.trace.filter(row => ["publish", "physical-publish", "release", "time"].includes(String(row[0])))).toEqual([]);
-            if (reason === "recording-process-signal-failed") expect(f.trace.filter(row => ["lookup", "command", "wait"].includes(String(row[0])))).toEqual([]);
+            if (reason === "recording-process-signal-failed") expect(f.trace.filter(row => ["effects", "wait"].includes(String(row[0])))).toEqual([]);
             if (reason === "recording-process-still-active") expect(result.commands).toHaveLength(2);
             if (reason === "provider-stop-failed") expect(f.trace.at(-1)).toEqual(["wait", "recording", 37]);
         }
@@ -448,21 +470,18 @@ describe("device-admin cleanup current policy traces", () => {
     });
 
     it.each([
-        ["android", { id: "unit", status: "running", port: 5554 }, ["-s", "emulator-5554", "emu", "kill"], "adb"],
-        ["android-device", { id: "unit", status: "attached", serial: "physical", recording: { active: true } }, ["-s", "physical", "shell", "pkill", "-2", "screenrecord"], "adb"],
-        ["ios", { id: "unit", status: "booted", simulatorName: "fallback" }, ["simctl", "shutdown", "fallback"], "xcrun"],
-        ["windows", { id: "unit", status: "starting", sandboxId: "12345678-1234-4234-9234-1234567890ab" }, ["stop", "--id", "12345678-1234-4234-9234-1234567890ab"], "wsb"],
-        ["macos", { id: "unit", status: "running", provider: "tart", providerInstance: "owned" }, ["stop", "owned"], "tart"],
-        ["macos", { id: "unit", status: "running", provider: "vz", providerInstance: "owned" }, ["stop", "owned"], "vz"],
-        ["macos", { id: "unit", status: "running", provider: "utmctl", providerInstance: "owned" }, ["stop", "owned"], "utmctl"],
-    ] as const)("preserves %s provider selection and raw command arguments", (stateKey, record, args, command) => {
-        const backend = { stateKey, name: stateKey };
-        const pair = cleanupFixtures({ [`owner/${stateKey}`]: [record] }, { backends: [backend], ...(stateKey === "android-device" ? { hardwareId: "physical" } : {}) });
-        for (const f of pair) {
-            expect(f.policy.owner("/chosen", 37).results[0].status).toBe("stopped");
-            expect(f.trace.filter(row => row[0] === "command")).toEqual([["command", "/allocated/" + command, [...args], 37]]);
-            expect(f.rows[`owner/${stateKey}`][0].status).toBe(stateKey === "android-device" ? "detached" : "stopped");
-        }
+        ["android", { id: "unit", status: "running", port: 5554 }, "android-emulator-stop"],
+        ["android-device", { id: "unit", status: "attached", serial: "physical", recording: { active: true } }, "android-recording-stop"],
+        ["ios", { id: "unit", status: "booted", simulatorName: "fallback" }, "ios-simulator-stop"],
+        ["windows", { id: "unit", status: "starting", sandboxId: "12345678-1234-4234-9234-1234567890ab" }, "windows-sandbox-stop"],
+        ["macos", { id: "unit", status: "running", provider: "tart", providerInstance: "owned" }, "macos-instance-stop"],
+    ] as const)("selects the finite %s stop intent with the owned record", (stateKey, record, kind) => {
+        const f = cleanupTrace({ [`owner/${stateKey}`]: [record] }, {
+            backends: [{ stateKey, name: stateKey }], ...(stateKey === "android-device" ? { hardwareId: "physical" } : {}),
+        });
+        expect(f.policy.owner("/chosen", 37).results[0].status).toBe("stopped");
+        expect(f.trace.filter(event => event[0] === "effects")).toEqual([["effects", [{ kind, device: record }], 37]]);
+        expect(f.rows[`owner/${stateKey}`][0].status).toBe(stateKey === "android-device" ? "detached" : "stopped");
     });
 
     it("uses the physical transition for iOS without executable lookup or power-off commands", () => {
@@ -470,7 +489,8 @@ describe("device-admin cleanup current policy traces", () => {
         const pair = cleanupFixtures({ "owner/ios-device": [record] }, { backends: [cleanupPhysicalIos], hardwareId: "owned" });
         for (const f of pair) {
             expect(f.policy.owner("/chosen", 37).results).toEqual([cleanupOutcome("ios-device", "attached", "stopped")]);
-            expect(f.trace.filter(row => ["lookup", "command", "publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.trace.filter(row => ["publish", "release"].includes(String(row[0])))).toEqual([]);
+            expect(f.trace.filter(row => row[0] === "effects")).toEqual([["effects", [], 37]]);
             expect(f.trace.filter(row => row[0] === "physical-publish")).toEqual([
                 ["physical-publish", "owner", "ios-device", record, { ...record, status: "detached", pid: null, appium: null, recording: null, updatedAt: "raw-time" }],
             ]);
@@ -514,15 +534,23 @@ describe("device-admin cleanup current policy traces", () => {
         }
     });
 
-    it("retains exact all-project owner/record output, command carriers and success/failure/skip counts", () => {
+    it("returns ordered all-project owner and record outcomes with opaque diagnostics", () => {
         const pair = cleanupFixtures({
             "later/android": [{ id: "unit", status: "stopped", pid: 9 }, { status: "running" }],
             "owner/android": [{ id: "bad", status: "running", serial: "bad" }, { id: "good", status: "running", serial: "good" }, { id: "skip", status: "stopped" }],
         }, { failedTarget: "bad" });
         for (const f of pair) {
-            expect(f.policy.allProjects(37)).toEqual({
-                ok: false, text: "projects: stop --all-projects\nproject: later\nstopped: unit  backend=android-emulator  previous=stopped\nskipped: (unknown)  backend=android-emulator  status=running\nproject: owner\nfailed: bad  backend=android-emulator  previous=running  reason=provider-stop-failed\ncommand: /allocated/adb -s bad emu kill -> 17\nstopped: good  backend=android-emulator  previous=running\ncommand: /allocated/adb -s good emu kill -> 0\nskipped: skip  backend=android-emulator  status=stopped\nfailed: 1\nskipped: 2\n",
+            const result = f.policy.allProjects(37);
+            expect(result.ok).toBe(false);
+            expect(result.projects.map(project => [project.ownerId, project.results.map(row => [row.id, row.status])])).toEqual([
+                ["later", [["unit", "stopped"], ["(unknown)", "skipped"]]],
+                ["owner", [["bad", "failed"], ["good", "stopped"], ["skip", "skipped"]]],
+            ]);
+            expect(result.projects[1].results[0]).toEqual({
+                id: "bad", backend: "android-emulator", previousStatus: "running", status: "failed", reason: "provider-stop-failed",
+                commands: [{ command: "android-emulator-stop", status: 17, stdout: "raw stdout", stderr: "raw stderr", absent: undefined }],
             });
+            expect(result.projects[1].results[1].commands[0].status).toBe(0);
             expect(f.rows["owner/android"]).toEqual([
                 { id: "bad", status: "running", serial: "bad" },
                 { id: "good", status: "stopped", serial: "good", pid: null, appium: null, recording: null, updatedAt: "raw-time" },
@@ -533,11 +561,11 @@ describe("device-admin cleanup current policy traces", () => {
     });
 
 
-    it("preserves the stop default timeout for provider commands and recorder waits", () => {
+    it("preserves the stop default timeout for semantic effects and recorder waits", () => {
         const recording = { runtimeId: "recording", pid: 41, processIdentity: { raw: "birth" } };
         for (const f of cleanupFixtures({ "owner/android": [{ id: "unit", status: "running", serial: "owned", recording }] })) {
             expect(f.policy.stopRecord("owner", cleanupAndroid, { id: "unit", status: "running", serial: "owned", recording }).status).toBe("stopped");
-            expect(f.trace.filter(row => row[0] === "command").every(row => row[3] === 5000)).toBe(true);
+            expect(f.trace.filter(row => row[0] === "effects").map(row => row[2])).toEqual([5000]);
             expect(f.trace.filter(row => row[0] === "wait")).toEqual([["wait", "recording", 5000]]);
         }
     });
@@ -673,6 +701,54 @@ describe("device-lab admin cleanup and stop commands", () => {
         }
         return files;
     }
+
+    it.each([
+        ["androidFile", { id: "unit", status: "running", port: 5554 }, "adb", ["-s", "emulator-5554", "emu", "kill"]],
+        ["iosFile", { id: "unit", status: "booted", simulatorName: "fallback simulator" }, "xcrun", ["simctl", "shutdown", "fallback simulator"]],
+        ["macosFile", { id: "unit", status: "running", provider: "tart", providerInstance: "owned instance" }, "tart", ["stop", "owned instance"]],
+        ["macosFile", { id: "unit", status: "running", provider: "vz", providerInstance: "owned instance" }, "vz", ["stop", "owned instance"]],
+        ["macosFile", { id: "unit", status: "running", provider: "utmctl", providerInstance: "owned instance" }, "utmctl", ["stop", "owned instance"]],
+    ] as const)("actual cleanup frames %s stops with intact argv", (fileKey, record, tool, args) => {
+        const cwd = "/project/admin-cleanup-native-argv";
+        const files = cleanupOnly(cwd);
+        writeFileSync(files[fileKey], JSON.stringify({ devices: [record] }));
+        const binDir = join(fixture.homeDir, "bin"), logPath = join(fixture.homeDir, "argv.json");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        fixture.writeNodeTool(binDir, tool, `writeFileSync(${JSON.stringify(logPath)}, JSON.stringify(args));`);
+
+        const result = cleanupOwnerDevices(cwd, 5_000);
+
+        expect(result.results[0].status).toBe("stopped");
+        expect(JSON.parse(readFileSync(logPath, "utf8"))).toEqual(args);
+        expect(result.results[0].commands).toEqual([expect.objectContaining({ status: 0 })]);
+        expect(fixture.readDevices(files[fileKey])[0].status).toBe("stopped");
+    });
+
+    it.each([
+        ["androidFile", { id: "unit", status: "running" }],
+        ["iosFile", { id: "unit", status: "booted" }],
+        ["windowsFile", { id: "unit", status: "running" }],
+        ["macosFile", { id: "unit", status: "running", provider: "tart" }],
+        ["macosFile", { id: "unit", status: "running", provider: "unsupported-provider", providerInstance: "owned" }],
+    ] as const)("actual cleanup refuses missing or unsupported lifecycle identity in %s", (fileKey, record) => {
+        const cwd = "/project/admin-cleanup-native-target-refusal";
+        const files = cleanupOnly(cwd);
+        writeFileSync(files[fileKey], JSON.stringify({ devices: [record] }));
+        const before = readFileSync(files[fileKey], "utf8");
+        const binDir = join(fixture.homeDir, "bin"), effects = join(fixture.homeDir, "unexpected-stop");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        for (const tool of ["adb", "xcrun", "wsb", "tart", "unsupported-provider"]) {
+            fixture.writeNodeTool(binDir, tool, `writeFileSync(${JSON.stringify(effects)}, JSON.stringify(args));`);
+        }
+
+        const result = cleanupOwnerDevices(cwd, 37);
+
+        expect(result.results[0]).toEqual(expect.objectContaining({ status: "failed", reason: "provider-stop-failed" }));
+        expect(readFileSync(files[fileKey], "utf8")).toBe(before);
+        expect(existsSync(effects)).toBe(false);
+    });
 
     it.each(["owner", "all-projects", "sync-cli", "async-cli"])("actual %s cleanup propagates a later native read fault after an earlier committed cleanup", async action => {
         const cwd = "/project/admin-cleanup-partial-native";

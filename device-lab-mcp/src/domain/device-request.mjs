@@ -307,9 +307,10 @@ export function requestErrorMessage(error) {
 }
 
 /** @typedef {{name?:string}} CatalogBackend */
-/** @typedef {{ownerId:string,broker:unknown,source:string,routedBy?:string,ok?:boolean,error?:string,backends:CatalogBackend[],localBackends?:CatalogBackend[],hostBackends?:{backends?:CatalogBackend[]},brokerBackendsError?:unknown}} BackendCatalogValue */
+/** @typedef {{receipt:unknown,backends:CatalogBackend[]}} HostBackendCatalog */
+/** @typedef {{ownerId:string,broker:unknown,source:string,routedBy?:string,ok?:boolean,error?:string,backends:CatalogBackend[],localBackends?:CatalogBackend[],hostBackends?:HostBackendCatalog,brokerBackendsError?:unknown}} BackendCatalogValue */
 /** @typedef {{kind:'direct'|'broker',value:BackendCatalogValue}|{kind:'broker-discovery-failed'|'discovery-unavailable'|'broker-unavailable',value:BackendCatalogValue}} BackendCatalogOutcome */
-/** Select facts before native presentation; failure diagnostics stay unfiltered.
+/** Select normalized facts before native presentation; diagnostics stay unfiltered.
  * @param {BackendCatalogOutcome} catalog @param {string|undefined} backend */
 export function selectBackendCatalog(catalog, backend) {
     const value = catalog.value;
@@ -319,8 +320,94 @@ export function selectBackendCatalog(catalog, backend) {
         backends: value.backends.filter(item => item.name === backend),
         ...(value.localBackends ? {localBackends:value.localBackends.filter(item => item.name === backend)} : {}),
         ...(value.hostBackends ? {hostBackends:{...value.hostBackends,
-            ...(Array.isArray(value.hostBackends.backends) ? {backends:value.hostBackends.backends.filter(item => item.name === backend)} : {})}} : {}),
+            backends:value.hostBackends.backends.filter(item => item.name === backend)}} : {}),
     };
+}
+
+/** @typedef {
+ * {kind:'read-source'|'capture-screenshot'|'back'|'home'|'forward'|'recents'|'power'|'lock'|'unlock'|'read-clipboard'} |
+ * {kind:'tap'|'double-tap',x:number,y:number} |
+ * {kind:'long-press',x:number,y:number,durationMs:number} |
+ * {kind:'swipe'|'drag',x1:number,y1:number,x2:number,y2:number,durationMs:number} |
+ * {kind:'type-text'|'set-clipboard',text:string} |
+ * {kind:'send-key',key:string} | {kind:'send-key-code',keyCode:number} |
+ * {kind:'set-orientation'|'set-display-rotation',orientation:string} |
+ * {kind:'set-automatic-rotation'|'set-airplane-mode-setting'|'announce-airplane-mode',enabled:boolean} |
+ * {kind:'open-url',url:string} | {kind:'install-app',path:string} |
+ * {kind:'launch-component',component:string} |
+ * {kind:'launch-app'|'uninstall-app'|'stop-app'|'clear-app-data',appId:string} |
+ * {kind:'set-location',latitude:number,longitude:number,altitude:number}
+ * } MobileEffect */
+/** @typedef {{effects:MobileEffect[],error?:undefined}|{error:string,effects?:undefined}} MobileEffectSelection */
+/** Admission and sequence policy only; native frames are constructed outward.
+ * @param {string} name @param {DeviceArguments} args @param {string} backend
+ * @returns {MobileEffectSelection} */
+export function selectMobileEffects(name, args, backend) {
+    const android = backend.startsWith('android');
+    if (name === 'mobile_dump_ui') return {effects:[{kind:'read-source'}]};
+    if (name === 'mobile_screenshot') return {effects:[{kind:'capture-screenshot'}]};
+    if (name === 'mobile_tap' || name === 'mobile_double_tap') return {effects:[{
+        kind:name === 'mobile_tap' ? 'tap' : 'double-tap',x:/** @type {number} */(args.x),y:/** @type {number} */(args.y)}]};
+    if (name === 'mobile_long_press') return {effects:[{kind:'long-press',x:/** @type {number} */(args.x),y:/** @type {number} */(args.y),durationMs:args.durationMs ?? 700}]};
+    if (name === 'mobile_swipe' || name === 'mobile_drag') return {effects:[{
+        kind:name === 'mobile_drag' ? 'drag' : 'swipe',x1:/** @type {number} */(args.x1),y1:/** @type {number} */(args.y1),
+        x2:/** @type {number} */(args.x2),y2:/** @type {number} */(args.y2),durationMs:args.durationMs ?? (name === 'mobile_drag' ? 700 : 300)}]};
+    if (name === 'mobile_type_text') return {effects:[{kind:'type-text',text:String(args.text)}]};
+    if (name === 'mobile_key') {
+        const key = args.key ?? args.keyCode;
+        if (key === undefined || key === null || key === '') return {error:'mobile_key requires key or keyCode'};
+        return {effects:[android && Number.isFinite(args.keyCode)
+            ? {kind:'send-key-code',keyCode:Number(args.keyCode)} : {kind:'send-key',key:String(key)}]};
+    }
+    if (name === 'mobile_back' || name === 'mobile_home' || name === 'mobile_lock' || name === 'mobile_unlock') {
+        return {effects:[{kind:/** @type {'back'|'home'|'lock'|'unlock'} */(name.slice(7))}]};
+    }
+    if (name === 'mobile_forward' || name === 'mobile_recents' || name === 'mobile_power') {
+        if (!android) return {error:`${name} is only supported by Android broker routing`};
+        return {effects:[{kind:/** @type {'forward'|'recents'|'power'} */(name.slice(7))}]};
+    }
+    if (name === 'mobile_rotate_left') return selectMobileEffects('mobile_set_orientation',{orientation:android ? 'landscape' : 'LANDSCAPE'},backend);
+    if (name === 'mobile_rotate_right') return selectMobileEffects('mobile_set_orientation',{orientation:android ? 'reverse-landscape' : 'PORTRAIT'},backend);
+    if (name === 'mobile_set_orientation') {
+        const raw = String(args.orientation || '');
+        if (android) {
+            const orientation = raw.toLowerCase();
+            if (!['portrait','landscape','reverse-portrait','reverse-landscape'].includes(orientation)) return {error:`Unsupported Android orientation: ${raw}`};
+            return {effects:orientation === 'portrait' || orientation === 'landscape'
+                ? [{kind:'set-orientation',orientation}]
+                : [{kind:'set-automatic-rotation',enabled:false},{kind:'set-display-rotation',orientation}]};
+        }
+        const orientation = raw.toUpperCase();
+        if (!['PORTRAIT','LANDSCAPE'].includes(orientation)) return {error:'iOS broker mobile_set_orientation requires PORTRAIT or LANDSCAPE'};
+        return {effects:[{kind:'set-orientation',orientation}]};
+    }
+    if (name === 'mobile_open_url') return args.url ? {effects:[{kind:'open-url',url:String(args.url)}]} : {error:'mobile_open_url requires url'};
+    if (name === 'mobile_install_app') return args.path ? {effects:[{kind:'install-app',path:String(args.path)}]} : {error:'mobile_install_app requires path'};
+    if (name === 'mobile_launch_app' && android && args.component && !args.packageName) return {effects:[{kind:'launch-component',component:String(args.component)}]};
+    if (name === 'mobile_launch_app' || name === 'mobile_uninstall_app' || name === 'mobile_stop_app') {
+        const appId = android ? args.packageName : args.bundleId;
+        if (!appId) return {error:`${name} requires ${android ? 'packageName' : 'bundleId'}`};
+        return {effects:[{kind:/** @type {'launch-app'|'uninstall-app'|'stop-app'} */(name.slice(7).replaceAll('_','-')),appId:String(appId)}]};
+    }
+    if (name === 'mobile_clear_app_data') {
+        if (!android) return {error:'mobile_clear_app_data is only supported by Android broker routing'};
+        return args.packageName ? {effects:[{kind:'clear-app-data',appId:String(args.packageName)}]} : {error:'mobile_clear_app_data requires packageName'};
+    }
+    if (name === 'mobile_set_location') {
+        if (backend === 'android-device') return {error:'Android real devices do not support mobile_set_location safely through broker routing; use an emulator or a dedicated device-farm controller.'};
+        if (backend === 'ios-device') return {error:'iOS real devices do not support mobile_set_location safely through broker routing; use a simulator or a dedicated device-farm controller.'};
+        if (!Number.isFinite(args.latitude) || !Number.isFinite(args.longitude)) return {error:'mobile_set_location requires latitude and longitude'};
+        return {effects:[{kind:'set-location',latitude:Number(args.latitude),longitude:Number(args.longitude),altitude:Number.isFinite(args.altitude) ? Number(args.altitude) : 0}]};
+    }
+    if (name === 'mobile_toggle_airplane_mode') {
+        if (!android) return {error:'mobile_toggle_airplane_mode is only supported by Android broker routing'};
+        if (typeof args.enabled !== 'boolean') return {error:'mobile_toggle_airplane_mode enabled must be boolean'};
+        return {effects:[{kind:'set-airplane-mode-setting',enabled:args.enabled},{kind:'announce-airplane-mode',enabled:args.enabled}]};
+    }
+    if (name === 'mobile_set_clipboard') return args.text === undefined || args.text === null
+        ? {error:'mobile_set_clipboard requires text'} : {effects:[{kind:'set-clipboard',text:String(args.text)}]};
+    if (name === 'mobile_get_clipboard') return {effects:[{kind:'read-clipboard'}]};
+    return {error:`broker mobile route does not support ${name}`};
 }
 
 /** @typedef {{kind:'observed',activeAppId:unknown,foreground:boolean,receipt:unknown}|{kind:'failed',localBudgetExhausted:boolean,receipt:unknown}} ActiveAppObservation */

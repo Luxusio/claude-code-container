@@ -39,9 +39,7 @@
  * @property {(lab: QemuLab) => {ok: true, diskPath: string} | QemuFailure} validateDiskPath
  * @property {(diskPath: string) => boolean} diskExists
  * @property {() => QemuProviderStatus} providerStatus
- * @property {(diskPath: string) => undefined} ensureDiskParent
- * @property {() => (command: string, args: string[], options: {cwd: string, env: Record<string, string | undefined>, timeoutMs: number}) => QemuExecution | null | undefined} qemuImageRunner
- * @property {() => Record<string, string | undefined>} commandEnvironment
+ * @property {(input: {sourcePath: string, sourceFormat: string, diskPath: string, labDirectory: string, dryRun: boolean, timeoutMs: number}, status: QemuProviderStatus) => QemuOverlayResult} createOverlay
  * @property {() => string} now
  * @property {(lab: QemuLab) => undefined} writeLab
  * @property {(lab: QemuLab) => QemuLab} presentLab

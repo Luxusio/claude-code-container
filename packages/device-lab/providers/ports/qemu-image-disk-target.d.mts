@@ -29,9 +29,7 @@ export interface QemuImageDiskTargetPorts {
     validateDiskPath(lab: QemuLab): { ok: true; diskPath: string; } | QemuFailure;
     diskExists(diskPath: string): boolean;
     providerStatus(): QemuProviderStatus;
-    ensureDiskParent(diskPath: string): undefined;
-    qemuImageRunner(): (command: string, args: string[], options: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number; }) => QemuExecution | null | undefined;
-    commandEnvironment(): Record<string, string | undefined>;
+    createOverlay(input: { sourcePath: string; sourceFormat: string; diskPath: string; labDirectory: string; dryRun: boolean; timeoutMs: number; }, status: QemuProviderStatus): QemuOverlayResult;
     now(): string;
     writeLab(lab: QemuLab): undefined;
     presentLab(lab: QemuLab): QemuLab;

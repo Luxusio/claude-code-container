@@ -1523,6 +1523,7 @@ describe("device-lab MCP broker routing", () => {
     it("maps explicit broker mobile controls into bounded Appium requests", { timeout: TIMEOUT }, async () => {
         const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
         let appiumEnsureDelayMs = 0;
+        let refuseAppiumEffect = false;
         const server = createServer(async (req, res) => {
             if (sendOwnerResolve(req, res)) return;
             let rawBody = "";
@@ -1551,6 +1552,10 @@ describe("device-lab MCP broker routing", () => {
                 return;
             }
             if (body.method === "broker.appium.request") {
+                if (refuseAppiumEffect) {
+                    res.end(JSON.stringify({ ok: false, error: "rotation-setting-refused", diagnostic: "first native effect refused" }));
+                    return;
+                }
                 const responseBody = body.params?.path === "/appium/device/get_clipboard"
                     ? { value: Buffer.from("broker clip", "utf8").toString("base64") }
                     : { value: "ok" };
@@ -1651,6 +1656,23 @@ describe("device-lab MCP broker routing", () => {
                     ...args, confirmDestructive: true,
                 });
             }
+
+            refuseAppiumEffect = true;
+            const failedOffset = rpcCalls.length;
+            const refusedRotation = await client.callTool({ name: "set_orientation", arguments: {
+                broker: true, autolaunch: false, deviceId: route.deviceId,
+                hostCandidates: route.hostCandidates, port: route.port, timeoutMs: route.timeoutMs,
+                orientation: "reverse-landscape",
+            } });
+            expect(JSON.parse(((refusedRotation.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
+                ok: false, error: "rotation-setting-refused", diagnostic: "first native effect refused",
+            });
+            const failedEffects = rpcCalls.slice(failedOffset).filter(call => call.method === "broker.appium.request");
+            expect(failedEffects).toHaveLength(1);
+            expect(failedEffects[0].params).toMatchObject({ method: "POST", path: "/execute/sync", body: {
+                script: "mobile: shell", args: [{ command: "settings", args: ["put", "system", "accelerometer_rotation", "0"] }],
+            } });
+            refuseAppiumEffect = false;
 
             appiumEnsureDelayMs = 100;
             const implicitSet = await client.callTool({

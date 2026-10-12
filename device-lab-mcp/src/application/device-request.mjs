@@ -1,5 +1,5 @@
 /** @typedef {import("../ports/device-request.mjs").DeviceArguments} Args */
-/** @typedef {import("../ports/device-request.mjs").BrokerResult} BrokerResult */
+/** @typedef {import("../ports/device-request.mjs").BrokerObservation} BrokerObservation */
 /** @typedef {import("../ports/device-request.mjs").DeviceRequestOptions} Options */
 import {
     BROKER_LIFECYCLE_COMMANDS,
@@ -44,7 +44,8 @@ import {
     isCursorMove,
     requestErrorMessage,
     selectBackendCatalog,
-    activeAppMatches
+    activeAppMatches,
+    selectMobileEffects
 } from "../domain/device-request.mjs";
 /** @template Result
  * @param {import("../ports/device-request.mjs").DeviceRequestPorts<Result>} ports */
@@ -121,9 +122,9 @@ export function createDeviceRequest(ports) {
         };
     }
 
-    /** @param {Args|null} probe @param {BrokerResult|null} rpcResult */
+    /** @param {Args|null} probe @param {BrokerObservation|null} rpcResult */
     function selectedBrokerProbeOptions(probe, rpcResult) {
-        const selected = rpcResult?.selected;
+        const selected = rpcResult?.selection;
         if (!selected?.host || !Number.isInteger(selected.port)) return probe;
         return { ...probe, hostCandidates: [selected.host], port: selected.port };
     }
@@ -194,42 +195,42 @@ export function createDeviceRequest(ports) {
         const containerBackends = directBackends.filter((backend) => backend.host === "container");
         const explicitBroker = wantsBrokerBackends(args);
         if (brokerOptOut) {
-            const broker = await ports.brokerStatus({ ...args, autolaunch: false, probe: false });
+            const broker = await ports.observeBrokerStatus({ ...args, autolaunch: false, probe: false });
             return { kind: "direct", value: {
                 ownerId: ports.ownerId(),
-                broker,
+                broker: broker.receipt,
                 source: "direct-provider",
                 backends: directBackends,
             } };
         }
         const implicitProbe = explicitBroker || brokerOptOut ? null : ports.implicitBrokerProbeOptions(args || {});
         const probe = explicitBroker ? { ...args, probe: true } : implicitProbe;
-        const broker = await ports.brokerStatus(probe ? { ...args, ...probe, probe: true } : { ...args, autolaunch: !brokerOptOut, probe: !brokerOptOut });
+        const broker = await ports.observeBrokerStatus(probe ? { ...args, ...probe, probe: true } : { ...args, autolaunch: !brokerOptOut, probe: !brokerOptOut });
         if (probe && broker.available) {
-            const brokerBackends = await ports.brokerRpc({ ...args, ...probe, ...brokerDiscoveryExecutionTimeout(args), method: "broker.backends" });
-            if (brokerBackends.ok && Array.isArray(brokerBackends.result?.backends)) {
-                const brokerBackendNames = new Set(brokerBackends.result.backends.map((backend) => backend?.name).filter(Boolean));
+            const brokerBackends = await ports.observeBrokerBackends({ ...args, ...probe, ...brokerDiscoveryExecutionTimeout(args) });
+            if (brokerBackends.ok && Array.isArray(brokerBackends.backends)) {
+                const brokerBackendNames = new Set(brokerBackends.backends.map((backend) => backend?.name).filter(Boolean));
                 return { kind: "broker", value: {
                     ownerId: ports.ownerId(),
-                    broker,
+                    broker: broker.receipt,
                     source: "host-broker-provider-discovery",
                     routedBy: "device-backends-broker",
                     backends: [
                         ...containerBackends.filter((backend) => !brokerBackendNames.has(backend.name)),
-                        ...brokerBackends.result.backends,
+                        ...brokerBackends.backends,
                     ],
-                    hostBackends: brokerBackends.result,
+                    hostBackends: {receipt:brokerBackends.payloadReceipt,backends:brokerBackends.backends},
                     ...(detail ? { localBackends: directBackends } : {}),
                 } };
             }
             return { kind: "broker-discovery-failed", value: {
                 ok: false,
                 ownerId: ports.ownerId(),
-                broker,
+                broker: broker.receipt,
                 source: "broker-provider-discovery-failed",
                 routedBy: "device-backends-broker",
                 backends: containerBackends,
-                brokerBackendsError: brokerBackends,
+                brokerBackendsError: brokerBackends.receipt,
                 ...(detail ? { localBackends: directBackends } : {}),
             } };
         }
@@ -237,7 +238,7 @@ export function createDeviceRequest(ports) {
             ok: false,
             error: broker.available ? "broker-provider-discovery-unavailable" : "broker-unavailable",
             ownerId: ports.ownerId(),
-            broker,
+            broker: broker.receipt,
             source: broker.available ? "broker-provider-discovery-failed" : "broker-unavailable",
             routedBy: "device-backends-broker",
             backends: containerBackends,
@@ -257,10 +258,10 @@ export function createDeviceRequest(ports) {
         return { ok: false, error: "device-backend-not-found" };
     }
 
-    /** @param {BrokerResult} inventory @param {string|undefined} deviceId @returns {import("../ports/device-request.mjs").BackendInference} */
+    /** @param {import("../ports/device-request.mjs").BrokerInventoryObservation} inventory @param {string|undefined} deviceId @returns {import("../ports/device-request.mjs").BackendInference} */
     function inferBrokerInventoryLifecycleBackend(inventory, deviceId) {
         const matches = [];
-        const backends = Array.isArray(inventory?.result?.backends) ? inventory.result.backends : [];
+        const backends = Array.isArray(inventory?.backends) ? inventory.backends : [];
         for (const entry of backends) {
             const backend = LIFECYCLE_STATE_BACKENDS.get(entry?.stateKey || "");
             if (!backend) continue;
@@ -322,241 +323,9 @@ export function createDeviceRequest(ports) {
         };
     }
 
-    /** @param {string} type @param {Record<string, unknown>[]} steps */
-    function brokerPointerActions(type, steps) {
-        return {
-            actions: [
-                {
-                    type: "pointer",
-                    id: type,
-                    parameters: { pointerType: "touch" },
-                    actions: steps,
-                },
-            ],
-        };
-    }
-
-    /** @param {number} keycode */
-    function androidKeycodeRequest(keycode) {
-        return { method: "POST", path: "/appium/device/press_keycode", body: { keycode } };
-    }
-
-    /** @param {string} command @param {string[]} args */
-    function brokerAndroidShellRequest(command, args) {
-        return { method: "POST", path: "/execute/sync", body: { script: "mobile: shell", args: [{ command, args }] } };
-    }
-
     /** @param {Args} args @param {string} backend */
     function appIdForBackend(args, backend) {
         return backend.startsWith("android") ? args?.packageName : args?.bundleId;
-    }
-
-    /** @param {unknown} text */
-    function base64Text(text) {
-        return ports.encodeBase64(String(text));
-    }
-
-    /** @param {unknown} value */
-    function decodeBase64Text(value) {
-        if (typeof value !== "string") return value;
-        const normalized = value.trim();
-        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 === 1) return value;
-        try {
-            const decoded = ports.decodeBase64(normalized);
-            const encoded = ports.encodeBase64(decoded).replace(/=+$/, "");
-            if (encoded !== normalized.replace(/=+$/, "")) return value;
-            return decoded;
-        } catch {
-            return value;
-        }
-    }
-
-    /** @param {string} orientation @returns {import("../ports/device-request.mjs").MobileRequestItem[]|null} */
-    function androidOrientationRequests(orientation) {
-        /** @type {Record<string, string>} */
-        const rotations = {
-            portrait: "0",
-            landscape: "1",
-            "reverse-portrait": "2",
-            "reverse-landscape": "3",
-        };
-        const rotation = rotations[orientation];
-        if (rotation === undefined) return null;
-        if (orientation === "portrait" || orientation === "landscape") {
-            return [{ method: "POST", path: "/orientation", body: { orientation: orientation.toUpperCase() } }];
-        }
-        return [
-            brokerAndroidShellRequest("settings", ["put", "system", "accelerometer_rotation", "0"]),
-            brokerAndroidShellRequest("settings", ["put", "system", "user_rotation", rotation]),
-        ];
-    }
-
-    /** @param {string} name @param {Args} args @param {string} backend @returns {import("../ports/device-request.mjs").MobileRequest} */
-    function brokerMobileRequest(name, args, backend) {
-        if (name === "mobile_dump_ui") return { method: "GET", path: "/source" };
-        if (name === "mobile_screenshot") return { method: "GET", path: "/screenshot" };
-        if (name === "mobile_tap") {
-            const { x, y } = args;
-            return { method: "POST", path: "/actions", body: brokerPointerActions("tap", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-            ]) };
-        }
-        if (name === "mobile_double_tap") {
-            const { x, y } = args;
-            return { method: "POST", path: "/actions", body: brokerPointerActions("doubleTap", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-                { type: "pause", duration: 80 },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerUp", button: 0 },
-            ]) };
-        }
-        if (name === "mobile_long_press") {
-            const { x, y, durationMs = 700 } = args;
-            return { method: "POST", path: "/actions", body: brokerPointerActions("longPress", [
-                { type: "pointerMove", duration: 0, x, y },
-                { type: "pointerDown", button: 0 },
-                { type: "pause", duration: durationMs },
-                { type: "pointerUp", button: 0 },
-            ]) };
-        }
-        if (name === "mobile_swipe" || name === "mobile_drag") {
-            const { x1, y1, x2, y2, durationMs = name === "mobile_drag" ? 700 : 300 } = args;
-            return { method: "POST", path: "/actions", body: brokerPointerActions(name === "mobile_drag" ? "drag" : "swipe", [
-                { type: "pointerMove", duration: 0, x: x1, y: y1 },
-                { type: "pointerDown", button: 0 },
-                { type: "pointerMove", duration: durationMs, x: x2, y: y2 },
-                { type: "pointerUp", button: 0 },
-            ]) };
-        }
-        if (name === "mobile_type_text") return { method: "POST", path: "/keys", body: { text: String(args.text), value: [...String(args.text)] } };
-        if (name === "mobile_key") {
-            const resolvedKey = args.key ?? args.keyCode;
-            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") return { error: "mobile_key requires key or keyCode" };
-            if (backend.startsWith("android") && Number.isFinite(args.keyCode)) return androidKeycodeRequest(Number(args.keyCode));
-            return { method: "POST", path: "/keys", body: { text: String(resolvedKey), value: [String(resolvedKey)] } };
-        }
-        if (name === "mobile_back") return { method: "POST", path: "/back", body: {} };
-        if (name === "mobile_home") {
-            if (backend.startsWith("android")) return androidKeycodeRequest(3);
-            return { method: "POST", path: "/execute/sync", body: { script: "mobile: pressButton", args: [{ name: "home" }] } };
-        }
-        if (name === "mobile_forward") {
-            if (backend.startsWith("android")) return androidKeycodeRequest(125);
-            return { error: "mobile_forward is only supported by Android broker routing" };
-        }
-        if (name === "mobile_recents") {
-            if (backend.startsWith("android")) return androidKeycodeRequest(187);
-            return { error: "mobile_recents is only supported by Android broker routing" };
-        }
-        if (name === "mobile_power") {
-            if (backend.startsWith("android")) return androidKeycodeRequest(26);
-            return { error: "mobile_power is only supported by Android broker routing" };
-        }
-        if (name === "mobile_lock") {
-            if (backend.startsWith("android")) return androidKeycodeRequest(223);
-            return { method: "POST", path: "/execute/sync", body: { script: "mobile: lock", args: [] } };
-        }
-        if (name === "mobile_unlock") {
-            if (backend.startsWith("android")) return androidKeycodeRequest(224);
-            return { method: "POST", path: "/execute/sync", body: { script: "mobile: unlock", args: [] } };
-        }
-        if (name === "mobile_rotate_left") return brokerMobileRequest("mobile_set_orientation", { orientation: backend.startsWith("android") ? "landscape" : "LANDSCAPE" }, backend);
-        if (name === "mobile_rotate_right") return brokerMobileRequest("mobile_set_orientation", { orientation: backend.startsWith("android") ? "reverse-landscape" : "PORTRAIT" }, backend);
-        if (name === "mobile_set_orientation") {
-            const raw = String(args.orientation || "");
-            if (backend.startsWith("android")) {
-                const requests = androidOrientationRequests(raw.toLowerCase());
-                if (!requests) return { error: `Unsupported Android orientation: ${raw}` };
-                return requests.length === 1 ? requests[0] : { requests };
-            }
-            const orientation = raw.toUpperCase();
-            if (!["PORTRAIT", "LANDSCAPE"].includes(orientation)) return { error: "iOS broker mobile_set_orientation requires PORTRAIT or LANDSCAPE" };
-            return { method: "POST", path: "/orientation", body: { orientation } };
-        }
-        if (name === "mobile_open_url") {
-            if (!args.url) return { error: "mobile_open_url requires url" };
-            return { method: "POST", path: "/url", body: { url: String(args.url) } };
-        }
-        if (name === "mobile_install_app") {
-            if (!args.path) return { error: "mobile_install_app requires path" };
-            return { method: "POST", path: "/appium/device/install_app", body: { appPath: String(args.path) } };
-        }
-        if (name === "mobile_launch_app") {
-            if (backend.startsWith("android") && args.component && !args.packageName) {
-                return brokerAndroidShellRequest("am", ["start", "-n", String(args.component)]);
-            }
-            const appId = appIdForBackend(args, backend);
-            if (!appId) return { error: backend.startsWith("android") ? "mobile_launch_app requires packageName" : "mobile_launch_app requires bundleId" };
-            return { method: "POST", path: "/appium/device/activate_app", body: { appId: String(appId) } };
-        }
-        if (name === "mobile_uninstall_app") {
-            const appId = appIdForBackend(args, backend);
-            if (!appId) return { error: backend.startsWith("android") ? "mobile_uninstall_app requires packageName" : "mobile_uninstall_app requires bundleId" };
-            return { method: "POST", path: "/appium/device/remove_app", body: { appId: String(appId) } };
-        }
-        if (name === "mobile_stop_app") {
-            const appId = appIdForBackend(args, backend);
-            if (!appId) return { error: backend.startsWith("android") ? "mobile_stop_app requires packageName" : "mobile_stop_app requires bundleId" };
-            return { method: "POST", path: "/appium/device/terminate_app", body: { appId: String(appId) } };
-        }
-        if (name === "mobile_clear_app_data") {
-            if (!backend.startsWith("android")) return { error: "mobile_clear_app_data is only supported by Android broker routing" };
-            if (!args.packageName) return { error: "mobile_clear_app_data requires packageName" };
-            return brokerAndroidShellRequest("pm", ["clear", String(args.packageName)]);
-        }
-        if (name === "mobile_set_location") {
-            if (backend === "android-device") return { error: "Android real devices do not support mobile_set_location safely through broker routing; use an emulator or a dedicated device-farm controller." };
-            if (backend === "ios-device") return { error: "iOS real devices do not support mobile_set_location safely through broker routing; use a simulator or a dedicated device-farm controller." };
-            if (!Number.isFinite(args.latitude) || !Number.isFinite(args.longitude)) return { error: "mobile_set_location requires latitude and longitude" };
-            return {
-                method: "POST",
-                path: "/location",
-                body: {
-                    location: {
-                        latitude: Number(args.latitude),
-                        longitude: Number(args.longitude),
-                        altitude: Number.isFinite(args.altitude) ? Number(args.altitude) : 0,
-                    },
-                },
-            };
-        }
-        if (name === "mobile_toggle_airplane_mode") {
-            if (!backend.startsWith("android")) return { error: "mobile_toggle_airplane_mode is only supported by Android broker routing" };
-            if (typeof args.enabled !== "boolean") return { error: "mobile_toggle_airplane_mode enabled must be boolean" };
-            return {
-                requests: [
-                    brokerAndroidShellRequest("settings", ["put", "global", "airplane_mode_on", args.enabled ? "1" : "0"]),
-                    brokerAndroidShellRequest("am", ["broadcast", "-a", "android.intent.action.AIRPLANE_MODE", "--ez", "state", args.enabled ? "true" : "false"]),
-                ],
-            };
-        }
-        if (name === "mobile_set_clipboard") {
-            if (args.text === undefined || args.text === null) return { error: "mobile_set_clipboard requires text" };
-            return { method: "POST", path: "/appium/device/set_clipboard", body: { content: base64Text(args.text), contentType: "plaintext", label: "text" } };
-        }
-        if (name === "mobile_get_clipboard") {
-            return { method: "POST", path: "/appium/device/get_clipboard", body: { contentType: "plaintext" } };
-        }
-        return { error: `broker mobile route does not support ${name}` };
-    }
-
-    /** @param {string} name @param {string} backend @param {BrokerResult} requestResult @param {Record<string,unknown>} [extra] */
-    function brokerMobilePayload(name, backend, requestResult, extra = {}) {
-        const responseBody = requestResult?.result?.response?.body;
-        const value = responseBody?.value ?? responseBody;
-        const base = {
-            provider: "broker-appium",
-            backend,
-            broker: requestResult,
-            ...extra,
-        };
-        if (name === "mobile_dump_ui") return { ...base, source: value };
-        if (name === "mobile_get_clipboard") return { ...base, text: decodeBase64Text(value) };
-        return base;
     }
 
     /** @param {string} name @param {Args} args */
@@ -607,7 +376,7 @@ export function createDeviceRequest(ports) {
         }
         const routeArgs = brokerRouteOptions(args);
         const brokerArgs = name === "device_create" ? { ...routeArgs, devicePort: args?.port, port: args?.brokerPort } : routeArgs;
-        const result = await ports.brokerCommand({
+        const result = await ports.invokeBrokerLifecycle({
             ...brokerArgs,
             ...brokerLifecycleExecutionTimeout({ ...args, backend: typeof backend === "string" ? backend : backend.backend, command: name }),
             action: "invoke",
@@ -618,34 +387,17 @@ export function createDeviceRequest(ports) {
             preserveNetwork: args?.preserveNetwork,
             dryRun: args?.dryRun === true,
         });
-        return ports.jsonResult(brokerLifecyclePublicResult(result, "device-lifecycle-broker"));
+        return ports.presentBrokerLifecycle(result.receipt, {routedBy:"device-lifecycle-broker",implicit:false});
     }
 
-    /** @param {BrokerResult} result @param {string} routedBy */
-    function brokerLifecyclePublicResult(result, routedBy) {
-        const body = result?.body && typeof result.body === "object" && !Array.isArray(result.body) ? result.body : null;
-        return {
-            ...result,
-            ...(typeof body?.detail === "string" && body.detail ? { detail: body.detail } : {}),
-            ...(typeof body?.remedy === "string" && body.remedy ? { remedy: body.remedy } : {}),
-            routedBy,
-        };
-    }
-
-    /** @param {string} name @param {Args} args @param {BrokerResult} result */
+    /** @param {string} name @param {Args} args @param {BrokerObservation} result */
     function implicitBrokerLifecycleResult(name, args, result) {
-        const routedBy = "device-lifecycle-broker-implicit";
-        if (!result?.ok || !result.result || typeof result.result !== "object" || Array.isArray(result.result)) {
-            return ports.jsonResult(brokerLifecyclePublicResult(result, routedBy));
-        }
-        /** @type {Record<string, unknown>} */
-    const payload = { ...result.result, routedBy };
-        if (name === "device_delete") {
-            payload.deleted = args?.deviceId;
-            if (args?.deleteAvd === true) payload.avdDeleted = true;
-            if (args?.deleteSimulator === true) payload.simulatorDeleted = true;
-        }
-        return ports.jsonResult(payload);
+        return ports.presentBrokerLifecycle(result.receipt, {
+            routedBy:"device-lifecycle-broker-implicit",implicit:true,
+            ...(name === "device_delete" ? {deleted:args.deviceId,
+                ...(args.deleteAvd === true ? {avdDeleted:true} : {}),
+                ...(args.deleteSimulator === true ? {simulatorDeleted:true} : {})} : {}),
+        });
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
@@ -656,7 +408,7 @@ export function createDeviceRequest(ports) {
             const requestedBackend = typeof args?.backend === "string" && args.backend ? args.backend : "";
             if (!requestedBackend || typeof args?.name !== "string" || !args.name.trim()) return null;
             if (!probe) return implicitBrokerUnavailableResult("device-lifecycle-broker-implicit");
-            const result = await ports.brokerCommand({
+            const result = await ports.invokeBrokerLifecycle({
                 ...args,
                 ...probe,
                 ...brokerLifecycleExecutionTimeout({ ...args, backend: requestedBackend, command: name }),
@@ -672,8 +424,8 @@ export function createDeviceRequest(ports) {
         const deviceId = typeof args?.deviceId === "string" ? args.deviceId : "";
         if (!deviceId) return null;
         if (!probe) return implicitBrokerUnavailableResult("device-lifecycle-broker-implicit");
-        const inventory = await ports.brokerRpc({ ...probe, method: "broker.inventory" });
-        if (!inventory.ok) return ports.jsonResult({ ...inventory, routedBy: "device-lifecycle-broker-implicit" });
+        const inventory = await ports.observeBrokerInventory({ ...probe });
+        if (!inventory.ok) return ports.presentBrokerReceipt(inventory.receipt, {routedBy: "device-lifecycle-broker-implicit"});
         const requestedBackend = typeof args?.backend === "string" && args.backend ? args.backend : "";
         const inventoryBackend = inferBrokerInventoryLifecycleBackend(inventory, deviceId);
         const explicitHyperVDeleteMiss = name === "device_delete"
@@ -704,7 +456,7 @@ export function createDeviceRequest(ports) {
                 routedBy: "device-lifecycle-broker-implicit",
             });
         }
-        const result = await ports.brokerCommand({
+        const result = await ports.invokeBrokerLifecycle({
             ...args,
             ...selectedBrokerProbeOptions(probe, inventory),
             ...brokerLifecycleExecutionTimeout({ ...args, backend: resolvedBackend, command: name }),
@@ -767,8 +519,8 @@ export function createDeviceRequest(ports) {
         }
         const deviceId = typeof args?.deviceId === "string" ? args.deviceId : "";
         if (!deviceId) return { ok: false, handled: true, response: ports.jsonResult({ ok: false, error: "missing-device-id", routedBy }) };
-        const inventory = await ports.brokerRpc({ ...probe, method: "broker.inventory" });
-        if (!inventory.ok) return { ok: false, handled: true, response: ports.jsonResult({ ...inventory, routedBy }) };
+        const inventory = await ports.observeBrokerInventory({ ...probe });
+        if (!inventory.ok) return { ok: false, handled: true, response: ports.presentBrokerReceipt(inventory.receipt, {routedBy}) };
         const inventoryBackend = inferBrokerInventoryLifecycleBackend(inventory, deviceId);
         if (!inventoryBackend.ok) {
             if (inventoryBackend.error === "device-backend-not-found") {
@@ -814,7 +566,7 @@ export function createDeviceRequest(ports) {
             ...selectedBrokerProbeOptions(probe, inference.inventory),
             ...brokerPhysicalExecutionTimeout(args),
         });
-        return ports.jsonResult({ ...result, routedBy });
+        return ports.presentBrokerReceipt(result.receipt, {routedBy});
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
@@ -830,7 +582,7 @@ export function createDeviceRequest(ports) {
             ...selectedBrokerProbeOptions(probe, inference.inventory),
             ...brokerPhysicalExecutionTimeout(args),
         });
-        return ports.jsonResult({ ...result, routedBy });
+        return ports.presentBrokerReceipt(result.receipt, {routedBy});
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result>} */
@@ -844,7 +596,7 @@ export function createDeviceRequest(ports) {
             ...brokerDeviceToolExecutionTimeout(name, args),
             tool: name,
         });
-        return ports.presentBrokerTool(result, { ...result, routedBy: BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker" : "device-readonly-broker" });
+        return ports.presentBrokerTool(result.receipt, { routedBy: BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker" : "device-readonly-broker" });
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
@@ -859,8 +611,8 @@ export function createDeviceRequest(ports) {
         let brokerBackend = typeof args?.backend === "string" && args.backend ? args.backend : "";
         let inventory = null;
         if (name !== "device_inventory" && !isUnattachedPhysicalTool) {
-            inventory = await ports.brokerRpc({ ...probe, method: "broker.inventory" });
-            if (!inventory.ok) return ports.jsonResult({ ...inventory, routedBy: BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker-implicit" : "device-readonly-broker-implicit" });
+            inventory = await ports.observeBrokerInventory({ ...probe });
+            if (!inventory.ok) return ports.presentBrokerReceipt(inventory.receipt, {routedBy: BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker-implicit" : "device-readonly-broker-implicit"});
             const inventoryBackend = inferBrokerInventoryLifecycleBackend(inventory, args.deviceId);
             if (!inventoryBackend.ok) {
                 if (inventoryBackend.error === "device-backend-not-found") {
@@ -904,23 +656,21 @@ export function createDeviceRequest(ports) {
         const listing = name === "device_list_files";
         if (listing && brokerBackend === "ios-device") return ports.jsonResult({ ok: false, error: "list-files-unsupported", detail: "The current Device Lab physical iOS adapter does not implement file listing.", deviceId: args.deviceId });
         const composedListing = listing && brokerBackend !== "ios-simulator";
-        const listingCommand = composedListing ? ports.buildListFilesCommand(brokerBackend, args) : undefined;
-        const executionArgs = { ...routedArgs };
-        if (composedListing) for (const key of ["path", "limit", "bundleId", "containerType"]) delete executionArgs[key];
-        const result = await ports.brokerDeviceTool({
-            ...executionArgs,
+        const executionArgs = {
+            ...routedArgs,
             ...selectedBrokerProbeOptions(probe, inventory),
             ...brokerDeviceToolExecutionTimeout(name, args),
-            ...(brokerBackend ? { backend: brokerBackend } : {}),
-            tool: composedListing ? "device_exec" : common.name,
-            ...(composedListing ? { command: listingCommand } : {}),
-        });
-        if (composedListing) return ports.listFilesFromExecResult(ports.presentBrokerTool(result, result), args);
+        };
+        const result = composedListing
+            ? await ports.invokeBrokerListFiles(executionArgs, brokerBackend)
+            : await ports.brokerDeviceTool({
+                ...executionArgs,
+                ...(brokerBackend ? {backend:brokerBackend} : {}),
+                tool:common.name,
+            });
+        if (composedListing) return ports.listFilesFromExecResult(ports.presentBrokerTool(result.receipt, {}), args);
         const routedBy = BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker-implicit" : "device-readonly-broker-implicit";
-        if (result.ok && BROKER_RECORDING_DEVICE_TOOLS.has(name) && result.result && typeof result.result === "object") {
-            return ports.presentBrokerTool(result, { ...result.result, routedBy });
-        }
-        return ports.presentBrokerTool(result, { ...result, routedBy });
+        return ports.presentBrokerTool(result.receipt, {routedBy,payload:BROKER_RECORDING_DEVICE_TOOLS.has(name)});
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result|null>} */
@@ -929,8 +679,8 @@ export function createDeviceRequest(ports) {
         if (!(typeof args?.deviceId === "string" && args.deviceId)) return null;
         const probe = ports.implicitBrokerProbeOptions(args || {});
         if (!probe) return implicitBrokerUnavailableResult("mobile-device-broker-implicit");
-        const inventory = await ports.brokerRpc({ ...probe, method: "broker.inventory" });
-        if (!inventory.ok) return ports.jsonResult({ ...inventory, routedBy: "mobile-device-broker-implicit" });
+        const inventory = await ports.observeBrokerInventory({ ...probe });
+        if (!inventory.ok) return ports.presentBrokerReceipt(inventory.receipt, {routedBy: "mobile-device-broker-implicit"});
         const inventoryBackend = inferBrokerInventoryLifecycleBackend(inventory, args.deviceId);
         if (!inventoryBackend.ok) {
             if (inventoryBackend.error === "device-backend-not-found") {
@@ -979,7 +729,7 @@ export function createDeviceRequest(ports) {
             backend: inventoryBackend.backend,
             tool: name,
         });
-        return ports.presentBrokerTool(result, { ...result, routedBy: "mobile-device-broker-implicit" });
+        return ports.presentBrokerTool(result.receipt, { routedBy: "mobile-device-broker-implicit" });
     }
 
     /** @param {string} name @param {Args} args @returns {Promise<Result>} */
@@ -990,8 +740,8 @@ export function createDeviceRequest(ports) {
         if (!backend) {
             const probe = ports.implicitBrokerProbeOptions(args || {}, { allowDefault: true });
             if (!probe) return implicitBrokerUnavailableResult("mobile-broker-appium");
-            const inventory = await ports.brokerRpc({ ...probe, method: "broker.inventory" });
-            if (!inventory.ok) return ports.jsonResult({ ...inventory, routedBy: "mobile-broker-appium" });
+            const inventory = await ports.observeBrokerInventory({ ...probe });
+            if (!inventory.ok) return ports.presentBrokerReceipt(inventory.receipt, {routedBy: "mobile-broker-appium"});
             backend = inferBrokerInventoryLifecycleBackend(inventory, deviceId);
             args = { ...args, ...selectedBrokerProbeOptions(probe, inventory) };
         }
@@ -1021,31 +771,29 @@ export function createDeviceRequest(ports) {
                 backend: resolvedBackend,
                 tool: name,
             });
-            return ports.presentBrokerTool(result, { ...result, routedBy: "mobile-device-broker" });
+            return ports.presentBrokerTool(result.receipt, { routedBy: "mobile-device-broker" });
         }
         if (name === "mobile_session_status") {
-            const result = await ports.brokerAppium({
+            const result = await ports.observeMobileSessionStatus({
                 ...appiumOptions,
-                action: "status",
                 backend: resolvedBackend,
                 deviceId,
             });
-            return ports.jsonResult({ deviceId, ...result, routedBy: "mobile-broker-appium" });
+            return ports.presentBrokerReceipt(result.receipt, {deviceId,routedBy:"mobile-broker-appium"});
         }
         const expectedAppId = appIdForBackend(args, resolvedBackend);
         if (name === "mobile_wait_for_app" && !expectedAppId) {
             return ports.textResult(false, resolvedBackend.startsWith("android") ? "mobile_wait_for_app requires packageName" : "mobile_wait_for_app requires bundleId");
         }
-        const mapped = name === "mobile_wait_for_text" || name === "mobile_wait_for_app" ? null : brokerMobileRequest(name, args || {}, resolvedBackend);
+        const mapped = name === "mobile_wait_for_text" || name === "mobile_wait_for_app" ? null : selectMobileEffects(name, args || {}, resolvedBackend);
         if (mapped?.error) return ports.textResult(false, mapped.error);
-        const ensure = await ports.brokerAppium({
+        const ensure = await ports.ensureMobileSession({
             ...appiumOptions,
-            action: "ensure-session",
             backend: resolvedBackend,
             deviceId,
             force: args?.force === true,
         });
-        if (!ensure.ok) return ports.jsonResult({ ...ensure, routedBy: "mobile-broker-appium" });
+        if (!ensure.ok) return ports.presentBrokerReceipt(ensure.receipt, {routedBy: "mobile-broker-appium"});
 
         if (name === "mobile_wait_for_text") {
             const text = args?.text;
@@ -1055,31 +803,27 @@ export function createDeviceRequest(ports) {
             let observed = false;
             let lastSource = "";
             while (wait.remaining() > 0) {
-                const observe = ports.brokerAppium;
                 const requestOptions = {
                     ...selectedBrokerProbeOptions(appiumOptions, ensure),
                     autolaunch: false,
                     requestTimeoutMs: wait.requestTimeout(600000),
-                    action: "request",
                     backend: resolvedBackend,
                     deviceId,
-                    method: "GET",
-                    path: "/source",
                 };
                 if (requestOptions.requestTimeoutMs <= 0) break;
-                const request = await observe(requestOptions);
-                if (!request.ok) {
-                    if (observed && ports.isLocalObservationBudgetExhaustion(request)) break;
-                    return ports.jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+                const request = await ports.executeMobileEffect(requestOptions, {kind:"read-source"});
+                if (request.kind === "failed") {
+                    if (observed && request.localBudgetExhausted) break;
+                    return ports.presentBrokerReceipt(request.receipt, {routedBy: "mobile-broker-appium"});
                 }
-                if (wait.remaining() <= 0) return ports.textResult(false, "Appium wait deadline exhausted during observation");
+                if (wait.remaining() <= 0) return ports.presentSourceWait({kind:"deadline-during"});
                 observed = true;
-                lastSource = String(request.result?.response?.body?.value ?? "");
-                if (lastSource.includes(text)) return ports.jsonResult({ found: true, text, source: lastSource, provider: "broker-appium", backend: resolvedBackend, broker: request });
+                lastSource = request.sourceText ?? "";
+                if (lastSource.includes(text)) return ports.presentSourceWait({kind:"matched",text,source:lastSource,backend:resolvedBackend,receipt:request.receipt});
                 await wait.pause();
             }
-            if (!observed) return ports.textResult(false, "Appium wait deadline exhausted before observation");
-            return ports.jsonResult({ found: false, text, source: lastSource, timeoutMs, provider: "broker-appium", backend: resolvedBackend });
+            if (!observed) return ports.presentSourceWait({kind:"deadline-before"});
+            return ports.presentSourceWait({kind:"unmatched",text,source:lastSource,timeoutMs,backend:resolvedBackend});
         }
 
         if (name === "mobile_wait_for_app") {
@@ -1116,38 +860,26 @@ export function createDeviceRequest(ports) {
             return ports.presentActiveAppWait({kind:'unmatched',backend:resolvedBackend,timeoutMs:wait.timeoutMs,receipt:lastReceipt});
         }
 
-        const mappedRequest = /** @type {import("../ports/device-request.mjs").MobileRequestSuccess} */ (mapped);
-        const requests = mappedRequest.requests || [mappedRequest];
-        let request = null;
-        for (const item of requests) {
-            request = await ports.brokerAppium({
-                ...appiumOptions,
-                action: "request",
-                backend: resolvedBackend,
-                deviceId,
-                method: item.method,
-                path: item.path,
-                body: item.body,
-            });
-            if (!request.ok) return ports.jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+        const effects = /** @type {Extract<import("../domain/device-request.mjs").MobileEffectSelection,{effects:unknown}>} */ (mapped).effects;
+        /** @type {import("../ports/device-request.mjs").MobileObservation|null} */
+        let observation = null;
+        for (const effect of effects) {
+            observation = await ports.executeMobileEffect({
+                ...appiumOptions,backend:resolvedBackend,deviceId,
+            }, effect);
+            if (observation.kind === 'failed') return ports.presentBrokerReceipt(observation.receipt,{routedBy:"mobile-broker-appium"});
         }
-        const completedRequest = /** @type {BrokerResult} */ (request);
-        if (!completedRequest.ok) return ports.jsonResult({ ...completedRequest, routedBy: "mobile-broker-appium" });
-        if (name === "mobile_screenshot") {
-            const value = request?.result?.response?.body?.value ?? request?.result?.response?.body?.screenshot;
-            if (!value) return ports.textResult(false, "Appium did not return screenshot data");
-            return ports.imageResult({ data: String(value), mimeType: "image/png" });
-        }
+        const completed = /** @type {Extract<import("../ports/device-request.mjs").MobileObservation,{kind:'completed'}>} */ (observation);
         const appId = appIdForBackend(args, resolvedBackend);
-        return ports.jsonResult(brokerMobilePayload(name, resolvedBackend, completedRequest, {
-            requests: requests.length,
+        return ports.presentMobileObservation(name, resolvedBackend, completed, {
+            requests: effects.length,
             ...(name === "mobile_open_url" ? { openedUrl: args.url } : {}),
             ...(name === "mobile_install_app" ? { installed: args.path } : {}),
             ...(name === "mobile_launch_app" ? { launched: appId } : {}),
             ...(name === "mobile_uninstall_app" ? { uninstalled: appId } : {}),
             ...(name === "mobile_stop_app" ? { stopped: appId } : {}),
             ...(name === "mobile_set_location" ? { location: { latitude: Number(args.latitude), longitude: Number(args.longitude) } } : {}),
-        }));
+        });
     }
 
     /** @param {string} name @param {Args} [args] @returns {Promise<Result|null>} */
@@ -1167,9 +899,9 @@ export function createDeviceRequest(ports) {
             : args || {};
         const probe = ports.implicitBrokerProbeOptions(probeArgs);
         if (!probe) return null;
-        const backends = await ports.brokerRpc({ ...probe, ...brokerDiscoveryExecutionTimeout(args), method: "broker.backends" });
-        const advertised = backends.ok && Array.isArray(backends.result?.backends)
-            ? backends.result.backends.find((backend) => backend?.name === "linux-vm" && backend?.provider === "hyper-v")
+        const backends = await ports.observeBrokerBackends({ ...probe, ...brokerDiscoveryExecutionTimeout(args) });
+        const advertised = backends.ok && Array.isArray(backends.backends)
+            ? backends.backends.find((backend) => backend?.name === "linux-vm" && backend?.provider === "hyper-v")
             : null;
         if (!advertised) return null;
         const route = { ...args, ...selectedBrokerProbeOptions(probe, backends), autolaunch: true };
@@ -1196,11 +928,11 @@ export function createDeviceRequest(ports) {
         if (!optsOutOfImplicitBroker(args)) {
             const probe = ports.implicitBrokerProbeOptions(args);
             if (probe) {
-                const inventory = await ports.brokerRpc({ ...args, ...probe, method: "broker.inventory" });
-                if (!inventory.ok || !Array.isArray(inventory.result?.backends)) {
-                    return ports.jsonResult({ ...inventory, routedBy: "device-list-broker-implicit" });
+                const inventory = await ports.observeBrokerInventory({ ...args, ...probe });
+                if (!inventory.ok || !Array.isArray(inventory.backends)) {
+                    return ports.presentBrokerReceipt(inventory.receipt, {routedBy: "device-list-broker-implicit"});
                 }
-                const failedBackend = inventory.result.backends.find((entry) => entry?.error);
+                const failedBackend = inventory.backends.find((entry) => entry?.error);
                 if (failedBackend) {
                     return ports.jsonResult({
                         ok: false,
@@ -1213,7 +945,7 @@ export function createDeviceRequest(ports) {
                     ownerId: ports.ownerId(),
                     devices: [
                         ports.currentDisplayTarget(),
-                        ...inventory.result.backends.flatMap((entry) => Array.isArray(entry?.devices) ? entry.devices : []),
+                        ...inventory.backends.flatMap((entry) => Array.isArray(entry?.devices) ? entry.devices : []),
                     ].filter((device) => !args.backend || device.backend === args.backend || (args.backend === CURRENT_DISPLAY_DEVICE_ID && device.id === CURRENT_DISPLAY_DEVICE_ID)),
                     routedBy: "device-list-broker-implicit",
                 });
@@ -1253,7 +985,7 @@ export function createDeviceRequest(ports) {
     /** @param {Args} args @param {boolean} detail @returns {Promise<Result>} */
     async function handleFilteredBackends(args, detail) {
         const catalog = await handleDeviceBackends(args, { detail });
-        return ports.jsonResult(selectBackendCatalog(catalog, args.backend));
+        return ports.presentBackendCatalog(selectBackendCatalog(catalog, args.backend));
     }
 
     /** @param {string} name @param {Args} rawArgs @param {Options} [options] @returns {Promise<Result>} */
@@ -1346,17 +1078,17 @@ export function createDeviceRequest(ports) {
             if (probe) {
                 const routedBy = BROKER_LIFECYCLE_COMMANDS.has(name) ? "device-lifecycle-broker-implicit"
                     : BROKER_MUTATING_DEVICE_TOOLS.has(name) ? "device-mutating-broker-implicit" : "device-readonly-broker-implicit";
-                const inventory = await ports.brokerRpc({ ...probe, method: "broker.inventory" });
-                if (!inventory.ok) return ports.jsonResult({ ...inventory, routedBy });
-                if (!Array.isArray(inventory.result?.backends)) {
+                const inventory = await ports.observeBrokerInventory({ ...probe });
+                if (!inventory.ok) return ports.presentBrokerReceipt(inventory.receipt, {routedBy});
+                if (!Array.isArray(inventory.backends)) {
                     return ports.jsonResult({ ok: false, error: "broker-inventory-invalid", routedBy });
                 }
-                const failedBackend = inventory.result.backends.find(entry => entry.error);
+                const failedBackend = inventory.backends.find(entry => entry.error);
                 if (failedBackend) return ports.jsonResult({ ok: false, error: failedBackend.error, stateKey: failedBackend.stateKey, routedBy });
-                if (inventory.result.backends.some(entry => !Array.isArray(entry.devices))) {
+                if (inventory.backends.some(entry => !Array.isArray(entry.devices))) {
                     return ports.jsonResult({ ok: false, error: "broker-inventory-invalid", routedBy });
                 }
-                const unattributedTarget = inventory.result.backends.some(entry =>
+                const unattributedTarget = inventory.backends.some(entry =>
                     Array.isArray(entry.devices) && entry.devices.some(device => device?.id === args.deviceId)
                     && !LIFECYCLE_STATE_BACKENDS.has(entry.stateKey || ""));
                 if (unattributedTarget) {
@@ -1409,10 +1141,7 @@ export function createDeviceRequest(ports) {
             const owner = directTarget || inferLifecycleBackend(args.deviceId);
             if (!owner.ok) return unhandledDeviceToolResult(name, args) || ports.jsonResult(owner);
             if (owner.backend === "ios-device") return ports.jsonResult({ ok: false, error: "list-files-unsupported", detail: "The current Device Lab physical iOS adapter does not implement file listing.", deviceId: args.deviceId });
-            if (owner.backend !== "ios-simulator") {
-                const command = ports.buildListFilesCommand(owner.backend, args);
-                return ports.listFilesFromExecResult(await dispatchTool("device_exec", { ...args, command }), args);
-            }
+            if (owner.backend !== "ios-simulator") return ports.listDirectDeviceFiles(args, owner.backend);
         }
         const androidResult = await ports.handleAndroidTool(name, args);
         if (androidResult) return androidResult;
@@ -1466,7 +1195,7 @@ export function createDeviceRequest(ports) {
       try {
        const policy=ports.evaluateDestructivePolicy(name,args);
        if(!policy.ok)return policyDeniedResult(policy);
-       if(name==="device_broker_status")return ports.jsonResult(await ports.brokerStatus(args));
+       if(name==="device_broker_status")return ports.presentBrokerReceipt((await ports.observeBrokerStatus(args)).receipt,{});
        if(name==="device_run_flow")return await handleDeviceRunFlow(args,{detail});
        return await dispatchTool(name,args,{detail});
       }catch(error){return ports.textResult(false,"Unexpected error: "+requestErrorMessage(error));}
