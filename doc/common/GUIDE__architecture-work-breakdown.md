@@ -20,7 +20,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R12 | Codex credential runtime observations | 진행 중 | 없음 | Credential runtime 의미 관측 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. Runtime publication 수정은 계획 리뷰 후 uncommitted 작성했으나 /tmp 후보가 사라져 복구/재작성·제품 리뷰·QA 필요\. managedBy 충돌·inode fixture 약점은 확인; 개별7147 실패 원인은 미입증\. |
 | R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm\-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님\. 구조 완료 credit 없음\. |
 | R14 | Shared mutation\-lock ownership policy | 진행 중 | 없음 | 공유 mutation lock 소유권 정책 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
-| R15 | Release workspace version synchronization | 진행 중 | 없음 | 버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과\. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류\. Hosted release는 실행하지 않음\. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다\. |
+| R15 | Release workspace version synchronization | 진행 중 | 없음 | 버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과\. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류\. Hosted release는 실행하지 않음\. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다\. 후보5c63d800에서만 scripts/set\-release\-version\.mjs를 추가했으며 현재 Main 파일 경로가 아니다\. |
 | R16 | Remote 연결·전송 경계 | 부분 완료 | 없음 | 원격 probe의 시간·응답 경계 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
 | R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | 797f5613의 Appium HTTP5개 의미 포트 분리\(제품5·테스트4·문서3\)는 실제 Code/Security/Docs 리뷰와 Linux 빌드·strict\(skipLibCheck=false\)·lint·CLI·shipping·MCP59 및7개 전체 파일120PASS0FAIL0SKIP 통과\. Native QA는 CRLF 인증 불일치 후 빌드·테스트 전 중단; 실제 native QA와 기존 recording 후보의 공동 qualification·로컬 통합이 남음\. |
 | R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다\. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음\. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다\. Android 같은 backend 파일 변경은 순차 처리; iOS/macOS 독립 파일은 별도 처리 가능\. |
@@ -66,7 +66,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 완료 조건: Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\.
 
-확인한 소스: [scripts/set\-release\-version\.mjs](../../scripts/set-release-version.mjs), [scripts/test\-workspace\-packages\.mjs](../../scripts/test-workspace-packages.mjs), [\.github/workflows/release\.yml](../../.github/workflows/release.yml)
+확인한 소스: [scripts/test\-workspace\-packages\.mjs](../../scripts/test-workspace-packages.mjs), [\.github/workflows/release\.yml](../../.github/workflows/release.yml)
 
 ### R16. Remote 연결·전송 경계
 

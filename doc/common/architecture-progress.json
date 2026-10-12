@@ -2359,7 +2359,7 @@
       "coveredOperationIds": [],
       "title": "Release workspace version synchronization",
       "workStatus": "in-progress",
-      "remainingWork": "버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류. Hosted release는 실행하지 않음. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다.",
+      "remainingWork": "버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류. Hosted release는 실행하지 않음. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다. 후보5c63d800에서만 scripts/set-release-version.mjs를 추가했으며 현재 Main 파일 경로가 아니다.",
       "completionCriteria": "Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI.",
       "confirmedAtCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
       "sourceTrace": {
@@ -2375,7 +2375,6 @@
           "scripts/workspace-build.mjs"
         ],
         "remainingPaths": [
-          "scripts/set-release-version.mjs",
           "scripts/test-workspace-packages.mjs",
           ".github/workflows/release.yml"
         ]
