@@ -1,3 +1,4 @@
+import { readDeviceLabFileIdentity, readDeviceLabFileIdentityAsync } from '../../../device-lab-file-identity.js';
 import { createHash, randomBytes } from "crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync } from "fs";
 import { promises as fsPromises } from "fs";
@@ -138,8 +139,9 @@ type AutomaticArtifactIdentity = { dev: bigint; ino: bigint; directory: boolean 
 
 function automaticArtifactIdentity(path: string): AutomaticArtifactIdentity | null {
     try {
-        const stat = lstatSync(path, { bigint: true });
-        if (stat.isSymbolicLink()) throw new Error("hyper-v-base-image-artifact-symlink");
+        const named = lstatSync(path, { bigint: true });
+        if (named.isSymbolicLink()) throw new Error("hyper-v-base-image-artifact-symlink");
+        const stat = readDeviceLabFileIdentity(path, "hyper-v-base-image-artifact");
         return { dev: stat.dev, ino: stat.ino, directory: stat.isDirectory() };
     } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
@@ -333,19 +335,20 @@ export function inspectLargeRegularFile(root: string, file: string, label: strin
     assertNoSymlinkPathComponents(root, label);
     assertNoSymlinkPathComponents(absolute, label);
     assertDeviceLabPathWithinRoot(root, absolute, label);
-    const pathStat = lstatSync(absolute);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.size <= 0) throw new Error(`${label}-invalid`);
+    let pathStat = lstatSync(absolute, { bigint: true });
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n) throw new Error(`${label}-invalid`);
+    pathStat = readDeviceLabFileIdentity(absolute, label);
     const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
     const descriptor = openSync(absolute, fsConstants.O_RDONLY | noFollow);
     try {
-        const descriptorStat = fstatSync(descriptor);
-        if (!descriptorStat.isFile() || descriptorStat.nlink !== 1
+        const descriptorStat = fstatSync(descriptor, { bigint: true });
+        if (!descriptorStat.isFile() || descriptorStat.nlink !== 1n
             || descriptorStat.dev !== pathStat.dev
             || descriptorStat.ino !== pathStat.ino
             || descriptorStat.size !== pathStat.size) {
             throw new Error(`${label}-identity-changed`);
         }
-        return { path: absolute, size: descriptorStat.size };
+        return { path: absolute, size: Number(descriptorStat.size) };
     } finally {
         closeSync(descriptor);
     }
@@ -367,34 +370,35 @@ export async function stageLargeRegularFileFromProject(
         assertNoSymlinkPathComponents(root, label);
         assertNoSymlinkPathComponents(absolute, label);
         assertDeviceLabPathWithinRoot(root, absolute, label);
-        const pathStat = await fsPromises.lstat(absolute);
-        if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.size <= 0 || pathStat.size > HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES) {
+        let pathStat = await fsPromises.lstat(absolute, { bigint: true });
+        if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n || pathStat.size > BigInt(HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES)) {
             throw new Error(`${label}-invalid`);
         }
+        pathStat = await readDeviceLabFileIdentityAsync(absolute, label);
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
         sourceDescriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow);
-        const openedSource = await sourceDescriptor.stat();
-        const currentSource = await fsPromises.lstat(absolute);
-        if (!openedSource.isFile() || openedSource.nlink !== 1
+        const openedSource = await sourceDescriptor.stat({ bigint: true });
+        const currentSource = await readDeviceLabFileIdentityAsync(absolute, label);
+        if (!openedSource.isFile() || openedSource.nlink !== 1n
             || openedSource.dev !== pathStat.dev || openedSource.ino !== pathStat.ino || openedSource.size !== pathStat.size
-            || currentSource.isSymbolicLink() || currentSource.nlink !== 1 || currentSource.dev !== openedSource.dev || currentSource.ino !== openedSource.ino || currentSource.size !== openedSource.size) {
+            || currentSource.isSymbolicLink() || currentSource.nlink !== 1n || currentSource.dev !== openedSource.dev || currentSource.ino !== openedSource.ino || currentSource.size !== openedSource.size) {
             throw new Error(`${label}-identity-changed`);
         }
         await fsPromises.mkdir(targetRoot, { recursive: true, mode: 0o700 });
         assertNoSymlinkPathComponents(targetRoot, `${label}-staging`);
         assertDeviceLabPathWithinRoot(targetRoot, stagingPath, `${label}-staging`);
         targetDescriptor = await fsPromises.open(stagingPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
-        const openedTarget = await targetDescriptor.stat();
-        const targetPathStat = await fsPromises.lstat(stagingPath);
-        if (!openedTarget.isFile() || openedTarget.nlink !== 1
+        const openedTarget = await targetDescriptor.stat({ bigint: true });
+        const targetPathStat = await readDeviceLabFileIdentityAsync(stagingPath, `${label}-staging`, openedTarget);
+        if (!openedTarget.isFile() || openedTarget.nlink !== 1n
             || targetPathStat.isSymbolicLink() || targetPathStat.dev !== openedTarget.dev || targetPathStat.ino !== openedTarget.ino) {
             throw new Error(`${label}-staging-identity-changed`);
         }
         const buffer = Buffer.allocUnsafe(1024 * 1024);
         let copied = 0;
-        while (copied < openedSource.size) {
+        while (copied < Number(openedSource.size)) {
             assertHyperVOperationDeadline(deadlineAt);
-            const { bytesRead: count } = await sourceDescriptor.read(buffer, 0, Math.min(buffer.length, openedSource.size - copied), null);
+            const { bytesRead: count } = await sourceDescriptor.read(buffer, 0, Math.min(buffer.length, Number(openedSource.size) - copied), null);
             if (count <= 0) throw new Error(`${label}-copy-short-read`);
             let offset = 0;
             while (offset < count) {
@@ -405,11 +409,11 @@ export async function stageLargeRegularFileFromProject(
             copied += count;
         }
         await targetDescriptor.sync();
-        const finalSource = await sourceDescriptor.stat();
-        const finalTarget = await targetDescriptor.stat();
-        const finalSourcePath = await fsPromises.lstat(absolute);
-        if (finalSource.nlink !== 1 || finalSource.dev !== openedSource.dev || finalSource.ino !== openedSource.ino || finalSource.size !== openedSource.size
-            || finalSourcePath.isSymbolicLink() || finalSourcePath.nlink !== 1 || finalSourcePath.dev !== openedSource.dev || finalSourcePath.ino !== openedSource.ino || finalSourcePath.size !== openedSource.size
+        const finalSource = await sourceDescriptor.stat({ bigint: true });
+        const finalTarget = await targetDescriptor.stat({ bigint: true });
+        const finalSourcePath = await readDeviceLabFileIdentityAsync(absolute, label);
+        if (finalSource.nlink !== 1n || finalSource.dev !== openedSource.dev || finalSource.ino !== openedSource.ino || finalSource.size !== openedSource.size
+            || finalSourcePath.isSymbolicLink() || finalSourcePath.nlink !== 1n || finalSourcePath.dev !== openedSource.dev || finalSourcePath.ino !== openedSource.ino || finalSourcePath.size !== openedSource.size
             || finalTarget.dev !== openedTarget.dev || finalTarget.ino !== openedTarget.ino || finalTarget.size !== openedSource.size) {
             throw new Error(`${label}-identity-changed`);
         }
@@ -435,15 +439,16 @@ export async function sha256LargeRegularFile(
     assertNoSymlinkPathComponents(root, label);
     assertNoSymlinkPathComponents(absolute, label);
     assertDeviceLabPathWithinRoot(root, absolute, label);
-    const pathStat = await fsPromises.lstat(absolute);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.size <= 0) throw new Error(`${label}-invalid`);
+    let pathStat = await fsPromises.lstat(absolute, { bigint: true });
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n) throw new Error(`${label}-invalid`);
+    pathStat = await readDeviceLabFileIdentityAsync(absolute, label);
     const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
     const descriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow);
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(1024 * 1024);
     try {
-        const openedStat = await descriptor.stat();
-        if (!openedStat.isFile() || openedStat.nlink !== 1
+        const openedStat = await descriptor.stat({ bigint: true });
+        if (!openedStat.isFile() || openedStat.nlink !== 1n
             || openedStat.dev !== pathStat.dev
             || openedStat.ino !== pathStat.ino
             || openedStat.size !== pathStat.size) {
@@ -455,13 +460,13 @@ export async function sha256LargeRegularFile(
             if (count === 0) break;
             hash.update(buffer.subarray(0, count));
         }
-        const finalStat = await descriptor.stat();
-        const finalPathStat = await fsPromises.lstat(absolute);
+        const finalStat = await descriptor.stat({ bigint: true });
+        const finalPathStat = await readDeviceLabFileIdentityAsync(absolute, label);
         if (!finalStat.isFile()
             || !finalPathStat.isFile()
             || finalPathStat.isSymbolicLink()
-            || finalStat.nlink !== 1
-            || finalPathStat.nlink !== 1
+            || finalStat.nlink !== 1n
+            || finalPathStat.nlink !== 1n
             || finalStat.dev !== openedStat.dev
             || finalStat.ino !== openedStat.ino
             || finalStat.size !== openedStat.size

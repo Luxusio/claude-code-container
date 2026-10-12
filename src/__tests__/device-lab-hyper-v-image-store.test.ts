@@ -1,6 +1,7 @@
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { createHash } from "crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
+import { promises as fsPromises } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, relative } from "path";
 import { describe, expect, it, vi } from "vitest";
@@ -18,20 +19,20 @@ import {
     type HyperVUbuntuImageCacheInspection,
 } from "@ccc/device-lab/device-lab/broker/hyper-v/image-store.js";
 import { createHyperVImagePreparation } from "@ccc/device-lab/device-lab/application/hyper-v-image-preparation.js";
-import type { HyperVImagePreparationPorts } from "@ccc/device-lab/device-lab/ports/hyper-v-image-preparation.js";
+import type { HyperVImagePreparationEffects, HyperVImagePreparationPorts } from "@ccc/device-lab/device-lab/ports/hyper-v-image-preparation.js";
 import { HYPER_V_IMAGE_CATALOG } from "@ccc/device-lab/device-lab/hyper-v-images.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP, type HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
 
 // Compile-only controls: import cleanup and automatic finalization are required capabilities,
 // and synchronous publication/root admission cannot silently accept asynchronous substitutions.
-function imagePreparationCapabilityContracts(ports: HyperVImagePreparationPorts): void {
+function imagePreparationCapabilityContracts(ports: HyperVImagePreparationPorts, effects: HyperVImagePreparationEffects): void {
     createHyperVImagePreparation(ports);
-    const { dismount: _dismount, ...withoutDismount } = ports;
+    const { dismount: _dismount, ...withoutDismount } = effects;
     // @ts-expect-error Detaching an owner-staged mounted image is mandatory.
-    createHyperVImagePreparation(withoutDismount);
-    const { finalizeAcquisition: _finalize, ...withoutFinalizer } = ports;
+    const missingDismount: HyperVImagePreparationEffects = withoutDismount;
+    const { finalizeAcquisition: _finalize, ...withoutFinalizer } = effects;
     // @ts-expect-error Automatic acquisition needs its guarded native finalizer.
-    createHyperVImagePreparation(withoutFinalizer);
+    const missingFinalizer: HyperVImagePreparationEffects = withoutFinalizer;
     const { resolvePath: _resolvePath, ...withoutPathResolution } = ports;
     // @ts-expect-error Path resolution requires the native current-directory authority.
     createHyperVImagePreparation(withoutPathResolution);
@@ -41,13 +42,41 @@ function imagePreparationCapabilityContracts(ports: HyperVImagePreparationPorts)
     const asynchronousPublication: HyperVImagePreparationPorts["publishManifest"] = async () => undefined;
     // @ts-expect-error Root admission must finish before the preparation lock is entered.
     const asynchronousRootAdmission: HyperVImagePreparationPorts["ensurePreparationRoot"] = async () => undefined;
-    void [_dismount, _finalize, _resolvePath, asynchronousPathResolution, asynchronousPublication, asynchronousRootAdmission];
+    void [_dismount, _finalize, _resolvePath, missingDismount, missingFinalizer, asynchronousPathResolution, asynchronousPublication, asynchronousRootAdmission];
 }
 void imagePreparationCapabilityContracts;
 
 // Pass-through record of every hash the image store starts, so the readiness cache inspection
 // can prove it never hashes the multi-gigabyte base image.
 const hashing = vi.hoisted(() => ({ algorithms: [] as string[] }));
+const windowsImageFs = vi.hoisted(() => ({ enabled: false, target: "", fault: "none", opens: 0, live: new Map<number, boolean>() }));
+vi.mock("fs", async importOriginal => {
+    const actual = await importOriginal<typeof import("fs")>();
+    const metadata = (stat: any, pathname: boolean, fresh = false) => {
+        const bigint = typeof stat.ino === "bigint";
+        const inode = BigInt(stat.ino) + 2n ** 60n + (fresh && windowsImageFs.fault === "inode" ? 1n : 0n);
+        const volume = 574283787n + (fresh && windowsImageFs.fault === "volume" ? 1n : 0n);
+        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: bigint ? (pathname ? 0n : volume) : Number(pathname ? 0n : volume), ino: bigint ? inode : Number(inode) });
+    };
+    return { ...actual,
+        openSync: (...args: Parameters<typeof actual.openSync>) => {
+            const fresh = windowsImageFs.enabled && String(args[0]) === windowsImageFs.target && ++windowsImageFs.opens >= 2;
+            if (fresh && windowsImageFs.fault === "open") throw Object.assign(new Error("fresh open denied"), { code: "EACCES" });
+            const fd = actual.openSync(...args);
+            if (windowsImageFs.enabled) windowsImageFs.live.set(fd, fresh);
+            return fd;
+        },
+        fstatSync: (...args: Parameters<typeof actual.fstatSync>) => {
+            const stat = actual.fstatSync(...args);
+            return windowsImageFs.enabled ? metadata(stat, false, windowsImageFs.live.get(args[0])) : stat;
+        },
+        lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+            const stat = actual.lstatSync(...args);
+            return windowsImageFs.enabled ? metadata(stat, true) : stat;
+        },
+        closeSync: (fd: number) => { actual.closeSync(fd); windowsImageFs.live.delete(fd); },
+    };
+});
 vi.mock("crypto", async (importOriginal) => {
     const actual = await importOriginal<typeof import("crypto")>();
     return {
@@ -672,6 +701,51 @@ describe("Hyper-V ubuntu-lts image cache inspection", () => {
 
         expect(inspectWithoutSideEffects(privateRoot)).toEqual({ state: "valid", source: "global" });
     }));
+
+    it("inspects and hashes real cached bytes with Windows dev0 paths and bigint opened identities", withPrivateRoot("windows-identity", async privateRoot => {
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        writeCache(profileRoot, automaticManifest(profileRoot));
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        const live = new Set<Awaited<ReturnType<typeof fsPromises.open>>>();
+        const realOpen = fsPromises.open.bind(fsPromises), realLstat = fsPromises.lstat.bind(fsPromises);
+        const metadata = (stat: any, pathname: boolean) => Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+            dev: typeof stat.ino === "bigint" ? (pathname ? 0n : 574283787n) : pathname ? 0 : 574283787,
+            ino: typeof stat.ino === "bigint" ? stat.ino + 2n ** 60n : Number(BigInt(stat.ino) + 2n ** 60n),
+        });
+        vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => metadata(await realLstat(...args), true)) as typeof fsPromises.lstat);
+        vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            const handle = await realOpen(...args);
+            live.add(handle);
+            const stat = handle.stat.bind(handle), close = handle.close.bind(handle);
+            vi.spyOn(handle, "stat").mockImplementation((async (...statArgs: any[]) => metadata(await stat(...statArgs), false)) as typeof handle.stat);
+            vi.spyOn(handle, "close").mockImplementation(async () => { await close(); live.delete(handle); });
+            return handle;
+        });
+        Object.assign(windowsImageFs, { enabled: true, target: join(profileRoot, "base.vhdx"), fault: "none", opens: 0 });
+        Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+        try {
+            expect(inspectHyperVUbuntuImageCache(privateRoot, ownerId)).toEqual({ state: "valid", source: "global" });
+            hashing.algorithms.length = 0;
+            expect(await createDecision(privateRoot)).toBe("valid");
+            expect(hashing.algorithms).toContain("sha256");
+            expect(readFileSync(join(profileRoot, "base.vhdx"))).toEqual(image);
+            expect(windowsImageFs.live.size).toBe(0);
+            expect(live.size).toBe(0);
+        } finally { windowsImageFs.enabled = false; Object.defineProperty(process, "platform", platform); vi.restoreAllMocks(); }
+    }));
+
+    it.each(["volume", "inode", "open"])("refuses unqualified cached image metadata (%s) and closes descriptors", fault => withPrivateRoot("windows-refusal", privateRoot => {
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        writeCache(profileRoot, automaticManifest(profileRoot));
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.assign(windowsImageFs, { enabled: true, target: join(profileRoot, "base.vhdx"), fault, opens: 0 });
+        Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+        try {
+            expect(inspectHyperVUbuntuImageCache(privateRoot, ownerId)).toEqual({ state: "conflict", code: "hyper-v-base-image-profile-conflict" });
+            expect(readFileSync(join(profileRoot, "base.vhdx"))).toEqual(image);
+            expect(windowsImageFs.live.size).toBe(0);
+        } finally { windowsImageFs.enabled = false; Object.defineProperty(process, "platform", platform); }
+    })());
 
     it("prefers the owner's user-provided image, as create does, even beside a shared-cache conflict", withPrivateRoot("owner", async (privateRoot) => {
         const ownerRoot = hyperVOwnerImageProfileRoot(privateRoot, ownerId, "ubuntu-lts");

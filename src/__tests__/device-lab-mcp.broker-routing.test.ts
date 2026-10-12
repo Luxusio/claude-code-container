@@ -9,7 +9,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
-import { createDeviceBrokerServer } from "@ccc/device-lab/device-lab-broker.js";
+import { createDeviceBrokerServer, deviceBrokerOwnerToken } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { cleanupOwner, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import {
@@ -819,6 +819,99 @@ describe("device-lab MCP broker routing", () => {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         }
     });
+
+    it.each(["stable", "inode", "volume", "open-refused", "pathname-swap"] as const)(
+        "qualifies actual MCP broker RPC Windows owner-file identity: %s", { timeout: TIMEOUT }, async fault => {
+            const env: Record<string, string> = {};
+            let auditFile = "";
+            let authFile = "";
+            const owner = brokerOwnerId();
+            const isolated = await createDeviceLabMcpTestContext({
+                env,
+                setupHome: home => {
+                    authFile = join(home, ".ccc", "devices", "broker", "auth", `${owner}.json`);
+                    auditFile = join(home, "auth-identity-audit.json");
+                    const preload = join(home, "windows-auth-identity.cjs");
+                    // Both MCP processes keep real native files/handles. Only this
+                    // owner's identity observations reproduce the Windows discrepancy.
+                    writeFileSync(preload, `
+require(${JSON.stringify(join(home, "isolate-broker-auth.cjs"))});
+const fs = require('fs');
+const actual = Object.fromEntries(['openSync','fstatSync','lstatSync','readSync','closeSync','writeFileSync'].map(key => [key, fs[key].bind(fs)]));
+const target = ${JSON.stringify(authFile)}, audit = ${JSON.stringify(auditFile)}, fault = ${JSON.stringify(fault)};
+const live = new Map(), events = {opened:0,closed:0,secondaryReads:0,reads:0,freshAttempts:0};
+let opens = 0;
+const inode = 9007199254740992n, volume = 574283787n;
+const metadata = (stat, fields) => Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, fields);
+Object.defineProperty(process, 'platform', {configurable:true,get:()=> 'win32'});
+fs.openSync = (file, flags, ...args) => {
+ const reading = String(file) === target && (flags === 'r' || typeof flags === 'number' && (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR)) === 0);
+ const second = reading && ++opens % 2 === 0;
+ if (second) { events.freshAttempts++; if (fault === 'open-refused') throw Object.assign(new Error('fresh auth open refused'), {code:'EACCES'}); }
+ const fd = actual.openSync(file, flags, ...args);
+ if (reading) {live.set(fd, second); events.opened++;}
+ return fd;
+};
+fs.fstatSync = (fd, options) => {
+ const stat = actual.fstatSync(fd, options);
+ if (!live.has(fd)) return stat;
+ const second = live.get(fd), bigint = options?.bigint === true;
+ return metadata(stat, {dev:bigint ? (second && fault === 'volume' ? volume + 1n : volume) : Number(volume),
+  ino:bigint ? (second && fault === 'inode' ? inode + 1n : inode) : Number(inode), nlink:bigint ? 1n : 1});
+};
+fs.lstatSync = (file, options) => {
+ const stat = actual.lstatSync(file, options);
+ if (String(file) !== target) return stat;
+ const bigint = options?.bigint === true, swapped = fault === 'pathname-swap' && [...live.values()].includes(true);
+ return metadata(stat, {dev:bigint ? 0n : 0,ino:bigint ? (swapped ? inode + 1n : inode) : Number(inode),nlink:bigint ? 1n : 1});
+};
+fs.readSync = (fd, ...args) => {if (live.has(fd)) {events.reads++;if(live.get(fd)) events.secondaryReads++;}return actual.readSync(fd,...args);};
+fs.closeSync = fd => {if(live.has(fd)){live.delete(fd);events.closed++;actual.writeFileSync(audit,JSON.stringify({...events,live:live.size}));}return actual.closeSync(fd);};
+require('module').syncBuiltinESMExports();
+`);
+                    env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+                },
+            });
+            const server = createDeviceBrokerServer({ cwd: repoRoot, host: "127.0.0.1", port: 0 });
+            let rpcRequests = 0;
+            server.on("request", req => { if (req.url?.endsWith("/rpc")) rpcRequests++; });
+            await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+            const address = server.address() as AddressInfo;
+            try {
+                // Provision through the actual broker first; MCP may only read
+                // the resulting owner credential, including on rejected proof.
+                deviceBrokerOwnerToken(owner);
+                const before = readFileSync(authFile, "utf8");
+                for (let call = 0; call < (fault === "stable" ? 2 : 1); call++) {
+                    const result = await callInternalBroker(isolated.client, { operation: "brokerRpc", arguments: {
+                        method: "broker.echo", params: { qualified: call }, hostCandidates: ["127.0.0.1"],
+                        port: address.port, timeoutMs: 1000, autolaunch: false,
+                    } });
+                    const payload = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+                    if (fault === "stable") {
+                        expect(result.isError).not.toBe(true);
+                        expect(payload).toMatchObject({ ok: true, selected: { status: 200 }, result: { ownerId: owner, params: { qualified: call } } });
+                    } else {
+                        expect(result.isError).toBe(true);
+                        expect(payload).toMatchObject({ ok: false, error: "broker-owner-auth-unavailable" });
+                    }
+                }
+                expect(readFileSync(authFile, "utf8")).toBe(before);
+                expect(rpcRequests).toBe(fault === "stable" ? 2 : 0);
+                const audit = JSON.parse(readFileSync(auditFile, "utf8"));
+                expect(audit.opened).toBeGreaterThan(0);
+                expect(audit.closed).toBe(audit.opened);
+                expect(audit.live).toBe(0);
+                expect(audit.freshAttempts).toBeGreaterThan(0);
+                expect(audit.secondaryReads).toBe(0);
+                if (fault === "stable") expect(audit.reads).toBeGreaterThan(0);
+                else expect(audit.reads).toBe(0);
+            } finally {
+                await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+                await cleanupDeviceLabMcpTestContext(isolated);
+            }
+        },
+    );
 
     it("routes explicit recording start and stop through the owner-scoped broker", { timeout: TIMEOUT }, async () => {
         const owner = brokerOwnerId();

@@ -3,7 +3,7 @@ import { fakeAndroidProviderScript, fakeAndroidLauncherPreloadSource } from "./f
 import { deviceLabTestHomeEnvironment } from "./device-lab-test-environment.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { installDefaultImplicitBroker, repoRoot, TIMEOUT } from "./device-lab-mcp-fixture.js";
@@ -22,8 +22,8 @@ export async function createFakeAndroidMcpContext(options: { platform?: "win32" 
     let homeDir = "";
     let binDir = "";
     let logPath = "";
-        homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-android-home-"));
-        binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-android-bin-"));
+        homeDir = realpathSync.native(mkdtempSync(join(tmpdir(), "ccc-device-lab-android-home-")));
+        binDir = realpathSync.native(mkdtempSync(join(tmpdir(), "ccc-device-lab-android-bin-")));
         logPath = join(homeDir, "fake-android.log");
         writeFileSync(logPath, "");
         const imageDir = join(homeDir, "Android", "Sdk", "system-images", "android-35", "google_apis", "x86_64");

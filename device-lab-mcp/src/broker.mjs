@@ -1,3 +1,4 @@
+import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import { createBrokerSupervision } from "./application/broker-supervision.mjs";
 import { fileURLToPath } from "url";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
@@ -63,7 +64,6 @@ export const BROKER_CONTROL_RESPONSE_LIMIT_BYTES = 1024 * 1024;
 export const BROKER_RPC_RESPONSE_LIMIT_BYTES = 64 * 1024 * 1024;
 export const BROKER_RPC_SCREENSHOT_RESPONSE_LIMIT_BYTES = 8 * 1024 * 1024;
 const BROKER_INVALID_RESPONSE_RAW_LIMIT_BYTES = 32 * 1024;
-const BROKER_AUTH_FILE_LIMIT_BYTES = 4096;
 const BROKER_RUNTIME_FILE_LIMIT_BYTES = 64 * 1024;
 const BROKER_LOG_TAIL_READ_LIMIT_BYTES = 4 * 1024;
 const BROKER_NAME = "ccc-device-broker";
@@ -1522,40 +1522,10 @@ function brokerAuthDirectoryValid(isolatedFile) {
     return true;
 }
 
-function readBoundedUtf8Descriptor(descriptor, limitBytes) {
-    const buffer = Buffer.allocUnsafe(limitBytes + 1);
-    let total = 0;
-    while (total <= limitBytes) {
-        const count = readSync(descriptor, buffer, total, buffer.length - total, null);
-        if (count === 0) return buffer.subarray(0, total).toString("utf8");
-        total += count;
-    }
-    throw new Error("control-state-file-too-large");
-}
-
 function existingOwnerSecret(owner) {
     const isolatedFile = isolatedBrokerAuthFile();
     if (!brokerAuthDirectoryValid(isolatedFile)) return null;
-    const file = brokerAuthSecretFile(owner, isolatedFile);
-    let fd = null;
-    try {
-        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-        fd = openSync(file, fsConstants.O_RDONLY | noFollow);
-        const stat = fstatSync(fd);
-        const pathStat = lstatSync(file);
-        if (!stat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink() || stat.nlink !== 1
-            || stat.dev !== pathStat.dev || stat.ino !== pathStat.ino) return null;
-        if (stat.size > BROKER_AUTH_FILE_LIMIT_BYTES) return null;
-        const parsed = JSON.parse(readBoundedUtf8Descriptor(fd, BROKER_AUTH_FILE_LIMIT_BYTES));
-        if (parsed?.ownerId !== owner || typeof parsed?.secret !== "string" || !/^[a-f0-9]{64}$/.test(parsed.secret)) return null;
-        return parsed.secret;
-    } catch {
-        return null;
-    } finally {
-        if (fd !== null) {
-            try { closeSync(fd); } catch { /* best effort after a read failure */ }
-        }
-    }
+    return readBrokerOwnerSecret(brokerAuthSecretFile(owner, isolatedFile), owner);
 }
 
 function ownerToken(owner) {

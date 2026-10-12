@@ -1,3 +1,4 @@
+import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import {planBrokerAndroidCreate, planBrokerAndroidExisting} from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCommand as semanticIosExisting} from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExistingCommand as semanticMacosExisting} from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
@@ -61,7 +62,7 @@ import { createAndroidPreviewPortAllocation, createLifecyclePreview } from "./de
 import { hyperVPreviewConflicts } from "./device-lab/domain/broker-observation-command-plan.js";
 import { desktopGuestCommand, desktopRemoteReadCommand, desktopRemoteReadOutputLimit, observeDesktopExecution, observeDesktopDirect } from "./device-lab/broker/hyper-v/desktop-native.js";
 import { spawn, spawnSync } from "child_process";
-import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname, uptime } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
@@ -288,7 +289,6 @@ export const DEVICE_BROKER_HYPER_V_OWNER_QUOTA = Object.freeze({
     maxRunningMemoryMb: 128 * 1024,
     maxRunningCpus: 64,
 });
-const DEVICE_BROKER_AUTH_FILE_LIMIT_BYTES = 4096;
 const DEVICE_BROKER_OWNER_REGISTRATION_FILE_LIMIT_BYTES = 16 * 1024;
 const DEVICE_BROKER_RUNTIME_FILE_LIMIT_BYTES = 64 * 1024;
 const DEVICE_BROKER_SERVICE_OWNER_FILE_LIMIT_BYTES = 16 * 1024;
@@ -1166,58 +1166,16 @@ export function deviceBrokerOwnerToken(ownerId: string): string {
     return createHash("sha256").update(`${DEVICE_BROKER_NAME}:owner:${ownerId}:secret:${secret}`).digest("hex");
 }
 
-function readBoundedUtf8Descriptor(descriptor: number, limitBytes: number): string {
-    const buffer = Buffer.allocUnsafe(limitBytes + 1);
-    let total = 0;
-    while (total <= limitBytes) {
-        const count = readSync(descriptor, buffer, total, buffer.length - total, null);
-        if (count === 0) return buffer.subarray(0, total).toString("utf8");
-        total += count;
-    }
-    throw new Error("control-state-file-too-large");
-}
-
 function readDeviceBrokerOwnerSecret(ownerId: string): string | null {
     const file = deviceBrokerAuthSecretFile(ownerId);
-    let fd: number | null = null;
     try {
         if (!inspectDeviceBrokerAuthDirectory()) return null;
-        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-        fd = openSync(file, fsConstants.O_RDONLY | noFollow);
-        const stat = fstatSync(fd, { bigint: true });
-        const pathStat = lstatSync(file, { bigint: true });
-        if (!stat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink()
-            || stat.nlink !== 1n || pathStat.nlink !== 1n || stat.dev === 0n || stat.ino <= 0n
-            || stat.ino !== pathStat.ino) return null;
-        if (stat.dev !== pathStat.dev) {
-            // Some supported Windows Node versions omit the pathname's volume ID.
-            // Prove it with another opened handle; a zero pathname ID is not proof.
-            if (process.platform !== "win32" || pathStat.dev !== 0n || stat.dev === 0n) return null;
-            const verificationFd = openSync(file, fsConstants.O_RDONLY | noFollow);
-            try {
-                const verification = fstatSync(verificationFd, { bigint: true });
-                const currentPath = lstatSync(file, { bigint: true });
-                if (!verification.isFile() || verification.nlink !== 1n
-                    || verification.dev !== stat.dev || verification.ino !== stat.ino
-                    || !currentPath.isFile() || currentPath.isSymbolicLink() || currentPath.nlink !== 1n
-                    || currentPath.ino !== verification.ino
-                    || (currentPath.dev !== 0n && currentPath.dev !== verification.dev)) return null;
-            } finally {
-                closeSync(verificationFd);
-            }
-        }
-        if (stat.size > BigInt(DEVICE_BROKER_AUTH_FILE_LIMIT_BYTES)) return null;
-        const parsed = JSON.parse(readBoundedUtf8Descriptor(fd, DEVICE_BROKER_AUTH_FILE_LIMIT_BYTES)) as { ownerId?: unknown; secret?: unknown };
-        if (parsed.ownerId !== ownerId || typeof parsed.secret !== "string" || !/^[a-f0-9]{64}$/.test(parsed.secret)) return null;
-        try { fchmodSync(fd, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
-        return parsed.secret;
     } catch {
         return null;
-    } finally {
-        if (fd !== null) {
-            try { closeSync(fd); } catch { /* best effort after a read failure */ }
-        }
     }
+    return readBrokerOwnerSecret(file, ownerId, descriptor => {
+        try { fchmodSync(descriptor, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+    });
 }
 
 function existingDeviceBrokerOwnerToken(ownerId: string): string | null {

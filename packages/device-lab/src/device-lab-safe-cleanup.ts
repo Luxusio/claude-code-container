@@ -1,8 +1,19 @@
+import { readDeviceLabFileIdentity } from './device-lab-file-identity.js';
 import { randomBytes } from "crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, type Stats } from "fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, type BigIntStats } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { withSharedMutationLock } from "./device-lab-shared-state.js";
+
+function cleanupFileIdentity(path: string, label: string, expected?: BigIntStats): BigIntStats {
+    try { return readDeviceLabFileIdentity(path, label, expected); }
+    catch (error) {
+        if (error instanceof Error && error.message === `${label}-identity-changed`) {
+            throw new Error("quarantined-cleanup-target-invalid");
+        }
+        throw error;
+    }
+}
 
 export type QuarantinedCleanupError = Error & { quarantineRoot?: string };
 type QuarantineCleanupOperations = {
@@ -30,16 +41,13 @@ function safeCleanupMutationLockFile(): string {
     return join(root, "mutation.lock");
 }
 
-function sameEntryIdentity(original: Stats, quarantined: Stats): boolean {
+function sameEntryIdentity(original: BigIntStats, quarantined: BigIntStats): boolean {
     if (original.dev !== quarantined.dev || original.ino !== quarantined.ino) return false;
-    if (original.ino !== 0 || quarantined.ino !== 0) return original.isDirectory() === quarantined.isDirectory()
-        && original.isSymbolicLink() === quarantined.isSymbolicLink();
-    return original.birthtimeMs === quarantined.birthtimeMs && original.ctimeMs === quarantined.ctimeMs
-        && original.isDirectory() === quarantined.isDirectory()
+    return original.isDirectory() === quarantined.isDirectory()
         && original.isSymbolicLink() === quarantined.isSymbolicLink();
 }
 
-function sameDirectoryIdentity(original: Stats, quarantined: Stats): boolean {
+function sameDirectoryIdentity(original: BigIntStats, quarantined: BigIntStats): boolean {
     return original.isDirectory() && quarantined.isDirectory()
         && !original.isSymbolicLink() && !quarantined.isSymbolicLink()
         && sameEntryIdentity(original, quarantined);
@@ -47,7 +55,7 @@ function sameDirectoryIdentity(original: Stats, quarantined: Stats): boolean {
 
 function removeBoundDirectory(
     path: string,
-    expected: Stats,
+    expected: BigIntStats,
     beforeRemove?: (path: string) => void,
     beforeRemoveEntry?: (entry: string) => void,
     beforeDeleteEntry?: (entry: string) => void,
@@ -62,8 +70,8 @@ function removeBoundDirectory(
     }
     const anchored = descriptor !== null && process.platform === "linux" ? `/proc/self/fd/${descriptor}` : path;
     const assertBound = () => {
-        const observed = descriptor !== null ? fstatSync(descriptor) : lstatSync(path);
-        const named = lstatSync(path);
+        const observed = descriptor !== null ? fstatSync(descriptor, { bigint: true }) : cleanupFileIdentity(path, "quarantined-cleanup-target", expected);
+        const named = cleanupFileIdentity(path, "quarantined-cleanup-target", expected);
         if (!sameDirectoryIdentity(expected, observed) || !sameDirectoryIdentity(expected, named)) {
             throw new Error("quarantined-cleanup-target-invalid");
         }
@@ -74,19 +82,20 @@ function removeBoundDirectory(
         for (const entry of readdirSync(anchored)) {
             assertBound();
             const child = join(anchored, entry);
-            const childStats = lstatSync(child);
+            const childPathStats = lstatSync(child, { bigint: true });
+            const childStats = childPathStats.isSymbolicLink() ? childPathStats : cleanupFileIdentity(child, "quarantined-cleanup-target");
             beforeRemoveEntry?.(child);
             assertBound();
             const stagedChild = join(anchored, `.ccc-entry-${randomBytes(16).toString("hex")}`);
             renameSync(child, stagedChild);
             assertBound();
-            const stagedStats = lstatSync(stagedChild);
+            const stagedStats = childStats.isSymbolicLink() ? lstatSync(stagedChild, { bigint: true }) : cleanupFileIdentity(stagedChild, "quarantined-cleanup-target", childStats);
             if (!sameEntryIdentity(childStats, stagedStats)) {
                 throw new Error("quarantined-cleanup-target-invalid");
             }
             beforeDeleteEntry?.(stagedChild);
             assertBound();
-            const deleteStats = lstatSync(stagedChild);
+            const deleteStats = stagedStats.isSymbolicLink() ? lstatSync(stagedChild, { bigint: true }) : cleanupFileIdentity(stagedChild, "quarantined-cleanup-target", stagedStats);
             if (!sameEntryIdentity(stagedStats, deleteStats)) throw new Error("quarantined-cleanup-target-invalid");
             if (childStats.isSymbolicLink() || !childStats.isDirectory()) unlinkSync(stagedChild);
             else removeBoundDirectory(stagedChild, deleteStats, undefined, undefined, beforeDeleteEntry, beforeDeleteRoot);
@@ -97,10 +106,10 @@ function removeBoundDirectory(
     }
     const emptyPath = join(dirname(path), `.ccc-empty-${randomBytes(16).toString("hex")}`);
     renameSync(path, emptyPath);
-    const emptyStats = lstatSync(emptyPath);
+    const emptyStats = cleanupFileIdentity(emptyPath, "quarantined-cleanup-target", expected);
     if (!sameDirectoryIdentity(expected, emptyStats)) throw new Error("quarantined-cleanup-target-invalid");
     beforeDeleteRoot?.(emptyPath);
-    const deleteStats = lstatSync(emptyPath);
+    const deleteStats = cleanupFileIdentity(emptyPath, "quarantined-cleanup-target", emptyStats);
     if (!sameDirectoryIdentity(emptyStats, deleteStats)) throw new Error("quarantined-cleanup-target-invalid");
     rmdirSync(emptyPath);
 }
@@ -113,14 +122,14 @@ function quarantineAndRemoveDirectoryUnlocked(
     const quarantineParent = join(dirname(target), `.ccc-cleanup-${randomBytes(16).toString("hex")}`);
     const quarantineRoot = join(quarantineParent, basename(target));
     validate(target);
-    const original = lstatSync(target);
+    const original = cleanupFileIdentity(target, "quarantined-cleanup-target");
     if (!original.isDirectory() || original.isSymbolicLink()) throw new Error("quarantined-cleanup-target-invalid");
     mkdirSync(quarantineParent, { mode: 0o700 });
     try {
         (operations.rename ?? renameSync)(target, quarantineRoot);
         validate(quarantineParent);
         validate(quarantineRoot);
-        const quarantined = lstatSync(quarantineRoot);
+        const quarantined = cleanupFileIdentity(quarantineRoot, "quarantined-cleanup-target", original);
         if (!quarantined.isDirectory() || quarantined.isSymbolicLink() || !sameDirectoryIdentity(original, quarantined)) {
             throw new Error("quarantined-cleanup-target-invalid");
         }

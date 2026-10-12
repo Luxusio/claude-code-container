@@ -2,14 +2,82 @@ import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "@ccc/device-lab/device-lab-safe-cleanup.js";
+
+const windowsFs = vi.hoisted(() => ({ enabled: false, target: "", fault: "none", targetOpens: 0, live: new Map<number, { path: string; fresh: boolean }>() }));
+vi.mock("fs", async importOriginal => {
+    const actual = await importOriginal<typeof import("fs")>();
+    const metadata = (stat: any, pathname: boolean, fresh = false) => {
+        const bigint = typeof stat.ino === "bigint";
+        const inode = BigInt(stat.ino) + 2n ** 60n + (fresh && windowsFs.fault === "inode" ? 1n : 0n);
+        const volume = 574283787n + (fresh && windowsFs.fault === "volume" ? 1n : 0n);
+        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: bigint ? (pathname ? 0n : volume) : Number(pathname ? 0n : volume), ino: bigint ? inode : Number(inode) });
+    };
+    return {
+        ...actual,
+        openSync: (...args: Parameters<typeof actual.openSync>) => {
+            const fresh = windowsFs.enabled && String(args[0]) === windowsFs.target && ++windowsFs.targetOpens >= 2;
+            if (fresh && windowsFs.fault === "open") throw Object.assign(new Error("fresh open denied"), { code: "EACCES" });
+            const fd = actual.openSync(...args);
+            if (windowsFs.enabled) windowsFs.live.set(fd, { path: String(args[0]), fresh });
+            return fd;
+        },
+        fstatSync: (...args: Parameters<typeof actual.fstatSync>) => {
+            const stat = actual.fstatSync(...args);
+            return windowsFs.enabled ? metadata(stat, false, windowsFs.live.get(args[0])?.fresh) : stat;
+        },
+        lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+            const stat = actual.lstatSync(...args);
+            if (!windowsFs.enabled) return stat;
+            const observed = metadata(stat, true);
+            if (String(args[0]) === windowsFs.target && windowsFs.targetOpens >= 2 && windowsFs.fault === "path-swap") observed.ino = typeof observed.ino === "bigint" ? observed.ino + 1n : observed.ino + 1;
+            return observed;
+        },
+        closeSync: (fd: number) => { actual.closeSync(fd); windowsFs.live.delete(fd); },
+    };
+});
 
 describe("quarantineAndRemoveDirectory", () => {
     const roots: string[] = [];
 
     afterEach(() => {
+        windowsFs.enabled = false;
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    it("removes a quarantined nested directory with Windows dev0 paths and exact bigint descriptors", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-windows-proof-"));
+        roots.push(root);
+        const target = join(root, "device");
+        mkdirSync(join(target, "nested"), { recursive: true });
+        writeFileSync(join(target, "nested", "owned.txt"), "owned");
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.assign(windowsFs, { enabled: true, target, fault: "none", targetOpens: 0 });
+        Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+        try {
+            const result = quarantineAndRemoveDirectory(target, () => {});
+            expect(existsSync(target)).toBe(false);
+            expect(existsSync(result.quarantineRoot)).toBe(false);
+            expect(windowsFs.live.size).toBe(0);
+        } finally { windowsFs.enabled = false; Object.defineProperty(process, "platform", platform); }
+    });
+
+    it.each(["volume", "inode", "open", "path-swap"])("retains the target when fresh Windows directory proof fails (%s)", fault => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-windows-refusal-"));
+        roots.push(root);
+        const target = join(root, "device");
+        mkdirSync(target);
+        writeFileSync(join(target, "owned.txt"), "preserved");
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.assign(windowsFs, { enabled: true, target, fault, targetOpens: 0 });
+        Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+        try {
+            expect(() => quarantineAndRemoveDirectory(target, () => {})).toThrow();
+            expect(readFileSync(join(target, "owned.txt"), "utf8")).toBe("preserved");
+            expect(readdirSync(root)).toEqual(["device"]);
+            expect(windowsFs.live.size).toBe(0);
+        } finally { windowsFs.enabled = false; Object.defineProperty(process, "platform", platform); }
     });
 
     it("renames before recursively removing the validated directory", () => {
@@ -71,7 +139,7 @@ describe("quarantineAndRemoveDirectory", () => {
                 rename(source, destination) {
                     renameSync(source, displaced);
                     mkdirSync(source);
-                    writeFileSync(join(source, "foreign.txt"), "preserved");
+                    writeFileSync(join(String(source), "foreign.txt"), "preserved");
                     renameSync(source, destination);
                 },
             });

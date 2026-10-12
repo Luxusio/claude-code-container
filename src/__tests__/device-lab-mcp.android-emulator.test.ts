@@ -1361,6 +1361,53 @@ if (args[0] === '-s' && args[2] === 'shell' && args[3] === 'getprop' && args[4] 
         }
     });
 
+    it.runIf(process.platform === "win32").each(["query", "resolver"] as const)(
+        "retains owned AVD artifacts and state when native Windows liveness %s fails", { timeout: TIMEOUT }, async failure => {
+            const inventory = await client.callTool({ name: "devices", arguments: { view: "available", backend: "android-emulator" } });
+            const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+            const deviceId = `android-native-liveness-${failure}`;
+            const avdName = `ccc-${ownerId}-native-liveness-${failure}`;
+            const statePath = join(homeDir, ".ccc", "devices", "owners", ownerId, "android", "devices.json");
+            const artifact = join(homeDir, ".android", "avd", `${avdName}.avd`);
+            const ini = join(homeDir, ".android", "avd", `${avdName}.ini`);
+            const userdata = join(artifact, "userdata-qemu.img");
+            const marker = join(homeDir, `fake-android-avd-${failure}-fail`);
+            const created = await client.callTool({ name: "create_android_emulator", arguments: {
+                name: "Native Liveness Refusal", deviceId, avdName, port: 5682,
+                systemImage: "system-images;android-35;google_apis;x86_64",
+            } });
+            expect(created.isError).not.toBe(true);
+            expect(existsSync(artifact)).toBe(true);
+            writeFileSync(userdata, "owned bytes must survive unavailable native liveness");
+            const originalIni = readFileSync(ini, "utf8");
+            const originalState = JSON.parse(readFileSync(statePath, "utf8"));
+            const beforeLog = readFileSync(logPath, "utf8");
+            const remove = () => client.callTool({ name: "delete", arguments: {
+                deviceId, deleteAvd: true, confirmDestructive: true,
+            } });
+            writeFileSync(marker, "fail");
+            try {
+                const refused = await remove();
+                expect(refused.isError).toBe(true);
+                expect((refused.content as Array<{ text?: string }>)[0]?.text).toContain("android-avd-active-or-liveness-unverified");
+                expect(readFileSync(userdata, "utf8")).toBe("owned bytes must survive unavailable native liveness");
+                expect(readFileSync(ini, "utf8")).toBe(originalIni);
+                expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(originalState);
+                const effects = readFileSync(logPath, "utf8").slice(beforeLog.length);
+                expect(effects).toContain(`android-avd-liveness ${failure === "query" ? "query-failed" : "resolver-refused"}`);
+                expect(effects).not.toContain(`avdmanager delete avd --name ${avdName}`);
+            } finally {
+                rmSync(marker, { force: true });
+            }
+            const deleted = await remove();
+            expect(deleted.isError, JSON.stringify(deleted)).not.toBe(true);
+            expect(parseToolJson(deleted)).toMatchObject({ deleted: deviceId });
+            expect(existsSync(artifact)).toBe(false);
+            expect(existsSync(ini)).toBe(false);
+            expect(JSON.parse(readFileSync(statePath, "utf8")).devices).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
+        },
+    );
+
     it("verifies direct AVD deletion identity through the empty console reply retry", { timeout: TIMEOUT }, async () => {
         const inventory = await client.callTool({ name: "devices", arguments: { view: "available", backend: "android-emulator" } });
         const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;

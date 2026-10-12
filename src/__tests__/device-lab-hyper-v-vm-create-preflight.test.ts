@@ -51,6 +51,41 @@ function devicePaths(): { deviceRoot: string; diskPath: string } {
     return { deviceRoot, diskPath };
 }
 
+async function withWindowsFileObservations<T>(source: string, fault: "none" | "volume" | "inode" | "open" | "path-swap", body: (live: Set<Awaited<ReturnType<typeof fsPromises.open>>>) => Promise<T>): Promise<T> {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const realOpen = fsPromises.open.bind(fsPromises), realLstat = fsPromises.lstat.bind(fsPromises);
+    const live = new Set<Awaited<ReturnType<typeof fsPromises.open>>>();
+    let sourceOpens = 0;
+    const metadata = (stat: any, pathname: boolean, fresh = false) => {
+        const bigint = typeof stat.ino === "bigint";
+        const inode = BigInt(stat.ino) + 2n ** 60n + (fresh && fault === "inode" ? 1n : 0n);
+        const volume = 574283787n + (fresh && fault === "volume" ? 1n : 0n);
+        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+            dev: bigint ? (pathname ? 0n : volume) : Number(pathname ? 0n : volume),
+            ino: bigint ? inode : Number(inode),
+        });
+    };
+    vi.spyOn(fsPromises, "lstat").mockImplementation((async (path: Parameters<typeof fsPromises.lstat>[0], ...args: any[]) => {
+        const stat = await realLstat(path, ...args);
+        const observed = metadata(stat, true);
+        if (path === source && sourceOpens >= 2 && fault === "path-swap") observed.ino = typeof observed.ino === "bigint" ? observed.ino + 1n : observed.ino + 1;
+        return observed;
+    }) as typeof fsPromises.lstat);
+    vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+        const fresh = args[0] === source && ++sourceOpens >= 2;
+        if (fresh && fault === "open") throw Object.assign(new Error("fresh open denied"), { code: "EACCES" });
+        const handle = await realOpen(...args);
+        live.add(handle);
+        const stat = handle.stat.bind(handle), close = handle.close.bind(handle);
+        vi.spyOn(handle, "stat").mockImplementation((async (...statArgs: any[]) => metadata(await stat(...statArgs), false, fresh)) as typeof handle.stat);
+        vi.spyOn(handle, "close").mockImplementation(async () => { await close(); live.delete(handle); });
+        return handle;
+    });
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    try { return await body(live); }
+    finally { Object.defineProperty(process, "platform", platform); vi.restoreAllMocks(); }
+}
+
 describe("Hyper-V host capacity", () => {
     const host = { totalMemoryBytes: 64 * 1024 * 1024 * 1024, logicalProcessors: 8 };
     const totalMb = 64 * 1024;
@@ -109,6 +144,29 @@ describe("Hyper-V disk capacity", () => {
 });
 
 describe("cloning the base image", () => {
+    it("copies and verifies actual bytes despite Windows pathname dev0 and precise bigint inode", async () => {
+        const bytes = Buffer.alloc(1024 * 1024 + 17, 7);
+        const { imageRoot, imagePath, sha256 } = writeBaseImage(bytes);
+        const { deviceRoot, diskPath } = devicePaths();
+        await withWindowsFileObservations(imagePath, "none", async live => {
+            await expect(cloneHyperVBaseImage({ baseImageRoot: imageRoot, baseImagePath: imagePath, expectedSha256: sha256, deviceRoot, diskPath })).resolves.toEqual({ bytes: bytes.length });
+            expect(readFileSync(diskPath)).toEqual(bytes);
+            expect(live.size).toBe(0);
+        });
+    });
+    it.each(["volume", "inode", "open", "path-swap"] as const)("refuses unsafe Windows source qualification (%s) and closes every handle", async fault => {
+        const bytes = Buffer.from("source must remain untouched");
+        const { imageRoot, imagePath, sha256 } = writeBaseImage(bytes);
+        const { deviceRoot, diskPath } = devicePaths();
+        const created = vi.fn();
+        await withWindowsFileObservations(imagePath, fault, async live => {
+            await expect(cloneHyperVBaseImage({ baseImageRoot: imageRoot, baseImagePath: imagePath, expectedSha256: sha256, deviceRoot, diskPath, onDestinationCreated: created })).rejects.toThrow();
+            expect(created).not.toHaveBeenCalled();
+            expect(() => statSync(diskPath)).toThrow();
+            expect(readFileSync(imagePath)).toEqual(bytes);
+            expect(live.size).toBe(0);
+        });
+    });
     it("copies the image and proves what landed on disk", async () => {
         const bytes = Buffer.alloc(3 * 1024 * 1024 + 517, 7);
         bytes.write("vhdxfile", 0);

@@ -1,3 +1,4 @@
+import { readDeviceLabFileIdentityAsync } from '../../../device-lab-file-identity.js';
 import { createHash } from "crypto";
 import { constants as fsConstants, promises as fsPromises } from "fs";
 import { dirname, resolve } from "path";
@@ -141,11 +142,11 @@ export type HyperVDiskCloneResult = {
  * read from. Identical bytes in a different file pass every hash and fail here.
  */
 export function hyperVSourceIdentityRefusal(
-    opened: { dev: number; ino: number; size: number; nlink: number },
-    final: { dev: number; ino: number; size: number; nlink: number },
-    finalPath: { dev: number; ino: number; size: number; nlink: number; isSymbolicLink(): boolean },
+    opened: { dev: number | bigint; ino: number | bigint; size: number | bigint; nlink: number | bigint },
+    final: { dev: number | bigint; ino: number | bigint; size: number | bigint; nlink: number | bigint },
+    finalPath: { dev: number | bigint; ino: number | bigint; size: number | bigint; nlink: number | bigint; isSymbolicLink(): boolean },
 ): string | null {
-    if (final.nlink !== 1 || final.dev !== opened.dev || final.ino !== opened.ino || final.size !== opened.size) {
+    if ((final.nlink !== 1 && final.nlink !== 1n) || final.dev !== opened.dev || final.ino !== opened.ino || final.size !== opened.size) {
         return "hyper-v-base-image-identity-changed";
     }
     if (finalPath.isSymbolicLink() || finalPath.dev !== opened.dev || finalPath.ino !== opened.ino) {
@@ -182,8 +183,8 @@ export async function assertClonedDiskMatches(
         verified += bytesRead;
     }
     if (clonedHash.digest("hex") !== expectedSha256) throw new Error("hyper-v-created-disk-hash-mismatch");
-    const finalTarget = await target.stat();
-    if (finalTarget.size !== expectedBytes) throw new Error("hyper-v-created-disk-length-mismatch");
+    const finalTarget = await target.stat({ bigint: true });
+    if (finalTarget.size !== BigInt(expectedBytes)) throw new Error("hyper-v-created-disk-length-mismatch");
 }
 
 /**
@@ -214,11 +215,13 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
     assertNoSymlinkPathComponents(request.diskPath, "hyper-v-disk");
     assertDeviceLabPathWithinRoot(request.deviceRoot, request.diskPath, "hyper-v-disk");
 
-    const sourceStat = await fsPromises.lstat(request.baseImagePath).catch(() => null);
+    let sourceStat = await fsPromises.lstat(request.baseImagePath, { bigint: true }).catch(() => null);
     if (sourceStat === null) throw new Error("hyper-v-base-image-not-found");
-    if (!sourceStat.isFile() || sourceStat.isSymbolicLink() || sourceStat.nlink !== 1 || sourceStat.size <= 0) {
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink() || sourceStat.nlink !== 1n || sourceStat.size <= 0n) {
         throw new Error("hyper-v-base-image-invalid");
     }
+
+    sourceStat = await readDeviceLabFileIdentityAsync(request.baseImagePath, label);
 
     // Absent on Windows, where it resolves to 0 and the open stops being NOFOLLOW. That is why
     // `Assert-NoReparsePath` stays in the PowerShell prologue: it is the only check in this
@@ -228,8 +231,8 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
     let target: Awaited<ReturnType<typeof fsPromises.open>> | null = null;
     try {
         source = await fsPromises.open(request.baseImagePath, fsConstants.O_RDONLY | noFollow);
-        const openedSource = await source.stat();
-        if (!openedSource.isFile() || openedSource.nlink !== 1
+        const openedSource = await source.stat({ bigint: true });
+        if (!openedSource.isFile() || openedSource.nlink !== 1n
             || openedSource.dev !== sourceStat.dev
             || openedSource.ino !== sourceStat.ino
             || openedSource.size !== sourceStat.size) {
@@ -238,7 +241,7 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
 
         // A dynamic disk's virtual capacity is not preallocated. Check the exact bytes
         // read from this validated handle before creating a destination or recording effects.
-        await assertHyperVDiskCapacity(request.diskPath, openedSource.size);
+        await assertHyperVDiskCapacity(request.diskPath, Number(openedSource.size));
         assertHyperVOperationDeadline(deadlineAt);
 
         // O_EXCL, so a disk that is already there is a refusal rather than an overwrite. The
@@ -249,9 +252,9 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
             0o600,
         );
         request.onDestinationCreated?.(request.diskPath);
-        const openedTarget = await target.stat();
-        const targetPathStat = await fsPromises.lstat(request.diskPath);
-        if (!openedTarget.isFile() || openedTarget.nlink !== 1
+        const openedTarget = await target.stat({ bigint: true });
+        const targetPathStat = await readDeviceLabFileIdentityAsync(request.diskPath, "hyper-v-disk", openedTarget);
+        if (!openedTarget.isFile() || openedTarget.nlink !== 1n
             || targetPathStat.isSymbolicLink()
             || targetPathStat.dev !== openedTarget.dev
             || targetPathStat.ino !== openedTarget.ino) {
@@ -261,9 +264,9 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
         const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
         const sourceHash = createHash("sha256");
         let copied = 0;
-        while (copied < openedSource.size) {
+        while (copied < Number(openedSource.size)) {
             assertHyperVOperationDeadline(deadlineAt);
-            const { bytesRead } = await source.read(buffer, 0, Math.min(buffer.length, openedSource.size - copied), null);
+            const { bytesRead } = await source.read(buffer, 0, Math.min(buffer.length, Number(openedSource.size) - copied), null);
             if (bytesRead <= 0) throw new Error("hyper-v-base-image-copy-short-read");
             const chunk = buffer.subarray(0, bytesRead);
             sourceHash.update(chunk);
@@ -282,15 +285,15 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
 
         const identityRefusal = hyperVSourceIdentityRefusal(
             openedSource,
-            await source.stat(),
-            await fsPromises.lstat(request.baseImagePath),
+            await source.stat({ bigint: true }),
+            await readDeviceLabFileIdentityAsync(request.baseImagePath, label, openedSource),
         );
         if (identityRefusal !== null) throw new Error(identityRefusal);
 
         // Read back what landed rather than trusting what was written.
-        await assertClonedDiskMatches(target, openedSource.size, request.expectedSha256, deadlineAt);
+        await assertClonedDiskMatches(target, Number(openedSource.size), request.expectedSha256, deadlineAt);
 
-        return { bytes: openedSource.size };
+        return { bytes: Number(openedSource.size) };
     } finally {
         // Disposed before any caller can compensate. The disk is opened without sharing, so a
         // delete attempted while a handle is still open takes a sharing violation on Windows --

@@ -24,6 +24,7 @@ import { fail, jsonResult, textResult } from "../responses.mjs";
 import { resolveAndroidEmulatorPort, validAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
 import { androidAvdHome, listOwnedAndroidAvdArtifacts, removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
 import { readAndroidAvdIdentity } from "../state/android-avd-identity.mjs";
+import { canonicalWindowsPowerShellPath } from "../state/windows-system-powershell.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -226,8 +227,10 @@ function liveAndroidAvdNames(discovery) {
 
 function androidAvdProcessState(avdName) {
     if (!isSafeProvisionedAvdName(avdName)) return { ok: false, active: false };
+    const powershell = process.platform === "win32" ? canonicalWindowsPowerShellPath() : null;
+    if (process.platform === "win32" && !powershell) return { ok: false, active: false };
     const result = process.platform === "win32"
-        ? run("powershell.exe", [
+        ? run(powershell, [
             "-NoProfile",
             "-NonInteractive",
             "-Command",

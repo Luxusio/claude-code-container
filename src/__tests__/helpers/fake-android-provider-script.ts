@@ -1,3 +1,5 @@
+import { canonicalWindowsPowerShellPath } from "@ccc/device-lab/providers/state/windows-system-powershell.mjs";
+
 /** Node provider program; prepended with a fixture tool name by the MCP fixture. */
 export const fakeAndroidProviderScript = String.raw`
 const fs = require('node:fs'), path = require('node:path');
@@ -94,12 +96,27 @@ export function fakeAndroidLauncherPreloadSource(binDir: string): string {
     return String.raw`
 const androidSpawn = cp.spawn;
 const androidSpawnSync = cp.spawnSync;
+const androidSystemPowerShell = ${JSON.stringify(canonicalWindowsPowerShellPath())};
+const androidResolverCandidate = ${JSON.stringify("\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")};
+const androidLstatSync = fs.lstatSync;
+fs.lstatSync = function(file, ...args) {
+    if (String(file).toLowerCase() === androidResolverCandidate.toLowerCase()
+        && fs.existsSync(path.join(process.env.HOME, 'fake-android-avd-resolver-fail'))) {
+        fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'android-avd-liveness resolver-refused\\n');
+        throw Object.assign(new Error('injected canonical AVD resolver refusal'), { code: 'EACCES' });
+    }
+    return androidLstatSync(file, ...args);
+};
 cp.spawnSync = function(command, args = [], options = {}) {
     // This SDK fixture owns no native emulator.exe/qemu processes. Model only
     // the exact AVD liveness probe; process identity probes remain native.
     const avdProbe = "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }";
     const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
-    if (command === 'powershell.exe' && probeArgs.length === 4 && probeArgs[0] === '-NoProfile' && probeArgs[1] === '-NonInteractive' && probeArgs[2] === '-Command' && probeArgs[3] === avdProbe) {
+    if (androidSystemPowerShell && command === androidSystemPowerShell && probeArgs.length === 4 && probeArgs[0] === '-NoProfile' && probeArgs[1] === '-NonInteractive' && probeArgs[2] === '-Command' && probeArgs[3] === avdProbe) {
+        if (fs.existsSync(path.join(process.env.HOME, 'fake-android-avd-query-fail'))) {
+            fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'android-avd-liveness query-failed\\n');
+            return { status: 17, signal: null, pid: 0, stdout: '', stderr: 'injected AVD process query failure', output: [null, '', 'injected AVD process query failure'] };
+        }
         return { status: 0, signal: null, pid: 0, stdout: '', stderr: '', output: [null, '', ''] };
     }
     return androidSpawnSync(command, args, options);
