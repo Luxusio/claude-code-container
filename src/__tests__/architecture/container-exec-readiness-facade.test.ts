@@ -220,8 +220,8 @@ const failureTrace = [...successTrace, "now:180"];
 
 function assertStartupLockFinalized() {
     // The public entrypoint now owns the host-wide startup lock. Its release
-    // runs after readiness (including throws) and reads Date.now for the bounded
-    // rename. Keep that native cleanup separate from the retry policy trace.
+    // runs after readiness (including throws). Its bounded rename uses the
+    // native clock captured at import, outside the retry policy trace.
     const releases = native.rename.mock.calls.filter(call => path.basename(call[0]) === "codex-state.lock");
     expect(releases).toHaveLength(1);
     expect(releases[0][1]).toMatch(/codex-state\.lock\.[a-f0-9]{16}\.release$/);
@@ -271,7 +271,7 @@ describe("public startProjectContainer through real exec readiness", () => {
     it.each(["running", "restart", "deferred"] as const)("preserves %s after exhaustion with no join or destructive fallback", path => {
         const f = fixture(path, [false, false, false]);
         expect(() => f.start()).toThrow(path === "restart" ? "Restarted container is unavailable" : "automatic destructive recovery was refused");
-        expect(f.trace).toEqual([...failureTrace, "now:180"]);
+        expect(f.trace).toEqual(failureTrace);
         assertStartupLockFinalized();
         expect(f.ready).not.toHaveBeenCalled();
         expect(f.guard).toHaveBeenCalledTimes(path === "restart" ? 0 : 1);
@@ -303,14 +303,13 @@ describe("public startProjectContainer through real exec readiness", () => {
 
 describe("native retry failure identity and late effects", () => {
     const stages = ["allocation", "clock:1", "clock:2", "probe:1", "clock:3", "sleep:1", "clock:4", "probe:2", "clock:5", "sleep:2", "clock:6", "probe:3", "clock:7"];
-    const failureTimes = [0, 0, 0, 0, 10, 10, 85, 85, 95, 95, 170, 170, 180];
     it.each(stages)("preserves Error/non-Error at %s without later retry or destructive effects", stage => {
         for (const failure of [new Error(stage), { stage }]) {
             const f = fixture("running", [false, false, false]);
             f.state.failureStep = stage; f.state.failure = failure;
             expect(thrown(f.start)).toBe(failure);
             const index = stages.indexOf(stage);
-            expect(f.trace).toEqual([...failureTrace.slice(0, index + 1), `now:${failureTimes[index]}`]);
+            expect(f.trace).toEqual(failureTrace.slice(0, index + 1));
             assertStartupLockFinalized();
             expect(f.ready).not.toHaveBeenCalled();
             expect(f.guard).not.toHaveBeenCalled();

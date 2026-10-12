@@ -323,8 +323,9 @@ export function selectBackendCatalog(catalog, backend) {
     };
 }
 
+/** @typedef {{kind:'observed',activeAppId:unknown,foreground:boolean,receipt:unknown}|{kind:'failed',localBudgetExhausted:boolean,receipt:unknown}} ActiveAppObservation */
 /** @param {string} backend @param {string} expectedAppId
- * @param {Extract<import('../ports/device-request.mjs').ActiveAppObservation,{kind:'observed'}>} observation */
+ * @param {Extract<ActiveAppObservation,{kind:'observed'}>} observation */
 export function activeAppMatches(backend, expectedAppId, observation) {
     return backend.startsWith('ios') ? observation.activeAppId === expectedAppId : observation.foreground;
 }

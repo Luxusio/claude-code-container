@@ -100,8 +100,11 @@ describe("public MCP terminal device diagnostics", () => {
         try {
             const file = store(ctx.homeDir, "windows-vm", []);
             writeFileSync(file, "{broken");
-            await expect(ctx.client.callTool({ name: "ui", arguments: { deviceId: "missing" } }))
-                .rejects.toThrow("owner-devices-state-invalid");
+            const failure = await ctx.client.callTool({ name: "ui", arguments: { deviceId: "missing" } });
+            expect(failure.isError).toBe(true);
+            expect(text(failure)).toContain("owner-devices-state-invalid");
+            expect(text(failure)).not.toContain("device-not-found");
+            expect(text(failure)).not.toContain("{broken");
         } finally { await cleanupDeviceLabMcpTestContext(ctx); }
     });
 
@@ -111,11 +114,11 @@ describe("public MCP terminal device diagnostics", () => {
             const lab = join(ctx.homeDir, ".ccc/labs/owners", owner, "labs/broken/lab.json");
             mkdirSync(dirname(lab), { recursive: true });
             writeFileSync(lab, "{private-corrupt-metadata");
-            const failure = await ctx.client.callTool({ name: "ui", arguments: { deviceId: "missing" } }).catch((error: Error) => error);
-            expect(failure).toBeInstanceOf(Error);
-            expect(String(failure)).toContain("lab-state-invalid");
-            expect(String(failure)).not.toContain("private-corrupt-metadata");
-            expect(String(failure)).not.toContain("device-not-found");
+            const failure = await ctx.client.callTool({ name: "ui", arguments: { deviceId: "missing" } });
+            expect(failure.isError).toBe(true);
+            expect(text(failure)).toContain("lab-state-invalid");
+            expect(text(failure)).not.toContain("private-corrupt-metadata");
+            expect(text(failure)).not.toContain("device-not-found");
         } finally { await cleanupDeviceLabMcpTestContext(ctx); }
     });
 

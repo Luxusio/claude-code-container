@@ -28,8 +28,11 @@ vi.mock("../../utils.js", async original => ({
     writeOwnedEnvFile: () => ({ path: "/fixture/exec.env", dispose: () => f.events.push("unlink") }),
 }));
 vi.mock("../../container-command.js", () => ({ runContainerCommand: f.command }));
-vi.mock("../../docker.js", () => ({
+vi.mock("../../docker.js", async original => ({
+    ...await original<typeof import("../../docker.js")>(),
     ensureDockerRunning: vi.fn(), ensureCredentialHostDir: vi.fn(),
+    inspectSessionContainerOwnership: () => ({ known: true, containerId: f.running ? "old-id" : null }),
+    isDockerDesktop: () => false,
     getContainerName: () => "ccc-fixture", getContainerStatus: () => ({ exists: f.exists, running: f.running, imageId: "sha256:old", containerId: "old-id" }),
     startProjectContainer: f.start, isContainerRunning: f.probeRunning,
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
@@ -77,9 +80,9 @@ vi.mock("../../codex-harness.js", () => ({ ensureCodexHarness: f.harness }));
 vi.mock("../../network-reach.js", () => ({ detectHostNetworkReach: f.reach }));
 vi.mock("../../mcp-forward.js", () => ({ buildMcpConfig: () => [] }));
 vi.mock("../../codex-clipboard-image.js", () => ({ maybeAttachCodexClipboardImage: async (_path: string, args: string[]) => ({ args }) }));
-vi.mock("../../codex-launch.js", () => ({ prepareCodexLaunch: (_runtime: string, args: string[], command: string[]) => {
+vi.mock("../../codex-launch.js", async original => ({ ...await original<typeof import("../../codex-launch.js")>(), prepareCodexLaunchSemantic: (_runtime: string, args: string[], command: string[]) => {
     expect(args).toContain("final-id"); f.events.push("launch-preparation");
-    return f.launchFailure ? { ok: false, status: 9, error: "daemon unavailable" } : { ok: true, command };
+    return f.launchFailure ? { ok: false, status: 9, reason: "engine-unavailable", cause: "daemon unavailable", command } : { ok: true, command };
 } }));
 import { clearSession } from "../../session.js";
 import { main } from "../../index.js";

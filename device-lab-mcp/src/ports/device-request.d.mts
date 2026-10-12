@@ -1,5 +1,5 @@
-import type { DeviceArguments } from '../domain/device-request.mjs';
-export type { DeviceArguments };
+import type { DeviceArguments, ActiveAppObservation } from '../domain/device-request.mjs';
+export type { DeviceArguments, ActiveAppObservation };
 export interface DeviceRecord { id: string; backend?: string; [key: string]: unknown }
 export interface BrokerBackendObservation { name?: string; host?: string; provider?: string; stateKey?: string; devices?: DeviceRecord[]; error?: string; [key: string]: unknown }
 export interface BackendDescription extends BrokerBackendObservation { name: string }
@@ -15,9 +15,6 @@ export type MobileRequest = {error:string; requests?:undefined; method?:undefine
 export interface DeviceRequest {publicName:string; operation:string; arguments:DeviceArguments; detail:boolean}
 export interface DeviceRequestOptions { detail?: boolean; toolName?: string; toolAllowed?: (name: string) => boolean }
 export interface DestructiveDecision { ok: boolean; [key: string]: unknown }
-export type ActiveAppObservation =
- | {kind: 'observed'; activeAppId: unknown; foreground: boolean; receipt: unknown}
- | {kind: 'failed'; localBudgetExhausted: boolean; receipt: unknown};
 export type ActiveAppObservationInput = DeviceArguments & {backend: string; expectedAppId: string; requestTimeoutMs: number};
 export type ActiveAppWaitOutcome =
  | {kind: 'matched'; backend: string; expectedAppId: string; receipt: unknown}

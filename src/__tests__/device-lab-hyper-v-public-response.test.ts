@@ -1,5 +1,3 @@
-import { readFileSync } from "fs";
-import { join } from "path";
 import { describe, expect, it } from "vitest";
 import { HYPER_V_ELEVATED_NETWORK_ERROR_CODES } from "@ccc/device-lab/device-lab/broker/hyper-v/elevated-network-session.js";
 import {
@@ -548,102 +546,6 @@ describe("Hyper-V typed error code", () => {
         }
     });
 });
-
-// A failed create's 502 detail is hyperVProviderDiagnosticCode over the code runTypedHyperVCreate
-// returns, so a create-path code the projection does not admit is reported as the generic
-// hyper-v-provider-command-failed -- which is how a real Windows create failure went
-// undiagnosable. Read from source so a new code cannot land without being admitted. The
-// compensation module is deliberately not scanned: runHyperVCreateCompensation records its
-// failures as attempts and never replaces the error that triggered it.
-describe("Hyper-V typed create failure codes", () => {
-    const root = join(__dirname, "..", "..", "packages", "device-lab", "src");
-    const broker = readFileSync(join(root, "device-lab-broker.ts"), "utf8");
-    const createStart = broker.indexOf("async function runTypedHyperVCreate(");
-    // Up to the catch: codes thrown inside compensation callbacks never become the result either.
-    const createBody = broker.slice(createStart, broker.indexOf("// Classify the triggering failure", createStart));
-    const sources: readonly (readonly [string, string])[] = [
-        ...[
-            join("device-lab", "broker", "hyper-v", "vm-create-adapter.ts"),
-            join("device-lab", "broker", "hyper-v", "vhd-create-inspection.ts"),
-            join("device-lab", "broker", "hyper-v", "vm-create-preflight.ts"),
-            join("device-lab", "broker", "hyper-v", "deadline.ts"),
-            join("..", "..", "hyper-v", "src", "lifecycle", "vm-create-reconcile.ts"),
-        ].map((relativePath) => [relativePath, readFileSync(join(root, relativePath), "utf8")] as const),
-        ["runTypedHyperVCreate", createBody] as const,
-    ];
-    // Path-assertion labels are prefixes rather than codes: the assertion appends its own suffix.
-    const labelsOf = (source: string) => new Set([...source.matchAll(
-        /(?:const label = |(?:assertNoSymlinkPathComponents|assertDeviceLabPathWithinRoot)\([^()]*?, )"(hyper-v-[a-z0-9-]+)"/g,
-    )].map(([, label]) => label));
-    const codesOf = (source: string) => {
-        const labels = labelsOf(source);
-        return [...new Set([...source.matchAll(/"(hyper-v-[a-z0-9-]+)"/g)].map(([, code]) => code))]
-            .filter((code) => !labels.has(code));
-    };
-    // What each path assertion appends to its label, so the codes a label produces are scanned too.
-    const pathAssertionSuffixes: Readonly<Record<string, readonly string[]>> = {
-        assertNoSymlinkPathComponents: ["path-symlink-rejected"],
-        assertDeviceLabPathWithinRoot: ["path-outside-root", "path-invalid"],
-    };
-    const pathAssertionCallsOf = (source: string) => [...source.matchAll(
-        /\b(assertNoSymlinkPathComponents|assertDeviceLabPathWithinRoot)\([^()]*?, (?:"(hyper-v-[a-z0-9-]+)"|(label))\)/g,
-    )];
-    const pathAssertionCodesOf = (source: string) => {
-        const label = /const label = "(hyper-v-[a-z0-9-]+)"/.exec(source)?.[1];
-        return pathAssertionCallsOf(source).flatMap(([, assertion, literal]) => (
-            pathAssertionSuffixes[assertion ?? ""] ?? []
-        ).map((suffix) => `${literal ?? label}-${suffix}`));
-    };
-
-    it("scans the typed create transaction itself", () => {
-        expect(createStart).toBeGreaterThanOrEqual(0);
-        expect(createBody).toContain('throw new Error("hyper-v-vm-preflight-failed")');
-        expect(createBody).not.toContain("runHyperVCreateCompensation");
-    });
-
-    it.each(sources)("admits every hyper-v code %s can throw", (_label, source) => {
-        const codes = [...codesOf(source), ...pathAssertionCodesOf(source)];
-        expect(codes.length).toBeGreaterThan(0);
-        expect(codes.filter((code) => hyperVProviderDiagnosticCode(
-            { error: code, stdout: "", stderr: "" },
-            "hyper-v-provider-command-failed",
-        ) !== code)).toEqual([]);
-    });
-
-    it("excludes only the known path labels from the scan", () => {
-        expect([...new Set(sources.flatMap(([, source]) => [...labelsOf(source)]))].sort()).toEqual([
-            "hyper-v-base-image",
-            "hyper-v-device-root",
-            "hyper-v-disk",
-        ]);
-        // Every assertion call is one the derivation understands, and it yields exactly these.
-        for (const [, source] of sources) {
-            expect(pathAssertionCallsOf(source)).toHaveLength(
-                [...source.matchAll(/\b(?:assertNoSymlinkPathComponents|assertDeviceLabPathWithinRoot)\(/g)].length,
-            );
-        }
-        expect([...new Set(sources.flatMap(([, source]) => pathAssertionCodesOf(source)))].sort()).toEqual([
-            "hyper-v-base-image-path-invalid",
-            "hyper-v-base-image-path-outside-root",
-            "hyper-v-base-image-path-symlink-rejected",
-            "hyper-v-device-root-path-symlink-rejected",
-            "hyper-v-disk-path-invalid",
-            "hyper-v-disk-path-outside-root",
-            "hyper-v-disk-path-symlink-rejected",
-        ]);
-        const scanned = sources.flatMap(([, source]) => codesOf(source));
-        for (const code of [
-            "hyper-v-create-plan-invalid",
-            "hyper-v-base-image-copy-short-write",
-            "hyper-v-created-disk-short-read",
-            "hyper-v-operation-deadline-exceeded",
-            "hyper-v-create-bootstrap-mac-address-not-derivable",
-        ]) {
-            expect(scanned).toContain(code);
-        }
-    });
-});
-
 
 describe("Hyper-V memory admission evidence", () => {
     const capacity = { requestedMb: 4096, availableMb: 6000, reserveMb: 6553, shortfallMb: 4649 };

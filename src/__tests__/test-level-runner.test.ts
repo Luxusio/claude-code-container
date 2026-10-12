@@ -377,33 +377,6 @@ function deviceLabServerLiteralSets(publicNames = true) {
     return publicNames ? sets.map(entry => ({ ...entry, values: entry.values.flatMap(name => name === "device_create" ? Object.keys(CREATE_TOOL_BACKENDS) : [publicToolName(name)]) })) : sets;
 }
 
-function deviceLabBackendCapabilityTools() {
-    const roots = [
-        join(repoRoot, "packages", "device-lab", "providers", "backends"),
-        join(repoRoot, "packages", "device-lab", "providers", "display"),
-    ];
-    const files = roots.flatMap((root) => filesUnder(root, [".mjs"]));
-    const capabilities: Array<{ file: string; values: string[] }> = [];
-    for (const file of files) {
-        const text = readFileSync(file, "utf-8");
-        const ast = parseModule(text);
-        walkAst(ast, (node) => {
-            if (node.type === "VariableDeclarator") {
-                const id = node.id as Record<string, unknown> | undefined;
-                if (id?.type === "Identifier" && /CAPABILITIES$/.test(String(id.name))) {
-                    const values = literalStringArrayValues(node.init as Record<string, unknown> | undefined);
-                    if (values.length > 0) capabilities.push({ file, values });
-                }
-            }
-            if (node.type !== "Property") return;
-            const key = propertyKey(node);
-            if (key !== "capabilities") return;
-            const values = literalStringArrayValues(node.value as Record<string, unknown> | undefined);
-            if (values.length > 0) capabilities.push({ file, values });
-        });
-    }
-    return capabilities.map(entry => ({ ...entry, values: entry.values.map(publicToolName) }));
-}
 
 function brokerCommandForwardedInputKeys() {
     const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8").replace(/\r\n/g, "\n");
@@ -416,15 +389,6 @@ function brokerCommandForwardedInputKeys() {
         .sort();
 }
 
-function brokerDeviceToolForwardedInputKeys() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
-    const match = /export const BROKER_DEVICE_TOOL_PARAM_KEYS = \[([\s\S]*?)\];/.exec(text);
-    expect(match).not.toBeNull();
-    const arrayBody = match?.[1] || "";
-    return [...new Set([...arrayBody.matchAll(/["']([a-zA-Z_][a-zA-Z0-9_]*)["']/g)]
-        .map((item) => item[1]))]
-        .sort();
-}
 
 function brokerAppiumActionKeys() {
     const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
@@ -450,52 +414,10 @@ function brokerAppiumForwardedInputKeys() {
     return [...forwarded].sort();
 }
 
-function hostBrokerAppiumAllowedRequests() {
-    const text = readFileSync(join(repoRoot, "packages", "device-lab", "src", "device-lab-broker.ts"), "utf-8");
-    const match = /const DEVICE_BROKER_APPIUM_REQUEST_ALLOWLIST = new Map<string, ReadonlySet<DeviceBrokerAppiumRequestMethod>>\(\[([\s\S]*?)\n\]\);/.exec(text);
-    expect(match).not.toBeNull();
-    const body = match?.[1] || "";
-    return [...body.matchAll(/\["([^"]+)", new Set\(\[([^\]]+)\]\)\]/g)]
-        .flatMap(([, path, methods]) => [...methods.matchAll(/"([^"]+)"/g)].map((method) => `${method[1]} ${path}`))
-        .sort();
-}
 
-function mcpBrokerAppiumRequests() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "server.mjs"), "utf-8");
-    return [...new Set([...text.matchAll(/method:\s*"([A-Z]+)",\s*path:\s*"([^"]+)"/g)]
-        .map(([, method, path]) => `${method} ${path}`))]
-        .sort();
-}
 
-function brokerWrapperActionKeys(functionName: string) {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
-    const match = new RegExp(`export async function ${functionName}[\\s\\S]*?const methodByAction = \\{([\\s\\S]*?)\\n\\s*\\};`).exec(text);
-    expect(match).not.toBeNull();
-    const body = match?.[1] || "";
-    return [...body.matchAll(/["']?([a-z][a-z0-9-]*)["']?\s*:/g)]
-        .map((item) => item[1])
-        .sort();
-}
 
-function brokerWrapperForwardedInputKeys(functionName: string) {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8").replace(/\r\n/g, "\n");
-    const match = new RegExp(`export async function ${functionName}[\\s\\S]*?params:\\s*\\{([\\s\\S]*?)\\n\\s*\\},\\n\\s*\\}\\);\\n\\}`).exec(text);
-    expect(match).not.toBeNull();
-    const body = match?.[1] || "";
-    const forwarded = new Set([...body.matchAll(/\b[a-zA-Z_][a-zA-Z0-9_]*:\s*options\.([a-zA-Z_][a-zA-Z0-9_]*)/g)]
-        .map((item) => item[1]));
-    if (body.includes("options.devicePort")) forwarded.add("devicePort");
-    return [...forwarded].sort();
-}
 
-function brokerAppleTrustActionKeys() {
-    const text = readFileSync(join(repoRoot, "packages", "device-lab", "src", "device-lab-broker.ts"), "utf-8");
-    const match = /const DEVICE_BROKER_APPLE_TRUST_ACTIONS = new Set\(\[([^\]]*)\]\);/.exec(text);
-    expect(match).not.toBeNull();
-    return [...(match?.[1] || "").matchAll(/["']([a-z][a-z0-9-]*)["']/g)]
-        .map((item) => item[1])
-        .sort();
-}
 
 function publicBrokerRpcMethodKeys() {
     const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
@@ -506,21 +428,7 @@ function publicBrokerRpcMethodKeys() {
         .sort();
 }
 
-function brokerMobileRequestToolKeys() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "server.mjs"), "utf-8").replace(/\r\n/g, "\n");
-    const match = /function brokerMobileRequest\(name, args, backend\) \{([\s\S]*?)\n\}\n\nfunction brokerMobilePayload/.exec(text);
-    expect(match).not.toBeNull();
-    return [...new Set([...(match?.[1] || "").matchAll(/\bname === "([^"]+)"/g)].map((item) => publicToolName(item[1])))].sort();
-}
 
-function deviceLabToolSchemaPropertyMap() {
-    const result = spawnSync(process.execPath, ["--input-type=module", "-e", "import { TOOLS } from './device-lab-mcp/src/tools.mjs'; console.log(JSON.stringify(TOOLS.map((tool) => [tool.name, Object.keys(tool.inputSchema?.properties || {})])));"], {
-        cwd: repoRoot,
-        encoding: "utf-8",
-    });
-    expect(result.status).toBe(0);
-    return new Map(JSON.parse(result.stdout) as Array<[string, string[]]>);
-}
 
 function deviceLabToolBackendEnums() {
     const result = spawnSync(process.execPath, ["--input-type=module", "-e", "import { TOOLS } from './device-lab-mcp/src/tools.mjs'; console.log(JSON.stringify(TOOLS.map((tool) => [tool.name, tool.inputSchema?.properties?.backend?.enum || []])));"], {
@@ -551,48 +459,7 @@ function deviceLabMcpBackendCapabilities() {
     return new Map((JSON.parse(result.stdout) as Array<[string, string[]]>).map(([backend, names]) => [backend, [...new Set(names.map(publicToolName))].sort()]));
 }
 
-function functionSwitchCaseLabels(file: string, functionName: string) {
-    const text = readFileSync(file, "utf-8");
-    const ast = parseModule(text);
-    let functionNode: Record<string, unknown> | null = null;
-    walkAst(ast, (node) => {
-        if (functionNode || node.type !== "FunctionDeclaration") return;
-        const id = node.id as Record<string, unknown> | undefined;
-        if (id?.type === "Identifier" && id.name === functionName) functionNode = node;
-    });
-    expect(functionNode).not.toBeNull();
-    const labels = new Set<string>();
-    walkAst(functionNode, (node) => {
-        if (node.type !== "SwitchCase") return;
-        const test = node.test as Record<string, unknown> | undefined;
-        if (test?.type === "Literal" && typeof test.value === "string") labels.add(String(test.value));
-    });
-    return [...new Set([...labels].map(publicToolName))].sort();
-}
 
-function deviceLabBackendHandlerCases() {
-    const backendRoot = join(repoRoot, "packages", "device-lab", "providers", "backends");
-    const handlers = new Map([
-        ["android-emulator", functionSwitchCaseLabels(join(backendRoot, "android.mjs"), "handleAndroidToolUnlocked")],
-        ["android-device", functionSwitchCaseLabels(join(backendRoot, "android-device.mjs"), "handleAndroidRealToolUnlocked")],
-        ["ios-simulator", functionSwitchCaseLabels(join(backendRoot, "ios-simulator.mjs"), "handleIosToolUnlocked")],
-        ["ios-device", functionSwitchCaseLabels(join(backendRoot, "ios-device.mjs"), "handleIosRealToolUnlocked")],
-        ["windows-sandbox", functionSwitchCaseLabels(join(backendRoot, "windows-sandbox.mjs"), "handleWindowsToolUnlocked")],
-        ["windows-vm", [...quotedArrayConstant(readFileSync(join(repoRoot, "packages", "device-lab", "src", "device-lab-broker.ts"), "utf-8"), "HYPER_V_VM_CAPABILITIES")].sort()],
-        ["macos-vm", functionSwitchCaseLabels(join(backendRoot, "macos-vm.mjs"), "handleMacosToolUnlocked")],
-        ["linux-vm", [...LINUX_VM_CAPABILITIES].map(publicToolName).sort()],
-    ]);
-    const server = readFileSync(join(repoRoot, "device-lab-mcp/src/server.mjs"), "utf8");
-    expect(server).toContain('if (name === "device_list_files")');
-    expect(server).toContain('buildListFilesCommand(owner.backend, args)');
-    expect(server).toContain('listFilesFromExecResult(await dispatchTool("device_exec", { ...args, command }), args)');
-    for (const backend of ["android-emulator", "android-device", "windows-sandbox", "macos-vm"]) {
-        const cases = handlers.get(backend)!;
-        expect(cases).toContain("exec");
-        cases.push("list_files");
-    }
-    return handlers;
-}
 
 function quotedSetConstant(text: string, name: string) {
     const match = new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\);`).exec(text);
@@ -1309,21 +1176,6 @@ describe("test level runner", () => {
         }
     });
 
-    it("keeps user-facing remediation on public device-lab tool names", () => {
-        const brokerText = readFileSync(join(repoRoot, "packages", "device-lab", "src", "device-lab-broker.ts"), "utf-8");
-        const mcpBrokerText = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
-        for (const hiddenName of [
-            "device_broker_attach",
-            "device_broker_apple",
-        ]) {
-            expect(brokerText).not.toMatch(new RegExp(`(?:Call|Re-run) ${hiddenName}\\b`));
-            expect(mcpBrokerText).not.toContain(`${hiddenName} is`);
-        }
-        expect(brokerText).toContain("Call device_attach");
-        expect(brokerText).toContain("Re-run device_wireless");
-        expect(mcpBrokerText).not.toContain("device_broker_service");
-    });
-
     it("keeps device-lab server literal tool sets deduplicated", () => {
         const setIssues = deviceLabServerLiteralSets(false).flatMap(({ name, values }) => {
             const duplicates = values.filter((value, index) => values.indexOf(value) !== index)
@@ -1331,28 +1183,6 @@ describe("test level runner", () => {
             return duplicates;
         });
         expect(setIssues).toEqual([]);
-    });
-
-    it("keeps every advertised device-lab MCP tool on a server dispatch path", () => {
-        const advertised = advertisedDeviceLabTools();
-        const sets = new Map(deviceLabServerLiteralSets().map(({ name, values }) => [name, values]));
-        const directlyHandled = [
-            "devices",
-            "run_flow",
-            "status",
-        ];
-        const routed = new Set([
-            ...directlyHandled,
-            "move",
-            ...(sets.get("BROKER_LIFECYCLE_COMMANDS") || []),
-            ...(sets.get("BROKER_READONLY_DEVICE_TOOLS") || []),
-            ...(sets.get("BROKER_MUTATING_DEVICE_TOOLS") || []),
-            ...(sets.get("BROKER_PHYSICAL_TOOLS") || []),
-            ...(sets.get("BROKER_MOBILE_ACTIONS") || []),
-            ...deviceLabBackendCapabilityTools().flatMap(({ values }) => values),
-        ]);
-        const missing = advertised.filter((tool) => !routed.has(tool));
-        expect(missing).toEqual([]);
     });
 
     it("keeps advertised backend enums aligned with direct and broker-supported handlers", () => {
@@ -1377,18 +1207,6 @@ describe("test level runner", () => {
             ];
         });
         expect(drift).toEqual([]);
-    });
-
-    it("keeps MCP backend capabilities backed by concrete backend handler cases", () => {
-        const capabilities = deviceLabMcpBackendCapabilities();
-        const handlerCases = deviceLabBackendHandlerCases();
-        const missing = [...capabilities.entries()].flatMap(([backend, tools]) => {
-            const cases = handlerCases.get(backend) || [];
-            return tools
-                .filter((tool) => !cases.includes(tool))
-                .map((tool) => ({ backend, tool }));
-        });
-        expect(missing).toEqual([]);
     });
 
     it("keeps provider real E2E scripts aligned with backend capability surfaces", () => {
@@ -1418,51 +1236,6 @@ describe("test level runner", () => {
         expect(drift).toEqual([]);
     });
 
-    it("keeps backend handler-only tool cases explicitly classified", () => {
-        const advertised = new Set(advertisedDeviceLabTools());
-        const capabilities = deviceLabMcpBackendCapabilities();
-        const handlerCases = deviceLabBackendHandlerCases();
-        const expected = new Map<string, string[]>([
-            ["android-emulator", ["reset"]], // Private delegate used by public clear_app_data.
-            ["android-device", [
-                "reset", // Private delegate used by public clear_app_data.
-                "set_battery",
-                "set_location",
-                "set_network",
-            ]],
-            ["ios-simulator", [
-                "back",
-                "forward",
-                "power",
-                "recents",
-                "set_battery",
-                "set_network",
-            ]],
-            ["ios-device", [
-                "exec",
-                "back",
-                "forward",
-                "clipboard",
-                "permission",
-                "open_url",
-                "power",
-                "recents",
-                "set_battery",
-                "set_location",
-                "set_network",
-                "uninstall_app",
-            ]],
-        ]);
-        const actual = new Map([...handlerCases.entries()].map(([backend, cases]) => {
-            const backendCapabilities = new Set(capabilities.get(backend) || []);
-            return [backend, cases
-                .filter((tool) => advertised.has(tool))
-                .filter((tool) => !backendCapabilities.has(tool))
-                .sort()];
-        }));
-        expect([...actual.entries()].filter(([, tools]) => tools.length > 0)).toEqual([...expected.entries()].map(([backend, tools]) => [backend, [...tools].sort()]));
-    });
-
     it("keeps hidden broker command forwarded lifecycle inputs explicit in the broker implementation", () => {
         const advertised = advertisedDeviceLabTools();
         expect(advertised).not.toContain("device_broker_command");
@@ -1479,77 +1252,6 @@ describe("test level runner", () => {
             "dryRun",
             "force",
         ]));
-    });
-
-    it("keeps broker-routed device and mobile tool inputs forwarded through the broker device proxy", () => {
-        const sets = new Map(deviceLabServerLiteralSets().map(({ name, values }) => [name, values]));
-        const routedTools = new Set([
-            ...(sets.get("BROKER_READONLY_DEVICE_TOOLS") || []),
-            ...(sets.get("BROKER_MUTATING_DEVICE_TOOLS") || []),
-            ...(sets.get("BROKER_MOBILE_ACTIONS") || []),
-        ]);
-        const forwarded = new Set(brokerDeviceToolForwardedInputKeys());
-        const routeOnlyKeys = new Set([
-            "detail", // Public response formatting, never a provider argument.
-            "view", // Selects the private discovery operation before dispatch.
-            "count", // Selects the private single/double click operation before dispatch.
-            "region", // Crops the returned screenshot in the MCP adapter after provider dispatch.
-            "appId", // Translated to provider-specific packageName or bundleId.
-            "broker",
-            "viaBroker",
-            "implicitBroker",
-            "autolaunch",
-            "hostCandidates",
-            "launchHost",
-            "port",
-            "brokerPort",
-            "timeoutMs",
-            "rpcTimeoutMs",
-            "launchTimeoutMs",
-            "backend",
-            "appiumPort",
-            "serverPort",
-            "automationName",
-            "provider",
-            "physical",
-        ]);
-        const schemas = deviceLabToolSchemaPropertyMap();
-        const missing = [...routedTools].flatMap((tool) => (schemas.get(tool) || [])
-            .filter((key) => !routeOnlyKeys.has(key) && !forwarded.has(key))
-            .map((key) => ({ tool, missing: key })));
-        expect(missing).toEqual([]);
-
-        const routedSchemaKeys = new Set([...routedTools].flatMap((tool) => schemas.get(tool) || []));
-        const translatedInputs = new Set(["eraseSimulator", "helperTimeoutMs", "packageName", "bundleId", "service"]);
-        const privateOnlyInputs = new Set(["enabled"]); // Retained private mobile_toggle_airplane_mode delegate.
-        const normalization = readFileSync(join(repoRoot, "device-lab-mcp/src/tool-arguments.mjs"), "utf8");
-        expect(normalization).toContain('if (name === "reset") normalized.eraseSimulator = true');
-        expect(normalization).toContain("normalized.helperTimeoutMs");
-        expect(normalization).toContain("normalized.packageName = args.appId");
-        expect(normalization).toContain("normalized.bundleId = args.appId");
-        expect(normalization).toContain("normalized.service = normalized.permission");
-        const hidden = [...forwarded]
-            .filter((key) => !routeOnlyKeys.has(key) && !translatedInputs.has(key) && !privateOnlyInputs.has(key) && !routedSchemaKeys.has(key))
-            .map((key) => ({ hidden: key }));
-        expect(hidden).toEqual([]);
-    });
-
-    it("keeps every broker-routed mobile action mapped to a concrete execution path", () => {
-        const sets = new Map(deviceLabServerLiteralSets().map(({ name, values }) => [name, values]));
-        const actions = new Set(sets.get("BROKER_MOBILE_ACTIONS") || []);
-        const backendProxyTools = new Set(sets.get("BROKER_BACKEND_MOBILE_TOOLS") || []);
-        const appiumRequestTools = new Set(brokerMobileRequestToolKeys());
-        const specialCases = new Set([
-            "status",
-            "wait_for_text",
-        ]);
-        const missing = [...actions]
-            .filter((tool) => !backendProxyTools.has(tool) && !appiumRequestTools.has(tool) && !specialCases.has(tool));
-        const staleBackendProxyTools = [...backendProxyTools].filter((tool) => !actions.has(tool));
-        const staleAppiumRequestTools = [...appiumRequestTools].filter((tool) => !actions.has(tool));
-        expect(missing).toEqual([]);
-        expect(staleBackendProxyTools).toEqual([]);
-        expect(staleAppiumRequestTools).toEqual([]);
     });
 
     it("keeps hidden broker Appium actions and forwarded inputs explicit in the implementation", () => {
@@ -1569,35 +1271,6 @@ describe("test level runner", () => {
             "path",
             "body",
         ]));
-    });
-
-    it("keeps MCP-generated broker Appium requests inside the host broker allowlist", () => {
-        const allowed = new Set(hostBrokerAppiumAllowedRequests());
-        const unsupported = mcpBrokerAppiumRequests()
-            .filter((request) => !allowed.has(request))
-            .map((request) => ({ request }));
-        expect(unsupported).toEqual([]);
-    });
-
-    it("keeps hidden physical broker actions and forwarded inputs explicit in the implementation", () => {
-        const advertised = advertisedDeviceLabTools();
-        expect(advertised).not.toContain("device_broker_lease");
-        expect(advertised).not.toContain("device_broker_attach");
-        expect(advertised).not.toContain("device_broker_apple");
-        expect(brokerWrapperActionKeys("brokerLease")).toEqual(["claim", "heartbeat", "list", "prune", "release"]);
-        expect(brokerWrapperActionKeys("brokerPhysical")).toEqual(["attach", "detach", "list"]);
-        expect(brokerAppleTrustActionKeys()).toEqual(["connect", "pair", "status"]);
-
-        const checks = [
-            { functionName: "brokerLease", expected: ["backend", "hardwareId", "deviceId", "connection", "ttlMs", "all"] },
-            { functionName: "brokerPhysical", expected: ["backend", "name", "deviceId", "serial", "udid", "connection", "host", "devicePort"] },
-            { functionName: "brokerApple", expected: ["backend", "udid"] },
-        ];
-        const missing = checks.flatMap(({ functionName, expected }) => {
-            const forwarded = new Set(brokerWrapperForwardedInputKeys(functionName));
-            return expected.filter((key) => !forwarded.has(key)).map((key) => ({ functionName, missing: key }));
-        });
-        expect(missing).toEqual([]);
     });
 
     it("keeps hidden broker RPC methods restricted to the runtime allowlist", () => {

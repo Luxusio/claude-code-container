@@ -67,6 +67,68 @@ describe("container exec semantic workflow", () => {
         expect(f.ports.buildMcpConfig).toHaveBeenCalledWith(undefined, expect.any(Function));
         expect(f.ports.syncClipboard).toHaveBeenCalledWith("final-id"); expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith("final-id");
     });
+    it("confirms command authority and restores config under the resolved profile lock before disposal", async () => {
+        const f = fixture({running: true});
+        let locked = false;
+        let commandAcknowledgements = 0;
+        vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => {
+            if (vi.mocked(f.ports.prepareCommand).mock.calls.length > 0) commandAcknowledgements++;
+        });
+        f.ports.configLock = <T>(operation: () => T, profile?: string): T => {
+            expect(profile).toBe("work"); expect(locked).toBe(false); locked = true;
+            try { return operation(); } finally { locked = false; }
+        };
+        vi.mocked(f.ports.restoreConfig).mockImplementation((target, profile) => {
+            expect(locked).toBe(true); expect([target, profile]).toEqual(["final-id", "work"]);
+            f.events.push("restore");
+        });
+        vi.mocked(f.ports.launchCommand).mockImplementation(async () => {
+            expect(commandAcknowledgements).toBe(2);
+            expect(f.ports.setCleanupEnabled).toHaveBeenLastCalledWith(true);
+            expect(locked).toBe(false); f.events.push("launch"); return 37;
+        });
+        expect(await f.exec("/repo", ["codex", "resume", "fixture-session"], {}, "work")).toBe(37);
+        expect(f.ports.disposeCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.events.slice(-4)).toEqual(["launch", "restore", "dispose", "cleanup"]);
+        expect(locked).toBe(false);
+    });
+    it("keeps preparation refusal status without granting cleanup permission or launching", async () => {
+        const f = fixture({running: true});
+        let commandAcknowledgements = 0;
+        vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => {
+            if (vi.mocked(f.ports.prepareCommand).mock.calls.length > 0) commandAcknowledgements++;
+        });
+        vi.mocked(f.ports.prepareCodexCommand).mockReturnValue({ok: false, status: 7, reason: "engine-unavailable"});
+        vi.mocked(f.ports.restoreConfig).mockImplementationOnce(() => {}).mockImplementation(() => { throw new Error("restore denied"); });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw new Error("cleanup denied"); });
+        expect(await f.exec("/repo", ["codex"])).toBe(7);
+        expect(commandAcknowledgements).toBe(1);
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.disposeCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+    it.each([1, 2])("preserves ownership acknowledgement %s rejection and cleans its command without launching", async rejectedAcknowledgement => {
+        const f = fixture({running: true}), original = { refusal: "ownership acknowledgement lost" };
+        let confirmations = 0;
+        vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => {
+            if (vi.mocked(f.ports.prepareCommand).mock.calls.length === 0) return;
+            if (++confirmations === rejectedAcknowledgement) throw original;
+        });
+        vi.mocked(f.ports.restoreConfig).mockImplementationOnce(() => {}).mockImplementation(() => { throw new Error("restore denied"); });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw new Error("cleanup denied"); });
+        vi.mocked(f.ports.report).mockImplementation(report => {
+            if (report.kind === "restore-failed" || report.kind === "cleanup-failed") throw new Error("diagnostic denied");
+        });
+        await expect(f.exec("/repo", ["codex"])).rejects.toBe(original);
+        expect(confirmations).toBe(rejectedAcknowledgement);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        if (rejectedAcknowledgement === 1) expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        else expect(f.ports.setCleanupEnabled).toHaveBeenLastCalledWith(true);
+        expect(f.ports.disposeCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
     it("attaches clipboard before preparation and forwards ordered environment intent unchanged", async () => {
         const f = fixture(), overrides = {LANG: "session-lang", TZ: "Session/Zone"}, connection = {url: "http://clipboard", token: "token"};
         f.ports.clipboardConnection = () => connection;

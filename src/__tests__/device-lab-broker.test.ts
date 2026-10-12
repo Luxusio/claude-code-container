@@ -2968,6 +2968,7 @@ describe("device-lab host broker daemon", () => {
                     ownerId: foreignOwnerId,
                     ownerBasis: `ccc-${foreignMountPath.slice("/project/".length)}--p--work:${foreignMountPath}`,
                     projectMountPath: foreignMountPath,
+                    projectId: foreignMountPath.slice("/project/".length),
                     profile: "work",
                 },
             });
