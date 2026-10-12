@@ -130,6 +130,10 @@ if (!mode.startsWith('acquire')) {
 }
 setupSignalHandlers();
 process.send({ event: 'phase', phase: mode.startsWith('acquire') ? 'acquiring' : 'arming' });
+if (mode === 'acquire-signal') {
+    // Observe delivery without replacing the facade's real signal listener.
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => process.send({ event: 'signal-observed', signal }));
+}
 let guardian;
 let directGuardian;
 let pendingRefusals;
@@ -661,6 +665,36 @@ export async function load(url, context, nextLoad) {
         // cleanup and this acknowledged ID could never be stopped.
         expect(stops()).toEqual([["stop", idA]]);
         expect(candidate.ready).toBeUndefined();
+    });
+
+    it.skipIf(process.platform !== "linux").each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("emitted %s during inspection waits for owned rollback and preserves the foreign owner", async signal => {
+        const predecessor = await start("", idA);
+        const candidate = launch("", idB, "project", false, "acquire-signal");
+        const inspected = await frame(candidate, "inspecting");
+        const guard = `${predecessor.ready.lock.slice(0, predecessor.ready.lock.lastIndexOf("--"))}.container-lifecycle.guard`;
+        expect((JSON.parse(readFileSync(guard, "utf8")) as { pid: number }).pid).toBe(candidate.child.pid);
+        expect(candidate.child.kill(signal)).toBe(true);
+        await frame(candidate, "signal-observed");
+        expect(candidate.child.exitCode).toBeNull();
+        expect(candidate.child.signalCode).toBeNull();
+        expect(existsSync(inspected.lock)).toBe(true);
+        expect(existsSync(guard)).toBe(true);
+        expect(existsSync(predecessor.ready.lock)).toBe(true);
+        expect(stops()).toEqual([]);
+        candidate.child.send({ event: "resume-inspection" });
+        await eventually(() => candidate.child.exitCode !== null || candidate.child.signalCode !== null, "interrupted acquisition settles and exits");
+        expect(candidate.child.signalCode, candidate.output).toBeNull();
+        expect(candidate.child.exitCode, candidate.output).toBe(0);
+        expect(existsSync(inspected.lock)).toBe(false);
+        expect(existsSync(guard)).toBe(false);
+        expect(existsSync(predecessor.ready.lock)).toBe(true);
+        expect(running(predecessor.ready.guardian)).toBe(true);
+        expect(stops()).toEqual([]);
+        expect(candidate.ready).toBeUndefined();
+        await kill(predecessor);
+        await eventually(() => !existsSync(predecessor.ready.lock), "preserved foreign owner cleanup");
+        await eventually(() => !running(predecessor.ready.guardian), "preserved foreign guardian completion");
+        expect(stops()).toEqual([["stop", idA]]);
     });
 
     it.skipIf(process.platform !== "linux")("pending READY replacement and fallback cleanup preserve the successor and its resources", async () => {

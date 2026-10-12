@@ -138,7 +138,7 @@ function processIsAlive(pid) {
         process.kill(pid, 0);
         return true;
     } catch (error) {
-        return nativeErrorCode(error) === "EPERM";
+        return nativeErrorCode(error) !== "ESRCH";
     }
 }
 
@@ -257,6 +257,7 @@ const publication = createStateFilePublication(publicationPorts);
 /** @type {import('../ports/shared-mutation-lock.mjs').SharedMutationLockPorts<ReturnType<typeof secureStateParentDirectory>>} */
 const lockPorts = {
     variant: "provider",
+    key: file => process.platform === "win32" ? resolve(file).toLowerCase() : resolve(file),
     capture: file => secureStateParentDirectory(file),
     check: fence => { assertStateDirectoriesUnchanged(fence); return undefined; },
     token: () => randomUUID(),

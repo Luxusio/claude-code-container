@@ -176,7 +176,7 @@ describe("device-lab shared mutation lock", () => {
         }
     });
 
-    it("bounds identity-unavailable locks without stealing long live operations", () => {
+    it("never age-reclaims identity-unavailable live owners", () => {
         for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
             const live = lockPath();
             const record = {
@@ -196,8 +196,185 @@ describe("device-lab shared mutation lock", () => {
             writeFileSync(veryOld, JSON.stringify(veryOldRecord));
             const nineHoursOld = new Date(Date.now() - 9 * 60 * 60 * 1000);
             utimesSync(veryOld, nineHoursOld, nineHoursOld);
-            expect(acquire(veryOld, () => "recovered", { waitMs: 1000, staleMs: 1 })).toBe("recovered");
-            expect(existsSync(veryOld)).toBe(false);
+            expect(() => acquire(veryOld, () => "unexpected", { waitMs: 30, staleMs: 1 }))
+                .toThrow(/Timed out acquiring shared mutation lock/);
+            expect(JSON.parse(readFileSync(veryOld, "utf8"))).toEqual(veryOldRecord);
+        }
+    });
+
+    it("preserves foreign-host boot identities even when the file is very old", async () => {
+        for (const acquire of [withHostSharedMutationLockAsync, withSharedMutationLockAsync]) {
+            const file = lockPath();
+            const bytes = JSON.stringify({ token: testToken(), pid: process.pid, host: `${hostname()}-foreign`, bootId: "foreign-boot" });
+            writeFileSync(file, bytes);
+            const old = new Date(Date.now() - 9 * 60 * 60 * 1000);
+            utimesSync(file, old, old);
+            const callback = vi.fn();
+            await expect(acquire(file, callback, { waitMs: 30, staleMs: 1 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(callback).not.toHaveBeenCalled();
+            expect(readFileSync(file, "utf8")).toBe(bytes);
+        }
+    });
+
+    it("preserves aged local owners when native liveness cannot be observed", async () => {
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+            throw Object.assign(new Error("liveness probe unavailable"), { code: "EIO" });
+        });
+        try {
+            for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock,
+                withHostSharedMutationLockAsync, withSharedMutationLockAsync]) {
+                const file = lockPath();
+                const bytes = JSON.stringify({ token: testToken(), pid: 2147483647, host: hostname(), processIdentityStatus: "unavailable" });
+                writeFileSync(file, bytes);
+                const old = new Date(Date.now() - 9 * 60 * 60 * 1000);
+                utimesSync(file, old, old);
+                const callback = vi.fn();
+                let observed: unknown;
+                try { await acquire(file, callback, { waitMs: 30, staleMs: 1 }); }
+                catch (error) { observed = error; }
+                expect(observed).toMatchObject({ code: "shared-mutation-lock-timeout" });
+                expect(callback).not.toHaveBeenCalled();
+                expect(readFileSync(file, "utf8")).toBe(bytes);
+            }
+            expect(kill).toHaveBeenCalledWith(2147483647, 0);
+        } finally { kill.mockRestore(); }
+    });
+
+    it("refuses same-process synchronous contention across host/direct wrappers and normalized aliases", async () => {
+        for (const ownerLock of [withHostSharedMutationLockAsync, withSharedMutationLockAsync]) {
+            const file = lockPath();
+            let release!: () => void;
+            let entered!: () => void;
+            const gate = new Promise<void>(resolve => { release = resolve; });
+            const ready = new Promise<void>(resolve => { entered = resolve; });
+            const owner = ownerLock(file, async () => { entered(); await gate; });
+            await ready;
+            const bytes = readFileSync(file, "utf8");
+            try {
+                for (const contender of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
+                    const callback = vi.fn();
+                    const alias = `${dirname(file)}/../${dirname(file).split(/[\\/]/).pop()}/state.mutation.lock`;
+                    expect(() => contender(alias, callback, { waitMs: 1000 })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" }));
+                    expect(() => contender(file, callback, { waitBudget: { remaining: () => 0 } })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                    expect(callback).not.toHaveBeenCalled();
+                    expect(readFileSync(file, "utf8")).toBe(bytes);
+                }
+            } finally { release(); await owner; }
+            expect(withNestedSharedMutationLock(file, () => "released")).toBe("released");
+        }
+    });
+
+    it.each(["write", "close", "post-admission"] as const)("cleans complete claims after %s failure without losing the primary error", async stage => {
+        for (const implementation of ["host", "provider"] as const) {
+            for (const asynchronous of [false, true]) {
+                for (const outcome of ["release", "successor", "release-failure"] as const) {
+                    const file = lockPath();
+                    const primary = Object.freeze(new Error(`${stage} failed`));
+                    const successor = JSON.stringify({ token: testToken(), pid: process.pid, host: hostname() });
+                    let descriptor: number | undefined;
+                    let published = false;
+                    let injected = false;
+                    vi.resetModules();
+                    vi.doMock("fs", async importOriginal => {
+                        const actual = await importOriginal<typeof import("fs")>();
+                        return { ...actual,
+                            openSync(path: import("fs").PathLike, flags: string | number, mode?: import("fs").Mode) {
+                                const fd = actual.openSync(path, flags, mode);
+                                if (path === file && flags === "wx") descriptor = fd;
+                                return fd;
+                            },
+                            writeFileSync(path: import("fs").PathOrFileDescriptor, value: string | NodeJS.ArrayBufferView, options?: import("fs").WriteFileOptions) {
+                                actual.writeFileSync(path, value, options);
+                                if (path === descriptor) {
+                                    published = true;
+                                    if (outcome === "successor") { actual.rmSync(file); actual.writeFileSync(file, successor); }
+                                    if (stage === "write") throw primary;
+                                }
+                            },
+                            closeSync(fd: number) {
+                                actual.closeSync(fd);
+                                if (fd === descriptor && stage === "close" && !injected) {
+                                    injected = true;
+                                    throw primary;
+                                }
+                            },
+                            renameSync(source: string, destination: string) {
+                                if (source === file && destination.endsWith(".release") && outcome === "release-failure") {
+                                    throw Object.assign(new Error("release denied"), { code: "EIO" });
+                                }
+                                actual.renameSync(source, destination);
+                            },
+                        };
+                    });
+                    try {
+                        const api = implementation === "host"
+                            ? await import("@ccc/device-lab/device-lab-shared-state.js?claim-failure")
+                            : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?claim-failure");
+                        const callback = vi.fn();
+                        const options = { waitBudget: { remaining() {
+                            if (stage === "post-admission" && published && !injected) { injected = true; throw primary; }
+                            return 1000;
+                        } } };
+                        let observed: unknown;
+                        try {
+                            if (asynchronous) await api.withSharedMutationLockAsync(file, callback, options);
+                            else api.withSharedMutationLock(file, callback, options);
+                        } catch (error) { observed = error; }
+                        expect(callback).not.toHaveBeenCalled();
+                        if (outcome === "release-failure") {
+                            expect(observed).toBeInstanceOf(AggregateError);
+                            expect((observed as AggregateError).cause).toBe(primary);
+                            expect((observed as AggregateError).errors[0]).toBe(primary);
+                            expect((observed as AggregateError).errors[1]).toMatchObject({ code: "shared-mutation-lock-release-failed" });
+                            expect(existsSync(file)).toBe(true);
+                        } else {
+                            expect(observed).toBe(primary);
+                            if (outcome === "successor") expect(readFileSync(file, "utf8")).toBe(successor);
+                            else expect(existsSync(file)).toBe(false);
+                        }
+                    } finally { vi.doUnmock("fs"); vi.resetModules(); }
+                }
+            }
+        }
+    });
+
+    it("reports exact-token release failure and preserves missing or successor release outcomes", async () => {
+        for (const implementation of ["host", "provider"] as const) {
+            for (const asynchronous of [false, true]) {
+                for (const outcome of ["owned", "missing", "successor"] as const) {
+                    const file = lockPath();
+                    const successor = JSON.stringify({ token: testToken(), pid: process.pid, host: hostname() });
+                    vi.resetModules();
+                    vi.doMock("fs", async importOriginal => {
+                        const actual = await importOriginal<typeof import("fs")>();
+                        return { ...actual, renameSync(source: string, destination: string) {
+                            if (source === file && destination.endsWith(".release")) throw Object.assign(new Error("release denied"), { code: "EIO" });
+                            actual.renameSync(source, destination);
+                        } };
+                    });
+                    try {
+                        const api = implementation === "host"
+                            ? await import("@ccc/device-lab/device-lab-shared-state.js?release-failure")
+                            : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?release-failure");
+                        const callback = vi.fn(() => {
+                            if (outcome !== "owned") rmSync(file);
+                            if (outcome === "successor") writeFileSync(file, successor);
+                            return "done";
+                        });
+                        const invoke = () => asynchronous ? api.withSharedMutationLockAsync(file, callback) : api.withSharedMutationLock(file, callback);
+                        if (outcome === "owned") {
+                            if (asynchronous) await expect(invoke()).rejects.toMatchObject({ code: "shared-mutation-lock-release-failed" });
+                            else expect(invoke).toThrow(expect.objectContaining({ code: "shared-mutation-lock-release-failed" }));
+                            expect(existsSync(file)).toBe(true);
+                        } else {
+                            expect(await invoke()).toBe("done");
+                            if (outcome === "successor") expect(readFileSync(file, "utf8")).toBe(successor);
+                            else expect(existsSync(file)).toBe(false);
+                        }
+                        expect(callback).toHaveBeenCalledTimes(1);
+                    } finally { vi.doUnmock("fs"); vi.resetModules(); }
+                }
+            }
         }
     });
 
@@ -553,7 +730,7 @@ describe("device-lab shared mutation lock", () => {
         await firstEntered;
         expect(existsSync(file)).toBe(true);
 
-        const second = withSharedMutationLockAsync(file, async () => {
+        const second = withHostSharedMutationLockAsync(file, async () => {
             order.push("second-enter");
         }, { waitMs: 1000 });
         await new Promise((resolve) => setTimeout(resolve, 30));

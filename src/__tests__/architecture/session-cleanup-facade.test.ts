@@ -389,6 +389,82 @@ describe("host ownership acquisition through the facade", () => {
         session.clearSession(); vi.restoreAllMocks();
     });
 
+    it.each(["inspection", "READY", "ACK"] as const)("registered signals share one completion while %s and guard release are pending", async stage => {
+        const once = vi.mocked(process.once);
+        const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
+        const previous = process.exitCode;
+        process.exitCode = 7;
+        let held = false;
+        let releaseGuard!: () => void;
+        let continueStage!: () => void;
+        const stagePending = new Promise<void>(resolve => { continueStage = resolve; });
+        const guardPending = new Promise<void>(resolve => { releaseGuard = resolve; });
+        let entered = false;
+        effects.lock.mockImplementation(async (_path, operation) => {
+            held = true;
+            try { return await operation(); }
+            finally { await guardPending; held = false; }
+        });
+        effects.rollback.mockImplementation(() => { expect(held).toBe(true); });
+        if (stage === "READY") effects.arm.mockImplementation(async () => { entered = true; await stagePending; return handle; });
+        if (stage === "ACK") update.mockImplementation(async () => { entered = true; await stagePending; });
+        const inspect = async () => {
+            if (stage === "inspection") { entered = true; await stagePending; }
+            return { known: true, containerId: "captured-exact-id", runtime: "docker" as const };
+        };
+        session.setupSignalHandlers();
+        const callbacks = ["SIGINT", "SIGTERM", "SIGHUP"].map(signal => once.mock.calls.find(([registered]) => registered === signal)![1]);
+        const acquisition = session.acquireHostSessionOwnership(request, inspect);
+        const rejected = expect(acquisition).rejects.toThrow("cancelled");
+        await vi.waitFor(() => expect(entered).toBe(true));
+        for (const callback of [...callbacks, callbacks[0]]) expect(() => callback()).not.toThrow();
+        expect(exit).not.toHaveBeenCalled();
+        expect(effects.rollback).not.toHaveBeenCalled();
+        expect(effects.unlink).not.toHaveBeenCalled();
+        continueStage();
+        await vi.waitFor(() => stage === "ACK"
+            ? expect(session.getCurrentSession().lockFile).not.toBeNull()
+            : expect(effects.rollback).toHaveBeenCalledTimes(1));
+        expect(exit).not.toHaveBeenCalled();
+        expect(held).toBe(true);
+        effects.lock.mockImplementation((_path, operation) => { expect(held).toBe(false); return operation(); });
+        releaseGuard();
+        await rejected;
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(7));
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(update.mock.calls.every(call => call[2] === false)).toBe(true);
+        if (stage === "ACK") {
+            expect(effects.rollback).not.toHaveBeenCalled();
+            expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(effects.capture.mock.results[0].value.path);
+            expect(release).toHaveBeenCalledTimes(1);
+        }
+        process.exitCode = previous;
+    });
+
+    it("reports asynchronous signal cleanup failure without listener throw or unhandled rejection", async () => {
+        const once = vi.mocked(process.once);
+        const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
+        const report = vi.spyOn(console, "error").mockImplementation(() => {});
+        const previous = process.exitCode;
+        process.exitCode = undefined;
+        let inspectDone!: () => void;
+        const pending = new Promise<void>(resolve => { inspectDone = resolve; });
+        const failure = new Error("owned rollback failed");
+        effects.rollback.mockImplementation(() => { throw failure; });
+        session.setupSignalHandlers();
+        const acquisition = session.acquireHostSessionOwnership(request, async () => { await pending; return { known: true, containerId: null, runtime: "docker" }; });
+        const rejected = expect(acquisition).rejects.toBeInstanceOf(AggregateError);
+        await vi.waitFor(() => expect(effects.capture).toHaveBeenCalledTimes(1));
+        expect(() => once.mock.calls.find(([signal]) => signal === "SIGTERM")![1]()).not.toThrow();
+        inspectDone();
+        await rejected;
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(1));
+        expect(report).toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled();
+        process.exitCode = previous;
+    });
+
     it("blocks generic cleanup while capture is pending and after capture fails without unlinking a replacement", async () => {
         let rejectArm!: (error: Error) => void;
         effects.arm.mockImplementation(() => new Promise((_resolve, reject) => { rejectArm = reject; }));

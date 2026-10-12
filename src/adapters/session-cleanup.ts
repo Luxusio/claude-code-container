@@ -40,13 +40,35 @@ export function stopNativeSessionContainer(readContainerId: () => string | null)
     }
 }
 
-export function setupNativeSessionCleanupSignals(cleanupSession: () => void): void {
-    const cleanup = () => {
-        cleanupSession();
+export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Promise<void>): void {
+    let completion: Promise<void> | null = null;
+    let finished = false;
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    const handlers = new Map<NodeJS.Signals, () => void>();
+    const exit = () => {
+        finished = true;
+        for (const [signal, handler] of handlers) process.removeListener(signal, handler);
         process.exit(process.exitCode ?? 0);
     };
+    const cleanup = (signal: NodeJS.Signals) => {
+        if (finished) return;
+        if (completion) {
+            process.once(signal, handlers.get(signal)!);
+            return;
+        }
+        const result = cleanupSession();
+        if (!result) return exit();
+        process.once(signal, handlers.get(signal)!);
+        completion = result.then(exit, (error) => {
+            process.exitCode = 1;
+            console.error("[ccc] Session signal cleanup failed:", error);
+            exit();
+        });
+    };
 
-    process.once("SIGINT", cleanup);
-    process.once("SIGTERM", cleanup);
-    process.once("SIGHUP", cleanup);
+    for (const signal of signals) {
+        const handler = () => cleanup(signal);
+        handlers.set(signal, handler);
+        process.once(signal, handler);
+    }
 }

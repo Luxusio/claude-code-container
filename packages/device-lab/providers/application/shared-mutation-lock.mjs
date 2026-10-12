@@ -1,4 +1,8 @@
 import { admitMutationLock, sameMutationBoot } from '../domain/shared-mutation-lock.mjs';
+/** Local ownership diagnoses blocking waits; it never authorizes file removal.
+ * @type {Map<string,string>} */
+const ownedClaims = new Map();
+
 /** @template {readonly import('../ports/state-file-publication.mjs').PublicationDirectory[]} Fence
  * @param {import('../ports/shared-mutation-lock.mjs').SharedMutationLockPorts<Fence>} ports */
 export function createSharedMutationLock(ports) {
@@ -77,16 +81,16 @@ export function createSharedMutationLock(ports) {
         const age = modified === null ? 0 : Math.max(0,ports.now()-modified);
         if (age < 100) return {stale:false};
         if (!lock) return {stale:age >= Math.min(staleMs,1000)};
-        if (lock.bootId && !sameMutationBoot(lock.bootId,ports.boot())) return {stale:true};
+        if (lock.host === ports.host() && lock.bootId && !sameMutationBoot(lock.bootId,ports.boot())) return {stale:true};
         if (lock.host === ports.host() && Number.isInteger(lock.pid)) {
             if (!ports.alive(lock.pid)) return {stale:true};
             if (lock.processIdentity) {
-                if (!asynchronous && ports.platform() === 'win32') return {stale:age >= 8*60*60*1000};
+                if (!asynchronous && ports.platform() === 'win32') return {stale:false};
                 return {probe:{...lock,processIdentity:lock.processIdentity}};
             }
-            return {stale:age >= 8*60*60*1000};
+            return {stale:false};
         }
-        return {stale:age >= staleMs};
+        return {stale:false};
     }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs */
     function stale(file,lock,staleMs) { const facts = staleFacts(file,lock,staleMs,false); if (!facts.probe) return facts.stale; const status = observation(facts.probe); return status === 'mismatch' || status === 'exited'; }
@@ -104,58 +108,120 @@ export function createSharedMutationLock(ports) {
         function check() { if (options.waitBudget && remaining() <= 0) throw ports.timeout(file); }
         return {remaining,check,expired:() => clock() >= deadline};
     }
+    /** @param {unknown[]} failures */
+    function throwFailures(failures) {
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) {
+            const combined = new AggregateError(failures, 'Shared mutation lock operation and cleanup failed', {cause:failures[0]});
+            const code = ports.errorCode(failures[0]);
+            if (code) Object.assign(combined, {code});
+            throw combined;
+        }
+    }
+    /** @param {string} file @param {string} token @param {Fence} fence */
+    function release(file,token,fence) {
+        ports.check(fence);
+        const released = ports.moveQualified(file,token,'release',fence);
+        ports.check(fence);
+        if (!released && readLock(file)?.token === token) {
+            throw Object.assign(new Error(`Failed to release shared mutation lock: ${file}`), {code:'shared-mutation-lock-release-failed'});
+        }
+    }
+    /** @param {number} descriptor @param {()=>string} value @param {unknown[]} failures */
+    function publish(descriptor,value,failures) {
+        try { ports.writeClaim(descriptor,value()); } catch (error) { failures.push(error); }
+        try { ports.closeClaim(descriptor); } catch (error) { failures.push(error); }
+        // The enclosing owned lifetime performs release and reports all failures.
+        if (failures.length) throw failures[0];
+    }
     /** @template T @param {string} file @param {()=>T} operation @param {import('../ports/shared-mutation-lock.mjs').MutationLockOptions} [options] */
     function withLock(file,operation,options = {}) {
         const wait = waitFor(file,options);
-        if (ports.variant === 'provider') wait.check();
+        wait.check();
+        const key = ports.key(file);
+        if (ownedClaims.has(key)) {
+            throw Object.assign(new Error(`Synchronous wait on locally owned shared mutation lock: ${file}`), {code:'shared-mutation-lock-self-contention'});
+        }
         const token = ports.token(), fence = ports.capture(file);
         const check = () => ports.check(fence);
-        while (true) {
-            wait.check();
-            try {
-                check(); const fd = ports.openClaim(file);
-                try { ports.writeClaim(fd,JSON.stringify(record(token,currentIdentity()))); } finally { ports.closeClaim(fd); }
-                check(); break;
-            } catch (error) {
-                if (ports.errorCode(error) !== 'EEXIST') throw error;
-                if (ports.variant === 'typescript') wait.check();
-                const existing = readLock(file);
-                const reclaim = ports.variant !== 'typescript' || options.reclaimStale !== false;
-                if (reclaim && existing && stale(file,existing,options.staleMs ?? 30000) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
-                if (reclaim && !existing && stale(file,existing,options.staleMs ?? 30000) && ports.moveMalformed(file,token,fence)) continue;
-                if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
-                wait.check(); ports.pauseSync(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
+        let claimed = false;
+        /** @type {unknown[]} */
+        const failures = [];
+        /** @type {T|undefined} */
+        let result;
+        try {
+            while (true) {
+                wait.check();
+                try {
+                    check(); const fd = ports.openClaim(file);
+                    claimed = true; ownedClaims.set(key,token);
+                    publish(fd,() => JSON.stringify(record(token,currentIdentity())),failures);
+                    check(); break;
+                } catch (error) {
+                    if (claimed || ports.errorCode(error) !== 'EEXIST') throw error;
+                    if (ports.variant === 'typescript') wait.check();
+                    const existing = readLock(file);
+                    const reclaim = ports.variant !== 'typescript' || options.reclaimStale !== false;
+                    if (reclaim && existing && stale(file,existing,options.staleMs ?? 30000) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
+                    if (reclaim && !existing && stale(file,existing,options.staleMs ?? 30000) && ports.moveMalformed(file,token,fence)) continue;
+                    if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
+                    wait.check(); ports.pauseSync(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
+                }
+            }
+            check(); wait.check(); result = operation();
+        } catch (error) {
+            if (!failures.length) failures.push(error);
+        } finally {
+            if (claimed) {
+                try { release(file,token,fence); } catch (error) { failures.push(error); }
+                finally { if (ownedClaims.get(key) === token) ownedClaims.delete(key); }
             }
         }
-        try { check(); wait.check(); return operation(); }
-        finally { check(); ports.moveQualified(file,token,'release',fence); check(); }
+        throwFailures(failures);
+        return /** @type {T} */ (result);
     }
     /** @template T @param {string} file @param {()=>T|Promise<T>} operation @param {import('../ports/shared-mutation-lock.mjs').MutationLockOptions} [options] */
     async function withLockAsync(file,operation,options = {}) {
         const wait = waitFor(file,options);
-        if (ports.variant === 'provider') wait.check();
+        wait.check();
+        const key = ports.key(file);
         const token = ports.token(), fence = ports.capture(file);
         const check = () => ports.check(fence);
-        if (ports.variant === 'typescript') wait.check();
         const value = record(token,options.waitBudget ? currentIdentity() : await currentIdentityAsync());
-        while (true) {
-            wait.check();
-            try {
-                check(); const fd = ports.openClaim(file);
-                try { ports.writeClaim(fd,JSON.stringify(value)); } finally { ports.closeClaim(fd); }
-                check(); break;
-            } catch (error) {
-                if (ports.errorCode(error) !== 'EEXIST') throw error;
-                if (ports.variant === 'typescript') wait.check();
-                const existing = readLock(file), staleMs = options.staleMs ?? 30000;
-                if (existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
-                if (!existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveMalformed(file,token,fence)) continue;
-                if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
-                wait.check(); await ports.pause(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
+        let claimed = false;
+        /** @type {unknown[]} */
+        const failures = [];
+        /** @type {T|undefined} */
+        let result;
+        try {
+            while (true) {
+                wait.check();
+                try {
+                    check(); const fd = ports.openClaim(file);
+                    claimed = true; ownedClaims.set(key,token);
+                    publish(fd,() => JSON.stringify(value),failures);
+                    check(); break;
+                } catch (error) {
+                    if (claimed || ports.errorCode(error) !== 'EEXIST') throw error;
+                    if (ports.variant === 'typescript') wait.check();
+                    const existing = readLock(file), staleMs = options.staleMs ?? 30000;
+                    if (existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
+                    if (!existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveMalformed(file,token,fence)) continue;
+                    if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
+                    wait.check(); await ports.pause(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
+                }
+            }
+            check(); wait.check(); result = await operation();
+        } catch (error) {
+            if (!failures.length) failures.push(error);
+        } finally {
+            if (claimed) {
+                try { release(file,token,fence); } catch (error) { failures.push(error); }
+                finally { if (ownedClaims.get(key) === token) ownedClaims.delete(key); }
             }
         }
-        try { check(); wait.check(); return await operation(); }
-        finally { check(); ports.moveQualified(file,token,'release',fence); check(); }
+        throwFailures(failures);
+        return /** @type {T} */ (result);
     }
     return {readLock,withLock,withLockAsync};
 }

@@ -23,3 +23,5 @@ export interface SessionAcquisitionPorts {
     reconcileForeign(prefix: string, lockFile: string): boolean;
     rollback(lockFile: string): void | Promise<void>;
 }
+
+export type SessionAcquisitionCheckpoint = () => void;

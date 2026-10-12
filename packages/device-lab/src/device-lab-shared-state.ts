@@ -146,7 +146,7 @@ function processIsAlive(pid: unknown): boolean {
         process.kill(pid as number, 0);
         return true;
     } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "EPERM";
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
     }
 }
 
@@ -255,6 +255,7 @@ const publicationPorts: StateFilePublicationPorts<DirectoryIdentity[], AtomicSta
 const publication = createStateFilePublication(publicationPorts);
 const lockPorts: SharedMutationLockPorts<DirectoryIdentity[]> = {
     variant: "typescript",
+    key: file => process.platform === "win32" ? resolve(file).toLowerCase() : resolve(file),
     capture: file => secureStateParentDirectory(file),
     check: fence => { assertStateDirectoriesUnchanged(fence); return undefined; },
     token: () => randomBytes(16).toString("hex"),

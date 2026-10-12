@@ -71,6 +71,8 @@ let ownership: SessionOwnershipHandle | null = null;
 let armingOwnership = false;
 let acquiringOwnership = false;
 let acquisitionFailure: Error | null = null;
+let acquisitionCancellation: Error | null = null;
+let acquisitionSettled: Promise<void> = Promise.resolve();
 let ownershipAuthorization: (() => void) | null = null;
 let capturedOwnership: SessionOwnershipReceipt | null = null;
 let pendingOwnershipUpdate: Promise<void> = Promise.resolve();
@@ -131,6 +133,12 @@ export async function acquireHostSessionOwnership(
     }
     acquiringOwnership = true;
     acquisitionFailure = null;
+    acquisitionCancellation = null;
+    let settleAcquisition!: () => void;
+    acquisitionSettled = new Promise<void>((resolve) => { settleAcquisition = resolve; });
+    const checkCancelled = () => {
+        if (acquisitionCancellation) throw acquisitionCancellation;
+    };
     const rollbackOwn = (_binding: unknown, receipt: SessionOwnershipReceipt) => {
         if (nativeSessionOwnershipMatches(receipt)) removeCapturedNativeSessionOwnership(receipt);
     };
@@ -184,12 +192,14 @@ export async function acquireHostSessionOwnership(
                 cleanupAuthorizationVersion++;
                 if (previous) await previous.release();
             },
-        }).run(request);
+        }).run(request, checkCancelled);
         if (acquisitionFailure) throw acquisitionFailure;
         return acquired;
     } finally {
         acquiringOwnership = false;
         acquisitionFailure = null;
+        acquisitionCancellation = null;
+        settleAcquisition();
     }
 }
 
@@ -374,5 +384,9 @@ export function cleanupSession(): void {
 
 // Setup signal handlers for cleanup
 export function setupSignalHandlers(): void {
-    setupNativeSessionCleanupSignals(() => cleanupSession());
+    setupNativeSessionCleanupSignals(() => {
+        if (!acquiringOwnership) return cleanupSession();
+        acquisitionCancellation ??= new Error("Host session ownership acquisition cancelled by signal.");
+        return acquisitionSettled.then(() => cleanupSession());
+    });
 }

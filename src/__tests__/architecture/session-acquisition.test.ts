@@ -213,7 +213,10 @@ describe("atomic session acquisition", () => {
         const rollbackFailure = new Error("owned unlink failed");
         f.ports.arm = async () => { f.inGuard("ready-failed"); throw readyFailure; };
         f.ports.rollback = path => { f.inGuard("rollback-failed"); expect(path).toBe(own); throw rollbackFailure; };
-        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(rollbackFailure);
+        const rejected = await createSessionAcquisition(f.ports).run(request).catch(error => error);
+        expect(rejected).toBeInstanceOf(AggregateError);
+        expect(rejected.errors).toEqual([readyFailure, rollbackFailure]);
+        expect(rejected.cause).toBe(readyFailure);
         expect([...f.claims]).toEqual([predecessor, own]);
         expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect", "ready-failed", "rollback-failed", "unlock:project--p--work"]);
         expect(f.isHeld()).toBe(false);
@@ -230,5 +233,55 @@ describe("atomic session acquisition", () => {
         expect(f.trace).not.toContain("capture");
         expect(f.trace).not.toContain("reconcile");
         expect(f.isHeld()).toBe(false);
+    });
+});
+
+describe("acquisition cancellation checkpoints", () => {
+    it("cancellation before reservation has no claim effects", async () => {
+        const f = fixture();
+        const cancelled = new Error("cancelled before reserve");
+        await expect(createSessionAcquisition(f.ports).run(request, () => { throw cancelled; })).rejects.toBe(cancelled);
+        expect([...f.claims]).toEqual([predecessor]);
+        expect(f.trace).not.toContain("reserve");
+        expect(f.trace).not.toContain("rollback");
+        expect(f.isHeld()).toBe(false);
+    });
+
+    it.each(["inspection", "READY", "ACK-rejection", "ACK-success"] as const)("settles pending %s before receipt-qualified cancellation", async stage => {
+        const f = fixture();
+        const entered = deferred();
+        const pending = deferred();
+        const cancelled = new Error("signal cancellation");
+        const ackFailure = new Error("ACK rejected");
+        let cancellation = false;
+        const wait = async (event: string) => { f.inGuard(event); entered.resolve(); await pending.promise; f.inGuard(`${event}-settled`); };
+        if (stage === "inspection") f.ports.inspectExisting = async () => { await wait("inspection-pending"); return { known: true, containerId: "captured-container-id", runtime: "podman" }; };
+        if (stage === "READY") f.ports.arm = () => wait("ready-pending");
+        if (stage.startsWith("ACK")) f.ports.acknowledge = async () => { await wait("ack-pending"); if (stage === "ACK-rejection") throw ackFailure; };
+        const acquisition = createSessionAcquisition(f.ports).run(request, () => { if (cancellation) throw cancelled; });
+        const rejected = expect(acquisition).rejects.toBe(stage === "ACK-rejection" ? ackFailure : cancelled);
+        await entered.promise;
+        cancellation = true;
+        await Promise.resolve();
+        expect(f.isHeld()).toBe(true);
+        expect(f.trace).not.toContain("rollback");
+        pending.resolve();
+        await rejected;
+        expect(f.isHeld()).toBe(false);
+        expect(f.trace).not.toContain("reconcile");
+        expect([...f.claims]).toEqual(stage === "ACK-success" ? [predecessor, own] : [predecessor]);
+        expect(f.trace.includes("rollback")).toBe(stage !== "ACK-success");
+        if (["inspection", "READY"].includes(stage)) expect(f.trace).not.toContain("ack");
+    });
+
+    it("proven absence cancelled during READY rolls back without acknowledging a fabricated ID", async () => {
+        const f = fixture();
+        let cancelled = false;
+        f.ports.inspectExisting = () => ({ known: true, containerId: null, runtime: "docker" });
+        f.ports.arm = async () => { f.inGuard("ready"); cancelled = true; };
+        await expect(createSessionAcquisition(f.ports).run(request, () => { if (cancelled) throw new Error("cancelled"); })).rejects.toThrow("cancelled");
+        expect([...f.claims]).toEqual([predecessor]);
+        expect(f.trace).not.toContain("ack");
+        expect(f.trace).not.toContain("reconcile");
     });
 });

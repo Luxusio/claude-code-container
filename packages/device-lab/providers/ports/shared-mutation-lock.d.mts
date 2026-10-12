@@ -5,6 +5,7 @@ export interface MutationLockRecord { token:string;pid:number;host:string;bootId
 export interface MutationLockOptions { reclaimStale?:boolean;waitMs?:number;staleMs?:number;waitBudget?:{remaining():number} }
 export interface SharedMutationLockPorts<Fence extends readonly PublicationDirectory[]> {
     variant:'typescript'|'provider';
+    key(file:string):string;
     capture(file:string):Fence;check(fence:Fence):undefined;
     token():string;pid():number;host():string;boot():string;platform():string;timestamp():string;
     now():number;monotonic():number;pauseSync(ms:number):undefined;pause(ms:number):Promise<undefined>;
