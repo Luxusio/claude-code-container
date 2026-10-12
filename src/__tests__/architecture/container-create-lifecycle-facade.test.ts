@@ -323,7 +323,7 @@ function publicFixture() {
     native.fstat.mockImplementation(() => stat("owner.json"));
     native.read.mockReturnValue(Buffer.from("fixture"));
     const markers = new Map<string, string>();
-    native.write.mockImplementation((path: string, content: string) => { markers.set(path.slice(path.lastIndexOf("/") + 1), content); });
+    native.write.mockImplementation((path: string, content: string) => { markers.set(path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1), content); });
     native.open.mockReturnValue(1);
     native.family.mockImplementation((_prefix, operation) => { state.familyCalls++; return operation(); });
     native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null }) => {
@@ -495,7 +495,7 @@ describe("public Docker creation cutover", () => {
         expect(order).toEqual([
             "log:Creating container...",
             ...(profile === "lab-runner" ? [
-                "warn:[ccc] lab-runner profile requested but nested VM support is unavailable: /dev/kvm is not available on the container host",
+                `warn:[ccc] lab-runner profile requested but nested VM support is unavailable: ${process.platform === "linux" ? "/dev/kvm is not available on the container host" : "nested virtualization from the CCC container requires a Linux container host"}`,
                 "warn:[ccc] no lab state volume is mounted; device-lab reports linux-vm as unsupported/SKIP.",
             ] : []),
         ]);

@@ -446,7 +446,7 @@ function fullCredentialMountsJson(
         ];
     const labStateMounts = options.labState === false
         ? []
-        : [{ Source: "ccc-my-project-c7e2f75b53b9-lab-state", Destination: "/home/ccc/.ccc/labs", Type: "volume", RW: true }];
+        : [{ Source: `${getContainerName("/home/user/my-project")}-lab-state`, Destination: "/home/ccc/.ccc/labs", Type: "volume", RW: true }];
     const linuxHost = process.platform === "linux";
     const status = options.status ?? (linuxHost ? "ready" : "unsupported");
     const unsupportedReason = options.unsupportedReason
@@ -939,7 +939,7 @@ describe("docker.ts module exports", () => {
 
             expect(getManagedProjectContainerIdentity(
                 "ccc-worktree--p--work",
-                "/projects/repo--feature",
+                resolve("/projects/repo--feature"),
             )).toEqual({ containerId: "managed123456", running: true });
         });
 
@@ -3235,7 +3235,7 @@ describe("docker.ts module exports", () => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             inspected.Config.Env = inspected.Config.Env.map((entry: string) => (
                 entry.startsWith("CCC_LAB_RUNNER_STATUS=")
-                    ? "CCC_LAB_RUNNER_STATUS=unsupported"
+                    ? `CCC_LAB_RUNNER_STATUS=${entry.endsWith("=ready") ? "unsupported" : "ready"}`
                     : entry
             ));
             const driftMountsJson = JSON.stringify(inspected);
@@ -3302,6 +3302,7 @@ describe("docker.ts module exports", () => {
                 status: "unsupported",
                 kvmDevice: false,
                 groupAdd: [],
+                unsupportedReason: "nested virtualization from the CCC container requires a Linux container host",
             }));
             inspected.Config.Labels["ccc.project.path"] = "/HOME/USER/MY-PROJECT";
             const projectMount = inspected.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
@@ -3322,7 +3323,7 @@ describe("docker.ts module exports", () => {
                     projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
                 );
                 expect(name).toBe(getContainerName(projectPath));
-                expect(guard).toHaveBeenCalledOnce();
+                expect(guard).not.toHaveBeenCalled();
                 expectNoContainerReplacement();
             } finally {
                 Object.defineProperty(process, "platform", { value: originalPlatform });
@@ -3854,7 +3855,7 @@ describe("docker.ts module exports", () => {
             _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported", kvmDevice: false, groupAdd: [], labState,
-                unsupportedReason: "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default",
+                unsupportedReason: process.platform === "linux" ? "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default" : "nested virtualization from the CCC container requires a Linux container host",
             }));
             inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/var/run/docker.sock").Source = "/var/run/docker.sock.raw";
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -3902,7 +3903,7 @@ describe("docker.ts module exports", () => {
             _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported", kvmDevice: false, groupAdd: [],
-                unsupportedReason: "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default",
+                unsupportedReason: process.platform === "linux" ? "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default" : "nested virtualization from the CCC container requires a Linux container host",
             }));
             inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/var/run/docker.sock").Source = "/var/run/docker.sock.raw";
             inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.ccc/labs").Source = "foreign-volume";
@@ -3943,7 +3944,7 @@ describe("docker.ts module exports", () => {
                     ? [{ Source: process.env.SSH_AUTH_SOCK, Destination: "/tmp/ssh-agent.sock" }]
                     : [], {
                 status: "unsupported",
-                unsupportedReason: "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default",
+                unsupportedReason: process.platform === "linux" ? "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default" : "nested virtualization from the CCC container requires a Linux container host",
                 kvmDevice: false,
                 groupAdd: [],
             }));
@@ -5028,7 +5029,8 @@ describe("docker.ts module exports", () => {
         });
 
         it("fails closed when the prepared owner directory is a symbolic link", () => {
-            const ownerRoot = join(homedir(), ".ccc", "devices", "owners", deviceLabOwnerId(projectPath));
+            const ownerPath = join(homedir(), ".ccc", "devices", "owners", deviceLabOwnerId(projectPath));
+            const ownerRoot = process.platform === "win32" ? ownerPath.toLowerCase() : ownerPath;
             mockLstatSync.mockImplementation((path: string) => ({
                 isFile: () => path !== ownerRoot,
                 isDirectory: () => path !== ownerRoot,
@@ -5921,7 +5923,7 @@ describe("docker.ts module exports", () => {
             );
             const runArgs = runCall![1] as string[];
             expect(runArgs.some((a) => a.endsWith("/.gitconfig:/host-stage/gitconfig:ro"))).toBe(false);
-            expect(runArgs.some((a) => a.includes("/.config/git:/home/ccc/.config/git"))).toBe(true);
+            expect(runArgs).toContain(`${join(homedir(), ".config", "git")}:/home/ccc/.config/git:ro`);
             const gitConfigInstall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker"
                     && (c[1] as string[]).some((arg) => arg.includes("/tmp/ccc-host-gitconfig"))
@@ -6657,7 +6659,7 @@ describe("docker.ts module exports", () => {
 
             stopProjectContainer(projectPath);
 
-            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(resolve(projectPath), 5000, undefined);
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
@@ -6776,7 +6778,7 @@ describe("docker.ts module exports", () => {
 
             removeProjectContainer(projectPath);
 
-            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(resolve(projectPath), 5000, undefined);
             expect(mockCleanupOwnerDevices).toHaveBeenCalledTimes(1);
             const rmCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
