@@ -13,6 +13,7 @@
     "packages/device-lab/providers/adapters/physical-attachment.mjs",
     "packages/device-lab/providers/adapters/direct-recording.mjs",
     "packages/device-lab/providers/adapters/ios-control-transfer.mjs",
+    "packages/device-lab/providers/adapters/desktop-access-result.mjs",
     "packages/device-lab/providers/state/physical-lease-store.mjs",
     "device-lab-mcp/src/domain/**/*.mjs",
     "device-lab-mcp/src/ports/**/*.mjs",

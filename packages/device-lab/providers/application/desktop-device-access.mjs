@@ -42,10 +42,12 @@ export function createDesktopDeviceAccess(ports) {
             return {kind:'json',value:ports.exec(target,selected.bridge,args.command,args.helperTimeoutMs)};
         }
         const stage = ports.stageScreenshot(target);
-        /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} */
+        /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessResult|undefined} */
         let outcome;
-        /** @type {unknown[]} */
-        const failures = [];
+        /** @type {{kind:'thrown',error:unknown}|undefined} */
+        let primaryFailure;
+        /** @type {import('../ports/desktop-device-access.mjs').DesktopCleanupEvidence[]} */
+        const cleanup = [];
         try {
             const capture = ports.capture(target,selected.bridge,stage,args.helperTimeoutMs);
             if (!capture.ok) outcome = {kind:'command-failure',receipt:capture.receipt};
@@ -57,18 +59,14 @@ export function createDesktopDeviceAccess(ports) {
                     outcome = image.kind === 'image' ? image : {kind:'text',text:image.message};
                 }
             }
-        } catch (error) { failures.push(error); }
-        const primaryFailed = failures.length > 0;
+        } catch (error) { primaryFailure = {kind:'thrown',error}; }
         try {
-            const cleanup = ports.cleanupRemote(target,selected.bridge,stage,args.helperTimeoutMs);
-            if (!cleanup.ok) failures.push(Object.assign(new Error('Remote screenshot cleanup failed'),{receipt:cleanup.receipt}));
-        } catch (error) { failures.push(error); }
-        try { ports.disposeScreenshot(stage); } catch (error) { failures.push(error); }
-        if (failures.length) {
-            if (primaryFailed && failures.length === 1) throw failures[0];
-            if (!primaryFailed && outcome && outcome.kind !== 'image') failures.unshift(outcome);
-            throw Object.assign(new AggregateError(failures,'Screenshot operation or cleanup failed',{cause:failures[0]}),{outcome});
-        }
+            const remote = ports.cleanupRemote(target,selected.bridge,stage,args.helperTimeoutMs);
+            if (!remote.ok) cleanup.push({operation:'remote',evidence:remote.receipt});
+        } catch (error) { cleanup.push({operation:'remote',evidence:error}); }
+        try { ports.disposeScreenshot(stage); } catch (error) { cleanup.push({operation:'local',evidence:error}); }
+        if (cleanup.length) return {kind:'cleanup-failure',primary:primaryFailure || /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessResult} */ (outcome),cleanup};
+        if (primaryFailure) throw primaryFailure.error;
         return outcome;
     }
     return {handle};
@@ -85,10 +83,12 @@ export function createDisplayDeviceAccess(ports) {
         if (name === 'display_current') return {kind:'json',value:current()};
         if (name !== 'display_screenshot') return undefined;
         const stage = ports.stageScreenshot();
-        /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} */
+        /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessResult|undefined} */
         let outcome;
-        /** @type {unknown[]} */
-        const failures = [];
+        /** @type {{kind:'thrown',error:unknown}|undefined} */
+        let primaryFailure;
+        /** @type {import('../ports/desktop-device-access.mjs').DesktopCleanupEvidence[]} */
+        const cleanup = [];
         try {
             const result = ports.capture(stage);
             if (!result.ok) outcome = {kind:'command-failure',receipt:result.receipt};
@@ -96,14 +96,10 @@ export function createDisplayDeviceAccess(ports) {
                 const image = ports.readScreenshot(stage);
                 outcome = image.kind === 'image' ? image : {kind:'text',text:image.message};
             }
-        } catch (error) { failures.push(error); }
-        const primaryFailed = failures.length > 0;
-        try { ports.disposeScreenshot(stage); } catch (error) { failures.push(error); }
-        if (failures.length) {
-            if (primaryFailed && failures.length === 1) throw failures[0];
-            if (!primaryFailed && outcome && outcome.kind !== 'image') failures.unshift(outcome);
-            throw Object.assign(new AggregateError(failures,'Screenshot operation or cleanup failed',{cause:failures[0]}),{outcome});
-        }
+        } catch (error) { primaryFailure = {kind:'thrown',error}; }
+        try { ports.disposeScreenshot(stage); } catch (error) { cleanup.push({operation:'local',evidence:error}); }
+        if (cleanup.length) return {kind:'cleanup-failure',primary:primaryFailure || /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessResult} */ (outcome),cleanup};
+        if (primaryFailure) throw primaryFailure.error;
         return outcome;
     }
     return {current,handle};

@@ -6,9 +6,11 @@ export interface DesktopAccessDiscovery { available:boolean }
 export interface DesktopAccessBridge { target:string }
 export interface DesktopScreenshotStage { localPath:string }
 export type DesktopScreenshotResult = {kind:"image";data:string}|{kind:"missing";message:string}|{kind:"invalid";message:string};
-export type DesktopAccessOutcome = {kind:'json';value:object}|{kind:'text';text:string}|{kind:'native';value:object}|{kind:'command-failure';receipt:CommandReceipt}|{kind:'image';data:string};
-export type DesktopAccessObservation = {ok:true;value:object}|{ok:false;outcome:DesktopAccessOutcome};
-export type DesktopScreenshotObservation = {ok:true;path:string}|{ok:false;outcome:DesktopAccessOutcome};
+export type DesktopAccessResult = {kind:'json';value:object}|{kind:'text';text:string}|{kind:'native';value:object}|{kind:'command-failure';receipt:CommandReceipt}|{kind:'image';data:string};
+export interface DesktopCleanupEvidence {operation:'remote'|'local';evidence:unknown}
+export type DesktopAccessOutcome = DesktopAccessResult|{kind:'cleanup-failure';primary:DesktopAccessResult|{kind:'thrown';error:unknown};cleanup:DesktopCleanupEvidence[]};
+export type DesktopAccessObservation = {ok:true;value:object}|{ok:false;outcome:DesktopAccessResult};
+export type DesktopScreenshotObservation = {ok:true;path:string}|{ok:false;outcome:DesktopAccessResult};
 export type DesktopNativeEffect = {ok:boolean;receipt:CommandReceipt};
 export interface DesktopAccessibilityLimits {maxDepth:number;maxNodes:number}
 export interface WindowsDeviceAccessPorts<Target extends DesktopAccessTarget,Helper> {

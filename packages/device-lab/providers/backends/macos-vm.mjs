@@ -9,6 +9,7 @@ import { macosProviderInstanceReferenced, managedProviderResource, snapshotProvi
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
 import { createDesktopDeviceAccess } from "../application/desktop-device-access.mjs";
+import { createDesktopAccessResult } from "../adapters/desktop-access-result.mjs";
 import { commandPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath, validateLocalReferencePath } from "../policy/files.mjs";
@@ -1082,15 +1083,7 @@ const macosAccessPorts = {
 };
 const macosAccess = createDesktopDeviceAccess(macosAccessPorts);
 
-/** @param {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} outcome */
-function macosAccessResult(outcome) {
-    if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.value);
-    if (outcome.kind === "text") return textResult(false, outcome.text);
-    if (outcome.kind === "command-failure") return fail(outcome.receipt);
-    if (outcome.kind === "native") return outcome.value;
-    return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
-}
+const macosAccessResult = createDesktopAccessResult({jsonResult,textResult,fail});
 
 /** @param {import('../domain/desktop-control-transfer.mjs').DesktopOutcome} outcome */
 function macosDesktopResult(outcome) {

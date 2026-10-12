@@ -11,6 +11,7 @@ import { X11_WINDOW_LIST_COMMAND, parseX11WindowList } from "./window-list.mjs";
 import { X11_DRAG_COMMAND } from "./desktop-input.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
 import { createDisplayDeviceAccess } from "../application/desktop-device-access.mjs";
+import { createDesktopAccessResult } from "../adapters/desktop-access-result.mjs";
 
 export function x11Available() {
     if (!existsSync("/usr/bin/xdotool") && !existsSync("/bin/xdotool")) return false;
@@ -98,6 +99,7 @@ const displayAccessPorts = {
     disposeScreenshot: stage => { rmSync(stage.tempRoot, { recursive: true, force: true }); return undefined; },
 };
 const displayAccess = createDisplayDeviceAccess(displayAccessPorts);
+const displayAccessResult = createDesktopAccessResult({jsonResult,textResult,fail});
 
 export function currentDisplayTarget() { return displayAccess.current(); }
 
@@ -106,13 +108,7 @@ export async function handleDisplayTool(name, args) {
     switch (name) {
         case "display_current":
         case "display_screenshot": {
-            const outcome = await displayAccess.handle(name);
-            if (!outcome) return undefined;
-            if (outcome.kind === "json") return jsonResult(outcome.value);
-            if (outcome.kind === "command-failure") return fail(outcome.receipt);
-            if (outcome.kind === "native") return outcome.value;
-            if (outcome.kind === "text") return textResult(false, outcome.text);
-            return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
+            return displayAccessResult(await displayAccess.handle(name));
         }
 
         default: {

@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDesktopDeviceAccess, createDisplayDeviceAccess } from "../../../packages/device-lab/providers/application/desktop-device-access.mjs";
+import { createDesktopAccessResult } from "../../../packages/device-lab/providers/adapters/desktop-access-result.mjs";
+import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
+import type { DeviceArguments, DeviceRequestPorts, ProviderRequest } from "../../../device-lab-mcp/src/ports/device-request.mjs";
 import type { WindowsDeviceAccessPorts, MacosDeviceAccessPorts, X11DeviceAccessPorts } from "../../../packages/device-lab/providers/ports/desktop-device-access.mjs";
 
 type Target = { id: string };
@@ -16,6 +19,54 @@ function windowsPorts(): WindowsDeviceAccessPorts<Target, Helper> {
 type Discovery = { available: boolean; ssh: string; scp: string };
 type Bridge = { target: string };
 type Stage = { localPath: string; remotePath: string };
+type Reply = { isError?: boolean; content: { type: string; text?: string; data?: unknown; mimeType?: string }[] };
+const nativeResponses = await vi.importActual<{
+    jsonResult(value: unknown): Reply;
+    textResult(ok: boolean, text: string): Reply;
+    fail(receipt: { status: number | null; stdout: string; stderr: string }): Reply;
+}>("../../../packages/device-lab/providers/responses.mjs");
+const { actionResult } = await vi.importActual<{
+    actionResult(name:string,operation:string,result:Reply,options:{detail?:boolean}):Reply;
+}>("../../../device-lab-mcp/src/action-output.mjs");
+
+function publicScreenshotRequest(macos:ProviderRequest<Reply>,display:ProviderRequest<Reply>) {
+    const unexpected = ():never => { throw new Error("unexpected-public-screenshot-effect"); };
+    const empty = () => [];
+    const unhandled = () => undefined;
+    const ports = {
+        OWNER_DEVICE_ID_PATTERN: /^(guest|x11-current-display)$/,
+        OPERATION_TOOLS: [{ name: "device_screenshot", inputSchema: { required: ["deviceId"] } }],
+        DEVICE_FLOW_TOOL_NAMES: [], now: () => 0, ownerId: () => "owner", readOwnerDevices: empty,
+        currentDisplayTarget: unexpected,
+        listAndroidDevices: empty, listAndroidRealDevices: empty, listIosDevices: empty, listIosRealDevices: empty,
+        listMacosDevices: () => [{ id: "guest", backend: "macos-vm" }], listLinuxVmDevices: empty,
+        listWindowsDevices: empty, listWindowsVmDevices: empty,
+        androidDiscovery: unexpected, iosDiscovery: unexpected, iosRealDiscovery: unexpected,
+        androidBackend: unexpected, androidRealBackend: unexpected, iosBackend: unexpected, iosRealBackend: unexpected,
+        macosBackend: unexpected, linuxVmBackend: unexpected, windowsBackend: unexpected, windowsVmBackend: unexpected,
+        handleAndroidTool: unhandled, handleAndroidRealTool: unhandled, handleIosTool: unhandled,
+        handleIosRealTool: unhandled, handleWindowsTool: unhandled, handleLinuxVmManagementTool: unhandled,
+        handleLinuxVmTool: unhandled, handleMacosTool: macos, handleDisplayTool: display,
+        observeBrokerStatus: unexpected, observeBrokerBackends: unexpected, observeBrokerInventory: unexpected,
+        invokeBrokerLifecycle: unexpected, brokerDeviceTool: unexpected, brokerPhysical: unexpected,
+        ensureMobileSession: unexpected, observeMobileSessionStatus: unexpected, executeMobileEffect: unexpected,
+        observeActiveApp: unexpected, presentActiveAppWait: unexpected, implicitBrokerProbeOptions: () => null,
+        withBrokerOperation: async <T>(operation:()=>Promise<T>) => operation(),
+        normalizeToolArgs: (args:unknown) => args as DeviceArguments,
+        normalizePublicToolArgs: (_name:string,args:unknown) => args as DeviceArguments,
+        toolInputError: () => null, toolOperation: (name:string) => name,
+        flowOperationAllowed: unexpected, flowStepArguments: unexpected, evaluateDestructivePolicy: () => ({ ok: true }),
+        presentBrokerReceipt: unexpected, presentBrokerTool: unexpected, presentBrokerLifecycle: unexpected,
+        presentBackendCatalog: unexpected, presentMobileObservation: unexpected, presentSourceWait: unexpected,
+        jsonResult: nativeResponses.jsonResult, textResult: nativeResponses.textResult,
+        flowJsonResult: unexpected, compactToolValue: unexpected,
+        actionResult,
+        invokeBrokerListFiles: unexpected, listDirectDeviceFiles: unexpected, listFilesFromExecResult: unexpected,
+        availableDevices: unexpected, startBootTimeoutMs: unexpected, finishStartReadiness: unexpected,
+        cropScreenshotResult: unexpected, createWaitBudget: unexpected, runDeviceFlow: unexpected,
+    } satisfies DeviceRequestPorts<Reply>;
+    return createDeviceRequest(ports);
+}
 function macosFixture() {
     const state = { remoteCleaned: false, disposed: false };
     const ports: MacosDeviceAccessPorts<Target, Discovery, Bridge, Stage> = {
@@ -134,10 +185,8 @@ describe("desktop device access policy", () => {
         const primary = new Error("copy threw"), remote = new Error("remote cleanup threw");
         f.ports.copy = () => { throw primary; };
         f.ports.cleanupRemote = () => { f.state.remoteCleaned = true; throw remote; };
-        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {}).catch(error => error);
-        expect(failure).toBeInstanceOf(AggregateError);
-        expect(failure.errors).toEqual([primary, remote]);
-        expect(failure.cause).toBe(primary);
+        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {});
+        expect(failure).toEqual({ kind: "cleanup-failure", primary: { kind: "thrown", error: primary }, cleanup: [{ operation: "remote", evidence: remote }] });
         expect(f.state.disposed).toBe(true);
     });
 
@@ -148,11 +197,8 @@ describe("desktop device access policy", () => {
         f.ports.capture = () => ({ ok: false, receipt });
         f.ports.cleanupRemote = () => { f.state.remoteCleaned = true; throw remote; };
         f.ports.disposeScreenshot = () => { f.state.disposed = true; throw local; };
-        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {}).catch(error => error);
-        expect(failure.errors).toEqual([{ kind: "command-failure", receipt }, remote, local]);
-        expect(failure.cause).toEqual({ kind: "command-failure", receipt });
-        expect(failure.outcome).toEqual({ kind: "command-failure", receipt });
-        expect(failure.outcome.receipt).toBe(receipt);
+        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {});
+        expect(failure).toEqual({ kind: "cleanup-failure", primary: { kind: "command-failure", receipt }, cleanup: [{ operation: "remote", evidence: remote }, { operation: "local", evidence: local }] });
         expect(f.state.disposed).toBe(true);
     });
 
@@ -160,9 +206,8 @@ describe("desktop device access policy", () => {
         const f = macosFixture();
         const local = new Error("local disposal threw");
         f.ports.disposeScreenshot = () => { f.state.disposed = true; throw local; };
-        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {}).catch(error => error);
-        expect(failure.errors).toEqual([local]);
-        expect(failure.outcome).toEqual({ kind: "image", data: "native-image" });
+        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {});
+        expect(failure).toEqual({ kind: "cleanup-failure", primary: { kind: "image", data: "native-image" }, cleanup: [{ operation: "local", evidence: local }] });
         expect(f.state).toEqual({ remoteCleaned: true, disposed: true });
     });
 
@@ -170,9 +215,8 @@ describe("desktop device access policy", () => {
         const f = macosFixture();
         const receipt = { status: 9, stdout: "", stderr: "cleanup denied" };
         f.ports.cleanupRemote = () => { f.state.remoteCleaned = true; return { ok: false, receipt }; };
-        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {}).catch(error => error);
-        expect(failure.errors[0].receipt).toBe(receipt);
-        expect(failure.outcome).toEqual({ kind: "image", data: "native-image" });
+        const failure = await createDesktopDeviceAccess(f.ports).handle("device_screenshot", {});
+        expect(failure).toEqual({ kind: "cleanup-failure", primary: { kind: "image", data: "native-image" }, cleanup: [{ operation: "remote", evidence: receipt }] });
         expect(f.state.disposed).toBe(true);
     });
 
@@ -202,9 +246,8 @@ describe("X11 capture finalization", () => {
             capture: () => { if (operation === "capture") throw primary; return { ok: true, receipt: { status: 0, stdout: "", stderr: "" } }; },
             readScreenshot: () => { throw primary; }, disposeScreenshot: () => { throw local; },
         };
-        const failure = await createDisplayDeviceAccess(ports).handle("display_screenshot").catch(error => error);
-        expect(failure.errors).toEqual([primary, local]);
-        expect(failure.cause).toBe(primary);
+        const failure = await createDisplayDeviceAccess(ports).handle("display_screenshot");
+        expect(failure).toEqual({ kind: "cleanup-failure", primary: { kind: "thrown", error: primary }, cleanup: [{ operation: "local", evidence: local }] });
     });
 
     it("retains successful X11 image evidence when disposal fails", async () => {
@@ -215,9 +258,8 @@ describe("X11 capture finalization", () => {
             capture: () => ({ ok: true, receipt: { status: 0, stdout: "", stderr: "" } }), readScreenshot: () => ({ kind: "image", data: "x11-image" }),
             disposeScreenshot: () => { throw local; },
         };
-        const failure = await createDisplayDeviceAccess(ports).handle("display_screenshot").catch(error => error);
-        expect(failure.errors).toEqual([local]);
-        expect(failure.outcome).toEqual({ kind: "image", data: "x11-image" });
+        const failure = await createDisplayDeviceAccess(ports).handle("display_screenshot");
+        expect(failure).toEqual({ kind: "cleanup-failure", primary: { kind: "image", data: "x11-image" }, cleanup: [{ operation: "local", evidence: local }] });
     });
     it.each(["refused", "threw"])("disposes its allocated stage when native capture %s", async mode => {
         const stage = { localPath: "/owned/x11.png" };
@@ -235,5 +277,66 @@ describe("X11 capture finalization", () => {
         if (mode === "threw") await expect(result).rejects.toBe(primary);
         else await expect(result).resolves.toEqual({ kind: "command-failure", receipt });
         expect(disposed).toBe(true);
+    });
+});
+
+describe("public screenshot cleanup results", () => {
+    it.each(["macos", "x11"] as const)("returns capture and cleanup failures through the %s MCP request dispatcher", async variant => {
+        const receipt = { status: 7, stdout: "capture failure output", stderr: "capture refused" };
+        const cleanup = new Error("owned cleanup refused");
+        let disposed = false;
+        const render = createDesktopAccessResult(nativeResponses);
+        const f = macosFixture();
+        f.ports.capture = () => ({ ok: false, receipt });
+        f.ports.cleanupRemote = () => { f.state.remoteCleaned = true; throw cleanup; };
+        const x11: X11DeviceAccessPorts<Target, Stage> = {
+            variant: "x11", owner: () => "owner", display: () => ":1", available: () => true,
+            publicTarget: target => target, stageScreenshot: () => ({ localPath: "/owned/x11.png", remotePath: "" }),
+            capture: () => ({ ok: false, receipt }),
+            readScreenshot: () => { throw new Error("failed-native-capture-must-not-read"); },
+            disposeScreenshot: () => { disposed = true; throw cleanup; },
+        };
+        const macos = createDesktopDeviceAccess(f.ports), display = createDisplayDeviceAccess(x11);
+        const request = publicScreenshotRequest(
+            async (name, args) => render(await macos.handle(name, args)),
+            async name => render(await display.handle(name)),
+        );
+        const reply = await request.request("device_screenshot", { deviceId: variant === "macos" ? "guest" : "x11-current-display", broker: false });
+        expect(reply.isError).toBe(true);
+        expect(reply.content.map(item => item.type)).toEqual(["text"]);
+        const diagnostic = JSON.parse(reply.content[0].text ?? "null");
+        expect(diagnostic).toMatchObject({ ok: false, error: "desktop-screenshot-cleanup-failed", cause: { kind: "command-failure" }, cleanup: [{ operation: variant === "macos" ? "remote" : "local", evidence: { message: "owned cleanup refused" } }] });
+        expect(diagnostic.cause.result.isError).toBe(true);
+        expect(JSON.stringify(diagnostic.cause.result)).toContain("capture refused");
+        expect(diagnostic.result).toBeUndefined();
+        expect(variant === "macos" ? f.state.disposed : disposed).toBe(true);
+    });
+
+    it.each(["macos", "x11"] as const)("preserves completed image bytes through %s MCP dispatch when disposal fails", async variant => {
+        const cleanup = new Error("local image disposal refused");
+        const render = createDesktopAccessResult(nativeResponses);
+        let disposed = false;
+        const f = macosFixture();
+        f.ports.disposeScreenshot = () => { f.state.disposed = true; throw cleanup; };
+        const x11: X11DeviceAccessPorts<Target, Stage> = {
+            variant: "x11", owner: () => "owner", display: () => ":1", available: () => true,
+            publicTarget: target => target, stageScreenshot: () => ({ localPath: "/owned/x11.png", remotePath: "" }),
+            capture: () => ({ ok: true, receipt: { status: 0, stdout: "", stderr: "" } }),
+            readScreenshot: () => ({ kind: "image", data: "x11-completed-image" }),
+            disposeScreenshot: () => { disposed = true; throw cleanup; },
+        };
+        const macos = createDesktopDeviceAccess(f.ports), display = createDisplayDeviceAccess(x11);
+        const request = publicScreenshotRequest(
+            async (name, args) => render(await macos.handle(name, args)),
+            async name => render(await display.handle(name)),
+        );
+        const reply = await request.request("device_screenshot", { deviceId: variant === "macos" ? "guest" : "x11-current-display", broker: false });
+        expect(reply.isError).toBe(true);
+        expect(reply.content.map(item => item.type)).toEqual(["text", "image"]);
+        const diagnostic = JSON.parse(reply.content[0].text ?? "null");
+        expect(diagnostic).toMatchObject({ ok: false, error: "desktop-screenshot-cleanup-failed", result: { kind: "image", completed: true }, cleanup: [{ operation: "local", evidence: { message: "local image disposal refused" } }] });
+        expect(reply.content[1]).toEqual({ type: "image", data: variant === "macos" ? "native-image" : "x11-completed-image", mimeType: "image/png" });
+        expect(variant === "macos" ? f.state.disposed : disposed).toBe(true);
+        if (variant === "macos") expect(f.state.remoteCleaned).toBe(true);
     });
 });
