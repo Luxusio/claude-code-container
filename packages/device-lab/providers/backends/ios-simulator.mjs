@@ -768,18 +768,29 @@ function performSimulatorEffect(xcrun, effect) {
 /** @param {string|null} [initialXcrun] */
 function createObservationAccess(initialXcrun = null) {
     let xcrun = initialXcrun;
+    /** @type {string|null} */
+    let appium = null;
     /** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../responses.mjs').IosAccessNativeResult>} */
     const observationPorts = {
         kind: "simulator",
         findDevice: id => findIosDevice(id),
-        discovery: () => iosDiscovery(),
-        appiumDiscovery: discovery => iosAppiumDiscovery(discovery),
-        backend: discovery => iosBackend(discovery),
+        discovery: () => {
+            const discovery = iosDiscovery();
+            xcrun = discovery.xcrun;
+            return discovery;
+        },
+        appiumDiscovery: discovery => {
+            const observed = iosAppiumDiscovery(/** @type {ReturnType<typeof iosDiscovery>|undefined} */ (discovery));
+            xcrun = observed.xcrun;
+            appium = observed.appium;
+            return observed;
+        },
+        backend: discovery => iosBackend(/** @type {ReturnType<typeof iosDiscovery>} */ (discovery)),
         targetStatus: device => withTargetStatus(device),
         withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios", id, operation),
         waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
         appiumEffect: performIosAppiumEffect,
-        spawnServer: spawnObservationAppium,
+        spawnServer: port => spawnObservationAppium(appium, port),
         inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
         waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
         refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
@@ -798,10 +809,10 @@ function createObservationAccess(initialXcrun = null) {
         textResult: (ok, message) => textResult(ok, message),
         commandFailure: command => fail(command),
         imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
-        verifyTarget: (executable, device) => { xcrun = executable; return resolveOwnedSimulatorTarget(executable, device); },
+        verifyTarget: device => resolveOwnedSimulatorTarget(xcrun, device),
         simulatorEffect: effect => performSimulatorEffect(xcrun, effect),
         missingPrerequisites: discovery => missingPrereqResult(discovery),
-        reconcileDevice: (device, discovery) => reconcileIosDevice(device, discovery),
+        reconcileDevice: (device, discovery) => reconcileIosDevice(device, /** @type {ReturnType<typeof iosDiscovery>} */ (discovery)),
         pathInContainer: (root, requested) => pathInsideContainer(root, requested),
         guardRead: (root, path) => ensureContainerPathForRead(root, path),
         listArgumentError: args => validateListFilesArgs(args),

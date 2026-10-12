@@ -5,8 +5,8 @@ import type { IosAccessDevice, IosSimulatorAccessPorts, IosPhysicalAccessPorts, 
 function simulatorPorts(device: IosAccessDevice): IosSimulatorAccessPorts<IosAccessDevice, object> {
     return {
         kind: "simulator", findDevice: () => device,
-        discovery: () => ({ available: true, xcrun: "xcrun", missing: [] }),
-        appiumDiscovery: () => ({ available: true, xcrun: "xcrun", appium: "appium", missing: [] }),
+        discovery: () => ({ available: true, missing: [] }),
+        appiumDiscovery: () => ({ available: true, missing: [] }),
         backend: () => ({ name: "ios-simulator" }), targetStatus: value => value,
         withDeviceOperation: async (_id, operation) => operation(),
         waitBudget: () => ({ timeoutMs: 100, remaining: () => 100, requestTimeout: () => 100, pause: async () => {} }),
@@ -33,6 +33,53 @@ function simulatorPorts(device: IosAccessDevice): IosSimulatorAccessPorts<IosAcc
 }
 
 describe("iOS observation and access", () => {
+    it("starts a session for the admitted owned target on the selected port", async () => {
+        const device = { id: "owned", udid: "OWNED-UDID", appiumPort: 4823 };
+        const ports = simulatorPorts(device);
+        const allocatedPorts: number[] = [];
+        const spawn = ports.spawnServer;
+        ports.spawnServer = port => { allocatedPorts.push(port); return spawn(port); };
+        ports.verifyTarget = owned => ({ target: owned.udid! });
+        const effects: IosAccessAppiumEffect[] = [];
+        const effect = ports.appiumEffect;
+        ports.appiumEffect = request => { effects.push(request); return effect(request); };
+        expect(await createIosObservationAccess(ports).ensureSession("owned")).toMatchObject({
+            serverUrl: "http://127.0.0.1:4823", sessionId: "new-session",
+        });
+        expect(allocatedPorts).toEqual([4823]);
+        expect(effects).toContainEqual({ kind: "create-session", serverUrl: "http://127.0.0.1:4823",
+            target: "OWNED-UDID", deviceName: "owned", physical: false });
+    });
+
+    it.each(["device_exec", "device_screenshot", "device_reset", "mobile_wait_for_app", "mobile_dump_ui"])(
+        "refuses %s when the owned simulator target cannot be admitted", async name => {
+            const ports = simulatorPorts({ id: "owned" });
+            ports.verifyTarget = () => ({ error: "owned target disappeared" });
+            ports.spawnServer = () => { throw new Error("rejected target must not allocate a server"); };
+            ports.appiumEffect = async () => { throw new Error("rejected target must not contact Appium"); };
+            ports.simulatorEffect = () => { throw new Error("rejected target must not execute simulator effects"); };
+            ports.stageScreenshot = () => { throw new Error("rejected target must not allocate screenshot staging"); };
+            expect(await createIosObservationAccess(ports).request(name, {
+                deviceId: "owned", eraseSimulator: true, bundleId: "com.wanted", command: "pwd",
+            })).toEqual({ ok: false, message: "owned target disappeared" });
+        },
+    );
+
+    it("reports physical host presence from native discovery without starting automation", async () => {
+        const device = { id: "phone", udid: "PHONE-UDID" };
+        const discovery = { available: true, missing: [] };
+        const hostDevice = { udid: "PHONE-UDID", name: "Connected phone" };
+        const ports: IosPhysicalAccessPorts<IosAccessDevice, object> = {
+            ...simulatorPorts(device), kind: "physical", discovery: () => discovery,
+            refreshLease: () => { throw new Error("passive status must not acquire a lease"); },
+            hostDevices: () => [hostDevice],
+        };
+        ports.spawnServer = () => { throw new Error("passive status must not start automation"); };
+        ports.appiumEffect = async () => { throw new Error("passive status must not contact Appium"); };
+        expect(await createIosObservationAccess(ports).request("device_status", { deviceId: "phone" }))
+            .toMatchObject({ device, hostDevice, appium: { lazy: true, physical: true } });
+    });
+
     it("rejects a positive simulator probe completed at the deadline and starts no fallback", async () => {
         const ports = simulatorPorts({ id: "owned" });
         let remaining = 10;

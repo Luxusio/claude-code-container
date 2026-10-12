@@ -189,9 +189,9 @@ async function terminateOwnedAppiumProcess(appium, label, timeoutMs = 1000) {
     return terminateOwnedRuntimeProcess({ ...appium, pid: appium?.serverPid }, label, { timeoutMs });
 }
 
-async function stopOwnedAppium(appium, label) { return observationAccess.stopOwnedAppium(appium, label); }
+async function stopOwnedAppium(appium, label) { return createObservationAccess().stopOwnedAppium(appium, label); }
 
-async function ensureIosRealAppiumSession(deviceId) { return observationAccess.ensureSession(deviceId); }
+async function ensureIosRealAppiumSession(deviceId) { return createObservationAccess().ensureSession(deviceId); }
 
 function currentIosRealObservationDevice(deviceId, attachment, session) {
     const current = findIosRealDevice(deviceId);
@@ -223,7 +223,7 @@ async function handleIosRealToolUnlocked(name, args) {
     if (outcome?.kind === "json") return jsonResult(outcome.payload);
     if (outcome?.kind === "text") return textResult(false, outcome.message);
     if (outcome?.kind === "command-failure") return fail(outcome.command);
-    const access = await observationAccess.request(name, args);
+    const access = await createObservationAccess().request(name, args);
     if (access !== undefined) return access;
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
@@ -401,40 +401,48 @@ function spawnObservationAppium(executable, port) {
     };
 }
 
-/** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../responses.mjs').IosAccessNativeResult>} */
-const observationPorts = {
-    kind: "physical",
-    findDevice: id => findIosRealDevice(id),
-    discovery: () => iosRealDiscovery(),
-    appiumDiscovery: discovery => iosAppiumDiscovery(discovery),
-    backend: discovery => iosRealBackend(discovery),
-    targetStatus: device => withTargetStatus(device),
-    withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios-device", id, operation),
-    waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
-    appiumEffect: performIosAppiumEffect,
-    spawnServer: spawnObservationAppium,
-    inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
-    waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
-    refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
-    terminateRuntime: (runtime, label) => terminateOwnedAppiumProcess(runtime, label),
-    isAlive: pid => processIsAlive(pid),
-    publishAppium: (id, expected, replacement, timestamp) => transitionAppiumGeneration(updateIosRealDevice, id, expected, replacement, timestamp),
-    updateAppiumPort: (id, runtimeId, port, timestamp) => updateIosRealDevice(id, item => item.appium?.runtimeId === runtimeId
-        ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
-    timestamp: () => now(),
-    runtimeId: () => randomUUID(),
-    serverUrlForPort: port => `http://127.0.0.1:${port}`,
-    portForDevice: id => appiumPortForDevice(id),
-    pause: milliseconds => sleep(milliseconds),
-    diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
-    jsonResult: value => jsonResult(value),
-    textResult: (ok, message) => textResult(ok, message),
-    commandFailure: command => fail(command),
-    imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
-    hostDevices: discovery => hostIosDevices(discovery).devices,
-    refreshLease: (device, budget) => refreshIosRealDeviceLease(device, budget),
-    guardObservation: (id, original, session, budget) => { guardIosRealObservation(id, original, session, budget); return undefined; },
-    checkObservation: (id, original, session) => { currentIosRealObservationDevice(id, original, session); return undefined; },
-};
+function createObservationAccess() {
+    /** @type {string|null} */
+    let appium = null;
+    /** @type {import('../ports/ios-observation-access.mjs').IosObservationAccessPorts<import('../ports/ios-observation-access.mjs').IosAccessDevice, import('../responses.mjs').IosAccessNativeResult>} */
+    const observationPorts = {
+        kind: "physical",
+        findDevice: id => findIosRealDevice(id),
+        discovery: () => iosRealDiscovery(),
+        appiumDiscovery: discovery => {
+            const observed = iosAppiumDiscovery(/** @type {ReturnType<typeof iosDiscovery>|undefined} */ (discovery));
+            appium = observed.appium;
+            return observed;
+        },
+        backend: discovery => iosRealBackend(/** @type {ReturnType<typeof iosRealDiscovery>} */ (discovery)),
+        targetStatus: device => withTargetStatus(device),
+        withDeviceOperation: (id, operation) => withOwnerDeviceOperation("ios-device", id, operation),
+        waitBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+        appiumEffect: performIosAppiumEffect,
+        spawnServer: port => spawnObservationAppium(appium, port),
+        inspectRuntime: runtime => inspectProcessIdentity(runtime?.processIdentity, runtime?.pid),
+        waitIdentity: (pid, timeoutMs) => waitForProcessIdentity(pid, timeoutMs),
+        refreshRuntime: runtime => refreshOwnedRuntimeProcessIdentity(runtime),
+        terminateRuntime: (runtime, label) => terminateOwnedAppiumProcess(runtime, label),
+        isAlive: pid => processIsAlive(pid),
+        publishAppium: (id, expected, replacement, timestamp) => transitionAppiumGeneration(updateIosRealDevice, id, expected, replacement, timestamp),
+        updateAppiumPort: (id, runtimeId, port, timestamp) => updateIosRealDevice(id, item => item.appium?.runtimeId === runtimeId
+            ? { ...item, appiumPort: port, updatedAt: timestamp } : item),
+        timestamp: () => now(),
+        runtimeId: () => randomUUID(),
+        serverUrlForPort: port => `http://127.0.0.1:${port}`,
+        portForDevice: id => appiumPortForDevice(id),
+        pause: milliseconds => sleep(milliseconds),
+        diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
+        jsonResult: value => jsonResult(value),
+        textResult: (ok, message) => textResult(ok, message),
+        commandFailure: command => fail(command),
+        imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
+        hostDevices: discovery => hostIosDevices(/** @type {ReturnType<typeof iosRealDiscovery>} */ (discovery)).devices,
+        refreshLease: (device, budget) => refreshIosRealDeviceLease(device, budget),
+        guardObservation: (id, original, session, budget) => { guardIosRealObservation(id, original, session, budget); return undefined; },
+        checkObservation: (id, original, session) => { currentIosRealObservationDevice(id, original, session); return undefined; },
+    };
 
-const observationAccess = createIosObservationAccess(observationPorts);
+    return createIosObservationAccess(observationPorts);
+}

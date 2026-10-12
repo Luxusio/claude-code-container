@@ -68,7 +68,7 @@ export function createIosObservationAccess(ports) {
         if (!discovery.available) return { error: `${physical ? "iOS real-device" : "iOS"} Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}` };
         let target = device.udid;
         if (ports.kind === "simulator") {
-            const owned = ports.verifyTarget(discovery.xcrun, device);
+            const owned = ports.verifyTarget(device);
             if (owned.error !== undefined) return { error: owned.error };
             target = owned.target;
         }
@@ -91,7 +91,7 @@ export function createIosObservationAccess(ports) {
         device = stale.device;
         if (!device) return { unknown: true };
         const runtimeId = ports.runtimeId();
-        const child = reusable ? null : ports.spawnServer(discovery.appium, port);
+        const child = reusable ? null : ports.spawnServer(port);
         const identity = child?.pid ? await ports.waitIdentity(child.pid, 1000) : null;
         if (child?.pid && !identity) {
             try { child.abortStartup(); } catch { /* startup child already exited */ }
@@ -205,7 +205,7 @@ export function createIosObservationAccess(ports) {
         if (name === "device_status") {
             const discovery = ports.discovery();
             if (ports.kind === "physical") return ports.jsonResult({ device: ports.targetStatus(device), backend: ports.backend(discovery),
-                hostDevice: discovery.xcrun ? ports.hostDevices(discovery).find(item => item.udid === device.udid) || null : null,
+                hostDevice: ports.hostDevices(discovery).find(item => item.udid === device.udid) || null,
                 appium: automationStatus(device, discovery) });
             return ports.jsonResult({ device: ports.targetStatus(ports.reconcileDevice(device, discovery)), backend: ports.backend(discovery), automation: automationStatus(device) });
         }
@@ -214,7 +214,7 @@ export function createIosObservationAccess(ports) {
             if (ports.kind === "physical") return ports.textResult(false, iosAccessUnsupported("physical", name));
             const discovery = ports.discovery();
             if (!discovery.available) return ports.missingPrerequisites(discovery);
-            const target = ports.verifyTarget(discovery.xcrun, device);
+            const target = ports.verifyTarget(device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
             const command = ports.simulatorEffect({ kind: "exec", target: target.target, command: args.command });
             return command.ok ? ports.jsonResult({ stdout: command.stdout, stderr: command.stderr, status: command.status }) : ports.commandFailure(command);
@@ -222,7 +222,7 @@ export function createIosObservationAccess(ports) {
         if (name === "device_screenshot" && ports.kind === "simulator") {
             const discovery = ports.discovery();
             if (!discovery.available) return ports.missingPrerequisites(discovery);
-            const target = ports.verifyTarget(discovery.xcrun, device);
+            const target = ports.verifyTarget(device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
             const stage = ports.stageScreenshot();
             try {
@@ -236,7 +236,7 @@ export function createIosObservationAccess(ports) {
             if (!args.bundleId) return ports.jsonResult({ ok: false, error: "list-files-bundle-id-required", detail: "iOS Simulator listing requires bundleId to select an app container." });
             const discovery = ports.discovery();
             if (!discovery.available) return ports.missingPrerequisites(discovery);
-            const target = ports.verifyTarget(discovery.xcrun, device);
+            const target = ports.verifyTarget(device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
             const command = ports.simulatorEffect({ kind: "app-container", target: target.target, bundleId: args.bundleId, containerType: args.containerType || "data" });
             if (!command.ok) return ports.commandFailure(command);
@@ -255,7 +255,7 @@ export function createIosObservationAccess(ports) {
             const discovery = ports.discovery();
             if (!discovery.available) return ports.missingPrerequisites(discovery);
             if (device.recording) return ports.textResult(false, `Refusing to erase ${args.deviceId} while a recording is active or pending finalization; stop the recording first`);
-            const target = ports.verifyTarget(discovery.xcrun, device);
+            const target = ports.verifyTarget(device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
             const command = ports.simulatorEffect({ kind: "erase", target: target.target });
             if (!command.ok) return ports.commandFailure(command);
@@ -270,7 +270,7 @@ export function createIosObservationAccess(ports) {
             if (!args.bundleId) return ports.textResult(false, "iOS Simulator wait-for-app requires bundleId");
             const discovery = ports.discovery();
             if (!discovery.available) return ports.missingPrerequisites(discovery);
-            const target = ports.verifyTarget(discovery.xcrun, device);
+            const target = ports.verifyTarget(device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
             const outcome = await waitForApp(target.target, args.bundleId, args.timeoutMs, args.intervalMs);
             return outcome.error ? ports.commandFailure(outcome.error) : ports.jsonResult({ ...outcome, bundleId: args.bundleId, provider: "simctl" });

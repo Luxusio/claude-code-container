@@ -6,6 +6,16 @@ import type { IosAccessDevice, IosAccessSessionOutcome, IosSimulatorAccessPorts,
 function consumedCapabilities(simulator: IosSimulatorAccessPorts<IosAccessDevice, object>, physical: IosPhysicalAccessPorts<IosAccessDevice, object>): void {
     const screenshot: Promise<object | undefined> = createIosObservationAccess(simulator).request("device_screenshot", { deviceId: "owned" });
     const session: Promise<IosAccessSessionOutcome<IosAccessDevice>> = createIosObservationAccess(physical).ensureSession("phone");
+    simulator.spawnServer(4723);
+    simulator.verifyTarget({ id: "owned", udid: "OWNED-UDID" });
+    // @ts-expect-error Server allocation accepts a semantic port, not an executable path.
+    simulator.spawnServer("/usr/bin/appium", 4723);
+    // @ts-expect-error Target admission accepts the owned device, not an executable path.
+    simulator.verifyTarget("/usr/bin/xcrun", { id: "owned" });
+    // @ts-expect-error Native executable discovery is opaque to the inward capability contract.
+    simulator.appiumDiscovery().appium;
+    // @ts-expect-error Physical status discovery does not expose a native executable selector.
+    physical.discovery().xcrun;
     const { publishAppium, ...withoutPublication } = simulator;
     // @ts-expect-error Session creation requires conditional native generation publication.
     createIosObservationAccess(withoutPublication);

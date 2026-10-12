@@ -39,13 +39,8 @@ export interface IosAccessArgs {
 export interface IosAccessDiscovery {
     available: boolean;
     missing: string[];
-    xcrun: string | null;
 }
-export interface IosAccessAppiumDiscovery extends IosAccessDiscovery {
-    appium: string | null;
-    xcuitestDriver?: string | null;
-    xcodebuild?: string | null;
-}
+export type IosAccessAppiumDiscovery = IosAccessDiscovery;
 export interface IosAccessCommand {
     status: number | null;
     stdout: string;
@@ -129,7 +124,7 @@ export interface IosAccessCommonPorts<Device extends IosAccessDevice, Result> {
     withDeviceOperation<T>(id: string | undefined, operation: () => T | Promise<T>): Promise<T>;
     waitBudget(timeoutMs?: number, intervalMs?: number): IosAccessBudget;
     appiumEffect<Effect extends IosAccessAppiumEffect>(effect: Effect): Promise<IosAccessAppiumResult<Effect>>;
-    spawnServer(executable: string | null, port: number): IosAccessChild;
+    spawnServer(port: number): IosAccessChild;
     inspectRuntime(runtime: IosAccessRuntime): { status: string };
     waitIdentity(pid: number, timeoutMs: number): Promise<unknown | null>;
     refreshRuntime(runtime: IosAccessRuntime): IosAccessRuntime;
@@ -152,7 +147,7 @@ export interface IosAccessCommonPorts<Device extends IosAccessDevice, Result> {
 }
 export interface IosSimulatorAccessPorts<Device extends IosAccessDevice, Result> extends IosAccessCommonPorts<Device, Result> {
     kind: "simulator";
-    verifyTarget(xcrun: string | null, device: Device): { target: string; error?: never } | { error: string; target?: never };
+    verifyTarget(device: Device): { target: string; error?: never } | { error: string; target?: never };
     simulatorEffect<Effect extends IosAccessSimulatorEffect>(effect: Effect): IosAccessSimulatorResult<Effect>;
     missingPrerequisites(discovery: IosAccessDiscovery): Result;
     reconcileDevice(device: Device, discovery: IosAccessDiscovery): Device;
