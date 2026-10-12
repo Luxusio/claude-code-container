@@ -230,8 +230,7 @@ it.each(["windows", "macos"] as const)("%s click preserves numeric coercion", as
         x: "2",
         y: "3",
         helperTimeoutMs: 123
-    }
-    as unknown as DesktopArguments;
+    } as unknown as DesktopArguments;
     expect((await create(p).handle("device_click", args))?.kind).toBe("completed");
     expect(calls).toEqual([[target, 2, 3, "left", 123]]);
 });
