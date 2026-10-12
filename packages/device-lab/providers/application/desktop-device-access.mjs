@@ -19,47 +19,57 @@ export function createDesktopDeviceAccess(ports) {
             return {kind:'json',value:{device:ports.publicDevice(target,discovery),backend:ports.backend(discovery)}};
         }
         if (ports.variant === 'windows') {
-            /** @type {import('../ports/desktop-device-access.mjs').WindowsAccessRequest} */
-            const request = name === 'device_exec' ? {type:'exec',command:args.command} : name === 'device_screenshot' ? {type:'screenshot'} : {type:'accessibility_snapshot',...desktopAccessibilityLimits(args)};
-            const result = await ports.request(target,request,args.helperTimeoutMs);
-            if (result.error !== undefined) return {kind:'text',text:result.error};
-            const response = result.response;
-            if (!response.ok) return {kind:'text',text:response.error || (name === 'device_exec' ? 'Windows helper exec failed' : name === 'device_screenshot' ? 'Windows helper screenshot failed' : 'Windows helper accessibility snapshot failed')};
-            if (name === 'device_exec') return {kind:'json',value:{stdout:response.stdout||'',stderr:response.stderr||'',status:response.status??0,provider:'windows-helper'}};
-            if (name === 'device_accessibility_snapshot') return {kind:'json',value:{provider:response.accessibility?.provider||'windows-uiautomation',accessibility:response.accessibility||null,response}};
-            const path = ports.screenshotPath(result.helper,response);
-            if (!path) return {kind:'text',text:'Windows helper screenshot output is missing or unsafe'};
+            const result = name === 'device_exec'
+                ? await ports.exec(target,args.command,args.helperTimeoutMs)
+                : name === 'device_screenshot'
+                    ? await ports.screenshot(target,args.helperTimeoutMs)
+                    : await ports.accessibility(target,desktopAccessibilityLimits(args),args.helperTimeoutMs);
+            if (!result.ok) return result.outcome;
+            if (name !== 'device_screenshot') return {kind:'json',value:/** @type {{ok:true,value:object}} */ (result).value};
+            const path = /** @type {{ok:true,path:string}} */ (result).path;
             const image = ports.readScreenshot(path);
             if (image.kind === 'missing') return {kind:'text',text:`Windows helper screenshot output missing: ${path}`};
             if (image.kind === 'invalid') return {kind:'text',text:`Windows helper screenshot output is invalid: ${image.reason}`};
             return image;
         }
         if (name === 'device_accessibility_snapshot') {
-            const limits = desktopAccessibilityLimits(args);
-            const helper = ports.helper(target,[String(limits.maxDepth),String(limits.maxNodes)],args.helperTimeoutMs);
-            if (helper.error !== undefined) return {kind:'native',value:helper.error};
-            if (helper.result.status !== 0) return {kind:'command-failure',receipt:helper.result};
-            const payload = ports.parseHelper(helper.result.stdout);
-            return {kind:'json',value:{provider:payload?.accessibility?.provider||payload?.provider||'macos-system-events',remoteScriptPath:helper.remoteScriptPath,accessibility:payload?.accessibility||null,response:payload,stdout:helper.result.stdout,stderr:helper.result.stderr,status:helper.result.status}};
+            const result = ports.accessibility(target,desktopAccessibilityLimits(args),args.helperTimeoutMs);
+            return result.ok ? {kind:'json',value:result.value} : result.outcome;
         }
         const selected = ports.bridge(target,name === 'device_exec' ? 'device_exec' : 'device_screenshot');
         if (!selected.ok) return {kind:'native',value:selected.result};
         if (name === 'device_exec') {
-            const result = ports.exec(target,selected.bridge,args.command,args.helperTimeoutMs);
-            return {kind:'json',value:{stdout:result.stdout,stderr:result.stderr,status:result.status,provider:'ssh'}};
+            return {kind:'json',value:ports.exec(target,selected.bridge,args.command,args.helperTimeoutMs)};
         }
         const stage = ports.stageScreenshot(target);
+        /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} */
+        let outcome;
+        /** @type {unknown[]} */
+        const failures = [];
         try {
             const capture = ports.capture(target,selected.bridge,stage,args.helperTimeoutMs);
-            if (capture.status !== 0) return {kind:'command-failure',receipt:capture};
-            const copy = ports.copy(target,selected.bridge,stage,args.helperTimeoutMs);
-            if (copy.status !== 0) return {kind:'command-failure',receipt:copy};
-            const image = ports.readScreenshot(stage);
-            return image.kind === 'image' ? image : {kind:'text',text:image.message};
-        } finally {
-            ports.cleanupRemote(target,selected.bridge,stage,args.helperTimeoutMs);
-            ports.disposeScreenshot(stage);
+            if (!capture.ok) outcome = {kind:'command-failure',receipt:capture.receipt};
+            else {
+                const copy = ports.copy(target,selected.bridge,stage,args.helperTimeoutMs);
+                if (!copy.ok) outcome = {kind:'command-failure',receipt:copy.receipt};
+                else {
+                    const image = ports.readScreenshot(stage);
+                    outcome = image.kind === 'image' ? image : {kind:'text',text:image.message};
+                }
+            }
+        } catch (error) { failures.push(error); }
+        const primaryFailed = failures.length > 0;
+        try {
+            const cleanup = ports.cleanupRemote(target,selected.bridge,stage,args.helperTimeoutMs);
+            if (!cleanup.ok) failures.push(Object.assign(new Error('Remote screenshot cleanup failed'),{receipt:cleanup.receipt}));
+        } catch (error) { failures.push(error); }
+        try { ports.disposeScreenshot(stage); } catch (error) { failures.push(error); }
+        if (failures.length) {
+            if (primaryFailed && failures.length === 1) throw failures[0];
+            if (!primaryFailed && outcome && outcome.kind !== 'image') failures.unshift(outcome);
+            throw Object.assign(new AggregateError(failures,'Screenshot operation or cleanup failed',{cause:failures[0]}),{outcome});
         }
+        return outcome;
     }
     return {handle};
 }
@@ -75,12 +85,26 @@ export function createDisplayDeviceAccess(ports) {
         if (name === 'display_current') return {kind:'json',value:current()};
         if (name !== 'display_screenshot') return undefined;
         const stage = ports.stageScreenshot();
+        /** @type {import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined} */
+        let outcome;
+        /** @type {unknown[]} */
+        const failures = [];
         try {
             const result = ports.capture(stage);
-            if (result.status !== 0) return {kind:'command-failure',receipt:result};
-            const image = ports.readScreenshot(stage);
-            return image.kind === 'image' ? image : {kind:'text',text:image.message};
-        } finally { ports.disposeScreenshot(stage); }
+            if (!result.ok) outcome = {kind:'command-failure',receipt:result.receipt};
+            else {
+                const image = ports.readScreenshot(stage);
+                outcome = image.kind === 'image' ? image : {kind:'text',text:image.message};
+            }
+        } catch (error) { failures.push(error); }
+        const primaryFailed = failures.length > 0;
+        try { ports.disposeScreenshot(stage); } catch (error) { failures.push(error); }
+        if (failures.length) {
+            if (primaryFailed && failures.length === 1) throw failures[0];
+            if (!primaryFailed && outcome && outcome.kind !== 'image') failures.unshift(outcome);
+            throw Object.assign(new AggregateError(failures,'Screenshot operation or cleanup failed',{cause:failures[0]}),{outcome});
+        }
+        return outcome;
     }
     return {current,handle};
 }

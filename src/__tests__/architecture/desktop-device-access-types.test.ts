@@ -9,17 +9,19 @@ type Bridge = { target: string };
 type Stage = { localPath: string };
 function windowsContracts(ports: WindowsDeviceAccessPorts<Target, Helper>) {
     const result: Promise<DesktopAccessOutcome | undefined> = createDesktopDeviceAccess(ports).handle("device_exec", { command: "whoami" });
-    const { request, ...withoutRequest } = ports;
-    // @ts-expect-error correlated native helper requests are required
-    createDesktopDeviceAccess(withoutRequest);
-    const { screenshotPath, ...withoutOutputFence } = ports;
+    const { exec, ...withoutExec } = ports;
+    // @ts-expect-error normalized native exec observations are required
+    createDesktopDeviceAccess(withoutExec);
+    const { screenshot, ...withoutOutputFence } = ports;
     // @ts-expect-error native helper output path qualification is required
     createDesktopDeviceAccess(withoutOutputFence);
     // @ts-expect-error owned target lookup must settle synchronously
     createDesktopDeviceAccess({ ...ports, target: async () => ({ id: "guest" }) });
     // @ts-expect-error bounded screenshot file observations are synchronous
     createDesktopDeviceAccess({ ...ports, readScreenshot: async () => ({ kind: "missing" }) });
-    void [result, request, screenshotPath];
+    // @ts-expect-error accessibility observation must distinguish success and refusal
+    createDesktopDeviceAccess({ ...ports, accessibility: async () => ({ value: {} }) });
+    void [result, exec, screenshot];
 }
 function macosContracts(ports: MacosDeviceAccessPorts<Target, Discovery, Bridge, Stage>) {
     const result: Promise<DesktopAccessOutcome | undefined> = createDesktopDeviceAccess(ports).handle("device_screenshot", {});
@@ -33,7 +35,7 @@ function macosContracts(ports: MacosDeviceAccessPorts<Target, Discovery, Bridge,
     // @ts-expect-error guarded SSH bridge admission is synchronous
     createDesktopDeviceAccess({ ...ports, bridge: async () => ({ ok: true, bridge: { target: "guest" } }) });
     // @ts-expect-error SCP observations settle before image publication
-    createDesktopDeviceAccess({ ...ports, copy: async () => ({ status: 0 }) });
+    createDesktopDeviceAccess({ ...ports, copy: async () => ({ ok: true, receipt: { status: 0 } }) });
     // @ts-expect-error guarded screenshot facts must be available synchronously
     createDesktopDeviceAccess({ ...ports, readScreenshot: async () => ({ kind: "image", data: "image" }) });
     // @ts-expect-error local disposal must finish synchronously
@@ -57,7 +59,7 @@ function displayContracts(ports: X11DeviceAccessPorts<Target, Stage>) {
     // @ts-expect-error native target formatting cannot defer synchronous current()
     createDisplayDeviceAccess({ ...ports, publicTarget: async () => ({ id: "x11-current-display" }) });
     // @ts-expect-error one native capture observation is synchronous
-    createDisplayDeviceAccess({ ...ports, capture: async () => ({ status: 0 }) });
+    createDisplayDeviceAccess({ ...ports, capture: async () => ({ ok: true, receipt: { status: 0 } }) });
     // @ts-expect-error native local stage allocation is synchronous
     createDisplayDeviceAccess({ ...ports, stageScreenshot: async () => ({ localPath: "/owned/image.png" }) });
     // @ts-expect-error guarded screenshot facts must be available synchronously

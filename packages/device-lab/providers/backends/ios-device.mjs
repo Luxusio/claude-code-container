@@ -1,3 +1,4 @@
+import { performIosControl } from "../adapters/ios-control-transfer.mjs";
 import { createIosPhysicalAttachment } from "../adapters/physical-attachment.mjs";
 import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
 import { createIosWirelessApplication } from "../application/ios-wireless.mjs";
@@ -282,7 +283,7 @@ async function handleIosRealToolUnlocked(name, args) {
         case "mobile_rotate_left":
         case "mobile_rotate_right":
         case "mobile_set_orientation":
-            return controlTransfer.handle(name, args);
+            return presentIosNativeOutcome(await controlTransfer.handle(name, args));
 
 
 
@@ -374,12 +375,7 @@ const controlTransfer = createIosControlTransfer({
             return { error: `iOS physical Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
         }
     },
-    requestSession: (session, path, body) => fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
-        method: "POST",
-        body: JSON.stringify(body),
-    }),
-    jsonResult: value => jsonResult(value),
-    textResult: (ok, message) => textResult(ok, message),
+    performControl: (session, command) => performIosControl(fetchIosAppiumJson, session, command),
 });
 
 const iosWireless = createIosWirelessApplication({
@@ -445,4 +441,11 @@ function createObservationAccess() {
     };
 
     return createIosObservationAccess(observationPorts);
+}
+
+function presentIosNativeOutcome(outcome) {
+    if (outcome === undefined) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "command-failure") return fail(outcome.receipt);
+    return textResult(false,outcome.message);
 }

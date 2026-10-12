@@ -44,17 +44,15 @@ export type IosTransferResult = {
     ok: false;
     message: string;
 };
-export interface IosControlPorts<Result> {
+export interface IosControlPorts {
     findDevice(id: string | undefined): IosControlDevice | null | undefined;
     resolveSession(id: string | undefined): Promise<IosSessionResolution>;
-    requestSession(session: IosControlSession, path: string, body: object): Promise<unknown>;
-    jsonResult(value: object): Result;
-    textResult(ok: boolean, message: string): Result;
+    performControl(session: IosControlSession, command: import("../domain/ios-control-transfer.mjs").IosControlCommand): Promise<IosControlObservation>;
 }
-export interface IosPhysicalControlPorts<Result> extends IosControlPorts<Result> {
+export interface IosPhysicalControlPorts extends IosControlPorts {
     kind: "physical";
 }
-export interface IosSimulatorControlPorts<Result> extends IosControlPorts<Result> {
+export interface IosSimulatorControlPorts extends IosControlPorts {
     kind: "simulator";
     ownedSimulatorName(name: string | undefined): boolean;
     discovery(): {
@@ -62,11 +60,6 @@ export interface IosSimulatorControlPorts<Result> extends IosControlPorts<Result
         xcrun: string | null;
         missing: string[];
     };
-    missingPrerequisites(facts: {
-        available: boolean;
-        xcrun: string | null;
-        missing: string[];
-    }): Result;
     verifyTarget(xcrun: string | null, device: IosControlDevice): {
         target: string;
         error?: never;
@@ -74,7 +67,7 @@ export interface IosSimulatorControlPorts<Result> extends IosControlPorts<Result
         error: string;
         target?: never;
     };
-    appContainerCommand(xcrun: string | null, target: string, bundleId: string, type: string): IosCommandResult;
+    resolveContainer(xcrun: string | null, target: string, bundleId: string, type: string): {kind:"resolved"; containerRoot:string} | {kind:"failed"; receipt:IosCommandResult};
     pathFacts(root: string, requestedPath: string): {
         path: string;
         relativePath: string;
@@ -93,6 +86,8 @@ export interface IosSimulatorControlPorts<Result> extends IosControlPorts<Result
     populateOutput(path: string, stage: IosTransferStage): IosTransferResult;
     commitOutput(stage: IosTransferStage): IosTransferResult;
     disposeStage(stage: IosTransferStage): undefined;
-    fail(result: IosCommandResult): Result;
 }
-export type IosControlTransferPorts<Result> = IosPhysicalControlPorts<Result> | IosSimulatorControlPorts<Result>;
+export type IosControlTransferPorts = IosPhysicalControlPorts | IosSimulatorControlPorts;
+
+export type IosControlObservation = {kind:"succeeded"} | {kind:"failed"; message:string};
+export type IosControlOutcome = {kind:"json"; payload:object} | {kind:"text"; message:string} | {kind:"command-failure"; receipt:unknown};

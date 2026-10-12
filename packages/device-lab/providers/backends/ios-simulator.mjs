@@ -1,3 +1,4 @@
+import { performIosControl, createIosSimulatorNative } from "../adapters/ios-control-transfer.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
 import { iosControlOrientation, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
@@ -393,9 +394,7 @@ const iosSimulatorLifecycle = createIosSimulatorLifecycle({
     slug: (...args) => slug(...args),
     isOwnedSimulatorName: (...args) => isOwnedSimulatorName(...args),
     iosDiscovery: (...args) => iosDiscovery(...args),
-    simctlJson: (...args) => simctlJson(...args),
-    run: (...args) => run(...args),
-    runWithTimeout: (...args) => runWithTimeout(...args),
+    ...createIosSimulatorNative({run, runWithTimeout, simctlJson}),
     ownerId: (...args) => ownerId(...args),
     appiumPortForIosDevice: (...args) => appiumPortForIosDevice(...args),
     claimIosDevice: (...args) => claimIosDevice(...args),
@@ -408,9 +407,6 @@ const iosSimulatorLifecycle = createIosSimulatorLifecycle({
     discardLocalOutputStage: (...args) => discardLocalOutputStage(...args),
     iosRecordingDir: (...args) => iosRecordingDir(...args),
     withTargetStatus: (...args) => withTargetStatus(...args),
-    textResult: (...args) => textResult(...args),
-    jsonResult: (...args) => jsonResult(...args),
-    fail: (...args) => fail(...args),
     runtimeId: (...args) => randomUUID(...args),
     wallTimestamp: (...args) => now(...args),
 });
@@ -431,18 +427,18 @@ async function handleIosToolUnlocked(name, args) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
         case "device_create":
-            return iosSimulatorLifecycle.create(args);
+            return presentIosNativeOutcome(await iosSimulatorLifecycle.create(args));
 
         case "device_delete":
-            return iosSimulatorLifecycle.delete(args);
+            return presentIosNativeOutcome(await iosSimulatorLifecycle.delete(args));
 
 
 
         case "device_start":
-            return iosSimulatorLifecycle.start(args);
+            return presentIosNativeOutcome(await iosSimulatorLifecycle.start(args));
 
         case "device_stop":
-            return iosSimulatorLifecycle.stop(args);
+            return presentIosNativeOutcome(await iosSimulatorLifecycle.stop(args));
 
 
 
@@ -456,7 +452,7 @@ async function handleIosToolUnlocked(name, args) {
 
         case "device_upload":
         case "device_download":
-            return controlTransfer.handle(name, args);
+            return presentIosNativeOutcome(await controlTransfer.handle(name, args));
 
 
 
@@ -481,7 +477,7 @@ async function handleIosToolUnlocked(name, args) {
         case "mobile_rotate_left":
         case "mobile_rotate_right":
         case "mobile_set_orientation":
-            return controlTransfer.handle(name, args);
+            return presentIosNativeOutcome(await controlTransfer.handle(name, args));
 
 
 
@@ -684,17 +680,16 @@ const controlTransfer = createIosControlTransfer({
             return { error: `iOS Simulator Appium operation lock failed: ${error instanceof Error ? error.message : String(error)}` };
         }
     },
-    requestSession: (session, path, body) => fetchIosAppiumJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
-        method: "POST",
-        body: JSON.stringify(body),
-    }),
-    jsonResult: value => jsonResult(value),
-    textResult: (ok, message) => textResult(ok, message),
+    performControl: (session, command) => performIosControl(fetchIosAppiumJson, session, command),
     ownedSimulatorName: name => isOwnedSimulatorName(name),
     discovery: () => iosDiscovery(),
-    missingPrerequisites: facts => missingPrereqResult(facts),
     verifyTarget: (xcrun, device) => resolveOwnedSimulatorTarget(xcrun, device),
-    appContainerCommand: (xcrun, target, bundleId, type) => run(xcrun, ["simctl", "get_app_container", target, bundleId, type]),
+    resolveContainer: (xcrun, target, bundleId, type) => {
+        const receipt = run(xcrun, ["simctl", "get_app_container", target, bundleId, type]);
+        if (receipt.status !== 0) return {kind:"failed", receipt};
+        const containerRoot = receipt.stdout.trim();
+        return containerRoot ? {kind:"resolved", containerRoot} : {kind:"failed", receipt:{...receipt,status:1,stderr:"simctl get_app_container returned an empty path"}};
+    },
     pathFacts: (root, requestedPath) => {
         const stripped = String(requestedPath || "").replace(/^[/\\]+/, "");
         const relativePath = normalize(stripped);
@@ -715,7 +710,6 @@ const controlTransfer = createIosControlTransfer({
     populateOutput: (path, stage) => controlTransferResult(populateLocalOutputStage(path, stage, { label: "download-remote-path" })),
     commitOutput: stage => controlTransferResult(commitLocalOutputStage(stage, { label: "download-local-path" })),
     disposeStage: stage => { stage.cleanup(); },
-    fail: result => fail(result),
 });
 
 /** @param {string|null} executable @param {number} port
@@ -828,4 +822,16 @@ function createObservationAccess(initialXcrun = null) {
     };
 
     return createIosObservationAccess(observationPorts);
+}
+
+function presentIosNativeOutcome(outcome) {
+    if (outcome === undefined) return undefined;
+    if (outcome.kind === "json") return jsonResult(outcome.payload);
+    if (outcome.kind === "command-failure") return fail(outcome.receipt);
+    if (outcome.kind === "conflict") {
+        const payload = { ...outcome.payload };
+        if (payload.rollback) payload.rollback = { ok: payload.rollback.ok, ...payload.rollback.receipt };
+        return textResult(false, JSON.stringify(payload));
+    }
+    return textResult(false,outcome.message);
 }

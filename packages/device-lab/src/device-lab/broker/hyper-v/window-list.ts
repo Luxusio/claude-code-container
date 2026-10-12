@@ -1,4 +1,4 @@
-import { validateWindowHandle, parseWindowsGuestWindowList, type DesktopWindowList } from "../../domain/hyper-v-desktop-transfer.js";
+import { validateWindowHandle, desktopRecord, type DesktopWindowList } from "../../domain/hyper-v-desktop-transfer.js";
 import { X11_WINDOW_LIST_COMMAND, parseX11WindowList } from "../../../../providers/display/window-list.mjs";
 
 export function linuxWindowListCommand(): string {
@@ -131,4 +131,55 @@ ${worker}
 export function parseGuestWindowList(backend: string, stdout: string): DesktopWindowList {
     return backend === "linux-vm" ? parseX11WindowList(stdout) : parseWindowsGuestWindowList(stdout, Buffer.byteLength(stdout));
 }
-export { parseGuestFocusWindow } from "../../domain/hyper-v-desktop-transfer.js";
+export function parseGuestFocusWindow(stdout: string): {
+    ok: true;
+} {
+    if (stdout.length > 2048)
+        throw new Error("window-focus-invalid-result");
+    let result: unknown;
+    try {
+        result = JSON.parse(stdout.replace(/^\uFEFF/, ""));
+    }
+    catch {
+        throw new Error("window-focus-invalid-result");
+    }
+    if (desktopRecord(result) && typeof result.error === "string")
+        throw new Error(result.error.slice(0, 512));
+    if (!desktopRecord(result) || result.ok !== true)
+        throw new Error("window-focus-invalid-result");
+    return {
+        ok: true
+    };
+}
+export function parseWindowsGuestWindowList(stdout: string, byteLength: number): DesktopWindowList {
+    if (byteLength > 1024 * 1024)
+        throw new Error("window-list-invalid-result");
+    let result: unknown;
+    try {
+        result = JSON.parse(stdout.replace(/^\uFEFF/, ""));
+    }
+    catch {
+        throw new Error("window-list-invalid-result");
+    }
+    if (desktopRecord(result) && typeof result.error === "string")
+        throw new Error(result.error.slice(0, 512));
+    if (!desktopRecord(result) || !Array.isArray(result.windows) || result.windows.length > 128
+        || (result.truncated !== undefined && typeof result.truncated !== "boolean"))
+        throw new Error("window-list-invalid-result");
+    const windows = result.windows.map((row: unknown) => {
+        if (!desktopRecord(row))
+            throw new Error("window-list-invalid-result");
+        const { title, handle, processId } = row;
+        if (typeof title !== "string" || title.length > 512 || typeof handle !== "string" || !/^\d+$/.test(handle)
+            || typeof processId !== "number" || !Number.isSafeInteger(processId) || Number(processId) <= 0)
+            throw new Error("window-list-invalid-result");
+        return {
+            title, handle, processId
+        };
+    });
+    return {
+        windows, ...(result.truncated ? {
+            truncated: true
+        } : {})
+    };
+}

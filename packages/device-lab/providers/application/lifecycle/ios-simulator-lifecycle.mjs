@@ -1,4 +1,4 @@
-import { boundedSimulatorIdentityDetail, iosLifecycleClaimStatus, iosSimulatorCommandFailed, selectIosSimulatorMatches } from "../../domain/lifecycle/ios-simulator-lifecycle.mjs";
+import { iosLifecycleClaimStatus, selectIosSimulatorMatches } from "../../domain/lifecycle/ios-simulator-lifecycle.mjs";
 /** @typedef {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorDevice} IosSimulatorDevice */
 /** @typedef {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorDiscovery} IosSimulatorDiscovery */
 /** @typedef {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorLifecycleClaim} IosSimulatorLifecycleClaim */
@@ -8,13 +8,12 @@ import { boundedSimulatorIdentityDetail, iosLifecycleClaimStatus, iosSimulatorCo
 /** @typedef {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorSettlement} IosSimulatorSettlement */
 /** @typedef {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorBoot} IosSimulatorBoot */
 /** @typedef {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorLifecycleInput} IosSimulatorLifecycleInput */
-/** @template Result
- * @param {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorLifecyclePorts<Result>} ports
+/** @param {import("../../ports/lifecycle/ios-simulator-lifecycle.mjs").IosSimulatorLifecyclePorts} ports
  */
 export function createIosSimulatorLifecycle(ports) {
     /** @param {string | undefined} deviceId @param {string} operation @param {IosSimulatorTransition} transition @param {unknown} [rollback] */
     function iosLifecycleConflict(deviceId, operation, transition, rollback = null) {
-        return ports.textResult(false, JSON.stringify({
+        return { kind: /** @type {const} */ ("conflict"), payload: {
             ok: false,
             error: "owner-device-state-conflict",
             backend: "ios-simulator",
@@ -22,7 +21,7 @@ export function createIosSimulatorLifecycle(ports) {
             operation,
             found: transition.found,
             ...(rollback ? { rollback } : {}),
-        }));
+        } };
     }
 
     /** @param {string | undefined} deviceId @param {IosSimulatorDevice} device @param {string} operation */
@@ -68,12 +67,12 @@ export function createIosSimulatorLifecycle(ports) {
         if (!ports.isOwnedSimulatorName(device?.simulatorName)) {
             return { error: `Refusing iOS Simulator operation for non-owned simulator name: ${device?.simulatorName}` };
         }
-        const listed = inventory ?? ports.simctlJson(xcrun, ["list", "devices", "-j"]);
-        if (listed.error) {
-            const detail = boundedSimulatorIdentityDetail(listed.error.stderr || listed.error.stdout || `exit ${listed.error.status}`);
+        const listed = inventory ?? ports.inventory(xcrun);
+        if (listed.kind === "failed") {
+            const detail = listed.message;
             return { error: `Unable to verify iOS Simulator ownership${detail ? `: ${detail}` : ""}` };
         }
-        const matches = selectIosSimulatorMatches(listed.value.devices, device);
+        const matches = selectIosSimulatorMatches(listed.devices, device);
         if (matches.length !== 1) {
             return { error: `Unable to verify iOS Simulator ownership for ${device.id}: expected one host match, found ${matches.length}` };
         }
@@ -117,7 +116,7 @@ export function createIosSimulatorLifecycle(ports) {
         const id = deviceId || ports.iosDeviceId(deviceName);
         const devices = ports.readIosDevices();
         if (devices.some((device) => device.id === id)) {
-            return ports.textResult(false, `Device already exists for this owner: ${id}`);
+            return textOutcome(`Device already exists for this owner: ${id}`);
         }
 
         const simulatorDisplayName = simulatorName || `${ports.ownerSimulatorPrefix()}${ports.slug(deviceName)}`;
@@ -125,16 +124,16 @@ export function createIosSimulatorLifecycle(ports) {
         let provisioning = "definition-only";
         if (createSimulator) {
             if (!ports.isOwnedSimulatorName(simulatorDisplayName)) {
-                return ports.textResult(false, `Refusing to create non-owned iOS Simulator name: ${simulatorDisplayName}`);
+                return textOutcome(`Refusing to create non-owned iOS Simulator name: ${simulatorDisplayName}`);
             }
             if (!deviceType || !runtime) {
-                return ports.textResult(false, "iOS Simulator provisioning requires deviceType and runtime");
+                return textOutcome("iOS Simulator provisioning requires deviceType and runtime");
             }
             const discovery = ports.iosDiscovery();
-            if (!discovery.available) return ports.textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
-            const r = ports.run(discovery.xcrun, ["simctl", "create", simulatorDisplayName, deviceType, runtime]);
-            if (r.status !== 0) return ports.fail(r);
-            createdUdid = r.stdout.trim();
+            if (!discovery.available) return textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            const r = ports.createSimulator(discovery.xcrun, simulatorDisplayName, deviceType, runtime);
+            if (r.kind === "failed") return commandOutcome(r.receipt);
+            createdUdid = r.udid;
             provisioning = "created";
         }
 
@@ -163,9 +162,9 @@ export function createIosSimulatorLifecycle(ports) {
         } catch (error) {
             if (provisioning === "created" && createdUdid) {
                 const discovery = ports.iosDiscovery();
-                const rollback = ports.run(discovery.xcrun, ["simctl", "delete", createdUdid]);
-                if (iosSimulatorCommandFailed(rollback, "delete")) {
-                    return ports.textResult(false, `Owner device state update failed; iOS Simulator rollback failed: ${rollback.stderr || rollback.stdout}`);
+                const rollback = ports.simulatorOperation(discovery.xcrun, "delete", createdUdid);
+                if (rollback.kind === "failed") {
+                    return textOutcome(`Owner device state update failed; iOS Simulator rollback failed: ${rollback.message}`);
                 }
             }
             throw error;
@@ -173,14 +172,14 @@ export function createIosSimulatorLifecycle(ports) {
         if (!claim.ok) {
             if (provisioning === "created" && createdUdid && claim.existing?.udid !== createdUdid) {
                 const discovery = ports.iosDiscovery();
-                const rollback = ports.run(discovery.xcrun, ["simctl", "delete", createdUdid]);
-                if (iosSimulatorCommandFailed(rollback, "delete")) {
-                    return ports.textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); iOS Simulator rollback failed: ${rollback.stderr || rollback.stdout}`);
+                const rollback = ports.simulatorOperation(discovery.xcrun, "delete", createdUdid);
+                if (rollback.kind === "failed") {
+                    return textOutcome(`Device identity conflict for this owner (${claim.field}: ${claim.value}); iOS Simulator rollback failed: ${rollback.message}`);
                 }
             }
-            return ports.textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
+            return textOutcome(`Device identity already exists for this owner (${claim.field}: ${claim.value})`);
         }
-        return ports.jsonResult({ device: ports.withTargetStatus(device) });
+        return jsonOutcome({ device: ports.withTargetStatus(device) });
     }
 
     /** @param {IosSimulatorLifecycleInput} args */
@@ -190,18 +189,18 @@ export function createIosSimulatorLifecycle(ports) {
         const device = devices.find((item) => item.id === deviceId);
         if (!device) return undefined;
         if (device.recording && !force) {
-            return ports.textResult(false, `Refusing to delete ${deviceId} while a recording is active or pending finalization; stop the recording or retry with force=true`);
+            return textOutcome(`Refusing to delete ${deviceId} while a recording is active or pending finalization; stop the recording or retry with force=true`);
         }
         if (!force && device.status !== "stopped") {
-            return ports.textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
+            return textOutcome(`Refusing to delete ${deviceId} while status is ${device.status}`);
         }
         let discovery = null;
         let ownedTarget = null;
         if (deleteSimulator) {
             discovery = ports.iosDiscovery();
-            if (!discovery.available) return ports.textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            if (!discovery.available) return textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
             ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return ports.textResult(false, ownedTarget.error);
+            if (ownedTarget.error !== undefined) return textOutcome(ownedTarget.error);
         }
         const claim = claimIosLifecycle(deviceId, device, "delete");
         if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "delete-claim", claim.transition);
@@ -211,13 +210,13 @@ export function createIosSimulatorLifecycle(ports) {
             const recorderSignal = ports.signalOwnedRuntimeProcess(device.recording, "SIGINT");
             if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
                 abortIosLifecycle(deviceId, claim.lifecycle, device);
-                return ports.textResult(false, `iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); device was not deleted.`);
+                return textOutcome(`iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); device was not deleted.`);
             }
             if (recorderSignal.signaled) {
                 const exited = await ports.waitForProcessExit(device.recording.pid, 3000);
                 if (!exited) {
                     abortIosLifecycle(deviceId, claim.lifecycle, device);
-                    return ports.textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; device was not deleted.`);
+                    return textOutcome(`iOS Simulator recording did not exit within 3000ms for ${deviceId}; device was not deleted.`);
                 }
             }
             actual.recording = { ...device.recording, active: false, endedAt: ports.wallTimestamp() };
@@ -226,22 +225,22 @@ export function createIosSimulatorLifecycle(ports) {
         const appiumStop = await stopOwnedAppium(device.appium, "iOS Simulator Appium");
         if (!appiumStop.exited) {
             abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
-            return ports.textResult(false, `${appiumStop.error}; device was not deleted.`);
+            return textOutcome(`${appiumStop.error}; device was not deleted.`);
         }
         actual.appium = null;
 
         if (deleteSimulator) {
             if (force && device.status !== "stopped") {
-                const shutdown = ports.run(/** @type {IosSimulatorDiscovery} */ (discovery).xcrun, ["simctl", "shutdown", /** @type {{target: string}} */ (ownedTarget).target]);
-                if (shutdown.status === 0 || String(shutdown.stderr || shutdown.stdout).includes("Unable to shutdown device in current state: Shutdown")) {
+                const shutdown = ports.simulatorOperation(/** @type {IosSimulatorDiscovery} */ (discovery).xcrun, "shutdown", /** @type {{target: string}} */ (ownedTarget).target);
+                if (shutdown.kind === "succeeded") {
                     actual.status = "stopped";
                     actual.bootReady = false;
                 }
             }
-            const r = ports.run(/** @type {IosSimulatorDiscovery} */ (discovery).xcrun, ["simctl", "delete", /** @type {{target: string}} */ (ownedTarget).target]);
-            if (iosSimulatorCommandFailed(r, "delete")) {
+            const r = ports.simulatorOperation(/** @type {IosSimulatorDiscovery} */ (discovery).xcrun, "delete", /** @type {{target: string}} */ (ownedTarget).target);
+            if (r.kind === "failed") {
                 abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
-                return ports.fail(r);
+                return commandOutcome(r.receipt);
             }
         }
 
@@ -257,10 +256,10 @@ export function createIosSimulatorLifecycle(ports) {
                     if (!current) return iosLifecycleConflict(deviceId, "delete-after-simulator-delete", { found: Boolean(ports.findIosDevice(deviceId)), matched: false });
                     const transition = ports.transitionIosDevice(deviceId, current, null);
                     if (!transition.matched) return iosLifecycleConflict(deviceId, "delete-after-simulator-delete", transition);
-                    return ports.textResult(false, `${discarded.message}; simulator and device metadata were deleted, but the staged recording requires explicit recovery`);
+                    return textOutcome(`${discarded.message}; simulator and device metadata were deleted, but the staged recording requires explicit recovery`);
                 }
                 abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
-                return ports.textResult(false, `${discarded.message}; device metadata was preserved for explicit recovery`);
+                return textOutcome(`${discarded.message}; device metadata was preserved for explicit recovery`);
             }
         }
 
@@ -268,7 +267,7 @@ export function createIosSimulatorLifecycle(ports) {
         if (!current) return iosLifecycleConflict(deviceId, "delete", { found: Boolean(ports.findIosDevice(deviceId)), matched: false });
         const transition = ports.transitionIosDevice(deviceId, current, null);
         if (!transition.matched) return iosLifecycleConflict(deviceId, "delete", transition);
-        return ports.jsonResult({ deleted: deviceId, simulatorDeleted: Boolean(deleteSimulator) });
+        return jsonOutcome({ deleted: deviceId, simulatorDeleted: Boolean(deleteSimulator) });
     }
 
     /** @param {IosSimulatorLifecycleInput} args */
@@ -279,31 +278,23 @@ export function createIosSimulatorLifecycle(ports) {
 
         const discovery = ports.iosDiscovery();
         if (!discovery.available) {
-            return ports.textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            return textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
         }
         const ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-        if (ownedTarget.error) return ports.textResult(false, ownedTarget.error);
+        if (ownedTarget.error !== undefined) return textOutcome(ownedTarget.error);
         const target = ownedTarget.target;
         const claim = claimIosLifecycle(deviceId, device, "start");
         if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "start-claim", claim.transition);
-        const r = ports.run(discovery.xcrun, ["simctl", "boot", target]);
-        if (iosSimulatorCommandFailed(r, "boot")) {
+        const r = ports.simulatorOperation(discovery.xcrun, "boot", target);
+        if (r.kind === "failed") {
             abortIosLifecycle(deviceId, claim.lifecycle, device);
-            return ports.fail(r);
+            return commandOutcome(r.receipt);
         }
 
         /** @type {IosSimulatorBoot} */
         let boot = { ready: true, skipped: true };
         if (waitForBoot) {
-            const bootstatus = ports.runWithTimeout(discovery.xcrun, ["simctl", "bootstatus", target, "-b"], bootTimeoutMs);
-            boot = {
-                ready: bootstatus.status === 0,
-                skipped: false,
-                status: bootstatus.status,
-                stdout: bootstatus.stdout,
-                stderr: bootstatus.stderr,
-            };
-            if (bootstatus.error) boot.error = bootstatus.error;
+            boot = ports.waitForBoot(discovery.xcrun, target, bootTimeoutMs);
         }
 
         const updated = {
@@ -315,11 +306,11 @@ export function createIosSimulatorLifecycle(ports) {
         };
         const transition = ports.transitionIosDevice(deviceId, claim.claimed, updated);
         if (!transition.matched) {
-            const shutdown = ports.run(discovery.xcrun, ["simctl", "shutdown", target]);
-            const rollback = { ok: shutdown.status === 0, status: shutdown.status, stdout: shutdown.stdout, stderr: shutdown.stderr };
+            const shutdown = ports.simulatorOperation(discovery.xcrun, "shutdown", target);
+            const rollback = { ok: shutdown.kind === "succeeded", receipt: shutdown.receipt };
             return iosLifecycleConflict(deviceId, "start-complete", transition, rollback);
         }
-        return ports.jsonResult({ device: ports.withTargetStatus(updated), boot });
+        return jsonOutcome({ device: ports.withTargetStatus(updated), boot });
     }
 
     /** @param {IosSimulatorLifecycleInput} args */
@@ -331,11 +322,11 @@ export function createIosSimulatorLifecycle(ports) {
         const discovery = ports.iosDiscovery();
         let ownedTarget = null;
         if (!discovery.available && device.status !== "stopped") {
-            return ports.textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            return textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
         }
         if (discovery.available) {
             ownedTarget = resolveOwnedSimulatorTarget(discovery.xcrun, device);
-            if (ownedTarget.error) return ports.textResult(false, ownedTarget.error);
+            if (ownedTarget.error !== undefined) return textOutcome(ownedTarget.error);
         }
         const claim = claimIosLifecycle(deviceId, device, "stop");
         if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "stop-claim", claim.transition);
@@ -343,22 +334,21 @@ export function createIosSimulatorLifecycle(ports) {
             const recorderSignal = ports.signalOwnedRuntimeProcess(device.recording, "SIGINT");
             if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
                 abortIosLifecycle(deviceId, claim.lifecycle, device);
-                return ports.textResult(false, `iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); recording metadata was preserved.`);
+                return textOutcome(`iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); recording metadata was preserved.`);
             }
             if (recorderSignal.signaled) {
                 const exited = await ports.waitForProcessExit(device.recording.pid, 3000);
                 if (!exited) {
                     abortIosLifecycle(deviceId, claim.lifecycle, device);
-                    return ports.textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; recording metadata was preserved.`);
+                    return textOutcome(`iOS Simulator recording did not exit within 3000ms for ${deviceId}; recording metadata was preserved.`);
                 }
             }
         }
         if (discovery.available) {
-            const shutdown = ports.run(/** @type {IosSimulatorDiscovery} */ (discovery).xcrun, ["simctl", "shutdown", /** @type {{target: string}} */ (ownedTarget).target]);
-            const alreadyShutdown = String(shutdown.stderr || shutdown.stdout).includes("Unable to shutdown device in current state: Shutdown");
-            if (shutdown.status !== 0 && !alreadyShutdown) {
+            const shutdown = ports.simulatorOperation(/** @type {IosSimulatorDiscovery} */ (discovery).xcrun, "shutdown", /** @type {{target: string}} */ (ownedTarget).target);
+            if (shutdown.kind === "failed") {
                 abortIosLifecycle(deviceId, claim.lifecycle, device);
-                return ports.fail(shutdown);
+                return commandOutcome(shutdown.receipt);
             }
         }
         const appiumStop = await stopOwnedAppium(device.appium, "iOS Simulator Appium");
@@ -370,7 +360,7 @@ export function createIosSimulatorLifecycle(ports) {
                     ? { recording: { ...device.recording, active: false, endedAt: ports.wallTimestamp() } }
                     : {}),
             });
-            return ports.textResult(false, appiumStop.error);
+            return textOutcome(appiumStop.error);
         }
         const current = currentIosLifecycleDevice(deviceId, claim.lifecycle);
         if (!current) return iosLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findIosDevice(deviceId)), matched: false });
@@ -387,8 +377,15 @@ export function createIosSimulatorLifecycle(ports) {
         };
         const transition = ports.transitionIosDevice(deviceId, current, updated);
         if (!transition.matched) return iosLifecycleConflict(deviceId, "stop", transition);
-        return ports.jsonResult({ device: ports.withTargetStatus(updated) });
+        return jsonOutcome({ device: ports.withTargetStatus(updated) });
     }
 
     return { create, start, stop, delete: deleteDevice };
 }
+
+/** @param {string | undefined} message */
+function textOutcome(message) { return { kind: /** @type {const} */ ("text"), message }; }
+/** @param {unknown} payload */
+function jsonOutcome(payload) { return { kind: /** @type {const} */ ("json"), payload }; }
+/** @param {unknown} receipt */
+function commandOutcome(receipt) { return { kind: /** @type {const} */ ("command-failure"), receipt }; }

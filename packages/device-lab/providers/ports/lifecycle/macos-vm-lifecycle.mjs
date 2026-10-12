@@ -3,8 +3,7 @@
 /** @typedef {import("./macos-vm-lifecycle.mjs").MacosVmLifecycleClaim} MacosVmLifecycleClaim */
 /** @typedef {import("./macos-vm-lifecycle.mjs").MacosVmProviderPlan} MacosVmProviderPlan */
 /** @typedef {import("./macos-vm-lifecycle.mjs").MacosVmProcessHandle} MacosVmProcessHandle */
-/** @template Result
- * @template {MacosVmProcessHandle} [Child=MacosVmProcessHandle]
- * @typedef {import("./macos-vm-lifecycle.mjs").MacosVmLifecyclePorts<Result, Child>} MacosVmLifecyclePorts
+/** @template {MacosVmProcessHandle} [Child=MacosVmProcessHandle]
+ * @typedef {import("./macos-vm-lifecycle.mjs").MacosVmLifecyclePorts<Child>} MacosVmLifecyclePorts
  */
 export {};

@@ -14,18 +14,6 @@ export type WindowsReadinessOutcome =
     | { readonly ok: false; readonly error: "hyper-v-guest-ready-timeout" | "hyper-v-guest-ready-failed"; readonly reason: string; readonly attempts: number; readonly scrubConfirmed: boolean; readonly mediaDetached: boolean };
 
 
-function ipv4(address:string):boolean { const parts=address.split('.'); return parts.length===4 && parts.every(part=>/^(0|[1-9][0-9]{0,2})$/.test(part)&&Number(part)<=255); }
-export function parseWindowsReadinessProbe(value:string):GuestProbe|null {
- let item:unknown; try {item=JSON.parse(value);} catch{return null;}
- if(!item || typeof item!=='object' || Array.isArray(item) || Object.keys(item).sort().join('|')!==['addresses','computerName','firstLogonCompleted','provisioningSecretsPresent'].join('|'))return null;
- if(!('computerName' in item)||typeof item.computerName!=='string'||item.computerName.length<1||item.computerName.length>255
- ||!('firstLogonCompleted' in item)||typeof item.firstLogonCompleted!=='string'||item.firstLogonCompleted.length>4096
- ||!('provisioningSecretsPresent' in item)||typeof item.provisioningSecretsPresent!=='boolean'
- ||!('addresses' in item)||!Array.isArray(item.addresses)||item.addresses.length>64)return null;
- const addresses:string[]=[];
- for(const address of item.addresses){if(typeof address!=='string'||!ipv4(address))return null;addresses.push(address);}
- return {computerName:item.computerName, firstLogonCompleted:item.firstLogonCompleted,provisioningSecretsPresent:item.provisioningSecretsPresent,addresses};
-}
 export function windowsProbeFingerprint(probe: GuestProbe): string {
     return JSON.stringify([
         probe.firstLogonCompleted,

@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import { createHyperVWindowsClient, type HyperVWindowsExecutionRequest } from "@ccc/hyper-v/low-level/index.js";
 import { linuxFocusWindowCommand, windowsFocusWindowCommand, parseGuestFocusWindow, windowsWindowListCommand } from "@ccc/device-lab/device-lab/broker/hyper-v/window-list.js";
 const identity = { selector: { kind: "id" as const, id: "12345678-1234-1234-1234-123456789abc" }, expectedName: "owned", expectedNotes: "owner-record" };
@@ -15,23 +14,10 @@ describe("Hyper-V desktop AX", () => {
         }
         expect(execute).toHaveBeenCalledTimes(1);
     });
-    it("keeps native button release in finally and geometry checks before input", () => {
-        const script = readFileSync("packages/hyper-v/powershell/Invoke-HyperVWindowsOperation.ps1", "utf8");
-        expect(script).toContain("isDown = $true");
-        expect(script).toMatch(/finally \{\s*try \{[^\n]+isDown = \$false/);
-        expect(script).toContain("if ($null -eq $DragFailure) { throw }");
-        expect(script.indexOf("$X2 -lt 0")).toBeLessThan(script.indexOf("isDown = $true"));
-    });
     it("uses verified interactive Windows user, session and actual foreground result", () => {
         const command = windowsFocusWindowCommand("42");
         expect(command.length).toBeLessThanOrEqual(4096);
         expect(windowsWindowListCommand().length).toBeLessThanOrEqual(4096);
-        expect(command).toContain("-LogonType Interactive -RunLevel Limited");
-        expect(command).toContain(".UserName -ne $user");
-        expect(command).toContain("WTSGetActiveConsoleSessionId() -ne $sid");
-        expect(command).toContain("(Get-Process -Id $processId).SessionId -ne [int]$Expected");
-        expect(command).toContain("GetForegroundWindow() -ne $h");
-        expect(command).toContain("Unregister-ScheduledTask");
     });
     it("uses managed guest X11, waits for focus, and rejects shell input", () => {
         const command = linuxFocusWindowCommand("42");

@@ -1,0 +1,28 @@
+# Desktop transfer staging lifetime
+
+Desktop screenshots and guest transfers must finalize ephemeral stages allocated
+by the current operation, including native execution throws, invalid native
+results, failed artifact validation and destination publication failure.
+Finalization uses the allocated handle and existing path/identity fences; it
+never grants permission to delete a different generation or unowned path.
+
+macOS remote screenshot cleanup failure must remain visible and must not prevent
+an attempt to dispose the operation's local screenshot stage. Remote recovery
+evidence and durable journals are distinct from ephemeral local stages and must
+not be erased by this rule.
+
+When an operation and cleanup both fail, retain both failures with the original
+operation as primary evidence. Cleanup failure after successful destination
+publication must retain truthful completed-publication evidence: it cannot claim
+that publication was prevented, undone or safe to replay automatically.
+
+Native transfer observations must match the requested operation before artifact
+publication. Unexpected Windows guest actions and malformed Linux download
+framing produce failure, followed by owned-stage finalization. Byte limits,
+staging validation and destination publication policy remain in the application;
+native encoding and decoding belong to adapters.
+
+Application tests exercise execution throws, unexpected actions, malformed or
+oversized artifacts, remote cleanup throws, combined failures and cleanup failure
+after publication. Native file/SDK qualification is separate from these composed
+policy tests.

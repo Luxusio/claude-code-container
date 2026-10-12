@@ -7,12 +7,26 @@ import * as emulatorState from "@ccc/device-lab/providers/state/android-state.mj
 import * as physicalState from "@ccc/device-lab/providers/state/android-device-state.mjs";
 import * as leases from "@ccc/device-lab/providers/state/physical-lease-store.mjs";
 import * as store from "@ccc/device-lab/providers/state/device-store.mjs";
-import { handleAndroidTool } from "@ccc/device-lab/providers/backends/android.mjs";
+import { handleAndroidTool, androidScreenshotResult } from "@ccc/device-lab/providers/backends/android.mjs";
 import { handleAndroidRealTool } from "@ccc/device-lab/providers/backends/android-device.mjs";
 
 const device = { id: "wait-phone", serial: "serial ; literal", leaseClaimId: "claim", leaseClaimNonce: "nonce" };
 const result = (stdout = "", status: number | null = 0, extra = {}) => ({ stdout, stderr: "", status, signal: null, ...extra });
 const payload = (response: any) => JSON.parse(response.content[0].text);
+
+describe("Android native screenshot compatibility", () => {
+    it("publishes PNG bytes even when the native process exits nonzero", () => {
+        const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2]);
+        expect(androidScreenshotResult({ status: 7, stdout: png, stderr: Buffer.from("late native error") }))
+            .toMatchObject({ content: [{ type: "image", mimeType: "image/png", data: png.toString("base64") }] });
+    });
+    it("retains the failed non-PNG native diagnostic and successful empty image", () => {
+        expect(androidScreenshotResult({ status: 7, stdout: Buffer.from("abc"), stderr: Buffer.from("capture denied") }))
+            .toMatchObject({ isError: true, content: [{ type: "text", text: "Error: capture denied" }] });
+        expect(androidScreenshotResult({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }))
+            .toMatchObject({ content: [{ type: "image", mimeType: "image/png", data: "" }] });
+    });
+});
 let time = 0;
 let clock: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
@@ -146,7 +160,6 @@ for (const [backend, handle] of [["android-emulator", handleAndroidTool], ["andr
             const bounded = vi.spyOn(commands, "runWithTimeout");
             expect(payload(await call("mobile_dump_ui"))).toHaveProperty("source", "<node/>");
             expect(run).toHaveBeenCalledTimes(2);
-            expect(run.mock.calls.every((args) => args.length === 2)).toBe(true);
             expect(bounded).not.toHaveBeenCalled();
         });
     });

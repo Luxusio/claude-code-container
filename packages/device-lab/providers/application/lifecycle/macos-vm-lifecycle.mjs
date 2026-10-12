@@ -4,12 +4,20 @@ import { recordingGenerationMatches } from "../../domain/runtime-generation.mjs"
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice} MacosVmDevice */
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleInput} MacosVmLifecycleInput */
 /** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleClaim} MacosVmLifecycleClaim */
-/** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmProviderPlan} MacosVmProviderPlan */
+/** @typedef {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativePlan} MacosVmNativePlan */
+
+/** @param {string} message @returns {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome} */
+function refused(message) { return {kind:'refused',message}; }
+/** @param {object} value @returns {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome} */
+function completedOutcome(value) { return {kind:'completed',value}; }
+/** @param {object} value @returns {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome} */
+function problem(value) { return {kind:'problem',value}; }
+/** @param {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativeObservation} observation @returns {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome} */
+function failed(observation) { return {kind:'failed',evidence:observation.evidence}; }
 
 /** Complete direct policy; only trusted native leaves enter this composition.
- * @template Result
  * @template {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmProcessHandle} Child
- * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecyclePorts<Result, Child>} ports
+ * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecyclePorts<Child>} ports
  */
 export function createMacosVmLifecycleApplication(ports) {
     /** @param {string | undefined} deviceId
@@ -17,7 +25,7 @@ export function createMacosVmLifecycleApplication(ports) {
      * @param {{found: boolean, matched?: boolean}} transition
      * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmRollback | null} [rollback] */
     function macosLifecycleConflict(deviceId, operation, transition, rollback = null) {
-        return (0, ports.textResult)(false, JSON.stringify({
+        return problem({
             ok: false,
             error: "owner-device-state-conflict",
             backend: "macos-vm",
@@ -25,7 +33,7 @@ export function createMacosVmLifecycleApplication(ports) {
             operation,
             found: transition.found,
             ...(rollback ? { rollback } : {}),
-        }));
+        });
     }
 
     /** @param {MacosVmDevice} device
@@ -86,12 +94,12 @@ export function createMacosVmLifecycleApplication(ports) {
         const lifecycle = device.lifecycle;
         if (lifecycle.operation === "start") {
             const plan = (0, ports.providerPlan)(device);
-            if (!plan.stopCommand) {
-                return { error: (0, ports.textResult)(false, `Cannot recover stale macOS VM start lifecycle for ${deviceId}: provider stop is unavailable`) };
+            if (!plan.stopAvailable) {
+                return { error: refused( `Cannot recover stale macOS VM start lifecycle for ${deviceId}: provider stop is unavailable`) };
             }
-            const stopped = (0, ports.providerCommand)(plan.stopCommand.command, plan.stopCommand.args, "stop");
-            if (stopped.status !== 0) {
-                return { error: (0, ports.textResult)(false, `Cannot recover stale macOS VM start lifecycle for ${deviceId}: ${stopped.stderr || stopped.stdout || stopped.error?.message || `exit ${stopped.status}`}`) };
+            const stopped = ports.stopInstance(plan);
+            if (!stopped.ok) {
+                return { error: refused( `Cannot recover stale macOS VM start lifecycle for ${deviceId}: ${stopped.detail}`) };
             }
         }
 
@@ -155,28 +163,26 @@ export function createMacosVmLifecycleApplication(ports) {
 
     /** @param {string | undefined} deviceId
      * @param {MacosVmLifecycleClaim} lifecycle
-     * @param {MacosVmProviderPlan} plan */
+     * @param {MacosVmNativePlan} plan */
     function rollbackStartedMacosVm(deviceId, lifecycle, plan) {
         const current = (0, ports.find)(deviceId);
         if (current?.lifecycle?.runtimeId !== lifecycle.runtimeId && current?.providerInstance === plan.providerInstance) {
             return { ok: false, attempted: false, reason: "provider-instance-owned-by-successor", providerInstance: plan.providerInstance };
         }
-        if (!plan.stopCommand || !plan.providerInstance) {
+        if (!plan.stopAvailable || !plan.providerInstance) {
             return { ok: false, attempted: false, reason: "provider-stop-command-unavailable", providerInstance: plan.providerInstance || null };
         }
-        const stopped = (0, ports.providerCommand)(plan.stopCommand.command, plan.stopCommand.args, "stop");
+        const stopped = ports.stopInstance(plan);
         return {
-            ok: stopped.status === 0,
+            ok: stopped.ok,
             attempted: true,
             providerInstance: plan.providerInstance,
-            status: stopped.status,
-            stdout: stopped.stdout,
-            stderr: stopped.stderr,
+            evidence: stopped.evidence,
         };
     }
 
     /** @param {string | undefined} deviceId
-     * @param {MacosVmProviderPlan} plan
+     * @param {MacosVmNativePlan} plan
      * @param {string} instance */
     function rollbackCreatedMacosResource(deviceId, plan, instance) {
         const current = (0, ports.find)(deviceId);
@@ -185,42 +191,40 @@ export function createMacosVmLifecycleApplication(ports) {
         }
         const deleted = deleteInstance(plan, instance);
         return {
-            ok: deleted.status === 0,
+            ok: deleted.ok,
             attempted: true,
             providerInstance: instance,
-            status: deleted.status,
-            stdout: deleted.stdout,
-            stderr: deleted.stderr,
+            evidence: deleted.evidence,
         };
     }
 
-    /** @param {MacosVmProviderPlan} plan
+    /** @param {MacosVmNativePlan} plan
      * @param {string | null | undefined} source
      * @param {string} target */
     function runTartClone(plan, source, target) {
-        const result = (0, ports.providerCommand)(plan.providerCommand, ["clone", source, target], "clone");
-        const cleanup = result.status !== 0 && (0, ports.commandTimedOut)(result)
+        const result = ports.cloneInstance(plan, source, target);
+        const cleanup = !result.ok && result.timedOut
             ? deleteInstance(plan, target)
             : null;
         return { result, cleanup };
     }
 
-    /** @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult} result
-     * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult | null} cleanup
+    /** @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativeObservation} result
+     * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativeObservation | null} cleanup
      * @param {string} target */
     function tartCloneFailure(result, cleanup, target) {
-        return ports.presentCloneFailure({ target, command: result, cleanup });
+        return {kind:'clone-failed',evidence:{ target, command: result, cleanup }};
     }
 
-    /** @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult} command
-     * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommandResult|null} cleanup
+    /** @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativeObservation} command
+     * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativeObservation|null} cleanup
      * @param {string} target
-     * @returns {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosCloneFailureEvidence} */
+     * @returns {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosNativeCloneFailureEvidence} */
     function cloneFailureEvidence(command, cleanup, target) { return { target, command, cleanup }; }
 
-    /** @param {MacosVmProviderPlan} plan @param {string} instance */
+    /** @param {MacosVmNativePlan} plan @param {string} instance */
     function deleteInstance(plan, instance) {
-        return (0, ports.providerCommand)(plan.providerCommand, ["delete", instance], "delete");
+        return ports.deleteInstance(plan, instance);
     }
 
     /** @param {{id: string, name?: string, provider: string, image: string, memoryMb: number, cpus: number, ssh: import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmSsh | null, extra?: Partial<MacosVmDevice>}} options */
@@ -238,15 +242,15 @@ export function createMacosVmLifecycleApplication(ports) {
         const name = "device_base_image_create";
         const { backend = "macos-vm", name: deviceName, deviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
         if (backend !== "macos-vm") return undefined;
-        if (!sourceImage) return (0, ports.textResult)(false, `${name} requires sourceImage`);
+        if (!sourceImage) return refused(`${name} requires sourceImage`);
 
         const id = deviceId || (0, ports.deviceId)(deviceName);
         const devices = (0, ports.read)();
         if (devices.some((device) => device.id === id)) {
-            return (0, ports.textResult)(false, `Device already exists for this owner: ${id}`);
+            return refused( `Device already exists for this owner: ${id}`);
         }
         const sshKeyPolicy = (0, ports.validateSshKey)(sshKeyPath);
-        if (!sshKeyPolicy.ok) return (0, ports.textResult)(false, sshKeyPolicy.message);
+        if (!sshKeyPolicy.ok) return refused( sshKeyPolicy.message);
 
         const ssh = macosSshConfig({ sshHost, sshPort, sshUser, sshKeyPath: sshKeyPolicy.path, sshPassword, provider, image: sourceImage });
         const device = macosDeviceDefinition({
@@ -265,14 +269,14 @@ export function createMacosVmLifecycleApplication(ports) {
         });
         const tart = (0, ports.tartPlan)(device, name);
         if (tart.error) return tart.error;
-        const target = (/** @type {MacosVmProviderPlan} */ (tart.plan)).providerInstance;
-        const clone = runTartClone((/** @type {MacosVmProviderPlan} */ (tart.plan)), sourceImage, target);
+        const target = (/** @type {MacosVmNativePlan} */ (tart.plan)).providerInstance;
+        const clone = runTartClone((/** @type {MacosVmNativePlan} */ (tart.plan)), sourceImage, target);
         const r = clone.result;
-        if (r.status !== 0) return tartCloneFailure(r, clone.cleanup, target);
+        if (!r.ok) return tartCloneFailure(r, clone.cleanup, target);
 
         const created = {
             ...device,
-            provider: (/** @type {MacosVmProviderPlan} */ (tart.plan)).selectedProvider,
+            provider: (/** @type {MacosVmNativePlan} */ (tart.plan)).selectedProvider,
             providerInstance: target,
             providerResourceManaged: true,
             imageCreatedAt: (0, ports.timestamp)(),
@@ -281,27 +285,25 @@ export function createMacosVmLifecycleApplication(ports) {
         try {
             claim = (0, ports.claim)(created);
         } catch (error) {
-            const rollback = (0, ports.providerCommand)((/** @type {MacosVmProviderPlan} */ (tart.plan)).providerCommand, ["delete", target], "delete");
-            if (rollback.status !== 0) {
-                return (0, ports.textResult)(false, `Owner device state update failed; macOS VM rollback failed: ${rollback.stderr || rollback.stdout}`);
+            const rollback = ports.deleteInstance(/** @type {MacosVmNativePlan} */ (tart.plan), target);
+            if (!rollback.ok) {
+                return refused( `Owner device state update failed; macOS VM rollback failed: ${rollback.detail}`);
             }
             throw error;
         }
         if (!claim.ok) {
             if (claim.existing?.provider !== created.provider || claim.existing?.providerInstance !== target) {
-                const rollback = (0, ports.providerCommand)((/** @type {MacosVmProviderPlan} */ (tart.plan)).providerCommand, ["delete", target], "delete");
-                if (rollback.status !== 0) {
-                    return (0, ports.textResult)(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); macOS VM rollback failed: ${rollback.stderr || rollback.stdout}`);
+                const rollback = ports.deleteInstance(/** @type {MacosVmNativePlan} */ (tart.plan), target);
+                if (!rollback.ok) {
+                    return refused( `Device identity conflict for this owner (${claim.field}: ${claim.value}); macOS VM rollback failed: ${rollback.detail}`);
                 }
             }
-            return (0, ports.textResult)(false, `Device identity already exists for this owner (${claim.field}: ${typeof claim.value === "object" ? JSON.stringify(claim.value) : claim.value})`);
+            return {kind:'identity-conflict',field:claim.field,value:claim.value};
         }
-        return (0, ports.jsonResult)({
+        return completedOutcome({
             operation: "base-image-create",
-            device: (0, ports.publicDevice)(created),
-            stdout: r.stdout,
-            stderr: r.stderr,
-            status: r.status,
+            device: created,
+            native: r.evidence,
         });
     }
 
@@ -323,10 +325,10 @@ export function createMacosVmLifecycleApplication(ports) {
         const id = deviceId || (0, ports.deviceId)(deviceName);
         const devices = (0, ports.read)();
         if (devices.some((device) => device.id === id)) {
-            return (0, ports.textResult)(false, `Device already exists for this owner: ${id}`);
+            return refused( `Device already exists for this owner: ${id}`);
         }
         const sshKeyPolicy = (0, ports.validateSshKey)(sshKeyPath);
-        if (!sshKeyPolicy.ok) return (0, ports.textResult)(false, sshKeyPolicy.message);
+        if (!sshKeyPolicy.ok) return refused( sshKeyPolicy.message);
         const ssh = macosSshConfig({ sshHost, sshPort, sshUser, sshKeyPath: sshKeyPolicy.path, sshPassword, provider, image });
 
         const device = {
@@ -351,9 +353,9 @@ export function createMacosVmLifecycleApplication(ports) {
         };
         const claim = (0, ports.claim)(device);
         if (!claim.ok) {
-            return (0, ports.textResult)(false, `Device identity already exists for this owner (${claim.field}: ${typeof claim.value === "object" ? JSON.stringify(claim.value) : claim.value})`);
+            return {kind:'identity-conflict',field:claim.field,value:claim.value};
         }
-        return (0, ports.jsonResult)({ device: (0, ports.publicDevice)(device) });
+        return completedOutcome({ device: device });
     }
 
     /** @param {MacosVmLifecycleInput} args */
@@ -363,10 +365,10 @@ export function createMacosVmLifecycleApplication(ports) {
         const device = (0, ports.find)(deviceId);
         if (!device) return undefined;
         if (device.status !== "stopped" || device.lifecycle) {
-            return (0, ports.textResult)(false, `Refusing to start ${deviceId} while status is ${device.status}${device.lifecycle ? ` and lifecycle operation ${device.lifecycle.operation || "unknown"} is active` : ""}`);
+            return refused( `Refusing to start ${deviceId} while status is ${device.status}${device.lifecycle ? ` and lifecycle operation ${device.lifecycle.operation || "unknown"} is active` : ""}`);
         }
         const keyPolicy = (0, ports.validateSshKey)(device.ssh?.keyPath);
-        if (!keyPolicy.ok) return (0, ports.textResult)(false, keyPolicy.message);
+        if (!keyPolicy.ok) return refused( keyPolicy.message);
         const safeDevice = device.ssh?.keyPath && keyPolicy.path !== device.ssh.keyPath
             ? { ...device, ssh: { ...device.ssh, keyPath: keyPolicy.path } }
             : device;
@@ -374,7 +376,7 @@ export function createMacosVmLifecycleApplication(ports) {
 
         const plan = (0, ports.providerPlan)(startDevice);
         if (!plan.available) {
-            return (0, ports.textResult)(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
+            return refused( `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
         }
 
         const claim = claimMacosLifecycle(deviceId, device, "start", {
@@ -385,18 +387,8 @@ export function createMacosVmLifecycleApplication(ports) {
         });
         if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "start-claim", claim.transition);
 
-        const startCommand = /** @type {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmCommand} */ (plan.selectedProvider === "tart" && plan.providerCommand
-            ? {
-                command: plan.providerCommand,
-                args: (0, ports.tartStartArgs)(plan.providerInstance, {
-                    ...startDevice,
-                    softnet: startDevice.softnet !== false && (0, ports.supportsFeature)(plan.providerCommand, "--with-softnet"),
-                }),
-            }
-            : plan.startCommand);
-
-        const child = (0, ports.spawn)(startCommand.command, startCommand.args);
-        const startError = await (0, ports.waitProviderStart)(child, "macOS VM provider start");
+        const {child,startCommand} = ports.launchProvider(plan,startDevice);
+        const startError = await (0, ports.waitProviderStart)(child);
         if (startError) {
             abortMacosLifecycle(deviceId, claim.lifecycle, device);
             return startError;
@@ -463,20 +455,20 @@ export function createMacosVmLifecycleApplication(ports) {
         }
         const updated = /** @type {MacosVmDevice} */ (completedTransition.device);
         if (waitForBoot && !boot.ready && !boot.skipped) {
-            return (0, ports.textResult)(false, JSON.stringify({ ok: false, error: "macos-boot-not-ready", device: (0, ports.publicDevice)(updated), boot }));
+            return problem({ ok: false, error: "macos-boot-not-ready", device: updated, boot });
         }
         if (!provision.ok) {
-            return (0, ports.textResult)(false, JSON.stringify({
+            return problem({
                 ok: false,
                 error: provision.error,
                 command: provision.command,
-                device: (0, ports.publicDevice)(updated),
+                device: updated,
                 helper: provision.provisioning,
                 providerStart: startedDevice.runtime,
                 boot,
-            }));
+            });
         }
-        return (0, ports.jsonResult)({ device: (0, ports.publicDevice)(updated), helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
+        return completedOutcome({ device: updated, helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
     }
 
     /** @param {MacosVmDevice} device */
@@ -486,10 +478,7 @@ export function createMacosVmLifecycleApplication(ports) {
         const signal = (0, ports.signalRecording)(recording, "SIGINT");
         if (!signal.signaled && signal.exited !== true) return { ok: false, reason: signal.reason || "runtime-process-signal-refused" };
         if (signal.signaled && recording.active) {
-            const bridge = (0, ports.sshBridge)(device, "device_record_video_stop");
-            if (!bridge.error) {
-                (0, ports.helperCommand)((/** @type {{ssh: string}} */ (bridge.discovery)).ssh, [...(0, ports.sshBaseArgs)(device), /** @type {string} */ (bridge.target), `pkill -INT -f ${(0, ports.shellQuote)(`screencapture.*${recording.remotePath}`)} || true`], undefined, (0, ports.sshCommandOptions)(device));
-            }
+            ports.interruptGuestRecording(device,recording);
         }
         const exited = await (0, ports.waitRecordingExit)(recording, 1000);
         return exited === true ? { ok: true } : { ok: false, reason: "runtime-process-exit-unconfirmed" };
@@ -503,9 +492,9 @@ export function createMacosVmLifecycleApplication(ports) {
     function recordingCleanupIncomplete(deviceId, lifecycle, device, updates, reason) {
         const restored = abortMacosLifecycle(deviceId, lifecycle, device, updates);
         if (!restored.matched) return macosLifecycleConflict(deviceId, "recording-cleanup", restored);
-        return (0, ports.textResult)(false, JSON.stringify({
+        return problem({
             ok: false, error: "macos-recording-cleanup-incomplete", deviceId, reason,
-        }));
+        });
     }
 
     /** @param {MacosVmLifecycleInput} args */
@@ -514,21 +503,21 @@ export function createMacosVmLifecycleApplication(ports) {
         const device = (0, ports.find)(deviceId);
         if (!device) return undefined;
         if (device.lifecycle) {
-            return (0, ports.textResult)(false, `Refusing to stop ${deviceId} while lifecycle operation ${device.lifecycle.operation || "unknown"} is active`);
+            return refused( `Refusing to stop ${deviceId} while lifecycle operation ${device.lifecycle.operation || "unknown"} is active`);
         }
         const claim = claimMacosLifecycle(deviceId, device, "stop");
         if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "stop-claim", claim.transition);
 
         const plan = (0, ports.providerPlan)(device);
-        if (device.status !== "stopped" && (!plan.available || !plan.stopCommand)) {
+        if (device.status !== "stopped" && (!plan.available || !plan.stopAvailable)) {
             abortMacosLifecycle(deviceId, claim.lifecycle, device);
-            return (0, ports.textResult)(false, `macOS VM stop is unavailable for ${deviceId}: ${plan.missing?.join(", ") || "provider stop command missing"}`);
+            return refused( `macOS VM stop is unavailable for ${deviceId}: ${plan.missing?.join(", ") || "provider stop command missing"}`);
         }
-        if (plan.stopCommand && device.providerInstance && device.status !== "stopped") {
-            const r = (0, ports.providerCommand)(plan.stopCommand.command, plan.stopCommand.args, "stop");
-            if (r.status !== 0) {
+        if (plan.stopAvailable && device.providerInstance && device.status !== "stopped") {
+            const r = ports.stopInstance(plan);
+            if (!r.ok) {
                 abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                return (0, ports.fail)(r);
+                return failed(r);
             }
         }
 
@@ -554,7 +543,7 @@ export function createMacosVmLifecycleApplication(ports) {
         });
         const transition = (0, ports.transition)(deviceId, current, stopped);
         if (!transition.matched) return macosLifecycleConflict(deviceId, "stop", transition);
-        return (0, ports.jsonResult)({ device: (0, ports.publicDevice)(/** @type {MacosVmDevice} */ (transition.device)) });
+        return completedOutcome({ device: /** @type {MacosVmDevice} */ (transition.device) });
     }
 
     /** @param {MacosVmLifecycleInput} args */
@@ -564,10 +553,10 @@ export function createMacosVmLifecycleApplication(ports) {
         const device = (0, ports.find)(deviceId);
         if (!device) return undefined;
         if (!force && device.status !== "stopped") {
-            return (0, ports.textResult)(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
+            return refused( `Refusing to delete ${deviceId} while status is ${device.status}`);
         }
         if (device.lifecycle) {
-            return (0, ports.textResult)(false, `Refusing to delete ${deviceId} while lifecycle operation ${device.lifecycle.operation || "unknown"} is active`);
+            return refused( `Refusing to delete ${deviceId} while lifecycle operation ${device.lifecycle.operation || "unknown"} is active`);
         }
         const claim = claimMacosLifecycle(deviceId, device, "delete");
         if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "delete-claim", claim.transition);
@@ -577,13 +566,13 @@ export function createMacosVmLifecycleApplication(ports) {
             const plan = (0, ports.providerPlan)(device);
             if (!plan.available) {
                 abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                return (0, ports.textResult)(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
+                return refused( `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
             }
-            if (plan.stopCommand) {
-                const stop = (0, ports.providerCommand)(plan.stopCommand.command, plan.stopCommand.args, "stop");
-                if (stop.status !== 0) {
+            if (plan.stopAvailable) {
+                const stop = ports.stopInstance(plan);
+                if (!stop.ok) {
                     abortMacosLifecycle(deviceId, claim.lifecycle, device);
-                    return (0, ports.fail)(stop);
+                    return failed(stop);
                 }
                 forcedStopPlan = plan;
                 forcedStopUpdates = {
@@ -621,10 +610,10 @@ export function createMacosVmLifecycleApplication(ports) {
                 if (!currentMacosLifecycleDevice(deviceId, claim.lifecycle)) {
                     return macosLifecycleConflict(deviceId, "delete-resource-ownership", { found: Boolean((0, ports.find)(deviceId)), matched: false });
                 }
-                const deleted = deleteInstance((/** @type {MacosVmProviderPlan} */ (tart.plan)), resource.instance);
-                if (deleted.status !== 0) {
+                const deleted = deleteInstance((/** @type {MacosVmNativePlan} */ (tart.plan)), resource.instance);
+                if (!deleted.ok) {
                     abortMacosLifecycle(deviceId, claim.lifecycle, device, forcedStopUpdates);
-                    return (0, ports.fail)(deleted);
+                    return failed(deleted);
                 }
                 providerDeleted.push(resource.instance);
                 if (resource.kind === "snapshot") {
@@ -654,7 +643,7 @@ export function createMacosVmLifecycleApplication(ports) {
         if (!current) return macosLifecycleConflict(deviceId, "delete", { found: Boolean((0, ports.find)(deviceId)), matched: false });
         const transition = (0, ports.transition)(deviceId, current, null);
         if (!transition.matched) return macosLifecycleConflict(deviceId, "delete", transition);
-        return (0, ports.jsonResult)({ deleted: deviceId, providerDeleted });
+        return completedOutcome({ deleted: deviceId, providerDeleted });
     }
 
     return { create, createImage, start, stop, delete: remove, conflict: macosLifecycleConflict,

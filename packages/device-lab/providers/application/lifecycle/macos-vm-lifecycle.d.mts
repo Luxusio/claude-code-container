@@ -1,4 +1,4 @@
-import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback, MacosCloneFailureEvidence } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
+import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback, MacosCloneFailureEvidence, MacosVmNativePlan, MacosVmNativeObservation, MacosVmLifecycleOutcome, MacosNativeCloneFailureEvidence } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
 export interface MacosVmLifecycle<Result> {
     create(input: MacosVmLifecycleInput): Result | undefined;
     createImage(input: MacosVmLifecycleInput): Result | undefined;
@@ -19,4 +19,11 @@ export interface MacosVmLifecycle<Result> {
     cloneFailureEvidence(command: MacosVmCommandResult, cleanup: MacosVmCommandResult | null, target: string): MacosCloneFailureEvidence;
     cloneFailure(result: MacosVmCommandResult, cleanup: MacosVmCommandResult | null, target: string): Result;
 }
-export function createMacosVmLifecycleApplication<Result, Child extends MacosVmProcessHandle = MacosVmProcessHandle>(ports: MacosVmLifecyclePorts<Result, Child>): MacosVmLifecycle<Result>;
+export interface MacosVmNativeLifecycle extends Omit<MacosVmLifecycle<MacosVmLifecycleOutcome>,'clone'|'cloneFailure'|'cloneFailureEvidence'|'rollbackCreated'|'rollbackStarted'> {
+    rollbackStarted(deviceId:string|undefined,lifecycle:MacosVmLifecycleClaim,plan:MacosVmNativePlan):MacosVmRollback;
+    rollbackCreated(deviceId:string|undefined,plan:MacosVmNativePlan,instance:string):MacosVmRollback;
+    clone(plan:MacosVmNativePlan,source:string|null|undefined,target:string):{result:MacosVmNativeObservation;cleanup:MacosVmNativeObservation|null};
+    cloneFailure(result:MacosVmNativeObservation,cleanup:MacosVmNativeObservation|null,target:string):MacosVmLifecycleOutcome;
+    cloneFailureEvidence(command:MacosVmNativeObservation,cleanup:MacosVmNativeObservation|null,target:string):MacosNativeCloneFailureEvidence;
+}
+export function createMacosVmLifecycleApplication<Child extends MacosVmProcessHandle = MacosVmProcessHandle>(ports: MacosVmLifecyclePorts<Child>): MacosVmNativeLifecycle;

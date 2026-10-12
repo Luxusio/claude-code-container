@@ -1,3 +1,4 @@
+import { dumpAndroidUi, readAndroidUi, observeAndroidApp, presentAndroidTextWait, presentAndroidAppWait } from "./android-wait.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { recordingInputError } from "../domain/direct-recording.mjs";
 import { createAndroidPhysicalAttachment } from "../adapters/physical-attachment.mjs";
@@ -14,7 +15,7 @@ import { createWaitBudget } from "../wait-budget.mjs";
 import { createHash, randomUUID } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
-import { androidDiscovery, appiumDiscovery, performAndroidAppEffect, presentAndroidAppOutcome, androidEnvironmentObservation, presentAndroidEnvironmentOutcome } from "./android.mjs";
+import { androidDiscovery, appiumDiscovery, performAndroidAppEffect, presentAndroidAppOutcome, androidEnvironmentObservation, presentAndroidEnvironmentOutcome, observeAndroidScreenshot } from "./android.mjs";
 import { run, runBuffer, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
@@ -411,43 +412,61 @@ const androidAppManagementPorts = {
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
 
-/** @type {import('../ports/android-device-access.mjs').AndroidPhysicalAccessPorts<NonNullable<ReturnType<typeof findAndroidRealDevice>>, ReturnType<typeof androidDiscovery>>} */
+/** @type {import('../ports/android-device-access.mjs').AndroidPhysicalAccessPorts<NonNullable<ReturnType<typeof findAndroidRealDevice>>, {adbAvailable:boolean,native:ReturnType<typeof androidDiscovery>}>} */
 const androidDeviceAccessPorts = {
     variant: "physical",
     device: id => findAndroidRealDevice(id),
-    discovery: () => androidDiscovery(),
-    backend: discovery => androidRealBackend(discovery),
-    publicDevice: device => withTargetStatus(device),
-    appium: discovery => { const facts = appiumDiscovery(discovery); return { available: facts.available, missing: facts.missing, tools: { appium: facts.appium, adb: facts.adb } }; },
+    discovery: () => { const native=androidDiscovery(); return {adbAvailable:Boolean(native.adb),native}; },
+    targetForDevice: (device,discovery) => ({device,native:{device,adb:discovery.native.adb}}),
     target(id) {
         const selected = ensureAdbDevice(id);
         if (selected.unknown) return { kind: "unknown" };
         if (selected.error) return { kind: "refused", message: selected.error };
-        return { kind: "ready", target: selected };
+        return { kind: "ready", target: {device:selected.device,native:selected} };
     },
-    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    uiPath: device => `/sdcard/window-${device.id}.xml`,
+    executeShell: (target,command) => {
+        const diagnostic = run(target.native.adb, adbArgsForDevice(target.device,["shell",command]));
+        return diagnostic.status === 0 ? {ok:true,value:undefined,diagnostic} : {ok:false,diagnostic};
+    },
+    dumpUi: (target,path,timeoutMs) => dumpAndroidUi(target.native.adb,adbArgsForDevice(target.device,[]),path,timeoutMs),
+    readUi: (target,path,mode,timeoutMs) => readAndroidUi(target.native.adb,adbArgsForDevice(target.device,[]),path,mode,timeoutMs),
+    observeApp: (target,packageName,timeoutMs) => observeAndroidApp(target.native.adb,adbArgsForDevice(target.device,[]),packageName,timeoutMs),
     capture: target => {
-        const result = runBuffer(target.adb, adbArgsForDevice(target.device, ["exec-out", "screencap", "-p"]), {
+        const result = runBuffer(target.native.adb, adbArgsForDevice(target.device, ["exec-out", "screencap", "-p"]), {
             maxBuffer: ANDROID_SCREENSHOT_MAX_BUFFER_BYTES, timeout: ANDROID_SCREENSHOT_TIMEOUT_MS,
         });
-        const stdout = Buffer.from(result.stdout || []);
-        return { status: result.status, byteLength: stdout.length, prefix: Array.from(stdout.subarray(0, 8)),
-            base64: stdout.toString("base64"), stdoutText: stdout.toString(), stderrText: result.stderr?.toString() || "" };
+        return observeAndroidScreenshot(result);
     },
     budget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
-    executeTimed: (target, args, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, args), timeoutMs),
     refreshLease: device => { const lease = refreshAndroidRealDeviceLease(device); return lease.ok ? { ok: true } : { ok: false, message: lease.error }; },
-    hostState: (device, adb) => run(adb, ["-s", device.serial, "get-state"]),
+    hostState: (device, discovery) => { const r = run(discovery.native.adb,["-s",device.serial,"get-state"]); return {stdout:(r.stdout||"").trim(),stderr:r.stderr,status:r.status}; },
 };
 const androidDeviceAccess = createAndroidDeviceAccess(androidDeviceAccessPorts);
 
 /** @param {import('../ports/android-device-access.mjs').AndroidAccessOutcome|undefined} outcome */
 function presentAndroidAccessOutcome(outcome) {
     if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
-    if (outcome.kind === "command-failure") return fail(outcome.command);
-    return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
+    if (outcome.kind === "refused") return textResult(false,outcome.message);
+    if (outcome.kind === "native-failure") return fail(outcome.diagnostic);
+    if (outcome.kind === "image") return {content:[{type:"image",data:outcome.data,mimeType:"image/png"}]};
+    if (outcome.kind === "session") {
+        const device = outcome.device;
+        const facts = appiumDiscovery();
+        const appium = {available:facts.available,missing:facts.missing,tools:{appium:facts.appium,adb:facts.adb}};
+        return jsonResult({deviceId:device.id,appium,session:device.appium||null,lazy:true,automationName:"UiAutomator2"});
+    }
+    if (outcome.kind === "status") {
+        const device = outcome.device, discovery = outcome.discovery.native;
+        const facts = appiumDiscovery(discovery);
+        const appium = {available:facts.available,missing:facts.missing,tools:{appium:facts.appium,adb:facts.adb}};
+        return jsonResult({device:withTargetStatus(device),backend:androidRealBackend(discovery),hostState:outcome.hostState,appium:{deviceId:device.id,appium,session:device.appium||null,lazy:true,automationName:"UiAutomator2"}});
+    }
+    if (outcome.kind === "executed") { const r = outcome.diagnostic; return jsonResult({stdout:r.stdout,stderr:r.stderr,status:r.status}); }
+    if (outcome.kind === "ui") { const r=outcome.dump; return jsonResult({provider:"adb-uiautomator",source:outcome.source,remotePath:outcome.remotePath,stdout:r.stdout,stderr:r.stderr}); }
+    const result = outcome.kind === "text-wait" ? presentAndroidTextWait(outcome.result) : presentAndroidAppWait(outcome.result);
+    if ("error" in result) return fail(result.error);
+    return outcome.kind === "text-wait" ? jsonResult({...result,text:outcome.text,provider:"adb-uiautomator"}) : jsonResult({...result,packageName:outcome.packageName,provider:"adb"});
 }
 
 /** @type {import('../ports/mobile-environment.mjs').AndroidPhysicalEnvironmentPorts<Extract<ReturnType<typeof ensureAdbDevice>,{device:unknown}>>} */

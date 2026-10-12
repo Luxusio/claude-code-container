@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeAndroidMcpContext, cleanupFakeAndroidMcpContext, type FakeAndroidMcpContext } from "./fake-android-mcp-fixture.js";
-import type { AndroidEmulatorCommandResult, AndroidEmulatorDevice, AndroidEmulatorLifecyclePorts, AndroidEmulatorProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
+import type { AndroidEmulatorLifecycleOutcome, AndroidEmulatorDevice, AndroidEmulatorLifecyclePorts, AndroidEmulatorProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
 import type { BrokerAndroidLifecycleInput, BrokerAndroidLifecycleRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidEmulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 
@@ -77,7 +77,7 @@ export function privateBrokerHome(): { home: string; remove: () => void } {
     return { home, remove: () => rmSync(home, { recursive: true, force: true }) };
 }
 
-export type DirectLifecycleResult = { ok: boolean; payload?: unknown; text?: string; failure?: AndroidEmulatorCommandResult };
+export type DirectLifecycleResult = AndroidEmulatorLifecycleOutcome;
 export interface DirectOwnedChild extends AndroidEmulatorProcessHandle { readonly pid: number; readonly nativeHandle: object }
 
 // Pure application effect fixture. Public/native witnesses above remain the
@@ -87,42 +87,38 @@ export function directLifecyclePorts(initial?: AndroidEmulatorDevice) {
     let current = initial, clockReads = 0;
     const trace: string[] = [], transitions: Array<{ expected: AndroidEmulatorDevice; replacement: AndroidEmulatorDevice | null }> = [];
     const child: DirectOwnedChild = { pid: 424242, nativeHandle: {} };
-    const discovery = { adb: "adb", emulator: "emulator", avdmanager: "avdmanager", available: true, missing: [], provisioningAvailable: true, provisioningMissing: [] };
-    const ports: AndroidEmulatorLifecyclePorts<DirectLifecycleResult, DirectOwnedChild> = {
+    const discovery = { adbAvailable: true, native: {}, available: true, missing: [], provisioningAvailable: true, provisioningMissing: [] };
+    const ports: AndroidEmulatorLifecyclePorts<DirectOwnedChild> = {
         androidAvdHome: () => "/owned-avd",
         androidAvdIsInactive: () => { trace.push("inactive"); return true; },
         androidDeviceId: () => "android-unit",
+        androidEmulatorSerial: port => `emulator-${port}`,
         androidDiscovery: () => { trace.push("discovery"); return discovery; },
-        androidEmulatorStartArgs: () => ["-no-window"],
-        androidLifecycleConflict: (deviceId, operation, transition, rollback) => ({ ok: false, payload: { error: "owner-device-state-conflict", deviceId, operation, ...transition, ...(rollback === undefined ? {} : { rollback }) } }),
-        androidSerial: device => device.serial || (device.port ? "emulator-" + device.port : undefined),
         appiumPortForDevice: () => 4723,
         approvedAndroidAvdRoot: () => "/owned-avd",
         claimAndroidDevice: device => { trace.push("claim"); current = device; return { ok: true }; },
         deleteOwnedAndroidAvd: (_avd, options) => { trace.push("remove-avd"); if (!options.verifyInactive()) return { ok: false, error: "native-liveness-unverified" }; return { ok: true, artifactsRemoved: 2 }; },
-        fail: failure => ({ ok: false, failure }),
         findAndroidDevice: () => current,
         isOwnedAvdName: (name: unknown): name is string => typeof name === "string",
         isSafeDeviceProfile: () => true,
         isSafeProvisionedAvdName: () => true,
         isSafeSystemImage: () => true,
-        jsonResult: payload => ({ ok: true, payload }),
         listOwnedAndroidAvdArtifacts: () => [],
         liveAndroidEmulatorPortsForAllocation: () => { trace.push("live-ports"); return { ok: true, ports: new Set() }; },
         ownerAvdPrefix: () => "ccc-owner-",
         ownerId: () => "owner",
-        publicAndroidDevice: device => device,
         readAndroidDevices: () => { trace.push("read"); return current ? [current] : []; },
         refreshOwnedRuntimeProcessIdentity: runtime => runtime,
         resolveAndroidEmulatorPort: (_owner, _id, port) => { trace.push("allocate"); return { ok: true, port: port || 5630 }; },
-        run: (_exe, args) => { trace.push("run:" + args.join(" ")); return { status: 0, stdout: "", stderr: "" }; },
-        runWithInput: (_exe, _args, input, options) => { trace.push("provision:" + input + ":" + options.timeout); return { status: 0, stdout: "", stderr: "" }; },
-        signalOwnedRuntimeProcess: () => { trace.push("recorder-signal"); return { signaled: false }; },
+        observeAndroidEmulator: () => { trace.push("observe-emulator"); return { live: true }; },
+        stopAndroidEmulator: () => { trace.push("stop-emulator"); return { ok: true, diagnostic: {} }; },
+        stopAndroidRecorder: () => { trace.push("stop-recorder"); },
+        provisionAndroidAvd: () => { trace.push("provision"); return { ok: true, diagnostic: {} }; },
+        signalAndroidRecorder: () => { trace.push("recorder-signal"); return { signaled: false }; },
         slug: () => "unit",
-        spawnAndroidEmulator: async () => { trace.push("spawn"); return child; },
+        launchAndroidEmulator: async () => { trace.push("spawn"); return child; },
         terminateFreshAndroidEmulatorProcessTree: async received => { trace.push("terminate-fresh"); if (received !== child) throw Error("Lost native child handle"); return { ok: true, exited: true }; },
         terminateOwnedRuntimeProcessTree: async (_runtime, label, options) => { trace.push("terminate:" + label + ":" + options.timeoutMs); return { exited: true }; },
-        textResult: (ok, text) => ({ ok, text }),
         transitionAndroidDevice: (_id, expected, replacement) => { trace.push("transition"); transitions.push({ expected, replacement }); const matched = current === expected; if (matched) current = replacement || undefined; return { matched, found: Boolean(current) }; },
         waitForAndroidBoot: async (_discovery, _device, _timeout, received) => { trace.push("boot"); if (received !== child) throw Error("Lost native child handle"); return { ready: true }; },
         waitForProcessExit: async (_pid, timeout) => { trace.push("wait-exit:" + timeout); return true; },

@@ -63,8 +63,12 @@ export interface MacosVmProvision {
 export interface MacosVmSignal { signaled: boolean; exited?: boolean; reason?: string }
 export interface MacosVmRollback { ok: boolean; attempted?: boolean; [key: string]: unknown }
 
-/** Required native leaves; no callback may perform an entire lifecycle. */
-export interface MacosVmLifecyclePorts<Result, Child extends MacosVmProcessHandle = MacosVmProcessHandle> {
+export interface MacosVmNativePlan {available:boolean;missing:string[];selectedProvider:string|null;providerInstance:string;stopAvailable:boolean;evidence:MacosVmProviderPlan}
+export interface MacosVmNativeObservation {ok:boolean;timedOut:boolean;detail:string;evidence:MacosVmCommandResult}
+export interface MacosNativeCloneFailureEvidence {target:string;command:MacosVmNativeObservation;cleanup:MacosVmNativeObservation|null}
+export type MacosVmLifecycleOutcome = {kind:'identity-conflict';field:string;value:unknown}|{kind:'refused';message:string}|{kind:'completed';value:object}|{kind:'problem';value:object}|{kind:'failed';evidence:MacosVmCommandResult}|{kind:'native';evidence:object}|{kind:'clone-failed';evidence:MacosNativeCloneFailureEvidence};
+/** Required finite native leaves; no callback performs an entire lifecycle. */
+export interface MacosVmLifecyclePorts<Child extends MacosVmProcessHandle = MacosVmProcessHandle> {
     read(): MacosVmDevice[];
     find(deviceId: string | undefined): MacosVmDevice | null;
     claim(device: MacosVmDevice): MacosVmClaimResult;
@@ -74,29 +78,19 @@ export interface MacosVmLifecyclePorts<Result, Child extends MacosVmProcessHandl
     parseLifecycleClaimedAt(value: string): number;
     validateSshKey(path: string | null | undefined): {ok: true; path: string | null} | {ok: false; message: string};
     helperMetadata(device: Partial<MacosVmDevice>): {provisioning?: unknown; [key: string]: unknown};
-    providerPlan(device: MacosVmDevice): MacosVmProviderPlan;
-    tartPlan(device: MacosVmDevice, toolName: string): {plan: MacosVmProviderPlan; error?: undefined} | {error: Result; plan?: undefined};
-    publicDevice(device: MacosVmDevice): unknown;
-    providerCommand(command: string | null, args: (string | null | undefined)[], kind: string): MacosVmCommandResult;
-    commandTimedOut(result: MacosVmCommandResult): boolean;
-    tartStartArgs(instance: string, device: MacosVmDevice): string[];
-    supportsFeature(command: string, feature: string): boolean;
-    spawn(command: string, args: string[]): Child;
-    waitProviderStart(child: Child, label: string): Promise<Result | null>;
-    waitBoot(plan: MacosVmProviderPlan, timeoutMs: number, deadlineAt: number): Promise<MacosVmBoot>;
+    providerPlan(device: MacosVmDevice): MacosVmNativePlan;
+    tartPlan(device: MacosVmDevice, toolName: string): {plan: MacosVmNativePlan; error?: undefined} | {error: MacosVmLifecycleOutcome; plan?: undefined};
+    cloneInstance(plan:MacosVmNativePlan,source:string|null|undefined,target:string):MacosVmNativeObservation;
+    deleteInstance(plan:MacosVmNativePlan,instance:string):MacosVmNativeObservation;
+    stopInstance(plan:MacosVmNativePlan):MacosVmNativeObservation;
+    launchProvider(plan:MacosVmNativePlan,device:MacosVmDevice):{child:Child;startCommand:unknown};
+    waitProviderStart(child: Child): Promise<MacosVmLifecycleOutcome | null>;
+    waitBoot(plan: MacosVmNativePlan, timeoutMs: number, deadlineAt: number): Promise<MacosVmBoot>;
     waitGuestHelper(device: MacosVmDevice, deadlineAt: number): Promise<MacosVmProvision>;
     provisionHelper(device: MacosVmDevice): MacosVmProvision;
     signalRecording(recording: MacosVmRuntime | null | undefined, signal: string): MacosVmSignal;
     waitRecordingExit(recording: MacosVmRuntime, timeoutMs: number): Promise<boolean>;
-    sshBridge(device: MacosVmDevice, toolName: string): {error: Result; discovery?: undefined; target?: undefined} | {error?: undefined; discovery: {ssh: string}; target: string};
-    sshBaseArgs(device: MacosVmDevice): string[];
-    shellQuote(text: string): string;
-    sshCommandOptions(device: MacosVmDevice): object;
-    helperCommand(command: string, args: string[], timeoutMs: undefined, options: object): MacosVmCommandResult;
-    textResult(ok: boolean, text: string): Result;
-    jsonResult(value: unknown): Result;
-    fail(result: MacosVmCommandResult): Result;
-    presentCloneFailure(evidence: MacosCloneFailureEvidence): Result;
+    interruptGuestRecording(device:MacosVmDevice,recording:MacosVmRuntime):void;
 }
 
 export interface MacosCloneFailureEvidence { target:string; command:MacosVmCommandResult; cleanup:MacosVmCommandResult|null; }

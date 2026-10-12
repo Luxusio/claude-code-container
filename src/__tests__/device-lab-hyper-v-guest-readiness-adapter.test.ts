@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { waitForDeviceLabHyperVGuestReadiness } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
+import { parseWindowsReadinessProbe, waitForDeviceLabHyperVGuestReadiness } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
 import type { HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
 
 const id = "12345678-1234-1234-1234-123456789abc";
@@ -33,6 +33,13 @@ function readinessClock() {
 }
 
 describe("Device Lab typed Hyper-V guest readiness", () => {
+    it("qualifies exact probe fields and strict IPv4, secret and marker facts", () => {
+        expect(parseWindowsReadinessProbe(probe())).toEqual({ computerName: "CCC-WIN", addresses: ["172.29.0.10"], firstLogonCompleted: marker, provisioningSecretsPresent: false });
+        const valid = JSON.parse(probe());
+        for (const change of [{ addresses: ["172.29.0.256"] }, { addresses: ["0172.29.0.10"] }, { addresses: [42] }, { provisioningSecretsPresent: "false" }, { firstLogonCompleted: null }, { extra: true }, { computerName: "" }]) {
+            expect(parseWindowsReadinessProbe(JSON.stringify({ ...valid, ...change }))).toBeNull();
+        }
+    });
     it("probes, confirms scrub, detaches media, deletes ISO, then checks network", async () => {
         const clock = readinessClock();
         const calls: string[] = [];

@@ -53,21 +53,26 @@ export interface AndroidEmulatorProcessHandle {
 }
 
 export interface AndroidEmulatorDiscovery {
-    adb: string | null;
-    emulator: string | null;
-    avdmanager: string | null;
+    adbAvailable: boolean;
+    native: unknown;
     available: boolean;
     missing: string[];
     provisioningAvailable: boolean;
     provisioningMissing: string[];
 }
 
-export interface AndroidEmulatorCommandResult {
-    status: number | null;
-    stdout: string;
-    stderr: string;
-    [key: string]: unknown;
-}
+export type AndroidEmulatorNativeObservation = { ok: boolean; diagnostic: unknown };
+export type AndroidEmulatorLifecycleOutcome =
+    | { kind: "refused"; message: string }
+    | { kind: "native-failure"; diagnostic: unknown }
+    | { kind: "identity-unavailable"; deviceId: string | undefined; termination: AndroidEmulatorTermination; stateReverted: boolean; runtimeStatePreserved: boolean }
+    | { kind: "boot-process-exited"; deviceId: string | undefined; boot: AndroidEmulatorBoot; rollback: unknown; stateReverted: boolean }
+    | { kind: "runtime-stop-failed"; deviceId: string | undefined; runtimeStop: AndroidEmulatorTermination }
+    | { kind: "force-delete-stop-failed"; deviceId: string | undefined; adbStop: unknown; runtimeStop: AndroidEmulatorTermination | null; stateReverted: boolean }
+    | { kind: "conflict"; deviceId: string | undefined; operation: string; found: boolean; rollback?: unknown }
+    | { kind: "created" | "stopped"; device: AndroidEmulatorDevice }
+    | { kind: "started"; device: AndroidEmulatorDevice; boot: AndroidEmulatorBoot }
+    | { kind: "deleted"; deviceId: string | undefined; avdDeleted: boolean };
 
 export interface AndroidEmulatorTransition {
     matched: boolean;
@@ -96,41 +101,37 @@ export interface AndroidEmulatorBoot {
 }
 
 /** Every required step is looked up at its operation phase; no workflow port. */
-export interface AndroidEmulatorLifecyclePorts<Result, Child extends AndroidEmulatorProcessHandle = AndroidEmulatorProcessHandle> {
+export interface AndroidEmulatorLifecyclePorts<Child extends AndroidEmulatorProcessHandle = AndroidEmulatorProcessHandle> {
+    provisionAndroidAvd(discovery: AndroidEmulatorDiscovery, input: { avdName: string; systemImage: string; deviceProfile?: string }): AndroidEmulatorNativeObservation;
+    launchAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, input: AndroidEmulatorLifecycleInput): Promise<Child>;
+    observeAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice): { live: boolean };
+    stopAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice): AndroidEmulatorNativeObservation | null;
+    stopAndroidRecorder(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice): void;
     androidAvdHome(): string;
     androidAvdIsInactive(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice | { avdName: string }): boolean;
     androidDeviceId(name: string | undefined): string;
     androidDiscovery(): AndroidEmulatorDiscovery;
-    androidEmulatorStartArgs(device: AndroidEmulatorDevice, args: AndroidEmulatorLifecycleInput): string[];
-    androidLifecycleConflict(deviceId: string | undefined, operation: string, transition: AndroidEmulatorTransition, rollback?: unknown): Result;
-    androidSerial(device: AndroidEmulatorDevice): string | undefined;
     appiumPortForDevice(id: string): number;
+    androidEmulatorSerial(port: number): string;
     approvedAndroidAvdRoot(recordedRoot: unknown): string | null;
     claimAndroidDevice(device: AndroidEmulatorDevice): { ok: true } | { ok: false; existing?: AndroidEmulatorDevice; field: string; value: unknown };
     deleteOwnedAndroidAvd(avdName: string | undefined, options: { avdRoot: string | null; verifyInactive: () => boolean }): AndroidEmulatorAvdDeletion;
-    fail(result: AndroidEmulatorCommandResult): Result;
     findAndroidDevice(deviceId: string | undefined): AndroidEmulatorDevice | null | undefined;
     isOwnedAvdName(avdName: unknown): avdName is string;
     isSafeDeviceProfile(deviceProfile: unknown): boolean;
     isSafeProvisionedAvdName(avdName: unknown): boolean;
     isSafeSystemImage(systemImage: unknown): boolean;
-    jsonResult(payload: unknown): Result;
     listOwnedAndroidAvdArtifacts(owner: string, options: { root: string | null }): { name: string }[];
     liveAndroidEmulatorPortsForAllocation(discovery?: AndroidEmulatorDiscovery): AndroidEmulatorLivePorts;
     ownerAvdPrefix(): string;
     ownerId(): string;
-    publicAndroidDevice(device: AndroidEmulatorDevice): unknown;
     readAndroidDevices(): AndroidEmulatorDevice[];
     refreshOwnedRuntimeProcessIdentity(runtime: AndroidEmulatorRuntime): AndroidEmulatorRuntime;
     resolveAndroidEmulatorPort(owner: string, deviceId: string, requestedPort?: number, additionalUsedPorts?: Iterable<number>): AndroidEmulatorPortAllocation;
-    run(executable: string, args: string[]): AndroidEmulatorCommandResult;
-    runWithInput(executable: string | null, args: string[], input: string, options: { timeout: number }): AndroidEmulatorCommandResult;
-    signalOwnedRuntimeProcess(runtime: AndroidEmulatorRuntime | null | undefined, signal: string): { signaled: boolean; [key: string]: unknown };
+    signalAndroidRecorder(runtime: AndroidEmulatorRuntime | null | undefined): { signaled: boolean; [key: string]: unknown };
     slug(name: string | undefined): string;
-    spawnAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, args: string[]): Promise<Child>;
-    terminateFreshAndroidEmulatorProcessTree(child: Child): Promise<AndroidEmulatorTermination>;
+    terminateFreshAndroidEmulatorProcessTree(child: Child): Promise<AndroidEmulatorTermination & { ok: boolean }>;
     terminateOwnedRuntimeProcessTree(runtime: AndroidEmulatorRuntime, label: string, options: { timeoutMs: number }): Promise<AndroidEmulatorTermination>;
-    textResult(ok: boolean, text: string): Result;
     transitionAndroidDevice(deviceId: string | undefined, expected: AndroidEmulatorDevice, replacement: AndroidEmulatorDevice | null): AndroidEmulatorTransition;
     waitForAndroidBoot(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, timeoutMs: number, child: Child): Promise<AndroidEmulatorBoot>;
     waitForProcessExit(pid: number | undefined, timeoutMs: number): Promise<boolean>;

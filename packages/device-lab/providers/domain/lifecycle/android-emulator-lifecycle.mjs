@@ -50,3 +50,14 @@ export function addAndroidEmulatorUsedPorts(used, additionalUsedPorts) {
         if (validAndroidEmulatorPort(port)) used.add(port);
     }
 }
+
+/** @param {string} message
+ * @returns {{kind:"refused",message:string}} */
+export function androidLifecycleRefused(message) { return { kind: "refused", message }; }
+
+/** @param {string|undefined} deviceId @param {string} operation
+ * @param {{found:boolean,matched:boolean}} transition @param {unknown} [rollback]
+ * @returns {{kind:"conflict",deviceId:string|undefined,operation:string,found:boolean,rollback?:unknown}} */
+export function androidLifecycleConflict(deviceId, operation, transition, rollback) {
+    return { kind: "conflict", deviceId, operation, found: transition.found, ...(rollback ? { rollback } : {}) };
+}

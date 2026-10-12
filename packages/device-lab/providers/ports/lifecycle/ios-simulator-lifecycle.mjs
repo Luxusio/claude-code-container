@@ -1,4 +1,2 @@
-/** @template Result
- * @typedef {import("./ios-simulator-lifecycle.mjs").IosSimulatorLifecyclePorts<Result>} IosSimulatorLifecyclePorts
- */
+/** @typedef {import("./ios-simulator-lifecycle.mjs").IosSimulatorLifecyclePorts} IosSimulatorLifecyclePorts */
 export {};

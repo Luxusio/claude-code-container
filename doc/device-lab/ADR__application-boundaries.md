@@ -66,3 +66,14 @@ The broker, docker lifecycle and remaining providers are not certified by this
 new guard. Their staged migration requires separate plans, behavior baselines and
 review. This foundation deliberately covers the readiness operation and its
 application dependency boundary, not a wholesale architecture rewrite.
+
+Direct lifecycle and desktop applications consume finite operation-specific
+native observations. Backend adapters own ADB, simctl, Tart, Appium, helper and
+Hyper-V transport framing and response diagnosis. Ownership, claims, deadlines,
+compensation and publication decisions remain inward; opaque native evidence is
+interpreted only by the adapter or outward presenter.
+
+Ephemeral stage finalization also covers native throws and invalid observations.
+Remote cleanup failure cannot suppress owned local disposal, and a later cleanup
+failure cannot erase evidence of completed publication. The precise lifetime
+contract is [desktop transfer staging lifetime](REQ__desktop-transfer-staging-lifetime.md).

@@ -90,7 +90,10 @@ const displayAccessPorts = {
         const tempRoot = mkdtempSync(join(tmpdir(), "ccc-x11-screenshot-"));
         return { tempRoot, localPath: join(tempRoot, "screenshot.png") };
     },
-    capture: stage => runWithTimeout("scrot", ["-p", "-o", stage.localPath], 30_000),
+    capture: stage => {
+        const receipt = runWithTimeout("scrot", ["-p", "-o", stage.localPath], 30_000);
+        return {ok:receipt.status === 0,receipt};
+    },
     readScreenshot: stage => readScreenshotFile(stage.localPath, "x11-screenshot"),
     disposeScreenshot: stage => { rmSync(stage.tempRoot, { recursive: true, force: true }); return undefined; },
 };

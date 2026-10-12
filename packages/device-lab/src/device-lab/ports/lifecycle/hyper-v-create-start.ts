@@ -4,7 +4,7 @@ import type {HyperVWindowsOperation} from '@ccc/hyper-v/low-level/index.js';
 import type {HyperVImageVhd} from '../../domain/hyper-v-image-preparation.js';
 import type {WindowsReadinessIdentity,WindowsReadinessError} from '../../domain/lifecycle/hyper-v-create-start.js';
 export interface WindowsReadinessPorts {
- probe(identity:WindowsReadinessIdentity,timeout:number):Promise<{action:'job';output:string}|{action:'unexpected'}>;
+ probe(identity:WindowsReadinessIdentity,timeout:number):Promise<{kind:'valid';probe:import('../../domain/lifecycle/hyper-v-create-start.js').GuestProbe}|{kind:'invalid'}|{kind:'unexpected'}>;
  detachMedia(identity:WindowsReadinessIdentity,path:string,timeout:number):Promise<undefined>;
  machines(identity:WindowsReadinessIdentity,timeout:number):Promise<readonly {name:string;notes:string|null}[]>;
  media(identity:WindowsReadinessIdentity,timeout:number):Promise<readonly {path:string|null}[]>;

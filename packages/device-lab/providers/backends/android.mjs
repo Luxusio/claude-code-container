@@ -1,6 +1,6 @@
+import { dumpAndroidUi, readAndroidUi, observeAndroidApp, presentAndroidTextWait, presentAndroidAppWait } from "./android-wait.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { recordingInputError } from "../domain/direct-recording.mjs";
-import { androidScreenshotOutcome } from "../domain/android-device-access.mjs";
 import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
@@ -129,14 +129,16 @@ function androidEmulatorStartArgs(device, args = {}) {
     return [...androidEmulatorHeadlessArgs(device, args), ...ANDROID_EMULATOR_NETSIM_NO_UI_ARGS];
 }
 
-function androidScreenshotFacts(result) {
+/** Native screenshot compatibility accepts a PNG even when the provider exits nonzero.
+ * @returns {import('../ports/android-device-access.mjs').AndroidCaptureObservation} */
+export function observeAndroidScreenshot(result) {
     const stdout = Buffer.from(result.stdout || []);
-    return { status: result.status, byteLength: stdout.length, prefix: Array.from(stdout.subarray(0, 8)),
-        base64: stdout.toString("base64"), stdoutText: stdout.toString(), stderrText: result.stderr?.toString() || "" };
+    const png = stdout.length >= 8 && [137,80,78,71,13,10,26,10].every((byte,index) => stdout[index] === byte);
+    if (png || result.status === 0) return {kind:"image",data:stdout.toString("base64")};
+    return {kind:"refused",message:`Error: ${result.stderr?.toString() || stdout.toString() || `exit ${result.status}`}`};
 }
-
 export function androidScreenshotResult(result) {
-    return presentAndroidAccessOutcome(androidScreenshotOutcome(androidScreenshotFacts(result)));
+    return presentAndroidAccessOutcome(observeAndroidScreenshot(result));
 }
 
 export function appiumDiscovery(android = { adb: findAndroidTool("adb") }) {
@@ -556,16 +558,21 @@ async function waitForProcessExit(pid, timeoutMs = 3000) {
     return !processIsAlive(pid);
 }
 
-function androidLifecycleConflict(deviceId, operation, transition, rollback = null) {
-    return textResult(false, JSON.stringify({
-        ok: false,
-        error: "owner-device-state-conflict",
-        backend: "android-emulator",
-        deviceId,
-        operation,
-        found: transition.found,
-        ...(rollback ? { rollback } : {}),
-    }));
+/** @param {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorLifecycleOutcome|undefined} outcome */
+function presentAndroidLifecycleOutcome(outcome) {
+    if (!outcome) return undefined;
+    switch (outcome.kind) {
+        case "refused": return textResult(false, outcome.message);
+        case "native-failure": return fail(outcome.diagnostic);
+        case "identity-unavailable": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-process-identity-unavailable",backend:"android-emulator",deviceId:outcome.deviceId,termination:outcome.termination,stateReverted:outcome.stateReverted,runtimeStatePreserved:outcome.runtimeStatePreserved}));
+        case "boot-process-exited": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-process-exited-during-boot",backend:"android-emulator",deviceId:outcome.deviceId,boot:outcome.boot,rollback:outcome.rollback,stateReverted:outcome.stateReverted}));
+        case "runtime-stop-failed": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-process-stop-failed",backend:"android-emulator",deviceId:outcome.deviceId,runtimeStop:outcome.runtimeStop}));
+        case "force-delete-stop-failed": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-force-delete-stop-failed",backend:"android-emulator",deviceId:outcome.deviceId,adbStop:outcome.adbStop,runtimeStop:outcome.runtimeStop,stateReverted:outcome.stateReverted}));
+        case "conflict": return textResult(false, JSON.stringify({ ok: false, error: "owner-device-state-conflict", backend: "android-emulator", deviceId: outcome.deviceId, operation: outcome.operation, found: outcome.found, ...(outcome.rollback ? { rollback: outcome.rollback } : {}) }));
+        case "created": case "stopped": return jsonResult({ device: publicAndroidDevice(outcome.device) });
+        case "started": return jsonResult({ device: publicAndroidDevice(outcome.device), boot: outcome.boot });
+        case "deleted": return jsonResult({ deleted: outcome.deviceId, avdDeleted: outcome.avdDeleted });
+    }
 }
 
 async function terminateFreshAndroidEmulatorProcessTree(child) {
@@ -599,42 +606,59 @@ async function terminateFreshAndroidEmulatorProcessTree(child) {
 export function listAndroidDevices() { return deviceObservation.owned(); }
 
 const androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
+    provisionAndroidAvd(discovery, input) {
+        const args = ["create", "avd", "--name", input.avdName, "--package", input.systemImage, "--force"];
+        if (input.deviceProfile) args.push("--device", input.deviceProfile);
+        const diagnostic = runWithInput(discovery.native.avdmanager, args, "no\n", { timeout: 300_000 });
+        return { ok: diagnostic.status === 0, diagnostic };
+    },
+    launchAndroidEmulator(discovery, device, input) {
+        return spawnAndroidEmulator(discovery.native, device, ["-avd", device.avdName, ...(device.port ? ["-port", String(device.port)] : []), ...androidEmulatorStartArgs(device, input)]);
+    },
+    observeAndroidEmulator(discovery, device) {
+        const serial = androidSerial(device);
+        return { live: Boolean(discovery.native.adb && serial && run(discovery.native.adb, ["-s", serial, "get-state"]).status === 0) };
+    },
+    stopAndroidEmulator(discovery, device) {
+        const serial = androidSerial(device);
+        if (!discovery.native.adb || !serial) return null;
+        const command = run(discovery.native.adb, ["-s", serial, "emu", "kill"]);
+        return { ok: command.status === 0, diagnostic: { status: command.status, stdout: command.stdout, stderr: command.stderr } };
+    },
+    stopAndroidRecorder(discovery, device) {
+        const serial = androidSerial(device);
+        if (discovery.native.adb && serial) run(discovery.native.adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"]);
+    },
     androidAvdHome,
-    androidAvdIsInactive,
+    androidAvdIsInactive: (discovery,device) => androidAvdIsInactive(discovery.native,device),
     androidDeviceId,
-    androidDiscovery,
-    androidEmulatorStartArgs,
-    androidLifecycleConflict,
-    androidSerial,
+    androidDiscovery: () => {
+        const native = androidDiscovery();
+        return {available:native.available,missing:native.missing,provisioningAvailable:native.provisioningAvailable,provisioningMissing:native.provisioningMissing,adbAvailable:Boolean(native.adb),native};
+    },
     appiumPortForDevice,
+    androidEmulatorSerial: port => `emulator-${port}`,
     approvedAndroidAvdRoot,
     claimAndroidDevice,
     deleteOwnedAndroidAvd,
-    fail,
     findAndroidDevice,
     isOwnedAvdName,
     isSafeDeviceProfile,
     isSafeProvisionedAvdName,
     isSafeSystemImage,
-    jsonResult,
     listOwnedAndroidAvdArtifacts,
-    liveAndroidEmulatorPortsForAllocation,
+    liveAndroidEmulatorPortsForAllocation: discovery => liveAndroidEmulatorPortsForAllocation(discovery?.native),
     ownerAvdPrefix,
     ownerId,
-    publicAndroidDevice,
     readAndroidDevices,
     refreshOwnedRuntimeProcessIdentity,
     resolveAndroidEmulatorPort,
-    run,
-    runWithInput,
-    signalOwnedRuntimeProcess,
+    signalAndroidRecorder: runtime => signalOwnedRuntimeProcess(runtime,"SIGINT"),
     slug,
-    spawnAndroidEmulator,
     terminateFreshAndroidEmulatorProcessTree,
     terminateOwnedRuntimeProcessTree,
-    textResult,
     transitionAndroidDevice,
-    waitForAndroidBoot,
+    waitForAndroidBoot: (discovery,device,timeoutMs,child) => waitForAndroidBoot(discovery.native,device,timeoutMs,child),
     waitForProcessExit,
     waitForProcessIdentity,
     runtimeId: () => randomUUID(),
@@ -762,39 +786,59 @@ const androidAppManagementPorts = {
 };
 const androidAppManagement = createAndroidAppManagement(androidAppManagementPorts);
 
-/** @type {import('../ports/android-device-access.mjs').AndroidEmulatorAccessPorts<NonNullable<ReturnType<typeof findAndroidDevice>>, ReturnType<typeof androidDiscovery>>} */
+/** @type {import('../ports/android-device-access.mjs').AndroidEmulatorAccessPorts<NonNullable<ReturnType<typeof findAndroidDevice>>, {adbAvailable:boolean,native:ReturnType<typeof androidDiscovery>}>} */
 const androidDeviceAccessPorts = {
     variant: "emulator",
     device: id => findAndroidDevice(id),
-    discovery: () => androidDiscovery(),
-    backend: discovery => androidBackend(discovery),
-    publicDevice: device => publicAndroidDevice(device),
-    appium: discovery => { const facts = appiumDiscovery(discovery); return { available: facts.available, missing: facts.missing, tools: { appium: facts.appium, adb: facts.adb } }; },
+    discovery: () => { const native=androidDiscovery(); return {adbAvailable:Boolean(native.adb),native}; },
+    targetForDevice: (device,discovery) => ({device,native:{device,adb:discovery.native.adb}}),
     target(id) {
         const selected = ensureAdbDevice(id);
         if (selected.unknown) return { kind: "unknown" };
         if (selected.error) return { kind: "refused", message: selected.error };
-        return { kind: "ready", target: selected };
+        return { kind: "ready", target: {device:selected.device,native:selected} };
     },
-    execute: (target, args) => run(target.adb, adbArgsForDevice(target.device, args)),
+    uiPath: device => `/sdcard/window-${device.id}.xml`,
+    executeShell: (target,command) => {
+        const diagnostic = run(target.native.adb, adbArgsForDevice(target.device,["shell",command]));
+        return diagnostic.status === 0 ? {ok:true,value:undefined,diagnostic} : {ok:false,diagnostic};
+    },
+    dumpUi: (target,path,timeoutMs) => dumpAndroidUi(target.native.adb,adbArgsForDevice(target.device,[]),path,timeoutMs),
+    readUi: (target,path,mode,timeoutMs) => readAndroidUi(target.native.adb,adbArgsForDevice(target.device,[]),path,mode,timeoutMs),
+    observeApp: (target,packageName,timeoutMs) => observeAndroidApp(target.native.adb,adbArgsForDevice(target.device,[]),packageName,timeoutMs),
     capture: target => {
-        const result = runBuffer(target.adb, adbArgsForDevice(target.device, ["exec-out", "screencap", "-p"]), {
+        const result = runBuffer(target.native.adb, adbArgsForDevice(target.device, ["exec-out", "screencap", "-p"]), {
             maxBuffer: ANDROID_SCREENSHOT_MAX_BUFFER_BYTES, timeout: ANDROID_SCREENSHOT_TIMEOUT_MS,
         });
-        return androidScreenshotFacts(result);
+        return observeAndroidScreenshot(result);
     },
     budget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
-    executeTimed: (target, args, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, args), timeoutMs),
 };
 const androidDeviceAccess = createAndroidDeviceAccess(androidDeviceAccessPorts);
 
 /** @param {import('../ports/android-device-access.mjs').AndroidAccessOutcome|undefined} outcome */
 function presentAndroidAccessOutcome(outcome) {
     if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
-    if (outcome.kind === "command-failure") return fail(outcome.command);
-    return { content: [{ type: "image", data: outcome.data, mimeType: "image/png" }] };
+    if (outcome.kind === "refused") return textResult(false,outcome.message);
+    if (outcome.kind === "native-failure") return fail(outcome.diagnostic);
+    if (outcome.kind === "image") return {content:[{type:"image",data:outcome.data,mimeType:"image/png"}]};
+    if (outcome.kind === "session") {
+        const device = outcome.device;
+        const facts = appiumDiscovery();
+        const appium = {available:facts.available,missing:facts.missing,tools:{appium:facts.appium,adb:facts.adb}};
+        return jsonResult({deviceId:device.id,device:publicAndroidDevice(device),provider:"adb",appium,session:device.appium||null,lazy:true});
+    }
+    if (outcome.kind === "status") {
+        const device = outcome.device, discovery = outcome.discovery.native;
+        const facts = appiumDiscovery(discovery);
+        const appium = {available:facts.available,missing:facts.missing,tools:{appium:facts.appium,adb:facts.adb}};
+        return jsonResult({device:publicAndroidDevice(device),backend:androidBackend(discovery),appium,automation:{deviceId:device.id,provider:"adb",session:device.appium||null,lazy:true}});
+    }
+    if (outcome.kind === "executed") { const r = outcome.diagnostic; return jsonResult({stdout:r.stdout,stderr:r.stderr,status:r.status}); }
+    if (outcome.kind === "ui") { const r=outcome.dump; return jsonResult({provider:"adb-uiautomator",source:outcome.source,remotePath:outcome.remotePath,stdout:r.stdout,stderr:r.stderr}); }
+    const result = outcome.kind === "text-wait" ? presentAndroidTextWait(outcome.result) : presentAndroidAppWait(outcome.result);
+    if ("error" in result) return fail(result.error);
+    return outcome.kind === "text-wait" ? jsonResult({...result,text:outcome.text,provider:"adb-uiautomator"}) : jsonResult({...result,packageName:outcome.packageName,provider:"adb"});
 }
 
 /** @param {import('../ports/mobile-environment.mjs').EnvironmentCommandReceipt} command
@@ -891,22 +935,22 @@ async function handleAndroidToolUnlocked(name, args) {
 
 
         case "device_create": {
-            return androidEmulatorLifecycle.create(args);
+            return presentAndroidLifecycleOutcome(await androidEmulatorLifecycle.create(args));
         }
 
         case "device_delete": {
-            return androidEmulatorLifecycle.delete(args);
+            return presentAndroidLifecycleOutcome(await androidEmulatorLifecycle.delete(args));
         }
 
         case "device_status":
             return presentAndroidAccessOutcome(androidDeviceAccess.request(name, args));
 
         case "device_start": {
-            return androidEmulatorLifecycle.start(args);
+            return presentAndroidLifecycleOutcome(await androidEmulatorLifecycle.start(args));
         }
 
         case "device_stop": {
-            return androidEmulatorLifecycle.stop(args);
+            return presentAndroidLifecycleOutcome(await androidEmulatorLifecycle.stop(args));
         }
 
         case "device_exec":

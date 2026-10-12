@@ -5,7 +5,7 @@ import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVCreateField,hyperV
 import type { SnapshotJournal } from '../../domain/lifecycle/hyper-v-snapshots.js';
 import { hyperVSelectedDevice } from '../../domain/lifecycle/hyper-v-stop-delete.js';
 import { hyperVCreateRecord, hyperVQuotaResource, hyperVQuotaProjection, type HyperVQuotaUsage, type HyperVLifecycleOutcome } from '../../domain/lifecycle/hyper-v-create-start.js';
-import { parseWindowsReadinessProbe, windowsProbeFingerprint, windowsReadinessReason, type WindowsReadinessRequest, type WindowsReadinessIdentity, type WindowsReadinessOutcome } from '../../domain/lifecycle/hyper-v-create-start.js';
+import { windowsProbeFingerprint, windowsReadinessReason, type WindowsReadinessRequest, type WindowsReadinessIdentity, type WindowsReadinessOutcome } from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { WindowsReadinessPorts } from '../../ports/lifecycle/hyper-v-create-start.js';
 class ReadinessRetry extends Error {
     constructor(readonly reason: string) { super(reason); }
@@ -58,11 +58,11 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
         let currentObservationFingerprint: string | null = null;
         try {
             const output = await ports.probe(options.identity, remainingTimeout());
-            if (output.action !== "job")
+            if (output.kind === "unexpected")
                 throw new Error("guest-probe-result-invalid");
-            const probe = parseWindowsReadinessProbe(output.output);
-            if (!probe)
+            if (output.kind === "invalid")
                 throw new ReadinessRetry("hyper-v-guest-probe-invalid");
+            const probe = output.probe;
             currentObservationFingerprint = `probe:${windowsProbeFingerprint(probe)}`;
             if (options.noProgressTimeoutMilliseconds !== undefined
                 && currentObservationFingerprint !== stableObservationFingerprint) {

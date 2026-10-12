@@ -174,7 +174,14 @@ export type DesktopDirectResult = {
     remotePath: string;
     bytes: number;
 };
+export type DesktopGuestIntent = {kind:"exec";command:string}|{kind:"window-list"}|{kind:"focus";handle:string}|{kind:"type";text:string}|{kind:"scroll";direction:"up"|"down";amount:number};
 export type DesktopExecution = {
+    ok: boolean;
+    guestFailed?: boolean;
+    action?: "exec" | "upload" | "download";
+    windows?: DesktopWindowList;
+    focused?: boolean;
+    artifact?: { readonly length: number };
     mode?: string;
     provider?: string;
     status?: number | null;
@@ -196,7 +203,7 @@ export interface DesktopSshFacts {
 }
 export function desktopRecord(value: unknown): value is DesktopRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 export function desktopField(record: DesktopDevice, key: string): string | null { return typeof record[key] === 'string' ? record[key] : null; }
-export function desktopSucceeded(result: DesktopExecution) { return result.status === 0 && !result.error; }
+export function desktopSucceeded(result: DesktopExecution) { return result.ok === true; }
 export const DESKTOP_CONSOLE_TOOLS: ReadonlySet<string> = new Set(['device_screenshot', 'device_click', 'device_double_click', 'device_drag', 'device_key', 'device_type', 'device_scroll', 'device_cursor_position']);
 export function desktopReadOnly(tool: string) { return ['device_screenshot', 'device_cursor_position', 'device_window_list'].includes(tool); }
 export function desktopInputFailure(result: DesktopOutcome, tool: string): DesktopOutcome {
@@ -241,55 +248,5 @@ export function validateWindowHandle(handle: unknown): asserts handle is string 
     if (typeof handle !== "string" || !/^[1-9][0-9]{0,15}$/.test(handle) || !Number.isSafeInteger(Number(handle)))
         throw new Error("window-handle-invalid");
 }
-export function parseGuestFocusWindow(stdout: string): {
-    ok: true;
-} {
-    if (stdout.length > 2048)
-        throw new Error("window-focus-invalid-result");
-    let result: unknown;
-    try {
-        result = JSON.parse(stdout.replace(/^\uFEFF/, ""));
-    }
-    catch {
-        throw new Error("window-focus-invalid-result");
-    }
-    if (desktopRecord(result) && typeof result.error === "string")
-        throw new Error(result.error.slice(0, 512));
-    if (!desktopRecord(result) || result.ok !== true)
-        throw new Error("window-focus-invalid-result");
-    return {
-        ok: true
-    };
-}
-export function parseWindowsGuestWindowList(stdout: string, byteLength: number): DesktopWindowList {
-    if (byteLength > 1024 * 1024)
-        throw new Error("window-list-invalid-result");
-    let result: unknown;
-    try {
-        result = JSON.parse(stdout.replace(/^\uFEFF/, ""));
-    }
-    catch {
-        throw new Error("window-list-invalid-result");
-    }
-    if (desktopRecord(result) && typeof result.error === "string")
-        throw new Error(result.error.slice(0, 512));
-    if (!desktopRecord(result) || !Array.isArray(result.windows) || result.windows.length > 128
-        || (result.truncated !== undefined && typeof result.truncated !== "boolean"))
-        throw new Error("window-list-invalid-result");
-    const windows = result.windows.map((row: unknown) => {
-        if (!desktopRecord(row))
-            throw new Error("window-list-invalid-result");
-        const { title, handle, processId } = row;
-        if (typeof title !== "string" || title.length > 512 || typeof handle !== "string" || !/^\d+$/.test(handle)
-            || typeof processId !== "number" || !Number.isSafeInteger(processId) || Number(processId) <= 0)
-            throw new Error("window-list-invalid-result");
-        return {
-            title, handle, processId
-        };
-    });
-    return {
-        windows, ...(result.truncated ? {
-            truncated: true
-        } : {})
-    };
-}
+
+export type DesktopDirectObservation = DesktopExecution & {result?: {status?:number;stdout?:string;stderr?:string;localPath?:string;remotePath?:string;bytes?:number}};

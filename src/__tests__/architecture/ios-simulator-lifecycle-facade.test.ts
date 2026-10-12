@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import {readFileSync} from "node:fs";
 import {
     cleanupFakeIosMcpContext,
     createFakeIosMcpContext,
@@ -42,5 +43,13 @@ describe("iOS simulator public lifecycle", () => {
         expect(parse(await call("stop", { deviceId: id })).device.status).toBe("stopped");
         expect(parse(await call("delete", { deviceId: id, deleteSimulator: true, confirmDestructive: true })))
             .toEqual({ deleted: id, simulatorDeleted: true });
+        const operations=readFileSync(context.logPath,"utf8").split("\n").filter(line=>/^xcrun simctl (create|boot |bootstatus|shutdown|delete)/.test(line));
+        expect(operations).toEqual([
+            `xcrun simctl create ${simulatorName} com.apple.CoreSimulator.SimDeviceType.iPhone-15 com.apple.CoreSimulator.SimRuntime.iOS-17-0`,
+            "xcrun simctl boot CREATED-IOS-UDID",
+            "xcrun simctl bootstatus CREATED-IOS-UDID -b",
+            "xcrun simctl shutdown CREATED-IOS-UDID",
+            "xcrun simctl delete CREATED-IOS-UDID",
+        ]);
     }, TIMEOUT);
 });

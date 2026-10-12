@@ -59,7 +59,7 @@ import { createAppiumObservations } from "./device-lab/application/broker-observ
 import { createBrokerService, createBrokerStatus, createBrokerDeviceStatus } from "./device-lab/application/broker-observation-status.js";
 import { createAndroidPreviewPortAllocation, createLifecyclePreview } from "./device-lab/application/broker-observation-command-plan.js";
 import { hyperVPreviewConflicts } from "./device-lab/domain/broker-observation-command-plan.js";
-import { linuxWindowListCommand, windowsWindowListCommand, parseGuestWindowList, linuxFocusWindowCommand, windowsFocusWindowCommand } from "./device-lab/broker/hyper-v/window-list.js";
+import { desktopGuestCommand, desktopRemoteReadCommand, desktopRemoteReadOutputLimit, observeDesktopExecution, observeDesktopDirect } from "./device-lab/broker/hyper-v/desktop-native.js";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
@@ -155,7 +155,7 @@ import {
     restoreDeviceLabHyperVSnapshot,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxGuiTypeGuestCommand, hyperVLinuxGuiScrollGuestCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
+import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "@ccc/device-lab/device-lab/providers/ios-simulator.js";
 import { DEVICE_LAB_VERSION } from "./version.js";
 
@@ -3881,13 +3881,6 @@ function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOpti
         frame: (ownerId, backend, deviceId, incarnationId) => currentHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId), incarnationId),
         rememberFrame: (ownerId, backend, deviceId, frame) => { rememberHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId), frame); },
         timestamp: () => new Date().toISOString(),
-        windowCommand: (backend, handle) => handle === null
-            ? backend === "linux-vm" ? linuxWindowListCommand() : windowsWindowListCommand()
-            : backend === "linux-vm" ? linuxFocusWindowCommand(handle) : windowsFocusWindowCommand(handle),
-        linuxWindows: stdout => parseGuestWindowList("linux-vm", stdout),
-        utf8Length: text => Buffer.byteLength(text),
-        linuxTypeCommand: hyperVLinuxGuiTypeGuestCommand,
-        linuxScrollCommand: hyperVLinuxGuiScrollGuestCommand,
         roots: (ownerId, backend, deviceId) => {
             const deviceRoot = hyperVDeviceRoot(ownerId, backend, deviceId);
             const privateRoot = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
@@ -3919,28 +3912,33 @@ function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOpti
         readStage: (stage, maxBytes) => readDeviceLabBinaryFile(stage.path, "hyper-v-guest-download-staging", maxBytes),
         disposeStage: stage => { rmSync(stage.path, { force: true }); },
         writeDestination: (path, bytes, label) => { writeDeviceLabBinaryFile(normalized.cwd, path, bytes, label); },
-        decodeBase64: encoded => Buffer.from(encoded, "base64"),
         guestConnection: operation => {
             const executable = operation === 'upload'
                 ? providerExecutable('scp.exe', normalized) || providerExecutable('scp', normalized)
                 : providerExecutable('ssh.exe', normalized) || providerExecutable('ssh', normalized);
             return executable ? { executable } : null;
         },
-        prepareGuestExec: (facts, connection, guestCommand) => {
+        prepareGuestExec: (facts, connection, intent) => {
+            const guestCommand = desktopGuestCommand("linux-vm", intent);
             const command = hyperVLinuxSshExecCommand({ ...facts, executable: connection.executable, guestCommand });
-            return budget => hyperVProviderCommandRunner(normalized, command, budget);
+            return async budget => observeDesktopExecution(await hyperVProviderCommandRunner(normalized, command, budget), "exec", intent);
         },
         prepareUpload: (facts, connection, localPath, remotePath) => {
             const command = hyperVLinuxScpUploadCommand({ ...facts, executable: connection.executable, localPath, remotePath });
-            return budget => hyperVProviderCommandRunner(normalized, command, budget);
+            return async budget => observeDesktopExecution(await hyperVProviderCommandRunner(normalized, command, budget), "upload");
         },
         prepareRemoteRead: (facts, connection, remotePath, maxBytes) => {
-            const encodedPath = Buffer.from(remotePath, 'utf8').toString('base64');
-            const guestCommand = `set -o pipefail; p=$(printf %s ${encodedPath} | base64 -d); head -c ${maxBytes + 1} -- "$p" | base64 -w0`;
+            const guestCommand = desktopRemoteReadCommand(remotePath, maxBytes);
             const command = hyperVLinuxSshExecCommand({ ...facts, executable: connection.executable, guestCommand });
-            return budget => hyperVProviderCommandRunner(normalized, command, budget);
+            return async budget => observeDesktopExecution(await hyperVProviderCommandRunner(normalized, command, { ...budget, outputLimit: desktopRemoteReadOutputLimit(maxBytes) }), "download");
         },
-        direct: (executable, timeoutMs, identity, action) => invokeDeviceLabHyperVGuestDirect({ executable, timeoutMilliseconds: timeoutMs, run: (command, options) => hyperVProviderCommandRunner(normalized, command, options), identity, action }),
+        direct: async (executable, timeoutMs, identity, action, intent) => {
+            const nativeAction = action.action === "exec" && intent
+                ? { ...action, command: desktopGuestCommand("windows-vm", intent) }
+                : action;
+            const result = await invokeDeviceLabHyperVGuestDirect({ executable, timeoutMilliseconds: timeoutMs, run: (command, options) => hyperVProviderCommandRunner(normalized, command, options), identity, action: nativeAction });
+            return observeDesktopDirect(result, nativeAction, intent);
+        },
         stateErrorCode: error => deviceLabStateFileErrorCode(error) || null,
         providerError: error => error instanceof HyperVWindowsError ? { code: error.code, validation: error.category === "validation" } : null,
         boundedErrorCode: hyperVBoundedErrorCode,

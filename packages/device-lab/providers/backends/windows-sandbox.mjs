@@ -1606,11 +1606,28 @@ const windowsAccessPorts = {
     target: id => findWindowsDevice(id),
     publicDevice: device => withTargetStatus({ ...device, helper: windowsHelperMetadata(device) }),
     backend: () => windowsBackend(),
-    request: (device, request, timeoutMs) => {
-        const { type, ...payload } = request;
-        return windowsHelperRequest(device, type, payload, timeoutMs);
+    exec: async (device, command, timeoutMs) => {
+        const result = await windowsHelperRequest(device, 'exec', {command}, timeoutMs);
+        if (result.error !== undefined) return {ok:false,outcome:{kind:'text',text:result.error}};
+        const response = result.response;
+        if (!response.ok) return {ok:false,outcome:{kind:'text',text:response.error || 'Windows helper exec failed'}};
+        return {ok:true,value:{stdout:response.stdout||'',stderr:response.stderr||'',status:response.status??0,provider:'windows-helper'}};
     },
-    screenshotPath: (helper, response) => verifiedHelperOutputPath(helper, response.imagePath || response.hostImagePath, `${response.id}.png`),
+    accessibility: async (device, limits, timeoutMs) => {
+        const result = await windowsHelperRequest(device, 'accessibility_snapshot', limits, timeoutMs);
+        if (result.error !== undefined) return {ok:false,outcome:{kind:'text',text:result.error}};
+        const response = result.response;
+        if (!response.ok) return {ok:false,outcome:{kind:'text',text:response.error || 'Windows helper accessibility snapshot failed'}};
+        return {ok:true,value:{provider:response.accessibility?.provider||'windows-uiautomation',accessibility:response.accessibility||null,response}};
+    },
+    screenshot: async (device, timeoutMs) => {
+        const result = await windowsHelperRequest(device, 'screenshot', {}, timeoutMs);
+        if (result.error !== undefined) return {ok:false,outcome:{kind:'text',text:result.error}};
+        const response = result.response;
+        if (!response.ok) return {ok:false,outcome:{kind:'text',text:response.error || 'Windows helper screenshot failed'}};
+        const path = verifiedHelperOutputPath(result.helper, response.imagePath || response.hostImagePath, `${response.id}.png`);
+        return path ? {ok:true,path} : {ok:false,outcome:{kind:'text',text:'Windows helper screenshot output is missing or unsafe'}};
+    },
     readScreenshot: path => {
         try {
             const image = readDeviceLabBinaryFile(path, "windows-helper-screenshot", WINDOWS_SANDBOX_SCREENSHOT_LIMIT_BYTES);

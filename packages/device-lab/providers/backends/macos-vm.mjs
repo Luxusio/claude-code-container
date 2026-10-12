@@ -75,7 +75,7 @@ const MACOS_LIFECYCLE_CLAIM_TTL_MS = 15 * 60 * 1000;
 const tartFeatureCache = new Map();
 
 // Lazy native leaf selection retains imported-callee timing and bare calls.
-const macosVmLifecycle = createMacosVmLifecycleApplication({
+const macosVmNativeLifecycle = createMacosVmLifecycleApplication({
     get read() { return readMacosDevices; },
     get find() { return findMacosDevice; },
     get claim() { return claimMacosDevice; },
@@ -86,27 +86,35 @@ const macosVmLifecycle = createMacosVmLifecycleApplication({
     get claimTtlMs() { return macosLifecycleClaimTtlMs; },
     get validateSshKey() { return validateMacosSshKeyPath; },
     get helperMetadata() { return macosHelperMetadata; },
-    get providerPlan() { return macosProviderPlan; },
-    get tartPlan() { return tartProviderPlan; },
-    get publicDevice() { return deviceWithPlan; },
-    get providerCommand() { return runProviderCommand; },
-    get commandTimedOut() { return providerCommandTimedOut; },
-    get supportsFeature() { return tartSupportsFeature; },
-    get waitProviderStart() { return waitForProviderStart; },
-    get waitBoot() { return waitForMacosBoot; },
+    providerPlan: device => macosNativePlan(macosProviderPlan(device)),
+    tartPlan: (device, name) => {
+        const result = tartProviderPlan(device,name);
+        return result.error ? {error:{kind:'native',evidence:result.error}} : {plan:macosNativePlan(result.plan)};
+    },
+    cloneInstance: (plan,source,target) => macosNativeObservation(runProviderCommand(plan.evidence.providerCommand,['clone',source,target],'clone')),
+    deleteInstance: (plan,instance) => macosNativeObservation(runProviderCommand(plan.evidence.providerCommand,['delete',instance],'delete')),
+    stopInstance: plan => macosNativeObservation(runProviderCommand(plan.evidence.stopCommand.command,plan.evidence.stopCommand.args,'stop')),
+    launchProvider: (plan,device) => {
+        const native = plan.evidence;
+        const startCommand = native.selectedProvider === 'tart' && native.providerCommand
+            ? {command:native.providerCommand,args:providerByName('tart').startArgs(native.providerInstance,{...device,softnet:device.softnet !== false && tartSupportsFeature(native.providerCommand,'--with-softnet')})}
+            : native.startCommand;
+        const child = spawn(startCommand.command,startCommand.args,{detached:true,stdio:'ignore',env:process.env,windowsHide:true});
+        return {child,startCommand};
+    },
+    waitProviderStart: async child => {
+        const error = await waitForProviderStart(child,'macOS VM provider start');
+        return error ? {kind:'native',evidence:error} : null;
+    },
+    waitBoot: (plan,timeoutMs,deadlineAt) => waitForMacosBoot(plan.evidence,timeoutMs,deadlineAt),
+    interruptGuestRecording: (device,recording) => {
+        const bridge = sshBridge(device,'device_record_video_stop');
+        if (!bridge.error) runHelperCommand(bridge.discovery.ssh,[...sshBaseArgs(device),bridge.target,`pkill -INT -f ${shellQuote(`screencapture.*${recording.remotePath}`)} || true`],undefined,sshCommandOptions(device));
+    },
     get waitGuestHelper() { return waitForMacosGuestHelper; },
     get provisionHelper() { return provisionMacosGuestHelper; },
     get signalRecording() { return signalOwnedRuntimeProcess; },
     get waitRecordingExit() { return waitForOwnedRecordingExit; },
-    get sshBridge() { return sshBridge; },
-    get sshBaseArgs() { return sshBaseArgs; },
-    get shellQuote() { return shellQuote; },
-    get sshCommandOptions() { return sshCommandOptions; },
-    get helperCommand() { return runHelperCommand; },
-    get textResult() { return textResult; },
-    get jsonResult() { return jsonResult; },
-    get fail() { return fail; },
-    get presentCloneFailure() { return presentMacosCloneFailure; },
     timestamp: () => new Date().toISOString(),
     now: () => Date.now(),
     get parseLifecycleClaimedAt() {
@@ -121,17 +129,61 @@ const macosVmLifecycle = createMacosVmLifecycleApplication({
             return Reflect.apply(parse, clock, [value]);
         };
     },
-    get tartStartArgs() { return providerByName("tart").startArgs; },
-    get spawn() {
-        const launch = spawn;
-        return (command, args) => launch(command, args, {
-            detached: true,
-            stdio: "ignore",
-            env: process.env,
-            windowsHide: true,
-        });
-    },
+
 });
+
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmProviderPlan} evidence
+ * @returns {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativePlan} */
+function macosNativePlan(evidence) {
+    return {available:evidence.available,missing:evidence.missing,selectedProvider:evidence.selectedProvider,providerInstance:evidence.providerInstance,stopAvailable:Boolean(evidence.stopCommand),evidence};
+}
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult} evidence
+ * @returns {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativeObservation} */
+function macosNativeObservation(evidence) {
+    return {ok:evidence.status === 0,timedOut:providerCommandTimedOut(evidence),detail:evidence.stderr||evidence.stdout||evidence.error?.message||`exit ${evidence.status}`,evidence};
+}
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome|undefined} outcome */
+function presentMacosLifecycle(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === 'identity-conflict') return textResult(false,`Device identity already exists for this owner (${outcome.field}: ${typeof outcome.value === 'object' ? JSON.stringify(outcome.value) : outcome.value})`);
+    if (outcome.kind === 'refused') return textResult(false,outcome.message);
+    if (outcome.kind === 'native') return outcome.evidence;
+    if (outcome.kind === 'failed') return fail(outcome.evidence);
+    if (outcome.kind === 'clone-failed') return presentMacosCloneFailure({target:outcome.evidence.target,command:outcome.evidence.command.evidence,cleanup:outcome.evidence.cleanup?.evidence||null});
+    const value = /** @type {{device?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice,native?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult,rollback?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmRollback} & Record<string,unknown>} */ (outcome.value);
+    const {native,...payload} = value;
+    if (payload.device) payload.device = deviceWithPlan(payload.device);
+    if (payload.rollback?.evidence) {
+        const {evidence,...rollback} = payload.rollback;
+        payload.rollback = {...rollback,.../** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult} */ (evidence)};
+    }
+    if (native) Object.assign(payload,{stdout:native.stdout,stderr:native.stderr,status:native.status});
+    return outcome.kind === 'problem' ? textResult(false,JSON.stringify(payload)) : jsonResult(payload);
+}
+// Existing image/snapshot policy consumes the original raw helper contract.
+// Adapt only at this native composition; the direct lifecycle stays finite.
+/** @type {import('../application/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycle<ReturnType<typeof textResult>>} */
+const macosVmLifecycle = {
+    ...macosVmNativeLifecycle,
+    create: args => presentMacosLifecycle(macosVmNativeLifecycle.create(args)),
+    createImage: args => presentMacosLifecycle(macosVmNativeLifecycle.createImage(args)),
+    start: async args => presentMacosLifecycle(await macosVmNativeLifecycle.start(args)),
+    stop: async args => presentMacosLifecycle(await macosVmNativeLifecycle.stop(args)),
+    delete: async args => presentMacosLifecycle(await macosVmNativeLifecycle.delete(args)),
+    conflict: (...args) => presentMacosLifecycle(macosVmNativeLifecycle.conflict(...args)),
+    recoverStale: id => {
+        const result = macosVmNativeLifecycle.recoverStale(id);
+        return result.error ? {error:presentMacosLifecycle(result.error)} : result;
+    },
+    rollbackStarted: (id,claim,plan) => macosVmNativeLifecycle.rollbackStarted(id,claim,macosNativePlan(plan)),
+    rollbackCreated: (id,plan,instance) => macosVmNativeLifecycle.rollbackCreated(id,macosNativePlan(plan),instance),
+    clone: (plan,source,target) => {
+        const result = macosVmNativeLifecycle.clone(macosNativePlan(plan),source,target);
+        return {result:result.result.evidence,cleanup:result.cleanup?.evidence||null};
+    },
+    cloneFailure: (result,cleanup,target) => presentMacosLifecycle(macosVmNativeLifecycle.cloneFailure(macosNativeObservation(result),cleanup ? macosNativeObservation(cleanup) : null,target)),
+    cloneFailureEvidence: (command,cleanup,target) => ({command,cleanup,target}),
+};
 
 
 function macosProviderTimeoutMs(kind) {
@@ -984,6 +1036,9 @@ const macosDesktopPorts = {
 };
 const macosDesktop = createDesktopControlTransfer(macosDesktopPorts);
 
+/** @param {import('../ports/desktop-control-transfer.mjs').CommandReceipt} receipt */
+function macosAccessEffect(receipt) { return {ok:receipt.status === 0,receipt}; }
+
 /** @typedef {{tempRoot:string,localPath:string,remotePath:string,commandOptions:ReturnType<typeof sshCommandOptions>}} MacosScreenshotStage */
 /** @type {import('../ports/desktop-device-access.mjs').MacosDeviceAccessPorts<NonNullable<ReturnType<typeof findMacosDevice>>,ReturnType<typeof macosDiscovery>,{target:string,discovery:ReturnType<typeof sshDiscovery>},MacosScreenshotStage>} */
 const macosAccessPorts = {
@@ -996,10 +1051,19 @@ const macosAccessPorts = {
         const bridge = sshBridge(device, operation);
         return bridge.error !== undefined ? { ok: false, result: bridge.error } : { ok: true, bridge };
     },
-    exec: (device, bridge, command, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
-        [...sshBaseArgs(device), bridge.target, command], timeoutMs, sshCommandOptions(device)),
-    helper: (device, argv, timeoutMs) => macosHelperCommand(device, "accessibility_snapshot", argv, timeoutMs),
-    parseHelper: stdout => macosHelperJson(stdout),
+    exec: (device, bridge, command, timeoutMs) => {
+        const result = runHelperCommand(bridge.discovery.ssh,
+            [...sshBaseArgs(device), bridge.target, command], timeoutMs, sshCommandOptions(device));
+        return {stdout:result.stdout,stderr:result.stderr,status:result.status,provider:'ssh'};
+    },
+    accessibility: (device, limits, timeoutMs) => {
+        const helper = macosHelperCommand(device, "accessibility_snapshot", [String(limits.maxDepth),String(limits.maxNodes)], timeoutMs);
+        if (helper.error !== undefined) return {ok:false,outcome:{kind:'native',value:helper.error}};
+        const result = helper.result;
+        if (result.status !== 0) return {ok:false,outcome:{kind:'command-failure',receipt:result}};
+        const payload = macosHelperJson(result.stdout);
+        return {ok:true,value:{provider:payload?.accessibility?.provider||payload?.provider||'macos-system-events',remoteScriptPath:helper.remoteScriptPath,accessibility:payload?.accessibility||null,response:payload,stdout:result.stdout,stderr:result.stderr,status:result.status}};
+    },
     stageScreenshot: device => {
         const tempRoot = mkdtempSync(join(tmpdir(), "ccc-macos-screenshot-"));
         const localPath = join(tempRoot, "screenshot.png");
@@ -1007,13 +1071,13 @@ const macosAccessPorts = {
         const commandOptions = sshCommandOptions(device);
         return { tempRoot, localPath, remotePath, commandOptions };
     },
-    capture: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
-        [...sshBaseArgs(device), bridge.target, macosScreenshotCommand(stage.remotePath)], timeoutMs, stage.commandOptions),
-    copy: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.scp,
-        [...scpBaseArgs(device), `${bridge.target}:${stage.remotePath}`, stage.localPath], timeoutMs, stage.commandOptions),
+    capture: (device, bridge, stage, timeoutMs) => macosAccessEffect(runHelperCommand(bridge.discovery.ssh,
+        [...sshBaseArgs(device), bridge.target, macosScreenshotCommand(stage.remotePath)], timeoutMs, stage.commandOptions)),
+    copy: (device, bridge, stage, timeoutMs) => macosAccessEffect(runHelperCommand(bridge.discovery.scp,
+        [...scpBaseArgs(device), `${bridge.target}:${stage.remotePath}`, stage.localPath], timeoutMs, stage.commandOptions)),
     readScreenshot: stage => readScreenshotFile(stage.localPath, "macos-vm-screenshot"),
-    cleanupRemote: (device, bridge, stage, timeoutMs) => runHelperCommand(bridge.discovery.ssh,
-        [...sshBaseArgs(device), bridge.target, `rm -f -- ${shellQuote(stage.remotePath)}`], Math.min(macosHelperTimeoutMs(timeoutMs), 5000), stage.commandOptions),
+    cleanupRemote: (device, bridge, stage, timeoutMs) => macosAccessEffect(runHelperCommand(bridge.discovery.ssh,
+        [...sshBaseArgs(device), bridge.target, `rm -f -- ${shellQuote(stage.remotePath)}`], Math.min(macosHelperTimeoutMs(timeoutMs), 5000), stage.commandOptions)),
     disposeScreenshot: stage => { rmSync(stage.tempRoot, { recursive: true, force: true }); return undefined; },
 };
 const macosAccess = createDesktopDeviceAccess(macosAccessPorts);

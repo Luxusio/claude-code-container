@@ -1,4 +1,4 @@
-import type { DesktopDevice, DesktopWindowList, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopDirectResult, DesktopExecution, DesktopPreparedEffect, DesktopSshFacts, DesktopFailureCategory } from '../domain/hyper-v-desktop-transfer.js';
+import type { DesktopDevice, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopExecution, DesktopPreparedEffect, DesktopSshFacts, DesktopFailureCategory, DesktopGuestIntent, DesktopDirectObservation } from '../domain/hyper-v-desktop-transfer.js';
 export interface DesktopRoots {
     deviceRoot: string;
     privateRoot: string;
@@ -36,11 +36,6 @@ export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
     frame(ownerId: string, backend: string, deviceId: string, incarnationId: string): DesktopFrame | null;
     rememberFrame(ownerId: string, backend: string, deviceId: string, frame: DesktopFrame): undefined;
     timestamp(): string;
-    windowCommand(backend: string, handle: string | null): string;
-    linuxWindows(stdout: string): DesktopWindowList;
-    utf8Length(text: string): number;
-    linuxTypeCommand(text: string): string;
-    linuxScrollCommand(direction: 'up' | 'down', amount: number): string;
     roots(ownerId: string, backend: 'windows-vm' | 'linux-vm', deviceId: string): DesktopRoots;
     assertPrivateRoot(ownerId: string, backend: 'windows-vm' | 'linux-vm', deviceId: string, privateRoot: string): undefined;
     readableSecret(path: string, label: 'hyper-v-linux-ssh-private-key' | 'hyper-v-guest-credential'): boolean;
@@ -55,14 +50,13 @@ export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
     readStage(stage: Stage, maxBytes: number): Bytes | null;
     disposeStage(stage: Stage): undefined;
     writeDestination(path: string, bytes: Bytes, label: 'hyper-v-linux-guest-download' | 'hyper-v-guest-download'): undefined;
-    decodeBase64(encoded: string): Bytes;
     guestConnection(operation: 'exec' | 'upload' | 'read'): Connection | null;
-    prepareGuestExec(facts: DesktopSshFacts, connection: Connection, command: string): DesktopPreparedEffect;
+    prepareGuestExec(facts: DesktopSshFacts, connection: Connection, intent: DesktopGuestIntent): DesktopPreparedEffect;
     prepareUpload(facts: DesktopSshFacts, connection: Connection, stagedPath: string, remotePath: string): DesktopPreparedEffect;
     prepareRemoteRead(facts: DesktopSshFacts, connection: Connection, remotePath: string, maxBytes: number): DesktopPreparedEffect;
     direct(executable: string, timeoutMs: number, identity: DesktopIdentity & {
         credentialPath: string;
-    }, action: DesktopDirectAction): Promise<DesktopDirectResult>;
+    }, action: DesktopDirectAction, intent?: DesktopGuestIntent): Promise<DesktopDirectObservation>;
     stateErrorCode(error: unknown): string | null;
     providerError(error: unknown): {
         code: string;

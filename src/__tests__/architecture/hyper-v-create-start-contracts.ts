@@ -17,7 +17,9 @@ function readinessCapabilities(request: WindowsReadinessRequest, ports: WindowsR
     // @ts-expect-error Successful readiness requires host media cleanup authority.
     waitHyperVWindowsGuestReadiness(request, withoutRemoval);
     // @ts-expect-error Typed probe transport settles asynchronously.
-    waitHyperVWindowsGuestReadiness(request, { ...ports, probe: () => ({ action: "unexpected" as const }) });
+    waitHyperVWindowsGuestReadiness(request, { ...ports, probe: () => ({ kind: "unexpected" as const }) });
+    // @ts-expect-error Readiness consumes qualified facts, never native JSON framing.
+    waitHyperVWindowsGuestReadiness(request, { ...ports, probe: async () => ({ action: "job", output: "{}" }) });
     // @ts-expect-error Host media removal must return its settled asynchronous completion.
     waitHyperVWindowsGuestReadiness(request, { ...ports, removeMedia: () => undefined });
     // @ts-expect-error The deadline clock cannot return a deferred observation.

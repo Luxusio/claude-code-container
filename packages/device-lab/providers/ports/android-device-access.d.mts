@@ -1,30 +1,33 @@
-import type { AndroidAccessReceipt, AndroidScreenshotFacts } from '../domain/android-device-access.mjs';
-export type { AndroidAccessReceipt, AndroidScreenshotFacts, AndroidAccessOutcome } from '../domain/android-device-access.mjs';
+import type { AndroidAccessObservation, AndroidCaptureObservation, AndroidAppObservation } from '../domain/android-device-access.mjs';
+export type { AndroidAccessObservation, AndroidCaptureObservation, AndroidAppObservation, AndroidAccessOutcome } from '../domain/android-device-access.mjs';
 
 export interface AndroidAccessArguments { deviceId?: string; command?: string; text?: string; packageName?: string; timeoutMs?: number; intervalMs?: number }
 export interface AndroidAccessDevice { id: string; serial?: string; port?: number; appium?: object | null }
-export interface AndroidAccessDiscovery { adb: string | null }
-export interface AndroidAccessTarget<Device extends AndroidAccessDevice = AndroidAccessDevice> { device: Device; adb: string }
+export interface AndroidAccessDiscovery { adbAvailable: boolean; native: unknown }
+export interface AndroidAccessTarget<Device extends AndroidAccessDevice = AndroidAccessDevice> { device: Device; native: unknown }
 export type AndroidAccessSelection<Target> = { kind: 'unknown' } | { kind: 'refused'; message: string } | { kind: 'ready'; target: Target };
-export interface AndroidAppiumFacts { available:boolean; missing:string[]; tools:{appium:string|null;adb:string|null} }
 export interface AndroidAccessBudget { timeoutMs:number; remaining():number; requestTimeout():number; pause():Promise<void> }
-export interface AndroidAccessWaitPorts<Target> { budget(timeoutMs:number|undefined,intervalMs:number|undefined):AndroidAccessBudget; executeTimed(target:Target,args:string[],timeoutMs:number):AndroidAccessReceipt }
-export type AndroidTextWaitResult = {error:AndroidAccessReceipt}|{found:false;source:string;timeoutMs:number}|{found:true;source:string;remotePath:string};
-export type AndroidAppWaitResult = {error:AndroidAccessReceipt}|{running:true;pid:string;stdout:string;stderr?:string;status:number|null}|{running:false;timeoutMs:number;stdout:string;stderr?:string;status:0;nativeStatus:number|null};
+export interface AndroidAccessWaitPorts<Target> {
+    budget(timeoutMs:number|undefined,intervalMs:number|undefined):AndroidAccessBudget;
+    dumpUi(target:Target,remotePath:string,timeoutMs?:number):AndroidAccessObservation<undefined>;
+    readUi(target:Target,remotePath:string,mode:'primary'|'fallback',timeoutMs?:number):AndroidAccessObservation<string>;
+    observeApp(target:Target,packageName:string,timeoutMs:number):AndroidAccessObservation<AndroidAppObservation>;
+}
+export type AndroidTextWaitResult = {kind:'native-failure';diagnostic:unknown}|{kind:'deadline';subject:'ui'}|{found:false;source:string;timeoutMs:number}|{found:true;source:string;remotePath:string};
+export type AndroidAppWaitResult = {kind:'native-failure';diagnostic:unknown}|{kind:'deadline';subject:'app'}|{running:true;pid:string;diagnostic:unknown}|{running:false;timeoutMs:number;diagnostic:unknown};
 interface AndroidAccessCommon<Device extends AndroidAccessDevice, Discovery extends AndroidAccessDiscovery> extends AndroidAccessWaitPorts<AndroidAccessTarget<Device>> {
     device(id:string|undefined):Device|undefined;
     discovery():Discovery;
-    backend(discovery:Discovery):object;
-    publicDevice(device:Device):object;
-    appium(discovery:Discovery|undefined):AndroidAppiumFacts;
+    targetForDevice(device:Device,discovery:Discovery):AndroidAccessTarget<Device>;
     target(id:string|undefined):AndroidAccessSelection<AndroidAccessTarget<Device>>;
-    execute(target:AndroidAccessTarget<Device>,args:(string|undefined)[]):AndroidAccessReceipt;
-    capture(target:AndroidAccessTarget<Device>):AndroidScreenshotFacts;
+    uiPath(device:Device):string;
+    executeShell(target:AndroidAccessTarget<Device>,command:string|undefined):AndroidAccessObservation<undefined>;
+    capture(target:AndroidAccessTarget<Device>):AndroidCaptureObservation;
 }
 export interface AndroidEmulatorAccessPorts<Device extends AndroidAccessDevice=AndroidAccessDevice, Discovery extends AndroidAccessDiscovery=AndroidAccessDiscovery> extends AndroidAccessCommon<Device,Discovery> { variant:'emulator' }
 export interface AndroidPhysicalAccessPorts<Device extends AndroidAccessDevice=AndroidAccessDevice, Discovery extends AndroidAccessDiscovery=AndroidAccessDiscovery> extends AndroidAccessCommon<Device,Discovery> {
     variant:'physical';
     refreshLease(device:Device):{ok:true}|{ok:false;message:string};
-    hostState(device:Device,adb:string):AndroidAccessReceipt;
+    hostState(device:Device,discovery:Discovery):unknown;
 }
 export type AndroidDeviceAccessPorts<Device extends AndroidAccessDevice=AndroidAccessDevice, Discovery extends AndroidAccessDiscovery=AndroidAccessDiscovery> = AndroidEmulatorAccessPorts<Device,Discovery>|AndroidPhysicalAccessPorts<Device,Discovery>;

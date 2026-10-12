@@ -11,9 +11,9 @@ function readinessFixture() {
     let attached = true;
     let mediaExists = true;
     const ports = {
-        probe: vi.fn(async (): Promise<{ action: "job"; output: string }> => ({ action: "job", output: JSON.stringify({
+        probe: vi.fn(async (): Promise<{ kind: "valid"; probe: { computerName: string; addresses: string[]; firstLogonCompleted: string; provisioningSecretsPresent: boolean } }> => ({ kind: "valid", probe: {
             computerName: "CCC-WIN", addresses: ["172.29.0.10"], firstLogonCompleted: request.identity.expectedNotes, provisioningSecretsPresent: false,
-        }) })),
+        } })),
         detachMedia: vi.fn(async (): Promise<undefined> => { attached = false; }),
         machines: vi.fn(async () => [{ name: request.identity.expectedName, notes: request.identity.expectedNotes }]),
         media: vi.fn(async () => attached ? [{ path: request.provisioningMediaPath }] : []),
@@ -22,7 +22,7 @@ function readinessFixture() {
         now: () => now,
         sleep: async (milliseconds: number) => { now += milliseconds; },
     } satisfies WindowsReadinessPorts;
-    return { request, ports, attached: () => attached, mediaExists: () => mediaExists };
+    return { request, ports, now: () => now, attached: () => attached, mediaExists: () => mediaExists };
 }
 
 describe("Hyper-V inward create/start readiness policy", () => {
@@ -37,9 +37,9 @@ describe("Hyper-V inward create/start readiness policy", () => {
 
     it("retains mounted answer-file media while provisioning secrets are still present", async () => {
         const f = readinessFixture();
-        f.ports.probe.mockResolvedValue({ action: "job", output: JSON.stringify({
+        f.ports.probe.mockResolvedValue({ kind: "valid", probe: {
             computerName: "CCC-WIN", addresses: ["172.29.0.10"], firstLogonCompleted: f.request.identity.expectedNotes, provisioningSecretsPresent: true,
-        }) });
+        } });
         expect(await waitHyperVWindowsGuestReadiness(f.request, f.ports)).toMatchObject({
             ok: false, reason: "hyper-v-guest-provisioning-not-scrubbed", scrubConfirmed: false, mediaDetached: false,
         });
@@ -56,6 +56,25 @@ describe("Hyper-V inward create/start readiness policy", () => {
         });
         expect(f.attached()).toBe(true);
         expect(f.mediaExists()).toBe(true);
+    });
+
+    it("never replays uncertain detach even when owned media is still attached", async () => {
+        const f = readinessFixture();
+        f.ports.detachMedia.mockRejectedValue(new Error("lost native response"));
+        expect(await waitHyperVWindowsGuestReadiness(f.request, f.ports)).toMatchObject({ ok: false, scrubConfirmed: true, mediaDetached: false });
+        expect(f.ports.detachMedia).toHaveBeenCalledTimes(1);
+        expect(f.ports.media).toHaveBeenCalledTimes(1);
+        expect(f.ports.removeMedia).not.toHaveBeenCalled();
+    });
+
+    it("bounds unchanged semantic probe facts by the no-progress allowance", async () => {
+        const f = readinessFixture();
+        f.ports.probe.mockResolvedValue({ kind: "valid", probe: {
+            computerName: "CCC-WIN", addresses: [], firstLogonCompleted: "", provisioningSecretsPresent: true,
+        } });
+        expect(await waitHyperVWindowsGuestReadiness({ ...f.request, timeoutMilliseconds: 12000, noProgressTimeoutMilliseconds: 3000 }, f.ports)).toMatchObject({ ok: false, attempts: 2, scrubConfirmed: false, mediaDetached: false });
+        expect(f.now()).toBe(103000);
+        expect(f.ports.detachMedia).not.toHaveBeenCalled();
     });
 
     it("retains scrub and detach facts when host media deletion fails", async () => {

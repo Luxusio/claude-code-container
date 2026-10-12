@@ -1,9 +1,21 @@
-import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, parseGuestFocusWindow, parseWindowsGuestWindowList, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopPreparedEffect, type DesktopDirectAction } from '../domain/hyper-v-desktop-transfer.js';
+import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopPreparedEffect, type DesktopDirectAction, type DesktopGuestIntent } from '../domain/hyper-v-desktop-transfer.js';
 import type { HyperVDesktopTransferPorts } from '../ports/hyper-v-desktop-transfer.js';
 export function createHyperVDesktopTransferApplication<Console, Stage, Bytes extends {
     readonly length: number;
 }, Connection>(ports: HyperVDesktopTransferPorts<Console, Stage, Bytes, Connection>) {
-    async function invoke(ownerId: string, parsed: DesktopRequest, match: DesktopTarget): Promise<DesktopOutcome> {
+    async function finalizeStage(operation:()=>Promise<DesktopOutcome>, stage:()=>{handle:Stage}|null, fallback:string):Promise<DesktopOutcome> {
+        let outcome:DesktopOutcome;
+        try { outcome=await operation(); }
+        catch(error) { outcome={kind:'failure',category:'provider-failed',facts:{ok:false,error:ports.stateErrorCode(error)|| (error instanceof Error?error.message:fallback)}}; }
+        const allocated=stage();
+        if(allocated)try { ports.disposeStage(allocated.handle); }
+        catch(error) {
+            const cleanupError=ports.stateErrorCode(error)||(error instanceof Error?error.message:'hyper-v-transfer-cleanup-failed');
+            outcome={kind:'failure',category:outcome.kind==='failure'?outcome.category:'provider-failed',facts:{...outcome.facts,ok:false,error:outcome.kind==='failure'?outcome.facts.error:'hyper-v-transfer-cleanup-failed',detail:{primary:outcome.facts,cleanupError,publicationCompleted:outcome.kind==='success'}}};
+        }
+        return outcome;
+    }
+    async function invoke(ownerId: string, parsed: DesktopRequest, match: DesktopTarget, nativeIntent?: DesktopGuestIntent): Promise<DesktopOutcome> {
         const deviceId = String(parsed.deviceId);
         let device = match.device;
         const powershell = ports.executable("powershell.exe") || ports.executable("pwsh") || ports.executable("powershell");
@@ -71,25 +83,22 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 ...parsed, tool: "device_exec",
                 params: {
                     ...parsed.params, incarnationId,
-                    command: parsed.tool === "device_focus_window"
-                        ? ports.windowCommand(match.backend || "", windowHandle)
-                        : ports.windowCommand(match.backend || "", null)
+
                 },
             }, {
                 ...match, device
-            });
+            }, parsed.tool === "device_focus_window" ? {kind:"focus",handle:windowHandle!} : {kind:"window-list"});
             if (result.kind !== 'success')
                 return desktopInputFailure(result, parsed.tool);
             const payload: DesktopRecord = desktopRecord(result.facts) ? result.facts : {};
             const resultRecord: DesktopRecord = desktopRecord(payload.result) ? payload.result : {};
             try {
-                const stdout = resultRecord.stdout;
-                if (typeof stdout !== "string")
+                if (parsed.tool === "device_focus_window" ? resultRecord.focused !== true : !desktopRecord(resultRecord.windows))
                     throw new Error("window-list-invalid-result");
                 return {
                     kind: 'success', facts: {
                         ok: true, result: {
-                            deviceId, tool: parsed.tool, ...(parsed.tool === "device_focus_window" ? parseGuestFocusWindow(stdout) : match.backend === "linux-vm" ? ports.linuxWindows(stdout) : parseWindowsGuestWindowList(stdout, ports.utf8Length(stdout))),
+                            deviceId, tool: parsed.tool, ...(parsed.tool === "device_focus_window" ? {ok:true} : resultRecord.windows as DesktopRecord),
                         }
                     }
                 };
@@ -182,9 +191,9 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                                 ...parsed,
                                 tool: "device_exec",
                                 params: {
-                                    ...parsed.params, command: ports.linuxTypeCommand(text)
+                                    ...parsed.params
                                 },
-                            }, match);
+                            }, match, {kind:"type",text});
                             if (typed.kind !== 'success')
                                 return desktopInputFailure(typed, parsed.tool);
                             inputProvider = "hyper-v-ssh-x11";
@@ -242,9 +251,9 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                                     ...parsed,
                                     tool: "device_exec",
                                     params: {
-                                        ...parsed.params, command: ports.linuxScrollCommand(direction, amount)
+                                        ...parsed.params
                                     },
-                                }, match);
+                                }, match, {kind:"scroll",direction,amount});
                                 if (scrolled.kind !== 'success')
                                     return desktopInputFailure(scrolled, parsed.tool);
                                 inputProvider = "hyper-v-ssh-x11";
@@ -331,126 +340,118 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
             } | null = null;
             let sourceBytes: number | null = null;
             let downloadMaxBytes: number | null = null;
-            try {
-                if (parsed.tool === "device_exec") {
-                    const connection = ports.guestConnection("exec");
-                    if (!connection)
-                        return {
-                            kind: 'failure', category: 'unavailable', facts: {
-                                ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
-                            }
-                        };
-                    preparedEffect = ports.prepareGuestExec(common, connection, typeof parsed.params.command === "string" ? parsed.params.command : "");
-                }
-                else {
-                    const rawLocalPath = parsed.localPath || "";
-                    localPath = ports.localPath(rawLocalPath, "hyper-v-linux-guest-transfer");
-                    if (parsed.tool === "device_upload") {
-                        const connection = ports.guestConnection("upload");
-                        if (!connection)
-                            return {
-                                kind: 'failure', category: 'unavailable', facts: {
-                                    ok: false, error: "missing-provider-command", missing: ["scp"], backend: match.backend, deviceId
-                                }
-                            };
-                        stage = ports.allocateStage(privateRoot, "upload", "hyper-v-linux-guest-transfer-staging");
-                        const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                        const source = ports.readSource(localPath, "hyper-v-linux-guest-upload", maxBytes);
-                        if (source === null) {
-                            ports.disposeStage(stage.handle);
-                            return {
-                                kind: 'failure', category: 'missing', facts: {
-                                    ok: false, error: "hyper-v-linux-guest-upload-source-missing", backend: match.backend, deviceId
-                                }
-                            };
-                        }
-                        sourceBytes = source.length;
-                        ports.writeStage(privateRoot, stage.handle, source, "hyper-v-linux-guest-upload-staging");
-                        preparedEffect = ports.prepareUpload(common, connection, stage.path, parsed.remotePath || "");
-                    }
-                    else {
-                        downloadMaxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                        const connection = ports.guestConnection("read");
+            return finalizeStage(async () => {
+                try {
+                    if (parsed.tool === "device_exec") {
+                        const connection = ports.guestConnection("exec");
                         if (!connection)
                             return {
                                 kind: 'failure', category: 'unavailable', facts: {
                                     ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
                                 }
                             };
-                        const remotePath = parsed.remotePath || "";
-                        preparedEffect = ports.prepareRemoteRead(common, connection, remotePath, downloadMaxBytes);
+                        preparedEffect = ports.prepareGuestExec(common, connection, nativeIntent ?? {kind:"exec",command:typeof parsed.params.command === "string" ? parsed.params.command : ""});
                     }
-                }
-            }
-            catch (error) {
-                if (stage)
-                    ports.disposeStage(stage.handle);
-                return {
-                    kind: 'failure', category: 'invalid', facts: {
-                        ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-linux-guest-options"), backend: match.backend, deviceId
-                    }
-                };
-            }
-            const outputLimit = parsed.tool === "device_download" && downloadMaxBytes !== null
-                ? Math.ceil((downloadMaxBytes + 1) / 3) * 4 + 4096
-                : 32 * 1024;
-            const execution = await preparedEffect({ timeoutMs, outputLimit });
-            if (!desktopSucceeded(execution)) {
-                if (stage)
-                    ports.disposeStage(stage.handle);
-                return {
-                    kind: 'failure', category: 'provider-failed', facts: {
-                        ok: false,
-                        error: "hyper-v-linux-guest-provider-failed",
-                        ownerId,
-                        backend: match.backend,
-                        deviceId,
-                        execution: ports.redactExecution(execution, "hyper-v-linux-guest-provider-failed"),
-                    },
-                };
-            }
-            let bytes = sourceBytes;
-            if (parsed.tool === "device_download" && localPath) {
-                try {
-                    const maxBytes = downloadMaxBytes || 16 * 1024 * 1024;
-                    const encoded = String(execution.stdout || "").trim();
-                    if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded))
-                        throw new Error("hyper-v-linux-guest-download-invalid-base64");
-                    const downloaded = ports.decodeBase64(encoded);
-                    if (downloaded.length > maxBytes) {
-                        return {
-                            kind: 'failure', category: 'too-large', facts: {
-                                ok: false, error: "hyper-v-linux-guest-download-source-too-large", ownerId, backend: match.backend, deviceId, bytes: downloaded.length, maxFileBytes: maxBytes
+                    else {
+                        const rawLocalPath = parsed.localPath || "";
+                        localPath = ports.localPath(rawLocalPath, "hyper-v-linux-guest-transfer");
+                        if (parsed.tool === "device_upload") {
+                            const connection = ports.guestConnection("upload");
+                            if (!connection)
+                                return {
+                                    kind: 'failure', category: 'unavailable', facts: {
+                                        ok: false, error: "missing-provider-command", missing: ["scp"], backend: match.backend, deviceId
+                                    }
+                                };
+                            stage = ports.allocateStage(privateRoot, "upload", "hyper-v-linux-guest-transfer-staging");
+                            const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
+                            const source = ports.readSource(localPath, "hyper-v-linux-guest-upload", maxBytes);
+                            if (source === null) {
+                                return {
+                                    kind: 'failure', category: 'missing', facts: {
+                                        ok: false, error: "hyper-v-linux-guest-upload-source-missing", backend: match.backend, deviceId
+                                    }
+                                };
                             }
-                        };
+                            sourceBytes = source.length;
+                            ports.writeStage(privateRoot, stage.handle, source, "hyper-v-linux-guest-upload-staging");
+                            preparedEffect = ports.prepareUpload(common, connection, stage.path, parsed.remotePath || "");
+                        }
+                        else {
+                            downloadMaxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
+                            const connection = ports.guestConnection("read");
+                            if (!connection)
+                                return {
+                                    kind: 'failure', category: 'unavailable', facts: {
+                                        ok: false, error: "missing-provider-command", missing: ["ssh"], backend: match.backend, deviceId
+                                    }
+                                };
+                            const remotePath = parsed.remotePath || "";
+                            preparedEffect = ports.prepareRemoteRead(common, connection, remotePath, downloadMaxBytes);
+                        }
                     }
-                    bytes = downloaded.length;
-                    ports.writeDestination(localPath, downloaded, "hyper-v-linux-guest-download");
                 }
                 catch (error) {
                     return {
-                        kind: 'failure', category: 'provider-failed', facts: {
-                            ok: false, error: ports.stateErrorCode(error) || "hyper-v-linux-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
+                        kind: 'failure', category: 'invalid', facts: {
+                            ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-linux-guest-options"), backend: match.backend, deviceId
                         }
                     };
                 }
-            }
-            else if (stage) {
-                ports.disposeStage(stage.handle);
-            }
-            return {
-                kind: 'success', facts: {
-                    ok: true, result: {
-                        ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: parsed.tool === "device_upload" ? "hyper-v-scp" : "hyper-v-ssh", status: 0, stdout: parsed.tool === "device_download" ? "" : execution.stdout || "", stderr: execution.stderr || "", ...(localPath ? {
-                            localPath
-                        } : {}), ...(parsed.remotePath ? {
-                            remotePath: parsed.remotePath
-                        } : {}), ...(bytes !== null ? {
-                            bytes
-                        } : {}), startsDevices: false
+                const outputLimit = parsed.tool === "device_download" && downloadMaxBytes !== null
+                    ? downloadMaxBytes + 1
+                    : 32 * 1024;
+                const execution = await preparedEffect({ timeoutMs, outputLimit });
+                if (!desktopSucceeded(execution) || execution.action !== (parsed.tool === "device_upload" ? "upload" : parsed.tool === "device_download" ? "download" : "exec")) {
+                    return {
+                        kind: 'failure', category: 'provider-failed', facts: {
+                            ok: false,
+                            error: "hyper-v-linux-guest-provider-failed",
+                            ownerId,
+                            backend: match.backend,
+                            deviceId,
+                            execution: ports.redactExecution(execution, "hyper-v-linux-guest-provider-failed"),
+                        },
+                    };
+                }
+                let bytes = sourceBytes;
+                if (parsed.tool === "device_download" && localPath) {
+                    try {
+                        const maxBytes = downloadMaxBytes || 16 * 1024 * 1024;
+                        const downloaded = execution.artifact as Bytes | undefined;
+                        if (!downloaded) throw new Error("hyper-v-linux-guest-download-invalid-artifact");
+                        if (downloaded.length > maxBytes) {
+                            return {
+                                kind: 'failure', category: 'too-large', facts: {
+                                    ok: false, error: "hyper-v-linux-guest-download-source-too-large", ownerId, backend: match.backend, deviceId, bytes: downloaded.length, maxFileBytes: maxBytes
+                                }
+                            };
+                        }
+                        bytes = downloaded.length;
+                        ports.writeDestination(localPath, downloaded, "hyper-v-linux-guest-download");
+                    }
+                    catch (error) {
+                        return {
+                            kind: 'failure', category: 'provider-failed', facts: {
+                                ok: false, error: ports.stateErrorCode(error) || "hyper-v-linux-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
+                            }
+                        };
                     }
                 }
-            };
+                return {
+                    kind: 'success', facts: {
+                        ok: true, result: {
+                            ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: parsed.tool === "device_upload" ? "hyper-v-scp" : "hyper-v-ssh", status: 0, stdout: parsed.tool === "device_download" ? "" : execution.stdout || "", stderr: execution.stderr || "", ...(execution.windows ? {windows:execution.windows}:{}), ...(execution.focused ? {focused:true}:{}), ...(localPath ? {
+                                localPath
+                            } : {}), ...(parsed.remotePath ? {
+                                remotePath: parsed.remotePath
+                            } : {}), ...(bytes !== null ? {
+                                bytes
+                            } : {}), startsDevices: false
+                        }
+                    }
+                };
+            }, () => stage, "hyper-v-linux-guest-provider-failed");
         }
         if (parsed.tool === "device_exec" || parsed.tool === "device_upload" || parsed.tool === "device_download") {
             const deviceRoot = typeof device.deviceRoot === "string" ? device.deviceRoot : null;
@@ -490,146 +491,135 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                 path: string;
             } | null = null;
             let uploadSourceBytes: number | null = null;
-            try {
-                if (parsed.tool === "device_exec") {
-                    guestAction = {
-                        action: "exec", command: typeof parsed.params.command === "string" ? parsed.params.command : ""
-                    };
-                }
-                else {
-                    const rawLocalPath = parsed.localPath || "";
-                    const localPath = ports.localPath(rawLocalPath, "hyper-v-guest-transfer");
-                    transferLocalPath = localPath;
-                    if (parsed.tool === "device_upload") {
-                        const maxBytes = typeof parsed.params.maxFileBytes === "number"
-                            ? Math.min(parsed.params.maxFileBytes, 128 * 1024 * 1024)
-                            : 16 * 1024 * 1024;
-                        const source = ports.readSource(localPath, "hyper-v-guest-upload", maxBytes);
-                        if (source === null)
-                            return {
-                                kind: 'failure', category: 'missing', facts: {
-                                    ok: false, error: "hyper-v-guest-upload-source-missing", backend: match.backend, deviceId
-                                }
-                            };
-                        uploadSourceBytes = source.length;
-                        transferStage = ports.allocateStage(privateRoot, "upload", "hyper-v-guest-upload-staging");
-                        ports.writeStage(privateRoot, transferStage.handle, source, "hyper-v-guest-upload-staging");
+            return finalizeStage(async () => {
+                try {
+                    if (parsed.tool === "device_exec") {
                         guestAction = {
-                            action: "upload", localPath: transferStage.path, remotePath: parsed.remotePath || ""
+                            action: "exec", command: typeof parsed.params.command === "string" ? parsed.params.command : ""
                         };
                     }
                     else {
-                        transferStage = ports.allocateStage(privateRoot, "download", "hyper-v-guest-download-staging");
-                        const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                        guestAction = {
-                            action: "download", localPath: transferStage.path, remotePath: parsed.remotePath || "", maxBytes
-                        };
+                        const rawLocalPath = parsed.localPath || "";
+                        const localPath = ports.localPath(rawLocalPath, "hyper-v-guest-transfer");
+                        transferLocalPath = localPath;
+                        if (parsed.tool === "device_upload") {
+                            const maxBytes = typeof parsed.params.maxFileBytes === "number"
+                                ? Math.min(parsed.params.maxFileBytes, 128 * 1024 * 1024)
+                                : 16 * 1024 * 1024;
+                            const source = ports.readSource(localPath, "hyper-v-guest-upload", maxBytes);
+                            if (source === null)
+                                return {
+                                    kind: 'failure', category: 'missing', facts: {
+                                        ok: false, error: "hyper-v-guest-upload-source-missing", backend: match.backend, deviceId
+                                    }
+                                };
+                            uploadSourceBytes = source.length;
+                            transferStage = ports.allocateStage(privateRoot, "upload", "hyper-v-guest-upload-staging");
+                            ports.writeStage(privateRoot, transferStage.handle, source, "hyper-v-guest-upload-staging");
+                            guestAction = {
+                                action: "upload", localPath: transferStage.path, remotePath: parsed.remotePath || ""
+                            };
+                        }
+                        else {
+                            transferStage = ports.allocateStage(privateRoot, "download", "hyper-v-guest-download-staging");
+                            const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
+                            guestAction = {
+                                action: "download", localPath: transferStage.path, remotePath: parsed.remotePath || "", maxBytes
+                            };
+                        }
                     }
-                }
-            }
-            catch (error) {
-                if (transferStage)
-                    ports.disposeStage(transferStage.handle);
-                return {
-                    kind: 'failure', category: 'invalid', facts: {
-                        ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-guest-options"), backend: match.backend, deviceId
-                    }
-                };
-            }
-            const timeoutMs = Math.min(300000, Math.max(1000, typeof parsed.params.helperTimeoutMs === "number" ? parsed.params.helperTimeoutMs : 30000));
-            let typedResult;
-            try {
-                typedResult = await ports.direct(powershell, timeoutMs, {
-                    selector: {
-                        kind: "id", id: vmId
-                    }, expectedName: vmName,
-                    expectedNotes: ports.ownershipNotes(ownerId, deviceId, incarnationId), credentialPath,
-                }, guestAction);
-            }
-            catch (error) {
-                if (transferStage)
-                    ports.disposeStage(transferStage.handle);
-                const providerError = ports.providerError(error);
-                const code = providerError ? providerError.code : "guest-executor-failed";
-                return {
-                    kind: 'failure', category: providerError?.validation ? 'invalid' : 'provider-failed',
-                    facts: {
-                        ok: false,
-                        error: "hyper-v-guest-provider-failed",
-                        ownerId,
-                        backend: match.backend,
-                        deviceId,
-                        execution: ports.redactExecution({
-                            mode: "exec", provider: "hyper-v", status: null, error: code
-                        }, "hyper-v-guest-provider-failed"),
-                    },
-                };
-            }
-            const observation = typedResult.action === "exec"
-                ? {
-                    ok: true as const, status: typedResult.status, stdout: typedResult.stdout, stderr: typedResult.stderr
-                } : typedResult.action === "mkdir" || typedResult.action === "job"
-                ? null
-                : {
-                    ok: true as const, localPath: typedResult.localPath, remotePath: typedResult.remotePath, bytes: typedResult.bytes
-                };
-            if (!observation)
-                return {
-                    kind: 'failure', category: 'provider-failed', facts: {
-                        ok: false, error: "hyper-v-guest-invalid-result", ownerId, backend: match.backend, deviceId
-                    }
-                };
-            if (parsed.tool === "device_download" && transferLocalPath && transferStage) {
-                try {
-                    const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
-                    const downloaded = ports.readStage(transferStage.handle, maxBytes);
-                    const downloadedBytes = downloaded?.length ?? null;
-                    if (downloaded === null || downloadedBytes === null || !("bytes" in observation) || observation.bytes !== downloadedBytes) {
-                        return {
-                            kind: 'failure', category: 'provider-failed', facts: {
-                                ok: false, error: "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
-                            }
-                        };
-                    }
-                    ports.writeDestination(transferLocalPath, downloaded, "hyper-v-guest-download");
-                    observation.localPath = transferLocalPath;
                 }
                 catch (error) {
                     return {
-                        kind: 'failure', category: 'provider-failed', facts: {
-                            ok: false, error: ports.stateErrorCode(error) || "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
+                        kind: 'failure', category: 'invalid', facts: {
+                            ok: false, error: ports.stateErrorCode(error) || (error instanceof Error ? error.message : "invalid-hyper-v-guest-options"), backend: match.backend, deviceId
                         }
                     };
                 }
-                finally {
-                    ports.disposeStage(transferStage.handle);
+                const timeoutMs = Math.min(300000, Math.max(1000, typeof parsed.params.helperTimeoutMs === "number" ? parsed.params.helperTimeoutMs : 30000));
+                let nativeObservation;
+                let typedResult;
+                try {
+                    nativeObservation = await ports.direct(powershell, timeoutMs, {
+                        selector: {
+                            kind: "id", id: vmId
+                        }, expectedName: vmName,
+                        expectedNotes: ports.ownershipNotes(ownerId, deviceId, incarnationId), credentialPath,
+                    }, guestAction, nativeIntent);
+                    typedResult = nativeObservation.result;
                 }
-            }
-            else if (parsed.tool === "device_upload" && transferLocalPath && transferStage) {
-                if (!("bytes" in observation) || observation.bytes !== uploadSourceBytes) {
-                    ports.disposeStage(transferStage.handle);
+                catch (error) {
+                    const providerError = ports.providerError(error);
+                    const code = providerError ? providerError.code : "guest-executor-failed";
+                    return {
+                        kind: 'failure', category: providerError?.validation ? 'invalid' : 'provider-failed',
+                        facts: {
+                            ok: false,
+                            error: "hyper-v-guest-provider-failed",
+                            ownerId,
+                            backend: match.backend,
+                            deviceId,
+                            execution: ports.redactExecution({
+                                ok:false, mode: "exec", provider: "hyper-v", status: null, error: code
+                            }, "hyper-v-guest-provider-failed"),
+                        },
+                    };
+                }
+                const observation = nativeObservation?.ok && nativeObservation.action === guestAction.action && typedResult ? {...typedResult} : null;
+                if (!observation)
                     return {
                         kind: 'failure', category: 'provider-failed', facts: {
-                            ok: false, error: "hyper-v-guest-upload-invalid-result", ownerId, backend: match.backend, deviceId
+                            ok: false, error: "hyper-v-guest-invalid-result", ownerId, backend: match.backend, deviceId
                         }
                     };
+                if (parsed.tool === "device_download" && transferLocalPath && transferStage) {
+                    try {
+                        const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;
+                        const downloaded = ports.readStage(transferStage.handle, maxBytes);
+                        const downloadedBytes = downloaded?.length ?? null;
+                        if (downloaded === null || downloadedBytes === null || !("bytes" in observation) || observation.bytes !== downloadedBytes) {
+                            return {
+                                kind: 'failure', category: 'provider-failed', facts: {
+                                    ok: false, error: "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
+                                }
+                            };
+                        }
+                        ports.writeDestination(transferLocalPath, downloaded, "hyper-v-guest-download");
+                        observation.localPath = transferLocalPath;
+                    }
+                    catch (error) {
+                        return {
+                            kind: 'failure', category: 'provider-failed', facts: {
+                                ok: false, error: ports.stateErrorCode(error) || "hyper-v-guest-download-invalid-artifact", ownerId, backend: match.backend, deviceId
+                            }
+                        };
+                    }
+
                 }
-                observation.localPath = transferLocalPath;
-                ports.disposeStage(transferStage.handle);
-            }
-            const guestFailed = parsed.tool === "device_exec" && "status" in observation && observation.status !== 0;
-            return {
-                ...(guestFailed ? { kind: 'failure' as const, category: 'guest-failed' as const } : { kind: 'success' as const }),
-                facts: {
-                    ok: !guestFailed,
-                    ...(guestFailed ? {
-                        error: "hyper-v-guest-command-failed"
-                    } : {}),
-                    result: {
-                        ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: "hyper-v-powershell-direct", ...observation, startsDevices: false
+                else if (parsed.tool === "device_upload" && transferLocalPath && transferStage) {
+                    if (!("bytes" in observation) || observation.bytes !== uploadSourceBytes) {
+                        return {
+                            kind: 'failure', category: 'provider-failed', facts: {
+                                ok: false, error: "hyper-v-guest-upload-invalid-result", ownerId, backend: match.backend, deviceId
+                            }
+                        };
+                    }
+                    observation.localPath = transferLocalPath;
+                }
+                const guestFailed = nativeObservation?.guestFailed === true;
+                return {
+                    ...(guestFailed ? { kind: 'failure' as const, category: 'guest-failed' as const } : { kind: 'success' as const }),
+                    facts: {
+                        ok: !guestFailed,
+                        ...(guestFailed ? {
+                            error: "hyper-v-guest-command-failed"
+                        } : {}),
+                        result: {
+                            ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: "hyper-v-powershell-direct", ...observation, ...(nativeObservation?.windows ? {windows:nativeObservation.windows}:{}), ...(nativeObservation?.focused ? {focused:true}:{}), startsDevices: false
+                        },
                     },
-                },
-            };
+                };
+            }, () => transferStage, "hyper-v-guest-provider-failed");
         }
         return {
             kind: 'failure', category: 'unsupported', facts: {

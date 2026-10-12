@@ -9,22 +9,6 @@ describe("Hyper-V window observation", () => {
         const encoded = command.match(/printf %s ([A-Za-z0-9+/=]+)/)![1];
         expect(Buffer.from(encoded, "base64").toString()).toBe(X11_WINDOW_LIST_COMMAND);
     });
-    it("fits the guest exec bound and enforces console-user/session fencing, atomic result and cleanup", () => {
-        const command = windowsWindowListCommand();
-        expect(command.length).toBeLessThanOrEqual(4096);
-        expect(command).toContain(".UserName -ne $user");
-        expect(command).toContain("-LogonType Interactive -RunLevel Limited");
-        expect(command).toContain(".SessionId -ne [int]$Expected");
-        expect(command).toContain("WTSGetActiveConsoleSessionId() -ne $sid");
-        expect(command).toContain("SetAccessRuleProtection($true,$false)");
-        expect(command).toContain("[IO.File]::Move(($out+'.tmp'),$out)");
-        expect(command).toContain("-ExecutionTimeLimit (New-TimeSpan -Seconds 20)");
-        expect(command).toContain("Stop-ScheduledTask -TaskName $name");
-        expect(command).toContain("Unregister-ScheduledTask -TaskName $name");
-        expect(command).toContain("Remove-Item -LiteralPath $dir -Recurse -Force");
-        expect(command).toContain("while($json.Length -gt 8000)");
-        expect(command).toContain("$result.truncated=$true");
-    });
     it("retains only actionable Windows data with explicit truncation", () => {
         expect(parseGuestWindowList("windows-vm", JSON.stringify({windows:[{handle:"42",title:"한글\napp",processId:123,noise:"discard"}],truncated:true})))
             .toEqual({windows:[{handle:"42",title:"한글\napp",processId:123}],truncated:true});

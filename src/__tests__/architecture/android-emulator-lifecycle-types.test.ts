@@ -28,24 +28,24 @@ function originalRequiredPortNegatives(): void {
 }
 void originalRequiredPortNegatives;
 
-type DirectPorts = AndroidEmulatorLifecyclePorts<DirectLifecycleResult, DirectOwnedChild>;
+type DirectPorts = AndroidEmulatorLifecyclePorts<DirectOwnedChild>;
 type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
 const directStepsRequired: [OptionalKeys<DirectPorts>] extends [never] ? true : false = true;
 const brokerStepsRequired: [OptionalKeys<BrokerAndroidEmulatorLifecyclePorts>] extends [never] ? true : false = true;
 void directStepsRequired; void brokerStepsRequired;
 function directOperationContractNegatives(): void {
     const direct = directLifecyclePorts().ports;
-    const { spawnAndroidEmulator, ...missingSpawn } = direct; void spawnAndroidEmulator;
+    const { launchAndroidEmulator, ...missingSpawn } = direct; void launchAndroidEmulator;
     // @ts-expect-error actual spawned native handle effect is required
     createAndroidEmulatorLifecycle(missingSpawn);
     // @ts-expect-error allocation is synchronously observed
     const asyncAllocation: DirectPorts = { ...direct, resolveAndroidEmulatorPort: async () => ({ ok: true, port: 5630 }) };
     // @ts-expect-error native command observation is synchronously available
-    const asyncCommand: DirectPorts = { ...direct, run: async () => ({ status: 0, stdout: "", stderr: "" }) };
+    const asyncCommand: DirectPorts = { ...direct, provisionAndroidAvd: async () => ({ ok: true, diagnostic: {} }) };
     // @ts-expect-error raw transition requires both found and matched observations
     const weakTransition: DirectPorts = { ...direct, transitionAndroidDevice: () => ({ matched: true }) };
     // @ts-expect-error spawn crosses the actual native handle, not merely its PID
-    const pidOnlySpawn: DirectPorts = { ...direct, spawnAndroidEmulator: async () => ({ pid: 424242 }) };
+    const pidOnlySpawn: DirectPorts = { ...direct, launchAndroidEmulator: async () => ({ pid: 424242 }) };
     // @ts-expect-error identity observation is asynchronous
     const syncIdentity: DirectPorts = { ...direct, waitForProcessIdentity: () => ({ startToken: "native" }) };
     // @ts-expect-error bounded owned termination reports an exited boolean
@@ -108,7 +108,7 @@ describe("Android emulator lifecycle current direct and broker contracts", () =>
         device.status = "stopped"; const f = directLifecyclePorts(device);
         const lifecycle = createAndroidEmulatorLifecycle(f.ports);
         const result: DirectLifecycleResult | undefined = await lifecycle.start({ deviceId: device.id, waitForBoot: false });
-        expect(result).toMatchObject({ ok: true, payload: { boot: { ready: false, skipped: true }, device: { raw: device.raw } } });
+        expect(result).toMatchObject({ kind: "started", boot: { ready: false, skipped: true }, device: { raw: device.raw } });
         expect(f.current()?.runtime?.pid).toBe(f.child.pid);
     });
 });

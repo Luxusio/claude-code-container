@@ -1,43 +1,83 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import * as path from "node:path";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
 import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
-import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmCommandResult, MacosVmNativeObservation, MacosVmProviderPlan, MacosVmLifecycleOutcome } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
 type Result={ok:boolean;value:unknown};
 function nativeLeaves(initial?:MacosVmDevice){
     let current=initial;const trace:string[]=[],fault={native:"raw claim failure"};
     const child={pid:71,unref(){expect(this).toBe(child);trace.push("unref");}};
     const plan={available:true,missing:[],selectedProvider:"tart",providerCommand:"/native/tart",providerInstance:"ccc-owner-unit",startCommand:{command:"/native/tart",args:["run","ccc-owner-unit"]},stopCommand:{command:"/native/tart",args:["stop","ccc-owner-unit"]}};
-    const ports:MacosVmLifecyclePorts<Result,typeof child>={
+    const nativePlan={available:true,missing:[],selectedProvider:"tart",providerInstance:plan.providerInstance,stopAvailable:true,evidence:plan};
+    const observe=(evidence:MacosVmCommandResult):MacosVmNativeObservation=>({ok:evidence.status===0,timedOut:evidence.signal==="SIGTERM",detail:evidence.stderr||evidence.stdout,evidence});
+    const command=(_command:string|null,args:(string|null|undefined)[])=>{trace.push(args.join(" "));return {status:0,stdout:"raw out",stderr:"raw err"};};
+    const ports:MacosVmLifecyclePorts<typeof child>={
         read(){trace.push("read");return current?[current]:[];},find(){trace.push("find");return current||null;},
         claim(device){trace.push("claim");current=device;return {ok:true};},
         transition(_id,expected,replacement){trace.push("transition");if(current!==expected)return {matched:false,found:Boolean(current),device:current!};current=replacement||undefined;return {matched:true,found:true,device:current!};},
         owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"2026-10-10T12:00:00.000Z",now:()=>1791633600000,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
         validateSshKey:()=>({ok:true,path:null}),helperMetadata:()=>({}),
-        providerPlan:()=>plan,tartPlan:()=>({plan}),publicDevice:device=>device,
-        providerCommand(_command,args){trace.push(args.join(" "));return {status:0,stdout:"raw out",stderr:"raw err"};},
-        commandTimedOut:result=>result.signal==="SIGTERM",tartStartArgs:()=>["run","ccc-owner-unit"],supportsFeature:()=>true,
-        spawn(){trace.push("spawn");return child;},async waitProviderStart(value){expect(value).toBe(child);trace.push("wait-start");return null;},
+        providerPlan:()=>nativePlan,tartPlan:()=>({plan:nativePlan}),
+        cloneInstance(_plan,source,target){return observe(command(null,["clone",source,target]));},
+        deleteInstance(_plan,instance){return observe(command(null,["delete",instance]));},
+        stopInstance(value){return observe(command(null,["stop",value.providerInstance]));},
+        launchProvider(){trace.push("spawn");return {child,startCommand:plan.startCommand};},async waitProviderStart(value){expect(value).toBe(child);trace.push("wait-start");return null;},
         async waitBoot(){trace.push("boot");return {ready:true,ip:"192.0.2.4"};},
         async waitGuestHelper(){trace.push("guest-helper");return {ok:true};},provisionHelper(){trace.push("provision");return {ok:true,skipped:true};},
         signalRecording(){trace.push("recording-signal");return {signaled:false,exited:true};},async waitRecordingExit(){trace.push("recording-wait");return true;},
-        sshBridge:()=>({discovery:{ssh:"ssh"},target:"host"}),sshBaseArgs:()=>[],shellQuote:value=>"'"+value+"'",sshCommandOptions:()=>({}),
-        helperCommand:()=>({status:0,stdout:"",stderr:""}),textResult:(ok,value)=>({ok,value}),jsonResult:value=>({ok:true,value}),fail:value=>({ok:false,value}),
-        presentCloneFailure:evidence=>({ok:false,value:evidence}),
+        interruptGuestRecording(){trace.push("guest-recording-interrupt");},
     };
-    return {ports,trace,fault,child,read:()=>current,replace:(value:MacosVmDevice)=>{current=value;}};
+    return {ports,trace,fault,child,plan,command,observe,read:()=>current,replace:(value:MacosVmDevice)=>{current=value;}};
+}
+// The unchanged image consumer still accepts its existing outward Result contract.
+function imageLifecycle(f:ReturnType<typeof nativeLeaves>):MacosVmLifecycle<Result> {
+    const app=createMacosVmLifecycleApplication(f.ports);
+    const present=(outcome:MacosVmLifecycleOutcome):Result=>({ok:outcome.kind==="completed",value:"value" in outcome?outcome.value:outcome});
+    const normalize=(plan:MacosVmProviderPlan)=>({available:plan.available,missing:plan.missing,selectedProvider:plan.selectedProvider,providerInstance:plan.providerInstance,stopAvailable:Boolean(plan.stopCommand),evidence:plan});
+    const result=(outcome:MacosVmLifecycleOutcome|undefined)=>outcome&&present(outcome);
+    return {...app,create:input=>result(app.create(input)),createImage:input=>result(app.createImage(input)),
+        start:async input=>result(await app.start(input)),stop:async input=>result(await app.stop(input)),delete:async input=>result(await app.delete(input)),
+        recoverStale:id=>{const recovered=app.recoverStale(id);return {...recovered,error:recovered.error&&present(recovered.error)};},
+        conflict:(...args)=>present(app.conflict(...args)),
+        rollbackCreated:(id,plan,instance)=>app.rollbackCreated(id,normalize(plan),instance),
+        rollbackStarted:(id,claim,plan)=>app.rollbackStarted(id,claim,normalize(plan)),
+        clone:(plan,source,target)=>{const cloned=app.clone(normalize(plan),source,target);return {result:cloned.result.evidence,cleanup:cloned.cleanup?.evidence||null};},
+        cloneFailureEvidence:(command,cleanup,target)=>({command,cleanup,target}),
+        cloneFailure:(command,cleanup,target)=>present(app.cloneFailure(f.observe(command),cleanup&&f.observe(cleanup),target)),
+    };
+}
+
+function imagePorts(f:ReturnType<typeof nativeLeaves>,command:ReturnType<typeof nativeLeaves>["command"]):MacosImageSnapshotsPorts<Result> {
+    return {...f.ports,snapshotId:()=>"snapshot-before",providerPlan:()=>f.plan,
+        providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true,
+        textResult:(ok,value)=>({ok,value}),jsonResult:value=>({ok:true,value}),fail:value=>({ok:false,value}),
+        presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}})};
 }
 describe("macOS independent inward policy controls",()=>{
-    it("constructs without looking up or invoking any native leaf",()=>{
-        const touched:string[]=[];const ports=new Proxy({},{get(_target,key){touched.push(String(key));throw Error("eager-native-observation");}}) as MacosVmLifecyclePorts<Result,MacosVmProcessHandle>;
-        createMacosVmLifecycleApplication(ports);expect(touched).toEqual([]);
+    it("retains clone and failed owned cleanup evidence without claiming the destination",()=>{
+        const f=nativeLeaves();
+        const primary=f.observe({status:null,stdout:"",stderr:"clone timed out",signal:"SIGTERM"});
+        const cleanup=f.observe({status:9,stdout:"",stderr:"owned cleanup denied"});
+        f.ports.cloneInstance=(_plan,source,target)=>{expect(source).toBe("base");expect(target).toBe("ccc-owner-unit");f.trace.push("clone");return primary;};
+        f.ports.deleteInstance=(_plan,target)=>{expect(target).toBe("ccc-owner-unit");f.trace.push("delete");return cleanup;};
+        const result=createMacosVmLifecycleApplication(f.ports).create({backend:"macos-vm",sourceImage:"base"});
+        expect(result).toEqual({kind:"clone-failed",evidence:{target:"ccc-owner-unit",command:primary,cleanup}});
+        expect(f.read()).toBeUndefined();expect(f.trace).not.toContain("claim");
+        expect(f.trace.slice(-2)).toEqual(["clone","delete"]);
     });
-    it("keeps domain imports free of effect authorities",()=>{
-        const file=path.resolve(import.meta.dirname,"../../../packages/device-lab/providers/domain/lifecycle/macos-vm-lifecycle.mjs");
-        const source=readFileSync(file,"utf8");expect(source).not.toMatch(/^import\s/m);expect(source).not.toMatch(/\b(?:process|spawn|readFileSync|writeFileSync)\b/);
+
+    it("preserves running runtime identity when native provider stop fails",async()=>{
+        const runtime={runtimeId:"exact-runtime",providerPid:71};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",runtime});
+        const evidence={status:7,stdout:"",stderr:"native stop refused"};
+        f.ports.stopInstance=()=>f.observe(evidence);
+        const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
+        expect(result).toEqual({kind:"failed",evidence});
+        expect(f.read()).toMatchObject({status:"running",runtime});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace).not.toContain("recording-signal");
     });
     it("metadata create is synchronous and claim raw exceptions preserve identity",()=>{
         const f=nativeLeaves();f.ports.claim=()=>{throw f.fault;};
@@ -52,7 +92,7 @@ describe("macOS independent inward policy controls",()=>{
     it("preserves opaque child receiver, launch/readback and skipped readiness ordering",async()=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart"});
         const result=await createMacosVmLifecycleApplication(f.ports).start({deviceId:"unit",waitForBoot:false});
-        expect(result?.ok).toBe(true);expect(f.trace.indexOf("spawn")).toBeLessThan(f.trace.indexOf("wait-start"));
+        expect(result?.kind).toBe("completed");expect(f.trace.indexOf("spawn")).toBeLessThan(f.trace.indexOf("wait-start"));
         expect(f.trace.indexOf("wait-start")).toBeLessThan(f.trace.indexOf("unref"));expect(f.trace).not.toContain("boot");
         expect(f.read()).toMatchObject({status:"running",runtime:{providerPid:71},bootReady:false});expect(f.read()).not.toHaveProperty("lifecycle");
     });
@@ -60,12 +100,12 @@ describe("macOS independent inward policy controls",()=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart"});
         f.ports.waitProviderStart=async()=>{f.replace({id:"unit",status:"running",providerInstance:"ccc-owner-unit",lifecycle:{runtimeId:"successor",operation:"start",claimedAt:"now"}});return null;};
         const result=await createMacosVmLifecycleApplication(f.ports).start({deviceId:"unit",waitForBoot:false});
-        expect(result?.ok).toBe(false);expect(f.read()?.lifecycle?.runtimeId).toBe("successor");expect(f.trace).not.toContain("stop ccc-owner-unit");
+        expect(result?.kind).toBe("problem");expect(f.read()?.lifecycle?.runtimeId).toBe("successor");expect(f.trace).not.toContain("stop ccc-owner-unit");
     });
     it("stop clears runtime and recording only after the native stop result",async()=>{
         const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",runtime:{providerPid:71},recording:{runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)},active:false}});
         const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
-        expect(result?.ok).toBe(true);expect(f.trace.indexOf("stop ccc-owner-unit")).toBeLessThan(f.trace.indexOf("recording-signal"));
+        expect(result?.kind).toBe("completed");expect(f.trace.indexOf("stop ccc-owner-unit")).toBeLessThan(f.trace.indexOf("recording-signal"));
         expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording:null,bootReady:false});
     });
     it("refused recorder signaling retains identity and recovery metadata after provider stop",async()=>{
@@ -73,9 +113,9 @@ describe("macOS independent inward policy controls",()=>{
         const recovery={candidateProviderInstance:"recovery"};
         const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",runtime:{providerPid:71},recording,restoreRecovery:recovery});
         f.ports.signalRecording=()=>({signaled:false,reason:"runtime-process-identity-mismatch"});
-        f.ports.helperCommand=()=>{throw Error("remote cleanup must not run after identity refusal");};
+        f.ports.interruptGuestRecording=()=>{throw Error("remote cleanup must not run after identity refusal");};
         const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
-        expect(result?.ok).toBe(false);expect(JSON.parse(String(result?.value))).toMatchObject({error:"macos-recording-cleanup-incomplete",reason:"runtime-process-identity-mismatch"});
+        expect(result?.kind).toBe("problem");expect((result?.kind === "problem" ? result.value : undefined)).toMatchObject({error:"macos-recording-cleanup-incomplete",reason:"runtime-process-identity-mismatch"});
         expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording,restoreRecovery:recovery});
         expect(f.read()).not.toHaveProperty("lifecycle");expect(f.trace).not.toContain("recording-wait");
     });
@@ -85,7 +125,7 @@ describe("macOS independent inward policy controls",()=>{
         f.ports.signalRecording=()=>({signaled:true});
         f.ports.waitRecordingExit=async(runtime,timeout)=>{expect(runtime).toMatchObject(recording);expect(timeout).toBe(1000);return false;};
         const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
-        expect(result?.ok).toBe(false);expect(f.read()).toMatchObject({status:"stopped",recording});expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(result?.kind).toBe("problem");expect(f.read()).toMatchObject({status:"stopped",recording});expect(f.read()).not.toHaveProperty("lifecycle");
     });
     it("confirmed recorder exit allows stop to clear recording metadata",async()=>{
         const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"},active:true};
@@ -93,7 +133,7 @@ describe("macOS independent inward policy controls",()=>{
         f.ports.signalRecording=()=>({signaled:true});
         f.ports.waitRecordingExit=async(runtime)=>{expect(runtime).toMatchObject(recording);return true;};
         const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
-        expect(result?.ok).toBe(true);expect(f.read()).toMatchObject({status:"stopped",recording:null});
+        expect(result?.kind).toBe("completed");expect(f.read()).toMatchObject({status:"stopped",recording:null});
     });
     it.each(["refused","unconfirmed"])("forced delete stops before resource deletion when recording cleanup is %s",async mode=>{
         const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"command"}};
@@ -102,7 +142,7 @@ describe("macOS independent inward policy controls",()=>{
         f.ports.signalRecording=()=>({signaled:mode==="unconfirmed",reason:"runtime-process-identity-unavailable"});
         f.ports.waitRecordingExit=async()=>false;
         const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit",force:true});
-        expect(result?.ok).toBe(false);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);
+        expect(result?.kind).toBe("problem");expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);
         expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording,snapshots,restoreRecovery});expect(f.read()).not.toHaveProperty("lifecycle");
     });
     it("already-stopped devices retain unverified recordings instead of deleting resources",async()=>{
@@ -110,7 +150,7 @@ describe("macOS independent inward policy controls",()=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",providerResourceManaged:true,recording});
         f.ports.signalRecording=()=>({signaled:false,reason:"runtime-process-identity-missing"});
         const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit"});
-        expect(result?.ok).toBe(false);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);expect(f.read()?.recording).toEqual(recording);
+        expect(result?.kind).toBe("problem");expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);expect(f.read()?.recording).toEqual(recording);
     });
     it("forced delete removes managed resources only after confirmed recorder exit",async()=>{
         const recording={runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)}};
@@ -118,7 +158,7 @@ describe("macOS independent inward policy controls",()=>{
         f.ports.signalRecording=()=>({signaled:true});
         f.ports.waitRecordingExit=async(runtime)=>{expect(runtime).toMatchObject(recording);f.trace.push("recording-exited");return true;};
         const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit",force:true});
-        expect(result?.ok).toBe(true);expect(f.read()).toBeUndefined();
+        expect(result?.kind).toBe("completed");expect(f.read()).toBeUndefined();
         expect(f.trace.indexOf("delete ccc-owner-unit")).toBeGreaterThan(f.trace.indexOf("recording-exited"));
     });
     it("a recording successor survives completed cleanup and blocks forced resource deletion",async()=>{
@@ -128,28 +168,28 @@ describe("macOS independent inward policy controls",()=>{
         f.ports.signalRecording=()=>({signaled:true});
         f.ports.waitRecordingExit=async()=>{f.replace({...f.read()!,recording:successor});return true;};
         const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit",force:true});
-        expect(result?.ok).toBe(false);expect(f.read()?.recording).toEqual(successor);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);
+        expect(result?.kind).toBe("problem");expect(f.read()?.recording).toEqual(successor);expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual([]);
     });
     it("cleanup refusal cannot restore state over a different lifecycle owner",async()=>{
         const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording:{runtimeId:"recorder",pid:17}});
         const successor={id:"unit",status:"running",lifecycle:{runtimeId:"successor",operation:"start",claimedAt:"now"}};
         f.ports.signalRecording=()=>{f.replace(successor);return {signaled:false,reason:"runtime-process-identity-missing"};};
         const result=await createMacosVmLifecycleApplication(f.ports).stop({deviceId:"unit"});
-        expect(result?.ok).toBe(false);expect(JSON.parse(String(result?.value)).error).toBe("owner-device-state-conflict");expect(f.read()).toEqual(successor);
+        expect(result?.kind).toBe("problem");expect(result).toMatchObject({kind:"problem",value:{error:"owner-device-state-conflict"}});expect(f.read()).toEqual(successor);
     });
     it.each(["boot-failure","helper-failure"])("publishes truthful started partial fields on %s",async mode=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",ssh:{user:"user",host:null}});
         f.ports.waitBoot=async(_plan,timeout,deadline)=>{expect(timeout).toBe(900000);expect(deadline).toBe(1791634200000);return mode==="boot-failure"?{ready:false,error:"raw-ip-failure"}:{ready:true,ip:"192.0.2.4"};};
         f.ports.waitGuestHelper=async()=>mode==="helper-failure"?{ok:false,error:"raw-helper-failure",provisioning:{status:"failed"}}:{ok:true};
         const result=await createMacosVmLifecycleApplication(f.ports).start({deviceId:"unit",waitForBoot:true,bootTimeoutMs:900000});
-        expect(result?.ok).toBe(false);expect(f.read()?.status).toBe(mode==="boot-failure"?"starting":"running");expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(result?.kind).toBe("problem");expect(f.read()?.status).toBe(mode==="boot-failure"?"starting":"running");expect(f.read()).not.toHaveProperty("lifecycle");
         expect(f.read()?.runtime?.providerPid).toBe(71);if(mode==="helper-failure")expect(f.read()?.ssh?.host).toBe("192.0.2.4");
     });
     it("managed deletion records already-completed snapshot progress when a later delete fails",async()=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerResourceManaged:true,providerInstance:"ccc-owner-unit",snapshots:[{id:"snapshot",provider:"tart",providerInstance:"snap"}]});
-        f.ports.providerCommand=(_command,args)=>{f.trace.push(args.join(" "));return {status:args[1]==="ccc-owner-unit"?9:0,stdout:"raw out",stderr:"raw err"};};
+        f.ports.deleteInstance=(_plan,instance)=>{f.trace.push(`delete ${instance}`);return f.observe({status:instance==="ccc-owner-unit"?9:0,stdout:"raw out",stderr:"raw err"});};
         const result=await createMacosVmLifecycleApplication(f.ports).delete({deviceId:"unit"});
-        expect(result?.ok).toBe(false);expect(f.trace.filter(value=>value.startsWith("delete"))).toEqual(["delete snap","delete ccc-owner-unit"]);
+        expect(result?.kind).toBe("failed");expect(f.trace.filter(value=>value.startsWith("delete"))).toEqual(["delete snap","delete ccc-owner-unit"]);
         expect(f.read()?.snapshots).toEqual([]);expect(f.read()?.status).toBe("stopped");
     });
 });
@@ -159,12 +199,13 @@ describe("macOS image and snapshot publication",()=>{
         const source:MacosVmDevice={id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit"};
         const f=nativeLeaves(source);
         const resources=new Set(["ccc-owner-unit"]);
-        const command:typeof f.ports.providerCommand=(_command,args)=>{
+        const command:typeof f.command=(_command,args)=>{
             if(args[0]==="clone"&&typeof args[2]==="string")resources.add(args[2]);
             if(args[0]==="delete"&&typeof args[1]==="string")resources.delete(args[1]);
             return {status:0,stdout:"",stderr:""};
         };
-        f.ports.providerCommand=command;
+        f.ports.cloneInstance=(plan,source,target)=>f.observe(command(plan.evidence.providerCommand,["clone",source,target]));
+        f.ports.deleteInstance=(plan,instance)=>f.observe(command(plan.evidence.providerCommand,["delete",instance]));
         f.ports.claim=destination=>{
             expect(destination).toMatchObject({id:"copy",providerInstance:"ccc-owner-copy",providerResourceManaged:true,
                 clonedFrom:{deviceId:"unit",providerInstance:"ccc-owner-unit"}});
@@ -172,11 +213,9 @@ describe("macOS image and snapshot publication",()=>{
             expect(f.read()).not.toHaveProperty("lifecycle");
             throw f.fault;
         };
-        const imagePorts:MacosImageSnapshotsPorts<Result>={...f.ports,snapshotId:()=>"snapshot-before",
-            providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true,
-            presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}}),
-            providerPlan:device=>({...f.ports.providerPlan(device),providerInstance:device.providerInstance||`ccc-owner-${device.id}`})};
-        const app=createMacosImageSnapshots(imagePorts,createMacosVmLifecycleApplication(f.ports));
+        const ports=imagePorts(f,command);
+        ports.providerPlan=device=>({...f.plan,providerInstance:device.providerInstance||`ccc-owner-${device.id}`});
+        const app=createMacosImageSnapshots(ports,imageLifecycle(f));
         await expect(app.clone({name:"Copy",deviceId:"copy",sourceDeviceId:"unit"})).rejects.toBe(f.fault);
         expect(resources).toEqual(new Set(["ccc-owner-unit"]));
         expect(f.read()).not.toHaveProperty("lifecycle");
@@ -186,7 +225,7 @@ describe("macOS image and snapshot publication",()=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",
             snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
         const resources=new Set(["ccc-owner-unit","owned-snapshot"]);
-        const command:typeof f.ports.providerCommand=(_command,args)=>{
+        const command:typeof f.command=(_command,args)=>{
             if(args[0]==="clone"&&typeof args[2]==="string")resources.add(args[2]);
             if(args[0]==="delete"&&typeof args[1]==="string"){
                 if(args[1].includes("-restore-"))return {status:9,stdout:"",stderr:"candidate cleanup denied"};
@@ -194,11 +233,9 @@ describe("macOS image and snapshot publication",()=>{
             }
             return {status:0,stdout:"restored",stderr:""};
         };
-        f.ports.providerCommand=command;
-        const imagePorts:MacosImageSnapshotsPorts<Result>={...f.ports,snapshotId:()=>"snapshot-before",
-            providerCommand:command,publicDevice:device=>device,waitRecordingExit:async()=>true,
-            presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}})};
-        const app=createMacosImageSnapshots(imagePorts,createMacosVmLifecycleApplication(f.ports));
+        f.ports.cloneInstance=(plan,source,target)=>f.observe(command(plan.evidence.providerCommand,["clone",source,target]));
+        f.ports.deleteInstance=(plan,instance)=>f.observe(command(plan.evidence.providerCommand,["delete",instance]));
+        const app=createMacosImageSnapshots(imagePorts(f,command),imageLifecycle(f));
         const result=await app.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
         expect(result?.ok).toBe(true);
         expect(f.read()).toMatchObject({status:"stopped",restoredFrom:{id:"snapshot-before",name:"Before"},

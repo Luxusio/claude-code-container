@@ -43,13 +43,13 @@ describe("distinct canonical authenticated broker Android policy", () => {
         expect(allocateBrokerAndroidCreatePort("owner", parsed, { ...ports, previewAllocation: preview })).toEqual({ ok: true, port: 5632 });
         expect(trace).toEqual(["allocate", "live", "allocate"]);
     });
-    it("constructor is lazy and a live start port refuses before provider execution/publication", async () => {
+    it("a live start port refuses before provider execution/publication", async () => {
         const f = brokerLifecyclePorts(brokerDevice());
-        Object.defineProperty(f.ports, "livePorts", { get() { f.trace.push("get-live"); return () => ({ ok: true, ports: new Set([5630]) }); } });
+        f.ports.livePorts = () => { f.trace.push("live"); return { ok: true, ports: new Set([5630]) }; };
         const app = createBrokerAndroidEmulatorLifecycle(f.ports); expect(f.trace).toEqual([]);
         const result = await app.start(f.input("device_start"));
         expect(result).toMatchObject({ kind: "refused", reason: "conflict", error: "android-emulator-port-conflict", detail: "port-5630-already-in-use" });
-        expect(f.trace).toEqual(["get-live"]); expect(f.publications).toEqual([]);
+        expect(f.trace).toEqual(["live"]); expect(f.publications).toEqual([]);
     });
     it("broker create keeps native error identity and raw diagnostics while compensating before claim", async () => {
         const f = brokerLifecyclePorts(), failure = { mode: "exec", provider: "avdmanager", status: 17, error: "raw error", stderr: "raw stderr", stdout: "raw stdout" };
@@ -112,27 +112,27 @@ describe("distinct canonical authenticated broker Android policy", () => {
 
 const stoppedDevice = (): AndroidEmulatorDevice => ({ id: "android-unit", backend: "android-emulator", avdName: "ccc-owner-unit", serial: "emulator-5630", port: 5630, status: "stopped", extra: { raw: "retained" } });
 describe("canonical direct Android emulator lifecycle policy", () => {
-    it("constructor defers effect lookup and allocation refusal precedes native discovery/read/provision", async () => {
+    it("allocation refusal precedes native discovery/read/provision", async () => {
         const f = directLifecyclePorts();
-        Object.defineProperty(f.ports, "resolveAndroidEmulatorPort", { get() { f.trace.push("get-allocate"); return () => ({ ok: false, error: "invalid-android-emulator-port", allowed: "even integer 5554-5682" }); } });
+        f.ports.resolveAndroidEmulatorPort = () => { f.trace.push("allocate"); return { ok: false, error: "invalid-android-emulator-port", allowed: "even integer 5554-5682" }; };
         const app = createAndroidEmulatorLifecycle(f.ports); expect(f.trace).toEqual([]);
         expect(await app.create({ backend: "other" })).toBeUndefined(); expect(f.trace).toEqual([]);
-        expect(await app.create({ backend: "android-emulator", name: "Unit", port: 5555 })).toEqual({ ok: false, text: "invalid-android-emulator-port (even integer 5554-5682)" });
-        expect(f.trace).toEqual(["get-allocate"]);
+        expect(await app.create({ backend: "android-emulator", name: "Unit", port: 5555 })).toEqual({ kind: "refused", message: "invalid-android-emulator-port (even integer 5554-5682)" });
+        expect(f.trace).toEqual(["allocate"]);
     });
     it("create reallocates a live default port before duplicate admission and keeps raw created carriers", async () => {
         const f = directLifecyclePorts(), live = new Set([5630]); let allocations = 0;
         f.ports.liveAndroidEmulatorPortsForAllocation = () => ({ ok: true, ports: live });
         f.ports.resolveAndroidEmulatorPort = (_owner, _id, _port, additional) => { f.trace.push("allocate"); allocations++; if (allocations === 2) expect(additional).toBe(live); return { ok: true, port: allocations === 1 ? 5630 : 5632 }; };
         const result = await createAndroidEmulatorLifecycle(f.ports).create({ backend: "android-emulator", name: "Unit" });
-        expect(result).toMatchObject({ ok: true, payload: { device: { id: "android-unit", port: 5632, serial: "emulator-5632", avdRoot: null, systemImage: null, deviceProfile: null, provisioned: false, status: "stopped", headless: true } } });
+        expect(result).toMatchObject({ kind: "created", device: { id: "android-unit", port: 5632, serial: "emulator-5632", avdRoot: null, systemImage: null, deviceProfile: null, provisioned: false, status: "stopped", headless: true } });
         expect(f.trace).toEqual(["allocate", "allocate", "read", "claim"]);
     });
     it("failed provisioning compensates only owned inactive artifacts and forwards the exact native failure", async () => {
         const f = directLifecyclePorts(), failure = { status: 17, stdout: "raw stdout", stderr: "raw stderr", native: {} };
-        f.ports.runWithInput = () => failure;
+        f.ports.provisionAndroidAvd = () => ({ ok: false, diagnostic: failure });
         const result = await createAndroidEmulatorLifecycle(f.ports).create({ backend: "android-emulator", name: "Unit", createAvd: true, systemImage: "system-images;android-35;google_apis;x86_64" });
-        expect(result?.failure).toBe(failure); expect(f.trace.slice(-2)).toEqual(["remove-avd", "inactive"]); expect(f.current()).toBeUndefined();
+        expect(result && "diagnostic" in result ? result.diagnostic : undefined).toBe(failure); expect(f.trace.slice(-2)).toEqual(["remove-avd", "inactive"]); expect(f.current()).toBeUndefined();
     });
     it("claim throw preserves error identity after compensation and refuses unverified rollback", async () => {
         const f = directLifecyclePorts(), thrown = new Error("native claim failure");
@@ -140,7 +140,7 @@ describe("canonical direct Android emulator lifecycle policy", () => {
         const app = createAndroidEmulatorLifecycle(f.ports), args = { backend: "android-emulator", name: "Unit", createAvd: true, systemImage: "system-images;android-35;google_apis;x86_64" };
         await expect(app.create(args)).rejects.toBe(thrown); expect(f.trace).toContain("remove-avd");
         f.trace.length = 0; f.ports.androidAvdIsInactive = () => false;
-        expect(await app.create(args)).toEqual({ ok: false, text: "Owner device state update failed; Android AVD rollback blocked because liveness is unverified" });
+        expect(await app.create(args)).toEqual({ kind: "refused", message: "Owner device state update failed; Android AVD rollback blocked because liveness is unverified" });
         expect(f.trace).not.toContain("remove-avd");
     });
     it("missing start/stop/delete fall through without discovery or native work", async () => {
@@ -151,7 +151,7 @@ describe("canonical direct Android emulator lifecycle policy", () => {
     it("start claims before spawn and retains the actual opaque child through identity and boot", async () => {
         const original = stoppedDevice(), f = directLifecyclePorts(original);
         const result = await createAndroidEmulatorLifecycle(f.ports).start({ deviceId: original.id });
-        expect(result).toMatchObject({ ok: true, payload: { boot: { ready: true }, device: { status: "running", bootReady: true, extra: original.extra } } });
+        expect(result).toMatchObject({ kind: "started", boot: { ready: true }, device: { status: "running", bootReady: true, extra: original.extra } });
         expect(f.trace).toEqual(["discovery", "live-ports", "transition", "spawn", "identity:1000", "transition", "boot", "transition"]);
         expect(f.transitions[0].expected).toBe(original); expect(f.current()?.runtime).toMatchObject({ pid: f.child.pid, processIdentity: { startToken: "native-token" } });
     });
@@ -159,31 +159,31 @@ describe("canonical direct Android emulator lifecycle policy", () => {
         const original = stoppedDevice(), f = directLifecyclePorts(original); f.ports.waitForProcessIdentity = async () => null;
         const app = createAndroidEmulatorLifecycle(f.ports);
         const contained = await app.start({ deviceId: original.id });
-        expect(JSON.parse(contained!.text!)).toMatchObject({ error: "android-emulator-process-identity-unavailable", stateReverted: true, runtimeStatePreserved: false }); expect(f.current()).toBe(original);
+        expect(contained).toMatchObject({ kind: "identity-unavailable", stateReverted: true, runtimeStatePreserved: false }); expect(f.current()).toBe(original);
         f.ports.terminateFreshAndroidEmulatorProcessTree = async child => { expect(child).toBe(f.child); return { ok: false, exited: false }; };
         const unresolved = await app.start({ deviceId: original.id });
-        expect(JSON.parse(unresolved!.text!)).toMatchObject({ stateReverted: false, runtimeStatePreserved: true });
+        expect(unresolved).toMatchObject({ stateReverted: false, runtimeStatePreserved: true });
         expect(f.current()?.runtime).toMatchObject({ pid: f.child.pid, processIdentity: null, identityUnavailable: true });
     });
     it("superseded boot publication rolls back only the previous runtime and preserves successor state", async () => {
         const original = stoppedDevice(), successor = { ...original, status: "stopped", extra: { raw: "successor" } }, f = directLifecyclePorts(original);
         f.ports.waitForAndroidBoot = async () => { f.replace(successor); return { ready: true }; };
         const result = await createAndroidEmulatorLifecycle(f.ports).start({ deviceId: original.id });
-        expect(result?.payload).toMatchObject({ error: "owner-device-state-conflict", operation: "start-complete", rollback: { ok: true } }); expect(f.current()).toBe(successor);
-        expect(f.trace.slice(-3)).toEqual(["transition", "run:-s emulator-5630 emu kill", "terminate:Android Emulator superseded startup:3000"]);
+        expect(result).toMatchObject({ kind: "conflict", operation: "start-complete", rollback: { ok: true } }); expect(f.current()).toBe(successor);
+        expect(f.trace.slice(-3)).toEqual(["transition", "stop-emulator", "terminate:Android Emulator superseded startup:3000"]);
     });
     it("stop recorder observations precede ADB/runtime cleanup and clear metadata through exact current-record CAS", async () => {
         const original: AndroidEmulatorDevice = { ...stoppedDevice(), status: "running", recording: { active: true, pid: 8 }, runtime: { pid: 9 }, appium: { raw: true } }, f = directLifecyclePorts(original);
-        f.ports.signalOwnedRuntimeProcess = () => { f.trace.push("recorder-signal"); return { signaled: true }; };
+        f.ports.signalAndroidRecorder = () => { f.trace.push("recorder-signal"); return { signaled: true }; };
         const result = await createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id });
-        expect(result).toMatchObject({ ok: true, payload: { device: { status: "stopped", pid: null, runtime: null, appium: null, recording: null, lifecycle: null, extra: original.extra } } });
-        expect(f.trace).toEqual(["transition", "discovery", "recorder-signal", "run:-s emulator-5630 shell pkill -2 screenrecord", "wait-exit:1000", "run:-s emulator-5630 get-state", "run:-s emulator-5630 emu kill", "terminate:Android Emulator:3000", "transition"]);
+        expect(result).toMatchObject({ kind: "stopped", device: { status: "stopped", pid: null, runtime: null, appium: null, recording: null, lifecycle: null, extra: original.extra } });
+        expect(f.trace).toEqual(["transition", "discovery", "recorder-signal", "stop-recorder", "wait-exit:1000", "observe-emulator", "stop-emulator", "terminate:Android Emulator:3000", "transition"]);
     });
     it("uncertain native stop restores original lifecycle presence and keeps a successor during abort", async () => {
         const original = { ...stoppedDevice(), status: "running", runtime: { pid: 9 } }, f = directLifecyclePorts(original);
         f.ports.terminateOwnedRuntimeProcessTree = async () => ({ exited: false, reason: "native identity mismatch" });
         const result = await createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id });
-        expect(JSON.parse(result!.text!)).toMatchObject({ error: "android-emulator-process-stop-failed", runtimeStop: { exited: false, reason: "native identity mismatch" } });
+        expect(result).toMatchObject({ kind: "runtime-stop-failed", runtimeStop: { exited: false, reason: "native identity mismatch" } });
         expect(f.current()).toMatchObject({ status: "running", runtime: original.runtime }); expect(f.current()).not.toHaveProperty("lifecycle");
         const successor = { ...original, lifecycle: { runtimeId: "successor", operation: "start", claimedAt: "successor" } };
         f.ports.terminateOwnedRuntimeProcessTree = async () => { f.replace(successor); return { exited: false }; };
@@ -191,20 +191,20 @@ describe("canonical direct Android emulator lifecycle policy", () => {
     });
     it("delete refuses running or foreign/live AVD state before removal and preserves native artifact errors", async () => {
         const original = { ...stoppedDevice(), status: "running" }, f = directLifecyclePorts(original), app = createAndroidEmulatorLifecycle(f.ports);
-        expect(await app.delete({ deviceId: original.id })).toEqual({ ok: false, text: "Refusing to delete android-unit while status is running" }); expect(f.trace).toEqual(["read"]);
+        expect(await app.delete({ deviceId: original.id })).toEqual({ kind: "refused", message: "Refusing to delete android-unit while status is running" }); expect(f.trace).toEqual(["read"]);
         f.replace(stoppedDevice()); f.ports.isOwnedAvdName = (_name: unknown): _name is string => false;
-        expect(await app.delete({ deviceId: original.id, deleteAvd: true })).toEqual({ ok: false, text: "Refusing to delete non-owned Android AVD name: ccc-owner-unit" });
+        expect(await app.delete({ deviceId: original.id, deleteAvd: true })).toEqual({ kind: "refused", message: "Refusing to delete non-owned Android AVD name: ccc-owner-unit" });
         f.ports.isOwnedAvdName = (name: unknown): name is string => typeof name === "string"; f.ports.androidAvdIsInactive = () => false;
-        expect(await app.delete({ deviceId: original.id, deleteAvd: true })).toEqual({ ok: false, text: "android-avd-active-or-liveness-unverified" }); expect(f.trace).not.toContain("remove-avd");
+        expect(await app.delete({ deviceId: original.id, deleteAvd: true })).toEqual({ kind: "refused", message: "android-avd-active-or-liveness-unverified" }); expect(f.trace).not.toContain("remove-avd");
         f.ports.androidAvdIsInactive = () => true; f.ports.deleteOwnedAndroidAvd = () => ({ ok: false, error: "raw artifact error" });
-        expect(await app.delete({ deviceId: original.id, deleteAvd: true })).toEqual({ ok: false, text: "Android AVD artifact cleanup failed: raw artifact error" }); expect(f.current()?.status).toBe("stopped");
+        expect(await app.delete({ deviceId: original.id, deleteAvd: true })).toEqual({ kind: "refused", message: "Android AVD artifact cleanup failed: raw artifact error" }); expect(f.current()?.status).toBe("stopped");
     });
     it("force-delete uncertainty restores state; successful removal passes the current snapshot to native CAS", async () => {
         const original = { ...stoppedDevice(), status: "running", runtime: { pid: 9 } }, f = directLifecyclePorts(original);
         f.ports.terminateOwnedRuntimeProcessTree = async () => ({ exited: false }); f.ports.waitForProcessExit = async () => false;
         const refused = await createAndroidEmulatorLifecycle(f.ports).delete({ deviceId: original.id, force: true });
-        expect(JSON.parse(refused!.text!)).toMatchObject({ error: "android-emulator-force-delete-stop-failed", stateReverted: true }); expect(f.current()?.status).toBe("running");
+        expect(refused).toMatchObject({ kind: "force-delete-stop-failed", stateReverted: true }); expect(f.current()?.status).toBe("running");
         f.replace(stoppedDevice()); const deleted = await createAndroidEmulatorLifecycle(f.ports).delete({ deviceId: original.id });
-        expect(deleted).toEqual({ ok: true, payload: { deleted: original.id, avdDeleted: false } }); expect(f.transitions.at(-1)?.replacement).toBeNull(); expect(f.transitions.at(-1)?.expected.status).toBe("deleting"); expect(f.current()).toBeUndefined();
+        expect(deleted).toEqual({ kind: "deleted", deviceId: original.id, avdDeleted: false }); expect(f.transitions.at(-1)?.replacement).toBeNull(); expect(f.transitions.at(-1)?.expected.status).toBe("deleting"); expect(f.current()).toBeUndefined();
     });
 });

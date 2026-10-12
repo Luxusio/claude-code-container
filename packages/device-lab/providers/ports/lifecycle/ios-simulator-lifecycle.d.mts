@@ -26,12 +26,14 @@ export interface IosSimulatorDiscovery { xcrun: string | null; available: boolea
 export interface IosSimulatorTransition { matched: boolean; found: boolean; [key: string]: unknown; }
 export interface IosSimulatorHost { name?: string; udid?: string; state?: string; [key: string]: unknown; }
 export interface IosSimulatorInventoryValue { devices?: Record<string, IosSimulatorHost[]>; [key: string]: unknown; }
-export type IosSimulatorInventory = { error: IosSimulatorCommandResult; value?: never } | { value: IosSimulatorInventoryValue; error?: never };
+export type IosSimulatorInventory = { kind: "failed"; message: string; receipt: IosSimulatorCommandResult } | { kind: "listed"; devices: IosSimulatorHost[] };
+export type IosSimulatorNativeResult = { kind: "succeeded"; receipt: IosSimulatorCommandResult } | { kind: "failed"; receipt: IosSimulatorCommandResult; message: string };
+export type IosSimulatorLifecycleOutcome = { kind: "conflict"; payload: { ok: boolean; error: string; backend: string; deviceId: string | undefined; operation: string; found: boolean; rollback?: unknown } } | { kind: "text"; message: string | undefined } | { kind: "json"; payload: unknown } | { kind: "command-failure"; receipt: unknown };
 export interface IosSimulatorBoot {
     ready: boolean; skipped: boolean; status?: number | null; stdout?: string; stderr?: string; error?: unknown;
 }
 export interface IosSimulatorSettlement { exited: boolean; signaled?: boolean; reason?: string; error?: string; [key: string]: unknown; }
-export interface IosSimulatorLifecyclePorts<Result> {
+export interface IosSimulatorLifecyclePorts {
     iosDeviceId(name: string | undefined): string;
     readIosDevices(): IosSimulatorDevice[];
     findIosDevice(deviceId: string | undefined): IosSimulatorDevice | null | undefined;
@@ -39,9 +41,10 @@ export interface IosSimulatorLifecyclePorts<Result> {
     slug(name: string | undefined): string;
     isOwnedSimulatorName(name: unknown): boolean;
     iosDiscovery(): IosSimulatorDiscovery;
-    simctlJson(xcrun: string | null, args: string[]): IosSimulatorInventory;
-    run(executable: string | null, args: (string | undefined)[]): IosSimulatorCommandResult;
-    runWithTimeout(executable: string | null, args: (string | undefined)[], timeoutMs: number): IosSimulatorCommandResult;
+    inventory(xcrun: string | null): IosSimulatorInventory;
+    createSimulator(xcrun: string | null, name: string, deviceType: string, runtime: string): { kind: "created"; udid: string } | { kind: "failed"; receipt: IosSimulatorCommandResult; message: string };
+    simulatorOperation(xcrun: string | null, operation: "boot" | "shutdown" | "delete", target: string): IosSimulatorNativeResult;
+    waitForBoot(xcrun: string | null, target: string, timeoutMs: number): IosSimulatorBoot;
     ownerId(): string;
     appiumPortForIosDevice(id: string): number;
     claimIosDevice(device: IosSimulatorDevice): { ok: boolean; existing?: IosSimulatorDevice; field?: string; value?: unknown };
@@ -54,9 +57,6 @@ export interface IosSimulatorLifecyclePorts<Result> {
     discardLocalOutputStage(path: string, options: { label: string; stageParent: string; stagePrefix: string }): { ok: boolean; message?: string };
     iosRecordingDir(device: IosSimulatorDevice): string;
     withTargetStatus(device: IosSimulatorDevice): unknown;
-    textResult(ok: boolean, text: string | undefined): Result;
-    jsonResult(payload: unknown): Result;
-    fail(result: IosSimulatorCommandResult): Result;
     runtimeId(): string;
     wallTimestamp(): string;
 }
