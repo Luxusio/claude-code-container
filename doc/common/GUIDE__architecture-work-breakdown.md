@@ -1,11 +1,11 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-12. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-13. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **19/19 완료 (100.0%)**, **0개 남음**.
-부분 완료: **0**; 진행 중: **0**; 미착수: **0**.
+확인된 구조 정리 그룹: **13/23 완료 (56.5%)**, **10개 남음**.
+부분 완료: **6**; 진행 중: **4**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -15,6 +15,16 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 | WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |
 | --- | --- | --- | --- | --- |
+| R08 | Codex·Claude 설정 포트 단순화 | 부분 완료 | 없음 | Python bootstrap framing 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
+| R11 | QEMU 이미지·수명주기 | 부분 완료 | 없음 | Guest 접근·snapshot 명령 분리 구현과 독립 Code/Security 리뷰·Linux QA 12개 파일112건 통과\. Guest transfer의 기존 네이티브 분리는 유지됨\. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류\. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다\. |
+| R12 | Codex credential runtime observations | 진행 중 | 없음 | Credential runtime 의미 관측 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. Runtime publication 수정은 계획 리뷰 후 uncommitted 작성했으나 /tmp 후보가 사라져 복구/재작성·제품 리뷰·QA 필요\. managedBy 충돌·inode fixture 약점은 확인; 개별7147 실패 원인은 미입증\. |
+| R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm\-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님\. 구조 완료 credit 없음\. |
+| R14 | Shared mutation\-lock ownership policy | 진행 중 | 없음 | 공유 mutation lock 소유권 정책 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
+| R15 | Release workspace version synchronization | 진행 중 | 없음 | 버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과\. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류\. Hosted release는 실행하지 않음\. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다\. |
+| R16 | Remote 연결·전송 경계 | 부분 완료 | 없음 | 원격 probe의 시간·응답 경계 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
+| R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | 797f5613의 Appium HTTP5개 의미 포트 분리\(제품5·테스트4·문서3\)는 실제 Code/Security/Docs 리뷰와 Linux 빌드·strict\(skipLibCheck=false\)·lint·CLI·shipping·MCP59 및7개 전체 파일120PASS0FAIL0SKIP 통과\. Native QA는 CRLF 인증 불일치 후 빌드·테스트 전 중단; 실제 native QA와 기존 recording 후보의 공동 qualification·로컬 통합이 남음\. |
+| R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다\. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음\. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다\. Android 같은 backend 파일 변경은 순차 처리; iOS/macOS 독립 파일은 별도 처리 가능\. |
+| R19 | Desktop 제어·파일 전송 | 부분 완료 | 없음 | Hyper\-V readiness·helper 응답 해석과 iOS 제어의 네이티브 명령·응답을 어댑터로 분리하고 리뷰·QA·통합한다\. iOS transfer 경계 수정은 기존 Windows 검증에서 통과\. 공유 브로커·codec 파일 연결은 R17/R18과 순차 처리한다\. |
 
 ### 진행 순서와 완료 판정
 
@@ -22,29 +32,83 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 공통 조합 지점의 연결, 독립 리뷰, portable QA, 로컬 통합까지 확인한 그룹만 완료로 바꾼다. 이 공통 작업은 각 그룹의 완료 조건에 포함하며 별도 그룹으로 더하지 않는다. 계획 작성·코드 작성만으로 완료 수를 올리지 않는다.
 
+### R08. Codex·Claude 설정 포트 단순화
+
+완료 조건: 코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다\. 기존 일반 포트 단순화 기여를 유지한다\.
+
+확인한 소스: [src/application/codex\-harness\-bootstrap\.ts](../../src/application/codex-harness-bootstrap.ts), [src/ports/codex\-harness\-bootstrap\.ts](../../src/ports/codex-harness-bootstrap.ts)
+
+### R11. QEMU 이미지·수명주기
+
+완료 조건: 코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다\. 독립 리뷰·QA·로컬 통합으로 확인한다\.
+
+확인한 소스: [packages/device\-lab/providers/application/qemu\-guest\-access\.mjs](../../packages/device-lab/providers/application/qemu-guest-access.mjs), [packages/device\-lab/providers/application/qemu\-owned\-data\.mjs](../../packages/device-lab/providers/application/qemu-owned-data.mjs)
+
+### R12. Codex credential runtime observations
+
+완료 조건: Native composition decodes ps/inspect and prior UID:GID into semantic account/container/mount facts; core retains source, inode, principal, active\-user and startup\-lock refusal\. Qualify actual fail\-closed callers through current review, joint QA and delivery\.
+
+확인한 소스: [src/application/credentials/codex\-state\-ownership\.ts](../../src/application/credentials/codex-state-ownership.ts), [src/domain/credentials/codex\-state\-ownership\.ts](../../src/domain/credentials/codex-state-ownership.ts), [src/ports/credentials/codex\-state\-ownership\.ts](../../src/ports/credentials/codex-state-ownership.ts)
+
+### R13. Top\-level installer presentation and materialization
+
+완료 조건: Native installer owns terminal/PowerShell hints, Unix/Windows launchers and package serialization; core retains build/cache/image/PATH/copy/uninstall and truthful partial outcomes\. Qualify materialized bytes/public launchers through current review, joint QA and delivery\.
+
+확인한 소스: [scripts/install/application\.mjs](../../scripts/install/application.mjs), [scripts/install/domain\.mjs](../../scripts/install/domain.mjs), [scripts/install/ports\.d\.mts](../../scripts/install/ports.d.mts)
+
+### R14. Shared mutation\-lock ownership policy
+
+완료 조건: Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation\. Qualify exact\-record release, successor protection and sync/async callers through current review, joint QA and delivery\.
+
+확인한 소스: [packages/device\-lab/providers/application/shared\-mutation\-lock\.mjs](../../packages/device-lab/providers/application/shared-mutation-lock.mjs), [packages/device\-lab/providers/domain/shared\-mutation\-lock\.mjs](../../packages/device-lab/providers/domain/shared-mutation-lock.mjs), [packages/device\-lab/providers/ports/shared\-mutation\-lock\.d\.mts](../../packages/device-lab/providers/ports/shared-mutation-lock.d.mts)
+
+### R15. Release workspace version synchronization
+
+완료 조건: Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\.
+
+확인한 소스: [scripts/set\-release\-version\.mjs](../../scripts/set-release-version.mjs), [scripts/test\-workspace\-packages\.mjs](../../scripts/test-workspace-packages.mjs), [\.github/workflows/release\.yml](../../.github/workflows/release.yml)
+
+### R16. Remote 연결·전송 경계
+
+완료 조건: 원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다\.
+
+확인한 소스: [src/application/remote\-sync\.ts](../../src/application/remote-sync.ts), [src/ports/remote\-services\.ts](../../src/ports/remote-services.ts)
+
+### R17. 브로커 상태·녹화·Appium 결과
+
+완료 조건: 상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다\.
+
+확인한 소스: [packages/device\-lab/src/device\-lab/application/broker\-recording\.ts](../../packages/device-lab/src/device-lab/application/broker-recording.ts), [packages/device\-lab/src/device\-lab/domain/broker\-recording\.ts](../../packages/device-lab/src/device-lab/domain/broker-recording.ts), [packages/device\-lab/src/device\-lab/application/broker\-owner\-cleanup\.ts](../../packages/device-lab/src/device-lab/application/broker-owner-cleanup.ts), [packages/device\-lab/src/device\-lab/application/broker\-appium\.ts](../../packages/device-lab/src/device-lab/application/broker-appium.ts)
+
+### R18. 브로커 provider 수명주기 결과
+
+완료 조건: Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다\.
+
+확인한 소스: [packages/device\-lab/providers/application/lifecycle/android\-emulator\-lifecycle\.mjs](../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs), [packages/device\-lab/providers/application/lifecycle/ios\-simulator\-lifecycle\.mjs](../../packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.mjs), [packages/device\-lab/providers/application/lifecycle/macos\-vm\-lifecycle\.mjs](../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs), [packages/device\-lab/providers/application/android\-device\-access\.mjs](../../packages/device-lab/providers/application/android-device-access.mjs)
+
+### R19. Desktop 제어·파일 전송
+
+완료 조건: 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다\.
+
+확인한 소스: [packages/device\-lab/src/device\-lab/application/hyper\-v\-desktop\-transfer\.ts](../../packages/device-lab/src/device-lab/application/hyper-v-desktop-transfer.ts), [packages/device\-lab/providers/application/ios\-control\-transfer\.mjs](../../packages/device-lab/providers/application/ios-control-transfer.mjs)
+
 ## 0.1 완료한 구조 정리
 
 | WBS | 그룹 | 통합 커밋 | 완료 조건 |
 | --- | --- | --- | --- |
 | R02 | MCP 요청·결과 경계 | `6ea57ca5` | 코어가 기기 선택·검증·순서·대기 예산을 결정하고, 어댑터가 모바일 요청 프레임과 응답을 정규화한다\. 활성 앱 대기 경계의 통합 기여는 유지한다\. |
 | R04 | 브로커 물리 기기·리스·정리 | `ca88c404` | 선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다\. |
-| 기완료 | 브로커 상태·녹화·Appium 결과 | `0cebcfe0` | 상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
 | R06 | Hyper\-V 수명주기·네이티브 경계 | `ca88c404` | 어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다\. |
-| 기완료 | 브로커 provider 수명주기 결과 | `8060aa02` | Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다\. |
 | 기완료 | Android·iOS 환경 제어 | `438db1c0` | 환경 코어가 의미 입력·결과만 사용하고, ADB·simctl 명령 구성과 응답 처리는 네이티브 어댑터에 둔다\. |
 | 기완료 | Android 앱 관리 | `438db1c0` | 앱 설치·실행·삭제·권한 정책과 ADB 명령 구성이 분리되고, emulator·physical 양쪽 호출 경로의 QA가 확인된다\. |
 | R07 | Device Lab 관리 명령 | `6ea57ca5` | 코어가 종료·소유권·record lock·프로세스 동일성·physical lease·조건부 공개를 판단하고, 어댑터가 유한한 종료 효과와 터미널 출력을 처리한다\. 기존 진단·setup·delete 기여를 유지한다\. |
 | R05 | 컨테이너 실행·준비 경계 | `ca88c404` | 코어는 준비 상태·거절 이유만 반환하고, CLI가 runtime별 복구 안내와 종료를 처리한다\. |
-| 기완료 | Remote 연결·전송 경계 | `9c1d1e5d` | 원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
 | 기완료 | 도구 설치·Doctor 진단 | `c9cae5ae` | 설치·진단 정책이 의미 관측을 사용하고, 네이티브 실행·터미널 표현이 어댑터에 있으며 리뷰·QA·통합이 확인된다\. |
-| 기완료 | Desktop 제어·파일 전송 | `a71e9ed2` | 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다\. |
 | R03 | Workspace 열기·사용자 안내 | `6ea57ca5` | 코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다\. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다\. |
 | R01 | Runtime capability 관측 | `ca88c404` | 어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다\. |
-| R08 | Codex·Claude 설정 포트 단순화 | `6ea57ca5` | 코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다\. 기존 일반 포트 단순화 기여를 유지한다\. |
 | 기완료 | 컨테이너 identity digest | `6d1e2a15` | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. |
 | R09 | iOS 앱 관리 | `6ea57ca5` | 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\. |
 | R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
-| R11 | QEMU 이미지·수명주기 | `6ea57ca5` | 코어는 검증된 경로·materialize/reuse 결정·runtime 동일성·공개 정책을 유지하고, 어댑터가 overlay·launch·guest provisioning 효과와 결과를 처리한다\. |
 
 각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
 
