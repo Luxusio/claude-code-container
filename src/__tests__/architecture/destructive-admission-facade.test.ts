@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../../device-lab-mcp/src/policy/destructive.mjs";
 import { ownerId } from "@ccc/device-lab/providers/context.mjs";
-import { ownerStateFile, readOwnerDevices } from "@ccc/device-lab/providers/state/device-store.mjs";
+import { readOwnerDeviceStateFile } from "@ccc/device-lab/device-lab-owner-state.js";
 import { writeBrokerDevices } from "../helpers/host-broker-test-fixture.js";
 import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, repoRoot, TIMEOUT, type DeviceLabMcpTestContext } from "../helpers/device-lab-mcp-fixture.js";
 function payload(result: Awaited<ReturnType<DeviceLabMcpTestContext["client"]["callTool"]>>) {
@@ -38,7 +38,7 @@ describe("destructive admission compatibility facade", () => {
     let definition: { id: string; name: string; backend: string; status: string; avdName: string; port: number; incarnationId: string };
     function expectDefinitionRetained() {
         expect(readFileSync(definitionFile)).toEqual(definitionBytes);
-        expect(readOwnerDevices("android")).toEqual([definition]);
+        expect(readOwnerDeviceStateFile(definitionFile)).toEqual([definition]);
     }
     beforeAll(async () => {
         context = await createDeviceLabMcpTestContext({ rawPublicCalls: true, setupHome(home) {
@@ -49,7 +49,7 @@ describe("destructive admission compatibility facade", () => {
             expect(join(root, "devices.json")).toBe(definitionFile);
             definitionBytes = readFileSync(definitionFile);
         } });
-        expect(ownerStateFile("android")).toBe(definitionFile);
+        expect(join(context.homeDir, ".ccc/devices/owners", ownerId(), "android", "devices.json")).toBe(definitionFile);
         expectDefinitionRetained();
     }, TIMEOUT);
     afterAll(async () => { await cleanupDeviceLabMcpTestContext(context); }, TIMEOUT);
