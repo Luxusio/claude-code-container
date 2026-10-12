@@ -120,9 +120,9 @@ function consumed() {
             evidence: null
         })
     });
+    // @ts-expect-error X11 native operations are synchronous
     create({
         ...x11,
-        // @ts-expect-error X11 native operations are synchronous
         click: async () => ({
             ok: true,
             evidence: null
