@@ -131,6 +131,8 @@ cp.spawnSync=function(command,args=[],options){
 const spawn=cp.spawn;cp.spawn=function(command,args=[],options){return command===fixture?spawn(process.execPath,[fixture,...args],options):spawn(command,args,options)};
 const fs=require('node:fs'),remove=fs.rmSync;
 fs.rmSync=function(target,options){const marker=require('node:path').join(process.env.HOME,'fake-windows-fail-scratch-remove');if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').trim()===String(target))throw Object.assign(new Error('owned scratch removal denied'),{code:'EPERM'});return remove(target,options)};
+const write=fs.writeFileSync;fs.writeFileSync=function(target,data,...rest){if(fs.existsSync(require('node:path').join(process.env.HOME,'fake-windows-throw-upload-request'))){let value;try{value=JSON.parse(String(data))}catch{}if(['upload','cursor_position'].includes(value?.type))throw Object.assign(new Error('fixture request write failure'),{code:'EIO'});}return write(target,data,...rest)};
+const rename=fs.renameSync;fs.renameSync=function(source,destination){const marker=require('node:path').join(process.env.HOME,'fake-windows-fail-download-commit');if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8')===String(destination))throw Object.assign(new Error('fixture download commit failure'),{code:'EIO'});return rename(source,destination)};
 require('node:module').syncBuiltinESMExports();`);
         chmodSync(wsbPath, 0o755);
 
@@ -359,6 +361,7 @@ require('node:module').syncBuiltinESMExports();`);
                     inboxDir: string;
                     outboxDir: string;
                     downloadsDir: string;
+                    uploadsDir: string;
                 };
             };
         };
@@ -433,6 +436,8 @@ require('node:module').syncBuiltinESMExports();`);
         let forceInactiveRecordStatus = false;
         let omitRecordStopArchive = false;
         let failRecordStop = false;
+        let responseOverride: Record<string, unknown> | undefined;
+        let holdUpload = false;
         const helperRequests: Array<Record<string, unknown>> = [];
         const responder = trackResponder(() => {
             let files: string[] = [];
@@ -461,6 +466,7 @@ require('node:module').syncBuiltinESMExports();`);
                     maxDepth?: number;
                     maxNodes?: number;
                 };
+                if (request.type === "upload" && holdUpload) continue;
                 helperRequests.push(request as unknown as Record<string, unknown>);
                 const response: Record<string, unknown> = { id: request.id, ok: true, type: request.type };
                 if (request.type === "exec") {
@@ -521,7 +527,8 @@ require('node:module').syncBuiltinESMExports();`);
                     const remoteName = String(request.remotePath ?? "remote.txt").split(/[\\/]/).filter(Boolean).pop() ?? "remote.txt";
                     const downloadName = `${request.id}-${remoteName}`;
                     const downloadPath = join(started.device.helper.downloadsDir, downloadName);
-                    writeFileSync(downloadPath, "downloaded");
+                    if (remoteName === "directory.bin") mkdirSync(downloadPath);
+                    else if (remoteName !== "missing.bin") writeFileSync(downloadPath, "downloaded");
                     if (remoteName === "oversized.bin") truncateSync(downloadPath, 2 * 1024 * 1024 * 1024 + 1);
                     const externalDownloadPath = join(homeDir, `external-${downloadName}`);
                     writeFileSync(externalDownloadPath, "host-secret-download");
@@ -580,6 +587,7 @@ require('node:module').syncBuiltinESMExports();`);
                         };
                     }
                 }
+                Object.assign(response, responseOverride);
                 writeFileSync(join(started.device.helper.outboxDir, `${request.id}.json`), JSON.stringify(response));
                 rmSync(requestPath, { force: true });
             }
@@ -705,6 +713,53 @@ require('node:module').syncBuiltinESMExports();`);
             windows: [expect.objectContaining({ processName: "notepad", title: "notes.txt - Notepad" })],
         }));
 
+        // Exercise the public truthiness fallbacks with actual native responses.
+        for (const count of [1, 2]) {
+            for (const [override, expected] of [
+                [{ doubleClicked: { winner: "double" }, clicked: { winner: "single" } }, { winner: "double" }],
+                [{ doubleClicked: null, clicked: { winner: "single" } }, { winner: "single" }],
+                [{ doubleClicked: false, clicked: null }, { x: 7, y: 8, button: "left" }],
+            ] as const) {
+                responseOverride = override;
+                const result = await client.callTool({ name: "click", arguments: { deviceId: "windows-win-helper", count, x: 7, y: 8, timeoutMs: 1000 } });
+                expect(result.isError).not.toBe(true);
+                expect(JSON.parse((result.content as Array<{ text: string }>)[0].text)[count === 2 ? "doubleClicked" : "clicked"]).toEqual(expected);
+            }
+        }
+        for (const [name, args, field, fallback] of [
+            ["key", { key: "Alt+F4" }, "key", { key: "Alt+F4", keys: "%{F4}" }],
+            ["type", { text: "literal+" }, "typed", { text: "literal+", keys: "literal{+}" }],
+            ["scroll", { x: 7, y: 8, direction: "up", amount: 2 }, "scrolled", { x: 7, y: 8, direction: "up", amount: 2 }],
+            ["cursor_position", {}, "cursor", null],
+        ] as const) {
+            for (const nativeValue of [undefined, null, false, "", { native: name }]) {
+                responseOverride = { [field]: nativeValue };
+                const result = await client.callTool({ name, arguments: { deviceId: "windows-win-helper", ...args, timeoutMs: 1000 } });
+                expect(result.isError).not.toBe(true);
+                expect(JSON.parse((result.content as Array<{ text: string }>)[0].text)[field]).toEqual(nativeValue || fallback);
+            }
+        }
+        for (const [provider, nativeWindows] of [[undefined, undefined], ["", { invalid: true }], [null, null], ["custom-provider", []]] as const) {
+            responseOverride = { provider, windows: nativeWindows, ok: 1 };
+            const missingWindows = await client.callTool({ name: "window_list", arguments: { deviceId: "windows-win-helper", timeoutMs: 1000 } });
+            expect(missingWindows.isError).not.toBe(true);
+            expect(JSON.parse((missingWindows.content as Array<{ text: string }>)[0].text)).toMatchObject({ provider: provider || "windows-process-main-window", windows: [] });
+        }
+        responseOverride = undefined;
+
+        const movingCursor = await client.callTool({ name: "move", arguments: { deviceId: "windows-win-helper", x: 12, y: 34, timeoutMs: 1000 } });
+        expect(movingCursor.isError).not.toBe(true);
+        expect(helperRequests.at(-1)).toMatchObject({ type: "cursor_position", x: 12, y: 34 });
+        for (const [name, arguments_, wire] of [
+            ["drag", { x1: 1, y1: 2, x2: 3, y2: 4 }, { type: "drag", x1: 1, y1: 2, x2: 3, y2: 4, durationMs: 700 }],
+            ["focus_window", { handle: "1234" }, { type: "focus_window", handle: "1234" }],
+        ] as const) {
+            const result = await client.callTool({ name, arguments: { deviceId: "windows-win-helper", ...arguments_, timeoutMs: 1000 } });
+            expect(result.isError).not.toBe(true);
+            expect(JSON.parse((result.content as Array<{ text: string }>)[0].text)).toMatchObject({ ok: true });
+            expect(helperRequests.at(-1)).toMatchObject(wire);
+        }
+
         const accessibility = await client.callTool({
             name: "ui",
             arguments: { deviceId: "windows-win-helper", maxDepth: 99, maxNodes: 5000, timeoutMs: 1000 },
@@ -738,6 +793,37 @@ require('node:module').syncBuiltinESMExports();`);
         }));
         expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
 
+        holdUpload = true;
+        const pendingUpload = client.callTool({ name: "upload", arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: "C:\\Users\\WDAGUtilityAccount\\deferred.txt", timeoutMs: 2000 } });
+        const uploadDeadline = Date.now() + 1000;
+        while (!readdirSync(started.device.helper.inboxDir).some(name => name.endsWith(".json")) && Date.now() < uploadDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(readdirSync(started.device.helper.inboxDir).some(name => name.endsWith(".json"))).toBe(true);
+        const stagedUploads = readdirSync(started.device.helper.uploadsDir);
+        expect(stagedUploads).toHaveLength(1);
+        expect(readFileSync(join(started.device.helper.uploadsDir, stagedUploads[0]), "utf8")).toBe("upload");
+        holdUpload = false;
+        expect((await pendingUpload).isError).not.toBe(true);
+        expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
+        responseOverride = { ok: false, error: "upload rejected" };
+        const refusedUpload = await client.callTool({ name: "upload", arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: "C:\\Users\\WDAGUtilityAccount\\refused.txt", timeoutMs: 1000 } });
+        expect(refusedUpload.isError).toBe(true);
+        expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
+        responseOverride = undefined;
+        const throwUploadMarker = join(homeDir, "fake-windows-throw-upload-request");
+        writeFileSync(throwUploadMarker, "");
+        try {
+            const thrownUpload = await client.callTool({ name: "upload", arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: "C:\\Users\\WDAGUtilityAccount\\throw.txt", timeoutMs: 1000 } });
+            expect(thrownUpload.isError).toBe(true);
+            expect((thrownUpload.content as Array<{ text: string }>)[0].text).toContain("Unexpected error: fixture request write failure");
+            expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
+            const ordinaryCursorFailure = await client.callTool({ name: "cursor_position", arguments: { deviceId: "windows-win-helper", timeoutMs: 1000 } });
+            expect(ordinaryCursorFailure.isError).toBe(true);
+            expect((ordinaryCursorFailure.content as Array<{ text: string }>)[0].text).toContain("fixture request write failure");
+            expect((ordinaryCursorFailure.content as Array<{ text: string }>)[0].text).not.toContain("helperDiagnostic");
+        } finally { rmSync(throwUploadMarker, { force: true }); }
+
         const downloadTarget = join(homeDir, "download.txt");
         const download = await client.callTool({
             name: "download",
@@ -752,6 +838,38 @@ require('node:module').syncBuiltinESMExports();`);
             }),
         }));
         expect(readFileSync(downloadTarget, "utf-8")).toBe("downloaded");
+
+        for (const override of [
+            { downloadPath: "C:\\outside\\unsafe.txt" },
+            { downloadPath: "C:\\ccc\\scratch\\downloads\\foreign-id-remote.txt" },
+            { downloadPath: null, hostDownloadPath: null },
+            { id: "foreign-id" },
+            { type: "upload" },
+        ]) {
+            responseOverride = override;
+            writeFileSync(downloadTarget, "preserve destination");
+            const rejectedDownload = await client.callTool({ name: "download", arguments: { deviceId: "windows-win-helper", remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt", localPath: downloadTarget, timeoutMs: 1000 } });
+            expect(rejectedDownload.isError).toBe(true);
+            expect(readFileSync(downloadTarget, "utf8")).toBe("preserve destination");
+        }
+        responseOverride = undefined;
+
+        for (const remoteName of ["directory.bin", "missing.bin"]) {
+            writeFileSync(downloadTarget, "preserve destination");
+            const invalidFile = await client.callTool({ name: "download", arguments: { deviceId: "windows-win-helper", remotePath: `C:\\Users\\WDAGUtilityAccount\\${remoteName}`, localPath: downloadTarget, timeoutMs: 1000 } });
+            expect(invalidFile.isError).toBe(true);
+            expect(readFileSync(downloadTarget, "utf8")).toBe("preserve destination");
+        }
+
+        const failCopyMarker = join(homeDir, "fake-windows-fail-download-commit");
+        writeFileSync(failCopyMarker, downloadTarget);
+        writeFileSync(downloadTarget, "preserve destination");
+        try {
+            const failedCopy = await client.callTool({ name: "download", arguments: { deviceId: "windows-win-helper", remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt", localPath: downloadTarget, timeoutMs: 1000 } });
+            expect(failedCopy.isError).toBe(true);
+            expect((failedCopy.content as Array<{ text: string }>)[0].text).toContain("EIO");
+            expect(readFileSync(downloadTarget, "utf8")).toBe("preserve destination");
+        } finally { rmSync(failCopyMarker, { force: true }); }
 
         const oversizedDownloadTarget = join(homeDir, "oversized-download.bin");
         writeFileSync(oversizedDownloadTarget, "preserved");
@@ -1183,12 +1301,13 @@ require('node:module').syncBuiltinESMExports();`);
         expect(JSON.stringify(value)).not.toContain(homeDir);
     });
 
-    it("reports a rejected cursor response as a closed stage without guest exception text", async () => {
+    it.each([true, false])("reports a rejected cursor response as a closed stage without guest exception text (ready=%s)", async readyMarkerPresent => {
         const deviceId = "cursor-rejected";
         await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Cursor rejected", deviceId } });
         const started = await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
         const helper = JSON.parse((started.content as Array<{ text: string }>)[0].text).device.helper;
-        writeFileSync(helper.readyMarkerPath, "ready");
+        if (readyMarkerPresent) writeFileSync(helper.readyMarkerPath, "ready");
+        else rmSync(helper.readyMarkerPath, { force: true });
         const responder = trackResponder(() => {
             for (const file of readdirSync(helper.inboxDir).filter(name => name.endsWith(".json"))) {
                 const path = join(helper.inboxDir, file);
@@ -1201,7 +1320,7 @@ require('node:module').syncBuiltinESMExports();`);
             const probe = await client.callTool({ name: "cursor_position", arguments: { deviceId, timeoutMs: 1000 } });
             const value = JSON.parse((probe.content as Array<{ text: string }>)[0].text);
             expect(probe.isError).toBe(true);
-            expect(value).toEqual({ ok: false, error: "windows-sandbox-helper-response-rejected", helperDiagnostic: { stage: "response-rejected", readyMarkerPresent: true } });
+            expect(value).toEqual({ ok: false, error: "windows-sandbox-helper-response-rejected", helperDiagnostic: { stage: "response-rejected", readyMarkerPresent } });
             expect(JSON.stringify(value)).not.toMatch(/secret|private/);
         } finally {
             clearInterval(responder);

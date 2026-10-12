@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { handleMacosTool } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
@@ -9,6 +9,14 @@ describe("macOS VM desktop helper and video tools with fake Tart provider", () =
     let context: FakeMacosMcpContext;
     let homeDir: string;
     let logPath: string;
+
+    async function withNativeReply(command: "ssh" | "scp", body: string, check: () => Promise<void>) {
+        const executable = join(context.binDir, command);
+        const original = readFileSync(executable, "utf-8");
+        const newline = original.indexOf("\n");
+        writeFileSync(executable, original.slice(0, newline + 1) + `{\n${body}\n}\n` + original.slice(newline + 1));
+        try { await check(); } finally { writeFileSync(executable, original); }
+    }
 
     beforeAll(() => {
         context = createFakeMacosMcpContext();
@@ -156,6 +164,7 @@ describe("macOS VM desktop helper and video tools with fake Tart provider", () =
             modifiers: ["command", "shift"],
         });
 
+        const logBeforeUnsupportedKey = readFileSync(logPath, "utf-8");
         const unsupportedKey = await handleMacosTool("device_key", {
             deviceId: "macos-fake-tart",
             key: "Hyper+Nope",
@@ -168,6 +177,7 @@ describe("macOS VM desktop helper and video tools with fake Tart provider", () =
         });
         expect(unsupportedModifier?.isError).toBe(true);
         expect((unsupportedModifier?.content as Array<{ text?: string }>)[0].text).toContain("Unsupported macOS key expression");
+        expect(readFileSync(logPath, "utf-8")).toBe(logBeforeUnsupportedKey);
 
         const type = await handleMacosTool("device_type", {
             deviceId: "macos-fake-tart",
@@ -347,6 +357,92 @@ describe("macOS VM desktop helper and video tools with fake Tart provider", () =
         const retriedRecordCopy = await handleMacosTool("device_record_video_stop", { deviceId: "macos-fake-tart" });
         expect(retriedRecordCopy?.isError).not.toBe(true);
         expect(readFileSync(retryRecordingPath, "utf-8")).toBe("fakepng");
+
+        // AC-005: successful transport with absent or invalid helper JSON keeps
+        // ordinary action defaults, while focus requires explicit verification.
+        for (const reply of ["", "not-json", '{"ok":false,"cursor":false,"windows":{},"provider":""}']) {
+            await withNativeReply("ssh", `
+                const wire = process.argv.slice(2).join(" ");
+                if (wire.includes("guest-helper.sh'")) {
+                    require("node:fs").appendFileSync(process.env.FAKE_TART_LOG, "ssh " + wire + "\\n");
+                    process.stdout.write(${JSON.stringify(reply)}); process.exit(0);
+                }`, async () => {
+                const cases = [
+                    ["device_click", { x: 8, y: 9 }, "clicked", { x: 8, y: 9, button: "left" }],
+                    ["device_double_click", { x: 8, y: 9 }, "doubleClicked", { x: 8, y: 9, button: "left" }],
+                    ["device_scroll", { amount: 0 }, "scrolled", { direction: "down", amount: 1 }],
+                    ["device_cursor_position", {}, "cursor", null],
+                    ["device_window_list", {}, "windows", []],
+                ] as const;
+                for (const [name, args, field, expected] of cases) {
+                    const result = await handleMacosTool(name, { deviceId: "macos-fake-tart", ...args });
+                    expect(result?.isError, `${name}: ${reply}`).not.toBe(true);
+                    const payload = JSON.parse((result?.content as Array<{ text: string }>)[0].text);
+                    expect(payload[field]).toEqual(expected);
+                    expect(payload.provider).toBe(name === "device_window_list" ? "macos-system-events" : "ssh-macos-helper");
+                    expect(payload.remoteScriptPath).toBe("/tmp/ccc-macos-fake-tart-guest-helper.sh");
+                }
+                const focus = await handleMacosTool("device_focus_window", { deviceId: "macos-fake-tart", handle: "macos:501:1:Notes" });
+                expect(focus?.isError).toBe(true);
+                expect((focus?.content as Array<{ text: string }>)[0].text).toContain("window-focus-unverified");
+            });
+        }
+        await withNativeReply("ssh", `
+            if (process.argv.slice(2).join(" ").includes("guest-helper.sh'")) {
+                console.log(JSON.stringify({clicked:{x:1}, doubleClicked:{x:2}})); process.exit(0);
+            }`, async () => {
+            for (const name of ["device_click", "device_double_click"]) {
+                const result = await handleMacosTool(name, { deviceId: "macos-fake-tart", x: 8, y: 9 });
+                expect(result?.isError).not.toBe(true);
+                expect(JSON.parse((result?.content as Array<{ text: string }>)[0].text)[name === "device_click" ? "clicked" : "doubleClicked"]).toEqual({ x: 2 });
+            }
+        });
+        await withNativeReply("ssh", `
+            if (process.argv.slice(2).join(" ").includes("guest-helper.sh'")) {
+                console.error("controlled native helper failure"); process.exit(7);
+            }`, async () => {
+            const result = await handleMacosTool("device_click", { deviceId: "macos-fake-tart", x: 8, y: 9 });
+            expect(result?.isError).toBe(true);
+            expect((result?.content as Array<{ text: string }>)[0].text).toContain("controlled native helper failure");
+        });
+
+        // AC-005: native failure and commit refusal must never publish staged
+        // bytes over an existing destination, and must dispose the entire stage.
+        for (const failTransfer of [true, false]) {
+            const destination = join(homeDir, `refused-download-${failTransfer}.txt`);
+            writeFileSync(destination, "original destination");
+            const stageRecord = join(homeDir, "observed-transfer-stage.json");
+            await withNativeReply("scp", `
+                const fs = require("node:fs"), argv = process.argv.slice(2), staged = argv.at(-1);
+                if (argv.join(" ").includes("/tmp/refused-download.txt")) {
+                    fs.appendFileSync(process.env.FAKE_TART_LOG, "scp " + argv.join(" ") + "\\n");
+                    fs.writeFileSync(${JSON.stringify(stageRecord)}, JSON.stringify(staged));
+                    ${failTransfer ? 'fs.writeFileSync(staged, "partial"); console.error("controlled transfer failure"); process.exit(7);' : 'fs.mkdirSync(staged); process.exit(0);'}
+                }`, async () => {
+                const result = await handleMacosTool("device_download", { deviceId: "macos-fake-tart", remotePath: "/tmp/refused-download.txt", localPath: destination });
+                expect(result?.isError).toBe(true);
+                expect(readFileSync(destination, "utf-8")).toBe("original destination");
+                const staged = JSON.parse(readFileSync(stageRecord, "utf-8")) as string;
+                expect(staged).toMatch(/[\\/]ccc-device-download-[^\\/]+[\\/]payload$/);
+                expect(existsSync(staged)).toBe(false);
+                expect(existsSync(dirname(staged))).toBe(false);
+            });
+        }
+        const logBeforePathRefusal = readFileSync(logPath, "utf-8");
+        const refusedPath = await handleMacosTool("device_download", { deviceId: "macos-fake-tart", remotePath: "/tmp/../escape.txt", localPath: join(homeDir, "never-allocated.txt") });
+        expect(refusedPath?.isError).toBe(true);
+        expect(readFileSync(logPath, "utf-8")).toBe(logBeforePathRefusal);
+        expect(existsSync(join(homeDir, "never-allocated.txt"))).toBe(false);
+        const scpExecutable = join(context.binDir, "scp");
+        const hiddenScp = join(context.binDir, "scp.unavailable");
+        renameSync(scpExecutable, hiddenScp);
+        try {
+            const refusedBridge = await handleMacosTool("device_download", { deviceId: "macos-fake-tart", remotePath: "/tmp/mac-download.txt", localPath: join(homeDir, "missing-bridge.txt") });
+            expect(refusedBridge?.isError).toBe(true);
+            expect((refusedBridge?.content as Array<{ text: string }>)[0].text).toContain("SSH bridge missing prerequisites");
+            expect(readFileSync(logPath, "utf-8")).toBe(logBeforePathRefusal);
+            expect(existsSync(join(homeDir, "missing-bridge.txt"))).toBe(false);
+        } finally { renameSync(hiddenScp, scpExecutable); }
 
         const stop = await handleMacosTool("device_stop", { deviceId: "macos-fake-tart" });
         expect(stop?.isError).not.toBe(true);

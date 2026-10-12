@@ -1493,6 +1493,61 @@ function windowsSandboxLifecyclePorts() {
 
 export function listWindowsDevices() { return deviceObservation.owned(); }
 
+/** @param {string} key */
+function windowsSendKeysExpression(key) {
+    const value = String(key || "");
+    /** @type {Record<string,string>} */
+    const aliases = {
+        Enter: "{ENTER}",
+        Return: "{ENTER}",
+        Escape: "{ESC}",
+        Esc: "{ESC}",
+        Tab: "{TAB}",
+        Backspace: "{BACKSPACE}",
+        Delete: "{DELETE}",
+        Del: "{DELETE}",
+        Insert: "{INSERT}",
+        Space: " ",
+        ArrowUp: "{UP}",
+        Up: "{UP}",
+        ArrowDown: "{DOWN}",
+        Down: "{DOWN}",
+        ArrowLeft: "{LEFT}",
+        Left: "{LEFT}",
+        ArrowRight: "{RIGHT}",
+        Right: "{RIGHT}",
+        PageUp: "{PGUP}",
+        PageDown: "{PGDN}",
+        Home: "{HOME}",
+        End: "{END}",
+    };
+    for (let index = 1; index <= 24; index += 1) aliases[`F${index}`] = `{F${index}}`;
+    const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
+    if (parts.length <= 1) return aliases[value] || value;
+    const keyPart = parts[parts.length - 1];
+    const base = aliases[keyPart] || (keyPart.length === 1 ? keyPart.toLowerCase() : keyPart);
+    const modifiers = parts.slice(0, -1).map((part) => part.toLowerCase());
+    let prefix = "";
+    if (modifiers.some((part) => part === "control" || part === "ctrl")) prefix += "^";
+    if (modifiers.includes("alt")) prefix += "%";
+    if (modifiers.includes("shift")) prefix += "+";
+    return `${prefix}${base}`;
+}
+
+/** @param {string} text */
+function windowsSendKeysLiteralText(text) {
+    return String(text ?? "").replace(/[+^%~()[\]{}]/g, (match) => `{${match}}`);
+}
+
+/** @typedef {{type:'click'|'double_click',x:number,y:number,button:string}|{type:'key',key:string,keys:string}|{type:'type',text:string,keys:string}|{type:'scroll',x:number,y:number,direction:string,amount:number}|({type:'drag'} & import('../ports/desktop-control-transfer.mjs').DragArguments)|{type:'focus_window',handle:string}|{type:'cursor_position',x?:number,y?:number}|{type:'window_list'}|{type:'upload',uploadPath:string,remotePath:string}|{type:'download',remotePath:string}} WindowsControlRequest */
+/** @typedef {{kind:'helper',request:WindowsControlRequest,result:Awaited<ReturnType<typeof windowsHelperRequest>>}|{kind:'copy',result:ReturnType<typeof copyWindowsSandboxFile>}} WindowsControlEvidence */
+/** @param {NonNullable<ReturnType<typeof findWindowsDevice>>} device @param {WindowsControlRequest} request @param {number|undefined} timeoutMs @returns {Promise<import('../ports/desktop-control-transfer.mjs').NativeObservation>} */
+async function windowsControlRequest(device, request, timeoutMs) {
+    const { type, ...payload } = request;
+    const result = await windowsHelperRequest(device, type, payload, timeoutMs);
+    return { ok: result.error === undefined && Boolean(result.response?.ok), evidence: { kind: "helper", request, result } };
+}
+
 /** @type {import('../ports/desktop-control-transfer.mjs').WindowsPorts<NonNullable<ReturnType<typeof findWindowsDevice>>, ReturnType<typeof ensureHelperWorkspace>, string>} */
 const windowsDesktopPorts = {
     variant: "windows",
@@ -1517,18 +1572,30 @@ const windowsDesktopPorts = {
         return { ok: true, handle: hostUploadPath, guestPath: `${helper.guestUploadsDir}\\${uploadName}` };
     },
     disposeUpload: path => { rmSync(path, { force: true }); },
-    request: (device, request, timeoutMs) => {
-        const { type, ...payload } = request;
-        return windowsHelperRequest(device, type, payload, timeoutMs);
-    },
-    readyMarkerPresent: helper => existsSync(helper.readyMarkerPath),
-    downloadOutput: (helper, response, remotePath) => {
-        const path = verifiedHelperOutputPath(helper, response.downloadPath || response.hostDownloadPath, `${response.id}-${windowsPathBasename(remotePath)}`);
+    click: (device, x, y, button, timeoutMs) => windowsControlRequest(device, {type:"click",x,y,button}, timeoutMs),
+    doubleClick: (device, x, y, button, timeoutMs) => windowsControlRequest(device, {type:"double_click",x,y,button}, timeoutMs),
+    key: (device, key, timeoutMs) => windowsControlRequest(device, {type:"key",key,keys:windowsSendKeysExpression(key)}, timeoutMs),
+    type: (device, text, timeoutMs) => windowsControlRequest(device, {type:"type",text,keys:windowsSendKeysLiteralText(text)}, timeoutMs),
+    scroll: (device, x, y, direction, amount, timeoutMs) => windowsControlRequest(device, {type:"scroll",x,y,direction,amount}, timeoutMs),
+    drag: (device, args, timeoutMs) => windowsControlRequest(device, {type:"drag",...args}, timeoutMs),
+    focusWindow: (device, handle, timeoutMs) => windowsControlRequest(device, {type:"focus_window",handle}, timeoutMs),
+    cursorPosition: (device, x, y, timeoutMs) => windowsControlRequest(device, x === undefined && y === undefined ? {type:"cursor_position"} : {type:"cursor_position",x,y}, timeoutMs),
+    windowList: (device, timeoutMs) => windowsControlRequest(device, {type:"window_list"}, timeoutMs),
+    upload: (device, uploadPath, remotePath, timeoutMs) => windowsControlRequest(device, {type:"upload",uploadPath,remotePath}, timeoutMs),
+    download: (device, remotePath, timeoutMs) => windowsControlRequest(device, {type:"download",remotePath}, timeoutMs),
+    downloadOutput: (evidence, remotePath) => {
+        const native = /** @type {WindowsControlEvidence} */ (evidence);
+        if (native.kind !== "helper" || native.result.error !== undefined) return { ok: false };
+        const { helper, response } = native.result;
+        const expectedName = `${response.id}-${windowsPathBasename(remotePath)}`;
+        const output = response.downloadPath || response.hostDownloadPath;
+        if (!isGuid(response.id) || (output && windowsPathBasename(output) !== expectedName)) return { ok: false };
+        const path = verifiedHelperOutputPath(helper, output, expectedName);
         return path ? { ok: true, path } : { ok: false };
     },
     copyDownload: (source, destination) => {
         const result = copyWindowsSandboxFile(source, destination, "windows-helper-download", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES);
-        return result.ok ? { ok: true } : { ok: false, error: result.error };
+        return { ok: result.ok, evidence: { kind: "copy", result } };
     },
 };
 const windowsDesktop = createDesktopControlTransfer(windowsDesktopPorts);
@@ -1591,14 +1658,39 @@ function windowsRecordingResult(outcome) {
     return jsonResult(outcome.value);
 }
 
+/** @param {Exclude<import('../domain/desktop-control-transfer.mjs').DesktopOutcome,undefined>} outcome */
+function windowsDesktopResult(outcome) {
+    if (outcome.kind === "refused") return textResult(false, outcome.message);
+    const native = /** @type {WindowsControlEvidence} */ (outcome.evidence);
+    if (native.kind === "copy") return textResult(false, `Windows helper download output copy failed: ${native.result.error}`);
+    const { request, result } = native;
+    if (result.error !== undefined) {
+        if (outcome.name === "device_cursor_position" && result.helperDiagnostic) return jsonResult({ok:false,error:result.helperDiagnostic.stage === "response-timeout" ? "windows-sandbox-helper-timeout" : "windows-sandbox-helper-failed",helperDiagnostic:result.helperDiagnostic});
+        return textResult(false, result.error);
+    }
+    const response = result.response;
+    if (!response.ok) {
+        if (outcome.name === "device_cursor_position") return jsonResult({ok:false,error:"windows-sandbox-helper-response-rejected",helperDiagnostic:{stage:"response-rejected",readyMarkerPresent:existsSync(result.helper.readyMarkerPath)}});
+        const label = request.type === "window_list" ? "window list" : ["click","double_click","key","type","scroll","upload","download"].includes(request.type) ? request.type : undefined;
+        return textResult(false, response.error || (label ? `Windows helper ${label} failed` : "desktop-control-failed"));
+    }
+    if (request.type === "drag" || request.type === "focus_window") return jsonResult({ok:true});
+    if (request.type === "click" || request.type === "double_click") return jsonResult({provider:"windows-helper",[request.type === "click" ? "clicked" : "doubleClicked"]:response.doubleClicked || response.clicked || {x:request.x,y:request.y,button:request.button},response});
+    if (request.type === "key") return jsonResult({provider:"windows-helper",key:response.key || {key:request.key,keys:request.keys},response});
+    if (request.type === "type") return jsonResult({provider:"windows-helper",typed:response.typed || {text:request.text,keys:request.keys},response});
+    if (request.type === "scroll") return jsonResult({provider:"windows-helper",scrolled:response.scrolled || {x:request.x,y:request.y,direction:request.direction,amount:request.amount},response});
+    if (request.type === "cursor_position") return jsonResult({provider:"windows-helper",cursor:response.cursor || null,response});
+    if (request.type === "upload" || request.type === "download") {
+        if (outcome.kind !== "completed") return textResult(false, "desktop-control-failed");
+        const {localPath,remotePath} = outcome.args;
+        return jsonResult({[request.type === "upload" ? "uploaded" : "downloaded"]:request.type === "upload" ? {localPath,remotePath} : {remotePath,localPath},provider:"windows-helper",response});
+    }
+    return jsonResult({provider:response.provider || "windows-process-main-window",windows:Array.isArray(response.windows)?response.windows:[],response});
+}
+
 async function handleWindowsToolUnlocked(name, args) {
     const desktop = await windowsDesktop.handle(name, args);
-    if (desktop !== undefined) {
-        if (desktop.kind === "json") return jsonResult(desktop.value);
-        if (desktop.kind === "text") return textResult(desktop.ok, desktop.text);
-        if (desktop.kind === "native") return desktop.value;
-        return fail(desktop.receipt);
-    }
+    if (desktop !== undefined) return windowsDesktopResult(desktop);
     switch (name) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
