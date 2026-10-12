@@ -101,7 +101,10 @@ describe("device-lab shared mutation lock", () => {
         const result = withSharedMutationLock(file, () => {
             const lock = JSON.parse(readFileSync(file, "utf8"));
             expect(lock).toEqual(expect.objectContaining({ token: expect.any(String), pid: process.pid, host: hostname(), bootId: expect.any(String) }));
-            if (readProcessIdentity(process.pid)) {
+            if (process.platform === "win32") {
+                expect(lock.processIdentityStatus).toBe("unavailable");
+                expect(lock.processIdentity).toBeUndefined();
+            } else if (readProcessIdentity(process.pid)) {
                 expect(lock.processIdentity).toEqual(readProcessIdentity(process.pid));
             }
             return "done";
@@ -144,12 +147,12 @@ describe("device-lab shared mutation lock", () => {
         }
     });
 
-    it("keeps identity-matched locks live and reclaims reused-PID identities", () => {
+    it("keeps identity-matched locks live and reclaims only positively observed reused-PID identities", async () => {
         const variants = [
-            { acquire: withHostSharedMutationLock, readIdentity: readDeviceRuntimeProcessIdentity },
-            { acquire: withNestedSharedMutationLock, readIdentity: readProcessIdentity },
+            { acquire: withHostSharedMutationLock, acquireAsync: withHostSharedMutationLockAsync, readIdentity: readDeviceRuntimeProcessIdentity },
+            { acquire: withNestedSharedMutationLock, acquireAsync: withSharedMutationLockAsync, readIdentity: readProcessIdentity },
         ];
-        for (const { acquire, readIdentity } of variants) {
+        for (const { acquire, acquireAsync, readIdentity } of variants) {
             const processIdentity = readIdentity(process.pid);
             if (!processIdentity) continue;
 
@@ -171,10 +174,24 @@ describe("device-lab shared mutation lock", () => {
             };
             writeFileSync(reused, JSON.stringify(reusedRecord));
             utimesSync(reused, old, old);
-            expect(acquire(reused, () => "recovered", { waitMs: 1000, staleMs: 60_000 })).toBe("recovered");
+            if (process.platform === "win32") {
+                const callback = vi.fn();
+                expect(() => acquire(reused, callback, { waitMs: 30, staleMs: 60_000 }))
+                    .toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                expect(callback).not.toHaveBeenCalled();
+                expect(JSON.parse(readFileSync(reused, "utf8"))).toEqual(reusedRecord);
+            } else {
+                expect(acquire(reused, () => "recovered", { waitMs: 1000, staleMs: 60_000 })).toBe("recovered");
+            }
+            if (process.platform !== "win32") {
+                writeFileSync(reused, JSON.stringify(reusedRecord));
+                utimesSync(reused, old, old);
+            }
+            expect(await acquireAsync(reused, () => "recovered asynchronously", { waitMs: 15_000, staleMs: 60_000 }))
+                .toBe("recovered asynchronously");
             expect(existsSync(reused)).toBe(false);
         }
-    });
+    }, 45_000);
 
     it("never age-reclaims identity-unavailable live owners", () => {
         for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {

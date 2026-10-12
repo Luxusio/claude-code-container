@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "../../ports/session-ownership.js";
 
@@ -15,7 +15,7 @@ vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>()
     existsSync: effects.exists, unlinkSync: effects.unlink,
 }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: effects.spawn, fork: effects.fork, spawn: effects.spawnAsync }));
-vi.mock("../../home-layout.js", () => ({ locksDir: () => "/fixture/locks" }));
+vi.mock("../../home-layout.js", () => ({ locksDir: () => join("/", "fixture", "locks") }));
 vi.mock("../../utils.js", () => ({ getProjectId: effects.identity }));
 vi.mock("../../container-runtime.js", () => ({ runtimeCli: effects.runtime }));
 vi.mock("../../device-lab-cleanup.js", () => ({ cleanupOwnerDevices: effects.devices }));
@@ -38,8 +38,9 @@ vi.mock("../../adapters/session-ownership.js", () => ({
 }));
 
 let session = await import("../../session.js");
-const own = "/fixture/locks/project--current.lock";
-const project = "/fixture/project";
+const fixtureLocks = join("/", "fixture", "locks");
+const own = join(fixtureLocks, "project--current.lock");
+const project = join("/", "fixture", "project");
 const stopOptions = { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL" };
 const emptyContext = { lockFile: null, projectPath: null, profile: undefined, toolName: null };
 let previousExitCode: typeof process.exitCode;
@@ -156,7 +157,7 @@ describe("native session cleanup through the public facade", () => {
         start(profile); session.cleanupSession();
         expect(order).toEqual(["identity", "enter", "claims", "claims", "devices", "runtime", "stop", "remove", "return"]);
         const prefix = profile ? `project--p--${profile}` : "project";
-        expect(effects.lock).toHaveBeenCalledExactlyOnceWith(join("/fixture/locks", `${prefix}.container-lifecycle.guard`), expect.any(Function), { waitMs: 180000 });
+        expect(effects.lock).toHaveBeenCalledExactlyOnceWith(join(fixtureLocks, `${prefix}.container-lifecycle.guard`), expect.any(Function), { waitMs: 180000 });
         expect(effects.devices).toHaveBeenCalledExactlyOnceWith(project, 5000, profile);
         expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("podman-fixture", ["stop", "captured-id"], stopOptions);
     });
@@ -169,18 +170,18 @@ describe("native session cleanup through the public facade", () => {
         const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw new Error("no PID probe"); });
         start(); session.cleanupSession();
         expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
-        expect(effects.read).toHaveBeenCalledWith("/fixture/locks/project--foreign.lock", "utf-8");
+        expect(effects.read).toHaveBeenCalledWith(join(fixtureLocks, "project--foreign.lock"), "utf-8");
         for (const effect of [effects.devices, effects.runtime, effects.spawn, kill]) expect(effect).not.toHaveBeenCalled();
         expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "claude" });
     });
 
     it("reconciles proven stale foreign ownership then stops the exact captured ID after a fresh empty veto", () => {
-        const foreign = "/fixture/locks/project--foreign.lock";
+        const foreign = join(fixtureLocks, "project--foreign.lock");
         const names = ["project--current.lock", "project--foreign.lock"];
         effects.list.mockImplementation(() => [...names]);
         effects.read.mockReturnValue("123");
         effects.classify.mockReturnValue("stale");
-        effects.unlink.mockImplementation(path => { names.splice(names.indexOf(path.split("/").at(-1)), 1); });
+        effects.unlink.mockImplementation(path => { names.splice(names.indexOf(basename(path)), 1); });
         start(); session.cleanupSession();
         expect(effects.unlink.mock.calls).toEqual([[foreign], [own]]);
         expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
@@ -189,7 +190,7 @@ describe("native session cleanup through the public facade", () => {
     });
 
     it("keeps failed stale foreign unlink as a fresh raw veto", () => {
-        const foreign = "/fixture/locks/project--foreign.lock";
+        const foreign = join(fixtureLocks, "project--foreign.lock");
         effects.list.mockReturnValue(["project--current.lock", "project--foreign.lock"]);
         effects.read.mockReturnValue("123"); effects.classify.mockReturnValue("stale");
         effects.unlink.mockImplementation(path => { if (path === foreign) throw new Error("denied"); });
@@ -217,15 +218,15 @@ describe("native session cleanup through the public facade", () => {
 
     it("keeps mutable facade reads across native identity, lock, raw query and removal callbacks", () => {
         effects.identity.mockImplementation(() => { session.setSession(own, project, "identity-profile"); return "project"; });
-        const lockPath = "/fixture/locks/project--p--identity-profile--lock.lock";
-        const queriedPath = "/fixture/locks/project--p--identity-profile--query.lock";
-        effects.lock.mockImplementation((_path, operation) => { session.setSession(lockPath, "/lock/project", "lock-profile"); return operation(); });
-        effects.list.mockImplementation(() => { session.setSession(queriedPath, "/query/project", "query-profile"); return ["project--p--identity-profile--lock.lock"]; });
-        effects.unlink.mockImplementation(() => { session.setSession("/removed.lock", "/removal/project", "removal-profile", "updated-tool"); session.setSessionContainerId("removal-id"); });
+        const lockPath = join(fixtureLocks, "project--p--identity-profile--lock.lock");
+        const queriedPath = join(fixtureLocks, "project--p--identity-profile--query.lock");
+        effects.lock.mockImplementation((_path, operation) => { session.setSession(lockPath, join("/", "lock", "project"), "lock-profile"); return operation(); });
+        effects.list.mockImplementation(() => { session.setSession(queriedPath, join("/", "query", "project"), "query-profile"); return ["project--p--identity-profile--lock.lock"]; });
+        effects.unlink.mockImplementation(() => { session.setSession(join("/", "removed.lock"), join("/", "removal", "project"), "removal-profile", "updated-tool"); session.setSessionContainerId("removal-id"); });
         start(); session.cleanupSession();
-        expect(effects.lock).toHaveBeenCalledWith(join("/fixture/locks", "project--p--identity-profile.container-lifecycle.guard"), expect.any(Function), { waitMs: 180000 });
+        expect(effects.lock).toHaveBeenCalledWith(join(fixtureLocks, "project--p--identity-profile.container-lifecycle.guard"), expect.any(Function), { waitMs: 180000 });
         expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(queriedPath);
-        expect(effects.devices).toHaveBeenCalledExactlyOnceWith("/query/project", 5000, "query-profile");
+        expect(effects.devices).toHaveBeenCalledExactlyOnceWith(join("/", "query", "project"), 5000, "query-profile");
         expect(effects.spawn).not.toHaveBeenCalled();
         expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "updated-tool" });
     });
@@ -519,7 +520,7 @@ describe("host ownership acquisition through the facade", () => {
         start();
         const arming = session.armSessionOwnership();
         void arming.catch(() => undefined);
-        expect(() => session.setSession("/successor.lock", project)).toThrow();
+        expect(() => session.setSession(join("/", "successor.lock"), project)).toThrow();
         expect(() => session.clearSession()).toThrow();
         expect(() => session.cleanupSession()).toThrow("ownership was not established");
         expect(effects.unlink).not.toHaveBeenCalled(); expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
@@ -539,7 +540,7 @@ describe("host ownership acquisition through the facade", () => {
         effects.matches.mockReturnValue(false);
         expect(() => session.cleanupSession()).toThrow("during acquisition");
         expect(effects.unlink).not.toHaveBeenCalled(); expect(effects.devices).not.toHaveBeenCalled();
-        expect(() => session.setSession("/successor.lock", project)).toThrow();
+        expect(() => session.setSession(join("/", "successor.lock"), project)).toThrow();
         expect(() => session.setSessionContainerId("unauthorized-id")).toThrow();
         inspected({ known: false, containerId: null, runtime: "docker" });
         await expect(acquisition).rejects.toThrow("could not be inspected");
@@ -551,9 +552,9 @@ describe("host ownership acquisition through the facade", () => {
         effects.arm.mockImplementation(async (_binding, _failure, options) => { options.onCaptured(captured); return handle; });
         start(); await expect(session.armSessionOwnership()).resolves.toBe(321);
         effects.authorize.mockImplementation(receipt => { expect(receipt).toEqual(captured); throw new Error("receipt replaced"); });
-        expect(() => session.setSession("/successor.lock", project)).toThrow();
+        expect(() => session.setSession(join("/", "successor.lock"), project)).toThrow();
         expect(() => session.cleanupSession()).toThrow("receipt replaced");
-        expect(effects.lock).toHaveBeenCalledWith(join("/fixture/locks", "project.container-lifecycle.guard"), expect.any(Function), { waitMs: 180000 });
+        expect(effects.lock).toHaveBeenCalledWith(join(fixtureLocks, "project.container-lifecycle.guard"), expect.any(Function), { waitMs: 180000 });
         expect(effects.unlink).not.toHaveBeenCalled(); expect(effects.list).not.toHaveBeenCalled();
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
         expect(session.getCurrentSession().lockFile).toBe(own); expect(release).not.toHaveBeenCalled();
@@ -579,12 +580,12 @@ describe("host ownership acquisition through the facade", () => {
         void acquisition.catch(() => undefined);
         await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("existing-exact-id", "podman", false));
         expect(effects.list).not.toHaveBeenCalled(); expect(effects.unlink).not.toHaveBeenCalled();
-        expect(() => session.setSession("/other.lock", project)).toThrow(); expect(() => session.clearSession()).toThrow();
+        expect(() => session.setSession(join("/", "other.lock"), project)).toThrow(); expect(() => session.clearSession()).toThrow();
         ack();
         const result = await acquisition;
         expect(result.existingId).toBe("existing-exact-id");
-        expect(effects.unlink).toHaveBeenCalledWith("/fixture/locks/project--foreign.lock");
-        expect(() => session.setSession("/other.lock", project)).toThrow();
+        expect(effects.unlink).toHaveBeenCalledWith(join(fixtureLocks, "project--foreign.lock"));
+        expect(() => session.setSession(join("/", "other.lock"), project)).toThrow();
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
         effects.list.mockReturnValue([]);
         update.mockResolvedValue(undefined);
@@ -653,7 +654,7 @@ describe("host ownership acquisition through the facade", () => {
         expect(effects.rollback).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
         expect(effects.list).not.toHaveBeenCalled(); expect(effects.unlink).not.toHaveBeenCalled();
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
-        expect(() => session.setSession("/replacement.lock", project)).toThrow();
+        expect(() => session.setSession(join("/", "replacement.lock"), project)).toThrow();
         session.cleanupSession();
         expect(effects.authorize).toHaveBeenCalledWith(captured);
         expect(effects.spawn).not.toHaveBeenCalled();
