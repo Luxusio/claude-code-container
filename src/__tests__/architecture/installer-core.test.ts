@@ -45,6 +45,36 @@ function nativeLeaves(platform: "unix" | "windows" = "unix") {
 }
 
 describe("installer application decisions", () => {
+    it.each(["unix", "windows"] as const)("propagates the original source postinstall build failure on %s without installing", platform => {
+        const f = nativeLeaves(platform);
+        const previousFiles = new Map(f.files), previousPath = f.userPath();
+        const failure = new Error("source build failed");
+        let buildCalls = 0;
+        f.ports.sourceBuild = () => { buildCalls++; throw failure; };
+        f.ports.runtimeAvailable = () => { throw new Error("postinstall must not probe a runtime"); };
+        f.ports.buildContainer = () => { throw new Error("postinstall must not build an image"); };
+        let caught: unknown;
+        try { createInstallerApplication(f.ports).postinstall(); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(buildCalls).toBe(1);
+        expect(f.files).toEqual(previousFiles);
+        expect(f.userPath()).toBe(previousPath);
+        expect(f.output).not.toContain("\nCLI installed. Run 'ccc --help' to verify.");
+        expect(f.output.some(line => line.startsWith("Build skipped:"))).toBe(false);
+    });
+
+    it.each(["unix", "windows"] as const)("skips the source build for packaged postinstall on %s", platform => {
+        const f = nativeLeaves(platform);
+        f.ports.sourceRoot = () => f.paths.join(f.sourceRoot, "node_modules", "ccc");
+        f.ports.sourceBuild = () => { throw new Error("packaged postinstall must not build source"); };
+        f.ports.runtimeAvailable = () => { throw new Error("packaged postinstall must not probe a runtime"); };
+        const previousFiles = new Map(f.files), previousPath = f.userPath();
+        createInstallerApplication(f.ports).postinstall();
+        expect(f.files).toEqual(previousFiles);
+        expect(f.userPath()).toBe(previousPath);
+        expect(f.output).toEqual([]);
+    });
+
     it("keeps the real native facade's Unix wrapper connected to the selected payload URL", () => {
         const target = resolve("owned payload ' space");
         expect(unixWrapperContent(target)).toContain(JSON.stringify(pathToFileURL(resolve(target, "dist/index.js")).href));

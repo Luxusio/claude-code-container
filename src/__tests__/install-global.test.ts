@@ -139,11 +139,18 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         expect(packaged.calls()).toBe("");
         expect(existsSync(join(packaged.installDir, "ccc"))).toBe(false);
         const source = fixture();
+        const previousArtifact = readFileSync(join(source.root, "dist/index.js"));
         const sourceResult = source.run(["--postinstall"], { FIXTURE_NPM_STATUS: "3" });
-        expect(sourceResult.status).toBe(0);
-        expect(sourceResult.stderr).toContain("Build skipped:");
+        expect(sourceResult.status).toBe(1);
         expect(sourceResult.stderr).toContain("Command failed: npm run build");
+        expect(sourceResult.stderr).not.toContain("Build skipped:");
+        expect(sourceResult.stdout).not.toContain("CLI installed.");
+        expect(sourceResult.stdout).not.toContain("Container image ready.");
+        expect(sourceResult.stdout).not.toContain("Done!");
+        expect(source.calls()).toBe("npm run build\n");
+        expect(readFileSync(join(source.root, "dist/index.js"))).toEqual(previousArtifact);
         expect(existsSync(join(source.installDir, "ccc"))).toBe(false);
+        expect(existsSync(join(source.installDir, "ccc-dist"))).toBe(false);
     });
 });
 

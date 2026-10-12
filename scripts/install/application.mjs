@@ -205,11 +205,7 @@ export function createInstallerApplication(ports) {
             return;
         }
         // Source repo after plain `npm install`: ensure dist/ is fresh.
-        try {
-            build();
-        } catch (e) {
-            ports.warn("Build skipped:", errorField(e, "message"));
-        }
+        build();
     }
 
     function uninstall() {
