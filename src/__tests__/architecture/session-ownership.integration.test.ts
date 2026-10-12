@@ -107,8 +107,7 @@ require('node:module').syncBuiltinESMExports();
         children.push(child);
         const messages: unknown[] = [];
         let stderr = "";
-        let closed = false;
-        child.once("close", () => { closed = true; });
+        child.stdout!.resume();
         child.stderr!.on("data", chunk => { stderr += String(chunk); });
         child.on("message", message => { messages.push(message); });
         child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt: captureNativeSessionOwnership(lock) });
@@ -117,7 +116,7 @@ require('node:module').syncBuiltinESMExports();
             child.send({ type: "update", sequence: 1, containerId: idA, runtime: "docker", cleanupEnabled: true });
             await eventually(() => messages.some(m => (m as { type: string }).type === "ack"), "real guardian ACK");
         }
-        return { child, stderr: () => stderr, closed: () => closed };
+        return { child, stderr: () => stderr, stderrEnded: () => child.stderr!.readableEnded };
     }
     it.each([0, 1, 3])("publishes native guardian identity and retains receipt until exact-ID stop succeeds (failures %s)", async failures => {
         const { child, stderr } = await launch(failures);
@@ -139,14 +138,14 @@ require('node:module').syncBuiltinESMExports();
         expect(existsSync(guard)).toBe(false);
     }, 30_000);
     it.each([false, true])("reports bounded ordered terminal causes before native exit (protocol primary %s)", async protocol => {
-        const { child, stderr, closed } = await launch(3);
+        const { child, stderr, stderrEnded } = await launch(3);
         writeFileSync(log + ".release", "release");
         if (protocol) {
             child.send({ type: "update", sequence: 1, containerId: idB, runtime: "docker",
                 cleanupEnabled: true, secret: "fixture-private-causal-secret" });
         } else child.disconnect();
         await eventually(() => child.exitCode !== null, "native terminal causal evidence");
-        await eventually(closed, "native terminal diagnostic pipe drained");
+        await eventually(stderrEnded, "native terminal diagnostic pipe drained");
         expect(child.exitCode).toBe(1);
         expect(existsSync(lock)).toBe(true);
         expect(stops()).toEqual(Array.from({ length: 3 }, () => ["stop", idA]));
