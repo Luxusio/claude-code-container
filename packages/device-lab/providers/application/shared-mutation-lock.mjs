@@ -26,6 +26,7 @@ export function createSharedMutationLock(ports) {
         finally { const next = waiters.shift(); if (next) next(); else active--; }
     }
     function currentIdentity() {
+        if (ownIdentity) return ownIdentity;
         if (ports.platform() === 'win32') return null;
         if (ownIdentity === undefined || ownIdentity === null && ports.now() >= ownRetryAt) {
             ownIdentity = ports.identitySync(ports.pid());

@@ -109,6 +109,9 @@ function makeLocksDir(): string {
 
 describe("session.ts", () => {
     beforeEach(() => {
+        // The default process observations below model Linux /proc and kill facts.
+        // Platform-specific cases override this baseline with their own observations.
+        vi.spyOn(process, "platform", "get").mockReturnValue("linux");
         mockSpawnSync.mockReset();
         mockExistsSync.mockReset();
         mockWriteFileSync.mockReset();

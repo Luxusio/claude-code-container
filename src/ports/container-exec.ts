@@ -84,7 +84,7 @@ export interface ContainerExecPorts<Prepared> {
     sessionClaims(prefix: string, currentLockFile: string): string[];
     lockName(path: string): string;
     prepareDeviceBroker(path: string, profile?: string): Promise<void>;
-    lifecycleLock<T>(prefix: string, operation: () => T): T;
+    lifecycleLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     setupLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     startContainer(path: string, ensureDirectories: () => void, mounts: ContainerExecMount[] | undefined, clipboardPortFile: string | undefined, profile: string | undefined,
         onRecreate: (() => void) | undefined, replacement: (recreate: () => void) => boolean,

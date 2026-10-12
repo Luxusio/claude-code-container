@@ -1,5 +1,7 @@
 import { existsSync, linkSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { hostname, tmpdir } from "os";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -96,22 +98,74 @@ describe("device-lab shared mutation lock", () => {
         }
     });
 
-    it("removes its token-fenced lock after the operation", () => {
+    it.each([
+        ["host", "../../packages/device-lab/dist/device-lab-shared-state.js"],
+        ["direct", "../../packages/device-lab/providers/state/shared-mutation-lock.mjs"],
+    ])("%s preserves native identity from a fresh async acquisition in subsequent sync claims", async (_label, modulePath) => {
         const file = lockPath();
-        const result = withSharedMutationLock(file, () => {
-            const lock = JSON.parse(readFileSync(file, "utf8"));
-            expect(lock).toEqual(expect.objectContaining({ token: expect.any(String), pid: process.pid, host: hostname(), bootId: expect.any(String) }));
+        const script = `
+            import assert from "node:assert/strict";
+            import { existsSync, readFileSync } from "node:fs";
+            const { withSharedMutationLock, withSharedMutationLockAsync } = await import(process.argv[2]);
+            const file = process.argv[1];
+            const record = () => JSON.parse(readFileSync(file, "utf8"));
+            const cold = withSharedMutationLock(file, record);
+            assert.equal(existsSync(file), false, "cold sync claim must release its token");
             if (process.platform === "win32") {
-                expect(lock.processIdentityStatus).toBe("unavailable");
-                expect(lock.processIdentity).toBeUndefined();
-            } else if (readProcessIdentity(process.pid)) {
-                expect(lock.processIdentity).toEqual(readProcessIdentity(process.pid));
+                assert.equal(cold.processIdentityStatus, "unavailable", "cold Windows sync claim must remain unavailable");
+                assert.equal(cold.processIdentity, undefined);
             }
-            return "done";
+            const captured = await withSharedMutationLockAsync(file, record, { waitMs: 15000 });
+            assert.equal(existsSync(file), false, "async claim must release its token");
+            const identity = captured.processIdentity;
+            assert.ok(identity, "Native " + process.platform + " async process identity is unavailable; cold/warm qualification cannot pass");
+            assert.equal(identity.pid, process.pid);
+            assert.equal(typeof identity.startToken, "string");
+            assert.ok(identity.startToken.length > 0);
+            assert.match(identity.commandHash, /^[a-f0-9]{64}$/);
+            assert.notEqual(captured.processIdentityStatus, "unavailable");
+            const warm = withSharedMutationLock(file, record);
+            assert.deepEqual(warm.processIdentity, identity, "warm sync claim must publish the captured native identity");
+            assert.notEqual(warm.processIdentityStatus, "unavailable");
+            assert.equal(existsSync(file), false, "warm sync claim must release its token");
+        `;
+        await new Promise<void>((resolve, reject) => {
+            execFile(process.execPath, ["--input-type=module", "-e", script, file, new URL(modulePath, import.meta.url).href], {
+                cwd: fileURLToPath(new URL("../../", import.meta.url)),
+                timeout: 30_000,
+                windowsHide: true,
+            }, (error, stdout, stderr) => {
+                if (error) reject(new Error(`${_label} native cold/async/warm identity regression failed: ${stderr || stdout || error.message}`, { cause: error }));
+                else resolve();
+            });
         });
-        expect(result).toBe("done");
-        expect(existsSync(file)).toBe(false);
-    });
+    }, 35_000);
+
+    it("removes its token-fenced lock after the operation", async () => {
+        for (const [acquire, acquireAsync, readIdentity] of [
+            [withHostSharedMutationLock, withHostSharedMutationLockAsync, readDeviceRuntimeProcessIdentity],
+            [withNestedSharedMutationLock, withSharedMutationLockAsync, readProcessIdentity],
+        ] as const) {
+            const file = lockPath();
+            const captured = await acquireAsync(file, () => JSON.parse(readFileSync(file, "utf8")), { waitMs: 15_000 });
+            expect(existsSync(file)).toBe(false);
+            const result = acquire(file, () => {
+                const lock = JSON.parse(readFileSync(file, "utf8"));
+                expect(lock).toEqual(expect.objectContaining({ token: expect.any(String), pid: process.pid, host: hostname(), bootId: expect.any(String) }));
+                if (process.platform === "win32") {
+                    expect(captured.processIdentity, "Native Windows async identity must be available for warm publication qualification").toBeTruthy();
+                    expect(lock.processIdentityStatus).not.toBe("unavailable");
+                    expect(lock.processIdentity).toEqual(captured.processIdentity);
+                    expect(lock.processIdentity).toEqual(readIdentity(process.pid));
+                } else if (readIdentity(process.pid)) {
+                    expect(lock.processIdentity).toEqual(readIdentity(process.pid));
+                }
+                return "done";
+            });
+            expect(result).toBe("done");
+            expect(existsSync(file)).toBe(false);
+        }
+    }, 35_000);
 
     it("recovers an old malformed lock without removing a live lock", () => {
         const malformed = lockPath();

@@ -15,7 +15,7 @@ import {
     prepareCodexConfigForContainer, syncClipboardShims, ensureContainerManagerSocketAccess, isDockerDesktop,
 } from "../docker.js";
 import {
-    acquireHostSessionOwnership, withProjectFamilyLifecycleLockAsync, withContainerLifecycleLock,
+    acquireHostSessionOwnership, withProjectFamilyLifecycleLockAsync, withContainerLifecycleLockAsync,
     withContainerSetupLockAsync, getActiveSessionsForContainer, setSessionContainerId,
     setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession,
 } from "../session.js";
@@ -37,15 +37,15 @@ import {
     containerExecReplacementBlockReason as replacementReason,
 } from "../application/container-exec.js";
 
-export function ensureContainerExecSetupAvailable(containerId: string, restart: () => string,
-    ports: Pick<ContainerExecReadinessPorts, "running"> & { log(message: string): void }): string {
+export function ensureContainerExecSetupAvailable(containerId: string, restart: () => Promise<string> | string,
+    ports: Pick<ContainerExecReadinessPorts, "running"> & { log(message: string): void }): Promise<string> {
     return ensureSetupAvailable(containerId, restart, {
         running: ports.running, restarted: () => ports.log("Container became unavailable during setup, restarting..."),
     });
 }
 
-export function ensureContainerExecTools(containerId: string, tool: ToolDefinition, restart: () => string,
-    ports: Pick<ContainerExecReadinessPorts, "running" | "install"> & { log(message: string): void }): string {
+export function ensureContainerExecTools(containerId: string, tool: ToolDefinition, restart: () => Promise<string> | string,
+    ports: Pick<ContainerExecReadinessPorts, "running" | "install"> & { log(message: string): void }): Promise<string> {
     return ensureToolsReady(containerId, tool, restart, {
         running: ports.running, install: ports.install,
         restarted: () => ports.log("Container became unavailable during setup, restarting..."),
@@ -161,7 +161,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
                 console.warn(`[ccc] WARNING: device broker auto-start failed (${detail}).${diagnostic} Host-backed device MCP tools may be unavailable.`);
             }
         },
-        lifecycleLock: withContainerLifecycleLock,
+        lifecycleLock: withContainerLifecycleLockAsync,
         setupLock: withContainerSetupLockAsync,
         startContainer: startProjectContainer,
         setSessionContainer: setSessionContainerId,

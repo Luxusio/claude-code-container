@@ -806,37 +806,37 @@ describe('auto container version-up', () => {
     expect(CONTAINER_SETUP_RESTART_MESSAGE).not.toContain('concurrent session')
   })
 
-  it('uses exact-ID liveness and one state-accurate restart path at every setup checkpoint', () => {
+  it('uses exact-ID liveness and one state-accurate restart path at every setup checkpoint', async () => {
     const containerId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
     const runningProbe = vi.fn(() => false)
     const restart = vi.fn(() => 'replacement-id')
     const log = vi.fn()
 
-    expect(ensureSetupContainerAvailable(containerId, restart, runningProbe, log)).toBe('replacement-id')
+    expect(await ensureSetupContainerAvailable(containerId, restart, runningProbe, log)).toBe('replacement-id')
     expect(runningProbe).toHaveBeenCalledWith(containerId, 'id')
     expect(restart).toHaveBeenCalledOnce()
     expect(log).toHaveBeenCalledWith(CONTAINER_SETUP_RESTART_MESSAGE)
   })
 
-  it('keeps an available pinned container without restarting it', () => {
+  it('keeps an available pinned container without restarting it', async () => {
     const containerId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
     const runningProbe = vi.fn(() => true)
     const restart = vi.fn(() => 'replacement-id')
     const log = vi.fn()
 
-    expect(ensureSetupContainerAvailable(containerId, restart, runningProbe, log)).toBe(containerId)
+    expect(await ensureSetupContainerAvailable(containerId, restart, runningProbe, log)).toBe(containerId)
     expect(restart).not.toHaveBeenCalled()
     expect(log).not.toHaveBeenCalled()
   })
 
-  it('installs and proves the requested tool on a late replacement container ID', () => {
+  it('installs and proves the requested tool on a late replacement container ID', async () => {
     const originalId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
     const replacementId = '296c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
     const runningProbe = vi.fn(() => false)
     const restart = vi.fn(() => replacementId)
     const installer = vi.fn()
 
-    expect(ensureToolsForSetupContainer(
+    expect(await ensureToolsForSetupContainer(
       originalId,
       getToolByName('codex')!,
       restart,
@@ -848,19 +848,19 @@ describe('auto container version-up', () => {
     expect(installer).toHaveBeenCalledWith(replacementId, getToolByName('codex')!)
   })
 
-  it('does not retry a tool failure against the same running container', () => {
+  it('does not retry a tool failure against the same running container', async () => {
     const containerId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
     const runningProbe = vi.fn(() => true)
     const restart = vi.fn()
     const installer = vi.fn(() => { throw new Error('codex probe timed out') })
 
-    expect(() => ensureToolsForSetupContainer(
+    await expect(ensureToolsForSetupContainer(
       containerId,
       getToolByName('codex')!,
       restart,
       runningProbe,
       installer,
-    )).toThrow('codex probe timed out')
+    )).rejects.toThrow('codex probe timed out')
     expect(installer).toHaveBeenCalledOnce()
     expect(restart).not.toHaveBeenCalled()
   })

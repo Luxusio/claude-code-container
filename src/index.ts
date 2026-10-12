@@ -48,10 +48,10 @@ export function containerUpdateDeferredMessage(containerWasInitiallyRunning: boo
 
 export function ensureSetupContainerAvailable(
     containerId: string,
-    restart: () => string,
+    restart: () => Promise<string> | string,
     runningProbe: typeof isContainerRunning = isContainerRunning,
     log: (message: string) => void = console.log,
-): string {
+): Promise<string> {
     return ensureContainerExecSetupAvailable(containerId, restart, { running: runningProbe, log });
 }
 
@@ -71,10 +71,10 @@ export async function withContainerSetupReadiness<T>(
 export function ensureToolsForSetupContainer(
     containerId: string,
     setupTool: ToolDefinition,
-    restart: () => string,
+    restart: () => Promise<string> | string,
     runningProbe: typeof isContainerRunning = isContainerRunning,
     installer: typeof ensureTools = ensureTools,
-): string {
+): Promise<string> {
     return ensureContainerExecTools(containerId, setupTool, restart, { running: runningProbe, install: installer, log: console.log });
 }
 import {

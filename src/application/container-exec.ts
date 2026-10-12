@@ -1,17 +1,17 @@
 import type { ToolDefinition } from "../domain/tool-registry.js";
 import type { ContainerExecOptions, ContainerExecPorts, ContainerExecReadinessPorts, ContainerExecReplacementPorts, ContainerExecReplacementReason } from "../ports/container-exec.js";
 
-export function ensureContainerExecSetupAvailable(containerId: string, restart: () => string, ports: Pick<ContainerExecReadinessPorts, "running" | "restarted">): string {
+export async function ensureContainerExecSetupAvailable(containerId: string, restart: () => Promise<string> | string, ports: Pick<ContainerExecReadinessPorts, "running" | "restarted">): Promise<string> {
     if (ports.running(containerId, "id")) return containerId;
     ports.restarted();
     return restart();
 }
 
-export function ensureContainerExecTools(containerId: string, setupTool: ToolDefinition, restart: () => string, ports: ContainerExecReadinessPorts): string {
+export async function ensureContainerExecTools(containerId: string, setupTool: ToolDefinition, restart: () => Promise<string> | string, ports: ContainerExecReadinessPorts): Promise<string> {
     let readyContainerId = containerId;
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
-        readyContainerId = ensureContainerExecSetupAvailable(readyContainerId, restart, ports);
+        readyContainerId = await ensureContainerExecSetupAvailable(readyContainerId, restart, ports);
         try { ports.install(readyContainerId, setupTool); return readyContainerId; }
         catch (error) {
             if (ports.running(readyContainerId, "id")) throw error;
@@ -134,11 +134,11 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             return true;
         };
         const invocationStartedContainers = new Set<string>();
-        const startContainer = (
+        const startContainer = async (
             mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
             portFile: string | undefined = clipboardPortFile,
             onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
-        ): string => {
+        ): Promise<string> => {
             return ports.lifecycleLock(sessionContainerPrefix, () => {
                 let readyContainerId: string | null = null;
                 ports.startContainer(
@@ -175,7 +175,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
         // commands or configuring the container.
         ports.report({ kind: "progress", phase: "setup" });
         let containerName = await ports.setupLock(sessionContainerPrefix, async () => {
-            let readyContainerName = startContainer();
+            let readyContainerName = await startContainer();
             await ports.confirmOwnership();
             ports.configLock(() => ports.restoreConfig(readyContainerName, profile), profile);
 
@@ -200,7 +200,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 }
 
                 // Verify container is still running before exec.
-                readyContainerName = ensureContainerExecSetupAvailable(
+                readyContainerName = await ensureContainerExecSetupAvailable(
                     readyContainerName, () => startContainer(undefined, undefined, undefined),
                     { running: ports.containerRunning, restarted: () => ports.report({ kind: "restarted" }) },
                 );
@@ -223,7 +223,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             // prove/install the requested command against that final pinned ID.
             if (shouldEnsureTool) {
                 ports.report({ kind: "progress", phase: "tools" });
-                readyContainerName = ensureContainerExecTools(
+                readyContainerName = await ensureContainerExecTools(
                     readyContainerName, setupTool, () => startContainer(undefined, undefined, undefined),
                     { running: ports.containerRunning, install: ports.installTools, restarted: () => ports.report({ kind: "restarted" }), installFailure: cause => ports.setupToolFailure(cause) },
                 );

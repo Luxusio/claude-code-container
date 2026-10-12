@@ -21,7 +21,7 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         worktreeMounts: () => [], containerName: () => "ccc-repo",
         containerStatus: () => ({exists: true, running: Boolean(options.running), containerId: options.running ? "final-id" : "setup-id", imageId: "image-id"}),
         sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
-        lifecycleLock<T>(_prefix: string, operation: () => T): T { return operation(); },
+        async lifecycleLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         async setupLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         startContainer: (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
             const id = options.replace && first ? "setup-id" : "final-id"; first = false;
@@ -48,6 +48,89 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
 }
 
 describe("container exec semantic workflow", () => {
+    it.each(["initial", "readiness", "tool-retry"] as const)("awaits the %s lifecycle guard before proceeding with its pinned identity", async checkpoint => {
+        const f = fixture();
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let entered!: () => void;
+        const waiting = new Promise<void>(resolve => { entered = resolve; });
+        let acquisitions = 0;
+        const blockedAcquisition = checkpoint === "initial" ? 1 : 2;
+        f.ports.lifecycleLock = async <T>(_prefix: string, operation: () => T | Promise<T>): Promise<T> => {
+            if (++acquisitions === blockedAcquisition) { entered(); await gate; }
+            return operation();
+        };
+        let starts = 0;
+        f.ports.startContainer = (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
+            const id = ++starts === 1 ? "initial-id" : "replacement-id";
+            onStarted(id); onReady(id, {startedByInvocation: true}); return "ccc-repo";
+        };
+        let originalRunning = checkpoint !== "readiness";
+        f.ports.containerRunning = id => id === "replacement-id" || originalRunning;
+        if (checkpoint === "tool-retry") vi.mocked(f.ports.installTools).mockImplementation(id => {
+            if (id === "initial-id") { originalRunning = false; throw new Error("container stopped during install"); }
+        });
+        const pending = f.exec("/repo", ["codex"]);
+        await waiting;
+        expect(f.ports.prepareCodexConfig).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.installTools).toHaveBeenCalledTimes(checkpoint === "tool-retry" ? 1 : 0);
+        if (checkpoint === "initial") {
+            expect(f.ports.buildMcpConfig).not.toHaveBeenCalled();
+            expect(f.ports.restoreConfig).not.toHaveBeenCalled();
+            expect(f.ports.confirmOwnership).not.toHaveBeenCalled();
+        }
+        release();
+        expect(await pending).toBe(0);
+        const finalId = checkpoint === "initial" ? "initial-id" : "replacement-id";
+        expect(f.ports.installTools).toHaveBeenLastCalledWith(finalId, expect.objectContaining({name: "codex"}));
+        expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith(finalId, undefined);
+        expect(f.ports.prepareCommand).toHaveBeenCalledWith(expect.objectContaining({target: finalId}));
+        expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith(finalId);
+    });
+    it.each(["initial", "readiness", "tool-retry"] as const)("propagates a rejected %s guard without proceeding", async checkpoint => {
+        const f = fixture();
+        const failure = new Error("lifecycle acquisition refused");
+        let reject!: (cause: unknown) => void;
+        const gate = new Promise<void>((_resolve, rejectGate) => { reject = rejectGate; });
+        let entered!: () => void;
+        const waiting = new Promise<void>(resolve => { entered = resolve; });
+        let acquisitions = 0;
+        f.ports.lifecycleLock = async <T>(_prefix: string, operation: () => T | Promise<T>): Promise<T> => {
+            if (++acquisitions === (checkpoint === "initial" ? 1 : 2)) { entered(); await gate; }
+            return operation();
+        };
+        let running = checkpoint !== "readiness";
+        f.ports.containerRunning = () => running;
+        if (checkpoint === "tool-retry") vi.mocked(f.ports.installTools).mockImplementation(() => { running = false; throw new Error("install lost container"); });
+        const pending = f.exec("/repo", ["codex"]);
+        const outcome = expect(pending).rejects.toMatchObject({message: "Container setup failed", cause: failure});
+        await waiting;
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        reject(failure);
+        await outcome;
+        expect(f.ports.prepareCodexConfig).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.installTools).toHaveBeenCalledTimes(checkpoint === "tool-retry" ? 1 : 0);
+        if (checkpoint === "initial") expect(f.ports.buildMcpConfig).not.toHaveBeenCalled();
+    });
+    it("retains the final tool failure cause after exactly two unavailable-container attempts", async () => {
+        const f = fixture();
+        const failure = new Error("replacement install failed");
+        let probes = 0;
+        // The general setup checkpoint succeeds; both tool attempts subsequently lose liveness.
+        f.ports.containerRunning = () => ++probes === 1;
+        vi.mocked(f.ports.installTools).mockImplementation(() => { throw failure; });
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({
+            message: "Container setup failed", cause: {message: "Failed to install tools", cause: failure},
+        });
+        expect(f.ports.installTools).toHaveBeenCalledTimes(2);
+        expect(f.ports.prepareCodexConfig).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
     it("pins setup, preparation and launch to the final replacement identity", async () => {
         const f = fixture({replace: true});
         expect(await f.exec("/repo", ["codex", "resume", "--last"])).toBe(0);
