@@ -72,7 +72,8 @@ let armingOwnership = false;
 let acquiringOwnership = false;
 let acquisitionFailure: Error | null = null;
 let acquisitionCancellation: Error | null = null;
-let acquisitionSettled: Promise<void> = Promise.resolve();
+type AcquisitionOutcome = { kind: "completed" } | { kind: "failed"; error: unknown; cancellation: Error | null };
+let acquisitionSettled: Promise<AcquisitionOutcome> = Promise.resolve({ kind: "completed" });
 let ownershipAuthorization: (() => void) | null = null;
 let capturedOwnership: SessionOwnershipReceipt | null = null;
 let pendingOwnershipUpdate: Promise<void> = Promise.resolve();
@@ -134,8 +135,9 @@ export async function acquireHostSessionOwnership(
     acquiringOwnership = true;
     acquisitionFailure = null;
     acquisitionCancellation = null;
-    let settleAcquisition!: () => void;
-    acquisitionSettled = new Promise<void>((resolve) => { settleAcquisition = resolve; });
+    let settleAcquisition!: (outcome: AcquisitionOutcome) => void;
+    let acquisitionOutcome: AcquisitionOutcome = { kind: "completed" };
+    acquisitionSettled = new Promise<AcquisitionOutcome>((resolve) => { settleAcquisition = resolve; });
     const checkCancelled = () => {
         if (acquisitionCancellation) throw acquisitionCancellation;
     };
@@ -195,11 +197,17 @@ export async function acquireHostSessionOwnership(
         }).run(request, checkCancelled);
         if (acquisitionFailure) throw acquisitionFailure;
         return acquired;
+    } catch (error) {
+        const failure = error === acquisitionCancellation && acquisitionFailure
+            ? new AggregateError([error, acquisitionFailure], "Session cancellation and ownership monitoring failed.", { cause: error })
+            : error;
+        acquisitionOutcome = { kind: "failed", error: failure, cancellation: acquisitionCancellation };
+        throw failure;
     } finally {
         acquiringOwnership = false;
         acquisitionFailure = null;
         acquisitionCancellation = null;
-        settleAcquisition();
+        settleAcquisition(acquisitionOutcome);
     }
 }
 
@@ -387,6 +395,16 @@ export function setupSignalHandlers(): void {
     setupNativeSessionCleanupSignals(() => {
         if (!acquiringOwnership) return cleanupSession();
         acquisitionCancellation ??= new Error("Host session ownership acquisition cancelled by signal.");
-        return acquisitionSettled.then(() => cleanupSession());
+        return acquisitionSettled.then((outcome) => {
+            const failed = outcome.kind === "failed" && outcome.error !== outcome.cancellation;
+            try { cleanupSession(); }
+            catch (cleanupError) {
+                if (failed && outcome.kind === "failed") {
+                    throw new AggregateError([outcome.error, cleanupError], "Session acquisition and signal cleanup failed.", { cause: outcome.error });
+                }
+                throw cleanupError;
+            }
+            if (failed && outcome.kind === "failed") throw outcome.error;
+        });
     });
 }

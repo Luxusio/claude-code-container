@@ -465,6 +465,54 @@ describe("host ownership acquisition through the facade", () => {
         process.exitCode = previous;
     });
 
+    it.each(["guardian release", "guard finalizer"] as const)("signal exit preserves %s failure after successful reservation rollback", async failureStage => {
+        const once = vi.mocked(process.once);
+        const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
+        const report = vi.spyOn(console, "error").mockImplementation(() => {});
+        const previous = process.exitCode;
+        process.exitCode = undefined;
+        const failure = new Error(`${failureStage} failed after reservation removal`);
+        let continueStage!: () => void;
+        let entered = false;
+        const pending = new Promise<void>(resolve => { continueStage = resolve; });
+        if (failureStage === "guardian release") {
+            effects.arm.mockImplementation(async () => { entered = true; await pending; return handle; });
+            release.mockRejectedValue(failure);
+        } else {
+            effects.lock.mockImplementation(async (_path, operation) => {
+                try { return await operation(); }
+                catch (error) { throw new AggregateError([error, failure], "Acquisition and guard release failed", { cause: error }); }
+            });
+        }
+        session.setupSignalHandlers();
+        const acquisition = session.acquireHostSessionOwnership(request, async () => {
+            if (failureStage === "guard finalizer") { entered = true; await pending; }
+            return { known: true, containerId: "unacknowledged-existing-id", runtime: "docker" };
+        });
+        // Observe the public rejection immediately so the test cannot itself
+        // produce an unhandled rejection while the signal completion settles.
+        const outcome = acquisition.then(() => { throw new Error("Expected interrupted acquisition failure"); }, error => error);
+        await vi.waitFor(() => expect(entered).toBe(true));
+        expect(() => once.mock.calls.find(([signal]) => signal === "SIGTERM")![1]()).not.toThrow();
+        expect(exit).not.toHaveBeenCalled();
+        continueStage();
+        const rejected = await outcome;
+        expect(rejected).toBeInstanceOf(AggregateError);
+        expect(rejected.errors).toEqual([expect.objectContaining({ message: expect.stringContaining("cancelled") }), failure]);
+        expect(rejected.cause).toBe(rejected.errors[0]);
+        expect(effects.rollback).toHaveBeenCalledExactlyOnceWith(effects.capture.mock.results[0].value);
+        expect(session.getCurrentSession()).toEqual(emptyContext);
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(1));
+        expect(report.mock.calls.some(call => call.includes(rejected))).toBe(true);
+        expect(effects.lock).toHaveBeenCalledTimes(1);
+        expect(update).not.toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(effects.unlink).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(failureStage === "guardian release" ? 1 : 0);
+        process.exitCode = previous;
+    });
+
     it("blocks generic cleanup while capture is pending and after capture fails without unlinking a replacement", async () => {
         let rejectArm!: (error: Error) => void;
         effects.arm.mockImplementation(() => new Promise((_resolve, reject) => { rejectArm = reject; }));
