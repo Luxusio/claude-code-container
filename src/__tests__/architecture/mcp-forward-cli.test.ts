@@ -31,6 +31,7 @@ vi.mock("../../container-command.js", () => ({ runContainerCommand: f.command })
 vi.mock("../../docker.js", () => ({
     ensureDockerRunning: vi.fn(), ensureCredentialHostDir: vi.fn(),
     getContainerName: () => "ccc-fixture", getContainerStatus: () => ({ exists: f.exists, running: f.running, imageId: "sha256:old", containerId: "old-id" }),
+    inspectSessionContainerOwnership: () => ({ known: true, containerId: f.exists ? "old-id" : null }),
     startProjectContainer: f.start, isContainerRunning: f.probeRunning,
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
     syncClipboardShims: () => f.events.push("clipboard"), ensureContainerManagerSocketAccess: vi.fn(),
