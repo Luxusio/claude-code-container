@@ -1891,7 +1891,7 @@ function verifyRequiredContainerMounts(
     }
 }
 
-function inspectCreatedContainerBindMounts(
+function inspectCreatedContainerMounts(
     containerId: string,
     requiredMounts: RequiredContainerMount[],
     projectMountIdentity: string,
@@ -1912,18 +1912,25 @@ function inspectCreatedContainerBindMounts(
     if (inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
         return { kind: "mismatch", reason: "created container project mount identity label changed" };
     }
-    return verifyRequiredContainerMountsOnce(
+    const verification = verifyRequiredContainerMountsOnce(
         containerId,
         inspected.Mounts ?? [],
         requiredMounts,
         "strict",
         session,
-        true,
+        false,
         finalProofAttempt,
     );
+    if (verification.kind !== "verified") return verification;
+    const defaultDaemonSocket = requiredMounts.some((mount) => (
+        mount.sourceProof?.kind === "daemon" && mount.hostPath === CONTAINER_MANAGER_SOCKET
+    ));
+    return defaultDaemonSocket && getRuntimeInfo().runtime === "docker"
+        ? containerManagerSocketTargetsCurrentDockerDaemon(containerId)
+        : verification;
 }
 
-function verifyCreatedContainerBindMounts(
+function verifyCreatedContainerMounts(
     containerId: string,
     requiredMounts: RequiredContainerMount[],
     projectMountIdentity: string,
@@ -1931,7 +1938,7 @@ function verifyCreatedContainerBindMounts(
     const session = createMountVerificationSession();
     try {
         return withBoundedVerificationRetry(
-            (finalAttempt) => inspectCreatedContainerBindMounts(
+            (finalAttempt) => inspectCreatedContainerMounts(
                 containerId,
                 requiredMounts,
                 projectMountIdentity,
@@ -2737,11 +2744,9 @@ function startProjectContainerLocked(
         assertDeviceSources: () => { assertPreparedDeviceLabMountSources(preparedDeviceLabSources); },
         assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
         verifyCreated: (id) => {
-            const verification = verifyCreatedContainerBindMounts(
+            const verification = verifyCreatedContainerMounts(
                 id,
-                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"
-                    || (runtimeInfo.runtime === "docker" && mount.sourceProof?.kind === "daemon"
-                        && mount.hostPath !== CONTAINER_MANAGER_SOCKET)),
+                requiredMounts,
                 projectMountIdentity,
             );
             if (verification.kind === "verified") publishStarted(id);

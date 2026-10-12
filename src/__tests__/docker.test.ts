@@ -47,6 +47,9 @@ let autoInspectCreatedContainer = true;
 let autoInspectCreatedContainerFailuresRemaining = 0;
 let autoInspectCreatedTmpfsOptions: string | undefined;
 let autoInspectCreatedMountSource = (source: string, _destination: string): string => source;
+type CreatedMount = { Source: string; Destination: string; Type: string; RW: boolean; Name?: string };
+let mutateCreatedMounts = (_mounts: CreatedMount[], _tmpfs: Record<string, string>): void => {};
+let createdDaemonIdentity = "daemon-current";
 const createdContainerInspectIds: string[] = [];
 let rejectStoppedExec = false;
 let existingRuntimeRunning = true;
@@ -67,6 +70,14 @@ vi.mock("child_process", async (importOriginal) => {
         ...actual,
         spawnSync: (...args: unknown[]) => {
             const argv = args[1] as string[];
+            const defaultCreatedSocket = latestCreatedContainer?.runArgs.includes("/var/run/docker.sock:/var/run/docker.sock");
+            if (defaultCreatedSocket && argv?.[0] === "info" && argv.includes("{{.ID}}")) {
+                return makeResult(0, "daemon-current\n");
+            }
+            if (defaultCreatedSocket && latestCreatedContainer && argv?.[0] === "exec" && argv.includes(latestCreatedContainer.id)
+                && argv.includes("/usr/bin/docker") && argv.includes("info")) {
+                return makeResult(0, `${createdDaemonIdentity}\n`);
+            }
             if (startupGlobalNamespaceIds && argv?.[0] === "ps" && argv.includes("label=ccc.managed=true")) {
                 return makeResult(0, startupGlobalNamespaceIds.join("\n"));
             }
@@ -90,12 +101,7 @@ vi.mock("child_process", async (importOriginal) => {
                     autoInspectCreatedContainerFailuresRemaining -= 1;
                     return makeResult(1, "", "container is not inspect-ready");
                 }
-                const mounts: Array<{
-                    Source: string;
-                    Destination: string;
-                    Type: "bind";
-                    RW: boolean;
-                }> = [];
+                const mounts: CreatedMount[] = [];
                 const labels: Record<string, string> = {};
                 const tmpfs: Record<string, string> = {};
                 for (let index = 0; index < latestCreatedContainer.runArgs.length; index += 1) {
@@ -107,14 +113,22 @@ vi.mock("child_process", async (importOriginal) => {
                             mounts.push({
                                 Source: autoInspectCreatedMountSource(match[1], match[2]),
                                 Destination: match[2],
-                                Type: "bind",
+                                Type: /^(?:[A-Za-z]:[\\/]|\/)/.test(match[1]) ? "bind" : "volume",
+                                ...(/^(?:[A-Za-z]:[\\/]|\/)/.test(match[1]) ? {} : { Name: match[1] }),
                                 RW: !volume.endsWith(":ro"),
                             });
                         }
                     }
-                    if (argument === "--tmpfs" && autoInspectCreatedTmpfsOptions !== undefined) {
-                        const destination = latestCreatedContainer.runArgs[index + 1].split(":")[0];
-                        tmpfs[destination] = autoInspectCreatedTmpfsOptions;
+                    if (argument === "--tmpfs") {
+                        const [destination, options] = latestCreatedContainer.runArgs[index + 1].split(":");
+                        tmpfs[destination] = autoInspectCreatedTmpfsOptions ?? options;
+                    }
+                    if (argument === "--mount") {
+                        const fields = Object.fromEntries((latestCreatedContainer.runArgs[index + 1] ?? "")
+                            .split(",").map(field => { const separator = field.indexOf("="); return separator < 0
+                                ? [field, ""] : [field.slice(0, separator), field.slice(separator + 1)]; }));
+                        mounts.push({ Source: autoInspectCreatedMountSource(fields.src ?? fields.source, fields.dst ?? fields.target),
+                            Destination: fields.dst ?? fields.target, Type: fields.type, RW: !("readonly" in fields || "ro" in fields) });
                     }
                     if (argument === "--label") {
                         const label = latestCreatedContainer.runArgs[index + 1] ?? "";
@@ -124,6 +138,7 @@ vi.mock("child_process", async (importOriginal) => {
                         }
                     }
                 }
+                mutateCreatedMounts(mounts, tmpfs);
                 return makeResult(0, JSON.stringify({
                     Id: latestCreatedContainer.id,
                     Mounts: mounts,
@@ -518,6 +533,8 @@ describe("docker.ts module exports", () => {
         autoInspectCreatedContainerFailuresRemaining = 0;
         autoInspectCreatedTmpfsOptions = undefined;
         autoInspectCreatedMountSource = (source: string): string => source;
+        mutateCreatedMounts = () => {};
+        createdDaemonIdentity = "daemon-current";
         createdContainerInspectIds.length = 0;
         rejectStoppedExec = false;
         existingRuntimeRunning = true;
@@ -5279,6 +5296,81 @@ describe("docker.ts module exports", () => {
             expect(runArgs).not.toContain("--privileged");
         });
 
+        it.each(["HostConfig.Tmpfs", "Mounts"])("admits complete Docker %s before started authority and handoff", representation => {
+            const events: string[] = [];
+            mutateCreatedMounts = (mounts, tmpfs) => {
+                events.push("full-mount-inspect");
+                if (representation === "Mounts") {
+                    for (const destination of Object.keys(tmpfs)) {
+                        mounts.push({ Source: "", Destination: destination, Type: "tmpfs", RW: true });
+                        delete tmpfs[destination];
+                    }
+                }
+            };
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock.mockImplementation((_command, argsValue) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${TEST_CREATED_CONTAINER_ID}\n`);
+                return makeResult(0);
+            });
+            const ready = vi.fn(() => { events.push("ready"); });
+            const started = vi.fn(() => { events.push("started"); });
+            expect(startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined,
+                undefined, undefined, ready, undefined, started)).toBe(getContainerName(projectPath));
+            expect(started).toHaveBeenCalledExactlyOnceWith(TEST_CREATED_CONTAINER_ID);
+            expect(ready).toHaveBeenCalledExactlyOnceWith(TEST_CREATED_CONTAINER_ID, { startedByInvocation: true });
+            expect(events.indexOf("full-mount-inspect")).toBeLessThan(events.indexOf("started"));
+            expect(events.indexOf("started")).toBeLessThan(events.indexOf("ready"));
+            expect(spawnSyncMock.mock.calls.some(([, args]) => (args as string[])[0] === "rm")).toBe(false);
+        });
+
+        it.each([
+            "missing owners tmpfs", "read-only owners tmpfs", "owners tmpfs replaced with bind",
+            "missing mise volume", "wrong mise volume", "mise volume replaced with bind",
+            "read-only mise volume", "unexpected mount", "foreign daemon",
+        ])("refuses complete created-container admission for %s before publishing authority", fault => {
+            const owners = "/home/ccc/.ccc/devices/owners";
+            const mise = "/home/ccc/.local/share/mise";
+            mutateCreatedMounts = (mounts, tmpfs) => {
+                const volume = mounts.find(mount => mount.Destination === mise);
+                if (!volume) throw new Error("created fixture missing planned mise volume");
+                if (fault === "missing owners tmpfs") delete tmpfs[owners];
+                if (fault === "read-only owners tmpfs") tmpfs[owners] = "ro,noexec,nosuid,nodev,mode=0711";
+                if (fault === "owners tmpfs replaced with bind") {
+                    delete tmpfs[owners];
+                    mounts.push({ Source: "/host/owners", Destination: owners, Type: "bind", RW: true });
+                }
+                if (fault === "missing mise volume") mounts.splice(mounts.indexOf(volume), 1);
+                if (fault === "wrong mise volume") { volume.Name = "foreign-mise"; volume.Source = "foreign-mise"; }
+                if (fault === "mise volume replaced with bind") { volume.Type = "bind"; volume.Source = "/host/mise"; delete volume.Name; }
+                if (fault === "read-only mise volume") volume.RW = false;
+                if (fault === "unexpected mount") mounts.push({ Source: "/host/extra", Destination: "/unexpected", Type: "bind", RW: true });
+            };
+            if (fault === "foreign daemon") createdDaemonIdentity = "daemon-foreign";
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock.mockImplementation((_command, argsValue) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${TEST_CREATED_CONTAINER_ID}\n`);
+                if (args[0] === "inspect" && args.includes("{{.Id}}")) return makeResult(1, "", `Error: No such object: ${TEST_CREATED_CONTAINER_ID}`);
+                return makeResult(0);
+            });
+            const ready = vi.fn();
+            const started = vi.fn();
+            expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined,
+                undefined, undefined, ready, undefined, started)).toThrow();
+            expect(ready).not.toHaveBeenCalled();
+            expect(started).not.toHaveBeenCalled();
+            expect(spawnSyncMock.mock.calls.filter(([, args]) => (args as string[])[0] === "rm")
+                .map(([, args]) => args)).toEqual([["rm", "-f", TEST_CREATED_CONTAINER_ID]]);
+            expect(spawnSyncMock.mock.calls.some(([, args]) => (args as string[])[0] === "cp")).toBe(false);
+        });
+
         it.each([
             "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup",
             "rw,noexec,nosuid,nodev,mode=0711,rprivate,tmpcopyup,rshared",
@@ -5330,6 +5422,7 @@ describe("docker.ts module exports", () => {
             });
             autoInspectCreatedMountSource = (source, destination) => (
                 source.startsWith("/") && destination !== "/var/run/docker.sock"
+                    && source !== "/run/host-services/ssh-auth.sock"
                     ? `${prefix}${source}`
                     : source
             );
@@ -5554,21 +5647,10 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "inspect"
                     && args.includes("{{json .}}")
                     && args.includes(createdId)) {
-                    return makeResult(0, JSON.stringify({
-                        Id: createdId,
-                        Mounts: [{
-                            Source: "/foreign/project",
-                            Destination: `/project/${getProjectId(projectPath)}`,
-                            Type: "bind",
-                            RW: true,
-                        }],
-                        Config: {
-                            Labels: {
-                                "ccc.project.mount-identity":
-                                    defaultProjectMountIdentity(projectPath),
-                            },
-                        },
-                    }));
+                    const inspected = JSON.parse(fullCredentialMountsJson([], { labState: false }));
+                    inspected.Id = createdId;
+                    inspected.Mounts.find((mount: CreatedMount) => mount.Destination === `/project/${getProjectId(projectPath)}`).Source = "/foreign/project";
+                    return makeResult(0, JSON.stringify(inspected));
                 }
                 if (args[0] === "inspect") return makeResult(1);
                 if (args[0] === "ps") return makeResult(0, "");

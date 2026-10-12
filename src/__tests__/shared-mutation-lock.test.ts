@@ -411,6 +411,159 @@ describe("device-lab shared mutation lock", () => {
         }
     });
 
+    for (const [label, ownerLock, descendantLock] of [
+        ["host to direct", withHostSharedMutationLockAsync, withSharedMutationLockAsync],
+        ["direct to host", withSharedMutationLockAsync, withHostSharedMutationLockAsync],
+    ] as const) {
+        it.each([false, true])(`${label} refuses async A to B to A descendants (physical alias: %s)`, async physicalAlias => {
+            const file = lockPath();
+            let descendantFile = file;
+            if (physicalAlias) {
+                const aliasParent = mkdtempSync(join(tmpdir(), "ccc-async-lock-alias-"));
+                roots.push(aliasParent);
+                const alias = join(aliasParent, "owner-directory");
+                symlinkSync(dirname(file), alias, process.platform === "win32" ? "junction" : "dir");
+                descendantFile = join(alias, "state.mutation.lock");
+            }
+            const other = lockPath();
+            await ownerLock(file, async () => {
+                const bytes = readFileSync(file, "utf8");
+                const directCallback = vi.fn();
+                await expect(descendantLock(descendantFile, directCallback, { waitMs: 200 }))
+                    .rejects.toMatchObject({ code: "shared-mutation-lock-self-contention" });
+                expect(directCallback).not.toHaveBeenCalled();
+                expect(readFileSync(file, "utf8")).toBe(bytes);
+                await descendantLock(other, async () => {
+                    await Promise.resolve();
+                    const callback = vi.fn();
+                    await expect(descendantLock(descendantFile, callback, { waitMs: 200 }))
+                        .rejects.toMatchObject({ code: "shared-mutation-lock-self-contention" });
+                    await expect(descendantLock(descendantFile, callback, { waitBudget: { remaining: () => 0 } }))
+                        .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                    expect(callback).not.toHaveBeenCalled();
+                    expect(readFileSync(file, "utf8")).toBe(bytes);
+                });
+                expect(readFileSync(file, "utf8")).toBe(bytes);
+            });
+            expect(existsSync(file)).toBe(false);
+            expect(existsSync(other)).toBe(false);
+        });
+
+        it(`${label} serializes an unrelated async caller until release`, async () => {
+            const file = lockPath();
+            let release!: () => void;
+            let entered!: () => void;
+            const gate = new Promise<void>(resolve => { release = resolve; });
+            const ready = new Promise<void>(resolve => { entered = resolve; });
+            const owner = ownerLock(file, async () => { entered(); await gate; });
+            await ready;
+            const bytes = readFileSync(file, "utf8");
+            const callback = vi.fn(() => "waiter admitted");
+            const waiter = descendantLock(file, callback, { waitMs: 1500 });
+            try {
+                await new Promise(resolve => setTimeout(resolve, 25));
+                expect(callback).not.toHaveBeenCalled();
+                expect(readFileSync(file, "utf8")).toBe(bytes);
+            } finally { release(); await owner; }
+            expect(await waiter).toBe("waiter admitted");
+            expect(callback).toHaveBeenCalledTimes(1);
+            expect(existsSync(file)).toBe(false);
+        });
+
+        it(`${label} reacquires from an inherited context after its owner released`, async () => {
+            const file = lockPath();
+            let resume!: () => void;
+            const gate = new Promise<void>(resolve => { resume = resolve; });
+            let later!: Promise<string>;
+            const callback = vi.fn(() => "reacquired");
+            await ownerLock(file, async () => {
+                later = (async () => {
+                    await gate;
+                    return descendantLock(file, callback, { waitMs: 1000 });
+                })();
+            });
+            expect(existsSync(file)).toBe(false);
+            resume();
+            expect(await later).toBe("reacquired");
+            expect(callback).toHaveBeenCalledTimes(1);
+            expect(existsSync(file)).toBe(false);
+        });
+    }
+
+    it("refuses async descendants started inside synchronous callbacks across facades", async () => {
+        for (const [sync, asyncLock] of [
+            [withHostSharedMutationLock, withSharedMutationLockAsync],
+            [withNestedSharedMutationLock, withHostSharedMutationLockAsync],
+        ] as const) {
+            const file = lockPath();
+            const callback = vi.fn();
+            let refused!: Promise<void>;
+            sync(file, () => {
+                const bytes = readFileSync(file, "utf8");
+                refused = expect(asyncLock(file, callback, { waitMs: 200 }))
+                    .rejects.toMatchObject({ code: "shared-mutation-lock-self-contention" });
+                expect(readFileSync(file, "utf8")).toBe(bytes);
+            });
+            await refused;
+            expect(callback).not.toHaveBeenCalled();
+            expect(existsSync(file)).toBe(false);
+        }
+    });
+
+    it.each(["fallback-matched", "fallback-unavailable", "uuid-reboot"] as const)("qualifies live-owner boot evidence conservatively for %s", async evidence => {
+        const currentUuid = "11111111-2222-4333-8444-555555555555";
+        const previousUuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        vi.resetModules();
+        vi.doMock("fs", async importOriginal => {
+            const actual = await importOriginal<typeof import("fs")>();
+            return { ...actual, readFileSync(path: import("fs").PathOrFileDescriptor, options?: unknown) {
+                if (path === "/proc/sys/kernel/random/boot_id") {
+                    if (evidence === "uuid-reboot") return currentUuid;
+                    throw Object.assign(new Error("boot UUID unavailable"), { code: "ENOENT" });
+                }
+                return actual.readFileSync(path, options as never);
+            } };
+        });
+        try {
+            const host = await import("@ccc/device-lab/device-lab-shared-state.js?boot-evidence");
+            const direct = await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?boot-evidence");
+            for (const [sync, asyncLock] of [
+                [host.withSharedMutationLock, host.withSharedMutationLockAsync],
+                [direct.withSharedMutationLock, direct.withSharedMutationLockAsync],
+            ] as const) {
+                const file = lockPath();
+                const captured = await asyncLock(file, () => JSON.parse(readFileSync(file, "utf8")), { waitMs: 15_000 });
+                if (evidence === "fallback-matched") {
+                    expect(captured.processIdentity, "native async identity must qualify matched-owner preservation").toBeTruthy();
+                }
+                const bootId = evidence === "uuid-reboot" ? previousUuid
+                    : `${hostname()}:${Number(String(captured.bootId).split(":").pop()) - 120}`;
+                const bytes = JSON.stringify({ ...captured, token: testToken(), bootId,
+                    ...(evidence === "fallback-unavailable" ? { processIdentity: undefined, processIdentityStatus: "unavailable" } : {}) });
+                for (const acquire of [sync, asyncLock]) {
+                    writeFileSync(file, bytes);
+                    const old = new Date(Date.now() - 9 * 60 * 60 * 1000);
+                    utimesSync(file, old, old);
+                    const callback = vi.fn(() => "recovered");
+                    let result: unknown;
+                    let failure: unknown;
+                    try { result = await acquire(file, callback, { waitMs: 200, staleMs: 1 }); }
+                    catch (error) { failure = error; }
+                    if (evidence === "uuid-reboot") {
+                        expect(failure).toBeUndefined();
+                        expect(result).toBe("recovered");
+                        expect(callback).toHaveBeenCalledTimes(1);
+                        expect(existsSync(file)).toBe(false);
+                    } else {
+                        expect(failure).toMatchObject({ code: "shared-mutation-lock-timeout" });
+                        expect(callback).not.toHaveBeenCalled();
+                        expect(readFileSync(file, "utf8")).toBe(bytes);
+                    }
+                }
+            }
+        } finally { vi.doUnmock("fs"); vi.resetModules(); }
+    }, 40_000);
+
     it.each(["write", "close", "post-admission"] as const)("cleans complete claims after %s failure without losing the primary error", async stage => {
         for (const implementation of ["host", "provider"] as const) {
             for (const asynchronous of [false, true]) {

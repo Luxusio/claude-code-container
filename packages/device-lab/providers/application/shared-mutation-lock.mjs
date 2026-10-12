@@ -1,4 +1,4 @@
-import { admitMutationLock, sameMutationBoot } from '../domain/shared-mutation-lock.mjs';
+import { admitMutationLock, mutationBootProvesReboot } from '../domain/shared-mutation-lock.mjs';
 /** Local ownership diagnoses blocking waits; it never authorizes file removal.
  * @type {Map<string,string>} */
 const ownedClaims = new Map();
@@ -82,7 +82,7 @@ export function createSharedMutationLock(ports) {
         const age = modified === null ? 0 : Math.max(0,ports.now()-modified);
         if (age < 100) return {stale:false};
         if (!lock) return {stale:age >= Math.min(staleMs,1000)};
-        if (lock.host === ports.host() && lock.bootId && !sameMutationBoot(lock.bootId,ports.boot())) return {stale:true};
+        if (lock.host === ports.host() && lock.bootId && mutationBootProvesReboot(lock.bootId,ports.boot())) return {stale:true};
         if (lock.host === ports.host() && Number.isInteger(lock.pid)) {
             if (!ports.alive(lock.pid)) return {stale:true};
             if (lock.processIdentity) {
@@ -169,7 +169,7 @@ export function createSharedMutationLock(ports) {
                     wait.check(); ports.pauseSync(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
                 }
             }
-            check(); wait.check(); result = operation();
+            check(); wait.check(); result = ports.runOwnerContext(key,token,operation);
         } catch (error) {
             if (!failures.length) failures.push(error);
         } finally {
@@ -187,6 +187,9 @@ export function createSharedMutationLock(ports) {
         wait.check();
         const token = ports.token(), fence = ports.capture(file);
         const key = ports.key(file);
+        if (ports.ownerContext().some(owner => owner.key === key && ownedClaims.get(key) === owner.token)) {
+            throw Object.assign(new Error(`Asynchronous wait on ancestor-owned shared mutation lock: ${file}`), {code:'shared-mutation-lock-self-contention'});
+        }
         const check = () => ports.check(fence);
         const value = record(token,options.waitBudget ? currentIdentity() : await currentIdentityAsync());
         let claimed = false;
@@ -212,7 +215,7 @@ export function createSharedMutationLock(ports) {
                     wait.check(); await ports.pause(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
                 }
             }
-            check(); wait.check(); result = await operation();
+            check(); wait.check(); result = await ports.runOwnerContext(key,token,operation);
         } catch (error) {
             if (!failures.length) failures.push(error);
         } finally {

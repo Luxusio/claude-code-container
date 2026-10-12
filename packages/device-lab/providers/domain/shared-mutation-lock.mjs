@@ -29,10 +29,12 @@ export function admitMutationLock(value) {
         ...(typeof bootId === 'string' ? {bootId} : {}),...(typeof createdAt === 'string' ? {createdAt} : {}),
         ...(status === 'recorded' || status === 'unavailable' ? {processIdentityStatus:status} : {}),...(identity ? {processIdentity:identity} : {})};
 }
-/** @param {unknown} left @param {unknown} right */
-export function sameMutationBoot(left,right) {
-    if (left === right) return true;
-    const a = typeof left === 'string' ? left.match(/^(.*):(\d+)$/) : null;
-    const b = typeof right === 'string' ? right.match(/^(.*):(\d+)$/) : null;
-    return Boolean(a && b && a[1] === b[1] && Math.abs(Number(a[2])-Number(b[2])) <= 5);
+/** Only native Linux boot UUIDs provide independent evidence of reboot.
+ * Clock-derived estimates and unknown/legacy identities require process evidence.
+ * @param {unknown} left @param {unknown} right */
+export function mutationBootProvesReboot(left,right) {
+    const authoritative = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+    return typeof left === 'string' && typeof right === 'string'
+        && authoritative.test(left) && authoritative.test(right)
+        && left.toLowerCase() !== right.toLowerCase();
 }

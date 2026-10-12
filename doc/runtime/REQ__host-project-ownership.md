@@ -94,6 +94,15 @@ mount representations. This compatibility does not bypass bind source, user,
 provenance or live identity checks. Failed creation verification still compensates
 only the exact captured newly created container ID.
 
+Before a newly created container receives a handoff or started-session authority,
+verify its complete normalized required mount set using the same strict contract
+as reuse: bind sources and access, named volume identities, and required tmpfs
+destinations and access. Missing, conflicting or unexpected mounts refuse admission.
+Daemon socket mounts retain their existing exact-daemon proof and supported source
+aliases. A creation that omits the owners tmpfs must fail immediately, rather than
+being accepted and then recreated on the next session. Compensation remains limited
+to the exact captured newly created ID; its failures retain the original cause.
+
 For the selected Podman runtime, an absent `HostConfig.DeviceRequests` field
 means no Docker-style device requests: Podman 4.9.3 does not expose that field.
 Determine this compatibility from the selected runtime, never inspected labels

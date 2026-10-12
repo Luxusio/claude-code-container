@@ -1,3 +1,4 @@
+import { ownerContext, runOwnerContext } from "./mutation-lock-context.mjs";
 import { randomUUID } from "crypto";
 import { createStateFilePublication } from "../application/state-file-publication.mjs";
 import { createSharedMutationLock } from "../application/shared-mutation-lock.mjs";
@@ -269,6 +270,8 @@ const publication = createStateFilePublication(publicationPorts);
 /** @type {import('../ports/shared-mutation-lock.mjs').SharedMutationLockPorts<ReturnType<typeof secureStateParentDirectory>>} */
 const lockPorts = {
     variant: "provider",
+    ownerContext,
+    runOwnerContext,
     key: file => {
         const key = join(realpathSync.native(dirname(resolve(file))), basename(file));
         return process.platform === "win32" ? key.toLowerCase() : key;

@@ -6,6 +6,8 @@ export interface MutationLockOptions { reclaimStale?:boolean;waitMs?:number;stal
 export interface SharedMutationLockPorts<Fence extends readonly PublicationDirectory[]> {
     variant:'typescript'|'provider';
     key(file:string):string;
+    ownerContext():readonly {key:string;token:string}[];
+    runOwnerContext<T>(key:string,token:string,operation:()=>T):T;
     capture(file:string):Fence;check(fence:Fence):undefined;
     token():string;pid():number;host():string;boot():string;platform():string;timestamp():string;
     now():number;monotonic():number;pauseSync(ms:number):undefined;pause(ms:number):Promise<undefined>;
