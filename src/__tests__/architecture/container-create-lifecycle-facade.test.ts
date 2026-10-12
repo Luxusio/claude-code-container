@@ -327,6 +327,11 @@ function publicFixture() {
     native.open.mockReturnValue(1);
     native.family.mockImplementation((_prefix, operation) => { state.familyCalls++; return operation(); });
     native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null }) => {
+        if (JSON.stringify(args) === JSON.stringify(["info", "--format", "{{.ID}}"])
+            || JSON.stringify(args) === JSON.stringify(["exec", "--user", "root", id,
+                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "info", "--format", "{{.ID}}"])) {
+            return result(0, "fixture-daemon\n");
+        }
         if (args[0] === "images") return result(0, "image-id");
         if (args[0] === "image" && args[1] === "inspect") {
             expect(args[2]).toMatch(/^ccc-identity:[a-f0-9]{64}$/);
