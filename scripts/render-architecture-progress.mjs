@@ -46,7 +46,7 @@ const structuralPlans = progress.planningLanes.filter(lane => lane.id.endsWith("
 const structuralCounts = { completed: 0, partial: 0, "in-progress": 0, pending: 0 };
 const structuralIds = new Set();
 for (const lane of structuralPlans) {
-    if (structuralIds.has(lane.id) || !Object.hasOwn(structuralCounts, lane.workStatus)
+    if (structuralIds.has(lane.id) || typeof lane.workStatus !== "string" || !Object.hasOwn(structuralCounts, lane.workStatus)
         || [lane.title, lane.remainingWork, lane.completionCriteria].some(value => typeof value !== "string" || !value.trim())
         || (lane.workStatus === "completed" && !/^[a-f0-9]{40}$/.test(lane.acceptedIntegrationCommit ?? ""))) {
         throw Error("Invalid structural group: " + lane.id);
