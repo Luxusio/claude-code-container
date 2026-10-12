@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { createStateFilePublication } from "../application/state-file-publication.mjs";
 import { createSharedMutationLock } from "../application/shared-mutation-lock.mjs";
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
 import { inspectProcessIdentity, processIdentityMatches, readProcessIdentity, readProcessIdentityAsync } from "./process-identity.mjs";
@@ -257,7 +257,10 @@ const publication = createStateFilePublication(publicationPorts);
 /** @type {import('../ports/shared-mutation-lock.mjs').SharedMutationLockPorts<ReturnType<typeof secureStateParentDirectory>>} */
 const lockPorts = {
     variant: "provider",
-    key: file => process.platform === "win32" ? resolve(file).toLowerCase() : resolve(file),
+    key: file => {
+        const key = join(realpathSync.native(dirname(resolve(file))), basename(file));
+        return process.platform === "win32" ? key.toLowerCase() : key;
+    },
     capture: file => secureStateParentDirectory(file),
     check: fence => { assertStateDirectoriesUnchanged(fence); return undefined; },
     token: () => randomUUID(),

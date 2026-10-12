@@ -3,10 +3,10 @@ import { createStateFilePublication } from "../providers/application/state-file-
 import { createSharedMutationLock } from "../providers/application/shared-mutation-lock.mjs";
 import type { StateFilePublicationPorts } from "../providers/ports/state-file-publication.mjs";
 import type { SharedMutationLockPorts } from "../providers/ports/shared-mutation-lock.mjs";
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import type { Stats } from "fs";
 import { hostname, uptime } from "os";
-import { basename, dirname, isAbsolute, parse, resolve, sep } from "path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
 import {
     deviceRuntimeProcessIdentityMatches,
     inspectDeviceRuntimeProcessIdentity,
@@ -255,7 +255,10 @@ const publicationPorts: StateFilePublicationPorts<DirectoryIdentity[], AtomicSta
 const publication = createStateFilePublication(publicationPorts);
 const lockPorts: SharedMutationLockPorts<DirectoryIdentity[]> = {
     variant: "typescript",
-    key: file => process.platform === "win32" ? resolve(file).toLowerCase() : resolve(file),
+    key: file => {
+        const key = join(realpathSync.native(dirname(resolve(file))), basename(file));
+        return process.platform === "win32" ? key.toLowerCase() : key;
+    },
     capture: file => secureStateParentDirectory(file),
     check: fence => { assertStateDirectoriesUnchanged(fence); return undefined; },
     token: () => randomBytes(16).toString("hex"),

@@ -264,6 +264,40 @@ describe("device-lab shared mutation lock", () => {
         }
     });
 
+    it("refuses local synchronous contention through a physical alias above the fenced home", async () => {
+        for (const ownerLock of [withHostSharedMutationLockAsync, withSharedMutationLockAsync]) {
+            const root = mkdtempSync(join(tmpdir(), "ccc-lock-physical-alias-"));
+            const aliasParent = mkdtempSync(join(tmpdir(), "ccc-lock-alias-parent-"));
+            roots.push(aliasParent, root);
+            const directory = join(root, "home", ".ccc", "locks");
+            mkdirSync(directory, { recursive: true });
+            const alias = join(aliasParent, "root-alias");
+            symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+            const file = join(directory, "shared.guard");
+            const aliasedFile = join(alias, "home", ".ccc", "locks", "shared.guard");
+            let release!: () => void;
+            let entered!: () => void;
+            const gate = new Promise<void>(resolve => { release = resolve; });
+            const ready = new Promise<void>(resolve => { entered = resolve; });
+            const owner = ownerLock(file, async () => { entered(); await gate; });
+            await ready;
+            const bytes = readFileSync(file, "utf8");
+            try {
+                for (const contender of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
+                    const callback = vi.fn();
+                    expect(() => contender(aliasedFile, callback, { waitMs: 1000 }))
+                        .toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" }));
+                    expect(callback).not.toHaveBeenCalled();
+                    expect(readFileSync(file, "utf8")).toBe(bytes);
+                    expect(readFileSync(aliasedFile, "utf8")).toBe(bytes);
+                }
+            } finally { release(); await owner; }
+            expect(existsSync(file)).toBe(false);
+            expect(withHostSharedMutationLock(aliasedFile, () => "released")).toBe("released");
+            expect(existsSync(file)).toBe(false);
+        }
+    });
+
     it.each(["write", "close", "post-admission"] as const)("cleans complete claims after %s failure without losing the primary error", async stage => {
         for (const implementation of ["host", "provider"] as const) {
             for (const asynchronous of [false, true]) {

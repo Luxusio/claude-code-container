@@ -138,11 +138,11 @@ export function createSharedMutationLock(ports) {
     function withLock(file,operation,options = {}) {
         const wait = waitFor(file,options);
         wait.check();
+        const token = ports.token(), fence = ports.capture(file);
         const key = ports.key(file);
         if (ownedClaims.has(key)) {
             throw Object.assign(new Error(`Synchronous wait on locally owned shared mutation lock: ${file}`), {code:'shared-mutation-lock-self-contention'});
         }
-        const token = ports.token(), fence = ports.capture(file);
         const check = () => ports.check(fence);
         let claimed = false;
         /** @type {unknown[]} */
@@ -184,8 +184,8 @@ export function createSharedMutationLock(ports) {
     async function withLockAsync(file,operation,options = {}) {
         const wait = waitFor(file,options);
         wait.check();
-        const key = ports.key(file);
         const token = ports.token(), fence = ports.capture(file);
+        const key = ports.key(file);
         const check = () => ports.check(fence);
         const value = record(token,options.waitBudget ? currentIdentity() : await currentIdentityAsync());
         let claimed = false;
