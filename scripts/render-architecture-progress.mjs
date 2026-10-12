@@ -64,20 +64,35 @@ const cell = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<
 const names = ["Baseline and inventory", "Core and ports", "State and identity", "Routes and transport", "Sandbox lifecycle", "Hyper-V lifecycle", "Images/network/admin", "Physical/recording/Appium", "Provider capabilities", "Device Lab entrypoints", "Sessions and containers", "Workspace/profiles/credentials/tools", "Host services/tool sessions/remote", "Composition and distribution", "Enforcement and reliability"];
 const label = { integrated: "integrated", candidate: "implemented candidate", partial: "partial", todo: "TODO", excluded: "excluded" };
 const structuralLabel = { completed: "완료", partial: "부분 완료", "in-progress": "진행 중", pending: "미착수" };
+const structuralById = new Map(structuralPlans.map(lane => [lane.id, lane]));
+const remainingStructuralPlans = structuralPlans.filter(lane => lane.workStatus !== "completed")
+    .sort((a, b) => a.wbsCode.localeCompare(b.wbsCode));
 const out = ["# Architecture work breakdown and progress", "", `Updated: ${cell(progress.updatedAt)}. Source baseline: \`${inventory.baselineCommit}\`.`, "", "Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).", "",
     `확인된 구조 정리 그룹: **${structuralCounts.completed}/${structuralPlans.length} 완료 (${structuralPercent}%)**, **${structuralRemaining}개 남음**.`,
     `부분 완료: **${structuralCounts.partial}**; 진행 중: **${structuralCounts["in-progress"]}**; 미착수: **${structuralCounts.pending}**.`, "",
     "이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.", "",
-    "## 0. 남은 구조 정리", "", "| 그룹 | 상태 | 남은 작업 | 완료 조건 | 확인한 소스 |", "| --- | --- | --- | --- | --- |"];
-for (const lane of structuralPlans.filter(lane => lane.workStatus !== "completed")) {
-    const source = (lane.sourceTrace?.remainingPaths ?? lane.sourceTrace?.owningPaths ?? []).join(", ");
-    out.push(`| ${cell(lane.title)} | ${structuralLabel[lane.workStatus]} | ${cell(lane.remainingWork)} | ${cell(lane.completionCriteria)} | ${cell(source)} |`);
+    "## 0. 현재 WBS: 남은 구조 정리", "",
+    "아래 WBS 번호는 기존 그룹 ID에 연결되어 있으며, 완료 후에도 유지한다. 부분 완료는 해당 그룹의 기존 작업이 통합되어 있지만 아래 정리가 남아 있다는 뜻이다.", "",
+    "| WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |", "| --- | --- | --- | --- | --- |"];
+for (const lane of remainingStructuralPlans) {
+    const dependencies = lane.dependsOn.map(id => structuralById.get(id).wbsCode).join(", ") || "없음";
+    out.push(`| ${cell(lane.wbsCode)} | ${cell(lane.title)} | ${structuralLabel[lane.workStatus]} | ${cell(dependencies)} | ${cell(lane.remainingWork)} |`);
 }
-out.push("", "## 0.1 완료한 구조 정리", "", "| 그룹 | 통합 커밋 | 완료 조건 |", "| --- | --- | --- |");
+out.push("", "### 진행 순서와 완료 판정", "",
+    "현재 구현 계획에서는 R01·R02·R03·R04를 병렬로 진행하고, R05는 R01 이후, R06은 R04 이후에 적용한다. R06의 선행 관계는 물리 기기 처리와 공유 브로커 파일의 변경을 조정하기 위한 작업 순서다.", "",
+    "공통 조합 지점의 연결, 독립 리뷰, portable QA, 로컬 통합까지 확인한 그룹만 완료로 바꾼다. 이 공통 작업은 각 그룹의 완료 조건에 포함하며 별도 그룹으로 더하지 않는다. 계획 작성·코드 작성만으로 완료 수를 올리지 않는다.", "");
+for (const lane of remainingStructuralPlans) {
+    const sources = (lane.sourceTrace?.remainingPaths ?? lane.sourceTrace?.owningPaths ?? [])
+        .map(path => `[${cell(path)}](../../${path})`).join(", ");
+    out.push(`### ${cell(lane.wbsCode)}. ${cell(lane.title)}`, "",
+        `완료 조건: ${cell(lane.completionCriteria)}`, "", `확인한 소스: ${sources}`, "");
+}
+out.push("## 0.1 완료한 구조 정리", "", "| WBS | 그룹 | 통합 커밋 | 완료 조건 |", "| --- | --- | --- | --- |");
 for (const lane of structuralPlans.filter(lane => lane.workStatus === "completed")) {
-    out.push(`| ${cell(lane.title)} | \`${lane.acceptedIntegrationCommit.slice(0, 8)}\` | ${cell(lane.completionCriteria)} |`);
+    out.push(`| ${cell(lane.wbsCode || "기완료")} | ${cell(lane.title)} | \`${lane.acceptedIntegrationCommit.slice(0, 8)}\` | ${cell(lane.completionCriteria)} |`);
 }
 out.push("", "각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.", "",
+    "<details>", "<summary>참고: 과거 기능 전환 기록·패킷 검증 조건·전체 범위 확인</summary>", "",
     "## 0.2 기능 전환 기록 (참고)", "",
     `Known in-scope operation cutovers: **${total}** (${items.size} inventoried, ${counts.excluded} explicitly excluded).`,
     `Implemented including unmerged candidates: **${implemented}/${total} (${percent(implemented)}%)**.`,
@@ -123,6 +138,6 @@ out.push("", `Current packet delivery gates: **${gateTotal}**. See the inventory
 for (const gap of inventory.gaps) out.push(`| ${cell(gap.id)} | ${cell(gap.remediationStatus)} | ${cell(gap.currentSourceDisposition?.reason ?? gap.currentAuditDisposition?.reason ?? gap.reason)} |`);
 out.push("", "## 18. Excluded scope", "");
 for (const id of excluded) out.push(`- \`${id}\` — ${cell(items.get(id).operation)}. Retained separately; no implementation or integration without an explicit scope restoration.`);
-out.push("");
+out.push("", "</details>", "");
 writeFileSync(resolve(root, "doc/common/GUIDE__architecture-work-breakdown.md"), out.join("\n"));
 console.log(JSON.stringify({ structuralGroups: structuralPlans.length, structuralCounts, structuralRemaining, structuralPercent, knownRequired: total, implemented, implementationPercent: percent(implemented), integrated: counts.integrated, integrationPercent: percent(counts.integrated), ...counts, currentPacketGates: gateTotal, sourceDenominatorCertified: progress.sourceDenominatorCertified }));

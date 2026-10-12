@@ -1466,6 +1466,8 @@
     },
     {
       "id": "mcp-request-selection-structural",
+      "wbsCode": "R02",
+      "dependsOn": [],
       "coveredOperationIds": [],
       "status": "Accepted bounded source at958c56c2: opaque core request results and semantic catalog selection with finite outward MCP presentation. Actual independent reviews and QA584/package/shipping passed; protected14pins/97userpaths delivered. Zero operation credit; no exhaustive/native/formal Goal certification.",
       "taskId": "TASK__architecture-mcp-result-selection",
@@ -1485,6 +1487,8 @@
     },
     {
       "id": "broker-lease-physical-cleanup-results-structural",
+      "wbsCode": "R04",
+      "dependsOn": [],
       "coveredOperationIds": [],
       "status": "Accepted bounded source ata5fbfb6f: semantic lease renewal/admission/release/restoration, physical outcomes and owner cleanup with finite native effects, captured identity and outward HTTP rendering. Actual independent reviews and QA385/ten whole files/build1322/package/shipping passed; protected17pins/97userpaths delivered. Prior Code failure corrected; formal receipt-empty park retained. Zero operation credit; no exhaustive/native Goal certification.",
       "taskId": "TASK__architecture-broker-control-outcomes",
@@ -1493,7 +1497,7 @@
       "deliveryEvidence": "/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json",
       "title": "브로커 물리 기기·리스·정리",
       "workStatus": "partial",
-      "remainingWork": "물리 기기 선택 안내 문구와 Apple inventory stdout 해석을 어댑터로 옮긴다.",
+      "remainingWork": "물리 기기 선택·Apple trust 안내와 inventory stdout 해석을 어댑터로 옮긴다.",
       "completionCriteria": "선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
@@ -1518,6 +1522,8 @@
     },
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
+      "wbsCode": "R06",
+      "dependsOn": ["broker-lease-physical-cleanup-results-structural"],
       "coveredOperationIds": [],
       "status": "Accepted bounded source at c181c0ff: semantic create/start, stop/delete, snapshot, image and network/trust outcomes with finite native effects and outward response rendering. Actual independent Code/Security/Docs and QA527 across19 whole files, genuine build1326, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Earlier compiler and rollback failures corrected and retained as evidence. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
       "taskId": "TASK__architecture-hyper-v-result-boundaries",
@@ -1527,7 +1533,7 @@
       "title": "Hyper-V 수명주기·네이티브 경계",
       "workStatus": "partial",
       "remainingWork": "Linux seed stdout의 마지막 줄 JSON 해석을 네이티브 어댑터로 옮긴다.",
-      "completionCriteria": "코어는 검증된 seed 관측을 받고, VM·키·네트워크 동일성 판단과 rollback 정책을 유지한다.",
+      "completionCriteria": "어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
         "remainingPaths": [
@@ -1641,6 +1647,8 @@
     },
     {
       "id": "container-native-recipe-boundaries-structural",
+      "wbsCode": "R05",
+      "dependsOn": ["runtime-capability-native-observations-structural"],
       "coveredOperationIds": [],
       "taskId": "TASK__architecture-container-native-recipe-boundaries",
       "status": "Accepted bounded source at 99a91a5b: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified.",
@@ -1662,7 +1670,7 @@
       "title": "컨테이너 실행·준비 경계",
       "workStatus": "partial",
       "remainingWork": "runtime readiness의 Docker·Podman 복구 안내 문구를 CLI 어댑터로 옮긴다.",
-      "completionCriteria": "컨테이너 정책은 준비 상태·거절 이유를 결정하고, CLI가 runtime별 명령 구성과 안내를 처리한다.",
+      "completionCriteria": "코어는 준비 상태·거절 이유만 반환하고, CLI가 runtime별 복구 안내와 종료를 처리한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "acceptedIntegrationCommit": "99a91a5b0f96bee6b277de23bc9ecaa4e47f1659",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/container-native-99a9-bpn4g3sq/qualification.json",
@@ -1721,11 +1729,13 @@
     },
     {
       "id": "workspace-open-presentation-structural",
+      "wbsCode": "R03",
+      "dependsOn": [],
       "coveredOperationIds": [],
       "title": "Workspace 열기·사용자 안내",
       "workStatus": "pending",
       "remainingWork": "workspace open의 prompt·출력 문구·exit 표현을 CLI 어댑터로 옮긴다.",
-      "completionCriteria": "코어가 등록 복구·사용자 확인·소유권·충돌 판단을 유지하고, 어댑터가 질문·출력·종료를 처리한다.",
+      "completionCriteria": "코어가 등록 복구·사용자 확인·소유권·충돌을 판단하고, 어댑터가 질문·출력을 처리하며 소유권 lock 해제 후 종료한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
         "remainingPaths": [
@@ -1736,10 +1746,12 @@
     },
     {
       "id": "runtime-capability-native-observations-structural",
+      "wbsCode": "R01",
+      "dependsOn": [],
       "coveredOperationIds": [],
       "title": "Runtime capability 관측",
       "workStatus": "pending",
-      "remainingWork": "raw status·stdout·JSON 해석과 Vitest 전용 분기를 코어 밖으로 정리한다.",
+      "remainingWork": "raw status·stdout·JSON 해석은 어댑터로, 캐시·Vitest 전용 분기는 기존 facade로 옮긴다.",
       "completionCriteria": "어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
