@@ -56,5 +56,5 @@ export interface SessionOwnershipGuardianPorts {
         containerId: string | null, runtime: SessionOwnershipRuntime): void | Promise<void>;
     send(message: SessionOwnershipMessage): Promise<void>;
     pause(milliseconds: number): Promise<void>;
-    finish(status?: 0 | 1): void;
+    finish(status?: 0 | 1, error?: unknown): void;
 }

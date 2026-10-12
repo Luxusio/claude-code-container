@@ -81,9 +81,9 @@ cp.spawnSync = function(command, args, options) {
             Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
         }
         const attempts = fs.readFileSync(process.env.CCC_FIXTURE_LOG, 'utf8').trim().split('\\n').map(JSON.parse).filter(a => a[0] === 'stop').length;
-        status = attempts <= Number(process.env.CCC_FIXTURE_FAILURES || 0) ? 73 : 0;
+        status = attempts <= Number(process.env.CCC_FIXTURE_FAILURES || 0) ? 72 + attempts : 0;
     }
-    return {pid: process.pid, status, signal: null, stdout, stderr: status ? 'owned fixture stop failure' : '', output: [null, stdout, '']};
+    return {pid: process.pid, status, signal: null, stdout, stderr: status ? 'fixture-sensitive-runtime-stderr-secret' : '', output: [null, stdout, '']};
 };
 require('node:module').syncBuiltinESMExports();
 `);
@@ -107,6 +107,8 @@ require('node:module').syncBuiltinESMExports();
         children.push(child);
         const messages: unknown[] = [];
         let stderr = "";
+        let closed = false;
+        child.once("close", () => { closed = true; });
         child.stderr!.on("data", chunk => { stderr += String(chunk); });
         child.on("message", message => { messages.push(message); });
         child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt: captureNativeSessionOwnership(lock) });
@@ -115,7 +117,7 @@ require('node:module').syncBuiltinESMExports();
             child.send({ type: "update", sequence: 1, containerId: idA, runtime: "docker", cleanupEnabled: true });
             await eventually(() => messages.some(m => (m as { type: string }).type === "ack"), "real guardian ACK");
         }
-        return { child, stderr: () => stderr };
+        return { child, stderr: () => stderr, closed: () => closed };
     }
     it.each([0, 1, 3])("publishes native guardian identity and retains receipt until exact-ID stop succeeds (failures %s)", async failures => {
         const { child, stderr } = await launch(failures);
@@ -134,6 +136,34 @@ require('node:module').syncBuiltinESMExports();
         expect(child.exitCode, stderr()).toBe(failures === 3 ? 1 : 0);
         expect(existsSync(lock)).toBe(failures === 3);
         expect(stops()).toEqual(Array.from({ length: failures === 3 ? 3 : failures + 1 }, () => ["stop", idA]));
+        expect(existsSync(guard)).toBe(false);
+    }, 30_000);
+    it.each([false, true])("reports bounded ordered terminal causes before native exit (protocol primary %s)", async protocol => {
+        const { child, stderr, closed } = await launch(3);
+        writeFileSync(log + ".release", "release");
+        if (protocol) {
+            child.send({ type: "update", sequence: 1, containerId: idB, runtime: "docker",
+                cleanupEnabled: true, secret: "fixture-private-causal-secret" });
+        } else child.disconnect();
+        await eventually(() => child.exitCode !== null, "native terminal causal evidence");
+        await eventually(closed, "native terminal diagnostic pipe drained");
+        expect(child.exitCode).toBe(1);
+        expect(existsSync(lock)).toBe(true);
+        expect(stops()).toEqual(Array.from({ length: 3 }, () => ["stop", idA]));
+        const prefix = "[ccc] Session ownership guardian failure: ";
+        const diagnostics = stderr().split("\n").filter(line => line.startsWith(prefix));
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0]!.length).toBeLessThan(2048);
+        expect(stderr()).not.toContain("fixture-private-causal-secret");
+        expect(stderr()).not.toContain(root);
+        expect(stderr()).not.toContain("owned fixture stop failure");
+        expect(stderr()).not.toContain("fixture-sensitive-runtime-stderr-secret");
+        const attempts = [73, 74, 75].map(status => ({ kind: "error", operation: "container-stop", status, signal: "none", code: "unknown" }));
+        const cleanup = { kind: "aggregate", operation: "cleanup", errors: attempts, cause: attempts[0] };
+        expect(JSON.parse(diagnostics[0]!.slice(prefix.length))).toEqual(protocol
+            ? { kind: "aggregate", operation: "guardian", errors: [{ kind: "error", operation: "protocol" }, cleanup],
+                cause: { kind: "error", operation: "protocol" } }
+            : cleanup);
         expect(existsSync(guard)).toBe(false);
     }, 30_000);
     it.each(["successor", "foreign"] as const)("revalidates %s authority between failed stop attempts", async kind => {
@@ -567,7 +597,7 @@ export async function load(url, context, nextLoad) {
         expect(child.exitCode).toBe(rejectLoad ? 1 : 0);
         expect(stops()).toEqual(rejectLoad ? [] : [["stop", idA]]);
         expect(existsSync(lock)).toBe(rejectLoad);
-        if (rejectLoad) expect(owner.output).toContain("Ended host session cleanup failed");
+        if (rejectLoad) expect(owner.output).toContain("Session ownership guardian failure:");
     });
 
     function calls(): string[][] {
@@ -756,7 +786,7 @@ export async function load(url, context, nextLoad) {
         await kill(owner);
         expect(existsSync(owner.ready.lock)).toBe(true);
         await eventually(() => !running(owner.ready.guardian), "bounded failed-cleanup guardian exit");
-        await eventually(() => owner.output.includes("Ended host session cleanup failed"), "visible ended-host cleanup failure");
+        await eventually(() => owner.output.includes("Session ownership guardian failure:"), "visible ended-host cleanup failure");
         expect(existsSync(owner.ready.lock)).toBe(true);
         expect(stops()).toEqual(Array.from({ length: 3 }, () => ["stop", idA]));
         // Process disappearance alone does not establish a grandchild exit code.
@@ -770,7 +800,7 @@ export async function load(url, context, nextLoad) {
         expect(result.code).toBe(1);
         expect(result.signal).toBeNull();
         expect(existsSync(owner.ready.lock)).toBe(true);
-        expect(owner.output).toContain("Ended host session cleanup failed");
+        expect(owner.output).toContain("Session ownership guardian failure:");
         expect(stops()).toEqual(Array.from({ length: 3 }, () => ["stop", idB]));
     });
 

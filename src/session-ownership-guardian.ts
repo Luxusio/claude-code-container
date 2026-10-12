@@ -1,3 +1,4 @@
+import { writeSync } from "fs";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { createSessionOwnershipGuardian } from "./application/session-ownership.js";
 import { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership-native.js";
@@ -9,10 +10,44 @@ if (!process.send || !process.connected || !Number.isSafeInteger(ownerPid) || ow
 let pendingSends = 0;
 let finishing = false;
 let exitStatus: 0 | 1 = 0;
-function finish(status: 0 | 1 = 0): void {
+function failureEvidence(error: unknown, depth = 0): object {
+    if (depth >= 4) return { kind: "truncated" };
+    if (!(error instanceof Error)) return { kind: "non-error" };
+    const evidence: Record<string, unknown> = {
+        kind: error instanceof AggregateError ? "aggregate"
+            : error instanceof TypeError ? "type-error" : error instanceof RangeError ? "range-error" : "error",
+    };
+    const operations: Record<string, string> = {
+        "Session ownership guardian cleanup failed.": "cleanup",
+        "Session ownership guardian failed and cleanup failed.": "guardian",
+        "Session ownership validation failed and rollback failed.": "validation",
+        "Invalid ownership frame.": "protocol",
+        "Invalid ownership sequence.": "protocol",
+        "Invalid container handoff.": "protocol",
+        "Session ownership guardian IPC is closed.": "ipc",
+        "Session ownership guardian IPC write timed out.": "ipc",
+        "Session ownership guardian IPC write failed.": "ipc",
+        "Session ownership guardian IPC parent does not match its owner.": "validation",
+    };
+    if (Object.hasOwn(operations, error.message)) evidence.operation = operations[error.message];
+    const stop = /^Container shutdown failed \(status=(-?\d{1,10}|unknown), signal=(none|SIG[A-Z0-9]{1,12}), error=([A-Z0-9_]{1,32}|unknown)\); session cleanup remains incomplete\.$/.exec(error.message);
+    if (stop) {
+        evidence.operation = "container-stop";
+        const status = Number(stop[1]);
+        evidence.status = Number.isInteger(status) && status >= -2147483648 && status <= 2147483647 ? status : "unknown";
+        evidence.signal = ["none", "SIGKILL", "SIGTERM", "SIGINT", "SIGHUP", "SIGABRT", "SIGSEGV"].includes(stop[2]) ? stop[2] : "unknown";
+        evidence.code = ["ENOENT", "ETIMEDOUT", "EACCES", "EPERM", "EIO", "ENOMEM", "ENOBUFS", "unknown"].includes(stop[3]) ? stop[3] : "unknown";
+    }
+    if (error instanceof AggregateError) evidence.errors = error.errors.slice(0, 3).map((failure: unknown) => failureEvidence(failure, depth + 1));
+    if (error.cause !== undefined) evidence.cause = failureEvidence(error.cause, depth + 1);
+    return evidence;
+}
+function finish(status: 0 | 1 = 0, error?: unknown): void {
     if (status === 1) {
         exitStatus = 1;
-        console.error("[ccc] Ended host session cleanup failed; no successful container shutdown was confirmed.");
+        try {
+            writeSync(2, `[ccc] Session ownership guardian failure: ${JSON.stringify(failureEvidence(error))}\n`);
+        } catch { /* A closed diagnostic stream must not prevent terminal completion. */ }
     }
     finishing = true;
     if (pendingSends === 0) process.exit(exitStatus);

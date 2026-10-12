@@ -124,7 +124,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
         queue = result.catch(() => undefined);
         return result;
     }
-    async function cleanupAndFinish(status: 0 | 1 = 0): Promise<void> {
+    async function cleanupAndFinish(status: 0 | 1 = 0, primary?: unknown): Promise<void> {
         if (finished) return;
         // The serial queue owns this terminal run, including all awaited attempts.
         finished = true;
@@ -146,15 +146,19 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
                     }
                     continue;
                 }
-                ports.finish(status);
+                ports.finish(status, primary);
                 return;
             }
         }
         if (failures.length) {
-            ports.finish(1);
-            throw new AggregateError(failures, "Session ownership guardian cleanup failed.", { cause: failures[0] });
+            const cleanupError = new AggregateError(failures, "Session ownership guardian cleanup failed.", { cause: failures[0] });
+            const terminalError = status === 1
+                ? new AggregateError([primary, cleanupError], "Session ownership guardian failed and cleanup failed.", { cause: primary })
+                : cleanupError;
+            ports.finish(1, terminalError);
+            throw terminalError;
         }
-        ports.finish(status);
+        ports.finish(status, primary);
     }
     function disconnect(): Promise<void> {
         // Wait for the native ACK write outcome before deciding which ID is owned.
@@ -194,11 +198,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
             } catch (error) {
                 try { await ports.send({ type: "error" }); } catch { /* retain the original failure */ }
                 // Do not await the queued disconnect from inside this operation.
-                try {
-                    await cleanupAndFinish(1);
-                } catch (cleanupError) {
-                    throw new AggregateError([error, cleanupError], "Session ownership guardian failed and cleanup failed.", { cause: error });
-                }
+                await cleanupAndFinish(1, error);
                 throw error;
             }
         });

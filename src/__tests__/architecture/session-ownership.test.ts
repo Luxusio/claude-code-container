@@ -529,6 +529,37 @@ describe("guardian ownership protocol", () => {
         expect(f.finishStatuses).toEqual([1]);
     });
 
+    it.each(["disconnect", "protocol", "pause"] as const)("constructs %s terminal evidence before finish can exit", async mode => {
+        const f = guardianFixture();
+        const failures = [new Error("first stop"), new TypeError("second stop"), new RangeError("third stop")];
+        const pauseFailure = new Error("asynchronous pause failed");
+        const exited = new Error("finish simulated native exit");
+        let attempts = 0;
+        const terminals: unknown[] = [];
+        f.ports.cleanup = async () => { throw failures[attempts++]; };
+        if (mode === "pause") f.ports.pause = async () => { await Promise.resolve(); throw pauseFailure; };
+        f.ports.finish = (status, error) => { expect(status).toBe(1); terminals.push(error); throw exited; };
+        await f.init();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        const pending = mode === "protocol"
+            ? f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true })
+            : f.guardian.disconnect();
+        await expect(pending).rejects.toBe(exited);
+        expect(terminals).toHaveLength(1);
+        const terminal = terminals[0] as AggregateError;
+        if (mode === "protocol") {
+            expect(terminal).toBeInstanceOf(AggregateError);
+            expect(terminal.errors[0]).toBeInstanceOf(Error);
+            expect(terminal.cause).toBe(terminal.errors[0]);
+            expect(terminal.errors[1]).toMatchObject({ errors: failures, cause: failures[0] });
+        } else {
+            expect(terminal).toMatchObject({ errors: mode === "pause" ? [failures[0], pauseFailure] : failures, cause: failures[0] });
+        }
+        await f.guardian.disconnect();
+        expect(terminals).toHaveLength(1);
+        expect(attempts).toBe(mode === "pause" ? 1 : 3);
+    });
+
     it("retains distinct failed attempts and makes pause rejection terminal", async () => {
         const f = guardianFixture();
         const failure = new Error("stop uncertainty");

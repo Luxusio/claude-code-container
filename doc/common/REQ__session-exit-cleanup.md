@@ -78,6 +78,13 @@ exhaustion the guardian reports failure and exits nonzero, retaining recovery
 evidence; a pending IPC send must not overwrite that status. Successful release
 or cleanup is terminal and cannot trigger duplicate shutdown.
 
+Exhausted attempts remain in chronological `AggregateError.errors`, with the
+first failure as `cause`. If an awaited retry pause rejects, stop retrying and
+retain the preceding cleanup failure followed by the pause failure; finish once
+with status 1. Construct terminal causal evidence before the native process can
+exit. Native diagnostics expose a bounded, redacted cause structure rather than
+arbitrary error messages, paths or command output.
+
 Parent launch/READY rollback and guardian validation/rollback must await
 asynchronous completion. When a primary launch, readiness or protocol error is
 followed by cleanup failure, preserve both in that order with the primary as
@@ -94,7 +101,10 @@ recorded process identity remains uncertain; age alone never permits removal.
 Verify with owned fake subprocesses: signal the parent while the interactive
 child is ready and alive, observe prompt signal handling, and join all fixtures.
 Cover native stop failures, successful retry, and a foreign claim appearing
-before retry. Build and test the shipped host CLI as well as source modules.
+before retry. Verify distinct exhausted failures, pause rejection and primary
+protocol failure followed by cleanup exhaustion, including redacted evidence
+from the emitted guardian entry point. Build and test the shipped host CLI as
+well as source modules.
 
 Forced process termination cannot run the parent's JavaScript cleanup; the
 separate guardian must cover host owner death. Real built-process fixtures must
