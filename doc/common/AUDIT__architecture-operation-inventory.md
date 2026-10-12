@@ -1,10 +1,26 @@
 # Architecture operation inventory
 
 Historical source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
-Current recording source qualified: `6454e788ef3780cb0ccd8d54c6ece31c39ba4e17`.
-Current composed source accepted: `f5a0ee8c7f6e056503ce3e854147ff9a2701dedd`.
+Historical recording source qualified: `6454e788ef3780cb0ccd8d54c6ece31c39ba4e17`.
+Historical composed source accepted: `f5a0ee8c7f6e056503ce3e854147ff9a2701dedd`.
 Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
+
+Current confirmed structural scope: **19/19 groups completed, 0 remaining**
+at `6ea57ca54aaa8531886e2947e2c4f258564e2a4b`, following the seven-group
+native-boundary delivery. Actual qualified portable QA records 28 whole files,
+913 passing cases and 9 existing platform skips, with independent required
+reviews, genuine build, strict architecture compilation and local shipping/CLI
+checks. Local delivery authenticates 57 source files and preserves all 97
+protected Main user paths, bytes, status and stage. Current group accounting is
+in the [WBS](GUIDE__architecture-work-breakdown.md).
+
+This is an unweighted subtotal of confirmed structural groups, not a certified
+exhaustive source denominator or full Goal completion. It adds no operation IDs
+or credit; whole-source, native-platform, reliability and formal completion
+remain unverified. The original source task remains truthfully blocked because
+automatic receipts were absent; actual results and local delivery are qualified
+under the recorded operator exception.
 
 Status: **all 218 inventoried operation cutovers are source-qualified; the
 original architecture boundary and acceptance work is still incomplete**.
@@ -31,10 +47,13 @@ recorded separately.
 
 The earlier “only recording remains” assessment described its bounded source
 audit. Later complete owning-body reviews found the following original result
-and native-process boundary defects. Completing the direct recording workflow
-does not resolve the broker recording result contract.
+and native-process boundary defects. At that stage, completing the direct
+recording workflow did not resolve the broker recording result contract.
 
-| Known original structural source group | Concrete current scope | State |
+The following table retains the **historical bounded five-of-nine snapshot**;
+its pending states describe that earlier inspection, not current group progress.
+
+| Historical original structural source group | Scope at that snapshot | State at that snapshot |
 | --- | --- | --- |
 | MCP request result selection | Shared request application/domain/ports, native server/flow composition and finite outward presenter | Accepted `958c56c2`; actual independent reviews, final QA584 and protected delivery |
 | Broker lease, physical and owner cleanup results | Nine core files, native broker composition and finite outward codec | Accepted `a5fbfb6f`; actual independent reviews, ten whole suites/QA385, genuine build1322 and protected delivery |
@@ -46,10 +65,10 @@ does not resolve the broker recording result contract.
 | Admin native commands and presentation | Diagnostics/setup/deletion cores and device-lab-admin native composition | Source-confirmed; executable/argv and setup terminal text remain inward; locks/CAS/leases retained |
 | Container native commands | Launch/create/exec cores and selected-runtime native composition | Source-confirmed; Docker/Podman run/exec flags remain inward; runtime/session/credential authority retained |
 
-**5/9 identified structural groups are source-accepted.** This is an unweighted
-subtotal of known groups, not an effort percentage or an exhaustive denominator
-for the full migration. The other four identified groups remain unimplemented. Auditing a
-group does not earn source acceptance.
+**At that historical snapshot, 5/9 identified structural groups were source-accepted.**
+The other four were unimplemented within that bounded inspection. This was an
+unweighted subtotal, not an effort percentage or an exhaustive denominator for
+the full migration. Auditing a group does not earn source acceptance.
 
 These findings add no operation IDs or count credit. Their source anchors and
 bounded inspection limits are recorded in the inventory gaps and zero-operation
@@ -72,9 +91,9 @@ does not certify native Windows/macOS clipboard behavior.
 
 The separate representative architecture review also identified remaining
 direct/mobile control, remote/clean and QEMU/recording native boundaries and
-unnecessary selector/capture/call-mechanics preservation. Those findings remain
-under the original whole-source reconciliation obligation; the nine-group
-subtotal does not certify that they are the complete remaining universe.
+unnecessary selector/capture/call-mechanics preservation. Those findings are
+retained as historical obligations; current confirmed group disposition is recorded in the WBS. The original whole-source reconciliation
+obligation remains open, and neither subtotal certifies an exhaustive universe.
 
 Current source-universe/exports/caller reconciliation, final type/dependency and
 composition qualification, final package/install/image evidence, reliability
@@ -102,6 +121,12 @@ runtime-suite failure remains preserved; the compiler-only consumer was renamed
 without changing its contents or weakening discovery configuration.
 
 Authoritative local evidence:
+
+- Seven native-boundary groups: source `/tmp/ccc-architecture-seven-native-boundaries-20261012`
+  at `6ea57ca54aaa8531886e2947e2c4f258564e2a4b`;
+  `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json`
+  (SHA-256 `5a1f36cc85fdaa68d2face08419cd5ae9754deef98524c859e0942450bd679cc`)
+  and `/tmp/ccc-seven-native-integration-20261012.json`.
 
 - Recording: `/tmp/ccc-direct-recording-source-20261011.json`,
   `/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/direct-recording-6454-mfkwmj3t/final-result.json`

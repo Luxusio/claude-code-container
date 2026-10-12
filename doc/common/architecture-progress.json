@@ -1469,18 +1469,19 @@
       "wbsCode": "R02",
       "dependsOn": [],
       "coveredOperationIds": [],
-      "status": "Active-app seam reviewed, QA qualified and locally delivered at ca88. Broader live mobile request/text/source native framing remains partial; earlier contributions retained. No whole-group or full Goal completion claim.",
-      "taskId": "TASK__architecture-remaining-native-boundaries",
-      "acceptedIntegrationCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/remaining-boundaries-67ca-aklmya70/qaCa88-carry-final.json",
-      "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
       "title": "MCP 요청·결과 경계",
-      "workStatus": "partial",
-      "remainingWork": "Appium HTTP·W3C 액션·Android 셸·클립보드와 text/source 응답 처리를 기존 네이티브 경계로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어가 기기 선택·검증·순서·대기 예산을 결정하고, 어댑터가 모바일 요청 프레임과 응답을 정규화한다. 활성 앱 대기 경계의 통합 기여는 유지한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
+        "remainingPaths": [],
+        "owningPaths": [
           "device-lab-mcp/src/application/device-request.mjs",
           "device-lab-mcp/src/broker.mjs"
         ]
@@ -1500,6 +1501,14 @@
           "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
           "status": "Actual independent Code/Security/Docs and current portable QA PASS;24 fresh whole files and518 unchanged prior passing files carried separately, not a new full/default-suite PASS. Compiled/extracted public native bindings qualified. Original empty automatic receipt formal park retained; native, exhaustive source and full Goal acceptance remain unverified. Zero additional operation credit.",
           "contribution": "Active-app native decoding, semantic wait and outward presentation"
+        },
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "Mobile request framing and text/source response normalization"
         }
       ]
     },
@@ -1675,8 +1684,8 @@
     {
       "id": "admin-native-boundaries-structural",
       "coveredOperationIds": [],
-      "taskId": "TASK__architecture-admin-native-boundaries",
-      "status": "Previously accepted diagnostics/setup/delete contribution retained; group reopened partial for independently confirmed live root-cleanup command and all-project presentation residue at ca88. Separate from broker physical cleanup.",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
       "sourceTrace": {
         "owningPaths": [
           "src/application/device-admin-diagnostics.ts",
@@ -1686,26 +1695,25 @@
           "src/ports/device-admin-setup.ts",
           "src/application/device-admin-delete.ts",
           "src/domain/device-admin-delete.ts",
-          "src/ports/device-admin-delete.ts"
-        ],
-        "nativeConsumers": [
-          "src/device-lab-admin.ts"
-        ],
-        "remainingPaths": [
+          "src/ports/device-admin-delete.ts",
           "src/application/device-admin-cleanup.ts",
           "src/domain/device-admin-cleanup.ts",
           "src/device-lab-cleanup.ts",
           "src/device-lab-admin.ts"
-        ]
+        ],
+        "nativeConsumers": [
+          "src/device-lab-admin.ts"
+        ],
+        "remainingPaths": []
       },
       "title": "Device Lab 관리 명령",
-      "workStatus": "partial",
-      "remainingWork": "root admin cleanup의 ADB·simctl·Sandbox·macOS 종료 명령과 all-projects 출력을 네이티브 어댑터로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어가 종료·소유권·record lock·프로세스 동일성·physical lease·조건부 공개를 판단하고, 어댑터가 유한한 종료 효과와 터미널 출력을 처리한다. 기존 진단·setup·delete 기여를 유지한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
-      "acceptedIntegrationCommit": "2d82f06c998d9fe358a0f42cc328aa240a9f7438",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/admin-native-2d82-szjznjdk/qa-command-summary.json",
-      "deliveryEvidence": "git merge-base --is-ancestor 2d82f06c998d9fe358a0f42cc328aa240a9f7438 c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
       "qualifiedContributions": [
         {
           "acceptedIntegrationCommit": "2d82f06c998d9fe358a0f42cc328aa240a9f7438",
@@ -1713,6 +1721,14 @@
           "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/admin-native-2d82-szjznjdk/qa-command-summary.json",
           "deliveryEvidence": "git merge-base --is-ancestor 2d82f06c998d9fe358a0f42cc328aa240a9f7438 c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
           "status": "Accepted bounded source at 2d82f06c: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified."
+        },
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "Root admin cleanup native effects and all-project presentation"
         }
       ],
       "wbsCode": "R07",
@@ -1824,18 +1840,19 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "Workspace 열기·사용자 안내",
-      "workStatus": "partial",
-      "remainingWork": "content-repair의 안내 문구·충돌 경로 표시·확인 질문을 CLI 어댑터로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
+        "remainingPaths": [],
+        "owningPaths": [
           "src/application/workspace/content-repair-admission.ts",
           "src/ports/workspace/content-repair-admission.ts",
           "src/index.ts"
         ]
       },
-      "status": "Workspace-open seam reviewed, QA qualified and locally delivered at ca88. Additional live content-repair presentation remains partial; delivered opening contribution retained.",
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
       "qualifiedContributions": [
         {
           "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
@@ -1847,12 +1864,20 @@
           "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
           "status": "Actual independent Code/Security/Docs and current portable QA PASS;24 fresh whole files and518 unchanged prior passing files carried separately, not a new full/default-suite PASS. Compiled/extracted public native bindings qualified. Original empty automatic receipt formal park retained; native, exhaustive source and full Goal acceptance remain unverified. Zero additional operation credit.",
           "contribution": "Workspace-open semantic confirmation/result and native family-unwind presentation"
+        },
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "Workspace content-repair semantic admission and CLI presentation"
         }
       ],
-      "acceptedIntegrationCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
-      "taskId": "TASK__architecture-remaining-native-boundaries",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/remaining-boundaries-67ca-aklmya70/qaCa88-carry-final.json",
-      "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json"
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json"
     },
     {
       "id": "runtime-capability-native-observations-structural",
@@ -1894,29 +1919,26 @@
       "id": "codex-config-bootstrap-boundaries-structural",
       "coveredOperationIds": [],
       "title": "Codex·Claude 설정 포트 단순화",
-      "workStatus": "partial",
-      "remainingWork": "managed MCP의 mise·Node 명령과 컨테이너·인증 파일 경로 구성을 기존 native config 어댑터로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다. 기존 일반 포트 단순화 기여를 유지한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
         "owningPaths": [
           "src/application/codex-harness.ts",
           "src/adapters/codex-harness.ts",
           "src/application/mcp-forward.ts",
-          "src/adapters/mcp-forward.ts"
-        ],
-        "remainingPaths": [
-          "src/domain/mcp-forward.ts",
-          "src/application/mcp-forward.ts",
           "src/adapters/mcp-forward.ts",
+          "src/domain/mcp-forward.ts",
           "src/mcp-forward.ts"
-        ]
+        ],
+        "remainingPaths": []
       },
-      "status": "Previously accepted ordinary configuration-port simplification retained; group reopened partial for independently confirmed live managed-native configuration construction at ca88.",
-      "taskId": "TASK__architecture-native-port-simplification",
-      "acceptedIntegrationCommit": "6d1e2a15c212e2525853acf864dd255c6010cf98",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/native-ports-240d-cjjknqoy/qa6d-final-summary.json",
-      "deliveryEvidence": "/tmp/ccc-native-port-integration-20261012.json",
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
       "qualifiedContributions": [
         {
           "acceptedIntegrationCommit": "6d1e2a15c212e2525853acf864dd255c6010cf98",
@@ -1924,6 +1946,14 @@
           "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/native-ports-240d-cjjknqoy/qa6d-final-summary.json",
           "deliveryEvidence": "/tmp/ccc-native-port-integration-20261012.json",
           "status": "Confirmed bounded group delivered at6d1e2a15 after actual independent Code/Security/Docs review and portable QA PASS. Ordinary ports replace getter/descriptor/Reflect preservation machinery; configuration locks, preparation, bootstrap, finally restoration and real filesystem publication authority remain qualified. Zero additional operation credit; native, reliability, exhaustive source, full Goal and formal close remain unverified."
+        },
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "Managed-native MCP configuration construction"
         }
       ],
       "wbsCode": "R08",
@@ -1956,21 +1986,36 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "iOS 앱 관리",
-      "workStatus": "pending",
-      "remainingWork": "simctl·devicectl 명령과 Appium terminate 요청·응답 표현을 네이티브 어댑터로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
-          "packages/device-lab/providers/application/ios-app-management.mjs",
-          "packages/device-lab/providers/ports/mobile-app-management.d.mts"
-        ],
+        "remainingPaths": [],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/ios-simulator.mjs",
           "packages/device-lab/providers/backends/ios-device.mjs"
+        ],
+        "owningPaths": [
+          "packages/device-lab/providers/application/ios-app-management.mjs",
+          "packages/device-lab/providers/ports/mobile-app-management.d.mts"
         ]
       },
-      "status": "Independent bounded source review confirmed actual native framing and live bindings at ca88. Newly recorded existing structural debt; not new functionality or additional operation credit. Exhaustive/native/full Goal acceptance remains unverified."
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+      "qualifiedContributions": [
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "iOS app-management native effects and response normalization"
+        }
+      ],
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json"
     },
     {
       "id": "ios-observation-access-native-boundaries-structural",
@@ -1978,21 +2023,36 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "iOS 관측·접근",
-      "workStatus": "pending",
-      "remainingWork": "Appium session·관측 HTTP/JSON과 simctl 실행·screenshot·erase·probe 프레임을 네이티브 어댑터로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
-          "packages/device-lab/providers/application/ios-observation-access.mjs",
-          "packages/device-lab/providers/ports/ios-observation-access.d.mts"
-        ],
+        "remainingPaths": [],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/ios-simulator.mjs",
           "packages/device-lab/providers/backends/ios-device.mjs"
+        ],
+        "owningPaths": [
+          "packages/device-lab/providers/application/ios-observation-access.mjs",
+          "packages/device-lab/providers/ports/ios-observation-access.d.mts"
         ]
       },
-      "status": "Independent bounded source review confirmed actual native framing and live bindings at ca88. Newly recorded existing structural debt; not new functionality or additional operation credit. Exhaustive/native/full Goal acceptance remains unverified."
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+      "qualifiedContributions": [
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "iOS observation/access native effects and response normalization"
+        }
+      ],
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json"
     },
     {
       "id": "qemu-image-lifecycle-native-boundaries-structural",
@@ -2000,21 +2060,36 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "QEMU 이미지·수명주기",
-      "workStatus": "pending",
-      "remainingWork": "overlay·QEMU launch·SSH provisioning의 네이티브 명령 구성을 기존 Linux VM 어댑터로 옮긴다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "코어는 검증된 경로·materialize/reuse 결정·runtime 동일성·공개 정책을 유지하고, 어댑터가 overlay·launch·guest provisioning 효과와 결과를 처리한다.",
-      "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
+      "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
+        "remainingPaths": [],
+        "nativeConsumers": [
+          "packages/device-lab/providers/backends/linux-vm.mjs"
+        ],
+        "owningPaths": [
           "packages/device-lab/providers/domain/qemu-image-disk-target.mjs",
           "packages/device-lab/providers/application/qemu-image-disk-target.mjs",
           "packages/device-lab/providers/application/qemu-lifecycle.mjs"
-        ],
-        "nativeConsumers": [
-          "packages/device-lab/providers/backends/linux-vm.mjs"
         ]
       },
-      "status": "Independent bounded source review confirmed actual native framing and live bindings at ca88. Newly recorded existing structural debt; not new functionality or additional operation credit. Exhaustive/native/full Goal acceptance remains unverified."
+      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+      "qualifiedContributions": [
+        {
+          "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+          "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+          "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+          "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+          "contribution": "QEMU overlay, launch and guest-provisioning native effects"
+        }
+      ],
+      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
+      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json"
     }
   ],
   "currentSourceQualificationAudit": {
@@ -2147,6 +2222,16 @@
     "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "confirmedStructuralScopeAudit": {
+    "sourceCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
+    "previousCompleted": 12,
+    "previousGroups": 19,
+    "confirmedGroups": 19,
+    "completedGroups": 19,
+    "remainingGroups": 0,
+    "sourceUniverseCertified": false,
+    "scope": "All nineteen currently confirmed structural groups independently qualified and locally delivered; seven remaining groups accepted at6ea57ca5 with913 passed/9 existing platform skips. Earlier bounded contributions and scope audit retained. Zero additional operation credit; full-default suite, native, reliability, exhaustive source universe, full Goal and formal close remain unverified; original automatic receipt park retained."
+  },
+  "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
     "sourceCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
     "previousCompleted": 10,
     "previousGroups": 16,

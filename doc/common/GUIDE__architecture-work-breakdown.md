@@ -4,8 +4,8 @@ Updated: 2026\-10\-12. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **12/19 완료 (63.2%)**, **7개 남음**.
-부분 완료: **4**; 진행 중: **0**; 미착수: **3**.
+확인된 구조 정리 그룹: **19/19 완료 (100.0%)**, **0개 남음**.
+부분 완료: **0**; 진행 중: **0**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -15,13 +15,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 | WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |
 | --- | --- | --- | --- | --- |
-| R02 | MCP 요청·결과 경계 | 부분 완료 | 없음 | Appium HTTP·W3C 액션·Android 셸·클립보드와 text/source 응답 처리를 기존 네이티브 경계로 옮긴다\. |
-| R03 | Workspace 열기·사용자 안내 | 부분 완료 | 없음 | content\-repair의 안내 문구·충돌 경로 표시·확인 질문을 CLI 어댑터로 옮긴다\. |
-| R07 | Device Lab 관리 명령 | 부분 완료 | 없음 | root admin cleanup의 ADB·simctl·Sandbox·macOS 종료 명령과 all\-projects 출력을 네이티브 어댑터로 옮긴다\. |
-| R08 | Codex·Claude 설정 포트 단순화 | 부분 완료 | 없음 | managed MCP의 mise·Node 명령과 컨테이너·인증 파일 경로 구성을 기존 native config 어댑터로 옮긴다\. |
-| R09 | iOS 앱 관리 | 미착수 | 없음 | simctl·devicectl 명령과 Appium terminate 요청·응답 표현을 네이티브 어댑터로 옮긴다\. |
-| R10 | iOS 관측·접근 | 미착수 | 없음 | Appium session·관측 HTTP/JSON과 simctl 실행·screenshot·erase·probe 프레임을 네이티브 어댑터로 옮긴다\. |
-| R11 | QEMU 이미지·수명주기 | 미착수 | 없음 | overlay·QEMU launch·SSH provisioning의 네이티브 명령 구성을 기존 Linux VM 어댑터로 옮긴다\. |
 
 ### 진행 순서와 완료 판정
 
@@ -29,64 +22,29 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 공통 조합 지점의 연결, 독립 리뷰, portable QA, 로컬 통합까지 확인한 그룹만 완료로 바꾼다. 이 공통 작업은 각 그룹의 완료 조건에 포함하며 별도 그룹으로 더하지 않는다. 계획 작성·코드 작성만으로 완료 수를 올리지 않는다.
 
-### R02. MCP 요청·결과 경계
-
-완료 조건: 코어가 기기 선택·검증·순서·대기 예산을 결정하고, 어댑터가 모바일 요청 프레임과 응답을 정규화한다\. 활성 앱 대기 경계의 통합 기여는 유지한다\.
-
-확인한 소스: [device\-lab\-mcp/src/application/device\-request\.mjs](../../device-lab-mcp/src/application/device-request.mjs), [device\-lab\-mcp/src/broker\.mjs](../../device-lab-mcp/src/broker.mjs)
-
-### R03. Workspace 열기·사용자 안내
-
-완료 조건: 코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다\. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다\.
-
-확인한 소스: [src/application/workspace/content\-repair\-admission\.ts](../../src/application/workspace/content-repair-admission.ts), [src/ports/workspace/content\-repair\-admission\.ts](../../src/ports/workspace/content-repair-admission.ts), [src/index\.ts](../../src/index.ts)
-
-### R07. Device Lab 관리 명령
-
-완료 조건: 코어가 종료·소유권·record lock·프로세스 동일성·physical lease·조건부 공개를 판단하고, 어댑터가 유한한 종료 효과와 터미널 출력을 처리한다\. 기존 진단·setup·delete 기여를 유지한다\.
-
-확인한 소스: [src/application/device\-admin\-cleanup\.ts](../../src/application/device-admin-cleanup.ts), [src/domain/device\-admin\-cleanup\.ts](../../src/domain/device-admin-cleanup.ts), [src/device\-lab\-cleanup\.ts](../../src/device-lab-cleanup.ts), [src/device\-lab\-admin\.ts](../../src/device-lab-admin.ts)
-
-### R08. Codex·Claude 설정 포트 단순화
-
-완료 조건: 코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다\. 기존 일반 포트 단순화 기여를 유지한다\.
-
-확인한 소스: [src/domain/mcp\-forward\.ts](../../src/domain/mcp-forward.ts), [src/application/mcp\-forward\.ts](../../src/application/mcp-forward.ts), [src/adapters/mcp\-forward\.ts](../../src/adapters/mcp-forward.ts), [src/mcp\-forward\.ts](../../src/mcp-forward.ts)
-
-### R09. iOS 앱 관리
-
-완료 조건: 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\.
-
-확인한 소스: [packages/device\-lab/providers/application/ios\-app\-management\.mjs](../../packages/device-lab/providers/application/ios-app-management.mjs), [packages/device\-lab/providers/ports/mobile\-app\-management\.d\.mts](../../packages/device-lab/providers/ports/mobile-app-management.d.mts)
-
-### R10. iOS 관측·접근
-
-완료 조건: 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\.
-
-확인한 소스: [packages/device\-lab/providers/application/ios\-observation\-access\.mjs](../../packages/device-lab/providers/application/ios-observation-access.mjs), [packages/device\-lab/providers/ports/ios\-observation\-access\.d\.mts](../../packages/device-lab/providers/ports/ios-observation-access.d.mts)
-
-### R11. QEMU 이미지·수명주기
-
-완료 조건: 코어는 검증된 경로·materialize/reuse 결정·runtime 동일성·공개 정책을 유지하고, 어댑터가 overlay·launch·guest provisioning 효과와 결과를 처리한다\.
-
-확인한 소스: [packages/device\-lab/providers/domain/qemu\-image\-disk\-target\.mjs](../../packages/device-lab/providers/domain/qemu-image-disk-target.mjs), [packages/device\-lab/providers/application/qemu\-image\-disk\-target\.mjs](../../packages/device-lab/providers/application/qemu-image-disk-target.mjs), [packages/device\-lab/providers/application/qemu\-lifecycle\.mjs](../../packages/device-lab/providers/application/qemu-lifecycle.mjs)
-
 ## 0.1 완료한 구조 정리
 
 | WBS | 그룹 | 통합 커밋 | 완료 조건 |
 | --- | --- | --- | --- |
+| R02 | MCP 요청·결과 경계 | `6ea57ca5` | 코어가 기기 선택·검증·순서·대기 예산을 결정하고, 어댑터가 모바일 요청 프레임과 응답을 정규화한다\. 활성 앱 대기 경계의 통합 기여는 유지한다\. |
 | R04 | 브로커 물리 기기·리스·정리 | `ca88c404` | 선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다\. |
 | 기완료 | 브로커 상태·녹화·Appium 결과 | `0cebcfe0` | 상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
 | R06 | Hyper\-V 수명주기·네이티브 경계 | `ca88c404` | 어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다\. |
 | 기완료 | 브로커 provider 수명주기 결과 | `8060aa02` | Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다\. |
 | 기완료 | Android·iOS 환경 제어 | `438db1c0` | 환경 코어가 의미 입력·결과만 사용하고, ADB·simctl 명령 구성과 응답 처리는 네이티브 어댑터에 둔다\. |
 | 기완료 | Android 앱 관리 | `438db1c0` | 앱 설치·실행·삭제·권한 정책과 ADB 명령 구성이 분리되고, emulator·physical 양쪽 호출 경로의 QA가 확인된다\. |
+| R07 | Device Lab 관리 명령 | `6ea57ca5` | 코어가 종료·소유권·record lock·프로세스 동일성·physical lease·조건부 공개를 판단하고, 어댑터가 유한한 종료 효과와 터미널 출력을 처리한다\. 기존 진단·setup·delete 기여를 유지한다\. |
 | R05 | 컨테이너 실행·준비 경계 | `ca88c404` | 코어는 준비 상태·거절 이유만 반환하고, CLI가 runtime별 복구 안내와 종료를 처리한다\. |
 | 기완료 | Remote 연결·전송 경계 | `9c1d1e5d` | 원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
 | 기완료 | 도구 설치·Doctor 진단 | `c9cae5ae` | 설치·진단 정책이 의미 관측을 사용하고, 네이티브 실행·터미널 표현이 어댑터에 있으며 리뷰·QA·통합이 확인된다\. |
 | 기완료 | Desktop 제어·파일 전송 | `a71e9ed2` | 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다\. |
+| R03 | Workspace 열기·사용자 안내 | `6ea57ca5` | 코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다\. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다\. |
 | R01 | Runtime capability 관측 | `ca88c404` | 어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다\. |
+| R08 | Codex·Claude 설정 포트 단순화 | `6ea57ca5` | 코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다\. 기존 일반 포트 단순화 기여를 유지한다\. |
 | 기완료 | 컨테이너 identity digest | `6d1e2a15` | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. |
+| R09 | iOS 앱 관리 | `6ea57ca5` | 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\. |
+| R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
+| R11 | QEMU 이미지·수명주기 | `6ea57ca5` | 코어는 검증된 경로·materialize/reuse 결정·runtime 동일성·공개 정책을 유지하고, 어댑터가 overlay·launch·guest provisioning 효과와 결과를 처리한다\. |
 
 각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
 
