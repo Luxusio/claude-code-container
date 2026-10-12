@@ -21,7 +21,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | Workspace 열기·사용자 안내 | 미착수 | workspace open의 prompt·출력 문구·exit 표현을 CLI 어댑터로 옮긴다\. | 코어가 등록 복구·사용자 확인·소유권·충돌 판단을 유지하고, 어댑터가 질문·출력·종료를 처리한다\. | src/application/workspace/open\.ts |
 | Runtime capability 관측 | 미착수 | raw status·stdout·JSON 해석과 Vitest 전용 분기를 코어 밖으로 정리한다\. | 어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다\. | src/application/runtime\-capabilities\.ts, src/adapters/runtime\-capabilities\.ts |
 | Codex·Claude 설정 포트 단순화 | 미착수 | 내부 포트의 getter·descriptor·Reflect 호출 보존 계층을 필요한 일반 함수로 줄인다\. | 설정 lock·prepare·bootstrap·finally 복구와 안전한 파일 공개 정책을 보존하면서, 실제 내부 호출 계약에 맞춘 단순한 포트를 사용한다\. | src/application/codex\-harness\.ts, src/adapters/codex\-harness\.ts, src/application/mcp\-forward\.ts, src/adapters/mcp\-forward\.ts |
-| 컨테이너 identity digest | 미착수 | captureLabelsDigest\(\)\(\) 이중 factory를 단일 digest 포트로 정리한다\. | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. | src/application/container/identity\-image\.ts, src/ports/container/identity\-image\.ts, src/adapters/container\-identity\.ts |
+| 컨테이너 identity digest | 미착수 | captureLabelsDigest\(\)\(\) 이중 factory를 단일 digest 포트로 정리한다\. | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. | src/application/container/identity\-image\.ts, src/ports/container/identity\-image\.ts, src/container\-identity\.ts |
 
 ## 0.1 완료한 구조 정리
 

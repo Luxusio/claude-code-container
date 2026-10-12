@@ -1778,7 +1778,7 @@
         "remainingPaths": [
           "src/application/container/identity-image.ts",
           "src/ports/container/identity-image.ts",
-          "src/adapters/container-identity.ts"
+          "src/container-identity.ts"
         ]
       },
       "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
