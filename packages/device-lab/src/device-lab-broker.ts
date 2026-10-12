@@ -9,7 +9,7 @@ import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
 import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
 import type {DeviceStatusPreparation, DeviceStatusPhysicalAdmission} from "./device-lab/domain/broker-observation.js";
 import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
-import { renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
+import { normalizeAppleInventory, renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVSecureBootConfiguration} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
@@ -5925,8 +5925,7 @@ function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
         read: readOwnerDevices,
         androidInventory: () => androidHostDeviceInventory(normalized),
         connectAndroid: target => observePhysicalCommand(normalized, { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["connect", target] }),
-        appleInventory: () => observePhysicalCommand(normalized, { mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["xctrace", "list", "devices"] }),
-        appleDevices: parseXctraceDevices,
+        appleInventory: () => normalizeAppleInventory(observePhysicalCommand(normalized, { mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["xctrace", "list", "devices"] }), parseXctraceDevices),
         nonce: () => randomBytes(16).toString("hex"),
         timestamp: () => new Date().toISOString(),
         claimLease: (owner, request) => brokerPhysicalLeases.claim(owner, request),

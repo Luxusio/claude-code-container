@@ -322,3 +322,9 @@ export function selectBackendCatalog(catalog, backend) {
             ...(Array.isArray(value.hostBackends.backends) ? {backends:value.hostBackends.backends.filter(item => item.name === backend)} : {})}} : {}),
     };
 }
+
+/** @param {string} backend @param {string} expectedAppId
+ * @param {Extract<import('../ports/device-request.mjs').ActiveAppObservation,{kind:'observed'}>} observation */
+export function activeAppMatches(backend, expectedAppId, observation) {
+    return backend.startsWith('ios') ? observation.activeAppId === expectedAppId : observation.foreground;
+}

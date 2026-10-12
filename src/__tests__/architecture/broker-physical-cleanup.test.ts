@@ -3,13 +3,15 @@ import { createBrokerOwnerCleanupApplication } from "../../../packages/device-la
 import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
 import { createBrokerPhysicalDevicesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-devices.js";
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
+import { normalizeAppleInventory, renderAppleTrustDiagnostic, renderPhysicalAttachOutcome } from "../../../packages/device-lab/src/device-lab/broker/physical-outcomes.js";
+import { appleTrustFacts } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-devices.js";
 
 function physicalPorts(): BrokerPhysicalDevicesPorts<string, { observed: boolean }> {
     return {
         deriveDeviceId: () => "phone", read: () => [],
         androidInventory: () => ({ ok: true, devices: [{ serial: "usb", state: "device", details: {}, connection: "usb", attachable: true }] }),
-        connectAndroid: () => ({ status: 0, receipt: { observed: true } }), appleInventory: () => ({ status: 0, stdout: "visible", receipt: { observed: true } }),
-        appleDevices: () => [{ name: "Phone", udid: "udid", version: "18", connection: "usb", availability: "available", raw: "visible" }],
+        connectAndroid: () => ({ status: 0, receipt: { observed: true } }),
+        appleInventory: () => ({ kind: "observed", receipt: { observed: true }, devices: [{ name: "Phone", udid: "udid", version: "18", connection: "usb", availability: "available", raw: "visible" }] }),
         nonce: () => "nonce", timestamp: () => "now",
         claimLease: () => ({ kind: "claimed", created: true, lease: { claimId: "claim" } }),
         releaseClaim: () => ({ kind: "released", lease: { claimId: "claim" } }),
@@ -26,6 +28,67 @@ function physicalPorts(): BrokerPhysicalDevicesPorts<string, { observed: boolean
 
 describe("broker physical devices", () => {
     const stopRequest = { backend: "android-device", stateKey: "android-device", deviceId: "phone", force: false, dryRun: false };
+    it.each([0, 2])("refuses %i attachable USB candidates before claiming", count => {
+        const ports = physicalPorts();
+        const candidates = Array.from({ length: count }, (_, index) => ({ serial: `usb-${index}`, state: "device", details: {}, connection: "usb", attachable: true }));
+        ports.androidInventory = () => ({ ok: true, devices: [...candidates, { serial: "wifi:5555", state: "device", details: {}, connection: "wifi", attachable: true }] });
+        const claim = vi.fn(ports.claimLease); ports.claimLease = claim;
+        const outcome = createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone" });
+        expect(outcome).toMatchObject({ kind: "attach-refused", category: count ? "conflict" : "missing", selectionReason: count ? "multiple-attachable-usb" : "no-attachable-usb", candidates });
+        expect(claim).not.toHaveBeenCalled();
+        expect(renderPhysicalAttachOutcome({ kind: "attach-refused", category: count ? "conflict" : "missing", error: count ? "android-device-selection-required" : "android-device-not-visible", selectionReason: count ? "multiple-attachable-usb" : "no-attachable-usb", candidates })).toMatchObject({ status: count ? 409 : 404, payload: { message: count ? "Multiple attachable USB Android devices are visible; pass serial." : "No attachable USB Android device is visible to host adb." } });
+    });
+
+    it("selects the sole attachable USB candidate while ignoring WiFi and unavailable devices", () => {
+        const ports = physicalPorts(), inventory = ports.androidInventory();
+        ports.androidInventory = vi.fn(() => ({ ...inventory, devices: [...inventory.devices, { serial: "offline", state: "offline", details: {}, connection: "usb", attachable: false }] }));
+        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone" })).toMatchObject({ kind: "attached", device: { serial: "usb" } });
+        expect(ports.androidInventory).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds the exact Android claim during connect and publishes before heartbeat", () => {
+        const ports = physicalPorts(); let claimed = false, published = false;
+        ports.claimLease = (owner, request) => { expect(owner).toBe("owner"); expect(request).toMatchObject({ hardwareId: "host:5555", claimNonce: "nonce" }); claimed = true; return { kind: "claimed", created: true, lease: { claimId: "claim" } }; };
+        ports.connectAndroid = target => { expect(claimed).toBe(true); expect(target).toBe("host:5555"); return { status: 0, receipt: { observed: true } }; };
+        ports.androidInventory = () => ({ ok: true, devices: [{ serial: "host:5555", state: "device", details: {}, connection: "wifi", attachable: true }] });
+        ports.claimDevice = (_owner, _state, device) => { published = true; return { ok: true, device, reattached: false }; };
+        ports.heartbeat = () => { expect(published).toBe(true); return { active: true }; };
+        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "host" })).toMatchObject({ kind: "attached" });
+    });
+
+    it.each(["connect", "inventory"])("preserves thrown native %s faults without adding claim rescue", phase => {
+        const ports = physicalPorts(), fault = new Error("native fault"), release = vi.fn(ports.releaseClaim); ports.releaseClaim = release;
+        if (phase === "connect") ports.connectAndroid = () => { throw fault; };
+        else ports.androidInventory = () => { throw fault; };
+        expect(() => createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "host" })).toThrow(fault);
+        expect(release).not.toHaveBeenCalled();
+    });
+
+    it.each(["inventory", "publication"])("compensates returned %s refusal with the exact claim and no heartbeat", phase => {
+        const ports = physicalPorts(), release = vi.fn(ports.releaseClaim), heartbeat = vi.fn(ports.heartbeat);
+        ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        if (phase === "inventory") ports.androidInventory = () => ({ ok: false, devices: [] });
+        else ports.claimDevice = () => ({ ok: false, error: "owner-device-state-conflict", existing: { generation: "successor" } });
+        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", serial: "usb" })).toMatchObject({ kind: "attach-refused" });
+        expect(release).toHaveBeenCalledWith("owner", { backend: "android-device", hardwareId: "usb", deviceId: "phone", claimId: "claim", claimNonce: "nonce" });
+        expect(heartbeat).not.toHaveBeenCalled();
+    });
+
+    it.each(["missing-executable", "command-failed"] as const)("keeps Apple %s failure distinct before admission", reason => {
+        const ports = physicalPorts(); ports.appleInventory = () => ({ kind: "failed", reason, receipt: { observed: true } });
+        const claim = vi.fn(ports.claimLease); ports.claimLease = claim;
+        const app = createBrokerPhysicalDevicesApplication(ports);
+        expect(app.attach("owner", { backend: "ios-device", deviceId: "phone", udid: "udid" })).toMatchObject({ error: "xctrace-inventory-failed" });
+        expect(app.trust("owner", { action: "status", udid: "udid" })).toMatchObject({ error: reason === "missing-executable" ? "ios-wireless-missing-xcrun" : "xctrace-inventory-failed" });
+        expect(claim).not.toHaveBeenCalled();
+    });
+
+    it.each(["unavailable", "usb"])("refuses iOS %s before the lease when WiFi attach is requested", condition => {
+        const ports = physicalPorts(); ports.appleInventory = () => ({ kind: "observed", receipt: { observed: true }, devices: [{ name: "Phone", udid: "udid", version: "18", connection: "usb", availability: condition === "unavailable" ? "unavailable" : "available", raw: "visible" }] });
+        const claim = vi.fn(ports.claimLease); ports.claimLease = claim;
+        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "ios-device", deviceId: "phone", udid: "udid", connection: "wifi" })).toMatchObject({ error: condition === "unavailable" ? "ios-device-not-attachable" : "ios-wifi-device-not-network-visible" });
+        expect(claim).not.toHaveBeenCalled();
+    });
     it("publishes detached status against the committed auxiliary replacement", () => {
         const ports = physicalPorts(), initial = { id: "phone", status: "attached", appium: { serverPid: 21 }, leaseClaimId: "claim", leaseClaimNonce: "nonce" };
         const cleaned = { ...initial, appium: null, updatedAt: "cleaned" };
@@ -90,7 +153,7 @@ describe("broker physical devices", () => {
     });
 
     it("refuses an invisible iOS device before claiming a lease", () => {
-        const ports = physicalPorts(); ports.appleDevices = () => [];
+        const ports = physicalPorts(); ports.appleInventory = () => ({ kind: "observed", devices: [], receipt: { observed: true } });
         ports.claimLease = () => { throw new Error("unexpected lease claim"); };
         expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "ios-device", deviceId: "phone", udid: "missing" })).toMatchObject({ error: "ios-device-not-visible" });
     });
@@ -120,7 +183,7 @@ describe("broker physical devices", () => {
     it("keeps pairing manual while accepting already-visible WiFi connect", () => {
         const ports = physicalPorts(), app = createBrokerPhysicalDevicesApplication(ports);
         expect(app.trust("owner", { action: "pair", udid: "udid" })).toMatchObject({ kind: "trust-refused", error: "ios-apple-pairing-manual-required", diagnostic: { manualRequired: true } });
-        ports.appleDevices = () => [{ name: "Phone", udid: "udid", version: "18", connection: "wifi", availability: "available", raw: "visible" }];
+        ports.appleInventory = () => ({ kind: "observed", receipt: { observed: true }, devices: [{ name: "Phone", udid: "udid", version: "18", connection: "wifi", availability: "available", raw: "visible" }] });
         expect(app.trust("owner", { action: "connect", udid: "udid" })).toMatchObject({ kind: "trust-observed", diagnostic: { alreadyNetworkVisible: true, manualRequired: false } });
     });
 
@@ -130,6 +193,50 @@ describe("broker physical devices", () => {
         const restore = vi.fn(ports.restoreLease); ports.restoreLease = restore;
         expect(createBrokerPhysicalDevicesApplication(ports).detach("owner", { backend: "android-device", deviceId: "phone" })).toMatchObject({ error: "owner-state-write-failed" });
         expect(restore).toHaveBeenCalledWith("owner", expect.objectContaining({ handle: "claim" }));
+    });
+});
+
+describe("native Apple inventory normalization and presentation", () => {
+    it.each([
+        { status: 1, error: "executable-not-found", reason: "missing-executable" },
+        { status: 1, error: undefined, reason: "command-failed" },
+        { status: 0, error: "native error", reason: "command-failed" },
+        { status: null, error: undefined, reason: "command-failed" },
+    ] as const)("refuses status $status / $error before parsing and retains opaque receipt", ({ status, error, reason }) => {
+        const receipt = { native: "private" }, parse = vi.fn(() => []);
+        const result = normalizeAppleInventory({ status, error, stdout: "untrusted devices", receipt }, parse);
+        expect(result).toEqual({ kind: "failed", reason, receipt });
+        expect(result.receipt).toBe(receipt);
+        expect(parse).not.toHaveBeenCalled();
+    });
+
+    it("passes empty successful output to the parser and reports empty inventory", () => {
+        const receipt = { native: "private" }, parse = vi.fn(() => []);
+        const result = normalizeAppleInventory({ status: 0, receipt }, parse);
+        expect(result).toEqual({ kind: "observed", devices: [], receipt });
+        expect(result.receipt).toBe(receipt);
+        expect(parse).toHaveBeenCalledWith("");
+    });
+
+    it("forwards successful native inventory stdout unchanged for xctrace decoding", () => {
+        const stdout = "== Devices ==\r\n  iPhone (18.0) (00008110-0011223344556677) (Network)\r\n", receipt = { native: "private" };
+        const parse = vi.fn(() => []);
+        expect(normalizeAppleInventory({ status: 0, stdout, receipt }, parse)).toEqual({ kind: "observed", devices: [], receipt });
+        expect(parse).toHaveBeenCalledWith(stdout);
+        expect(parse).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["absent", "usb", "wifi", "unavailable"])("presents Apple %s visibility with the existing manual guidance", visibility => {
+        const selected = visibility === "absent" ? null : { name: "Phone", udid: "udid", version: "18", connection: visibility === "wifi" ? "wifi" : "usb", availability: visibility === "unavailable" ? "unavailable" : "available", raw: "visible" };
+        const diagnostic = renderAppleTrustDiagnostic(appleTrustFacts("status", "udid", selected));
+        expect(diagnostic).toMatchObject({ backend: "ios-device", provider: "xcrun-xctrace", action: "status", udid: "udid", selected, visible: visibility !== "absent", networkVisible: visibility === "wifi", readyToAttach: visibility === "usb" || visibility === "wifi", manualRequired: visibility === "absent" || visibility === "unavailable", supportedActions: ["status"], unsupportedActions: ["pair", "connect"], safety: { bypassesTrustPrompt: false, powersOffDevice: false, erasesDevice: false, disconnectsDevice: false } });
+        expect(diagnostic.manualSteps).toEqual([
+            "Connect the iPhone or iPad to the macOS host over USB, unlock it, and accept the Trust This Computer prompt.",
+            "Enable Developer Mode on the device when iOS requires it.",
+            "Open Xcode Devices and Simulators on the macOS host and enable network pairing if Wi-Fi attach is needed.",
+            "Re-run device_wireless with backend=ios-device and action=status, then call device_attach when xctrace reports the UDID as USB or Network.",
+        ]);
+        expect(diagnostic.attachFlow).toBe(visibility === "wifi" ? "Call device_attach with backend=ios-device, connection=wifi, and this UDID." : visibility === "usb" ? "Call device_attach with backend=ios-device and this UDID for USB attach, or complete Xcode network pairing first for Wi-Fi attach." : "Complete Apple trust, Developer Mode, and Xcode pairing on the macOS host, then re-run this status check.");
     });
 });
 

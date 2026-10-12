@@ -15,6 +15,16 @@ export type MobileRequest = {error:string; requests?:undefined; method?:undefine
 export interface DeviceRequest {publicName:string; operation:string; arguments:DeviceArguments; detail:boolean}
 export interface DeviceRequestOptions { detail?: boolean; toolName?: string; toolAllowed?: (name: string) => boolean }
 export interface DestructiveDecision { ok: boolean; [key: string]: unknown }
+export type ActiveAppObservation =
+ | {kind: 'observed'; activeAppId: unknown; foreground: boolean; receipt: unknown}
+ | {kind: 'failed'; localBudgetExhausted: boolean; receipt: unknown};
+export type ActiveAppObservationInput = DeviceArguments & {backend: string; expectedAppId: string; requestTimeoutMs: number};
+export type ActiveAppWaitOutcome =
+ | {kind: 'matched'; backend: string; expectedAppId: string; receipt: unknown}
+ | {kind: 'unmatched'; backend: string; timeoutMs: number; receipt: unknown}
+ | {kind: 'failed-observation'; receipt: unknown}
+ | {kind: 'deadline-before'}
+ | {kind: 'deadline-during'};
 export interface WaitBudget { timeoutMs: number; remaining(): number; requestTimeout(maximum: number): number; pause(): Promise<void> }
 export interface DeviceFlowPorts<Result> {
  toolInputError(name: string, args: unknown): string|null;
@@ -74,6 +84,8 @@ export interface DeviceRequestPorts<Result> {
  brokerCommand(args: DeviceArguments): Promise<BrokerResult>;
  brokerDeviceTool(args: DeviceArguments): Promise<BrokerResult>;
  brokerPhysical(args: DeviceArguments): Promise<BrokerResult>;
+ observeActiveApp(args: ActiveAppObservationInput): Promise<ActiveAppObservation>;
+ presentActiveAppWait(outcome: ActiveAppWaitOutcome): Result;
  brokerAppium(args: DeviceArguments): Promise<BrokerResult>;
  brokerRpc(args: DeviceArguments): Promise<BrokerResult>;
  implicitBrokerProbeOptions(args: DeviceArguments, behavior?: {allowDefault?: boolean}): DeviceArguments|null;

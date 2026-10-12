@@ -2270,6 +2270,26 @@ export async function brokerDeviceTool(options = {}) {
     });
 }
 
+/** Observe the active app through the selected broker; transport facts stay outward.
+ * @param {import('./ports/device-request.mjs').ActiveAppObservationInput} options
+ * @returns {Promise<import('./ports/device-request.mjs').ActiveAppObservation>} */
+export async function observeActiveApp(options) {
+    const ios = options.backend.startsWith('ios');
+    const broker = await brokerAppium({
+        ...options,
+        action: 'request',
+        method: 'POST',
+        path: ios ? '/execute/sync' : '/appium/device/app_state',
+        body: ios ? {script:'mobile: activeAppInfo',args:[]} : {appId:String(options.expectedAppId)},
+    });
+    if (!broker.ok) return {kind:'failed',localBudgetExhausted:isLocalObservationBudgetExhaustion(broker),receipt:broker};
+    const body = broker.result?.response?.body;
+    const appState = body?.value ?? body ?? null;
+    const activeAppId = ios && appState !== null && typeof appState === 'object'
+        ? Reflect.get(appState, 'bundleId') ?? Reflect.get(appState, 'bundleID') ?? null : null;
+    return {kind:'observed',activeAppId,foreground:ios ? false : Number(appState) >= 3,receipt:{broker,appState}};
+}
+
 export async function brokerAppium(options = {}) {
     const action = typeof options.action === "string" ? options.action : "";
     const methodByAction = {

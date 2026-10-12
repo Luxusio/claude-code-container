@@ -1,4 +1,4 @@
-import { presentBrokerTool, imageResult } from "./device-request-presenter.mjs";
+import { presentBrokerTool, presentActiveAppWait, imageResult } from "./device-request-presenter.mjs";
 import { availableDevices } from "./available-devices.mjs";
 import { cropScreenshotResult } from "./screenshot-region.mjs";
 import { finishStartReadiness, startBootTimeoutMs } from "./start-readiness.mjs";
@@ -14,7 +14,7 @@ import { handleMacosTool, listMacosDevices, macosBackend } from "@ccc/device-lab
 import { handleLinuxVmManagementTool, handleLinuxVmTool, linuxVmBackend, listLinuxVmDevices } from "@ccc/device-lab/providers/backends/linux-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "@ccc/device-lab/providers/backends/windows-sandbox.mjs";
 import { listWindowsVmDevices, windowsVmBackend } from "@ccc/device-lab/providers/backends/windows-vm.mjs";
-import { brokerAppium, brokerCommand, brokerDeviceTool, brokerPhysical, brokerRpc, brokerStatus, implicitBrokerProbeOptions, isLocalObservationBudgetExhaustion, withBrokerOperation } from "./broker.mjs";
+import { brokerAppium, observeActiveApp, brokerCommand, brokerDeviceTool, brokerPhysical, brokerRpc, brokerStatus, implicitBrokerProbeOptions, isLocalObservationBudgetExhaustion, withBrokerOperation } from "./broker.mjs";
 import { ownerId } from "@ccc/device-lab/providers/context.mjs";
 import { currentDisplayTarget, handleDisplayTool } from "@ccc/device-lab/providers/display/x11.mjs";
 import { evaluateDestructivePolicy } from "./policy/destructive.mjs";
@@ -66,6 +66,7 @@ const deviceRequest = createDeviceRequest({
     listWindowsVmDevices,
     windowsVmBackend,
     brokerAppium,
+    observeActiveApp,
     brokerCommand,
     brokerDeviceTool,
     brokerPhysical,
@@ -81,6 +82,7 @@ const deviceRequest = createDeviceRequest({
     flowJsonResult,
     jsonResult,
     presentBrokerTool: (receipt, value) => presentBrokerTool(receipt, value, jsonResult),
+    presentActiveAppWait: outcome => presentActiveAppWait(outcome, jsonResult, textResult),
     imageResult,
     textResult,
     compactToolValue,

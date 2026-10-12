@@ -37,22 +37,29 @@ export interface AndroidHostDevice {
     serial:string;state:string;details:PhysicalRecord;connection:string;attachable:boolean;[key:string]:unknown;
 }
 export interface AndroidInventory {ok:boolean;devices:AndroidHostDevice[];[key:string]:unknown}
+export type AndroidSelectionReason = 'no-attachable-usb' | 'multiple-attachable-usb';
+export type AppleInventoryObservation<Receipt> = {kind:'observed';devices:AppleHostDevice[];receipt:Receipt} | {kind:'failed';reason:'missing-executable'|'command-failed';receipt:Receipt};
+export interface AppleTrustFacts {
+    action:string;udid:string|null;selected:AppleHostDevice|null;visible:boolean;networkVisible:boolean;readyToAttach:boolean;manualRequired:boolean;
+    trustState:'visible-unavailable'|'visible-to-xctrace'|'not-visible';
+    ownerId?:string;inventory?:{devices:AppleHostDevice[];count:number};alreadyNetworkVisible?:boolean;
+}
 export interface PhysicalExecution<Receipt> {status?:number|null;stdout?:string;stderr?:string;error?:string;timedOut?:boolean;receipt:Receipt}
 export interface PhysicalContext<Receipt> {
     error:string; allowed?:string[]; ownerId?:string; backend?:string; deviceId?:string; hardwareId?:string;
-    connection?:string; state?:string; detail?:string; message?:string; existing?:PhysicalRecord|null;
-    inventory?:AndroidInventory; inventoryObservation?:PhysicalExecution<Receipt>; hostDevices?:unknown[]; candidates?:unknown[]; command?:PhysicalExecution<Receipt>;
-    diagnostic?:PhysicalRecord; device?:unknown; auxiliaryCleanup?:AuxiliaryCleanup; detached?:false;
+    connection?:string; state?:string; detail?:string; selectionReason?:AndroidSelectionReason; existing?:PhysicalRecord|null;
+    inventory?:AndroidInventory; inventoryObservation?:AppleInventoryObservation<Receipt>; hostDevices?:unknown[]; candidates?:unknown[]; command?:PhysicalExecution<Receipt>|AppleInventoryObservation<Receipt>;
+    diagnostic?:AppleTrustFacts; device?:unknown; auxiliaryCleanup?:AuxiliaryCleanup; detached?:false;
     release?:CleanupLeaseResult|null; leaseRollback?:CleanupRollback; physicalLeaseCleanup?:CleanupLeaseResult;
     execution?:PhysicalExecution<Receipt>; invoked?:boolean; dryRun?:boolean; mutatesHost?:boolean; found?:boolean;
 }
-export type AttachOutcome<Receipt> = ({kind:'attached';device:PhysicalRecord;lease:PhysicalRecord;heartbeat:unknown} & ({provider:'adb';inventory:AndroidInventory}|{provider:'xcrun';inventory:PhysicalExecution<Receipt>;command:PhysicalExecution<Receipt>})) |
+export type AttachOutcome<Receipt> = ({kind:'attached';device:PhysicalRecord;lease:PhysicalRecord;heartbeat:unknown} & ({provider:'adb';inventory:AndroidInventory}|{provider:'xcrun';inventory:AppleInventoryObservation<Receipt>;command:AppleInventoryObservation<Receipt>})) |
     {kind:'attach-refused';category:'invalid'|'missing'|'conflict'|'provider-failed'|'state-write-failed'} & PhysicalContext<Receipt> |
     {kind:'lease-refused';failure:LeaseFailure};
 export type DetachOutcome<Receipt> = {kind:'detached';deviceId:string;device:unknown;release:CleanupLeaseResult|null;auxiliaryCleanup:AuxiliaryCleanup} |
     {kind:'detach-refused';category:'invalid'|'missing'|'conflict'|'provider-failed'|'state-write-failed'} & PhysicalContext<Receipt> |
     {kind:'scope-refused';failure:LeaseFailure};
-export type TrustOutcome<Receipt> = {kind:'trust-observed';diagnostic:PhysicalRecord;inventoryObservation:PhysicalExecution<Receipt>} |
+export type TrustOutcome<Receipt> = {kind:'trust-observed';diagnostic:AppleTrustFacts;inventoryObservation:AppleInventoryObservation<Receipt>} |
     {kind:'trust-refused';category:'invalid'|'conflict'|'provider-failed'} & PhysicalContext<Receipt>;
 export type PhysicalStopOutcome<Receipt> = {kind:'stop-preview'} |
     {kind:'stop-observed';success:boolean;device:unknown;auxiliaryCleanup:AuxiliaryCleanup;release:CleanupLeaseResult|null;execution:PhysicalExecution<Receipt>;invoked:true;dryRun:false;mutatesHost:boolean;publicationMatched:boolean;found?:boolean} |
@@ -130,46 +137,15 @@ export function validateAppleTrustParams(params: unknown): PhysicalParamError | 
         ok: true, action, backend, udid
     };
 }
-function appleTrustManualSteps() {
-    return [
-        "Connect the iPhone or iPad to the macOS host over USB, unlock it, and accept the Trust This Computer prompt.",
-        "Enable Developer Mode on the device when iOS requires it.",
-        "Open Xcode Devices and Simulators on the macOS host and enable network pairing if Wi-Fi attach is needed.",
-        "Re-run device_wireless with backend=ios-device and action=status, then call device_attach when xctrace reports the UDID as USB or Network.",
-    ];
-}
-export function appleTrustDiagnostic(action: string, udid: string | null, hostDevice: AppleHostDevice | null) {
+export function appleTrustFacts(action: string, udid: string | null, hostDevice: AppleHostDevice | null): AppleTrustFacts {
     const visible = Boolean(hostDevice);
     const networkVisible = hostDevice?.connection === "wifi";
     const unavailable = hostDevice?.availability === "unavailable";
     const readyToAttach = visible && !unavailable;
-    const manualRequired = action !== "status" || !readyToAttach;
     return {
-        backend: "ios-device",
-        action,
-        udid,
-        provider: "xcrun-xctrace",
-        selected: hostDevice,
-        visible,
-        networkVisible,
-        readyToAttach,
-        manualRequired,
+        action, udid, selected: hostDevice, visible, networkVisible, readyToAttach,
+        manualRequired: action !== "status" || !readyToAttach,
         trustState: visible ? unavailable ? "visible-unavailable" : "visible-to-xctrace" : "not-visible",
-        supportedActions: ["status"],
-        unsupportedActions: ["pair", "connect"],
-        attachFlow: networkVisible
-            ? "Call device_attach with backend=ios-device, connection=wifi, and this UDID."
-            : readyToAttach
-                ? "Call device_attach with backend=ios-device and this UDID for USB attach, or complete Xcode network pairing first for Wi-Fi attach."
-                : "Complete Apple trust, Developer Mode, and Xcode pairing on the macOS host, then re-run this status check.",
-        manualSteps: appleTrustManualSteps(),
-        safety: {
-            bypassesTrustPrompt: false,
-            powersOffDevice: false,
-            erasesDevice: false,
-            disconnectsDevice: false,
-        },
-
     };
 }
 export function detachedPhysicalDeviceCanReattach(existing: Record<string, unknown>, deviceId: string, hardwareId: string, hardwareField: "serial" | "udid") {

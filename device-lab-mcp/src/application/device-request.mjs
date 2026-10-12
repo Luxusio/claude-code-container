@@ -43,7 +43,8 @@ import {
     HYPER_V_LINUX_TOOLS,
     isCursorMove,
     requestErrorMessage,
-    selectBackendCatalog
+    selectBackendCatalog,
+    activeAppMatches
 } from "../domain/device-request.mjs";
 /** @template Result
  * @param {import("../ports/device-request.mjs").DeviceRequestPorts<Result>} ports */
@@ -540,12 +541,6 @@ export function createDeviceRequest(ports) {
         if (name === "mobile_get_clipboard") {
             return { method: "POST", path: "/appium/device/get_clipboard", body: { contentType: "plaintext" } };
         }
-        if (name === "mobile_wait_for_app") {
-            const appId = appIdForBackend(args, backend);
-            if (!appId) return { error: backend.startsWith("android") ? "mobile_wait_for_app requires packageName" : "mobile_wait_for_app requires bundleId" };
-            if (backend.startsWith("ios")) return { method: "POST", path: "/execute/sync", body: { script: "mobile: activeAppInfo", args: [] } };
-            return { method: "POST", path: "/appium/device/app_state", body: { appId: String(appId) } };
-        }
         return { error: `broker mobile route does not support ${name}` };
     }
 
@@ -561,7 +556,6 @@ export function createDeviceRequest(ports) {
         };
         if (name === "mobile_dump_ui") return { ...base, source: value };
         if (name === "mobile_get_clipboard") return { ...base, text: decodeBase64Text(value) };
-        if (name === "mobile_wait_for_app") return { ...base, appState: value };
         return base;
     }
 
@@ -1038,7 +1032,11 @@ export function createDeviceRequest(ports) {
             });
             return ports.jsonResult({ deviceId, ...result, routedBy: "mobile-broker-appium" });
         }
-        const mapped = name === "mobile_wait_for_text" ? null : brokerMobileRequest(name, args || {}, resolvedBackend);
+        const expectedAppId = appIdForBackend(args, resolvedBackend);
+        if (name === "mobile_wait_for_app" && !expectedAppId) {
+            return ports.textResult(false, resolvedBackend.startsWith("android") ? "mobile_wait_for_app requires packageName" : "mobile_wait_for_app requires bundleId");
+        }
+        const mapped = name === "mobile_wait_for_text" || name === "mobile_wait_for_app" ? null : brokerMobileRequest(name, args || {}, resolvedBackend);
         if (mapped?.error) return ports.textResult(false, mapped.error);
         const ensure = await ports.brokerAppium({
             ...appiumOptions,
@@ -1084,50 +1082,41 @@ export function createDeviceRequest(ports) {
             return ports.jsonResult({ found: false, text, source: lastSource, timeoutMs, provider: "broker-appium", backend: resolvedBackend });
         }
 
-        // The text-only branch returned above; error mappings returned before session setup.
-        const mappedRequest = /** @type {import("../ports/device-request.mjs").MobileRequestSuccess} */ (mapped);
         if (name === "mobile_wait_for_app") {
             const wait = ports.createWaitBudget(args?.timeoutMs, args?.intervalMs);
-            const timeoutMs = wait.timeoutMs;
             let observed = false;
             /** @type {unknown} */
-            let lastState = null;
-            const expectedAppId = appIdForBackend(args, resolvedBackend);
+            let lastReceipt = null;
+            // Admission above guarantees an app identity before session setup.
+            const appId = /** @type {string} */ (expectedAppId);
             while (wait.remaining() > 0) {
-                const observe = ports.brokerAppium;
                 const requestOptions = {
                     ...selectedBrokerProbeOptions(appiumOptions, ensure),
                     autolaunch: false,
                     requestTimeoutMs: wait.requestTimeout(600000),
-                    action: "request",
                     backend: resolvedBackend,
                     deviceId,
-                    method: mappedRequest.method,
-                    path: mappedRequest.path,
-                    body: mappedRequest.body,
+                    expectedAppId: appId,
                 };
                 if (requestOptions.requestTimeoutMs <= 0) break;
-                const request = await observe(requestOptions);
-                if (!request.ok) {
-                    if (observed && ports.isLocalObservationBudgetExhaustion(request)) break;
-                    return ports.jsonResult({ ...request, routedBy: "mobile-broker-appium" });
+                const observation = await ports.observeActiveApp(requestOptions);
+                if (observation.kind === 'failed') {
+                    if (observed && observation.localBudgetExhausted) break;
+                    return ports.presentActiveAppWait({kind:'failed-observation',receipt:observation.receipt});
                 }
-                if (wait.remaining() <= 0) return ports.textResult(false, "Appium wait deadline exhausted during observation");
+                if (wait.remaining() <= 0) return ports.presentActiveAppWait({kind:'deadline-during'});
                 observed = true;
-                lastState = request.result?.response?.body?.value ?? request.result?.response?.body ?? null;
-                if (resolvedBackend.startsWith("ios")) {
-                    const activeBundleId = lastState !== null && typeof lastState === "object"
-                        ? Reflect.get(lastState, "bundleId") ?? Reflect.get(lastState, "bundleID") ?? null : null;
-                    if (activeBundleId === expectedAppId) return ports.jsonResult({ found: true, bundleId: expectedAppId, activeApp: lastState, provider: "broker-appium", backend: resolvedBackend, broker: request });
-                } else if (Number(lastState) >= 3) {
-                    return ports.jsonResult({ found: true, packageName: expectedAppId, appState: lastState, provider: "broker-appium", backend: resolvedBackend, broker: request });
+                lastReceipt = observation.receipt;
+                if (activeAppMatches(resolvedBackend, appId, observation)) {
+                    return ports.presentActiveAppWait({kind:'matched',backend:resolvedBackend,expectedAppId:appId,receipt:observation.receipt});
                 }
                 await wait.pause();
             }
-            if (!observed) return ports.textResult(false, "Appium wait deadline exhausted before observation");
-            return ports.jsonResult({ found: false, appState: lastState, timeoutMs, provider: "broker-appium", backend: resolvedBackend });
+            if (!observed) return ports.presentActiveAppWait({kind:'deadline-before'});
+            return ports.presentActiveAppWait({kind:'unmatched',backend:resolvedBackend,timeoutMs:wait.timeoutMs,receipt:lastReceipt});
         }
 
+        const mappedRequest = /** @type {import("../ports/device-request.mjs").MobileRequestSuccess} */ (mapped);
         const requests = mappedRequest.requests || [mappedRequest];
         let request = null;
         for (const item of requests) {

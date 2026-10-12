@@ -18,6 +18,8 @@ import {
 
 async function createFakeAppiumServer(sessionId = "MCP-BROKER-SESSION-1") {
     const requests: Array<{ method: string; url: string; body: unknown }> = [];
+    let activeAppBody: unknown = { value: { bundleId: "com.example.Test", name: "Test" } };
+    let appStateBody: unknown = { value: 4 };
     const server = createServer((req, res) => {
         let raw = "";
         req.on("data", (chunk) => { raw += chunk; });
@@ -35,7 +37,7 @@ async function createFakeAppiumServer(sessionId = "MCP-BROKER-SESSION-1") {
             if (req.method === "POST" && req.url === `/session/${sessionId}/orientation`) return res.end(JSON.stringify({ value: null }));
             if (req.method === "POST" && req.url === `/session/${sessionId}/execute/sync`) {
                 if (body && typeof body === "object" && (body as { script?: string }).script === "mobile: activeAppInfo") {
-                    return res.end(JSON.stringify({ value: { bundleId: "com.example.Test", name: "Test" } }));
+                    return res.end(JSON.stringify(activeAppBody));
                 }
                 return res.end(JSON.stringify({ value: null }));
             }
@@ -46,7 +48,7 @@ async function createFakeAppiumServer(sessionId = "MCP-BROKER-SESSION-1") {
             if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/activate_app`) return res.end(JSON.stringify({ value: null }));
             if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/remove_app`) return res.end(JSON.stringify({ value: null }));
             if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/terminate_app`) return res.end(JSON.stringify({ value: null }));
-            if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/app_state`) return res.end(JSON.stringify({ value: 4 }));
+            if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/app_state`) return res.end(JSON.stringify(appStateBody));
             if (req.method === "POST" && req.url === `/session/${sessionId}/location`) return res.end(JSON.stringify({ value: null }));
             if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/set_clipboard`) return res.end(JSON.stringify({ value: null }));
             if (req.method === "POST" && req.url === `/session/${sessionId}/appium/device/get_clipboard`) return res.end(JSON.stringify({ value: Buffer.from("hello broker", "utf8").toString("base64") }));
@@ -59,6 +61,8 @@ async function createFakeAppiumServer(sessionId = "MCP-BROKER-SESSION-1") {
     return {
         port: address.port,
         requests,
+        setActiveAppBody: (body: unknown) => { activeAppBody = body; },
+        setAppStateBody: (body: unknown) => { appStateBody = body; },
         close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
     };
 }
@@ -702,6 +706,24 @@ describe("device-lab MCP broker Appium routing", () => {
                 activeApp: expect.objectContaining({ appId: "com.example.Test" }),
             }));
 
+            for (const nativeBody of [
+                { value: { bundleID: "com.example.Test", name: "alternate spelling" } },
+                { bundleId: "com.example.Test", name: "body fallback" },
+                { value: null, bundleID: "com.example.Test", name: "null value fallback" },
+            ]) {
+                fakeAppium.setActiveAppBody(nativeBody);
+                const result = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.Test", intervalMs: 50 } });
+                const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}"));
+                expect(payload).toMatchObject({ found: true, appId: "com.example.Test", provider: "broker-appium", backend: "ios-simulator" });
+                expect(payload.activeApp).toMatchObject("bundleId" in nativeBody ? { appId: "com.example.Test" } : { bundleID: "com.example.Test" });
+                expect(payload.broker).toMatchObject({ ok: true, selected: { host: "127.0.0.1", port: address.port } });
+            }
+            fakeAppium.setActiveAppBody({ value: { bundleId: "other", bundleID: "com.example.Test" } });
+            const unmatched = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.Test", timeoutMs: 500, intervalMs: 50 } });
+            const unmatchedPayload = JSON.parse(((unmatched.content as Array<{ text?: string }>)[0].text ?? "{}"));
+            expect(unmatchedPayload).toMatchObject({ found: false, appState: { bundleId: "other", bundleID: "com.example.Test" }, provider: "broker-appium", backend: "ios-simulator", timeoutMs: 500 });
+            expect(unmatchedPayload.activeApp).toBeUndefined();
+
             expect(fakeAppium.requests.map((entry) => `${entry.method} ${entry.url}`)).toEqual(expect.arrayContaining([
                 "POST /session/MCP-IOS-APP-ACTIONS-SESSION-1/url",
                 "POST /session/MCP-IOS-APP-ACTIONS-SESSION-1/appium/device/terminate_app",
@@ -968,6 +990,15 @@ describe("device-lab MCP broker Appium routing", () => {
                 backend: "android-emulator",
                 appState: 4,
             }));
+
+            for (const state of ["3", "4"]) {
+                fakeAppium.setAppStateBody({ value: state });
+                const result = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.android", intervalMs: 50 } });
+                expect(JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ found: true, appState: state, provider: "broker-appium", backend: "android-emulator", broker: { ok: true, selected: { host: "127.0.0.1", port: address.port } } });
+            }
+            fakeAppium.setAppStateBody({ value: "2" });
+            const background = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.android", timeoutMs: 500, intervalMs: 50 } });
+            expect(JSON.parse(((background.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ found: false, appState: "2", timeoutMs: 500, provider: "broker-appium", backend: "android-emulator" });
 
             expect(fakeAppium.requests.map((entry) => `${entry.method} ${entry.url}`)).toEqual(expect.arrayContaining([
                 "POST /session/MCP-ANDROID-APP-ACTIONS-SESSION-1/url",

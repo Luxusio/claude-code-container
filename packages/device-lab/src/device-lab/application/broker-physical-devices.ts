@@ -1,4 +1,4 @@
-import { validateAttachParams, validateAppleTrustParams, detachedPhysicalDeviceCanReattach, appleTrustDiagnostic, commandSucceeded, physicalStopReplacement, type AttachParams, type PhysicalStopRequest, type AttachOutcome, type DetachOutcome, type TrustOutcome, type PhysicalStopOutcome } from '../domain/broker-physical-devices.js';
+import { validateAttachParams, validateAppleTrustParams, detachedPhysicalDeviceCanReattach, appleTrustFacts, commandSucceeded, physicalStopReplacement, type AttachParams, type PhysicalStopRequest, type AttachOutcome, type DetachOutcome, type TrustOutcome, type PhysicalStopOutcome } from '../domain/broker-physical-devices.js';
 import { cleanupRecord, type PhysicalRecord, type CleanupLeaseGuard, type CleanupPublication, type CleanupLeaseResult } from '../domain/broker-owner-cleanup.js';
 import type { BrokerPhysicalDevicesPorts, AndroidInventory } from '../ports/broker-physical-devices.js';
 export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: BrokerPhysicalDevicesPorts<Handle, Receipt>) {
@@ -19,7 +19,7 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
         return {ok:false,kind:'attach-refused',category:candidates.length === 0 ? 'missing' : 'conflict',
             error:candidates.length === 0 ? 'android-device-not-visible' : 'android-device-selection-required',
             backend:parsed.backend,connection:parsed.connection,hostDevices:inventory.devices,candidates,
-            message:candidates.length === 0 ? 'No attachable USB Android device is visible to host adb.' : 'Multiple attachable USB Android devices are visible; pass serial.'};
+            selectionReason:candidates.length === 0 ? 'no-attachable-usb' : 'multiple-attachable-usb'};
 
     }
     function brokerAttachAndroid(ownerId: string, parsed: AttachParams): AttachOutcome<Receipt> {
@@ -134,16 +134,16 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
             return {kind:'attach-refused',category:'conflict',error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: parsed.udid};
         }
         const inventory = ports.appleInventory();
-        if (!commandSucceeded(inventory))
-            return {kind:'attach-refused',category:'provider-failed',error: "xctrace-inventory-failed", command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null)};
-        const hostDevice = ports.appleDevices(inventory.stdout || "").find((device) => device.udid === parsed.udid);
+        if (inventory.kind === 'failed')
+            return {kind:'attach-refused',category:'provider-failed',error: "xctrace-inventory-failed", command: inventory, diagnostic: appleTrustFacts("status", parsed.udid, null)};
+        const hostDevice = inventory.devices.find((device) => device.udid === parsed.udid);
         if (!hostDevice)
-            return {kind:'attach-refused',category:'missing',error: "ios-device-not-visible", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, null)};
+            return {kind:'attach-refused',category:'missing',error: "ios-device-not-visible", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustFacts("status", parsed.udid, null)};
         if (hostDevice.availability === "unavailable") {
-            return {kind:'attach-refused',category:'conflict',error: "ios-device-not-attachable", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustDiagnostic("status", parsed.udid, hostDevice)};
+            return {kind:'attach-refused',category:'conflict',error: "ios-device-not-attachable", hardwareId: parsed.udid, command: inventory, diagnostic: appleTrustFacts("status", parsed.udid, hostDevice)};
         }
         if (parsed.connection === "wifi" && hostDevice.connection !== "wifi") {
-            return {kind:'attach-refused',category:'conflict',error: "ios-wifi-device-not-network-visible", hardwareId: parsed.udid, inventoryObservation:inventory, diagnostic: appleTrustDiagnostic("connect", parsed.udid, hostDevice)};
+            return {kind:'attach-refused',category:'conflict',error: "ios-wifi-device-not-network-visible", hardwareId: parsed.udid, inventoryObservation:inventory, diagnostic: appleTrustFacts("connect", parsed.udid, hostDevice)};
         }
         const connection = parsed.connectionProvided ? parsed.connection : hostDevice.connection;
         const leaseClaimNonce = ports.nonce();
@@ -208,18 +208,18 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
         if (!parsed.ok)
             return {kind:'trust-refused',category:'invalid',error:parsed.error,...(parsed.allowed ? {allowed:parsed.allowed} : {})};
         const inventory = ports.appleInventory();
-        if (!commandSucceeded(inventory)) {
-            return {kind:'trust-refused',category:'provider-failed',inventoryObservation:inventory,error: inventory.error === "executable-not-found" ? "ios-wireless-missing-xcrun" : "xctrace-inventory-failed",
+        if (inventory.kind === 'failed') {
+            return {kind:'trust-refused',category:'provider-failed',inventoryObservation:inventory,error: inventory.reason === "missing-executable" ? "ios-wireless-missing-xcrun" : "xctrace-inventory-failed",
                     diagnostic: {
                         ownerId,
-                        ...appleTrustDiagnostic(parsed.action, parsed.udid, null),
+                        ...appleTrustFacts(parsed.action, parsed.udid, null),
                     },};
         }
-        const devices = ports.appleDevices(inventory.stdout || "");
+        const devices = inventory.devices;
         const selected = parsed.udid ? devices.find((device) => device.udid === parsed.udid) || null : null;
         const diagnostic = {
             ownerId,
-            ...appleTrustDiagnostic(parsed.action, parsed.udid, selected),
+            ...appleTrustFacts(parsed.action, parsed.udid, selected),
             inventory: {
                 devices,
                 count: devices.length,

@@ -5,6 +5,7 @@ import { createContainerExec, resolveContainerExecTools, attachContainerExecClip
 import { createNativeContainerExecPorts, ensureContainerExecSetupAvailable, ensureContainerExecTools, containerExecReplacementBlockReason } from "./composition/container-exec.js";
 import type { ContainerExecOptions } from "./ports/container-exec.js";
 import { createWorkspaceOpen } from "./application/workspace/open.js";
+import { createWorkspaceOpenPresentation } from "./adapters/workspace/open-presentation.js";
 import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";
 import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
@@ -485,6 +486,12 @@ function repairBrokenWorktree(
     return admitWorkspaceContentRepair(cwd, wsPath, name, branch);
 }
 
+const workspaceOpenPresentation = createWorkspaceOpenPresentation({
+    prompt: question => prompt(question, true),
+    report: message => { console.log(message); return undefined; },
+    reportError: message => { console.error(message); return undefined; },
+    safeLiteral: text => terminalSafeLiteral(text),
+});
 const workspaceOpen = createWorkspaceOpen({
     path: (cwd, branch) => getWorkspacePath(cwd, branch),
     projectId: path => getProjectId(path),
@@ -510,7 +517,6 @@ const workspaceOpen = createWorkspaceOpen({
         });
         return { repaired, failure };
     },
-    safeLiteral: text => terminalSafeLiteral(text),
     assertBranch: (path, branch, cwd, allowTrackedGitlinks) => {
         assertWorkspaceBranch(path, branch, spawnSync, cwd, allowTrackedGitlinks ? { allowTrackedGitlinks: true } : undefined);
         return undefined;
@@ -524,14 +530,18 @@ const workspaceOpen = createWorkspaceOpen({
     create: (cwd, branch) => createWorkspace(cwd, branch),
     damage: error => error instanceof DamagedWorkspaceMetadataError ? { message: error.message, repairs: error.repairs } : null,
     repairRegistration: repair => repairWorkspaceWorktree(repair),
-    prompt: question => prompt(question, true),
-    report: message => { console.log(message); return undefined; },
-    reportError: message => { console.error(message); return undefined; },
-    exit: code => process.exit(code),
+    confirm: workspaceOpenPresentation.confirm,
+    report: workspaceOpenPresentation.report,
+    recoveryError: workspaceOpenPresentation.recoveryError,
 });
 
 async function prepareWorktree(cwd: string, branch: string): Promise<string> {
-    return workspaceOpen.open(cwd, branch);
+    const outcome = await workspaceOpen.open(cwd, branch);
+    if (outcome.kind === "refused") {
+        workspaceOpenPresentation.refusal(outcome);
+        process.exit(1);
+    }
+    return outcome.path;
 }
 
 export function withWorkspaceRemovalLifecycleLock<T>(

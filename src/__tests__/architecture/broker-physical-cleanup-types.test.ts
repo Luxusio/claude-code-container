@@ -12,6 +12,26 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     publish: BrokerOwnerCleanupPorts<string, { deviceId: string }, { observed: boolean }>["publish"];
 } {
     const devices = createBrokerPhysicalDevicesApplication(physical), owner = createBrokerOwnerCleanupApplication(cleanup);
+    const inventory = physical.appleInventory();
+    if (inventory.kind === "observed") {
+        const udids: string[] = inventory.devices.map(device => device.udid);
+        void udids;
+    } else {
+        const reason: "missing-executable" | "command-failed" = inventory.reason;
+        void reason;
+    }
+    const receipt: { observed: boolean } = inventory.receipt;
+    void receipt;
+    // @ts-expect-error raw native execution is not a semantic inventory observation
+    createBrokerPhysicalDevicesApplication({ ...physical, appleInventory: () => ({ status: 0, stdout: "raw", receipt: { observed: true } }) });
+    // @ts-expect-error an observed inventory requires decoded devices
+    createBrokerPhysicalDevicesApplication({ ...physical, appleInventory: () => ({ kind: "observed", receipt: { observed: true } }) });
+    // @ts-expect-error native failures have a finite reason
+    createBrokerPhysicalDevicesApplication({ ...physical, appleInventory: () => ({ kind: "failed", reason: "arbitrary native prose", receipt: { observed: true } }) });
+    const { appleInventory, ...withoutInventory } = physical;
+    // @ts-expect-error inventory observation is required for visibility before lease admission
+    createBrokerPhysicalDevicesApplication(withoutInventory);
+    void appleInventory;
     const { releaseLease, ...missingRelease } = physical;
     // @ts-expect-error exact lease release is a required physical capability
     createBrokerPhysicalDevicesApplication(missingRelease);

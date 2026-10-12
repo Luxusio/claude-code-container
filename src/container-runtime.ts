@@ -134,10 +134,6 @@ const dockerEndpoint = createDockerEndpointResolver({
 
 const collectRuntimeCapabilities = createRuntimeCapabilitiesCollector({
     ...createNativeRuntimeCapabilitiesObservations(dockerEndpoint),
-    readCachedInfo: () => _cachedInfo,
-    publishCachedInfo: info => { _cachedInfo = info; return undefined; },
-    readVitestFlag: () => process.env.VITEST,
-    readExplicitOverride: () => _runtimeOverride,
     selectRuntime: resolveRuntime,
 });
 
@@ -147,7 +143,17 @@ const collectRuntimeCapabilities = createRuntimeCapabilitiesCollector({
  * Return cached runtime info, running detection on first call.
  */
 export function getRuntimeInfo(): RuntimeInfo {
-    return collectRuntimeCapabilities();
+    if (_cachedInfo) return _cachedInfo;
+    if (process.env.VITEST && !_runtimeOverride) {
+        _cachedInfo = {
+            runtime: "docker", flavor: "docker-native", version: "0.0.0",
+            socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false,
+        };
+        return _cachedInfo;
+    }
+    const info = collectRuntimeCapabilities();
+    _cachedInfo = info;
+    return info;
 }
 
 /**

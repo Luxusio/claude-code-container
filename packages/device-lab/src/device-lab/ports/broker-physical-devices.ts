@@ -1,14 +1,13 @@
 import type {ClaimOutcome, ReleaseOutcome, LeaseFailure} from '../domain/broker-physical-leases.js';
 import type { PhysicalRecord, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback, AuxiliaryOutcome, CleanupPublication } from '../domain/broker-owner-cleanup.js';
-import type { AttachParams, AppleHostDevice, AndroidInventory, PhysicalExecution, PhysicalStopRequest } from '../domain/broker-physical-devices.js';
+import type { AttachParams, AppleInventoryObservation, AndroidInventory, PhysicalExecution, PhysicalStopRequest } from '../domain/broker-physical-devices.js';
 export type {AndroidHostDevice, AndroidInventory} from '../domain/broker-physical-devices.js';
 export interface BrokerPhysicalDevicesPorts<Handle, Receipt> {
     deriveDeviceId(backend: string, identity: string): string;
     read(ownerId: string, stateKey: string): unknown[];
     androidInventory(): AndroidInventory;
     connectAndroid(target: string): PhysicalExecution<Receipt>;
-    appleInventory(): PhysicalExecution<Receipt>;
-    appleDevices(text: string): AppleHostDevice[];
+    appleInventory(): AppleInventoryObservation<Receipt>;
     nonce(): string;
     timestamp(): string;
     claimLease(ownerId: string, request: PhysicalRecord): ClaimOutcome;

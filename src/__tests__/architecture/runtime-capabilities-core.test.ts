@@ -1,122 +1,83 @@
 import { describe, expect, it } from "vitest";
 import { createRuntimeCapabilitiesCollector } from "../../application/runtime-capabilities.js";
-import { decodeDockerRootlessOptions, deriveRuntimeFlavor, parseRuntimeVersion } from "../../domain/runtime-capabilities.js";
-import type { RuntimeInfo } from "../../domain/runtime-capabilities.js";
-import type { RuntimeCapabilitiesPorts, RuntimeCapabilityProbeResult } from "../../ports/runtime-capabilities.js";
+import type { RuntimeCapabilitiesPorts } from "../../ports/runtime-capabilities.js";
 
 function fixture() {
-    const trace: string[] = [];
-    let cached: RuntimeInfo | null = null;
-    const result = (name: string, status: number | null, stdout: string): RuntimeCapabilityProbeResult => ({
-        get status() { trace.push(`${name}.status`); return status; },
-        get stdout() { trace.push(`${name}.stdout`); return stdout; },
-    });
     const ports: RuntimeCapabilitiesPorts = {
-        readCachedInfo: () => { trace.push("cache"); return cached; },
-        publishCachedInfo: info => { trace.push("publish"); cached = info; return undefined; },
-        readVitestFlag: () => { trace.push("vitest"); return undefined; },
-        readExplicitOverride: () => { trace.push("override"); return null; },
-        selectRuntime: () => { trace.push("select"); return "docker"; },
-        readPlatform: () => { trace.push("platform"); return "linux"; },
-        observeVersion: () => { trace.push("version"); return result("version", 0, "Docker 27.1.1"); },
-        observeDockerOperatingSystem: () => { trace.push("os"); return result("os", 0, "Ubuntu"); },
-        readSelectedDockerEndpoint: () => { trace.push("endpoint"); return "unix:///selected.sock"; },
-        observePodmanRemote: () => { trace.push("remote"); return result("remote", 0, "false"); },
-        observeDockerSecurityOptions: () => { trace.push("security"); return result("security", 0, "[]"); },
-        observePodmanRootless: () => { trace.push("rootless"); return result("rootless", 0, "false"); },
-        readWslDistributionName: () => { trace.push("wsl"); return undefined; },
-        observeWslMirroredLoopback: () => { trace.push("loopback"); return false; },
-        readRuntimeSocketOverride: () => { trace.push("socket"); return undefined; },
-        readXdgRuntimeDirectory: () => { trace.push("xdg"); return undefined; },
-        readEffectiveUidOrDefault: () => { trace.push("uid"); return 1000; },
-        joinPodmanSocketPath: xdg => { trace.push("join"); return `${xdg}/podman/podman.sock`; },
+        selectRuntime: () => "docker", readPlatform: () => "linux",
+        observeVersion: () => "27.1.1", observeDockerOperatingSystem: () => "other",
+        readSelectedDockerEndpoint: () => "unix:///selected.sock",
+        observePodmanRemote: () => false, observeDockerSecurityOptions: () => false,
+        observePodmanRootless: () => false, readWslDistributionName: () => undefined,
+        observeWslMirroredLoopback: () => false, readRuntimeSocketOverride: () => undefined,
+        readXdgRuntimeDirectory: () => undefined, readEffectiveUidOrDefault: () => 1000,
+        joinPodmanSocketPath: xdg => `${xdg}/podman/podman.sock`,
     };
-    return { ports, trace, collect: () => createRuntimeCapabilitiesCollector(ports), cached: () => cached };
+    return { ports, collect: () => createRuntimeCapabilitiesCollector(ports)() };
 }
 
-describe("complete runtime capability policy", () => {
-    it("requires every explicit semantic port, including lazy WSL observation", () => {
-        const { ports } = fixture();
-        for (const name of Object.keys(ports)) {
-            const incomplete = { ...ports }; Reflect.deleteProperty(incomplete, name);
-            expect(() => createRuntimeCapabilitiesCollector(incomplete)).toThrow(`callable ${name} port`);
-        }
+describe("runtime capability policy from semantic observations", () => {
+    it("derives complete native Docker facts without probing Podman", () => {
+        const { ports, collect } = fixture();
+        ports.observePodmanRemote = ports.observePodmanRootless = () => { throw Error("unused provider"); };
+        expect(collect()).toEqual({ runtime: "docker", flavor: "docker-native", version: "27.1.1", socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false });
     });
-    it("collects in original order and publishes only complete info", () => {
-        const { collect, trace } = fixture();
-        expect(collect()()).toEqual({ runtime: "docker", flavor: "docker-native", version: "27.1.1", socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false });
-        expect(trace).toEqual(["cache", "vitest", "select", "version", "version.status", "version.stdout", "os", "os.status", "os.stdout", "platform", "wsl", "platform", "security", "security.status", "security.stdout", "socket", "publish", "cache"]);
+    it.each(["unavailable", "other"] as const)("Windows Desktop fallback distinguishes %s OS", os => {
+        const { ports, collect } = fixture(); ports.readPlatform = () => "win32";
+        ports.observeDockerOperatingSystem = () => os;
+        ports.readSelectedDockerEndpoint = () => "npipe:////./pipe/dockerDesktopLinuxEngine";
+        expect(collect()).toMatchObject({ dockerDesktop: os === "unavailable", remote: true, flavor: "docker-desktop", rootless: false });
     });
-    it("returns cache by identity before environment and retains external mutation", () => {
-        const { collect, ports, trace } = fixture(); const get = collect(); const first = get(); first.version = "mutated"; trace.length = 0;
-        ports.readVitestFlag = () => { throw Error("environment must be skipped"); };
-        expect(get()).toBe(first); expect(trace).toEqual(["cache"]);
+    it.each(["ssh://remote", "tcp://remote:2376", null])("does not grant Desktop through endpoint %s", endpoint => {
+        const { ports, collect } = fixture(); ports.observeDockerOperatingSystem = () => "desktop"; ports.readSelectedDockerEndpoint = () => endpoint;
+        expect(collect().dockerDesktop).toBe(false);
     });
-    it("publishes the fixed Vitest stub unless a current explicit override exists", () => {
-        const { ports, collect, trace } = fixture(); ports.readVitestFlag = () => "1";
-        expect(collect()()).toMatchObject({ runtime: "docker", version: "0.0.0", rootless: false, remote: false, dockerDesktop: false });
-        expect(trace).toEqual(["cache", "override", "publish", "cache"]);
-        const actual = fixture(); actual.ports.readVitestFlag = () => "1"; actual.ports.readExplicitOverride = () => "docker";
-        expect(actual.collect()().version).toBe("27.1.1");
+    it("grants local Desktop capability and skips WSL", () => {
+        const { ports, collect } = fixture(); ports.observeDockerOperatingSystem = () => "desktop";
+        ports.readWslDistributionName = () => { throw Error("unused WSL"); };
+        expect(collect()).toMatchObject({ dockerDesktop: true, remote: true, flavor: "docker-desktop" });
     });
-    it.each([false, true])("observes mirrored loopback only for truthy Linux Docker WSL, mirrored=%s", mirrored => {
-        const { ports, collect, trace } = fixture(); ports.readWslDistributionName = () => "Ubuntu"; ports.observeWslMirroredLoopback = () => { trace.push("loopback"); return mirrored; };
-        expect(collect()().remote).toBe(!mirrored); expect(trace).toContain("loopback");
-        const falsy = fixture(); falsy.ports.readWslDistributionName = () => ""; falsy.ports.observeWslMirroredLoopback = () => { throw Error("skip loopback"); };
-        expect(falsy.collect()().remote).toBe(false);
+    it.each([false, true])("preserves WSL mirrored networking=%s", mirrored => {
+        const { ports, collect } = fixture(); ports.readWslDistributionName = () => "Ubuntu"; ports.observeWslMirroredLoopback = () => mirrored;
+        expect(collect().remote).toBe(!mirrored);
+        ports.readWslDistributionName = () => ""; ports.observeWslMirroredLoopback = () => { throw Error("unused loopback"); };
+        expect(collect().remote).toBe(false);
     });
-    it("propagates WSL getter faults without publishing and skips WSL for Desktop", () => {
-        const failed = fixture(); const fault = Error("wsl"); failed.ports.readWslDistributionName = () => { throw fault; };
-        expect(() => failed.collect()()).toThrow(fault); expect(failed.cached()).toBeNull();
-        const desktop = fixture(); desktop.ports.observeDockerOperatingSystem = () => ({ status: 0, stdout: "Docker Desktop" }); desktop.ports.readWslDistributionName = () => { throw fault; };
-        expect(desktop.collect()()).toMatchObject({ dockerDesktop: true, remote: true });
+    it("preserves non-Linux remote defaults and legacy flavor without Desktop capability", () => {
+        const { ports, collect } = fixture(); ports.readPlatform = () => "darwin";
+        ports.observeDockerSecurityOptions = () => { throw Error("unused Linux rootless probe"); };
+        expect(collect()).toMatchObject({ remote: true, rootless: false, flavor: "docker-desktop", dockerDesktop: false });
     });
-    it("keeps changing platform observations separate across phases", () => {
-        const { ports, collect, trace } = fixture(); const platforms = ["win32", "linux", "darwin", "linux"];
-        ports.observeDockerOperatingSystem = () => ({ status: 1, get stdout(): never { throw Error("failed OS stdout must be skipped"); } });
-        ports.readPlatform = () => { trace.push("platform"); return platforms.shift()!; };
-        expect(collect()()).toMatchObject({ dockerDesktop: false, remote: true, rootless: false, flavor: "docker-desktop" });
-        expect(trace.filter(name => name === "platform")).toHaveLength(4);
+    it.each([false, true])("derives Podman remote=%s without Docker probes", remote => {
+        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRemote = () => remote;
+        ports.observeDockerOperatingSystem = () => { throw Error("unused Docker"); }; ports.observeDockerSecurityOptions = () => { throw Error("unused Docker"); };
+        expect(collect()).toMatchObject({ remote, flavor: remote ? "podman-machine" : "podman-rootful", dockerDesktop: false });
     });
-    it("successful nonDesktop OS defeats exact Windows pipe and skips endpoint", () => {
-        const { ports, collect, trace } = fixture(); ports.readPlatform = () => "win32";
-        ports.readSelectedDockerEndpoint = () => { throw Error("endpoint must be skipped"); };
-        expect(collect()()).toMatchObject({ dockerDesktop: false, remote: true, flavor: "docker-desktop" }); expect(trace).not.toContain("endpoint");
+    it.each([false, true, null])("distinguishes Podman rootless observation %s from UID fallback", rootless => {
+        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRootless = () => rootless; ports.readRuntimeSocketOverride = () => "/chosen.sock";
+        expect(collect().rootless).toBe(rootless ?? true);
     });
-    it.each(["ssh://remote", "tcp://remote:2376", null])("does not grant Desktop through nonlocal endpoint %s", endpoint => {
-        const { ports, collect } = fixture(); ports.observeDockerOperatingSystem = () => ({ status: 0, stdout: "Docker Desktop" }); ports.readSelectedDockerEndpoint = () => endpoint;
-        expect(collect()().dockerDesktop).toBe(false);
+    it("ignores unknown-rootless UID faults but propagates socket UID faults", () => {
+        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRootless = () => null;
+        const fault = Error("uid"); ports.readEffectiveUidOrDefault = () => { throw fault; };
+        expect(collect()).toMatchObject({ rootless: false, socketPath: "/run/podman/podman.sock" });
+        ports.observePodmanRootless = () => true; expect(() => collect()).toThrow(fault);
     });
-    it.each(["version", "os", "security", "socket"])("retries complete collection after %s failure without publishing", stage => {
-        const { ports, collect, trace, cached } = fixture(); const fault = Error(stage);
-        const operations = { version: "observeVersion", os: "observeDockerOperatingSystem", security: "observeDockerSecurityOptions", socket: "readRuntimeSocketOverride" } as const;
-        Object.defineProperty(ports, operations[stage as keyof typeof operations], { value: () => { throw fault; } });
-        const get = collect(); for (let index = 0; index < 2; index++) expect(() => get()).toThrow(fault);
-        expect(cached()).toBeNull(); expect(trace.filter(name => name === "select")).toHaveLength(2); expect(trace).not.toContain("publish");
+    it("uses root UID only when Podman rootless is unknown", () => {
+        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRootless = () => null;
+        ports.readEffectiveUidOrDefault = () => 0; expect(collect()).toMatchObject({ rootless: false, socketPath: "/run/podman/podman.sock" });
+        ports.observePodmanRootless = () => false; ports.readEffectiveUidOrDefault = () => { throw Error("unused UID"); };
+        expect(collect().rootless).toBe(false);
     });
-    it("consumes raw result lazily and never accesses failed-version stdout", () => {
-        const { ports, collect, trace } = fixture(); let statusReads = 0;
-        ports.observeVersion = () => ({ get status() { statusReads++; return 1; }, get stdout(): never { throw Error("stdout"); } });
-        expect(collect()().version).toBeNull(); expect(statusReads).toBe(1); expect(trace).not.toContain("version.stdout");
+    it("prioritizes socket override then XDG then native UID", () => {
+        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRootless = () => true;
+        ports.readRuntimeSocketOverride = () => " raw socket "; expect(collect().socketPath).toBe(" raw socket ");
+        ports.readRuntimeSocketOverride = () => undefined; ports.readXdgRuntimeDirectory = () => "/run/custom";
+        expect(collect().socketPath).toBe("/run/custom/podman/podman.sock");
+        ports.readXdgRuntimeDirectory = () => undefined; expect(collect().socketPath).toBe("/run/user/1000/podman/podman.sock");
     });
-    it("distinguishes ignored rootless UID failures from propagating socket UID failures", () => {
-        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRootless = () => ({ status: 1, stdout: "" }); ports.readEffectiveUidOrDefault = () => { throw Error("uid"); };
-        expect(collect()().rootless).toBe(false);
-        const socket = fixture(); socket.ports.selectRuntime = () => "podman"; socket.ports.observePodmanRootless = () => ({ status: 0, stdout: "true" }); socket.ports.readEffectiveUidOrDefault = () => { throw Error("socket-uid"); };
-        expect(() => socket.collect()()).toThrow("socket-uid"); expect(socket.cached()).toBeNull();
-    });
-    it("prioritizes socket override then XDG join over UID", () => {
-        const { ports, collect } = fixture(); ports.selectRuntime = () => "podman"; ports.observePodmanRootless = () => ({ status: 0, stdout: "true" }); ports.readRuntimeSocketOverride = () => " raw socket "; ports.readXdgRuntimeDirectory = () => { throw Error("skip"); };
-        expect(collect()().socketPath).toBe(" raw socket ");
-        const xdg = fixture(); xdg.ports.selectRuntime = () => "podman"; xdg.ports.observePodmanRootless = () => ({ status: 0, stdout: "true" }); xdg.ports.readXdgRuntimeDirectory = () => "/run/custom"; xdg.ports.readEffectiveUidOrDefault = () => { throw Error("skip"); };
-        expect(xdg.collect()().socketPath).toBe("/run/custom/podman/podman.sock");
-    });
-});
-
-describe("runtime capability domain compatibility", () => {
-    it("preserves version matching, rootless JSON/fallback and remote flavor", () => {
-        expect(parseRuntimeVersion("Docker version 27.1.1")).toBe("27.1.1"); expect(parseRuntimeVersion("podman version 5.2")).toBe("5.2"); expect(parseRuntimeVersion("unavailable")).toBeNull();
-        expect(decodeDockerRootlessOptions('["name=rootless"]')).toBe(true); expect(decodeDockerRootlessOptions("rootless")).toBe(true); expect(decodeDockerRootlessOptions('"rootless"')).toBe(false);
-        expect(deriveRuntimeFlavor("docker", true, false)).toBe("docker-desktop"); expect(deriveRuntimeFlavor("podman", true, false)).toBe("podman-machine");
+    it("preserves unknown version and Docker rootless flavor", () => {
+        const { ports, collect } = fixture(); ports.observeVersion = () => null; ports.observeDockerSecurityOptions = () => true;
+        expect(collect()).toMatchObject({ version: null, rootless: true, flavor: "docker-rootless" });
     });
 });

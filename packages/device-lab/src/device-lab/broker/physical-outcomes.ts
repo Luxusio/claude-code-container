@@ -36,14 +36,41 @@ export function renderCleanupRollback(outcome: CleanupRollback) {
 }
 
 import type { ProviderCommand, ProviderCommandResult } from '../../device-lab-broker.js';
-import type { AttachOutcome, DetachOutcome, TrustOutcome, PhysicalStopOutcome, PhysicalContext, PhysicalExecution } from '../domain/broker-physical-devices.js';
+import type { AttachOutcome, DetachOutcome, TrustOutcome, PhysicalStopOutcome, PhysicalContext, PhysicalExecution, AppleHostDevice, AppleInventoryObservation, AppleTrustFacts } from '../domain/broker-physical-devices.js';
 import type { OwnerCleanupOutcome, CleanupDeviceReport } from '../domain/broker-owner-cleanup.js';
 export interface NativePhysicalReceipt { command: ProviderCommand; execution: ProviderCommandResult }
+export function normalizeAppleInventory<Receipt>(observation: PhysicalExecution<Receipt>, devices: (text:string)=>AppleHostDevice[]): AppleInventoryObservation<Receipt> {
+    if (observation.status !== 0 || observation.error) return {kind:'failed',reason:observation.error === 'executable-not-found' ? 'missing-executable' : 'command-failed',receipt:observation.receipt};
+    return {kind:'observed',devices:devices(observation.stdout || ''),receipt:observation.receipt};
+}
+export function renderAppleTrustDiagnostic(facts: AppleTrustFacts) {
+    return {
+        ...(facts.ownerId === undefined ? {} : {ownerId:facts.ownerId}),
+        backend: 'ios-device', action:facts.action, udid:facts.udid, provider:'xcrun-xctrace',
+        selected:facts.selected, visible:facts.visible, networkVisible:facts.networkVisible,
+        readyToAttach:facts.readyToAttach, manualRequired:facts.manualRequired, trustState:facts.trustState,
+        supportedActions:['status'], unsupportedActions:['pair','connect'],
+        attachFlow: facts.networkVisible
+            ? 'Call device_attach with backend=ios-device, connection=wifi, and this UDID.'
+            : facts.readyToAttach
+                ? 'Call device_attach with backend=ios-device and this UDID for USB attach, or complete Xcode network pairing first for Wi-Fi attach.'
+                : 'Complete Apple trust, Developer Mode, and Xcode pairing on the macOS host, then re-run this status check.',
+        manualSteps:[
+            'Connect the iPhone or iPad to the macOS host over USB, unlock it, and accept the Trust This Computer prompt.',
+            'Enable Developer Mode on the device when iOS requires it.',
+            'Open Xcode Devices and Simulators on the macOS host and enable network pairing if Wi-Fi attach is needed.',
+            'Re-run device_wireless with backend=ios-device and action=status, then call device_attach when xctrace reports the UDID as USB or Network.',
+        ],
+        safety:{bypassesTrustPrompt:false,powersOffDevice:false,erasesDevice:false,disconnectsDevice:false},
+        ...(facts.inventory === undefined ? {} : {inventory:facts.inventory}),
+        ...(facts.alreadyNetworkVisible === undefined ? {} : {alreadyNetworkVisible:facts.alreadyNetworkVisible}),
+    };
+}
 function physicalFailureDetail(execution: ProviderCommandResult) {
     const parts = [execution.error ? `error: ${execution.error}` : '', execution.stderr ? `stderr: ${execution.stderr}` : '', execution.stdout ? `stdout: ${execution.stdout}` : ''].filter(Boolean);
     return (parts.join('\n') || `provider exited with status ${String(execution.status)}`).slice(0, 8192);
 }
-function inventoryCommand(observation: PhysicalExecution<NativePhysicalReceipt>) {
+function inventoryCommand(observation: {receipt:NativePhysicalReceipt}) {
     const execution = observation.receipt.execution;
     return { provider: execution.provider, executable: execution.executable, args: execution.args, status: execution.status, stderr: execution.stderr };
 }
@@ -61,13 +88,13 @@ function physicalRefusalFacts(facts: PhysicalContext<NativePhysicalReceipt>) {
         ...(facts.connection === undefined ? {} : {connection:facts.connection}),
         ...(facts.state === undefined ? {} : {state:facts.state}),
         ...(facts.detail === undefined ? {} : {detail:facts.detail}),
-        ...(facts.message === undefined ? {} : {message:facts.message}),
+        ...(facts.selectionReason === undefined ? {} : {message:facts.selectionReason === 'no-attachable-usb' ? 'No attachable USB Android device is visible to host adb.' : 'Multiple attachable USB Android devices are visible; pass serial.'}),
         ...(facts.existing === undefined ? {} : {existing:facts.existing}),
         ...(facts.inventory === undefined ? {} : {inventory:facts.inventory}),
         ...(facts.hostDevices === undefined ? {} : {hostDevices:facts.hostDevices}),
         ...(facts.candidates === undefined ? {} : {candidates:facts.candidates}),
         ...(facts.command ? {command:facts.command.receipt.execution} : {}),
-        ...(facts.diagnostic ? {diagnostic:{...facts.diagnostic,inventoryCommand:facts.inventoryObservation ? inventoryCommand(facts.inventoryObservation) : facts.command ? inventoryCommand(facts.command) : null}} : {}),
+        ...(facts.diagnostic ? {diagnostic:{...renderAppleTrustDiagnostic(facts.diagnostic),inventoryCommand:facts.inventoryObservation ? inventoryCommand(facts.inventoryObservation) : facts.command ? inventoryCommand(facts.command) : null}} : {}),
     };
 }
 export function renderPhysicalAttachOutcome(outcome: AttachOutcome<NativePhysicalReceipt>): PhysicalWireResult {
@@ -77,9 +104,9 @@ export function renderPhysicalAttachOutcome(outcome: AttachOutcome<NativePhysica
     return {status:refusalStatus(outcome.category),payload:{ok:false,...physicalRefusalFacts(outcome)}};
 }
 export function renderAppleTrustOutcome(outcome: TrustOutcome<NativePhysicalReceipt>): PhysicalWireResult {
-    if (outcome.kind === 'trust-observed') return {status:200,payload:{ok:true,result:{...outcome.diagnostic,inventoryCommand:inventoryCommand(outcome.inventoryObservation)}}};
+    if (outcome.kind === 'trust-observed') return {status:200,payload:{ok:true,result:{...renderAppleTrustDiagnostic(outcome.diagnostic),inventoryCommand:inventoryCommand(outcome.inventoryObservation)}}};
     return {status:refusalStatus(outcome.category),payload:{ok:false,error:outcome.error,...(outcome.allowed ? {allowed:outcome.allowed} : {}),
-        ...(outcome.diagnostic ? {result:{...outcome.diagnostic,inventoryCommand:outcome.inventoryObservation ? inventoryCommand(outcome.inventoryObservation) : null}} : {})}};
+        ...(outcome.diagnostic ? {result:{...renderAppleTrustDiagnostic(outcome.diagnostic),inventoryCommand:outcome.inventoryObservation ? inventoryCommand(outcome.inventoryObservation) : null}} : {})}};
 }
 export function renderPhysicalDetachOutcome(outcome: DetachOutcome<NativePhysicalReceipt>, redact: (value:unknown)=>unknown): PhysicalWireResult {
     if (outcome.kind === 'scope-refused') return renderLeaseFailure(outcome.failure);

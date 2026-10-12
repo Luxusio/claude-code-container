@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
 import type { DeviceArguments, DeviceRequestPorts } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
 
-import { presentBrokerTool, imageResult } from "../../../device-lab-mcp/src/device-request-presenter.mjs";
+import { presentBrokerTool, imageResult, presentActiveAppWait } from "../../../device-lab-mcp/src/device-request-presenter.mjs";
 type OpaqueResult = { selection: "json" | "text" | "image"; value: unknown };
 function jsonReply(value: unknown): OpaqueResult { return { selection: "json", value }; }
 
@@ -57,6 +57,14 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
         brokerDeviceTool: unexpected,
         brokerPhysical: unexpected,
         brokerAppium: unexpected,
+        observeActiveApp: unexpected,
+        presentActiveAppWait: outcome => {
+            let selected: OpaqueResult = jsonReply(null);
+            presentActiveAppWait(outcome,
+                value => { selected = jsonReply(value); return { content: [] }; },
+                (_ok, text) => { selected = { selection: "text", value: text }; return { content: [] }; });
+            return selected;
+        },
         brokerRpc: unexpected,
         implicitBrokerProbeOptions: unexpected,
         isLocalObservationBudgetExhaustion: unexpected,
@@ -225,3 +233,86 @@ function requiredPresenters(ports: DeviceRequestPorts<OpaqueResult>) {
     void [broker, image];
 }
 void requiredPresenters;
+
+describe("semantic active-app waits", () => {
+    function waiting(backend = "ios-simulator") {
+        const args = { backend, deviceId: "owned-phone", broker: true, bundleId: "com.example.Test", packageName: "com.example.Test", timeoutMs: 100, intervalMs: 10 };
+        const ports = requestPorts("mobile_wait_for_app", args);
+        let remaining = 100;
+        ports.brokerAppium = vi.fn(async () => ({ ok: true, selected: { host: "selected-broker", port: 43123 } }));
+        ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => remaining, requestTimeout: maximum => Math.min(maximum, remaining), pause: async () => { remaining = 0; } });
+        const broker = { ok: true, result: { diagnostic: "opaque-native-receipt" } };
+        ports.observeActiveApp = vi.fn(async () => ({ kind: "observed" as const, activeAppId: "com.example.Test", foreground: false, receipt: { broker, appState: { bundleID: "com.example.Test" } } }));
+        return { ports, args, broker, expire: () => { remaining = 0; }, run: () => createDeviceRequest(ports).dispatch("mobile_wait_for_app", args) };
+    }
+
+    it("matches iOS identity independently of foreground and preserves native receipt presentation", async () => {
+        const fixture = waiting();
+        await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { found: true, bundleId: "com.example.Test", activeApp: { bundleID: "com.example.Test" }, provider: "broker-appium", backend: "ios-simulator", broker: fixture.broker } });
+        expect(fixture.ports.observeActiveApp).toHaveBeenCalledWith(expect.objectContaining({ backend: "ios-simulator", expectedAppId: "com.example.Test", hostCandidates: ["selected-broker"], port: 43123, autolaunch: false, requestTimeoutMs: 100 }));
+        expect(fixture.ports.brokerAppium).toHaveBeenCalledTimes(1);
+        expect(fixture.ports.handleAndroidTool).not.toHaveBeenCalled();
+    });
+
+    it("keeps strict iOS matching and presents the last unmatched state", async () => {
+        const fixture = waiting();
+        fixture.args.bundleId = "123";
+        fixture.ports.observeActiveApp = async () => ({ kind: "observed", activeAppId: 123, foreground: true, receipt: { broker: fixture.broker, appState: { bundleId: 123 } } });
+        await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { found: false, appState: { bundleId: 123 }, timeoutMs: 100, provider: "broker-appium", backend: "ios-simulator" } });
+    });
+
+    it("uses Android foreground facts without requiring iOS identity", async () => {
+        const fixture = waiting("android-device");
+        fixture.ports.observeActiveApp = async () => ({ kind: "observed", activeAppId: null, foreground: true, receipt: { broker: fixture.broker, appState: "3" } });
+        await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { found: true, packageName: "com.example.Test", appState: "3", provider: "broker-appium", backend: "android-device", broker: fixture.broker } });
+    });
+
+    it.each([false, true])("fails the first observation immediately even for local exhaustion=%s", async localBudgetExhausted => {
+        const fixture = waiting();
+        const receipt = { ok: false, error: "native-observation-refused", selected: { host: "selected-broker", port: 43123 } };
+        fixture.ports.observeActiveApp = vi.fn(async () => ({ kind: "failed" as const, localBudgetExhausted, receipt }));
+        await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { ...receipt, routedBy: "mobile-broker-appium" } });
+        expect(fixture.ports.observeActiveApp).toHaveBeenCalledTimes(1);
+        expect(fixture.ports.handleAndroidTool).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("distinguishes provider failure from local exhaustion after observation (%s)", async localBudgetExhausted => {
+        const fixture = waiting();
+        fixture.ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => 50, requestTimeout: () => 50, pause: async () => {} });
+        const receipt = { ok: false, error: "native-observation-refused" };
+        fixture.ports.observeActiveApp = vi.fn()
+            .mockResolvedValueOnce({ kind: "observed", activeAppId: "other", foreground: false, receipt: { broker: fixture.broker, appState: { bundleId: "other" } } })
+            .mockResolvedValueOnce({ kind: "failed", localBudgetExhausted, receipt });
+        await expect(fixture.run()).resolves.toEqual({ selection: "json", value: localBudgetExhausted
+            ? { found: false, appState: { bundleId: "other" }, timeoutMs: 100, provider: "broker-appium", backend: "ios-simulator" }
+            : { ...receipt, routedBy: "mobile-broker-appium" } });
+        expect(fixture.ports.observeActiveApp).toHaveBeenCalledTimes(2);
+    });
+
+    it("reports deadline before observation without dispatching a probe", async () => {
+        const fixture = waiting();
+        fixture.expire();
+        await expect(fixture.run()).resolves.toEqual({ selection: "text", value: "Appium wait deadline exhausted before observation" });
+        expect(fixture.ports.observeActiveApp).not.toHaveBeenCalled();
+    });
+
+    it("does not dispatch when the remaining request budget is zero", async () => {
+        const fixture = waiting();
+        fixture.ports.createWaitBudget = () => ({ timeoutMs: 100, remaining: () => 1, requestTimeout: () => 0, pause: async () => {} });
+        await expect(fixture.run()).resolves.toEqual({ selection: "text", value: "Appium wait deadline exhausted before observation" });
+        expect(fixture.ports.observeActiveApp).not.toHaveBeenCalled();
+    });
+
+    it("returns session refusal before active-app observation", async () => {
+        const fixture = waiting();
+        fixture.ports.brokerAppium = async () => ({ ok: false, error: "session-refused" });
+        await expect(fixture.run()).resolves.toEqual({ selection: "json", value: { ok: false, error: "session-refused", routedBy: "mobile-broker-appium" } });
+        expect(fixture.ports.observeActiveApp).not.toHaveBeenCalled();
+    });
+
+    it("gives deadline during observation precedence over a successful match", async () => {
+        const fixture = waiting();
+        fixture.ports.observeActiveApp = async () => { fixture.expire(); return { kind: "observed", activeAppId: "com.example.Test", foreground: true, receipt: { broker: fixture.broker, appState: { bundleId: "com.example.Test" } } }; };
+        await expect(fixture.run()).resolves.toEqual({ selection: "text", value: "Appium wait deadline exhausted during observation" });
+    });
+});

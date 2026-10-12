@@ -1,5 +1,5 @@
 import type { WorktreeResult, WorktreeRepoResult } from "../../domain/workspace/creation-result.js";
-import type { WorkspaceDamage, WorkspaceRegistrationPreflight, WorkspaceRegistrationRepair } from "../../domain/workspace/open.js";
+import type { WorkspaceDamage, WorkspaceRegistrationPreflight, WorkspaceRegistrationRepair, WorkspaceOpenConfirmation, WorkspaceOpenEvent } from "../../domain/workspace/open.js";
 export interface WorkspaceOpenPorts {
     path(cwd: string, branch: string): string;
     projectId(path: string): string;
@@ -12,7 +12,7 @@ export interface WorkspaceOpenPorts {
     missingRegistration(error: unknown): boolean;
     registrationPreflight(path: string, cwd: string, branch: string): WorkspaceRegistrationPreflight | null;
     recoverRegistration(path: string, cwd: string, branch: string, preflight: WorkspaceRegistrationPreflight): { repaired: boolean; failure?: string };
-    safeLiteral(text: string): string;
+    recoveryError(path: string, failure?: string): Error;
     assertBranch(path: string, branch: string, cwd: string, allowTrackedGitlinks: boolean): undefined;
     actualBranch(path: string): string | null | undefined;
     repairNested(cwd: string, path: string, branch: string): WorktreeRepoResult[];
@@ -23,8 +23,6 @@ export interface WorkspaceOpenPorts {
     create(cwd: string, branch: string): WorktreeResult;
     damage(error: unknown): WorkspaceDamage | null;
     repairRegistration(repair: WorkspaceRegistrationRepair): { ok: boolean; detail: string };
-    prompt(question: string): Promise<string>;
-    report(message: string): undefined;
-    reportError(message: string): undefined;
-    exit(code: number): never;
+    confirm(request: WorkspaceOpenConfirmation): Promise<boolean>;
+    report(event: WorkspaceOpenEvent): undefined;
 }
