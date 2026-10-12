@@ -324,7 +324,7 @@ export function selectBackendCatalog(catalog, backend) {
     };
 }
 
-/** @typedef {
+/** @typedef {(
  * {kind:'read-source'|'capture-screenshot'|'back'|'home'|'forward'|'recents'|'power'|'lock'|'unlock'|'read-clipboard'} |
  * {kind:'tap'|'double-tap',x:number,y:number} |
  * {kind:'long-press',x:number,y:number,durationMs:number} |
@@ -337,7 +337,7 @@ export function selectBackendCatalog(catalog, backend) {
  * {kind:'launch-component',component:string} |
  * {kind:'launch-app'|'uninstall-app'|'stop-app'|'clear-app-data',appId:string} |
  * {kind:'set-location',latitude:number,longitude:number,altitude:number}
- * } MobileEffect */
+ * )} MobileEffect */
 /** @typedef {{effects:MobileEffect[],error?:undefined}|{error:string,effects?:undefined}} MobileEffectSelection */
 /** Admission and sequence policy only; native frames are constructed outward.
  * @param {string} name @param {DeviceArguments} args @param {string} backend

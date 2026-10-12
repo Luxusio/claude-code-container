@@ -258,7 +258,7 @@ export async function performIosAppiumEffect(effect) {
     return /** @type {import('../ports/ios-observation-access.mjs').IosAccessAppiumResult<Effect>} */ (result);
 }
 
-export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) { return createObservationAccess(xcrun).waitForApp(xcrun, target, bundleId, timeoutMs, intervalMs); }
+export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) { return createObservationAccess(xcrun).waitForApp(target, bundleId, timeoutMs, intervalMs); }
 
 async function ensureIosAppiumSession(deviceId) { return createObservationAccess().ensureSession(deviceId); }
 

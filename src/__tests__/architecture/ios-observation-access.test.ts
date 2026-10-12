@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createIosObservationAccess } from "../../../packages/device-lab/providers/application/ios-observation-access.mjs";
-import type { IosAccessDevice, IosSimulatorAccessPorts, IosPhysicalAccessPorts, IosAccessAppiumResult, IosAccessSimulatorResult } from "../../../packages/device-lab/providers/ports/ios-observation-access.mjs";
+import type { IosAccessDevice, IosSimulatorAccessPorts, IosPhysicalAccessPorts, IosAccessAppiumEffect, IosAccessAppiumResult, IosAccessSimulatorResult } from "../../../packages/device-lab/providers/ports/ios-observation-access.mjs";
 
 function simulatorPorts(device: IosAccessDevice): IosSimulatorAccessPorts<IosAccessDevice, object> {
     return {
@@ -33,6 +33,20 @@ function simulatorPorts(device: IosAccessDevice): IosSimulatorAccessPorts<IosAcc
 }
 
 describe("iOS observation and access", () => {
+    it("rejects a positive simulator probe completed at the deadline and starts no fallback", async () => {
+        const ports = simulatorPorts({ id: "owned" });
+        let remaining = 10;
+        ports.waitBudget = () => ({ timeoutMs: 10, remaining: () => remaining, requestTimeout: () => remaining, pause: async () => undefined });
+        const probes = vi.fn(() => undefined);
+        ports.simulatorEffect = effect => {
+            probes(); remaining = 0;
+            return { kind: "present", pid: "123", receipt: { status: 0, stdout: "123\n", stderr: "" } } as IosAccessSimulatorResult<typeof effect>;
+        };
+        const observed = await createIosObservationAccess(ports).waitForApp("OWNED-UDID", "com.wanted", 10);
+        expect(observed).toMatchObject({ running: false, timeoutMs: 10 });
+        expect(probes).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
         { activeApp: { bundleId: "com.other", bundleID: "com.wanted" }, bundleIds: ["com.other", "com.wanted"], found: true },
         { activeApp: {}, bundleIds: [], found: false },
@@ -112,8 +126,9 @@ describe("iOS observation and access", () => {
     it("refuses stale process cleanup when owned identity has changed", async () => {
         const ports = simulatorPorts({ id: "owned" });
         ports.inspectRuntime = () => ({ status: "mismatch" });
-        const effect = vi.fn(ports.appiumEffect), terminate = vi.fn(ports.terminateRuntime);
-        ports.appiumEffect = effect; ports.terminateRuntime = terminate;
+        const effect = vi.fn((_effect: IosAccessAppiumEffect) => undefined), terminate = vi.fn(ports.terminateRuntime);
+        const originalEffect = ports.appiumEffect;
+        ports.appiumEffect = request => { effect(request); return originalEffect(request); }; ports.terminateRuntime = terminate;
         expect(await createIosObservationAccess(ports).stopOwnedAppium({ runtimeId: "owned", processOwner: "device-lab-mcp", startedBy: "direct-provider", serverPid: 42, processIdentity: {}, serverUrl: "http://owned", sessionId: "session" }, "cleanup")).toMatchObject({ exited: false, reason: "runtime-process-identity-mismatch" });
         expect(effect).not.toHaveBeenCalled(); expect(terminate).not.toHaveBeenCalled();
     });
@@ -123,13 +138,15 @@ describe("iOS observation and access", () => {
         const ports = simulatorPorts({ id: "owned", udid: "OWNED-UDID", appium: oldAppium });
         ports.publishAppium = () => ({ committed: true, device: null });
         ports.spawnServer = () => { throw new Error("missing record must not spawn a new server"); };
-        const request = vi.fn<IosSimulatorAccessPorts<IosAccessDevice, object>["appiumEffect"]>(async (effect) => {
+        const request = vi.fn((_effect: IosAccessAppiumEffect) => undefined);
+        ports.appiumEffect = async effect => {
+            request(effect);
             if (effect.kind === "server-status") throw new Error("stale server");
             if (effect.kind === "delete-session") return undefined as IosAccessAppiumResult<typeof effect>;
             throw new Error("missing record must not create a session");
-        });
+        };
         const terminate = vi.fn(ports.terminateRuntime);
-        ports.appiumEffect = request; ports.terminateRuntime = terminate;
+        ports.terminateRuntime = terminate;
         expect(await createIosObservationAccess(ports).ensureSession("owned")).toEqual({ unknown: true });
         expect(request).toHaveBeenCalledWith({ kind: "delete-session", serverUrl: "http://old-server", sessionId: "old-session" });
         expect(terminate).toHaveBeenCalledWith(expect.objectContaining({ runtimeId: "old-runtime", pid: 41 }), "iOS Simulator stale Appium");
@@ -162,8 +179,9 @@ describe("iOS observation and access", () => {
         ports.publishAppium = (_id, _expected, replacement) => replacement === null
             ? { committed: true, device: { id: "owned", udid: "OWNED-UDID", appium: null } }
             : { committed: false, device: successor };
-        const request = vi.fn(ports.appiumEffect), terminate = vi.fn(ports.terminateRuntime);
-        ports.appiumEffect = request; ports.terminateRuntime = terminate;
+        const request = vi.fn((_effect: IosAccessAppiumEffect) => undefined), terminate = vi.fn(ports.terminateRuntime);
+        const originalEffect = ports.appiumEffect;
+        ports.appiumEffect = effect => { request(effect); return originalEffect(effect); }; ports.terminateRuntime = terminate;
         expect(await createIosObservationAccess(ports).ensureSession("owned")).toEqual({
             error: "iOS Simulator Appium state changed before the new session was committed",
         });

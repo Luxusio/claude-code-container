@@ -18,7 +18,7 @@ export function createIosObservationAccess(ports) {
     }
     /** @param {Appium|null|undefined} appium @param {boolean} ready */
     async function sessionReady(appium, ready) {
-        if (!appium?.sessionId || !ready) return false;
+        if (!appium?.sessionId || !appium.serverUrl || !ready) return false;
         try { await ports.appiumEffect({ kind: "session-status", serverUrl: appium.serverUrl, sessionId: appium.sessionId }); return true; }
         catch { return false; }
     }
@@ -157,8 +157,8 @@ export function createIosObservationAccess(ports) {
         if (outcome.error !== undefined) return { kind: "result", result: ports.textResult(false, outcome.error) };
         return { kind: "ready", session: outcome };
     }
-    /** @param {string|null} xcrun @param {string} target @param {string} bundleId @param {number} [timeoutMs] @param {number} [intervalMs] */
-    async function waitForApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) {
+    /** @param {string} target @param {string} bundleId @param {number} [timeoutMs] @param {number} [intervalMs] */
+    async function waitForApp(target, bundleId, timeoutMs = 10000, intervalMs = 500) {
         if (ports.kind !== "simulator") throw new Error("Simulator app observation is unavailable for physical iOS");
         const budget = ports.waitBudget(timeoutMs, intervalMs);
         /** @type {Command|null} */ let last = null;
@@ -171,6 +171,7 @@ export function createIosObservationAccess(ports) {
                 const result = ports.simulatorEffect({ kind: "app-probe", target, bundleId, probe, timeoutMs: allowance });
                 last = result.receipt;
                 if (result.kind !== "failed") observation = result.receipt;
+                if (budget.remaining() <= 0) break;
                 if (result.kind === "present") return {
                     running: true, pid: result.pid ?? null, stdout: result.receipt.stdout,
                     stderr: result.receipt.stderr, status: result.receipt.status,
@@ -271,7 +272,7 @@ export function createIosObservationAccess(ports) {
             if (!discovery.available) return ports.missingPrerequisites(discovery);
             const target = ports.verifyTarget(discovery.xcrun, device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
-            const outcome = await waitForApp(discovery.xcrun, target.target, args.bundleId, args.timeoutMs, args.intervalMs);
+            const outcome = await waitForApp(target.target, args.bundleId, args.timeoutMs, args.intervalMs);
             return outcome.error ? ports.commandFailure(outcome.error) : ports.jsonResult({ ...outcome, bundleId: args.bundleId, provider: "simctl" });
         }
         if ((name === "device_screenshot" || name === "mobile_screenshot" || name === "mobile_dump_ui") && ports.kind === "physical") {

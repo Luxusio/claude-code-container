@@ -58,6 +58,13 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("iOS Simulator app observation", () => {
+    it("rejects a native PID observed at the deadline and starts no further command", async () => {
+        fixture.observe = () => { vi.setSystemTime(Date.now() + 10); return result(0, "123\n"); };
+        expect(await wait(10)).toMatchObject({ running: false, timeoutMs: 10 });
+        expect(fixture.calls).toHaveLength(1);
+        expect(fixture.allowances).toEqual([10]);
+    });
+
     it("preserves the native minimum allowance for a zero requested timeout", async () => {
         fixture.observe = () => { vi.setSystemTime(Date.now() + 1); return failed(); };
         expect(await wait(0)).toHaveProperty("error");

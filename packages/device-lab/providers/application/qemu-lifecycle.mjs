@@ -88,7 +88,7 @@ function start(args = {}) {
         const materialized = needsMaterialize
             ? ports.imageDiskTargetApplication().materializeDisk({ labId: loaded.lab.id, dryRun: true })
             : { ok: true, materialized: false, reused: ports.diskExists(disk.diskPath), lab: loaded.lab };
-        if (!materialized.ok) return { ok: false, error: "lab-disk-materialize-failed", materialized };
+        if (!materialized.ok) return { ok: /** @type {false} */ (false), error: "lab-disk-materialize-failed", materialized };
         const planLab = needsMaterialize
             ? {
                 ...loaded.lab,
@@ -100,10 +100,10 @@ function start(args = {}) {
             }
             : loaded.lab;
         const planned = launch(planLab, ctx, status, true, needsMaterialize);
-        if (!planned.ok) return { ok: false, error: "lab-start-failed", result: planned.presentation };
+        if (!planned.ok) return { ok: /** @type {false} */ (false), error: "lab-start-failed", result: planned.presentation };
         return { ok: true, ownerId: ctx.owner, dryRun: true, lab: publicLab(planLab), ...planned.preview, providerStatus: status, materialized };
     }
-    if (!status.available) return { ok: false, error: "lab-provider-unsupported", providerStatus: status };
+    if (!status.available) return { ok: /** @type {false} */ (false), error: "lab-provider-unsupported", providerStatus: status };
     if (loaded.lab.runtimeState === "running") return { ownerId: ctx.owner, reused: true, ...prepareStartedLab(loaded.lab, true) };
     const shouldMaterialize = Boolean(loaded.lab.image?.sourceImage);
     const materialized = !shouldMaterialize
@@ -111,10 +111,10 @@ function start(args = {}) {
         : ports.diskExists(disk.diskPath)
         ? { ok: true, materialized: false, reused: true, lab: loaded.lab }
         : ports.imageDiskTargetApplication().materializeDisk({ labId: loaded.lab.id });
-    if (!materialized.ok) return { ok: false, error: "lab-disk-materialize-failed", materialized };
+    if (!materialized.ok) return { ok: /** @type {false} */ (false), error: "lab-disk-materialize-failed", materialized };
     const startLabState = materialized.lab || loaded.lab;
     const started = launch(startLabState, ctx, status, false, materialized.materialized === true);
-    if (!started.ok) return { ok: false, error: "lab-start-failed", result: started.presentation };
+    if (!started.ok) return { ok: /** @type {false} */ (false), error: "lab-start-failed", result: started.presentation };
     const timestamp = ports.clock();
     const lab = {
         ...startLabState,
