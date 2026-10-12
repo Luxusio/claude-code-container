@@ -79,7 +79,7 @@ for (const lane of remainingStructuralPlans) {
     out.push(`| ${cell(lane.wbsCode)} | ${cell(lane.title)} | ${structuralLabel[lane.workStatus]} | ${cell(dependencies)} | ${cell(lane.remainingWork)} |`);
 }
 out.push("", "### 진행 순서와 완료 판정", "",
-    "현재 구현 계획에서는 R01·R02·R03·R04를 병렬로 진행하고, R05는 R01 이후, R06은 R04 이후에 적용한다. R06의 선행 관계는 물리 기기 처리와 공유 브로커 파일의 변경을 조정하기 위한 작업 순서다.", "",
+    "남은 그룹은 표의 선행 작업과 실제 파일 소유권을 기준으로 병렬 진행한다. 공유 조합 파일은 코디네이터가 연결하고, 각 그룹의 결과를 함께 검증한다.", "",
     "공통 조합 지점의 연결, 독립 리뷰, portable QA, 로컬 통합까지 확인한 그룹만 완료로 바꾼다. 이 공통 작업은 각 그룹의 완료 조건에 포함하며 별도 그룹으로 더하지 않는다. 계획 작성·코드 작성만으로 완료 수를 올리지 않는다.", "");
 for (const lane of remainingStructuralPlans) {
     const sources = (lane.sourceTrace?.remainingPaths ?? lane.sourceTrace?.owningPaths ?? [])
