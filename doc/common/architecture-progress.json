@@ -1754,36 +1754,44 @@
       "id": "codex-config-bootstrap-boundaries-structural",
       "coveredOperationIds": [],
       "title": "Codex·Claude 설정 포트 단순화",
-      "workStatus": "pending",
-      "remainingWork": "내부 포트의 getter·descriptor·Reflect 호출 보존 계층을 필요한 일반 함수로 줄인다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "설정 lock·prepare·bootstrap·finally 복구와 안전한 파일 공개 정책을 보존하면서, 실제 내부 호출 계약에 맞춘 단순한 포트를 사용한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
-        "remainingPaths": [
+        "owningPaths": [
           "src/application/codex-harness.ts",
           "src/adapters/codex-harness.ts",
           "src/application/mcp-forward.ts",
           "src/adapters/mcp-forward.ts"
         ]
       },
-      "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
+      "status": "Confirmed bounded group delivered at6d1e2a15 after actual independent Code/Security/Docs review and portable QA PASS. Ordinary ports replace getter/descriptor/Reflect preservation machinery; configuration locks, preparation, bootstrap, finally restoration and real filesystem publication authority remain qualified. Zero additional operation credit; native, reliability, exhaustive source, full Goal and formal close remain unverified.",
+      "taskId": "TASK__architecture-native-port-simplification",
+      "acceptedIntegrationCommit": "6d1e2a15c212e2525853acf864dd255c6010cf98",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/native-ports-240d-cjjknqoy/qa6d-final-summary.json",
+      "deliveryEvidence": "/tmp/ccc-native-port-integration-20261012.json"
     },
     {
       "id": "identity-digest-ownership-structural",
       "coveredOperationIds": [],
       "title": "컨테이너 identity digest",
-      "workStatus": "pending",
-      "remainingWork": "captureLabelsDigest()() 이중 factory를 단일 digest 포트로 정리한다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
       "completionCriteria": "labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
-        "remainingPaths": [
+        "owningPaths": [
           "src/application/container/identity-image.ts",
           "src/ports/container/identity-image.ts",
           "src/container-identity.ts"
         ]
       },
-      "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
+      "status": "Confirmed bounded group delivered at6d1e2a15 after actual independent Code/Security/Docs review and portable QA PASS. A single native labelsDigest port replaces the double factory; actual public hash/key/cache/rebuild/bare-base/failure authority is qualified. Zero additional operation credit; native, reliability, exhaustive source, full Goal and formal close remain unverified.",
+      "taskId": "TASK__architecture-native-port-simplification",
+      "acceptedIntegrationCommit": "6d1e2a15c212e2525853acf864dd255c6010cf98",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/native-ports-240d-cjjknqoy/qa6d-final-summary.json",
+      "deliveryEvidence": "/tmp/ccc-native-port-integration-20261012.json"
     }
   ],
   "currentSourceQualificationAudit": {
