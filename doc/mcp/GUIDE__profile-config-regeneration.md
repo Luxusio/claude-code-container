@@ -58,8 +58,7 @@ carrier; asynchronous publishers are not valid inward bindings.
 
 Host decoding retains the original read/JSON/optional-inspection fallback.
 Existence is observed first. A present document supplies one read capability;
-the application invokes `JSON.parse(read())` inside the original catch, selecting
-the parser before native reading. A parser getter failure prevents the read.
+the application reads and parses it inside the shared fallback catch.
 Claude malformed JSON and ignored native read failures retain the empty-object
 fallback. Existence/path failures outside those catches propagate unchanged.
 Valid Claude JSON null, scalars and arrays retain their original behavior;
@@ -72,21 +71,20 @@ serialization failure or Claude write error therefore leaves any newly published
 Codex bytes in place. There is no rollback. Permission diagnostics and raw error
 precedence remain the original native behavior.
 
-Claude publication selects the native writer before evaluating JSON
-serialization. Its port getter captures that invocation's writer; constructor
-validation recognizes the getter without invoking it. A serializer that changes
-a builtin export therefore cannot redirect the already-selected publication.
-Serializer or selected-writer failures retain their raw identity and preceding
-Codex bytes.
+All seven required ports are ordinary synchronous functions, checked locally
+when constructing the generator. Construction does not perform profile reads,
+lock acquisition or publication. Claude serialization and native write failures
+retain their raw identity and preceding Codex bytes.
 
 ## Verification and known ceiling
 
-Freeze actual baseline source/native authority before edits. Pair baseline and
-candidate public facade executions with identical ordered native observations,
-raw errors, mutable values and surviving bytes. New core/replay/facade/type/CLI
-suites complement the existing MCP forwarding, Codex lock/access and startup
-regressions. CLI proof must execute the actual generator through fresh/reuse,
-Codex/Claude and default/named variants, retaining both restoration positions.
+Core, facade, type and CLI suites check required function bindings, read
+fallbacks, lock and restoration order, unchanged Codex write suppression,
+publication failures and surviving bytes. Real private files establish inode,
+mode and symlink behavior. These checks complement existing MCP forwarding,
+Codex lock/access and startup regressions. CLI proof executes the actual
+generator through fresh/reuse, Codex/Claude and default/named variants, retaining
+both restoration positions.
 Native fixtures use private homes and fences around external runtime effects.
 
 Coordinator integration must freshly build and assemble both extracted npm and

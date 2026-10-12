@@ -77,6 +77,8 @@ describe("private native facade, real lock and direct filesystem publication", (
         const { claude, codex } = prepare(); const cause = { code: "EACCES", detail: "Claude" }; f.faults.set(`write:${claude}`, cause);
         let thrown: unknown; try { api.buildMcpConfig(); } catch (error) { thrown = error; }
         expect(thrown).toBe(cause); expect(readFileSync(codex, "utf8")).toContain("# ccc-managed-mcp end"); expect(existsSync(claude)).toBe(false);
+        expect(readFileSync(codex, "utf8")).toContain('url = "http://host.docker.internal:9"');
+        expect(existsSync(lockPath())).toBe(false);
     });
     it.each(["EACCES", "EPERM", "EIO"])("retains contextual Codex write error and permission-only hint for %s", code => {
         const { claude, codex } = prepare(); f.faults.set(`write:${codex}`, Object.assign(new Error("fixture denied"), { code }));

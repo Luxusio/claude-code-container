@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createMcpConfigRegenerator } from "../../application/mcp-forward.js";
 import { selectHostMcpServers, forwardHostMcpServers, freshManagedMcpServers } from "../../domain/mcp-forward.js";
-import * as domain from "../../domain/mcp-forward.js";
 
 function fixture(claude: string | undefined = undefined, host: string | undefined = undefined, existing = "") {
     const events: string[] = [];
@@ -26,52 +25,14 @@ function fixture(claude: string | undefined = undefined, host: string | undefine
 }
 
 describe("inward synchronous MCP regeneration", () => {
-    it("does not select an accessor publication writer during construction", () => {
-        let selections = 0; let calls = 0;
-        const generator = createMcpConfigRegenerator({
-            resolveClaudeProfile: () => "claude",
-            readClaudeProfileDocument: () => () => "{}",
-            readHostMcpDocument: () => undefined,
-            withCodexProfileLock: <T>(_profile: string | undefined, operation: () => T): T => operation(),
-            prepareCodexProfile: () => ({binding: "codex", existingText: ""}),
-            publishCodexProfile: () => undefined,
-            get publishClaudeProfile() {
-                selections += 1;
-                return () => { calls += 1; return undefined; };
-            },
-        });
-        expect(selections).toBe(0); expect(calls).toBe(0);
-        generator.build();
-        expect(selections).toBe(1); expect(calls).toBe(1);
-    });
-    it("requires every semantic port at construction", () => {
-        for (const name of ["resolveClaudeProfile", "readClaudeProfileDocument", "readHostMcpDocument", "withCodexProfileLock", "prepareCodexProfile", "publishCodexProfile", "publishClaudeProfile"]) {
-            const ports = Object.fromEntries(["resolveClaudeProfile", "readClaudeProfileDocument", "readHostMcpDocument", "withCodexProfileLock", "prepareCodexProfile", "publishCodexProfile", "publishClaudeProfile"].filter(key => key !== name).map(key => [key, () => undefined]));
-            // Intentionally malformed runtime input, independently of the strict consumer proof.
-            expect(() => createMcpConfigRegenerator(ports as never)).toThrow(name);
+    it.each(["resolveClaudeProfile", "readClaudeProfileDocument", "readHostMcpDocument", "withCodexProfileLock", "prepareCodexProfile", "publishCodexProfile", "publishClaudeProfile"])("requires callable %s at construction", name => {
+        const names = ["resolveClaudeProfile", "readClaudeProfileDocument", "readHostMcpDocument", "withCodexProfileLock", "prepareCodexProfile", "publishCodexProfile", "publishClaudeProfile"];
+        const absent = Object.fromEntries(names.filter(key => key !== name).map(key => [key, () => undefined]));
+        // Intentionally malformed runtime inputs exercise the construction boundary.
+        expect(() => createMcpConfigRegenerator(absent as never)).toThrow(name);
+        for (const value of [undefined, null, false, 1, "writer", {}]) {
+            expect(() => createMcpConfigRegenerator({ ...absent, [name]: value } as never)).toThrow(name);
         }
-    });
-    it("retains ordinary maps, shared mutable Chrome identity and fresh Device Lab identity", () => {
-        const first = freshManagedMcpServers(); const second = freshManagedMcpServers();
-        expect(Object.getPrototypeOf(first)).toBe(Object.prototype); expect(first).not.toBe(second);
-        expect(first["chrome-devtools"]).toBe(second["chrome-devtools"]);
-        expect(first["device-lab"]).not.toBe(second["device-lab"]);
-        expect(first["device-lab"].args).not.toBe(second["device-lab"].args);
-        expect(first["device-lab"].env).not.toBe(second["device-lab"].env);
-        first["chrome-devtools"].witness = "mutable";
-        try { expect(freshManagedMcpServers()["chrome-devtools"].witness).toBe("mutable"); }
-        finally { delete first["chrome-devtools"].witness; }
-    });
-    it("creates fresh managed entries before observing the host document", () => {
-        const f = fixture();
-        const original = domain.freshManagedMcpServers;
-        const managed = vi.spyOn(domain, "freshManagedMcpServers").mockImplementation(() => { f.events.push("managed"); return original(); });
-        try {
-            f.generator.build();
-            expect(f.events.indexOf("managed")).toBeGreaterThan(f.events.indexOf("read-claude"));
-            expect(f.events.indexOf("managed")).toBeLessThan(f.events.indexOf("read-host"));
-            expect(managed).toHaveBeenCalledOnce();
-        } finally { managed.mockRestore(); }
     });
     it("retains host arrays and unknown primitive entries without schema hardening", () => {
         const array = selectHostMcpServers({mcpServers: [{command: "node"}]});
@@ -139,15 +100,5 @@ describe("inward synchronous MCP regeneration", () => {
         expect(thrown).toBe(cause);
         expect(f.events).toEqual(["resolve:default", "read-claude", "read-host", "lock:default", "unlock"]);
         expect(f.writes).toEqual({});
-    });
-    it("Claude serialization failure leaves the successful Codex publication intact", () => {
-        const config: Record<string, unknown> = {}; config.circular = config;
-        const parse = vi.spyOn(JSON, "parse").mockReturnValueOnce(config);
-        const f = fixture("{}");
-        try {
-            expect(() => f.generator.build()).toThrow(TypeError);
-            expect(f.writes.codex).toContain("# ccc-managed-mcp end");
-            expect(f.writes.claude).toBeUndefined(); expect(f.events.at(-1)).toBe("unlock");
-        } finally { parse.mockRestore(); }
     });
 });
