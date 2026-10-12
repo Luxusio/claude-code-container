@@ -296,6 +296,8 @@ describe("device-lab shared mutation lock", () => {
                 const file = lockPath();
                 const bytes = JSON.stringify({ token: testToken(), pid: ownerPid, host: hostname(), processIdentityStatus: "unavailable" });
                 writeFileSync(file, bytes);
+                const old = new Date(Date.now() - 1000);
+                utimesSync(file, old, old);
                 const callback = vi.fn(() => "admitted");
                 if (state === "Z" || state === "X") {
                     expect(await acquire(file, callback, { waitMs: 100 })).toBe("admitted");
