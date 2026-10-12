@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 import { createHash } from "crypto";
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { ContainerRestartRequiredError, formatContainerStartupError } from "../container-restart-guidance.js";
 
 // Image building and retained-state repair have dedicated shell/identity suites.
@@ -50,6 +50,7 @@ let autoInspectCreatedMountSource = (source: string, _destination: string): stri
 const createdContainerInspectIds: string[] = [];
 let rejectStoppedExec = false;
 let existingRuntimeRunning = true;
+let startupGlobalNamespaceIds: string[] | null = null;
 let stoppedExecAttempts = 0;
 let autoReadMountMarkers = true;
 let autoReadMountMarkerFailuresRemaining = 0;
@@ -66,6 +67,9 @@ vi.mock("child_process", async (importOriginal) => {
         ...actual,
         spawnSync: (...args: unknown[]) => {
             const argv = args[1] as string[];
+            if (startupGlobalNamespaceIds && argv?.[0] === "ps" && argv.includes("label=ccc.managed=true")) {
+                return makeResult(0, startupGlobalNamespaceIds.join("\n"));
+            }
             if (rejectStoppedExec && !existingRuntimeRunning && argv?.[0] === "exec") {
                 stoppedExecAttempts += 1;
                 return makeResult(1, "", "container is stopped; exec refused");
@@ -361,7 +365,7 @@ function defaultDeviceLabMountIdentity(): string {
 
 function defaultProjectMountIdentity(path = "/home/user/my-project"): string {
     return bindMountSourceIdentityDigest({
-        realpath: path,
+        realpath: resolve(path),
         dev: "1",
         ino: "1",
     });
@@ -392,7 +396,7 @@ function fullCredentialMountsJson(
         RW: true,
     }));
     const projectMounts = [{
-        Source: "/home/user/my-project",
+        Source: resolve("/home/user/my-project"),
         Destination: `/project/${getProjectId("/home/user/my-project")}`,
         Type: "bind",
         RW: true,
@@ -443,7 +447,11 @@ function fullCredentialMountsJson(
     const labStateMounts = options.labState === false
         ? []
         : [{ Source: "ccc-my-project-c7e2f75b53b9-lab-state", Destination: "/home/ccc/.ccc/labs", Type: "volume", RW: true }];
-    const status = options.status || "ready";
+    const linuxHost = process.platform === "linux";
+    const status = options.status ?? (linuxHost ? "ready" : "unsupported");
+    const unsupportedReason = options.unsupportedReason
+        ?? (status === "unsupported" && !linuxHost ? "nested virtualization from the CCC container requires a Linux container host" : undefined);
+    const kvmDevice = options.kvmDevice ?? linuxHost;
     const env = [
         "CCC_LAB_RUNNER=1",
         `CCC_LAB_RUNNER_STATUS=${status}`,
@@ -451,9 +459,9 @@ function fullCredentialMountsJson(
         "CCC_LAB_NET_MODE=user",
         "CCC_DEVICE_BROKER_AUTH_FILE=/run/ccc-device-broker-auth/owner.json",
     ];
-    if (options.unsupportedReason) env.push(`CCC_LAB_RUNNER_UNSUPPORTED_REASON=${options.unsupportedReason}`);
-    const devices = options.devices ?? (options.kvmDevice === false ? [] : [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm" }]);
-    const groupAdd = options.groupAdd ?? (status === "ready" && options.kvmDevice !== false ? ["108"] : []);
+    if (unsupportedReason) env.push(`CCC_LAB_RUNNER_UNSUPPORTED_REASON=${unsupportedReason}`);
+    const devices = options.devices ?? (kvmDevice ? [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm" }] : []);
+    const groupAdd = options.groupAdd ?? (status === "ready" && kvmDevice ? ["108"] : []);
     return JSON.stringify({
         Id: "abc123",
         State: { Running: true },
@@ -474,7 +482,7 @@ function fullCredentialMountsJson(
             Labels: {
                 ...getIdentityLabels(mockIdentity),
                 "ccc.managed": "true",
-                "ccc.project.path": "/home/user/my-project",
+                "ccc.project.path": resolve("/home/user/my-project"),
                 "ccc.project.mount-identity": defaultProjectMountIdentity(),
                 "ccc.device-lab.mount-identity": defaultDeviceLabMountIdentity(),
             },
@@ -513,6 +521,7 @@ describe("docker.ts module exports", () => {
         createdContainerInspectIds.length = 0;
         rejectStoppedExec = false;
         existingRuntimeRunning = true;
+        startupGlobalNamespaceIds = null;
         stoppedExecAttempts = 0;
         autoReadMountMarkers = true;
         autoReadMountMarkerFailuresRemaining = 0;
@@ -753,12 +762,14 @@ describe("docker.ts module exports", () => {
         });
 
         it("does not enumerate global namespaces outside Windows", () => {
+            const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             expect(findManagedProjectNamespaceCollision(
                 "/home/user/repo",
                 mountIdentity,
                 { realpath: "/home/user/repo", dev: "1", ino: "1" },
             )).toBeNull();
             expect(spawnSyncMock).not.toHaveBeenCalled();
+            platformSpy.mockRestore();
         });
     });
 
@@ -1258,6 +1269,16 @@ describe("docker.ts module exports", () => {
     });
 
     describe("Codex config ownership helpers", () => {
+        const nativeGetuid = Object.getOwnPropertyDescriptor(process, "getuid");
+        beforeEach(() => {
+            // These ACL cases supply a Unix host identity independently of the
+            // OS running Vitest; absence of that identity is a separate refusal.
+            if (!nativeGetuid) Object.defineProperty(process, "getuid", {value: () => 1000, configurable: true});
+        });
+        afterEach(() => {
+            if (nativeGetuid) Object.defineProperty(process, "getuid", nativeGetuid);
+            else Reflect.deleteProperty(process, "getuid");
+        });
         it("leaves readable host config ownership untouched", () => {
             restoreCodexConfigHostOwnership("ccc-test");
             expect(mockAccessSync).toHaveBeenCalled();
@@ -1315,7 +1336,7 @@ describe("docker.ts module exports", () => {
                 .toThrow("regular non-symlink, single-link config file");
             expect(spawnSyncMock).toHaveBeenCalledTimes(2);
             expect(spawnSyncMock.mock.calls.every(([, args]) => !(args as string[]).includes("--user"))).toBe(true);
-            expect(mockLstatSync).toHaveBeenCalledWith(expect.stringContaining("profiles/work/codex/config.toml"));
+            expect(mockLstatSync).toHaveBeenCalledWith(expect.stringContaining(join("profiles", "work", "codex", "config.toml")));
         });
 
         it("repairs a denied directory before checking the config", () => {
@@ -1327,7 +1348,7 @@ describe("docker.ts module exports", () => {
             prepareCodexConfigForContainer("ccc-test", "work");
             expect(spawnSyncMock).toHaveBeenCalledTimes(5);
             expect((spawnSyncMock.mock.calls[2][1] as string[]).at(-1)).toContain("os.setxattr");
-            expect(mockLstatSync).toHaveBeenCalledWith(expect.stringContaining("profiles/work/codex"));
+            expect(mockLstatSync).toHaveBeenCalledWith(expect.stringContaining(join("profiles", "work", "codex")));
         });
 
         it.each([124, 137])("aborts an inner probe timeout (%s) without repair", status => {
@@ -1423,8 +1444,8 @@ describe("docker.ts module exports", () => {
             const claudeMount = { hostDir: ".ccc/claude", containerDir: "/home/ccc/.claude" };
             const codexMount = { hostDir: ".ccc/codex", containerDir: "/home/ccc/.codex" };
 
-            expect(resolveCredentialHostPath(claudeMount, "work")).toMatch(/\/\.ccc\/profiles\/work\/claude$/);
-            expect(resolveCredentialHostPath(codexMount, "work")).toMatch(/\/\.ccc\/profiles\/work\/codex$/);
+            expect(resolveCredentialHostPath(claudeMount, "work")).toBe(join(homedir(), ".ccc", "profiles", "work", "claude"));
+            expect(resolveCredentialHostPath(codexMount, "work")).toBe(join(homedir(), ".ccc", "profiles", "work", "codex"));
         });
 
         it("creates the codex packages mount point on the host but no extra dir for other tools", () => {
@@ -1610,7 +1631,7 @@ describe("docker.ts module exports", () => {
     describe("getHostGitIdentityMounts", () => {
         it("returns existing host git identity config directory paths", () => {
             mockExistsSync.mockImplementation((p: string) => (
-                p.endsWith("/.gitconfig") || p.endsWith("/.config/git")
+                p.endsWith(join(".gitconfig")) || p.endsWith(join(".config", "git"))
             ));
 
             const mounts = getHostGitIdentityMounts();
@@ -1621,7 +1642,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("does not require a bind mount for host .gitconfig", () => {
-            mockExistsSync.mockImplementation((p: string) => p.endsWith("/.gitconfig"));
+            mockExistsSync.mockImplementation((p: string) => p.endsWith(join(".gitconfig")));
 
             const mounts = getHostGitIdentityMounts();
 
@@ -2034,7 +2055,7 @@ describe("docker.ts module exports", () => {
                 const copy = spawnSyncMock.mock.calls.find((call: unknown[]) => {
                     const args = call[1] as string[];
                     return args?.[0] === "cp"
-                        && args[1]?.endsWith(`/${bundle}/server.mjs`)
+                        && args[1]?.endsWith(join(bundle, "server.mjs"))
                         && args[2]?.startsWith(`ccc-test:/tmp/ccc-managed-${bundle}-`);
                 });
                 expect(copy).toBeDefined();
@@ -2231,12 +2252,16 @@ describe("docker.ts module exports", () => {
 
         beforeEach(() => {
             mockLifecycleImage = true;
+            // Ordinary startup fixtures have no other managed project namespace.
+            // Windows collision cases below supply their own explicit inventory.
+            startupGlobalNamespaceIds = [];
             expandShortContainerIds = true;
             ensureDirs.mockReset();
             mockExistsSync.mockReturnValue(true);
         });
 
         it("preserves a canonical-era Windows container instead of creating a duplicate", () => {
+            startupGlobalNamespaceIds = null;
             const existingId = "b".repeat(64);
             const existingName = "ccc-my-project-deadbeef0000";
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -2790,7 +2815,7 @@ describe("docker.ts module exports", () => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             let projectIdentityReads = 0;
             mockRealpathSync.mockImplementation((path: string) => {
-                if (path === projectPath) {
+                if (path === resolve(projectPath)) {
                     projectIdentityReads += 1;
                     if (projectIdentityReads === 5) {
                         const error = new Error("temporary filesystem I/O failure") as NodeJS.ErrnoException;
@@ -4294,7 +4319,7 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockReturnValue(true);
             const inspected = JSON.parse(fullCredentialMountsJson());
             mockExistsSync.mockImplementation((path: string) => (
-                !path.endsWith("/.config/git")
+                !path.endsWith(join(".config", "git"))
                 && !path.endsWith(".json")
             ));
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -4320,7 +4345,7 @@ describe("docker.ts module exports", () => {
             ["source substitution", (mount: { Source: string; RW: boolean }) => { mount.Source = "/foreign/.gitconfig"; }],
             ["writable access", (mount: { Source: string; RW: boolean }) => { mount.RW = true; }],
         ])("fails closed on Git identity %s while the container is running", (name, mutate) => {
-            mockExistsSync.mockImplementation((path: string) => path.endsWith("/.config/git"));
+            mockExistsSync.mockImplementation((path: string) => path.endsWith(join(".config", "git")));
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported",
                 kvmDevice: false,
@@ -4761,7 +4786,7 @@ describe("docker.ts module exports", () => {
 
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            )).toThrow(`bind mount source identity changed: ${projectPath}`);
+            )).toThrow(`bind mount source identity changed: ${resolve(projectPath)}`);
             expect(guard).not.toHaveBeenCalled();
             expect(identityChanged).toBe(true);
             expectNoContainerReplacement();
@@ -5877,7 +5902,7 @@ describe("docker.ts module exports", () => {
 
         it("mounts existing host git identity paths when creating a container", () => {
             mockExistsSync.mockImplementation((p: string) => (
-                p.endsWith("/.gitconfig") || p.endsWith("/.config/git")
+                p.endsWith(join(".gitconfig")) || p.endsWith(join(".config", "git"))
             ));
 
             spawnSyncMock
@@ -6092,7 +6117,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("recreates container when host git identity directory mounts are missing", () => {
-            mockExistsSync.mockImplementation((p: string) => p.endsWith("/.config/git"));
+            mockExistsSync.mockImplementation((p: string) => p.endsWith(join(".config", "git")));
 
             const missingGitIdentityMountsJson = fullCredentialMountsJson()
                 .replace(/,\{"Source":"\/host\/home\/user\/\.config\/git","Destination":"\/home\/ccc\/\.config\/git"\}/, "");

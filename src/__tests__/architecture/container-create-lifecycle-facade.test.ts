@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 import { createNativeContainerCreateLifecycle } from "../../composition/container-create-lifecycle.js";
 import type { NativeContainerCreateLifecycleContext } from "../../composition/container-create-lifecycle.js";
+import {isAbsolute, resolve} from "node:path";
 
 const native = vi.hoisted(() => ({
     spawn: vi.fn(), runtime: vi.fn(), remote: vi.fn(), family: vi.fn(),
@@ -41,7 +42,7 @@ vi.mock("../../session.js", () => ({
 vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
     ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(),
     withSharedMutationLock: (path: string, operation: () => unknown, options: { waitMs: number; reclaimStale?: boolean }) => {
-        if (!/^\/fixture\/home\/\.ccc\/(?:codex-state\.lock|run\/locks\/identity-[a-f0-9]{64}\.lock)$/.test(path)) throw new Error("unexpected fixture lock IO");
+        if (!/^\/fixture\/home\/\.ccc\/(?:codex-state\.lock|run\/locks\/identity-[a-f0-9]{64}\.lock)$/.test(path.replace(/\\/g, "/"))) throw new Error("unexpected fixture lock IO");
         expect(operation).toBeTypeOf("function");
         expect(options).toEqual({ waitMs: path.endsWith("codex-state.lock") ? 600_000 : 1_260_000, reclaimStale: false });
         return operation();
@@ -297,7 +298,7 @@ const containerIdentity = await import("../../container-identity.js");
 const sharedState = await import("@ccc/device-lab/device-lab-shared-state.js");
 const baseImageId = `sha256:${"b".repeat(64)}`;
 const identityImageId = `sha256:${"c".repeat(64)}`;
-const project = "/fixture/project";
+const project = resolve("/fixture/project");
 
 function publicFixture() {
     const identity = containerIdentity.resolveContainerIdentity();
@@ -357,7 +358,7 @@ function publicFixture() {
                 const value = state.runArgs[index + 1];
                 if (argument === "-v") {
                     const match = value.match(/^(.*):(\/[^:]+)(?::ro)?$/)!;
-                    mounts.push({ Source: match[1], Destination: match[2], Type: state.invalidMount && match[1] === project ? "tmpfs" : match[1].startsWith("/") ? "bind" : "volume", RW: !value.endsWith(":ro") });
+                    mounts.push({ Source: match[1], Destination: match[2], Type: state.invalidMount && match[1] === project ? "tmpfs" : isAbsolute(match[1]) ? "bind" : "volume", RW: !value.endsWith(":ro") });
                 }
                 if (argument === "--tmpfs") mounts.push({ Source: "", Destination: value.split(":")[0], Type: "tmpfs", RW: true });
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);

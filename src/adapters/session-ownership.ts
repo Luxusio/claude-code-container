@@ -10,7 +10,26 @@ export function captureNativeSessionOwnership(path: string): SessionOwnershipRec
     const fd = openSync(path, "r");
     try {
         const stat = fstatSync(fd, { bigint: true });
-        if (!stat.isFile() || stat.size > 4096n || stat.dev !== named.dev || stat.ino !== named.ino) throw new Error("Invalid session ownership receipt.");
+        const windowsUnnamedDevice = process.platform === "win32" && named.dev === 0n;
+        if (!stat.isFile() || stat.size > 4096n || stat.ino !== named.ino || stat.birthtimeNs !== named.birthtimeNs
+            || (!windowsUnnamedDevice && stat.dev !== named.dev)) throw new Error("Invalid session ownership receipt.");
+        if (windowsUnnamedDevice) {
+            // Some Windows libuv versions omit the volume from path stats. Two
+            // opened handles must still prove the exact volume and file identity.
+            if (stat.dev <= 0n || stat.ino <= 0n) throw new Error("Invalid session ownership receipt.");
+            const secondFd = openSync(path, "r");
+            try {
+                const second = fstatSync(secondFd, { bigint: true });
+                if (!second.isFile() || second.size > 4096n || second.size !== stat.size
+                    || second.dev !== stat.dev || second.ino !== stat.ino
+                    || second.birthtimeNs !== stat.birthtimeNs) throw new Error("Invalid session ownership receipt.");
+                const currentNamed = lstatSync(path, { bigint: true });
+                if (!currentNamed.isFile() || currentNamed.ino !== stat.ino || currentNamed.birthtimeNs !== stat.birthtimeNs
+                    || (currentNamed.dev !== 0n && currentNamed.dev !== stat.dev)) throw new Error("Invalid session ownership receipt.");
+            } finally {
+                closeSync(secondFd);
+            }
+        }
         const bytes = readFileSync(fd);
         const owner = sessionLockOwner(bytes.toString("utf8"));
         if (!owner) throw new Error("Invalid session ownership record.");

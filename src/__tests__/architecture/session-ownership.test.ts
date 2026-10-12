@@ -60,6 +60,59 @@ function parentFixture() {
     };
 }
 
+describe("native Windows receipt capture when named device is unavailable", () => {
+    it.each(["valid", "non-Windows", "cross-volume", "replacement", "birthtime", "second-link", "named-link", "rebound-link", "rebound-name", "named-device", "unknown-handle", "unknown-inode", "size-change", "oversize", "permission", "read-failure"])("qualifies exact ownership and closes every opened descriptor: %s", async outcome => {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { configurable: true, value: outcome === "non-Windows" ? "linux" : "win32" });
+        const opened: number[] = [];
+        const closed: number[] = [];
+        let names = 0;
+        const stats = (dev: bigint, ino = 7n, birthtimeNs = 9n, file = true, size = 3n) => ({ dev, ino, birthtimeNs, size, isFile: () => file });
+        let bytes = Buffer.from("42");
+        let volume = 11n;
+        vi.resetModules();
+        vi.doMock("fs", async original => ({ ...await original<typeof import("node:fs")>(),
+            lstatSync: () => {
+                names++;
+                return stats(outcome === "named-device" && names > 1 ? 12n : 0n,
+                    outcome === "rebound-name" && names > 1 ? 8n : 7n, 9n, outcome !== "named-link" && !(outcome === "rebound-link" && names > 1));
+            },
+            openSync: () => {
+                if (outcome === "permission" && opened.length === 1) throw Object.assign(new Error("second open denied"), { code: "EACCES" });
+                const fd = 100 + opened.length; opened.push(fd); return fd;
+            },
+            fstatSync: (fd: number) => stats(outcome === "unknown-handle" ? 0n : outcome === "cross-volume" && fd === 101 ? 12n : volume,
+                outcome === "unknown-inode" ? 0n : outcome === "replacement" && fd === 101 ? 8n : 7n,
+                outcome === "birthtime" && fd === 101 ? 10n : 9n,
+                !(outcome === "second-link" && fd === 101), outcome === "oversize" && fd === 101 ? 4097n : outcome === "size-change" && fd === 101 ? 4n : 3n),
+            readFileSync: () => { if (outcome === "read-failure") throw new Error("read denied"); return bytes; },
+            closeSync: (fd: number) => { closed.push(fd); },
+        }));
+        try {
+            const api = await import("../../adapters/session-ownership.js");
+            if (outcome === "valid") {
+                const captured = api.captureNativeSessionOwnership("fixture.lock");
+                expect(captured).toEqual({ path: "fixture.lock", bytes: Buffer.from("42").toString("base64"), device: "11", inode: "7", birthtime: "9", ownerPid: 42 });
+                expect(api.nativeSessionOwnershipMatches(captured)).toBe(true);
+                expect(api.nativeSessionOwnershipMatches({ ...captured, ownerPid: 43 })).toBe(false);
+                expect(api.nativeSessionOwnershipMatches({ ...captured, inode: "8" })).toBe(false);
+                expect(api.nativeSessionOwnershipMatches({ ...captured, birthtime: "10" })).toBe(false);
+                volume = 12n;
+                expect(api.nativeSessionOwnershipMatches(captured)).toBe(false);
+                volume = 11n; bytes = Buffer.from("43");
+                expect(api.nativeSessionOwnershipMatches(captured)).toBe(false);
+                expect(() => api.removeCapturedNativeSessionOwnership(captured)).toThrow("changed before removal");
+            } else {
+                expect(() => api.captureNativeSessionOwnership("fixture.lock")).toThrow();
+            }
+            expect([...closed].sort((a, b) => a - b)).toEqual([...opened].sort((a, b) => a - b));
+            expect(new Set(closed).size).toBe(closed.length);
+        } finally {
+            vi.doUnmock("fs"); vi.resetModules(); Object.defineProperty(process, "platform", platform);
+        }
+    });
+});
+
 describe("parent ownership handshake", () => {
     it("waits for READY before arming, uses a bounded timer and captures the exact binding and receipt", async () => {
         const f = parentFixture();

@@ -197,7 +197,8 @@ describe("session liveness public facade preserves native adapters", () => {
 });
 
 // These are real Node imports, separate from Vitest's module mocks. No native
-// observation is needed: all versioned outcomes are cached and kill is a fixture.
+// Versioned outcomes are cached. Legacy probes use the actual host platform:
+// Unix keeps its kill fixture; Windows consumes pre-observed presence facts.
 describe.each(["source", "built"] as const)("direct Node %s session liveness facade", artifact => {
     it("validates exports, codecs and cached/current liveness classifications", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-session-facade-"));
@@ -209,6 +210,7 @@ describe.each(["source", "built"] as const)("direct Node %s session liveness fac
                 ...(artifact === "source" ? ["--import", pathToFileURL(loader).href] : []),
                 "--input-type=module", "-e", `
 import assert from 'node:assert/strict';
+const nativePlatform = process.platform;
 let calls = [];
 process.kill = function (pid, signal) { calls.push([pid, signal]); };
 const api = await import(${JSON.stringify(moduleUrl.href)});
@@ -223,11 +225,17 @@ for (const [observation, expected] of [[{status:'found',token:'opaque'},'active'
   assert.equal(api.sessionLockLiveness(lock,new Map([[4242,observation]])), expected);
 }
 assert.equal(api.sessionLockLiveness('invalid'), 'unknown');
-Object.defineProperty(process, 'platform', {configurable:true,value:'linux'});
+Object.defineProperty(process, 'platform', {configurable:true,value:nativePlatform});
+if (nativePlatform === 'win32') {
+  assert.equal(api.sessionLockLiveness(String(process.pid),new Map([[process.pid,{status:'found',token:'windows:123'}]])), 'active');
+  assert.equal(api.sessionLockLiveness(String(process.pid),new Map([[process.pid,{status:'missing'}]])), 'stale');
+  assert.deepEqual(calls, []);
+} else {
 assert.equal(api.sessionLockLiveness(String(process.pid)), 'active');
 process.kill = function (pid, signal) { calls.push([pid,signal]); throw Object.assign(new Error('fixture'),{code:'ESRCH'}); };
 assert.equal(api.sessionLockLiveness(String(process.pid)), 'stale');
 assert.deepEqual(calls, [[process.pid,0],[process.pid,0]]);
+}
 process.stdout.write('facade behavior passed');
 `,
             ], { cwd: root, env: { HOME: home, USERPROFILE: home, PATH: "", TMPDIR: home, TEMP: home, TMP: home },

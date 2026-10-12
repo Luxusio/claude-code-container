@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { captureNativeSessionOwnership } from "../../adapters/session-ownership.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -13,6 +13,35 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const distribution = fileURLToPath(new URL("../../../dist/", import.meta.url));
 const idA = "a".repeat(64);
 const idB = "b".repeat(64);
+
+it("emitted native receipts accept an owned regular claim and refuse changed bytes before removal", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-emitted-receipt-"));
+    const lock = join(root, "owner.lock");
+    try {
+        writeFileSync(lock, String(process.pid));
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,existsSync} from 'node:fs';
+const api=await import(${JSON.stringify(pathToFileURL(join(distribution, "adapters", "session-ownership.js")).href)});
+const path=process.argv[1];
+const captured=api.captureNativeSessionOwnership(path);
+assert.equal(captured.ownerPid,Number(readFileSync(path,'utf8')));
+assert.equal(captured.bytes,readFileSync(path).toString('base64'));
+assert.ok(BigInt(captured.device)>0n);
+assert.ok(BigInt(captured.inode)>0n);
+assert.equal(api.nativeSessionOwnershipMatches(captured),true);
+writeFileSync(path,'2147483647');
+assert.equal(api.nativeSessionOwnershipMatches(captured),false);
+assert.throws(()=>api.removeCapturedNativeSessionOwnership(captured));
+assert.equal(existsSync(path),true);
+assert.equal(readFileSync(path,'utf8'),'2147483647');
+process.stdout.write('native receipt qualified');
+`, lock], { encoding: "utf8", timeout: 10_000 });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("native receipt qualified");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 interface Ready {
     event: "ready";

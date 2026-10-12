@@ -28,6 +28,8 @@ Successful command execution cannot mask failed session cleanup. A single primar
 
 On Linux a well-formed /proc stat state Z or X proves the process has exited even when its PID and start ticks remain visible. Such owners are stale for session claims and absent for native shared-guard liveness. Other-host records and failed or malformed observations remain conservative; a reused live PID without a recorded identity is still not proof of the original owner's liveness or death.
 
+On Windows, a pathname stat may omit the device number even when an opened descriptor reports its volume. In this specific case receipt capture requires matching positive volume, inode and birth time from two opened handles to the exact path, plus a repeated regular-file path check. The receipt retains the descriptor's device number. Volume mismatch, rebinding and uncertain observations remain refusals; future receipt comparison still includes device, inode, birth time, contents and owner PID.
+
 ## Known ceiling
 
 Native timeouts bound individual client operations; daemon work may continue after timeout. Preserve uncertainty during qualification.
