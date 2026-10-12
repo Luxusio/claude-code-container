@@ -705,6 +705,7 @@ describe("device-lab admin cleanup and stop commands", () => {
     it.each([
         ["androidFile", { id: "unit", status: "running", port: 5554 }, "adb", ["-s", "emulator-5554", "emu", "kill"]],
         ["iosFile", { id: "unit", status: "booted", simulatorName: "fallback simulator" }, "xcrun", ["simctl", "shutdown", "fallback simulator"]],
+        ["iosFile", { id: "unit", status: "booted" }, "xcrun", ["simctl", "shutdown", "unit"]],
         ["macosFile", { id: "unit", status: "running", provider: "tart", providerInstance: "owned instance" }, "tart", ["stop", "owned instance"]],
         ["macosFile", { id: "unit", status: "running", provider: "vz", providerInstance: "owned instance" }, "vz", ["stop", "owned instance"]],
         ["macosFile", { id: "unit", status: "running", provider: "utmctl", providerInstance: "owned instance" }, "utmctl", ["stop", "owned instance"]],
@@ -727,7 +728,6 @@ describe("device-lab admin cleanup and stop commands", () => {
 
     it.each([
         ["androidFile", { id: "unit", status: "running" }],
-        ["iosFile", { id: "unit", status: "booted" }],
         ["windowsFile", { id: "unit", status: "running" }],
         ["macosFile", { id: "unit", status: "running", provider: "tart" }],
         ["macosFile", { id: "unit", status: "running", provider: "unsupported-provider", providerInstance: "owned" }],

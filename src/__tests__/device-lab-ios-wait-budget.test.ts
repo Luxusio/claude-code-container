@@ -39,17 +39,20 @@ it.each(["mobile_wait_for_text", "mobile_wait_for_app"])("%s bootstraps once and
         return { timeoutMs, remaining, requestTimeout: (max = 120000) => Math.min(max, Math.ceil(remaining())), pause: async () => {} };
     });
     const observations: number[] = [];
-    const fetch = vi.spyOn(simulator, "fetchIosAppiumJson").mockImplementation(async (url, options) => {
-        if (url.endsWith("/status") || url.endsWith("/session/session")) { time += 1000; return { value: {} }; }
-        observations.push(options.timeoutMs);
+    // Observe the abort deadline installed by the real HTTP adapter.
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/status") || url.endsWith("/session/session")) { time += 1000; return Response.json({ value: {} }); }
+        observations.push(Number(timers.mock.lastCall![1]));
         time += 30;
-        return { value: observations.length === 2 ? (name.endsWith("text") ? "needle" : { bundleId: "app.target" }) : "unrelated" };
+        return Response.json({ value: observations.length === 2 ? (name.endsWith("text") ? "needle" : { bundleId: "app.target" }) : "unrelated" });
     });
     const pending = wait(name);
     expect((await pending)?.isError).toBe(false);
     expect(observations).toEqual([100, 70]);
-    expect(fetch.mock.calls.filter(([url]) => url.endsWith("/status"))).toHaveLength(1);
-    expect(fetch.mock.calls.filter(([url]) => url.endsWith("/session/session"))).toHaveLength(1);
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/status"))).toHaveLength(1);
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/session/session"))).toHaveLength(1);
     const guards = vi.mocked(leases.heartbeatPhysicalLease).mock.calls.filter((call) => call[3]?.waitBudget);
     expect(guards).toHaveLength(2);
     expect(guards[0][3].waitBudget).toBe(guards[1][3].waitBudget);
@@ -57,17 +60,20 @@ it.each(["mobile_wait_for_text", "mobile_wait_for_app"])("%s bootstraps once and
 
 it.each(["lease", "generation", "attachment"])("stops polling after %s changes without repeating bootstrap", async (change) => {
     let observations = 0;
-    vi.spyOn(simulator, "fetchIosAppiumJson").mockImplementation(async (url) => {
-        if (!url.endsWith("/source")) return { value: {} };
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (!url.endsWith("/source")) return Response.json({ value: {} });
         observations++;
         if (change === "lease") vi.mocked(leases.heartbeatPhysicalLease).mockReturnValue({ ok: false, error: "lease stolen" });
         else if (change === "generation") device = { ...device, appium: { ...device.appium, runtimeId: "successor" } };
         else device = { ...device, leaseClaimNonce: "successor" };
-        return { value: "unrelated" };
+        return Response.json({ value: "unrelated" });
     });
     const pending = wait();
     expect((await pending)?.isError).toBe(true);
     expect(observations).toBe(1);
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/status"))).toHaveLength(1);
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/session/session"))).toHaveLength(1);
 });
 
 it("does not fetch after the physical lease guard exhausts the shared allowance", async () => {
@@ -83,7 +89,7 @@ it("does not fetch after the physical lease guard exhausts the shared allowance"
         if (options.waitBudget) time = 100;
         return { ok: true, lease: {} };
     });
-    const fetch = vi.spyOn(simulator, "fetchIosAppiumJson").mockResolvedValue({ value: {} });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ value: {} }));
     expect((await wait())?.isError).toBe(true);
     expect(fetch.mock.calls.map(([url]) => url)).toEqual(["http://fixture/status", "http://fixture/session/session"]);
 });

@@ -865,7 +865,8 @@ export function createDeviceRequest(ports) {
         let observation = null;
         for (const effect of effects) {
             observation = await ports.executeMobileEffect({
-                ...appiumOptions,backend:resolvedBackend,deviceId,
+                ...selectedBrokerProbeOptions(appiumOptions, ensure),
+                autolaunch: false, backend: resolvedBackend, deviceId,
             }, effect);
             if (observation.kind === 'failed') return ports.presentBrokerReceipt(observation.receipt,{routedBy:"mobile-broker-appium"});
         }

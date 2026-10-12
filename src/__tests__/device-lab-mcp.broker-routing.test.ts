@@ -1553,6 +1553,7 @@ describe("device-lab MCP broker routing", () => {
             }
             if (body.method === "broker.appium.request") {
                 if (refuseAppiumEffect) {
+                    res.statusCode = 502;
                     res.end(JSON.stringify({ ok: false, error: "rotation-setting-refused", diagnostic: "first native effect refused" }));
                     return;
                 }
@@ -1664,8 +1665,10 @@ describe("device-lab MCP broker routing", () => {
                 hostCandidates: route.hostCandidates, port: route.port, timeoutMs: route.timeoutMs,
                 orientation: "reverse-landscape",
             } });
+            expect(refusedRotation.isError).toBe(true);
             expect(JSON.parse(((refusedRotation.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
-                ok: false, error: "rotation-setting-refused", diagnostic: "first native effect refused",
+                ok: false, error: "rotation-setting-refused", status: 502,
+                body: { diagnostic: "first native effect refused" },
             });
             const failedEffects = rpcCalls.slice(failedOffset).filter(call => call.method === "broker.appium.request");
             expect(failedEffects).toHaveLength(1);
