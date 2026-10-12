@@ -3,14 +3,7 @@ import type { CodexHarnessPorts } from "../ports/codex-harness.js";
 
 export function createCodexHarness(ports: CodexHarnessPorts) {
     for (const name of ["withConfigLock", "prepareConfig", "executeBootstrap", "restoreAccess", "publishBootstrapOutput", "publishUnavailable"] as const) {
-        let target: object | null = ports;
-        let descriptor: PropertyDescriptor | undefined;
-        while (target != null) {
-            descriptor = Object.getOwnPropertyDescriptor(target, name);
-            if (descriptor) break;
-            target = Object.getPrototypeOf(target);
-        }
-        if (!descriptor || ("value" in descriptor && typeof descriptor.value !== "function")) throw new TypeError(`Codex Harness requires ${name}`);
+        if (!ports || typeof ports[name] !== "function") throw new TypeError(`Codex Harness requires ${name}`);
     }
     function ensure(containerName: string, profile?: string): void {
         try {

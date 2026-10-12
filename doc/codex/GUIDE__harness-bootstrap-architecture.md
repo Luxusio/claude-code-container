@@ -47,20 +47,17 @@ Host transport retains selected runtime, exact stdin/environment/workdir/default
 identity and 135000ms budget. Preparation precedes transport and restoration
 runs once after entered lock callback, even on prepare/output/result failure.
 Restore errors can mask earlier failures; failed lock acquisition does not restore.
-Output keeps both stdout reads/trims and result getter order.
+Nonempty stdout is trimmed and published before execution failure handling.
 
-Native publisher getters capture console receiver and method before message
-arguments. Constructors recognize own/prototype descriptors without evaluating
-accessors. Warning conversion and invocation can themselves throw; this migration
-does not turn the original best-effort function into an unconditional no-throw
-API. No extra per-call callable validation or error substitution is introduced.
+Native ports are ordinary synchronous functions, with output published through
+console.error and warnings through console.warn. Construction checks each required
+port is callable without executing it. Warning conversion and invocation can
+themselves throw; the best-effort function does not guarantee a no-throw API.
+No extra per-call callable validation or error substitution is introduced.
 
-## Frozen proof and acceptance
+## Verification and acceptance
 
-Authenticate and copy original source, emitted program, declarations and native
-dependencies before editing. The approved terminal DFD donor supplies original
-evidence only; copied artifacts are frozen and never reused as candidate QA.
-Actual original/candidate Python execution must cover malformed shapes, literal
+Actual generated Python execution must cover malformed shapes, literal
 booleans, version boundaries, all required files, events/indices/options,
 noncommand/nohooks, trust hashes/enablement, every install stage/postprobe/temp
 cleanup and timeout kill/drain faults, with surviving bytes and ordered effects.
