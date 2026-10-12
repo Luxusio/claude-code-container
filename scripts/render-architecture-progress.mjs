@@ -43,28 +43,55 @@ const total = items.size - counts.excluded;
 const implemented = counts.integrated + counts.candidate;
 const baselineIntegrated = [...items.values()].filter(item => !excluded.has(item.id) && item.implementationStatus === "migrated").length;
 const structuralPlans = progress.planningLanes.filter(lane => lane.id.endsWith("-structural"));
-const acceptedStructuralPlans = structuralPlans.filter(lane => lane.acceptedIntegrationCommit);
+const structuralCounts = { completed: 0, partial: 0, "in-progress": 0, pending: 0 };
+const structuralIds = new Set();
+for (const lane of structuralPlans) {
+    if (structuralIds.has(lane.id) || !Object.hasOwn(structuralCounts, lane.workStatus)
+        || [lane.title, lane.remainingWork, lane.completionCriteria].some(value => typeof value !== "string" || !value.trim())
+        || (lane.workStatus === "completed" && !/^[a-f0-9]{40}$/.test(lane.acceptedIntegrationCommit ?? ""))) {
+        throw Error("Invalid structural group: " + lane.id);
+    }
+    structuralIds.add(lane.id);
+    structuralCounts[lane.workStatus]++;
+}
+if (!structuralPlans.length) throw Error("Missing structural groups");
+const structuralRemaining = structuralPlans.length - structuralCounts.completed;
+const structuralPercent = (100 * structuralCounts.completed / structuralPlans.length).toFixed(1);
 const percent = count => (100 * count / total).toFixed(1);
 const cell = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
     .replace(/[\\`*_{}\[\]()#+.!|~\-]/g, "\\$&").replace(/[\r\n]+/g, " ");
 const names = ["Baseline and inventory", "Core and ports", "State and identity", "Routes and transport", "Sandbox lifecycle", "Hyper-V lifecycle", "Images/network/admin", "Physical/recording/Appium", "Provider capabilities", "Device Lab entrypoints", "Sessions and containers", "Workspace/profiles/credentials/tools", "Host services/tool sessions/remote", "Composition and distribution", "Enforcement and reliability"];
 const label = { integrated: "integrated", candidate: "implemented candidate", partial: "partial", todo: "TODO", excluded: "excluded" };
+const structuralLabel = { completed: "완료", partial: "부분 완료", "in-progress": "진행 중", pending: "미착수" };
 const out = ["# Architecture work breakdown and progress", "", `Updated: ${cell(progress.updatedAt)}. Source baseline: \`${inventory.baselineCommit}\`.`, "", "Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).", "",
+    `확인된 구조 정리 그룹: **${structuralCounts.completed}/${structuralPlans.length} 완료 (${structuralPercent}%)**, **${structuralRemaining}개 남음**.`,
+    `부분 완료: **${structuralCounts.partial}**; 진행 중: **${structuralCounts["in-progress"]}**; 미착수: **${structuralCounts.pending}**.`, "",
+    "이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.", "",
+    "## 0. 남은 구조 정리", "", "| 그룹 | 상태 | 남은 작업 | 완료 조건 | 확인한 소스 |", "| --- | --- | --- | --- | --- |"];
+for (const lane of structuralPlans.filter(lane => lane.workStatus !== "completed")) {
+    const source = (lane.sourceTrace?.remainingPaths ?? lane.sourceTrace?.owningPaths ?? []).join(", ");
+    out.push(`| ${cell(lane.title)} | ${structuralLabel[lane.workStatus]} | ${cell(lane.remainingWork)} | ${cell(lane.completionCriteria)} | ${cell(source)} |`);
+}
+out.push("", "## 0.1 완료한 구조 정리", "", "| 그룹 | 통합 커밋 | 완료 조건 |", "| --- | --- | --- |");
+for (const lane of structuralPlans.filter(lane => lane.workStatus === "completed")) {
+    out.push(`| ${cell(lane.title)} | \`${lane.acceptedIntegrationCommit.slice(0, 8)}\` | ${cell(lane.completionCriteria)} |`);
+}
+out.push("", "각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.", "",
+    "## 0.2 기능 전환 기록 (참고)", "",
     `Known in-scope operation cutovers: **${total}** (${items.size} inventoried, ${counts.excluded} explicitly excluded).`,
     `Implemented including unmerged candidates: **${implemented}/${total} (${percent(implemented)}%)**.`,
     `Integrated source: **${counts.integrated}/${total} (${percent(counts.integrated)}%)**; historical baseline: **${baselineIntegrated}**. Candidates: **${counts.candidate}**; partial: **${counts.partial}**; TODO: **${counts.todo}**.`, "",
     "These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.", "",
-    `Known original structural corrections accepted: **${acceptedStructuralPlans.length}/${structuralPlans.length} identified groups**. This separate subtotal is not an effort percentage or an exhaustive remaining-work denominator. Overall migration completion remains unverified.`, "",
-    "## 0. Tracking and update rules", "",
+    "Accepted historical structural commits remain recorded even when current group debt makes workStatus partial. Overall migration completion remains unverified.", "",
+    "## 0.3 Tracking and update rules", "",
     "- One stable OP id counts once; helper files, ports, aliases and equivalent executor bindings do not add TODOs.",
     "- `[x]` means implemented in the recorded baseline or candidate; the status label distinguishes integration. `[ ]` means partial or unimplemented.",
     "- Update the overlay when a candidate, review or scope changes. Preserve historical inventory anchors. After verified source integration and local delivery, mark the lane accepted with its immutable acceptedIntegrationCommit; then run `node scripts/render-architecture-progress.mjs`. Partial bindings remain partial. A fresh inventory baseline is a separate validated refresh.",
     "- Keep code implementation, review/QA, integration and native/reliability acceptance separate. Missing hook receipts never become a formal close PASS.",
-    "- Never launch hosted CI, workflow reruns or pushes without explicit user authorization.", "", "## 0.1 Current candidate lanes", "", "| Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |", "| --- | ---: | ---: | --- | --- | --- |"];
+    "- Structural completion uses workStatus, never acceptedIntegrationCommit alone. Record concrete remainingWork and completionCriteria; update only after actual qualified evidence. Then regenerate this Guide.",
+    "- Never launch hosted CI, workflow reruns or pushes without explicit user authorization.", "", "## 0.4 Historical operation lanes", "", "| Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |", "| --- | ---: | ---: | --- | --- | --- |");
 for (const lane of progress.lanes) out.push(`| ${cell(lane.id)} | ${lane.wholeOperationIds.length} | ${lane.partialOperationIds.length} | \`${lane.commit.slice(0, 8)}\` | ${cell(lane.codeReview)} | ${cell(lane.integration)}${lane.integration === "accepted" ? ` @ ${lane.acceptedIntegrationCommit.slice(0, 8)}` : ""} |`);
-out.push("", "## 0.2 Known original structural work", "", "| Group | Accepted source | State |", "| --- | --- | --- |");
-for (const lane of structuralPlans) out.push(`| ${cell(lane.id)} | ${lane.acceptedIntegrationCommit ? `\`${cell(lane.acceptedIntegrationCommit.slice(0, 8))}\`` : "pending"} | ${cell(lane.status)} |`);
-out.push("", "Current whole-source/exports/caller closure, final type/composition integration, final package/install/image qualification, reliability/resource evidence, native-platform acceptance and formal disposition remain separate original completion gates.", "", "## 0.3 Other plans and historical contributions", "", "| Lane | Operation ids | State |", "| --- | --- | --- |");
+out.push("", "Current whole-source/exports/caller closure, final type/composition integration, final package/install/image qualification, reliability/resource evidence, native-platform acceptance and formal disposition remain separate original completion gates.", "", "## 0.5 Other plans and historical contributions", "", "| Lane | Operation ids | State |", "| --- | --- | --- |");
 for (const lane of progress.planningLanes.filter(lane => !lane.id.endsWith("-structural"))) out.push(`| ${cell(lane.id)} | ${cell(lane.coveredOperationIds.join(", "))} | ${cell(lane.status)} |`);
 for (let index = 0; index < names.length; index++) {
     const packet = `M${String(index).padStart(2, "0")}`;
@@ -97,4 +124,4 @@ out.push("", "## 18. Excluded scope", "");
 for (const id of excluded) out.push(`- \`${id}\` — ${cell(items.get(id).operation)}. Retained separately; no implementation or integration without an explicit scope restoration.`);
 out.push("");
 writeFileSync(resolve(root, "doc/common/GUIDE__architecture-work-breakdown.md"), out.join("\n"));
-console.log(JSON.stringify({ knownRequired: total, implemented, implementationPercent: percent(implemented), integrated: counts.integrated, integrationPercent: percent(counts.integrated), ...counts, currentPacketGates: gateTotal, sourceDenominatorCertified: progress.sourceDenominatorCertified }));
+console.log(JSON.stringify({ structuralGroups: structuralPlans.length, structuralCounts, structuralRemaining, structuralPercent, knownRequired: total, implemented, implementationPercent: percent(implemented), integrated: counts.integrated, integrationPercent: percent(counts.integrated), ...counts, currentPacketGates: gateTotal, sourceDenominatorCertified: progress.sourceDenominatorCertified }));

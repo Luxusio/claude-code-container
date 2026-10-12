@@ -4,23 +4,59 @@ Updated: 2026\-10\-12. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
+확인된 구조 정리 그룹: **7/16 완료 (43.8%)**, **9개 남음**.
+부분 완료: **4**; 진행 중: **1**; 미착수: **4**.
+
+이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
+
+## 0. 남은 구조 정리
+
+| 그룹 | 상태 | 남은 작업 | 완료 조건 | 확인한 소스 |
+| --- | --- | --- | --- | --- |
+| MCP 요청·결과 경계 | 부분 완료 | Appium 활성 앱 응답 필드 해석과 MCP 응답 생성을 어댑터로 옮긴다\. | 애플리케이션은 앱 상태 관측 결과로 대기·종료를 결정하고, 어댑터가 Appium 응답 필드와 MCP 출력을 처리한다\. | device\-lab\-mcp/src/application/device\-request\.mjs |
+| 브로커 물리 기기·리스·정리 | 부분 완료 | 물리 기기 선택 안내 문구와 Apple inventory stdout 해석을 어댑터로 옮긴다\. | 선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다\. | packages/device\-lab/src/device\-lab/application/broker\-physical\-devices\.ts |
+| Hyper\-V 수명주기·네이티브 경계 | 부분 완료 | Linux seed stdout의 마지막 줄 JSON 해석을 네이티브 어댑터로 옮긴다\. | 코어는 검증된 seed 관측을 받고, VM·키·네트워크 동일성 판단과 rollback 정책을 유지한다\. | packages/device\-lab/src/device\-lab/application/lifecycle/hyper\-v\-create\-start\.ts |
+| 컨테이너 실행·준비 경계 | 부분 완료 | runtime readiness의 Docker·Podman 복구 안내 문구를 CLI 어댑터로 옮긴다\. | 컨테이너 정책은 준비 상태·거절 이유를 결정하고, CLI가 runtime별 명령 구성과 안내를 처리한다\. | src/application/container\-runtime\-readiness\.ts |
+| Desktop 제어·파일 전송 | 진행 중 | X11·Windows·macOS 경계 구현과 독립 리뷰는 끝났고, 빌드·행동 QA·로컬 통합을 진행한다\. | 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책을 QA 후 통합한다\. | packages/device\-lab/providers/application/desktop\-control\-transfer\.mjs |
+| Workspace 열기·사용자 안내 | 미착수 | workspace open의 prompt·출력 문구·exit 표현을 CLI 어댑터로 옮긴다\. | 코어가 등록 복구·사용자 확인·소유권·충돌 판단을 유지하고, 어댑터가 질문·출력·종료를 처리한다\. | src/application/workspace/open\.ts |
+| Runtime capability 관측 | 미착수 | raw status·stdout·JSON 해석과 Vitest 전용 분기를 코어 밖으로 정리한다\. | 어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다\. | src/application/runtime\-capabilities\.ts, src/adapters/runtime\-capabilities\.ts |
+| Codex·Claude 설정 포트 단순화 | 미착수 | 내부 포트의 getter·descriptor·Reflect 호출 보존 계층을 필요한 일반 함수로 줄인다\. | 설정 lock·prepare·bootstrap·finally 복구와 안전한 파일 공개 정책을 보존하면서, 실제 내부 호출 계약에 맞춘 단순한 포트를 사용한다\. | src/application/codex\-harness\.ts, src/adapters/codex\-harness\.ts, src/application/mcp\-forward\.ts, src/adapters/mcp\-forward\.ts |
+| 컨테이너 identity digest | 미착수 | captureLabelsDigest\(\)\(\) 이중 factory를 단일 digest 포트로 정리한다\. | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. | src/application/container/identity\-image\.ts, src/ports/container/identity\-image\.ts, src/adapters/container\-identity\.ts |
+
+## 0.1 완료한 구조 정리
+
+| 그룹 | 통합 커밋 | 완료 조건 |
+| --- | --- | --- |
+| 브로커 상태·녹화·Appium 결과 | `0cebcfe0` | 상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
+| 브로커 provider 수명주기 결과 | `8060aa02` | Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다\. |
+| Android·iOS 환경 제어 | `438db1c0` | 환경 코어가 의미 입력·결과만 사용하고, ADB·simctl 명령 구성과 응답 처리는 네이티브 어댑터에 둔다\. |
+| Android 앱 관리 | `438db1c0` | 앱 설치·실행·삭제·권한 정책과 ADB 명령 구성이 분리되고, emulator·physical 양쪽 호출 경로의 QA가 확인된다\. |
+| Device Lab 관리 명령 | `2d82f06c` | 관리 진단·setup·delete 정책은 의미 관측을 사용하고, 실행 recipe·터미널 출력은 네이티브 어댑터가 처리한다\. |
+| Remote 연결·전송 경계 | `9c1d1e5d` | 원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
+| 도구 설치·Doctor 진단 | `c9cae5ae` | 설치·진단 정책이 의미 관측을 사용하고, 네이티브 실행·터미널 표현이 어댑터에 있으며 리뷰·QA·통합이 확인된다\. |
+
+각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
+
+## 0.2 기능 전환 기록 (참고)
+
 Known in-scope operation cutovers: **218** (219 inventoried, 1 explicitly excluded).
 Implemented including unmerged candidates: **218/218 (100.0%)**.
 Integrated source: **218/218 (100.0%)**; historical baseline: **31**. Candidates: **0**; partial: **0**; TODO: **0**.
 
 These are provisional, unweighted operation counts. Source scope closure and independent inventory re-review remain incomplete. They are not effort estimates or overall architecture/native acceptance percentages. A checked implementation row may still require review, integration and delivery gates. Partial bindings receive no completion credit. OpenCode is outside current scope; Codex and Claude/shared operations remain in scope.
 
-Known original structural corrections accepted: **5/9 identified groups**. This separate subtotal is not an effort percentage or an exhaustive remaining-work denominator. Overall migration completion remains unverified.
+Accepted historical structural commits remain recorded even when current group debt makes workStatus partial. Overall migration completion remains unverified.
 
-## 0. Tracking and update rules
+## 0.3 Tracking and update rules
 
 - One stable OP id counts once; helper files, ports, aliases and equivalent executor bindings do not add TODOs.
 - `[x]` means implemented in the recorded baseline or candidate; the status label distinguishes integration. `[ ]` means partial or unimplemented.
 - Update the overlay when a candidate, review or scope changes. Preserve historical inventory anchors. After verified source integration and local delivery, mark the lane accepted with its immutable acceptedIntegrationCommit; then run `node scripts/render-architecture-progress.mjs`. Partial bindings remain partial. A fresh inventory baseline is a separate validated refresh.
 - Keep code implementation, review/QA, integration and native/reliability acceptance separate. Missing hook receipts never become a formal close PASS.
+- Structural completion uses workStatus, never acceptedIntegrationCommit alone. Record concrete remainingWork and completionCriteria; update only after actual qualified evidence. Then regenerate this Guide.
 - Never launch hosted CI, workflow reruns or pushes without explicit user authorization.
 
-## 0.1 Current candidate lanes
+## 0.4 Historical operation lanes
 
 | Lane | Whole operations | Partial operations | Commit | Review/QA | Integration |
 | --- | ---: | ---: | --- | --- | --- |
@@ -73,23 +109,9 @@ Known original structural corrections accepted: **5/9 identified groups**. This 
 | direct\-physical\-attachment\-source\-closure | 2 | 0 | `b14321e7` | Actual independent Code DEEP/Security/Guide and complete required\-binding review PASS\. Accepted source has current strict implementation/native producer contracts and graph, genuine build/1313 emits, 11 whole files/267 cases/0 skips, lint, package7, actual npm/materialized Unix exports/assets/MCP startup and compiled CLI 0/0/0/1 PASS\. Protected main delivery preserves all97 original user changes\. Source\-only producer checking does not certify every legacy helper body or native hosts; formal/exhaustive acceptance remains unverified\. | accepted @ b14321e7 |
 | direct\-recording\-source\-closure | 3 | 0 | `6454e788` | Actual independent complete/affected Code/Security/Guide and all five recording bindings/default Windows/macOS broker child routes PASS\. Final ordinary QA328 cases/16 whole files/0 skips, genuine build1318 emits, package/npm materialized Unix/CLI/authentication and settled actors accepted; protected main delivery preserves97 original user changes\. Operation\-policy qualification does not close remaining original semantic\-result/native\-process/source\-universe/native/reliability/formal gates\. | accepted @ 6454e788 |
 
-## 0.2 Known original structural work
-
-| Group | Accepted source | State |
-| --- | --- | --- |
-| mcp\-request\-selection\-structural | `958c56c2` | Accepted bounded source at958c56c2: opaque core request results and semantic catalog selection with finite outward MCP presentation\. Actual independent reviews and QA584/package/shipping passed; protected14pins/97userpaths delivered\. Zero operation credit; no exhaustive/native/formal Goal certification\. |
-| broker\-lease\-physical\-cleanup\-results\-structural | `a5fbfb6f` | Accepted bounded source ata5fbfb6f: semantic lease renewal/admission/release/restoration, physical outcomes and owner cleanup with finite native effects, captured identity and outward HTTP rendering\. Actual independent reviews and QA385/ten whole files/build1322/package/shipping passed; protected17pins/97userpaths delivered\. Prior Code failure corrected; formal receipt\-empty park retained\. Zero operation credit; no exhaustive/native Goal certification\. |
-| broker\-remaining\-semantic\-results\-structural | `0cebcfe0` | Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation\. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered\. Prior compiler/runtime failures corrected and retained\. Formal receipt\-empty park and original worktree retained\. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified\. |
-| hyper\-v\-lifecycle\-results\-native\-recipes\-structural | `c181c0ff` | Accepted bounded source at c181c0ff: semantic create/start, stop/delete, snapshot, image and network/trust outcomes with finite native effects and outward response rendering\. Actual independent Code/Security/Docs and QA527 across19 whole files, genuine build1326, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered\. Earlier compiler and rollback failures corrected and retained as evidence\. Formal receipt\-empty park and original worktree retained\. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified\. |
-| broker\-provider\-lifecycle\-results\-structural | `8060aa02` | Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation\. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed\. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified\. Formal receipt\-empty park and original worktree retained\. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified\. |
-| mobile\-environment\-native\-boundaries\-structural | pending | Source\-confirmed at0cebcfe0; implementation queued\. Android/iOS environment domain builders construct ADB/simctl arrays and inward applications forward them to generic execution ports\. Move finite native framing outward while retaining validation, fallback ordering and partial\-effect policy\. Original SPEC adapter\-only NativeProcess obligation; no new operation credit or source/native/exhaustive acceptance\. |
-| android\-app\-native\-boundaries\-structural | pending | Source\-confirmed at0cebcfe0; implementation queued\. androidAppPlan builds install/launch/uninstall/permission shell arguments; createAndroidAppManagement forwards plan\.args to execute for both Android variants\. Replace that builder\-runner seam with finite semantic native effects\. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance\. |
-| admin\-native\-boundaries\-structural | pending | Source\-confirmed at0cebcfe0; implementation queued\. Admin diagnostics/setup carry executable/argv recipes into generic runners, macOS deletion builds provider argv inward, and setup returns terminal text\. Move finite effects/framing and presentation to native composition; retain locks, expected records and lease/publication policy\. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance\. |
-| container\-native\-recipe\-boundaries\-structural | pending | Source\-confirmed at0cebcfe0; implementation queued\. Container launch/create and exec applications assemble Docker/Podman run/exec flags and pass arrays to native runtime runners\. Separate semantic intent from adapter\-owned flags/framing without changing runtime/session/credential authority\. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance\. |
-
 Current whole-source/exports/caller closure, final type/composition integration, final package/install/image qualification, reliability/resource evidence, native-platform acceptance and formal disposition remain separate original completion gates.
 
-## 0.3 Other plans and historical contributions
+## 0.5 Other plans and historical contributions
 
 | Lane | Operation ids | State |
 | --- | --- | --- |

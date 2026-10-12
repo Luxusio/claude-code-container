@@ -1471,7 +1471,17 @@
       "taskId": "TASK__architecture-mcp-result-selection",
       "acceptedIntegrationCommit": "958c56c28735d654ba1f9daf19b94b0cc086529f",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/mcp-selection-958c-9bf520_b/final-result.json",
-      "deliveryEvidence": "/tmp/ccc-mcp-selection-inventory-main-delivery-result-20261011.json"
+      "deliveryEvidence": "/tmp/ccc-mcp-selection-inventory-main-delivery-result-20261011.json",
+      "title": "MCP 요청·결과 경계",
+      "workStatus": "partial",
+      "remainingWork": "Appium 활성 앱 응답 필드 해석과 MCP 응답 생성을 어댑터로 옮긴다.",
+      "completionCriteria": "애플리케이션은 앱 상태 관측 결과로 대기·종료를 결정하고, 어댑터가 Appium 응답 필드와 MCP 출력을 처리한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "device-lab-mcp/src/application/device-request.mjs"
+        ]
+      }
     },
     {
       "id": "broker-lease-physical-cleanup-results-structural",
@@ -1480,7 +1490,17 @@
       "taskId": "TASK__architecture-broker-control-outcomes",
       "acceptedIntegrationCommit": "a5fbfb6fa45996d12863b92743b1af78879ada14",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-control-a5fb-ee996tiu/final-result.json",
-      "deliveryEvidence": "/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json"
+      "deliveryEvidence": "/tmp/ccc-broker-control-outcomes-main-delivery-result-20261011.json",
+      "title": "브로커 물리 기기·리스·정리",
+      "workStatus": "partial",
+      "remainingWork": "물리 기기 선택 안내 문구와 Apple inventory stdout 해석을 어댑터로 옮긴다.",
+      "completionCriteria": "선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "packages/device-lab/src/device-lab/application/broker-physical-devices.ts"
+        ]
+      }
     },
     {
       "id": "broker-remaining-semantic-results-structural",
@@ -1489,7 +1509,12 @@
       "taskId": "TASK__architecture-broker-remaining-result-boundaries",
       "acceptedIntegrationCommit": "0cebcfe028aa6a6a15f8afa020e436daef83616a",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-remaining-0ceb-3hu7nfyo/final-result.json",
-      "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json"
+      "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
+      "title": "브로커 상태·녹화·Appium 결과",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb"
     },
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
@@ -1498,7 +1523,17 @@
       "taskId": "TASK__architecture-hyper-v-result-boundaries",
       "acceptedIntegrationCommit": "c181c0ff11210b7c673b980ad786c69dde101c2b",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/hyperv-results-c181-g4j3wyxs/final-result.json",
-      "deliveryEvidence": "/tmp/ccc-hyper-v-result-boundaries-main-delivery-20261011.json"
+      "deliveryEvidence": "/tmp/ccc-hyper-v-result-boundaries-main-delivery-20261011.json",
+      "title": "Hyper-V 수명주기·네이티브 경계",
+      "workStatus": "partial",
+      "remainingWork": "Linux seed stdout의 마지막 줄 JSON 해석을 네이티브 어댑터로 옮긴다.",
+      "completionCriteria": "코어는 검증된 seed 관측을 받고, VM·키·네트워크 동일성 판단과 rollback 정책을 유지한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts"
+        ]
+      }
     },
     {
       "id": "broker-provider-lifecycle-results-structural",
@@ -1507,7 +1542,12 @@
       "taskId": "TASK__architecture-provider-lifecycle-result-boundaries",
       "acceptedIntegrationCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
-      "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json"
+      "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
+      "title": "브로커 provider 수명주기 결과",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb"
     },
     {
       "id": "shared-android-contract-cleanup-accepted",
@@ -1521,7 +1561,7 @@
       "id": "mobile-environment-native-boundaries-structural",
       "coveredOperationIds": [],
       "taskId": "TASK__architecture-mobile-environment-native-boundaries",
-      "status": "Source-confirmed at0cebcfe0; implementation queued. Android/iOS environment domain builders construct ADB/simctl arrays and inward applications forward them to generic execution ports. Move finite native framing outward while retaining validation, fallback ordering and partial-effect policy. Original SPEC adapter-only NativeProcess obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "status": "Accepted bounded source at 438db1c0: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified.",
       "sourceTrace": {
         "owningPaths": [
           "packages/device-lab/providers/domain/mobile-environment.mjs",
@@ -1535,13 +1575,21 @@
           "packages/device-lab/providers/backends/ios-simulator.mjs",
           "packages/device-lab/providers/backends/ios-device.mjs"
         ]
-      }
+      },
+      "title": "Android·iOS 환경 제어",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "환경 코어가 의미 입력·결과만 사용하고, ADB·simctl 명령 구성과 응답 처리는 네이티브 어댑터에 둔다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "acceptedIntegrationCommit": "438db1c08654fa6a69b9ddf0429d7bca91a566f6",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/mobile-native-438d-m1rcv7mw/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-mobile-native-integration-after-20261012.json"
     },
     {
       "id": "android-app-native-boundaries-structural",
       "coveredOperationIds": [],
       "taskId": "TASK__architecture-android-app-native-boundaries",
-      "status": "Source-confirmed at0cebcfe0; implementation queued. androidAppPlan builds install/launch/uninstall/permission shell arguments; createAndroidAppManagement forwards plan.args to execute for both Android variants. Replace that builder-runner seam with finite semantic native effects. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "status": "Accepted bounded source at 438db1c0: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified.",
       "sourceTrace": {
         "owningPaths": [
           "packages/device-lab/providers/domain/mobile-app-management.mjs",
@@ -1552,13 +1600,21 @@
           "packages/device-lab/providers/backends/android.mjs",
           "packages/device-lab/providers/backends/android-device.mjs"
         ]
-      }
+      },
+      "title": "Android 앱 관리",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "앱 설치·실행·삭제·권한 정책과 ADB 명령 구성이 분리되고, emulator·physical 양쪽 호출 경로의 QA가 확인된다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "acceptedIntegrationCommit": "438db1c08654fa6a69b9ddf0429d7bca91a566f6",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/mobile-native-438d-m1rcv7mw/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-mobile-native-integration-after-20261012.json"
     },
     {
       "id": "admin-native-boundaries-structural",
       "coveredOperationIds": [],
       "taskId": "TASK__architecture-admin-native-boundaries",
-      "status": "Source-confirmed at0cebcfe0; implementation queued. Admin diagnostics/setup carry executable/argv recipes into generic runners, macOS deletion builds provider argv inward, and setup returns terminal text. Move finite effects/framing and presentation to native composition; retain locks, expected records and lease/publication policy. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "status": "Accepted bounded source at 2d82f06c: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified.",
       "sourceTrace": {
         "owningPaths": [
           "src/application/device-admin-diagnostics.ts",
@@ -1573,13 +1629,21 @@
         "nativeConsumers": [
           "src/device-lab-admin.ts"
         ]
-      }
+      },
+      "title": "Device Lab 관리 명령",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "관리 진단·setup·delete 정책은 의미 관측을 사용하고, 실행 recipe·터미널 출력은 네이티브 어댑터가 처리한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "acceptedIntegrationCommit": "2d82f06c998d9fe358a0f42cc328aa240a9f7438",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/admin-native-2d82-szjznjdk/qa-command-summary.json",
+      "deliveryEvidence": "git merge-base --is-ancestor 2d82f06c998d9fe358a0f42cc328aa240a9f7438 c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb"
     },
     {
       "id": "container-native-recipe-boundaries-structural",
       "coveredOperationIds": [],
       "taskId": "TASK__architecture-container-native-recipe-boundaries",
-      "status": "Source-confirmed at0cebcfe0; implementation queued. Container launch/create and exec applications assemble Docker/Podman run/exec flags and pass arrays to native runtime runners. Separate semantic intent from adapter-owned flags/framing without changing runtime/session/credential authority. Original SPEC obligation; no new operation credit or source/native/exhaustive acceptance.",
+      "status": "Accepted bounded source at 99a91a5b: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified.",
       "sourceTrace": {
         "owningPaths": [
           "src/application/container-launch-arguments.ts",
@@ -1590,8 +1654,134 @@
         ],
         "nativeConsumers": [
           "src/docker.ts"
+        ],
+        "remainingPaths": [
+          "src/application/container-runtime-readiness.ts"
         ]
-      }
+      },
+      "title": "컨테이너 실행·준비 경계",
+      "workStatus": "partial",
+      "remainingWork": "runtime readiness의 Docker·Podman 복구 안내 문구를 CLI 어댑터로 옮긴다.",
+      "completionCriteria": "컨테이너 정책은 준비 상태·거절 이유를 결정하고, CLI가 runtime별 명령 구성과 안내를 처리한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "acceptedIntegrationCommit": "99a91a5b0f96bee6b277de23bc9ecaa4e47f1659",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/container-native-99a9-bpn4g3sq/qualification.json",
+      "deliveryEvidence": "git merge-base --is-ancestor 99a91a5b0f96bee6b277de23bc9ecaa4e47f1659 c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb"
+    },
+    {
+      "id": "remote-native-boundaries-structural",
+      "coveredOperationIds": [],
+      "title": "Remote 연결·전송 경계",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "src/application/remote-sync.ts",
+          "src/application/remote-services.ts"
+        ]
+      },
+      "acceptedIntegrationCommit": "9c1d1e5d80ff0ed0d3a9f5ba9629264e2c99a093",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/remote-native-9c1d-s_9oiueb",
+      "deliveryEvidence": "/tmp/ccc-remote-native-integration-20261012.json",
+      "status": "Accepted bounded source at 9c1d1e5d: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified."
+    },
+    {
+      "id": "tooling-doctor-native-boundaries-structural",
+      "coveredOperationIds": [],
+      "title": "도구 설치·Doctor 진단",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "설치·진단 정책이 의미 관측을 사용하고, 네이티브 실행·터미널 표현이 어댑터에 있으며 리뷰·QA·통합이 확인된다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "acceptedIntegrationCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/tooling-doctor-c9ca-zcq_xdmp",
+      "deliveryEvidence": "/tmp/ccc-tooling-doctor-integration-20261012.json",
+      "status": "Accepted bounded source at c9cae5ae: actual independent review, portable QA and local integration qualified. Current workStatus records remaining group debt; native, reliability, exhaustive and formal completion remain unverified."
+    },
+    {
+      "id": "desktop-native-boundaries-structural",
+      "coveredOperationIds": [],
+      "title": "Desktop 제어·파일 전송",
+      "workStatus": "in-progress",
+      "remainingWork": "X11·Windows·macOS 경계 구현과 독립 리뷰는 끝났고, 빌드·행동 QA·로컬 통합을 진행한다.",
+      "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책을 QA 후 통합한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "packages/device-lab/providers/application/desktop-control-transfer.mjs"
+        ]
+      },
+      "status": "Confirmed current source scope; in-progress. Zero additional operation credit; full Goal acceptance remains unverified.",
+      "taskId": "TASK__architecture-desktop-native-boundaries",
+      "candidateCommit": "a47d7b2972c4cbcdf0e7d329c06b1178da3a2bca"
+    },
+    {
+      "id": "workspace-open-presentation-structural",
+      "coveredOperationIds": [],
+      "title": "Workspace 열기·사용자 안내",
+      "workStatus": "pending",
+      "remainingWork": "workspace open의 prompt·출력 문구·exit 표현을 CLI 어댑터로 옮긴다.",
+      "completionCriteria": "코어가 등록 복구·사용자 확인·소유권·충돌 판단을 유지하고, 어댑터가 질문·출력·종료를 처리한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "src/application/workspace/open.ts"
+        ]
+      },
+      "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
+    },
+    {
+      "id": "runtime-capability-native-observations-structural",
+      "coveredOperationIds": [],
+      "title": "Runtime capability 관측",
+      "workStatus": "pending",
+      "remainingWork": "raw status·stdout·JSON 해석과 Vitest 전용 분기를 코어 밖으로 정리한다.",
+      "completionCriteria": "어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "src/application/runtime-capabilities.ts",
+          "src/adapters/runtime-capabilities.ts"
+        ]
+      },
+      "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
+    },
+    {
+      "id": "codex-config-bootstrap-boundaries-structural",
+      "coveredOperationIds": [],
+      "title": "Codex·Claude 설정 포트 단순화",
+      "workStatus": "pending",
+      "remainingWork": "내부 포트의 getter·descriptor·Reflect 호출 보존 계층을 필요한 일반 함수로 줄인다.",
+      "completionCriteria": "설정 lock·prepare·bootstrap·finally 복구와 안전한 파일 공개 정책을 보존하면서, 실제 내부 호출 계약에 맞춘 단순한 포트를 사용한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "src/application/codex-harness.ts",
+          "src/adapters/codex-harness.ts",
+          "src/application/mcp-forward.ts",
+          "src/adapters/mcp-forward.ts"
+        ]
+      },
+      "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
+    },
+    {
+      "id": "identity-digest-ownership-structural",
+      "coveredOperationIds": [],
+      "title": "컨테이너 identity digest",
+      "workStatus": "pending",
+      "remainingWork": "captureLabelsDigest()() 이중 factory를 단일 digest 포트로 정리한다.",
+      "completionCriteria": "labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다.",
+      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "sourceTrace": {
+        "remainingPaths": [
+          "src/application/container/identity-image.ts",
+          "src/ports/container/identity-image.ts",
+          "src/adapters/container-identity.ts"
+        ]
+      },
+      "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
     }
   ],
   "currentSourceQualificationAudit": {
