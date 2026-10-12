@@ -20,7 +20,7 @@ it("keeps session cleanup policy inward and its native adapter out of Admin and 
     expect(application.every(specifier => specifier.startsWith("../domain/") || specifier.startsWith("../ports/"))).toBe(true);
 });
 
-function fixture(mode?: "retryable-owner" | "ended-owner") {
+function fixture() {
     const trace: unknown[][] = [];
     let held = false;
     let foreign = false;
@@ -42,23 +42,22 @@ function fixture(mode?: "retryable-owner" | "ended-owner") {
             return undefined;
         },
     };
-    const app = createSessionCleanup(ports, mode);
+    const app = createSessionCleanup(ports);
     const setActive = () => {
         app.setSession(active.lockFile, active.projectPath, active.profile, active.toolName);
         app.setSessionContainerId("captured-container-id");
     };
-    return { app, ports, trace, setActive, setForeign: (value: boolean) => { foreign = value; }, isHeld: () => held };
+    return {
+        app, ports, trace, setActive,
+        setForeign: (value: boolean) => { foreign = value; }, isHeld: () => held,
+        runHeld: () => {
+            held = true;
+            try { return app.cleanupSessionInHeldLifecycleLock(); } finally { held = false; }
+        },
+    };
 }
 
 describe("explicit session cleanup construction", () => {
-    it.each(["retryable-owner", "ended-owner"] as const)("accepts explicit %s policy without effects", mode => {
-        expect(fixture(mode).trace).toEqual([]);
-    });
-    it.each([null, "", "unknown", false, 0, {}])("rejects unknown cleanup policy %j without effects", mode => {
-        const f = fixture();
-        expect(() => createSessionCleanup(f.ports, mode as Parameters<typeof createSessionCleanup>[1])).toThrow(TypeError);
-        expect(f.trace).toEqual([]);
-    });
     it.each([undefined, null])("rejects absent ports %s", value => {
         expect(() => createSessionCleanup(value as unknown as SessionCleanupPorts)).toThrow(TypeError);
     });
@@ -94,57 +93,89 @@ describe("explicit session cleanup construction", () => {
 
 });
 
-describe("cleanup after ownership has ended", () => {
-    it("removes the ended owner's receipt under the guard before foreign queries and exact-ID stop", () => {
-        const f = fixture("ended-owner");
-        f.setActive(); f.app.cleanupSession();
+describe("cleanup in an already-held lifecycle guard", () => {
+    it.each([false, true])("matches synchronous cleanup effects and finalization with foreign ownership %s", foreign => {
+        const ordinary = fixture();
+        const held = fixture();
+        for (const f of [ordinary, held]) { f.setActive(); f.setForeign(foreign); }
+        ordinary.app.cleanupSession();
+        expect(held.runHeld()).toBeUndefined();
+        expect(held.trace).toEqual(ordinary.trace.filter(row => row[0] !== "lock" && row[0] !== "unlock"));
+        expect(held.app.getCurrentSession()).toEqual(ordinary.app.getCurrentSession());
+        expect(held.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
+        held.trace.length = 0;
+        held.runHeld();
+        expect(held.trace).toEqual([]);
+    });
+    it("never reacquires a lifecycle guard while stopping the captured container", () => {
+        const f = fixture();
+        f.setActive();
+        f.ports.withLifecycleLock = () => { throw new Error("nested guard acquisition"); };
+        f.runHeld();
         expect(f.trace).toEqual([
-            ["project", active.projectPath], ["lock", "project-id--p--work"],
-            ["remove", active.lockFile], ["raw", "project-id--p--work", active.lockFile],
+            ["project", active.projectPath], ["raw", "project-id--p--work", active.lockFile],
             ["devices", active.projectPath, 5000, active.profile], ["stop", "captured-container-id"],
-            ["unlock", "project-id--p--work"],
+            ["remove", active.lockFile],
+        ]);
+    });
+    it.each(["hasOtherClaims", "stopContainer", "removeClaim"] as const)("retains claim and incomplete context after held %s failure, then retries", member => {
+        const f = fixture();
+        f.setActive();
+        let claimPresent = true;
+        const remove = f.ports.removeClaim;
+        f.ports.removeClaim = path => { remove(path); claimPresent = false; return undefined; };
+        const original = f.ports[member];
+        const failure = { member };
+        Object.assign(f.ports, { [member]: () => {
+            expect(f.isHeld()).toBe(true);
+            expect(claimPresent).toBe(true);
+            f.trace.push(["failure", member]);
+            throw failure;
+        } });
+        let caught: unknown;
+        try { f.runHeld(); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(claimPresent).toBe(true);
+        expect(f.app.getCurrentSession()).toEqual(active);
+        expect(f.trace.some(row => row[0] === "remove")).toBe(false);
+        if (member === "hasOtherClaims") {
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop")).toBe(false);
+        }
+        Object.assign(f.ports, { [member]: original });
+        f.trace.length = 0;
+        f.runHeld();
+        expect(f.trace).toEqual([
+            ["project", active.projectPath], ["raw", "project-id--p--work", active.lockFile],
+            ["devices", active.projectPath, 5000, active.profile], ["stop", "captured-container-id"],
+            ["remove", active.lockFile],
+        ]);
+        expect(claimPresent).toBe(false);
+        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
+    });
+    it("rechecks foreign authority on retry before releasing only its own receipt", () => {
+        const f = fixture();
+        f.setActive();
+        f.ports.stopContainer = () => { throw new Error("stop failed"); };
+        expect(() => f.runHeld()).toThrow("stop failed");
+        expect(f.trace.some(row => row[0] === "remove")).toBe(false);
+        f.setForeign(true);
+        f.trace.length = 0;
+        f.runHeld();
+        expect(f.trace).toEqual([
+            ["project", active.projectPath], ["raw", "project-id--p--work", active.lockFile],
+            ["remove", active.lockFile],
         ]);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
-    it("removes the ended receipt even when stopping fails, preserving error identity and incomplete context", () => {
-        const f = fixture("ended-owner");
+    it.each(["ordinary", "held"] as const)("%s cleanup respects disabled shutdown authorization", entry => {
+        const f = fixture();
         f.setActive();
-        const failure = { reason: "stop" };
-        f.ports.stopContainer = () => { throw failure; };
-        let caught: unknown;
-        try { f.app.cleanupSession(); } catch (error) { caught = error; }
-        expect(caught).toBe(failure);
-        expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
-        expect(f.trace.findIndex(row => row[0] === "remove")).toBeLessThan(f.trace.findIndex(row => row[0] === "devices"));
-        expect(f.app.getCurrentSession()).toEqual(active);
-        let retries = 0;
-        f.ports.stopContainer = readId => { expect(readId()).toBe("captured-container-id"); retries++; return undefined; };
-        f.app.cleanupSession();
-        expect(retries).toBe(1);
-        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
-    });
-    it("removes ended ownership before failed enumeration but skips device and container effects", () => {
-        const f = fixture("ended-owner");
-        f.setActive();
-        const failure = new Error("enumeration failed");
-        f.ports.hasOtherClaims = () => { throw failure; };
-        expect(() => f.app.cleanupSession()).toThrow(failure);
-        expect(f.trace.map(row => row[0])).toEqual(["project", "lock", "remove", "unlock"]);
-        expect(f.app.getCurrentSession()).toEqual(active);
-    });
-    it("failed ended-owner unlink prevents foreign queries, devices and stop", () => {
-        const f = fixture("ended-owner");
-        f.setActive();
-        const failure = new Error("unlink denied");
-        f.ports.removeClaim = () => { throw failure; };
-        expect(() => f.app.cleanupSession()).toThrow(failure);
-        expect(f.trace.map(row => row[0])).toEqual(["project", "lock", "unlock"]);
-        expect(f.app.getCurrentSession()).toEqual(active);
-    });
-    it("removes ended ownership while live foreign ownership still vetoes all shared effects", () => {
-        const f = fixture("ended-owner");
-        f.setActive(); f.setForeign(true); f.app.cleanupSession();
-        expect(f.trace.map(row => row[0])).toEqual(["project", "lock", "remove", "raw", "unlock"]);
+        f.app.setSessionCleanupEnabled(false);
+        if (entry === "held") f.runHeld(); else f.app.cleanupSession();
+        expect(f.trace.filter(row => row[0] !== "lock" && row[0] !== "unlock")).toEqual([
+            ["project", active.projectPath], ["raw", "project-id--p--work", active.lockFile],
+            ["remove", active.lockFile],
+        ]);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
 });

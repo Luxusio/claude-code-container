@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "path";
-import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
+import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { getProjectId } from "@ccc/device-lab/project-identity.js";
 import { nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "../adapters/session-ownership.js";
 import { sessionClaimPrefix, sessionLockClaimsForContainer } from "../domain/session-claims.js";
@@ -11,6 +11,11 @@ import type { SessionOwnershipBinding, SessionOwnershipReceipt } from "../ports/
 export function withLifecycleLock<T>(prefix: string, operation: () => T): T {
     ensureNativeSessionClaimsDirectory();
     return withSharedMutationLock(join(locksDir(), `${prefix}.container-lifecycle.guard`), operation, { waitMs: 180_000 });
+}
+
+export async function withLifecycleLockAsync<T>(prefix: string, operation: () => T | Promise<T>): Promise<T> {
+    ensureNativeSessionClaimsDirectory();
+    return withSharedMutationLockAsync(join(locksDir(), `${prefix}.container-lifecycle.guard`), operation, { waitMs: 180_000 });
 }
 
 export function validateNativeSessionOwnership(
@@ -37,11 +42,11 @@ export function assertNativeSessionOwnership(receipt: SessionOwnershipReceipt): 
     if (!nativeSessionOwnershipMatches(receipt)) throw new Error("Session ownership receipt is absent, unreadable, or replaced.");
 }
 
-export function rollbackCapturedNativeSessionOwnership(
+export async function rollbackCapturedNativeSessionOwnership(
     binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
-): void {
+): Promise<void> {
     const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
-    withLifecycleLock(prefix, () => {
+    await withLifecycleLockAsync(prefix, () => {
         if (nativeSessionOwnershipMatches(receipt)) removeCapturedNativeSessionOwnership(receipt);
     });
 }

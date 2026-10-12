@@ -42,7 +42,7 @@ export interface SessionOwnershipHandle {
 
 export interface SessionOwnershipPorts {
     launch(): SessionOwnershipChannel;
-    cleanup(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
+    cleanup(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
     setTimer(callback: () => void, milliseconds: number): unknown;
     clearTimer(timer: unknown): void;
     timeoutMs: number;
@@ -50,10 +50,11 @@ export interface SessionOwnershipPorts {
 }
 
 export interface SessionOwnershipGuardianPorts {
-    rollback(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
-    validate(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
+    rollback(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
+    validate(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
     cleanup(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
         containerId: string | null, runtime: SessionOwnershipRuntime): void | Promise<void>;
     send(message: SessionOwnershipMessage): Promise<void>;
+    pause(milliseconds: number): Promise<void>;
     finish(status?: 0 | 1): void;
 }

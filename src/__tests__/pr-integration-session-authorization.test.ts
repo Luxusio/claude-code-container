@@ -9,7 +9,7 @@ const successorId = "b".repeat(64);
 const binding = { lockFile: "/fixture/owner.lock", projectPath: "/fixture/project", toolName: "codex" };
 const receipt = { path: binding.lockFile, bytes: "NDI=", device: "1", inode: "2", birthtime: "3", ownerPid: 42 };
 
-function cleanupFixture(mode: "retryable-owner" | "ended-owner") {
+function cleanupFixture() {
     const trace: unknown[][] = [];
     let other = false;
     const ports: SessionCleanupPorts = {
@@ -21,7 +21,7 @@ function cleanupFixture(mode: "retryable-owner" | "ended-owner") {
         reportDeviceCleanupFailure: error => { trace.push(["failure", error]); return undefined; },
         stopContainer: read => { trace.push(["stop", read()]); return undefined; },
     };
-    const app = createSessionCleanup(ports, mode);
+    const app = createSessionCleanup(ports);
     app.setSession(binding.lockFile, binding.projectPath);
     app.setSessionContainerId(id);
     return { app, trace, foreign: () => { other = true; } };
@@ -37,6 +37,7 @@ function guardianFixture() {
         rollback: (...args) => { rollbacks.push(args); },
         cleanup: (...args) => { cleanups.push(args); },
         send: async message => { frames.push(message); },
+        pause: async milliseconds => { expect(milliseconds).toBe(1000); },
         finish: status => { statuses.push(status); },
     };
     const guardian = createSessionOwnershipGuardian(ports);
@@ -45,8 +46,8 @@ function guardianFixture() {
 }
 
 describe("PR integration separates captured identity from shutdown authorization", () => {
-    it.each(["retryable-owner", "ended-owner"] as const)("failed join releases only its claim under %s cleanup", mode => {
-        const f = cleanupFixture(mode);
+    it("failed join releases only its claim", () => {
+        const f = cleanupFixture();
         f.app.setSessionCleanupEnabled(false);
         f.app.cleanupSession();
         f.app.cleanupSession();
@@ -54,8 +55,8 @@ describe("PR integration separates captured identity from shutdown authorization
         expect(f.app.getCurrentSession().lockFile).toBeNull();
     });
 
-    it.each(["retryable-owner", "ended-owner"] as const)("a newly started or successfully launched session cleans its exact ID under %s", mode => {
-        const f = cleanupFixture(mode);
+    it("a newly started or successfully launched session cleans its exact ID", () => {
+        const f = cleanupFixture();
         f.app.setSessionCleanupEnabled(false);
         f.app.setSessionCleanupEnabled(true);
         f.app.cleanupSession();
@@ -65,7 +66,7 @@ describe("PR integration separates captured identity from shutdown authorization
     });
 
     it("other live claims still veto shared cleanup even after explicit authorization", () => {
-        const f = cleanupFixture("ended-owner");
+        const f = cleanupFixture();
         f.app.setSessionCleanupEnabled(true);
         f.foreign();
         f.app.cleanupSession();

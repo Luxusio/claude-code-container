@@ -1,10 +1,7 @@
 import { sessionClaimPrefix } from "../domain/session-claims.js";
 import type { SessionCleanupPorts } from "../ports/session-cleanup.js";
 
-export type SessionCleanupMode = "retryable-owner" | "ended-owner";
-
-export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCleanupMode = "retryable-owner") {
-    if (mode !== "retryable-owner" && mode !== "ended-owner") throw new TypeError("Invalid session cleanup mode.");
+export function createSessionCleanup(ports: SessionCleanupPorts) {
     for (const name of [
         "projectId", "withLifecycleLock", "hasOtherClaims", "removeClaim",
         "cleanupDevices", "reportDeviceCleanupFailure", "stopContainer",
@@ -54,36 +51,50 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
         cleanedUp = false;
     }
 
+    function cleanupSessionBody(containerPrefix: string): void {
+        // The composed query reconciles proven stale foreign owners, then uses
+        // remaining raw claims as the shutdown veto under this same guard.
+        const hasOthers = ports.hasOtherClaims(containerPrefix, currentSessionLockFile!);
+        if (!hasOthers && cleanupEnabled) {
+            try {
+                ports.cleanupDevices(currentProjectPath!, 5000, currentProfile);
+            } catch (error) {
+                ports.reportDeviceCleanupFailure(error);
+            }
+            if (currentContainerId) {
+                // Native runtime selection happens before this mutable ID is read.
+                ports.stopContainer(() => currentContainerId);
+            }
+        }
+        // Keep the receipt through a failed stop so owned cleanup can retry.
+        ports.removeClaim(currentSessionLockFile!);
+    }
+
+    function finalizeSessionCleanup(): void {
+        cleanedUp = true;
+        currentSessionLockFile = null;
+        currentProjectPath = null;
+        currentProfile = undefined;
+    }
+
+    function cleanupSessionInHeldLifecycleLock(): void {
+        if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
+            return;
+        }
+        const projectId = ports.projectId(currentProjectPath);
+        const containerPrefix = sessionClaimPrefix(projectId, currentProfile);
+        cleanupSessionBody(containerPrefix);
+        finalizeSessionCleanup();
+    }
+
     function cleanupSession(): void {
         if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
             return;
         }
         const projectId = ports.projectId(currentProjectPath);
         const containerPrefix = sessionClaimPrefix(projectId, currentProfile);
-        // The composed query reconciles proven stale foreign owners, then uses
-        // remaining raw claims as the shutdown veto under this same guard.
-        ports.withLifecycleLock(containerPrefix, () => {
-            if (mode === "ended-owner") ports.removeClaim(currentSessionLockFile!);
-            const hasOthers = ports.hasOtherClaims(containerPrefix, currentSessionLockFile!);
-            if (!hasOthers && cleanupEnabled) {
-                try {
-                    ports.cleanupDevices(currentProjectPath!, 5000, currentProfile);
-                } catch (error) {
-                    ports.reportDeviceCleanupFailure(error);
-                }
-                if (currentContainerId) {
-                    // Native runtime selection happens before this mutable ID is read.
-                    ports.stopContainer(() => currentContainerId);
-                }
-            }
-            // Keep the receipt through a failed stop so owned cleanup can retry.
-            if (mode === "retryable-owner") ports.removeClaim(currentSessionLockFile!);
-        });
-
-        cleanedUp = true;
-        currentSessionLockFile = null;
-        currentProjectPath = null;
-        currentProfile = undefined;
+        ports.withLifecycleLock(containerPrefix, () => cleanupSessionBody(containerPrefix));
+        finalizeSessionCleanup();
     }
 
     return {
@@ -93,5 +104,6 @@ export function createSessionCleanup(ports: SessionCleanupPorts, mode: SessionCl
         getCurrentSession,
         clearSession,
         cleanupSession,
+        cleanupSessionInHeldLifecycleLock,
     };
 }

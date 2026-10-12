@@ -114,6 +114,26 @@ describe("native Windows receipt capture when named device is unavailable", () =
 });
 
 describe("parent ownership handshake", () => {
+    it.each(["launch", "READY"])("awaits %s rollback and preserves both failures", async phase => {
+        const f = parentFixture();
+        const primary = new Error("launch failed");
+        const rollback = deferred();
+        const entered = deferred();
+        const secondary = new Error("rollback failed");
+        f.ports.cleanup = async () => { entered.resolve(); await rollback.promise; };
+        if (phase === "launch") f.ports.launch = () => { throw primary; };
+        let settled = false;
+        const pending = f.arm().finally(() => { settled = true; });
+        const rejected = expect(pending).rejects.toMatchObject({
+            errors: [phase === "launch" ? primary : expect.any(Error), secondary],
+            cause: phase === "launch" ? primary : expect.any(Error),
+        });
+        if (phase === "READY") f.expire();
+        await entered.promise;
+        expect(settled).toBe(false);
+        rollback.reject(secondary);
+        await rejected;
+    });
     it("waits for READY before arming, uses a bounded timer and captures the exact binding and receipt", async () => {
         const f = parentFixture();
         let armed = false;
@@ -326,26 +346,26 @@ describe("native ownership receipt and binding", () => {
         expect(nativeSessionOwnershipMatches(captured)).toBe(false);
     });
 
-    it("startup rollback removes only the captured claim and preserves a proven stale predecessor", () => {
+    it("startup rollback removes only the captured claim and preserves a proven stale predecessor", async () => {
         const predecessor = join(lockDirectory, `${getProjectId(ownedBinding.projectPath)}--p--work--predecessor.lock`);
         writeFileSync(predecessor, "99999999", { flag: "wx" });
-        rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt);
+        await rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt);
         expect(existsSync(ownedBinding.lockFile)).toBe(false);
         expect(readFileSync(predecessor, "utf8")).toBe("99999999");
         expect(existsSync(join(nativeEnvironment.home, ".ccc", "devices"))).toBe(false);
     });
 
-    it("changing record bytes in the same file denies removal and all composition cleanup effects", () => {
+    it("changing record bytes in the same file denies removal and all composition cleanup effects", async () => {
         const replacement = String(process.pid + 1);
         writeFileSync(ownedBinding.lockFile, replacement);
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => assertNativeSessionOwnership(ownedReceipt)).toThrow();
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
         expect(readFileSync(ownedBinding.lockFile, "utf8")).toBe(replacement);
     });
 
-    it("a same-path successor with identical bytes has different identity and survives guarded cleanup", () => {
+    it("a same-path successor with identical bytes has different identity and survives guarded cleanup", async () => {
         // Retain the old inode so immediate filesystem inode reuse cannot mask the replacement.
         renameSync(ownedBinding.lockFile, join(lockDirectory, "retired-receipt"));
         writeFileSync(ownedBinding.lockFile, Buffer.from(ownedReceipt.bytes, "base64"), { flag: "wx" });
@@ -354,29 +374,29 @@ describe("native ownership receipt and binding", () => {
         expect(successor.inode).not.toBe(ownedReceipt.inode);
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt);
-        cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "podman");
+        await rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt);
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "podman");
         expect(captureNativeSessionOwnership(ownedBinding.lockFile)).toEqual(successor);
     });
 
-    it("an unreadable/non-file own path fails closed and survives guarded cleanup", () => {
+    it("an unreadable/non-file own path fails closed and survives guarded cleanup", async () => {
         rmSync(ownedBinding.lockFile);
         mkdirSync(ownedBinding.lockFile);
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
 
-    it("a symlink cannot stand in for the captured owner and its target survives", context => {
+    it("a symlink cannot stand in for the captured owner and its target survives", async context => {
         const target = join(lockDirectory, "captured-target");
         renameSync(ownedBinding.lockFile, target);
         fileSymlinkOrSkip(context, target, ownedBinding.lockFile);
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
         expect(readFileSync(target)).toEqual(Buffer.from(ownedReceipt.bytes, "base64"));
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
@@ -418,6 +438,7 @@ function guardianFixture() {
         cleanup: (...args) => { cleanups.push(args); },
         rollback: (...args) => { rollbacks.push(args); },
         send: async message => { sent.push(message); },
+        pause: async milliseconds => { expect(milliseconds).toBe(1000); },
         finish: status => { finishes++; finishStatuses.push(status); },
     };
     const guardian = createSessionOwnershipGuardian(ports);
@@ -434,6 +455,107 @@ function deferred() {
 }
 
 describe("guardian ownership protocol", () => {
+    it("awaits validation and queues disconnect until captured ownership is adopted", async () => {
+        const f = guardianFixture();
+        const validation = deferred();
+        const entered = deferred();
+        f.ports.validate = async () => { entered.resolve(); await validation.promise; };
+        const init = f.init();
+        await entered.promise;
+        const disconnected = f.guardian.disconnect();
+        expect(f.sent).toEqual([]);
+        expect(f.rollbacks).toEqual([]);
+        validation.resolve();
+        await init;
+        await disconnected;
+        expect(f.sent).toEqual([{ type: "ready" }]);
+        expect(f.rollbacks).toEqual([[binding, receipt]]);
+        expect(f.finishStatuses).toEqual([0]);
+    });
+
+    it("awaits rollback and both retry pauses before finishing", async () => {
+        const f = guardianFixture();
+        const failure = new Error("transient rollback");
+        const first = deferred();
+        const second = deferred();
+        const pauses: number[] = [];
+        let attempts = 0;
+        f.ports.rollback = async () => { if (++attempts < 3) throw failure; };
+        f.ports.pause = async milliseconds => { pauses.push(milliseconds); await (pauses.length === 1 ? first : second).promise; };
+        await f.init();
+        const disconnected = f.guardian.disconnect();
+        const duplicate = f.guardian.disconnect();
+        await vi.waitFor(() => expect(pauses).toEqual([1000]));
+        expect(attempts).toBe(1);
+        expect(f.finishes()).toBe(0);
+        first.resolve();
+        await vi.waitFor(() => expect(pauses).toEqual([1000, 1000]));
+        expect(attempts).toBe(2);
+        second.resolve();
+        await disconnected;
+        await duplicate;
+        expect(attempts).toBe(3);
+        expect(f.finishStatuses).toEqual([0]);
+    });
+
+    it("does not finish while asynchronous owned rollback is pending", async () => {
+        const f = guardianFixture();
+        const rollback = deferred();
+        const entered = deferred();
+        f.ports.rollback = async (...args) => { f.rollbacks.push(args); entered.resolve(); await rollback.promise; };
+        await f.init();
+        const disconnected = f.guardian.disconnect();
+        const duplicate = f.guardian.disconnect();
+        await entered.promise;
+        expect(f.finishStatuses).toEqual([]);
+        expect(f.rollbacks).toEqual([[binding, receipt]]);
+        rollback.resolve();
+        await disconnected;
+        await duplicate;
+        expect(f.finishStatuses).toEqual([0]);
+    });
+
+    it("preserves all three distinct failed attempts in order", async () => {
+        const f = guardianFixture();
+        const failures = [new Error("first"), new Error("second"), new Error("third")];
+        let attempts = 0;
+        const pauses: number[] = [];
+        f.ports.rollback = async () => { throw failures[attempts++]; };
+        f.ports.pause = async ms => { pauses.push(ms); };
+        await f.init();
+        await expect(f.guardian.disconnect()).rejects.toMatchObject({ errors: failures, cause: failures[0] });
+        expect(attempts).toBe(3);
+        expect(pauses).toEqual([1000, 1000]);
+        expect(f.finishStatuses).toEqual([1]);
+    });
+
+    it("retains distinct failed attempts and makes pause rejection terminal", async () => {
+        const f = guardianFixture();
+        const failure = new Error("stop uncertainty");
+        const pauseFailure = new Error("pause rejected");
+        let attempts = 0;
+        f.ports.cleanup = async () => { attempts++; throw failure; };
+        f.ports.pause = async () => { throw pauseFailure; };
+        await f.init();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await expect(f.guardian.disconnect()).rejects.toMatchObject({ errors: [failure, pauseFailure], cause: failure });
+        expect(attempts).toBe(1);
+        expect(f.finishStatuses).toEqual([1]);
+    });
+
+    it("retries transient cleanup once and never retries after success", async () => {
+        const f = guardianFixture();
+        let attempts = 0;
+        const pauses: number[] = [];
+        f.ports.cleanup = async (...args) => { f.cleanups.push(args); if (++attempts === 1) throw new Error("transient stop"); };
+        f.ports.pause = async ms => { pauses.push(ms); };
+        await f.init();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await Promise.all([f.guardian.disconnect(), f.guardian.disconnect()]);
+        expect(f.cleanups).toEqual(Array.from({ length: 2 }, () => [binding, receipt, containerId, "docker"]));
+        expect(pauses).toEqual([1000]);
+        expect(f.finishStatuses).toEqual([0]);
+    });
     it("requires a rollback port before accepting any native ownership effects", () => {
         const f = guardianFixture();
         expect(() => createSessionOwnershipGuardian({ ...f.ports, rollback: undefined } as unknown as SessionOwnershipGuardianPorts)).toThrow(TypeError);
@@ -473,7 +595,7 @@ describe("guardian ownership protocol", () => {
         await f.init();
         await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
         const disconnected = f.guardian.disconnect();
-        const outcome = rejectCleanup ? expect(disconnected).rejects.toBe(failure) : disconnected;
+        const outcome = rejectCleanup ? expect(disconnected).rejects.toMatchObject({ errors: [failure, failure, failure], cause: failure }) : disconnected;
         const duplicate = f.guardian.disconnect();
         await entered.promise;
         expect(f.finishes()).toBe(0);
@@ -481,7 +603,7 @@ describe("guardian ownership protocol", () => {
         if (rejectCleanup) cleanup.reject(failure); else cleanup.resolve();
         await outcome;
         await duplicate;
-        expect(f.cleanups).toHaveLength(1);
+        expect(f.cleanups).toHaveLength(rejectCleanup ? 3 : 1);
         expect(f.finishStatuses).toEqual([rejectCleanup ? 1 : 0]);
     });
 
@@ -496,7 +618,7 @@ describe("guardian ownership protocol", () => {
         f.ports.cleanup = async (...args) => { f.cleanups.push(args); entered.resolve(); await cleanup.promise; };
         f.ports.send = async message => { if (message.type === "ack") throw original; f.sent.push(message); };
         const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true });
-        const outcome = expect(update).rejects.toBe(rejectCleanup ? cleanupFailure : original);
+        const outcome = (rejectCleanup ? expect(update).rejects.toMatchObject({ errors: [original, expect.objectContaining({ errors: [cleanupFailure, cleanupFailure, cleanupFailure] })], cause: original }) : expect(update).rejects.toBe(original));
         const duplicate = f.guardian.disconnect();
         await entered.promise;
         expect(f.finishes()).toBe(0);
@@ -505,7 +627,7 @@ describe("guardian ownership protocol", () => {
         await outcome;
         await duplicate;
         expect(f.finishStatuses).toEqual([1]);
-        expect(f.cleanups).toHaveLength(1);
+        expect(f.cleanups).toHaveLength(rejectCleanup ? 3 : 1);
     });
 
     it("normal release acknowledges once and prevents disconnect cleanup", async () => {
@@ -651,7 +773,7 @@ describe("guardian ownership protocol", () => {
         await f.init();
         const failure = new Error("captured claim rollback failed");
         f.ports.rollback = () => { throw failure; };
-        await expect(f.guardian.disconnect()).rejects.toBe(failure);
+        await expect(f.guardian.disconnect()).rejects.toMatchObject({ errors: [failure, failure, failure], cause: failure });
         await f.guardian.disconnect();
         expect(f.cleanups).toEqual([]);
         expect(f.finishStatuses).toEqual([1]);
@@ -668,9 +790,10 @@ describe("guardian ownership protocol", () => {
             if (message.type === "error") throw new Error("error callback failed");
         };
         const initialized = f.init();
-        const rejected = expect(initialized).rejects.toBe(rollbackFailure);
+        const primary = new Error("READY callback failed");
+        const rejected = expect(initialized).rejects.toMatchObject({ errors: [primary, expect.objectContaining({ errors: [rollbackFailure, rollbackFailure, rollbackFailure] })], cause: primary });
         await sending.promise;
-        ready.reject(new Error("READY callback failed"));
+        ready.reject(primary);
         await rejected;
         await f.guardian.disconnect();
         expect(f.cleanups).toEqual([]);
@@ -713,10 +836,11 @@ describe("guardian ownership protocol", () => {
             if (message.type === "error") throw new Error("error notification callback also failed");
         };
         const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "docker", cleanupEnabled: true });
-        const rejected = expect(update).rejects.toBe(cleanupFailure);
+        const primary = new Error("original ACK callback failed");
+        const rejected = expect(update).rejects.toMatchObject({ errors: [primary, expect.objectContaining({ errors: [cleanupFailure, cleanupFailure, cleanupFailure] })], cause: primary });
         await sending.promise;
         const disconnected = f.guardian.disconnect();
-        ack.reject(new Error("original ACK callback failed"));
+        ack.reject(primary);
         await rejected;
         await disconnected;
         expect(f.finishStatuses).toEqual([1]);
@@ -730,7 +854,7 @@ describe("guardian ownership protocol", () => {
         f.ports.cleanup = () => { throw failure; };
         let caught: unknown;
         try { await f.guardian.disconnect(); } catch (error) { caught = error; }
-        expect(caught).toBe(failure);
+        expect(caught).toMatchObject({ errors: [failure, failure, failure], cause: failure });
         expect(f.finishStatuses).toEqual([1]);
         await f.guardian.disconnect();
         expect(f.finishes()).toBe(1);

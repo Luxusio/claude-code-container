@@ -62,13 +62,34 @@ and can retry. Retain the own claim through device/container cleanup and remove
 it only after successful stop (or after another owner vetoes stop). Non-ENOENT
 claim removal errors remain failures. A timeout leaves the daemon-side outcome unknown.
 
-For an ended host owner, release the captured unchanged claim before foreign
-enumeration and device/container cleanup, inside the same lifecycle guard. A
-daemon stop failure must not leave a dead-owner claim active. Failed own removal
-still prevents effects, and unknown foreign ownership still vetoes shutdown.
-The guardian must report bounded cleanup failure and exit nonzero; a pending IPC
-send must not overwrite that failure status. Retryable living-owner cleanup
-retains its different stop-before-removal ordering.
+For an ended host owner, retain the captured unchanged claim through guarded
+foreign enumeration and device/container cleanup. The guardian acquires the
+existing lifecycle guard asynchronously, including process-identity observation
+on Windows, and reuses the cleanup body while that guard is held. It does not
+reacquire a synchronous guard inside the asynchronous one. Unknown foreign
+ownership still vetoes shared effects; successful cleanup or a foreign-owner
+veto removes only the unchanged own claim.
+
+The guardian makes at most three cleanup attempts, with an awaited one-second
+pause between failed attempts. Each attempt reacquires the guard and rechecks
+the captured receipt and foreign claims. A failed stop retains the receipt for
+retry. A replaced or unreadable receipt never authorizes shared effects. After
+exhaustion the guardian reports failure and exits nonzero, retaining recovery
+evidence; a pending IPC send must not overwrite that status. Successful release
+or cleanup is terminal and cannot trigger duplicate shutdown.
+
+Parent launch/READY rollback and guardian validation/rollback must await
+asynchronous completion. When a primary launch, readiness or protocol error is
+followed by cleanup failure, preserve both in that order with the primary as
+cause. Reservation rollback already running inside the acquisition guard keeps
+its held-guard callback rather than reacquiring the same guard.
+
+## Known ceiling
+
+Three attempts bound repetitions, not total wall time: each lifecycle guard and
+native command keeps its existing time limit. Persistent runtime unavailability
+cannot be reported as successful shutdown. A live-PID legacy guard without a
+recorded process identity remains uncertain; age alone never permits removal.
 
 Verify with owned fake subprocesses: signal the parent while the interactive
 child is ready and alive, observe prompt signal handling, and join all fixtures.

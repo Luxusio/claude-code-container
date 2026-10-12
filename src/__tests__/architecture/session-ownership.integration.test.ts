@@ -3,7 +3,9 @@ import { captureNativeSessionOwnership } from "../../adapters/session-ownership.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
+import { readDeviceRuntimeProcessIdentityAsync } from "@ccc/device-lab/device-lab-process-identity.js";
+import { getProjectId } from "../../utils.js";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -13,6 +15,189 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const distribution = fileURLToPath(new URL("../../../dist/", import.meta.url));
 const idA = "a".repeat(64);
 const idB = "b".repeat(64);
+
+// The private preload intercepts only runtime commands. Native PowerShell,
+// filesystem identity, guardian IPC and lifecycle acquisition remain real.
+describe("emitted guardian native lifecycle recovery on every platform", () => {
+    const children: ChildProcess[] = [];
+    let root: string;
+    let home: string;
+    let project: string;
+    let lock: string;
+    let guard: string;
+    let log: string;
+    let shim: string;
+    beforeEach(() => {
+        root = mkdtempSync(join(tmpdir(), "ccc-native-guardian-"));
+        home = join(root, "home");
+        project = join(root, "project");
+        const directory = join(home, ".ccc", "run", "locks");
+        mkdirSync(directory, { recursive: true });
+        mkdirSync(project);
+        const prefix = getProjectId(project);
+        lock = join(directory, prefix + "--fixture.lock");
+        guard = join(directory, prefix + ".container-lifecycle.guard");
+        log = join(root, "runtime.jsonl");
+        shim = join(root, "runtime-preload.cjs");
+        writeFileSync(lock, String(process.pid));
+        writeFileSync(log, "");
+        writeFileSync(shim, `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+const original = cp.spawnSync;
+const originalOpen = fs.openSync;
+const originalRead = fs.readSync;
+const originalClose = fs.closeSync;
+const guardDescriptors = new Set();
+fs.openSync = function(path) {
+    const descriptor = originalOpen.apply(this, arguments);
+    if (String(path) === process.env.CCC_FIXTURE_GUARD) guardDescriptors.add(descriptor);
+    return descriptor;
+};
+fs.readSync = function(descriptor) {
+    const result = originalRead.apply(this, arguments);
+    if (guardDescriptors.has(descriptor) && result > 0) {
+        fs.writeFileSync(process.env.CCC_FIXTURE_LOG + '.guard-read', String(process.pid));
+    }
+    return result;
+};
+fs.closeSync = function(descriptor) {
+    try { return originalClose.apply(this, arguments); }
+    finally { guardDescriptors.delete(descriptor); }
+};
+cp.spawnSync = function(command, args, options) {
+    if (!/^(docker|podman)(\\.exe)?$/i.test(String(command))) return original.apply(this, arguments);
+    fs.appendFileSync(process.env.CCC_FIXTURE_LOG, JSON.stringify(args) + '\\n');
+    let status = 0, stdout = '';
+    if (args[0] === '--version') stdout = 'Docker version 27.1.1\\n';
+    if (args[0] === 'info' && args[2] === '{{.OperatingSystem}}') stdout = 'Linux\\n';
+    if (args[0] === 'info' && args[2] === '{{json .SecurityOptions}}') stdout = '[]\\n';
+    if (args[0] === 'stop') {
+        const marker = process.env.CCC_FIXTURE_LOG + '.entered';
+        fs.writeFileSync(marker, String(process.pid));
+        const deadline = Date.now() + 15000;
+        while (!fs.existsSync(process.env.CCC_FIXTURE_LOG + '.release')) {
+            if (Date.now() > deadline) throw new Error('fixture stop release timeout');
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        const attempts = fs.readFileSync(process.env.CCC_FIXTURE_LOG, 'utf8').trim().split('\\n').map(JSON.parse).filter(a => a[0] === 'stop').length;
+        status = attempts <= Number(process.env.CCC_FIXTURE_FAILURES || 0) ? 73 : 0;
+    }
+    return {pid: process.pid, status, signal: null, stdout, stderr: status ? 'owned fixture stop failure' : '', output: [null, stdout, '']};
+};
+require('node:module').syncBuiltinESMExports();
+`);
+    });
+    afterEach(async () => {
+        writeFileSync(log + ".release", "release");
+        for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        for (const child of children) await eventually(() => child.exitCode !== null || child.signalCode !== null, "fixture child exit");
+        children.length = 0;
+        rmSync(root, { recursive: true, force: true });
+    });
+    const calls = () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as string[]);
+    const stops = () => calls().filter(args => args[0] === "stop");
+    async function launch(failures = 0, acknowledged = true) {
+        const child = spawn(process.execPath, [join(distribution, "session-ownership-guardian.js"), String(process.pid)], {
+            env: { ...process.env, HOME: home, USERPROFILE: home, CCC_RUNTIME: "docker",
+                CCC_DEVICE_BROKER_AUTO_START: "0", NODE_OPTIONS: "--require " + JSON.stringify(shim),
+                CCC_FIXTURE_LOG: log, CCC_FIXTURE_GUARD: guard, CCC_FIXTURE_FAILURES: String(failures) },
+            stdio: ["ignore", "pipe", "pipe", "ipc"],
+        });
+        children.push(child);
+        const messages: unknown[] = [];
+        let stderr = "";
+        child.stderr!.on("data", chunk => { stderr += String(chunk); });
+        child.on("message", message => { messages.push(message); });
+        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt: captureNativeSessionOwnership(lock) });
+        await eventually(() => messages.some(m => (m as { type: string }).type === "ready"), "real guardian READY: " + stderr);
+        if (acknowledged) {
+            child.send({ type: "update", sequence: 1, containerId: idA, runtime: "docker", cleanupEnabled: true });
+            await eventually(() => messages.some(m => (m as { type: string }).type === "ack"), "real guardian ACK");
+        }
+        return { child, stderr: () => stderr };
+    }
+    it.each([0, 1, 3])("publishes native guardian identity and retains receipt until exact-ID stop succeeds (failures %s)", async failures => {
+        const { child, stderr } = await launch(failures);
+        child.disconnect();
+        await eventually(() => existsSync(log + ".entered"), "held exact-ID stop");
+        expect(existsSync(lock)).toBe(true);
+        const record = JSON.parse(readFileSync(guard, "utf8")) as { pid: number; processIdentityStatus: string; processIdentity: { pid: number; startToken: string; commandHash: string } };
+        expect(record.pid).toBe(child.pid);
+        expect(record.processIdentityStatus).toBe("recorded");
+        expect(record.processIdentity.pid).toBe(child.pid);
+        expect(record.processIdentity.startToken).toBeTruthy();
+        expect(record.processIdentity.commandHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(record.processIdentity).toEqual(await readDeviceRuntimeProcessIdentityAsync(child.pid));
+        writeFileSync(log + ".release", "release");
+        await eventually(() => child.exitCode !== null, "bounded guardian exit");
+        expect(child.exitCode, stderr()).toBe(failures === 3 ? 1 : 0);
+        expect(existsSync(lock)).toBe(failures === 3);
+        expect(stops()).toEqual(Array.from({ length: failures === 3 ? 3 : failures + 1 }, () => ["stop", idA]));
+        expect(existsSync(guard)).toBe(false);
+    }, 30_000);
+    it.each(["successor", "foreign"] as const)("revalidates %s authority between failed stop attempts", async kind => {
+        const { child, stderr } = await launch(1);
+        child.disconnect();
+        await eventually(() => existsSync(log + ".entered"), "first exact-ID stop");
+        writeFileSync(log + ".release", "release");
+        await eventually(() => stops().length === 1 && !existsSync(guard), "first failed attempt released its guard");
+        expect(existsSync(lock)).toBe(true);
+        const foreign = join(dirname(lock), getProjectId(project) + "--foreign.lock");
+        const bytes = readFileSync(lock);
+        if (kind === "successor") {
+            renameSync(lock, lock + ".retired");
+            writeFileSync(lock, bytes, { flag: "wx" });
+        } else writeFileSync(foreign, String(process.pid), { flag: "wx" });
+        await eventually(() => child.exitCode !== null, "retry authority veto");
+        expect(child.exitCode, stderr()).toBe(0);
+        expect(stops()).toEqual([["stop", idA]]);
+        expect(existsSync(lock)).toBe(kind === "successor");
+        if (kind === "successor") expect(readFileSync(lock)).toEqual(bytes);
+        else expect(readFileSync(foreign, "utf8")).toBe(String(process.pid));
+    }, 30_000);
+    it.each([
+        ["mismatch", false], ["matching", false], ["unavailable", false],
+        ["mismatch", true], ["matching", true], ["unavailable", true],
+    ] as const)("recovers only positive recorded identity mismatch (%s, rollback %s)", async (kind, rollback) => {
+        const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+        children.push(unrelated);
+        const identity = await readDeviceRuntimeProcessIdentityAsync(unrelated.pid);
+        expect(identity, "Native fixture identity must be observable").toBeTruthy();
+        const record = { token: "0123456789abcdef0123456789abcdef", host: hostname(), pid: unrelated.pid,
+            processIdentityStatus: kind === "unavailable" ? "unavailable" : "recorded",
+            ...(kind === "unavailable" ? {} : { processIdentity: { ...identity!,
+                startToken: kind === "mismatch" ? identity!.startToken + "-previous" : identity!.startToken } }) };
+        const { child, stderr } = await launch(0, !rollback);
+        writeFileSync(guard, JSON.stringify(record));
+        writeFileSync(log + ".release", "release");
+        child.disconnect();
+        if (kind !== "mismatch") {
+            await eventually(() => existsSync(log + ".guard-read"), "guardian observed valid fixture guard after native identity startup");
+            expect(readFileSync(log + ".guard-read", "utf8")).toBe(String(child.pid));
+            expect(unrelated.exitCode).toBeNull();
+            expect(unrelated.signalCode).toBeNull();
+            await new Promise(resolve => setTimeout(resolve, 700));
+            expect(child.exitCode).toBeNull();
+            expect(existsSync(lock)).toBe(true);
+            expect(JSON.parse(readFileSync(guard, "utf8"))).toEqual(record);
+            expect(stops()).toEqual([]);
+            // Release only the exact fixture child. Acquisition now has positive
+            // process-exit evidence, avoiding the production 180-second limit.
+            unrelated.kill("SIGKILL");
+            await eventually(() => unrelated.exitCode !== null || unrelated.signalCode !== null, "guard owner fixture exit");
+        }
+        await eventually(() => child.exitCode !== null, "native guard recovery completion");
+        expect(child.exitCode, stderr()).toBe(0);
+        expect(existsSync(lock)).toBe(false);
+        expect(existsSync(guard)).toBe(false);
+        expect(stops()).toEqual(rollback ? [] : [["stop", idA]]);
+        if (kind === "mismatch") {
+            expect(unrelated.exitCode).toBeNull();
+            expect(unrelated.signalCode).toBeNull();
+        }
+    }, 30_000);
+});
 
 it("emitted native receipts accept an owned regular claim and refuse changed bytes before removal", () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-emitted-receipt-"));
@@ -566,13 +751,14 @@ export async function load(url, context, nextLoad) {
         expect(stops()).toEqual([["stop", idB]]);
     });
 
-    it.skipIf(process.platform === "win32")("removes an ended host claim despite failed exact-ID shutdown and logs the failure", async () => {
+    it.skipIf(process.platform === "win32")("retains an ended host claim after three failed exact-ID shutdown attempts and logs the failure", async () => {
         const owner = await start("", idA, "project", true);
         await kill(owner);
-        await eventually(() => !existsSync(owner.ready.lock), "ended owner claim removal after failed stop");
+        expect(existsSync(owner.ready.lock)).toBe(true);
         await eventually(() => !running(owner.ready.guardian), "bounded failed-cleanup guardian exit");
         await eventually(() => owner.output.includes("Ended host session cleanup failed"), "visible ended-host cleanup failure");
-        expect(stops()).toEqual([["stop", idA]]);
+        expect(existsSync(owner.ready.lock)).toBe(true);
+        expect(stops()).toEqual(Array.from({ length: 3 }, () => ["stop", idA]));
         // Process disappearance alone does not establish a grandchild exit code.
     });
 
@@ -583,9 +769,9 @@ export async function load(url, context, nextLoad) {
         const result = owner.messages.find((message) => (message as { event?: string }).event === "guardian-exit") as { code: number | null; signal: string | null };
         expect(result.code).toBe(1);
         expect(result.signal).toBeNull();
-        expect(existsSync(owner.ready.lock)).toBe(false);
+        expect(existsSync(owner.ready.lock)).toBe(true);
         expect(owner.output).toContain("Ended host session cleanup failed");
-        expect(stops()).toEqual([["stop", idB]]);
+        expect(stops()).toEqual(Array.from({ length: 3 }, () => ["stop", idB]));
     });
 
     it.skipIf(process.platform === "win32")("clearing an active session cleans its claim and stops once before releasing protection", async () => {

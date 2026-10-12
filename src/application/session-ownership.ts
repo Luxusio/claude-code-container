@@ -19,7 +19,11 @@ export async function armSessionOwnership(
     try {
         channel = ports.launch();
     } catch (error) {
-        ports.cleanup(binding, receipt);
+        try {
+            await ports.cleanup(binding, receipt);
+        } catch (rollbackError) {
+            throw new AggregateError([error, rollbackError], "Session ownership startup failed and rollback failed.", { cause: error });
+        }
         throw error;
     }
     let phase: "starting" | "active" | "releasing" | "closed" = "starting";
@@ -77,7 +81,11 @@ export async function armSessionOwnership(
         channel.unref();
     } catch (error) {
         dispose(error instanceof Error ? error : new Error("Session ownership guardian startup failed."));
-        ports.cleanup(binding, receipt);
+        try {
+            await ports.cleanup(binding, receipt);
+        } catch (rollbackError) {
+            throw new AggregateError([error, rollbackError], "Session ownership startup failed and rollback failed.", { cause: error });
+        }
         throw error;
     }
     return {
@@ -101,7 +109,7 @@ export async function armSessionOwnership(
 }
 
 export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPorts) {
-    for (const name of ["validate", "rollback", "cleanup", "send", "finish"] as const) {
+    for (const name of ["validate", "rollback", "cleanup", "send", "pause", "finish"] as const) {
         if (typeof ports?.[name] !== "function") throw new TypeError(`Session ownership guardian requires a callable ${name} port.`);
     }
     let ownership: { binding: SessionOwnershipBinding; receipt: SessionOwnershipReceipt } | null = null;
@@ -118,15 +126,33 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
     }
     async function cleanupAndFinish(status: 0 | 1 = 0): Promise<void> {
         if (finished) return;
+        // The serial queue owns this terminal run, including all awaited attempts.
         finished = true;
-        try {
-            if (ownership) {
-                if (containerId === null || !cleanupEnabled) ports.rollback(ownership.binding, ownership.receipt);
-                else await ports.cleanup(ownership.binding, ownership.receipt, containerId, runtime);
+        const failures: unknown[] = [];
+        if (ownership) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    if (containerId === null || !cleanupEnabled) await ports.rollback(ownership.binding, ownership.receipt);
+                    else await ports.cleanup(ownership.binding, ownership.receipt, containerId, runtime);
+                } catch (error) {
+                    failures.push(error);
+                    if (attempt < 2) {
+                        try {
+                            await ports.pause(1000);
+                        } catch (pauseError) {
+                            failures.push(pauseError);
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                ports.finish(status);
+                return;
             }
-        } catch (error) {
+        }
+        if (failures.length) {
             ports.finish(1);
-            throw error;
+            throw new AggregateError(failures, "Session ownership guardian cleanup failed.", { cause: failures[0] });
         }
         ports.finish(status);
     }
@@ -141,7 +167,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
                 if (!message || typeof message !== "object") throw new Error("Invalid ownership frame.");
                 const frame = message as SessionOwnershipMessage;
                 if (frame.type === "init" && !ownership) {
-                    ports.validate(frame.binding, frame.receipt);
+                    await ports.validate(frame.binding, frame.receipt);
                     ownership = { binding: Object.freeze({ ...frame.binding }), receipt: Object.freeze({ ...frame.receipt }) };
                     await ports.send({ type: "ready" });
                     return;
@@ -168,7 +194,11 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
             } catch (error) {
                 try { await ports.send({ type: "error" }); } catch { /* retain the original failure */ }
                 // Do not await the queued disconnect from inside this operation.
-                await cleanupAndFinish(1);
+                try {
+                    await cleanupAndFinish(1);
+                } catch (cleanupError) {
+                    throw new AggregateError([error, cleanupError], "Session ownership guardian failed and cleanup failed.", { cause: error });
+                }
                 throw error;
             }
         });

@@ -1,4 +1,4 @@
-import { createSessionCleanup, type SessionCleanupMode } from "../application/session-cleanup.js";
+import { createSessionCleanup } from "../application/session-cleanup.js";
 import {
     cleanupNativeSessionDevices,
     removeNativeOwnedSessionClaim,
@@ -14,7 +14,6 @@ export function createNativeSessionCleanup(
     withLifecycleLock: SessionCleanupPorts["withLifecycleLock"],
     hasOtherClaims: SessionCleanupPorts["hasOtherClaims"],
     removeClaim: SessionCleanupPorts["removeClaim"] = removeNativeOwnedSessionClaim,
-    mode: SessionCleanupMode = "retryable-owner",
 ) {
     return createSessionCleanup({
         projectId: (path) => getProjectId(path),
@@ -24,5 +23,5 @@ export function createNativeSessionCleanup(
         cleanupDevices: (path, timeoutMs, profile) => cleanupNativeSessionDevices(path, timeoutMs, profile),
         reportDeviceCleanupFailure: (error) => reportNativeSessionDeviceCleanupFailure(error),
         stopContainer: (readContainerId) => stopNativeSessionContainer(readContainerId),
-    }, mode);
+    });
 }

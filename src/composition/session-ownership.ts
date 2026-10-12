@@ -1,10 +1,12 @@
-import { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership, withLifecycleLock } from "./session-ownership-native.js";
+import { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership, withLifecycleLock, withLifecycleLockAsync } from "./session-ownership-native.js";
 export { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./session-ownership-native.js";
 import { armSessionOwnership } from "../application/session-ownership.js";
 import {
     captureNativeSessionOwnership, launchNativeSessionOwnership,
     nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership,
 } from "../adapters/session-ownership.js";
+import { getProjectId } from "@ccc/device-lab/project-identity.js";
+import { sessionClaimPrefix } from "../domain/session-claims.js";
 import { setRuntimeOverride } from "../container-runtime.js";
 import { createNativeSessionClaims } from "./session-claims.js";
 import { createNativeSessionCleanup } from "./session-cleanup.js";
@@ -12,29 +14,29 @@ import type {
     SessionOwnershipBinding, SessionOwnershipHandle, SessionOwnershipReceipt, SessionOwnershipRuntime,
 } from "../ports/session-ownership.js";
 
-export function cleanupCapturedNativeSessionOwnership(
+export async function cleanupCapturedNativeSessionOwnership(
     binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
     containerId: string | null = null, runtime: SessionOwnershipRuntime = "docker",
-): void {
-    const claims = createNativeSessionClaims(withLifecycleLock);
-    const cleanup = createNativeSessionCleanup(
-        (prefix, operation) => withLifecycleLock(prefix, () => {
-            if (!nativeSessionOwnershipMatches(receipt)) return undefined as ReturnType<typeof operation>;
-            return operation();
-        }),
-        (prefix, ownPath) => claims.hasOtherReconciledSessionClaims(prefix, ownPath),
-        () => removeCapturedNativeSessionOwnership(receipt),
-        "ended-owner",
-    );
-    if (containerId !== null) setRuntimeOverride(runtime);
-    cleanup.setSession(binding.lockFile, binding.projectPath, binding.profile, binding.toolName);
-    cleanup.setSessionContainerId(containerId);
-    cleanup.cleanupSession();
+): Promise<void> {
+    const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
+    await withLifecycleLockAsync(prefix, () => {
+        if (!nativeSessionOwnershipMatches(receipt)) return;
+        const claims = createNativeSessionClaims(withLifecycleLock);
+        const cleanup = createNativeSessionCleanup(
+            withLifecycleLock,
+            (claimPrefix, ownPath) => claims.hasOtherReconciledSessionClaims(claimPrefix, ownPath),
+            () => removeCapturedNativeSessionOwnership(receipt),
+        );
+        if (containerId !== null) setRuntimeOverride(runtime);
+        cleanup.setSession(binding.lockFile, binding.projectPath, binding.profile, binding.toolName);
+        cleanup.setSessionContainerId(containerId);
+        cleanup.cleanupSessionInHeldLifecycleLock();
+    });
 }
 
 export interface NativeSessionOwnershipOptions {
     onCaptured?(receipt: SessionOwnershipReceipt): void;
-    rollback?(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
+    rollback?(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
 }
 
 export async function armNativeSessionOwnership(

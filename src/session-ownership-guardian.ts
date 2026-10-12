@@ -18,14 +18,20 @@ function finish(status: 0 | 1 = 0): void {
     if (pendingSends === 0) process.exit(exitStatus);
 }
 const guardian = createSessionOwnershipGuardian({
-    validate(binding, receipt) {
+    async validate(binding, receipt) {
         validateNativeSessionOwnership(binding, receipt, ownerPid);
         assertNativeSessionOwnership(receipt);
         if (process.ppid !== ownerPid) {
             // A parent can die before its queued initialization is received.
             // Preserve uncertain owners; only a proven dead receipt permits cleanup.
             if (sessionLockLiveness(Buffer.from(receipt.bytes, "base64").toString("utf8")) === "stale") {
-                rollbackCapturedNativeSessionOwnership(binding, receipt);
+                const error = new Error("Session ownership guardian IPC parent does not match its owner.");
+                try {
+                    await rollbackCapturedNativeSessionOwnership(binding, receipt);
+                } catch (rollbackError) {
+                    throw new AggregateError([error, rollbackError], "Session ownership validation failed and rollback failed.", { cause: error });
+                }
+                throw error;
             }
             throw new Error("Session ownership guardian IPC parent does not match its owner.");
         }
@@ -33,7 +39,7 @@ const guardian = createSessionOwnershipGuardian({
     rollback: rollbackCapturedNativeSessionOwnership,
     async cleanup(binding, receipt, containerId, runtime) {
         const { cleanupCapturedNativeSessionOwnership } = await import("./composition/session-ownership.js");
-        cleanupCapturedNativeSessionOwnership(binding, receipt, containerId, runtime);
+        await cleanupCapturedNativeSessionOwnership(binding, receipt, containerId, runtime);
     },
     send(message) {
         return new Promise<void>((resolve, reject) => {
@@ -57,11 +63,12 @@ const guardian = createSessionOwnershipGuardian({
             }
         });
     },
+    pause: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     finish,
 });
 process.on("message", (message) => {
-    void guardian.receive(message).catch(() => finish(1));
+    void guardian.receive(message).catch(() => { /* the guardian owns terminal completion */ });
 });
 process.once("disconnect", () => {
-    void guardian.disconnect().catch(() => finish(1));
+    void guardian.disconnect().catch(() => { /* the guardian owns terminal completion */ });
 });

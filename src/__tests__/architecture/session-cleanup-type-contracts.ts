@@ -21,6 +21,7 @@ app.setSessionCleanupEnabled(true);
 app.setSessionCleanupEnabled("true");
 const snapshot: { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } = app.getCurrentSession();
 const cleanup: void = app.cleanupSession();
+const heldCleanup: void = app.cleanupSessionInHeldLifecycleLock();
 const clear: void = app.clearSession();
 const projectId: string = ports.projectId("/project");
 const foreign: boolean = ports.hasOtherClaims("project-id", "own.lock");
@@ -31,7 +32,7 @@ const stopped: undefined = ports.stopContainer(() => null);
 const lockedNumber: number = ports.withLifecycleLock("project-id", () => 42);
 // The synchronous generic implementation preserves T, including a callback that returns a promise.
 const lockedPromise: Promise<number> = ports.withLifecycleLock("project-id", async () => 42);
-void [snapshot, cleanup, clear, projectId, foreign, removed, devices, reported, stopped, lockedNumber, lockedPromise];
+void [snapshot, cleanup, heldCleanup, clear, projectId, foreign, removed, devices, reported, stopped, lockedNumber, lockedPromise];
 
 type RequiredNames = "projectId" | "withLifecycleLock" | "hasOtherClaims" | "removeClaim"
     | "cleanupDevices" | "reportDeviceCleanupFailure" | "stopContainer";
@@ -46,6 +47,8 @@ void allRequired;
 createSessionCleanup();
 // @ts-expect-error Explicit ports cannot be absent.
 createSessionCleanup(undefined);
+// @ts-expect-error Cleanup no longer accepts an early-release ownership mode.
+createSessionCleanup(ports, "ended-owner");
 // @ts-expect-error Project identity must be callable.
 createSessionCleanup({ ...ports, projectId: "project-id" });
 // @ts-expect-error Lifecycle lock must be callable.
@@ -93,4 +96,6 @@ ports.stopContainer(async () => "id");
 const exposedId = app.getCurrentSession().containerId;
 // @ts-expect-error Cleanup is synchronous.
 const asynchronousCleanup: Promise<void> = app.cleanupSession();
-void [exposedId, asynchronousCleanup];
+// @ts-expect-error Held cleanup is synchronous under the caller's guard.
+const asynchronousHeldCleanup: Promise<void> = app.cleanupSessionInHeldLifecycleLock();
+void [exposedId, asynchronousCleanup, asynchronousHeldCleanup];
