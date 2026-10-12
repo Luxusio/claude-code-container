@@ -80,14 +80,34 @@ describe("session liveness public facade preserves native adapters", () => {
         expect(mocks.spawn).not.toHaveBeenCalled();
     });
 
-    it.each(["malformed", "4242 (fixture) S 0"])("incomplete Linux stat %s remains unknown", stat => {
+    it.each(["Z", "X"])("Linux exited state %s is stale even when its birth ticks match", state => {
+        mocks.read.mockReturnValue(`4242 (fixture ) name) ${[state, ...Array(18).fill("0"), "987"].join(" ")}`);
+        expect(facade.sessionLockLiveness(lock("linux:987"))).toBe("stale");
+        expect(facade.sessionLockLiveness(String(pid))).toBe("stale");
+        expect(facade.processStartToken(pid)).toBeNull();
+        expect(process.kill).not.toHaveBeenCalled();
+    });
+
+    it.each(["R", "S"])("Linux running state %s keeps matching ownership active", state => {
+        mocks.read.mockReturnValue(`4242 (fixture) ${[state, ...Array(18).fill("0"), "987"].join(" ")}`);
+        expect(facade.sessionLockLiveness(lock("linux:987"))).toBe("active");
+        expect(facade.sessionLockLiveness(lock("linux:986"))).toBe("stale");
+        Object.defineProperty(process, "kill", { configurable: true, value: vi.fn(() => true) });
+        expect(facade.sessionLockLiveness(String(pid))).toBe("active");
+    });
+
+    it.each(["malformed", "4242 (fixture) S 0", `4242 (fixture) ${["S", ...Array(18).fill("0"), "invalid"].join(" ")}`])("incomplete Linux stat %s remains unknown", stat => {
         mocks.read.mockReturnValue(stat);
         expect(facade.sessionLockLiveness(lock("linux:987"))).toBe("unknown");
         expect(facade.processStartToken(pid)).toBeNull();
+        Object.defineProperty(process, "kill", { configurable: true, value: vi.fn(() => true) });
+        expect(facade.sessionLockLiveness(String(pid))).toBe("active");
     });
     it.each([["ENOENT", "stale"], ["EACCES", "unknown"]])("Linux %s keeps its conservative result", (code, expected) => {
         mocks.read.mockImplementation(() => { throw Object.assign(new Error("fixture"), { code }); });
         expect(facade.sessionLockLiveness(lock("linux:987"))).toBe(expected);
+        Object.defineProperty(process, "kill", { configurable: true, value: vi.fn(() => true) });
+        expect(facade.sessionLockLiveness(String(pid))).toBe(code === "ENOENT" ? "stale" : "active");
         expect(mocks.spawn).not.toHaveBeenCalled();
     });
 
@@ -204,10 +224,10 @@ for (const [observation, expected] of [[{status:'found',token:'opaque'},'active'
 }
 assert.equal(api.sessionLockLiveness('invalid'), 'unknown');
 Object.defineProperty(process, 'platform', {configurable:true,value:'linux'});
-assert.equal(api.sessionLockLiveness('4242'), 'active');
+assert.equal(api.sessionLockLiveness(String(process.pid)), 'active');
 process.kill = function (pid, signal) { calls.push([pid,signal]); throw Object.assign(new Error('fixture'),{code:'ESRCH'}); };
-assert.equal(api.sessionLockLiveness('4242'), 'stale');
-assert.deepEqual(calls, [[4242,0],[4242,0]]);
+assert.equal(api.sessionLockLiveness(String(process.pid)), 'stale');
+assert.deepEqual(calls, [[process.pid,0],[process.pid,0]]);
 process.stdout.write('facade behavior passed');
 `,
             ], { cwd: root, env: { HOME: home, USERPROFILE: home, PATH: "", TMPDIR: home, TEMP: home, TMP: home },

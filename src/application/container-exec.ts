@@ -134,14 +134,15 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             return true;
         };
         const invocationStartedContainers = new Set<string>();
+        let startup: ReturnType<ContainerExecPorts<Prepared>["prepareContainer"]>;
         const startContainer = async (
             mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
             portFile: string | undefined = clipboardPortFile,
             onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
         ): Promise<string> => {
-            return ports.lifecycleLock(sessionContainerPrefix, () => {
+            const readyId = await ports.stateLock(() => ports.lifecycleLock(sessionContainerPrefix, () => {
                 let readyContainerId: string | null = null;
-                ports.startContainer(
+                startup.start(
                     fullPath,
                     () => ports.ensureDirectories(profile),
                     mounts,
@@ -166,7 +167,10 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                     throw ports.handoffFailure();
                 }
                 return readyContainerId;
-            });
+            }));
+            await ports.confirmOwnership();
+            startup.initialize(readyId);
+            return readyId;
         };
         const projectMountPath = `/project/${projectId}`;
         // A running container is not necessarily setup-ready. Hold the distinct
@@ -175,6 +179,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
         // commands or configuring the container.
         ports.report({ kind: "progress", phase: "setup" });
         let containerName = await ports.setupLock(sessionContainerPrefix, async () => {
+            startup = ports.prepareContainer();
             let readyContainerName = await startContainer();
             await ports.confirmOwnership();
             ports.configLock(() => ports.restoreConfig(readyContainerName, profile), profile);
@@ -282,16 +287,17 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
         if (options.env) envEntries.push(...Object.entries(options.env));
 
         let preparationStatus: number | null = null;
-        let resultStatus: number;
-        // Artifact creation failures remain under the outer CLI cleanup authority.
-        const prepared = ports.prepareCommand({
-            runtime: ports.runtime(), target: containerName, workdir: projectMountPath,
-            environment: envEntries,
-            command: commandTool?.name === "claude"
-                ? { kind: "claude", arguments: cmd.slice(1) }
-                : { kind: "command", arguments: resolvedCmd },
-        });
+        let resultStatus: number = 0;
+        const failures: unknown[] = [];
+        let prepared: Prepared | undefined;
         try {
+            prepared = ports.prepareCommand({
+                runtime: ports.runtime(), target: containerName, workdir: projectMountPath,
+                environment: envEntries,
+                command: commandTool?.name === "claude"
+                    ? { kind: "claude", arguments: cmd.slice(1) }
+                    : { kind: "command", arguments: resolvedCmd },
+            });
             if (commandTool?.name === "codex" && options.interactive !== false) {
                 const preparation = ports.prepareCodexCommand(prepared);
                 if (!preparation.ok) preparationStatus = preparation.status;
@@ -308,6 +314,8 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             } else {
                 resultStatus = preparationStatus;
             }
+        } catch (error) {
+            failures.push(error);
         } finally {
             try {
                 ports.configLock(() => ports.restoreConfig(containerName, profile), profile);
@@ -315,20 +323,18 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 try {
                     ports.report({ kind: "restore-failed", cause: error });
                 } catch { /* A diagnostic must not replace the command outcome. */ }
-            } finally {
-                try {
-                    ports.disposeCommand(prepared);
-                } finally {
-                    try {
-                        ports.cleanupSession();
-                    } catch {
-                        try {
-                            ports.report({ kind: "cleanup-failed" });
-                        } catch { /* A diagnostic must not replace the command outcome. */ }
-                    }
-                }
+            }
+            try { if (prepared !== undefined) ports.disposeCommand(prepared); }
+            catch (error) { failures.push(error); }
+            try { ports.cleanupSession(); }
+            catch (error) {
+                failures.push(error);
+                try { ports.report({ kind: "cleanup-failed", cause: error }); }
+                catch { /* Diagnostics cannot erase cleanup or command failures. */ }
             }
         }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Container command and finalization failed", { cause: failures[0] });
 
         if (ports.debugEnabled()) ports.reportConversationFiles(containerName, projectId);
 

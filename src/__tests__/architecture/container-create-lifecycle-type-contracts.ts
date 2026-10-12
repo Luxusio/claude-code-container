@@ -8,7 +8,8 @@ const request: ContainerCreateLifecycleRequest = { containerName: "name", projec
 const result: string = app.run(request);
 const created: ContainerCreateResult = { kind: "created", containerId: null };
 const failed: ContainerCreateResult = { kind: "failed" };
-void [result, created, failed];
+const timedOut: ContainerCreateResult = { kind: "failed", cause: new Error("native timeout") };
+void [result, created, failed, timedOut];
 // @ts-expect-error Native argv cannot replace an opaque preparation.
 ports.create(["run"]);
 // @ts-expect-error Async observations cannot authorize synchronous creation.

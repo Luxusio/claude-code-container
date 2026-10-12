@@ -50,20 +50,24 @@ export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Pr
         for (const [signal, handler] of handlers) process.removeListener(signal, handler);
         process.exit(process.exitCode ?? 0);
     };
+    const fail = (error: unknown) => {
+        process.exitCode = 1;
+        try { console.error("[ccc] Session signal cleanup failed:", error); }
+        catch { /* Reporting must not interrupt controlled cleanup completion. */ }
+        exit();
+    };
     const cleanup = (signal: NodeJS.Signals) => {
         if (finished) return;
         if (completion) {
             process.once(signal, handlers.get(signal)!);
             return;
         }
-        const result = cleanupSession();
+        let result: void | Promise<void>;
+        try { result = cleanupSession(); }
+        catch (error) { return fail(error); }
         if (!result) return exit();
         process.once(signal, handlers.get(signal)!);
-        completion = result.then(exit, (error) => {
-            process.exitCode = 1;
-            console.error("[ccc] Session signal cleanup failed:", error);
-            exit();
-        });
+        completion = result.then(exit, fail);
     };
 
     for (const signal of signals) {

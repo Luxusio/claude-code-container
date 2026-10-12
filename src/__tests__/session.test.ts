@@ -123,7 +123,7 @@ describe("session.ts", () => {
         mockChmodSync.mockReset();
         mockReadFileSync.mockImplementation((path: string) => {
             if (String(path) === `/proc/${process.pid}/stat`) {
-                const fields = Array.from({ length: 20 }, (_, index) => index === 19 ? "self-start" : "0");
+                const fields = Array.from({ length: 20 }, (_, index) => index === 0 ? "S" : index === 19 ? "100" : "0");
                 return `${process.pid} (node) ${fields.join(" ")}`;
             }
             return undefined;
@@ -548,10 +548,10 @@ describe("session.ts", () => {
             mockReaddirSync.mockReturnValue(["proj-abc--reused.lock"]);
             mockReadFileSync.mockImplementation((path: string) => {
                 if (String(path).startsWith("/proc/4242/")) {
-                    const fields = Array.from({ length: 20 }, (_, index) => index === 19 ? "new-start" : "0");
+                    const fields = Array.from({ length: 20 }, (_, index) => index === 0 ? "R" : index === 19 ? "200" : "0");
                     return `4242 (node) ${fields.join(" ")}`;
                 }
-                return JSON.stringify({ version: 2, pid: 4242, startToken: "linux:old-start" });
+                return JSON.stringify({ version: 2, pid: 4242, startToken: "linux:100" });
             });
             vi.spyOn(process, "kill").mockImplementation(() => true);
 
@@ -1604,11 +1604,11 @@ describe("session.ts", () => {
             mockUnlinkSync.mockImplementation((path: string) => { claims.splice(claims.indexOf(basename(path)), 1); });
             mockReadFileSync.mockImplementation((path: string) => {
                 if (String(path).startsWith("/proc/4242/")) {
-                    const fields = Array.from({ length: 20 }, (_, index) => index === 19 ? "new-start" : "0");
+                    const fields = Array.from({ length: 20 }, (_, index) => index === 0 ? "R" : index === 19 ? "200" : "0");
                     return `4242 (node) ${fields.join(" ")}`;
                 }
                 if (String(path).endsWith(stale)) {
-                    return JSON.stringify({ version: 2, pid: 4242, startToken: "linux:old-start" });
+                    return JSON.stringify({ version: 2, pid: 4242, startToken: "linux:100" });
                 }
                 return String(process.pid);
             });

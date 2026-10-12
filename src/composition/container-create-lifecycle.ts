@@ -18,6 +18,7 @@ export function createNativeContainerCreateLifecycle(
     ports: Omit<ContainerCreateLifecyclePorts<{ cli: string; args: string[] }>, NativeCreatePorts>,
     context: NativeContainerCreateLifecycleContext,
 ) {
+    let createCause: unknown;
     return createContainerCreateLifecycle({
         ...ports,
         failCreate: (failure) => {
@@ -31,7 +32,7 @@ export function createNativeContainerCreateLifecycle(
                         + "The existing container was preserved.",
                     );
                 case "create-failed":
-                    throw new Error("Failed to create container");
+                    throw new Error("Failed to create container", { cause: createCause });
                 case "missing-id-verification":
                     throw new Error("created container bind mount identity verification failed (container runtime did not return an exact 64-hex container ID)");
                 case "verification-failed":
@@ -62,23 +63,31 @@ export function createNativeContainerCreateLifecycle(
         prepareCreate: () => ({ cli: context.createCli, args: context.prepareRunArgs() }),
         create: (prepared) => {
             const result = spawnSync(prepared.cli, prepared.args, {
+                timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8",
                 stdio: ["inherit", "pipe", "inherit"],
             });
-            if (result.status !== 0) return { kind: "failed" };
+            if (result.error || result.status !== 0) {
+                createCause = result.error ?? new Error(`Runtime exited with status ${result.status}`);
+                return { kind: "failed", cause: createCause };
+            }
             const containerId = (result.stdout ?? "").trim().split(/\s+/)
                 .find(token => /^[a-f0-9]{64}$/i.test(token)) ?? null;
             return { kind: "created", containerId };
         },
         removeRejected: (id) => {
-            spawnSync(context.createCli, ["rm", "-f", id], {
+            const removed = spawnSync(context.createCli, ["rm", "-f", id], {
+                timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
             });
+            if (removed.error || removed.status !== 0) throw new Error("Failed to remove rejected container", { cause: removed.error ?? new Error(removed.stderr || `Runtime exited with status ${removed.status}`) });
         },
-        explicitlyAbsent: (id) => context.explicitlyNotFound(spawnSync(
-            context.createCli,
-            ["inspect", "-f", "{{.Id}}", id],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        )),
+        explicitlyAbsent: (id) => {
+            const result = spawnSync(context.createCli, ["inspect", "-f", "{{.Id}}", id],
+                { encoding: "utf-8", timeout: 5_000, killSignal: "SIGKILL", stdio: ["pipe", "pipe", "pipe"] });
+            if (result.error) throw result.error;
+            if (result.status === null) throw new Error("Rejected container absence inspection did not complete.");
+            return context.explicitlyNotFound(result);
+        },
     });
 }

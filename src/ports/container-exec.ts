@@ -55,7 +55,8 @@ export type ContainerExecReport =
     | { kind: "mounts-debug"; mounts: ContainerExecMount[] }
     | { kind: "replacement-blocked"; evidence: ContainerExecReplacementReason }
     | { kind: "broker-failed" | "restore-failed"; cause: unknown }
-    | { kind: "ownership-unconfirmed" | "cleanup-failed" | "restarted" }
+    | { kind: "ownership-unconfirmed" | "restarted" }
+    | { kind: "cleanup-failed"; cause: unknown }
     | { kind: "mcp-forwarded"; names: string[] }
     | { kind: "environment-skipped"; keys: string[] }
     | { kind: "codex-preparation"; result: ContainerExecCodexPreparation };
@@ -84,6 +85,8 @@ export interface ContainerExecPorts<Prepared> {
     sessionClaims(prefix: string, currentLockFile: string): string[];
     lockName(path: string): string;
     prepareDeviceBroker(path: string, profile?: string): Promise<void>;
+    prepareContainer(): { start: ContainerExecPorts<Prepared>["startContainer"]; initialize(id: string): void };
+    stateLock<T>(operation: () => Promise<T> | T): Promise<T>;
     lifecycleLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     setupLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     startContainer(path: string, ensureDirectories: () => void, mounts: ContainerExecMount[] | undefined, clipboardPortFile: string | undefined, profile: string | undefined,

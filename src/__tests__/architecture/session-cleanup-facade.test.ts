@@ -200,6 +200,27 @@ describe("native session cleanup through the public facade", () => {
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
     });
 
+    it.each([["Z", true], ["X", true], ["Z", false], ["X", false]] as const)("native %s foreign ownership (versioned=%s) reconciliation permits only the captured exact-ID stop", async (state, versioned) => {
+        const native = await vi.importActual<typeof import("../../session-lock-liveness.js")>("../../session-lock-liveness.js");
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+        const foreign = join(fixtureLocks, "project--foreign.lock");
+        const names = [basename(own), basename(foreign)];
+        effects.list.mockImplementation(() => [...names]);
+        effects.observe.mockReturnValue(new Map());
+        effects.classify.mockImplementation(native.sessionLockLiveness);
+        effects.read.mockImplementation(path => path === "/proc/4242/stat"
+            ? `4242 (exited owner) ${[state, ...Array(18).fill("0"), "987"].join(" ")}`
+            : versioned ? JSON.stringify({ version: 2, pid: 4242, startToken: "linux:987" }) : "4242");
+        effects.unlink.mockImplementation(path => { names.splice(names.indexOf(basename(path)), 1); });
+        try {
+            start(); session.cleanupSession();
+            expect(effects.read).toHaveBeenCalledWith("/proc/4242/stat", "utf-8");
+            expect(effects.unlink.mock.calls).toEqual([[foreign], [own]]);
+            expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
+        } finally { Object.defineProperty(process, "platform", platform); }
+    });
+
     it.each(["replacement-id", null, ""])("reads the container ID after runtime selection mutates it to %s", nextId => {
         effects.runtime.mockImplementation(() => { session.setSessionContainerId(nextId); return "changed-runtime"; });
         start(); session.cleanupSession();
@@ -352,15 +373,24 @@ describe("native session cleanup through the public facade", () => {
         } finally { process.exitCode = previousExitCode; }
     });
 
-    it.each(["SIGINT", "SIGTERM", "SIGHUP"])("does not exit when intercepted %s cleanup throws", signal => {
+    it.each(["SIGINT", "SIGTERM", "SIGHUP", "throwing diagnostic"])("controls intercepted %s cleanup throws and completes repeated signals once", signal => {
         const once = vi.spyOn(process, "once").mockImplementation(() => process);
         const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
         const failure = new Error("signal cleanup failed");
+        const report = vi.spyOn(console, "error").mockImplementation(() => {});
+        if (signal === "throwing diagnostic") report.mockImplementation(() => { throw new Error("diagnostic unavailable"); });
+        process.exitCode = undefined;
         effects.runtime.mockImplementation(() => { throw failure; });
         start(); session.setupSignalHandlers();
-        const callback = once.mock.calls.find(([registered]) => registered === signal)![1];
-        expect(() => callback()).toThrow(failure);
-        expect(exit).not.toHaveBeenCalled(); expect(session.getCurrentSession().lockFile).toBe(own);
+        const callback = once.mock.calls.find(([registered]) => registered === (signal === "throwing diagnostic" ? "SIGTERM" : signal))![1];
+        expect(() => callback()).not.toThrow();
+        for (const registered of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+            expect(() => once.mock.calls.find(([name]) => name === registered)![1]()).not.toThrow();
+        }
+        expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+        expect(report.mock.calls.some(call => call.includes(failure))).toBe(true);
+        expect(effects.runtime).toHaveBeenCalledTimes(1);
+        expect(session.getCurrentSession().lockFile).toBe(own);
     });
 });
 
@@ -443,10 +473,11 @@ describe("host ownership acquisition through the facade", () => {
         process.exitCode = previous;
     });
 
-    it("reports asynchronous signal cleanup failure without listener throw or unhandled rejection", async () => {
+    it.each([false, true])("reports asynchronous signal cleanup failure without listener throw or unhandled rejection (diagnostic throws=%s)", async diagnosticThrows => {
         const once = vi.mocked(process.once);
         const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
         const report = vi.spyOn(console, "error").mockImplementation(() => {});
+        if (diagnosticThrows) report.mockImplementation(() => { throw new Error("diagnostic unavailable"); });
         const previous = process.exitCode;
         process.exitCode = undefined;
         let inspectDone!: () => void;
@@ -457,11 +488,14 @@ describe("host ownership acquisition through the facade", () => {
         const acquisition = session.acquireHostSessionOwnership(request, async () => { await pending; return { known: true, containerId: null, runtime: "docker" }; });
         const rejected = expect(acquisition).rejects.toBeInstanceOf(AggregateError);
         await vi.waitFor(() => expect(effects.capture).toHaveBeenCalledTimes(1));
-        expect(() => once.mock.calls.find(([signal]) => signal === "SIGTERM")![1]()).not.toThrow();
+        for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+            expect(() => once.mock.calls.find(([name]) => name === signal)![1]()).not.toThrow();
+        }
         inspectDone();
         await rejected;
         await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(1));
         expect(report).toHaveBeenCalled();
+        expect(effects.rollback).toHaveBeenCalledTimes(1);
         expect(effects.spawn).not.toHaveBeenCalled();
         process.exitCode = previous;
     });

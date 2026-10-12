@@ -134,6 +134,18 @@ function readLock(file) {
 /** @param {number} pid @returns {boolean} */
 function processIsAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
+    if (process.platform === "linux") {
+        try {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+            const close = stat.lastIndexOf(")");
+            const fields = stat.slice(close + 1).trim().split(/\s+/);
+            if (close >= 0 && /^[0-9]+ \(/.test(stat) && Number(stat.slice(0, stat.indexOf(" "))) === pid
+                && (fields[0] === "Z" || fields[0] === "X") && /^[0-9]+$/.test(fields[19] ?? "")
+                && fields.slice(1, 19).every((field) => /^-?[0-9]+$/.test(field))) return false;
+        } catch {
+            // An unavailable stat is not evidence of exit; retain the existing probe.
+        }
+    }
     try {
         process.kill(pid, 0);
         return true;

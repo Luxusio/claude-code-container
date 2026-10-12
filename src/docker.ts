@@ -69,7 +69,7 @@ import {
     getRuntimeInfo,
 } from "./container-runtime.js";
 import { ensureIdentityImage, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, normalizeImageId, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
-import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
+import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { codexConfigFileAclScript, codexConfigDirectoryAclScript } from "./codex-config-acl.js";
 import { proveWslBindSourceIdentity } from "./wsl-bind-source-proof.js";
 import { prepareLabStateOwnership } from "./lab-state-ownership.js";
@@ -2344,15 +2344,48 @@ function containerExecIdentityMatches(containerId: string, identity: ContainerUs
         && result.stdout.trim() === `${identity.uid}:${identity.gid}:ccc:/home/ccc`;
 }
 
-/** One host-wide fence covers retained state migration through container start. */
-export function startProjectContainer(...args: Parameters<typeof startProjectContainerLocked>): string {
-    return withSharedMutationLock(join(cccHome(), "codex-state.lock"),
-        () => startProjectContainerLocked(...args), { waitMs: 600_000, reclaimStale: false });
+/** Preparation pins the image before any shared mutation guard is acquired. */
+export function prepareProjectContainerStartup() {
+    ensureImage();
+    const identity = resolveContainerIdentity();
+    const baseImageId = getCurrentImageId();
+    if (!baseImageId) throw new Error("Cannot resolve the current CCC base image.");
+    const imageId = ensureIdentityImage(baseImageId, identity);
+    const helpers = new Map<string, Array<() => void>>();
+    return {
+        start: (...args: Parameters<typeof startProjectContainer>) => {
+            helpers.clear();
+            return startProjectContainerLocked({ identity, imageId, helpers }, ...args);
+        },
+        initialize: (id: string) => {
+            const pending = helpers.get(id);
+            if (!pending) throw new Error("Container initialization has no exact startup identity.");
+            for (const helper of pending) helper();
+            helpers.delete(id);
+        },
+    };
+}
+
+export function withProjectContainerStateLockAsync<T>(operation: () => Promise<T> | T): Promise<T> {
+    return withSharedMutationLockAsync(join(cccHome(), "codex-state.lock"), operation,
+        { waitMs: 600_000 });
+}
+
+/** Legacy synchronous callers retain guarded startup and helper initialization. */
+export function startProjectContainer(...args: Parameters<ProjectContainerStartup>): string {
+    const prepared = prepareProjectContainerStartup();
+    let readyId: string | undefined;
+    const onReady = args[7];
+    args[7] = (id, handoff) => { readyId = id; onReady?.(id, handoff); };
+    const result = withSharedMutationLock(join(cccHome(), "codex-state.lock"),
+        () => prepared.start(...args), { waitMs: 600_000, reclaimStale: false });
+    if (readyId) prepared.initialize(readyId);
+    return result;
 }
 
 // === Container Lifecycle ===
 
-function startProjectContainerLocked(
+type ProjectContainerStartup = (
     projectPath: string,
     ensureDirs: () => void,
     extraMounts?: Array<{
@@ -2382,14 +2415,16 @@ function startProjectContainerLocked(
     initiallyRunningContainerId?: string,
     /** Publishes this invocation's exact started ID before helper setup can fail. */
     onContainerStarted?: (containerId: string) => void,
+) => string;
+
+function startProjectContainerLocked(
+    prepared: { identity: ContainerUserIdentity; imageId: string; helpers: Map<string, Array<() => void>> },
+    ...args: Parameters<ProjectContainerStartup>
 ): string {
+    const [projectPath, ensureDirs, extraMounts, clipboardPortFile, profile, onRecreate, recreateRunningContainer, onContainerReady, initiallyRunningContainerId, onContainerStarted] = args;
     ensureDirs();
     mkdirSync(clipboardFilesDir(), { recursive: true, mode: 0o700 });
-    ensureImage();
-    const identity = resolveContainerIdentity();
-    const baseImageId = getCurrentImageId();
-    if (!baseImageId) throw new Error("Cannot resolve the current CCC base image.");
-    const imageId = ensureIdentityImage(baseImageId, identity);
+    const { identity, imageId } = prepared;
     const miseVolumeName = getIdentityMiseVolumeName(identity);
     const codexPackagesVolumeName = getIdentityCodexPackagesVolumeName(identity);
 
@@ -2554,6 +2589,23 @@ function startProjectContainerLocked(
     };
     assertRequiredFilesystemMountSources();
 
+    const queueHelper = (id: string, helper: (id: string) => void) => {
+        const pending = prepared.helpers.get(id) ?? [];
+        pending.push(() => {
+            const assertInitializationSources = () => {
+                assertPreparedProjectMountSources();
+                assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+                assertRequiredFilesystemMountSources();
+                const current = getContainerIdentity(id);
+                if (!current?.running || current.containerId !== id) throw new Error("Container identity changed during initialization.");
+            };
+            assertInitializationSources();
+            helper(id);
+            assertInitializationSources();
+        });
+        prepared.helpers.set(id, pending);
+    };
+
     const listedContainer = getListedContainerId(containerName);
     // Retain immutable provenance before a guarded replacement removes the old container.
     const previousContainer = listedContainer.containerId
@@ -2647,9 +2699,9 @@ function startProjectContainerLocked(
         canExec: canExecContainer,
         canExecAfterBriefRetry: canExecContainerAfterBriefRetry,
         deviceSourcesMatch: () => preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources),
-        syncMcp: (id) => { syncManagedMcpBundles(id); },
-        fixSsh: (id) => { fixSshPermissions(id); },
-        syncGit: (id) => { syncHostGitConfig(id); },
+        syncMcp: (id) => { queueHelper(id, syncManagedMcpBundles); },
+        fixSsh: (id) => { queueHelper(id, fixSshPermissions); },
+        syncGit: (id) => { queueHelper(id, syncHostGitConfig); },
         finish: (id) => { finish(id, restartedByInvocation); },
     }, {
         startCli: cli,
@@ -2695,9 +2747,9 @@ function startProjectContainerLocked(
             if (verification.kind === "verified") publishStarted(id);
             return verification;
         },
-        syncMcp: (id) => { syncManagedMcpBundles(id); },
-        fixSsh: (id) => { fixSshPermissions(id); },
-        syncGit: (id) => { syncHostGitConfig(id); },
+        syncMcp: (id) => { queueHelper(id, syncManagedMcpBundles); },
+        fixSsh: (id) => { queueHelper(id, fixSshPermissions); },
+        syncGit: (id) => { queueHelper(id, syncHostGitConfig); },
         finish: (id) => finish(id, true),
     }, {
         createCli: cli,

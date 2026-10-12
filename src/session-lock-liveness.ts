@@ -32,11 +32,14 @@ function observeProcessStart(pid: number): ProcessStartObservation {
         try {
             const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
             const close = stat.lastIndexOf(")");
-            if (close < 0) return { status: "unknown" };
+            if (close < 0 || !/^[0-9]+ \(/.test(stat) || Number(stat.slice(0, stat.indexOf(" "))) !== pid) return { status: "unknown" };
             const fields = stat.slice(close + 1).trim().split(/\s+/);
-            return fields[19]
-                ? { status: "found", token: `linux:${fields[19]}` }
-                : { status: "unknown" };
+            if (!/^[RSDTtWXZIKP]$/.test(fields[0] ?? "") || !/^[0-9]+$/.test(fields[19] ?? "")
+                || !fields.slice(1, 19).every((field) => /^-?[0-9]+$/.test(field))) {
+                return { status: "unknown" };
+            }
+            if (fields[0] === "Z" || fields[0] === "X") return { status: "missing" };
+            return { status: "found", token: `linux:${fields[19]}` };
         } catch (error) {
             return (error as NodeJS.ErrnoException).code === "ENOENT"
                 ? { status: "missing" }
@@ -172,6 +175,9 @@ export function sessionLockLiveness(
         getPlatform: () => process.platform,
         observeProcessStart: (pid) => observeProcessStart(pid),
         probeLegacyProcess: (pid) => {
+            if (process.platform === "linux" && observeProcessStart(pid).status === "missing") {
+                throw Object.assign(new Error("Session owner has exited."), { code: "ESRCH" });
+            }
             process.kill(pid, 0);
             return undefined;
         },

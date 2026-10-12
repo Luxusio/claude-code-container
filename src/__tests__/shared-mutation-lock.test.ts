@@ -273,6 +273,48 @@ describe("device-lab shared mutation lock", () => {
         }
     });
 
+    it.each(["Z", "X", "R", "S", "malformed", "incomplete-Z", "denied"])("both native facades qualify %s owners with unavailable identity in sync and async acquisition", async state => {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+        const ownerPid = 424242;
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+        vi.resetModules();
+        vi.doMock("fs", async original => {
+            const actual = await original<typeof import("fs")>();
+            return { ...actual, readFileSync(path: import("fs").PathOrFileDescriptor, options?: unknown) {
+                if (path === `/proc/${ownerPid}/stat`) {
+                    if (state === "denied") throw Object.assign(new Error("denied"), { code: "EACCES" });
+                    return state === "malformed" ? "unreadable stat" : state === "incomplete-Z" ? `${ownerPid} (owner) Z 0` : `${ownerPid} (owner) ${[state, ...Array(18).fill("0"), "987"].join(" ")}`;
+                }
+                return actual.readFileSync(path, options as never);
+            } };
+        });
+        try {
+            const host = await import("@ccc/device-lab/device-lab-shared-state.js?owner-state");
+            const direct = await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?owner-state");
+            for (const acquire of [host.withSharedMutationLock, host.withSharedMutationLockAsync, direct.withSharedMutationLock, direct.withSharedMutationLockAsync]) {
+                const file = lockPath();
+                const bytes = JSON.stringify({ token: testToken(), pid: ownerPid, host: hostname(), processIdentityStatus: "unavailable" });
+                writeFileSync(file, bytes);
+                const callback = vi.fn(() => "admitted");
+                if (state === "Z" || state === "X") {
+                    expect(await acquire(file, callback, { waitMs: 100 })).toBe("admitted");
+                    expect(callback).toHaveBeenCalledTimes(1);
+                    expect(existsSync(file)).toBe(false);
+                } else {
+                    let failure: unknown;
+                    try { await acquire(file, callback, { waitMs: 30, staleMs: 1 }); } catch (error) { failure = error; }
+                    expect(failure).toMatchObject({ code: "shared-mutation-lock-timeout" });
+                    expect(callback).not.toHaveBeenCalled();
+                    expect(readFileSync(file, "utf8")).toBe(bytes);
+                }
+            }
+        } finally {
+            vi.doUnmock("fs"); vi.resetModules(); kill.mockRestore();
+            Object.defineProperty(process, "platform", platform);
+        }
+    });
+
     it("preserves foreign-host boot identities even when the file is very old", async () => {
         for (const acquire of [withHostSharedMutationLockAsync, withSharedMutationLockAsync]) {
             const file = lockPath();

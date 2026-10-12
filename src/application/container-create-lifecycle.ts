@@ -50,8 +50,17 @@ export function createContainerCreateLifecycle<PreparedCreate>(ports: ContainerC
                 }
             } catch (error) {
                 if (createdContainerId) {
-                    ports.removeRejected(createdContainerId);
-                    if (!ports.explicitlyAbsent(createdContainerId)) {
+                    const compensationFailures: unknown[] = [];
+                    try { ports.removeRejected(createdContainerId); }
+                    catch (removalError) { compensationFailures.push(removalError); }
+                    let absent = false;
+                    try { absent = ports.explicitlyAbsent(createdContainerId); }
+                    catch (absenceError) { compensationFailures.push(absenceError); }
+                    if (compensationFailures.length > 0) {
+                        throw new AggregateError([error, ...compensationFailures],
+                            "Created container verification and rejected-container cleanup failed", { cause: error });
+                    }
+                    if (!absent) {
                         ports.failCreate({ kind: "rejected-removal-failed", containerId: createdContainerId, error });
                     }
                 }

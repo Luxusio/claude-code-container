@@ -23,6 +23,8 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
         async lifecycleLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         async setupLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
+        async stateLock<T>(operation: () => Promise<T> | T): Promise<T> { return operation(); },
+        prepareContainer: () => ({start: (...args) => ports.startContainer(...args), initialize: vi.fn()}),
         startContainer: (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
             const id = options.replace && first ? "setup-id" : "final-id"; first = false;
             if (!options.running) onStarted(id); onReady(id, {startedByInvocation: !options.running}); return "ccc-repo";
@@ -48,6 +50,59 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
 }
 
 describe("container exec semantic workflow", () => {
+    it("prepares once before mutation locks and initializes after release and ownership acknowledgement", async () => {
+        const f = fixture();
+        let stateHeld = false, lifecycleHeld = false, setupHeld = false;
+        f.ports.setupLock = async (_prefix, operation) => { setupHeld = true; try { return await operation(); } finally { setupHeld = false; } };
+        f.ports.stateLock = async operation => { expect(setupHeld).toBe(true); stateHeld = true; try { return await operation(); } finally { stateHeld = false; } };
+        f.ports.lifecycleLock = async (_prefix, operation) => { expect(stateHeld).toBe(true); lifecycleHeld = true; try { return await operation(); } finally { lifecycleHeld = false; } };
+        const initialize = vi.fn((id: string) => {
+            expect(id).toBe("final-id"); expect(setupHeld).toBe(true);
+            expect(stateHeld).toBe(false); expect(lifecycleHeld).toBe(false);
+            expect(f.ports.confirmOwnership).toHaveBeenCalled();
+        });
+        const prepare = vi.fn(() => {
+            expect(setupHeld).toBe(true); expect(stateHeld).toBe(false); expect(lifecycleHeld).toBe(false);
+            return {start: f.ports.startContainer, initialize};
+        });
+        f.ports.prepareContainer = prepare;
+        await f.exec("/repo", ["codex"]);
+        expect(prepare).toHaveBeenCalledOnce(); expect(initialize).toHaveBeenCalledExactlyOnceWith("final-id");
+    });
+    it("preparation failure performs no mutation admission or command launch", async () => {
+        const f = fixture(), failure = new Error("image preparation unavailable");
+        f.ports.prepareContainer = () => { throw failure; };
+        let stateCalls = 0, lifecycleCalls = 0;
+        f.ports.stateLock = async <T>(operation: () => T | Promise<T>): Promise<T> => {
+            stateCalls++; return operation();
+        };
+        f.ports.lifecycleLock = async <T>(_prefix: string, operation: () => T | Promise<T>): Promise<T> => {
+            lifecycleCalls++; return operation();
+        };
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(stateCalls).toBe(0); expect(lifecycleCalls).toBe(0);
+        expect(f.ports.setSessionContainer).not.toHaveBeenCalled(); expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+    it("helper failure retains acknowledged exact startup identity for cleanup", async () => {
+        const f = fixture(), failure = new Error("SSH initialization failed");
+        f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => {
+            expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith("final-id");
+            expect(f.ports.confirmOwnership).toHaveBeenCalled(); throw failure;
+        }});
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(f.ports.setCleanupEnabled).toHaveBeenLastCalledWith(true); expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+    it.each([false, true])("preserves ordered command, disposal and cleanup failures with commandFailure=%s", async commandFails => {
+        const f = fixture(), primary = new Error("command failed"), disposal = new Error("disposal failed"), cleanup = new Error("cleanup failed");
+        if (commandFails) vi.mocked(f.ports.launchCommand).mockRejectedValue(primary);
+        vi.mocked(f.ports.disposeCommand).mockImplementation(() => { f.events.push("dispose"); throw disposal; });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { f.events.push("cleanup"); throw cleanup; });
+        vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "cleanup-failed") throw new Error("diagnostic failed"); });
+        const errors = commandFails ? [primary, disposal, cleanup] : [disposal, cleanup];
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: errors[0], errors});
+        expect(f.ports.report).toHaveBeenCalledWith(expect.objectContaining({kind: "cleanup-failed", cause: cleanup}));
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
     it.each(["initial", "readiness", "tool-retry"] as const)("awaits the %s lifecycle guard before proceeding with its pinned identity", async checkpoint => {
         const f = fixture();
         let release!: () => void;
@@ -184,8 +239,9 @@ describe("container exec semantic workflow", () => {
         });
         vi.mocked(f.ports.prepareCodexCommand).mockReturnValue({ok: false, status: 7, reason: "engine-unavailable"});
         vi.mocked(f.ports.restoreConfig).mockImplementationOnce(() => {}).mockImplementation(() => { throw new Error("restore denied"); });
-        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw new Error("cleanup denied"); });
-        expect(await f.exec("/repo", ["codex"])).toBe(7);
+        const cleanupFailure = new Error("cleanup denied");
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw cleanupFailure; });
+        await expect(f.exec("/repo", ["codex"])).rejects.toBe(cleanupFailure);
         expect(commandAcknowledgements).toBe(1);
         expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
@@ -200,11 +256,12 @@ describe("container exec semantic workflow", () => {
             if (++confirmations === rejectedAcknowledgement) throw original;
         });
         vi.mocked(f.ports.restoreConfig).mockImplementationOnce(() => {}).mockImplementation(() => { throw new Error("restore denied"); });
-        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw new Error("cleanup denied"); });
+        const cleanupFailure = new Error("cleanup denied");
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw cleanupFailure; });
         vi.mocked(f.ports.report).mockImplementation(report => {
             if (report.kind === "restore-failed" || report.kind === "cleanup-failed") throw new Error("diagnostic denied");
         });
-        await expect(f.exec("/repo", ["codex"])).rejects.toBe(original);
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: original, errors: [original, cleanupFailure]});
         expect(confirmations).toBe(rejectedAcknowledgement);
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
         if (rejectedAcknowledgement === 1) expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
@@ -241,21 +298,22 @@ describe("container exec semantic workflow", () => {
         await f.exec("/repo", ["printf"], {interactive: false});
         expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual([["container", "docker"], ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["LANG", "en_US.UTF-8"], ["TZ", expected]]);
     });
-    it("creation failure stays outside local finally", async () => {
+    it("command artifact creation failure still restores and cleans acknowledged startup", async () => {
         const f = fixture(), failure = new Error("prepare denied");
         vi.mocked(f.ports.prepareCommand).mockImplementation(() => { throw failure; });
         await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
-        expect(f.ports.restoreConfig).toHaveBeenCalledTimes(1);
-        expect(f.ports.disposeCommand).not.toHaveBeenCalled(); expect(f.ports.cleanupSession).not.toHaveBeenCalled();
+        expect(f.ports.restoreConfig).toHaveBeenCalledTimes(2);
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled(); expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
     });
-    it.each(["status", "failure"] as const)("throwing restore/cleanup diagnostics preserve command %s", async outcome => {
+    it.each(["status", "failure"] as const)("throwing restore/cleanup diagnostics preserve failures for command %s", async outcome => {
         const f = fixture(), failure = new Error("primary command failure");
+        const cleanupFailure = new Error("cleanup denied");
         vi.mocked(f.ports.restoreConfig).mockImplementationOnce(() => {}).mockImplementation(() => { f.events.push("restore"); throw new Error("restore denied"); });
-        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { f.events.push("cleanup"); throw new Error("cleanup denied"); });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { f.events.push("cleanup"); throw cleanupFailure; });
         vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "restore-failed" || report.kind === "cleanup-failed") throw new Error("diagnostic denied"); });
         if (outcome === "failure") vi.mocked(f.ports.launchCommand).mockRejectedValue(failure); else vi.mocked(f.ports.launchCommand).mockResolvedValue(23);
         const pending = f.exec("/repo", ["codex"]);
-        if (outcome === "failure") await expect(pending).rejects.toBe(failure); else expect(await pending).toBe(23);
+        if (outcome === "failure") await expect(pending).rejects.toMatchObject({cause: failure, errors: [failure, cleanupFailure]}); else await expect(pending).rejects.toBe(cleanupFailure);
         expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
     });
     it("disposal failure still cleans the session and retains existing propagation", async () => {

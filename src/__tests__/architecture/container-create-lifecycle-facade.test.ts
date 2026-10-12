@@ -51,8 +51,8 @@ vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
 const id = "A".repeat(64);
 const name = "fixture-container";
 const request = { containerName: name, projectMountIdentity: "physical" };
-const createOptions = { encoding: "utf-8", stdio: ["inherit", "pipe", "inherit"] };
-const cleanupOptions = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
+const createOptions = { encoding: "utf-8", stdio: ["inherit", "pipe", "inherit"], timeout: 30000, killSignal: "SIGKILL" };
+const cleanupOptions = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" };
 type SuppliedPorts = Parameters<typeof createNativeContainerCreateLifecycle>[0];
 
 function result(status: number | null = 0, stdout = "", stderr = ""): SpawnSyncReturns<string> {
@@ -157,16 +157,35 @@ describe("actual creation application through native composition", () => {
         expect(native.spawn).toHaveBeenCalledTimes(1);
         expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
     });
+    it("native create timeout retains its cause and grants no namespace compensation", () => {
+        const failure = Object.assign(new Error("create timed out"), {code: "ETIMEDOUT"});
+        native.spawn.mockReturnValue({...result(null, id), error: failure});
+        const f = fixture();
+        expect(thrown(() => f.lifecycle.run(request))).toMatchObject({cause: failure});
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", f.args, createOptions);
+        expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
+        expect(f.ports.finish).not.toHaveBeenCalled();
+        expect(f.ports.syncMcp).not.toHaveBeenCalled();
+    });
 
     it.each([
         ["pull noise\n" + id + "\n", id],
         ["short 123456789abc x" + id + " " + id + "x " + id + " " + "b".repeat(64), id],
         ["noise " + "b".repeat(64) + " " + id, "b".repeat(64)],
     ])("pins the first complete 64hex token from %s", (stdout, expected) => {
-        native.spawn.mockReturnValue({ ...result(0, stdout), error: new Error("ignored native field") });
+        native.spawn.mockReturnValue(result(0, stdout));
         const f = fixture();
         expect(f.lifecycle.run(request)).toBe("public-name");
         for (const port of [f.ports.verifyCreated, f.ports.syncMcp, f.ports.fixSsh, f.ports.syncGit, f.ports.finish]) expect(port).toHaveBeenCalledExactlyOnceWith(expected);
+    });
+    it("refuses successful native status carrying an error without compensation", () => {
+        const failure = new Error("native client failed after output");
+        native.spawn.mockReturnValue({...result(0, id), error: failure});
+        const f = fixture();
+        expect(thrown(() => f.lifecycle.run(request))).toMatchObject({cause: failure});
+        expect(native.spawn).toHaveBeenCalledOnce();
+        expect(f.ports.verifyCreated).not.toHaveBeenCalled();
+        expect(f.ports.finish).not.toHaveBeenCalled();
     });
 
     it.each(["", " \t\n", "123456789abc", "x" + id, id + "x", "g".repeat(64)])("refuses unpinned native output %s", stdout => {
@@ -181,13 +200,14 @@ describe("actual creation application through native composition", () => {
     it("compensates only the exact ID with captured CLI and independent absence classification", () => {
         const original = new Error("source swapped");
         const absentResult = result(1, "", "no such container");
-        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce({ status: 1, error: new Error("rm failed") }).mockReturnValueOnce(absentResult);
+        const removal = new Error("rm failed");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce({ status: 1, error: removal }).mockReturnValueOnce(absentResult);
         const f = fixture({ verifyCreated: () => { native.runtime.mockReturnValue("changed-runtime"); throw original; } });
-        expect(thrown(() => f.lifecycle.run(request))).toBe(original);
+        expect(thrown(() => f.lifecycle.run(request))).toMatchObject({cause: original, errors: [original, {cause: removal}]});
         expect(native.spawn.mock.calls).toEqual([
             ["captured-runtime", f.args, createOptions],
             ["captured-runtime", ["rm", "-f", id], cleanupOptions],
-            ["captured-runtime", ["inspect", "-f", "{{.Id}}", id], cleanupOptions],
+            ["captured-runtime", ["inspect", "-f", "{{.Id}}", id], { ...cleanupOptions, timeout: 5000 }],
         ]);
         expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absentResult);
         expect(native.runtime).not.toHaveBeenCalled();
@@ -203,8 +223,44 @@ describe("actual creation application through native composition", () => {
         expect(error.cause).toBe(original);
         expect(native.spawn).toHaveBeenCalledTimes(3);
     });
+    it("rethrows original verification failure unchanged after successful exact-ID removal and proven absence", () => {
+        const original = new Error("verification rejected");
+        const absent = result(1, "", "No such container");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(result()).mockReturnValueOnce(absent);
+        const f = fixture({verifyCreated: () => { throw original; }});
+        expect(thrown(() => f.lifecycle.run(request))).toBe(original);
+        expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absent);
+        expect(native.spawn.mock.calls.slice(1).map(call => call[1])).toEqual([["rm", "-f", id], ["inspect", "-f", "{{.Id}}", id]]);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+    it("retains verification, removal and independent absence failures in occurrence order", () => {
+        const original = new Error("verification rejected"), removal = new Error("removal threw"), inspection = new Error("inspection threw");
+        const f = fixture({verifyCreated: () => { throw original; }});
+        native.spawn.mockImplementation((_cli, args: string[]) => {
+            if (args[0] === "run") return result(0, id);
+            if (args[0] === "rm") throw removal;
+            throw inspection;
+        });
+        expect(thrown(() => f.lifecycle.run(request))).toMatchObject({cause: original, errors: [original, removal, inspection]});
+        expect(native.spawn.mock.calls.slice(1).map(call => call[1])).toEqual([["rm", "-f", id], ["inspect", "-f", "{{.Id}}", id]]);
+        expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+    it.each([{status: null}, {status: 1, error: new Error("inspect timed out"), stderr: "No such container"}])("refuses uncertain absence even with a permissive classifier: %j", probe => {
+        const original = new Error("verification rejected");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(result()).mockReturnValueOnce(probe);
+        const f = fixture({verifyCreated: () => { throw original; }});
+        const caught = thrown(() => f.lifecycle.run(request));
+        expect(caught).toMatchObject({cause: original});
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect(caught).toMatchObject({errors: [original, "error" in probe ? probe.error : {message: expect.stringContaining("did not complete")}]});
+        expect(caught).not.toBe(original);
+        expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
+        expect(f.ports.finish).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls.slice(1).map(call => call[1])).toEqual([["rm", "-f", id], ["inspect", "-f", "{{.Id}}", id]]);
+    });
 
-    it.each(["create", "remove", "inspect", "classifier"])("propagates native %s throw at original boundary", stage => {
+    it.each(["create", "remove", "inspect", "classifier"])("preserves native %s failure with original verification outcome", stage => {
         const original = new Error("verification failed"); const failure = { stage };
         const f = fixture({ verifyCreated: () => { throw original; } });
         native.spawn.mockImplementation((_cli, args: string[]) => {
@@ -217,10 +273,13 @@ describe("actual creation application through native composition", () => {
             return result();
         });
         if (stage === "classifier") f.context.explicitlyNotFound = () => { throw failure; };
-        expect(thrown(() => f.lifecycle.run(request))).toBe(failure);
+        const caught = thrown(() => f.lifecycle.run(request));
+        if (stage === "create") expect(caught).toBe(failure);
+        else expect(caught).toMatchObject({cause: original, errors: [original, failure]});
         expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(
-            stage === "create" ? ["run"] : stage === "remove" ? ["run", "rm"] : ["run", "rm", "inspect"],
+            stage === "create" ? ["run"] : ["run", "rm", "inspect"],
         );
+        if (stage !== "create") expect(native.spawn.mock.calls.slice(1).map(call => call[1])).toEqual([["rm", "-f", id], ["inspect", "-f", "{{.Id}}", id]]);
     });
 
     it.each(["syncMcp", "fixSsh", "syncGit", "finish"] as const)("does not compensate late %s failure", port => {
@@ -246,7 +305,7 @@ function publicFixture() {
     const state = {
         createResult: result(0, "short-id"), remaining: result(1, "", "No such container"),
         changed: false, swapProject: false, currentCli: "captured-runtime",
-        familyCalls: 0, existing: false, runArgs: [] as string[], invalidMount: false,
+        familyCalls: 0, existing: false, stopped: false, outdatedImage: false, runArgs: [] as string[], invalidMount: false,
         helperFailure: undefined as unknown,
     };
     native.runtime.mockImplementation(() => state.currentCli);
@@ -284,9 +343,10 @@ function publicFixture() {
             return state.createResult;
         }
         if (args[0] === "ps" && args[1] === "-aq") return result(0, state.existing ? id : "");
-        if (args[0] === "ps" && args[1] === "-q") return result(0, state.existing ? id : "");
-        if (args[0] === "inspect" && args.includes("{{.State.Running}}")) return result(0, state.existing ? "true" : "false");
-        if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) return result(0, `${id}|true`);
+        if (args[0] === "ps" && args[1] === "-q") return result(0, state.existing && !state.stopped ? id : "");
+        if (args[0] === "start") { state.stopped = false; return result(); }
+        if (args[0] === "inspect" && args.includes("{{.State.Running}}")) return result(0, state.existing && !state.stopped ? "true" : "false");
+        if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) return result(0, `${id}|${!state.stopped}`);
         if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}|{{.Image}}")) return result(0, `${id}|true|${identityImageId}`);
         if (args[0] === "inspect" && args.includes("{{json .}}")) {
             const mounts: Array<{ Source: string; Destination: string; Type: string; RW: boolean }> = [];
@@ -303,7 +363,7 @@ function publicFixture() {
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);
                 if (argument === "-e") env.push(value);
             }
-            return result(0, JSON.stringify({ Id: id, Image: identityImageId, State: { Running: true }, Mounts: mounts, Config: { Labels: labels, Env: env, User: "ccc" }, HostConfig: { Init: true, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
+            return result(0, JSON.stringify({ Id: id, Image: state.outdatedImage ? `sha256:${"d".repeat(64)}` : identityImageId, State: { Running: !state.stopped }, Mounts: mounts, Config: { Labels: labels, Env: env, User: "ccc" }, HostConfig: { Init: true, Devices: [], DeviceRequests: [], GroupAdd: [], Privileged: false } }));
         }
         if (args[0] === "exec" && args[1] === id && args[2] === "sh" && args[4]?.includes('$(id -un)')) return result(0, `${identity.uid}:${identity.gid}:ccc:/home/ccc`);
         if (args[0] === "exec" && args.includes("ccc-ssh-copy") && state.helperFailure !== undefined) throw state.helperFailure;
@@ -318,13 +378,39 @@ function publicFixture() {
 }
 
 describe("public Docker creation cutover", () => {
+    it.each(["reuse", "restart", "defer"] as const)("prepared %s queues its branch helper set until initialization", branch => {
+        const state = publicFixture(); state.createResult = result(0, id);
+        // Seed an actual valid native contract, then observe the existing branch.
+        const seed = docker.prepareProjectContainerStartup();
+        seed.start(project, () => {}, undefined, undefined, undefined, undefined, undefined, () => {});
+        state.existing = true; state.stopped = branch === "restart"; state.outdatedImage = branch === "defer";
+        native.exists.mockImplementation(path => String(path).endsWith(".gitconfig"));
+        const originalStat = native.lstat.getMockImplementation()!;
+        native.lstat.mockImplementation(path => String(path).endsWith("server.mjs")
+            ? {isFile: () => true, isSymbolicLink: () => false, size: 16}
+            : originalStat(path));
+        const startup = docker.prepareProjectContainerStartup();
+        native.spawn.mockClear();
+        const ready = vi.fn();
+        startup.start(project, () => {}, undefined, undefined, undefined, undefined, () => false, ready, branch === "defer" ? id : undefined);
+        const helperCalls = () => native.spawn.mock.calls.filter(call => call[1].includes("ccc-ssh-copy")
+            || call[1].includes("ccc-signing-key-rewrite") || call[1][0] === "cp" && String(call[1][1]).endsWith("server.mjs"));
+        expect(ready).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: branch === "restart"});
+        expect(helperCalls()).toEqual([]);
+        startup.initialize(id);
+        expect(helperCalls().map(call => call[1].includes("ccc-ssh-copy") ? "ssh"
+            : call[1].includes("ccc-signing-key-rewrite") ? "git" : "mcp"))
+            .toEqual(branch === "defer" ? ["ssh", "git"] : ["mcp", "ssh", "git"]);
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "start").map(call => call[1])).toEqual(branch === "restart" ? [["start", id]] : []);
+        expect(native.spawn.mock.calls.some(call => call[1][0] === "rm")).toBe(false);
+    });
     it("rejects unexpected fixture lock paths before calling an operation", () => {
         const operation = vi.fn();
         expect(() => sharedState.withSharedMutationLock("/unexpected/private.lock", operation)).toThrow("unexpected fixture lock IO");
         expect(operation).not.toHaveBeenCalled();
     });
 
-    it("publishes verified start before helper failure without firing final ready", () => {
+    it("publishes verified start and ready before helper failure", () => {
         const state = publicFixture(); state.createResult = result(0, id);
         const failure = { kind: "ssh helper failure" }; state.helperFailure = failure;
         const ready = vi.fn();
@@ -335,7 +421,20 @@ describe("public Docker creation cutover", () => {
         });
         expect(thrown(() => docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready, undefined, started))).toBe(failure);
         expect(started).toHaveBeenCalledExactlyOnceWith(id);
-        expect(ready).not.toHaveBeenCalled();
+        expect(ready).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: true});
+        expect(native.spawn.mock.calls.filter(call => call[1][0] === "rm")).toEqual([]);
+    });
+    it("prepared startup publishes handoff while helpers wait for explicit initialization", () => {
+        const state = publicFixture(); state.createResult = result(0, id);
+        const startup = docker.prepareProjectContainerStartup();
+        const ready = vi.fn(), started = vi.fn();
+        startup.start(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready, undefined, started);
+        expect(started).toHaveBeenCalledExactlyOnceWith(id);
+        expect(ready).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: true});
+        expect(native.spawn.mock.calls.some(call => call[1].includes("ccc-ssh-copy"))).toBe(false);
+        startup.initialize(id);
+        expect(native.spawn.mock.calls.some(call => call[1].includes("ccc-ssh-copy"))).toBe(true);
+        expect(() => startup.initialize("successor")).toThrow("exact startup identity");
         expect(native.spawn.mock.calls.filter(call => call[1][0] === "rm")).toEqual([]);
     });
 
@@ -415,7 +514,7 @@ describe("public Docker creation cutover", () => {
         expect(run?.[1]).toContain(`ccc.project.path=${project}`);
         expect(native.spawn.mock.calls.some(call => call[1][0] === "rm")).toBe(false);
         expect(native.spawn.mock.calls.filter(call => call[1].includes("{{.Id}}"))).toEqual([
-            ["captured-runtime", ["inspect", IMAGE_NAME, "--format", "{{.Id}}"], cleanupOptions],
+            ["captured-runtime", ["inspect", IMAGE_NAME, "--format", "{{.Id}}"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }],
         ]);
         expect(console.log).toHaveBeenCalledWith("Creating container...");
     });
@@ -442,17 +541,25 @@ describe("public Docker creation cutover", () => {
         [null, "No such container", undefined, false],
         [1, "permission denied", undefined, false],
         [1, "No such container", new Error("native error"), false],
-    ] as const)("uses unchanged explicit absence classifier status=%s stderr=%s", (status, stderr, error, absent) => {
+    ] as const)("requires completed native absence classification status=%s stderr=%s", (status, stderr, error, absent) => {
         const state = publicFixture(); state.swapProject = true; state.createResult = result(0, id);
         state.remaining = { ...result(status, "", stderr), ...(error ? { error } : {}) };
         const failure = thrown(() => docker.startProjectContainer(project, () => {})) as Error;
         const primary = `bind mount source identity changed: ${project}`;
-        expect(failure.message).toBe(absent ? primary : `${primary}; failed to remove rejected container ${id}`);
-        if (!absent) expect((failure.cause as Error).message).toBe(primary);
+        if (error || status === null) {
+            expect(failure).toBeInstanceOf(AggregateError);
+            expect(failure).toMatchObject({
+                cause: {message: primary},
+                errors: [{message: primary}, error ?? {message: "Rejected container absence inspection did not complete."}],
+            });
+        } else {
+            expect(failure.message).toBe(absent ? primary : `${primary}; failed to remove rejected container ${id}`);
+            if (!absent) expect((failure.cause as Error).message).toBe(primary);
+        }
         const calls = native.spawn.mock.calls.filter(call => call[1][0] === "run" && call[1][1] !== "--rm" || call[1][0] === "rm" || call[1][0] === "inspect" && call[1].at(-1) === id && call[1].includes("{{.Id}}"));
         expect(calls.map(call => [call[0], call[1][0]])).toEqual([["captured-runtime", "run"], ["captured-runtime", "rm"], ["captured-runtime", "inspect"]]);
         expect(calls[1]).toEqual(["captured-runtime", ["rm", "-f", id], cleanupOptions]);
-        expect(calls[2]).toEqual(["captured-runtime", ["inspect", "-f", "{{.Id}}", id], cleanupOptions]);
+        expect(calls[2]).toEqual(["captured-runtime", ["inspect", "-f", "{{.Id}}", id], { ...cleanupOptions, timeout: 5000 }]);
     });
 
 });

@@ -7,7 +7,7 @@ export interface ContainerCreateLifecycleRequest {
 
 export type ContainerCreateResult =
     | { kind: "created"; containerId: string | null }
-    | { kind: "failed" };
+    | { kind: "failed"; cause?: unknown };
 
 export type ContainerCreateFailure =
     | { kind: "namespace-appeared"; containerName: string }

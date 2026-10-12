@@ -11,7 +11,7 @@ import { getToolByName, getDefaultTool } from "../tool-registry.js";
 import { detectWorktreeWorkspaceBranch, assertWorkspaceBranch, getWorktreeGitMounts } from "../worktree.js";
 import {
     ensureDockerRunning, inspectSessionContainerOwnership, getContainerName, getContainerStatus,
-    startProjectContainer, restoreCodexConfigHostOwnership, isContainerRunning,
+    startProjectContainer, prepareProjectContainerStartup, withProjectContainerStateLockAsync, restoreCodexConfigHostOwnership, isContainerRunning,
     prepareCodexConfigForContainer, syncClipboardShims, ensureContainerManagerSocketAccess, isDockerDesktop,
 } from "../docker.js";
 import {
@@ -107,7 +107,7 @@ export function presentContainerExecReport(report: ContainerExecReport): void {
         case "broker-failed": console.warn(`[ccc] WARNING: device broker auto-start failed (${report.cause instanceof Error ? report.cause.message : String(report.cause)}). Host-backed device MCP tools may be unavailable.`); return;
         case "restore-failed": console.warn(`[ccc] Unable to restore Codex config access after command exit: ${report.cause instanceof Error ? report.cause.message : String(report.cause)}`); return;
         case "ownership-unconfirmed": console.warn("[ccc] Unable to confirm session ownership after setup failure."); return;
-        case "cleanup-failed": console.warn("[ccc] Session cleanup failed after command exit."); return;
+        case "cleanup-failed": console.warn(`[ccc] Session cleanup failed after command exit: ${report.cause instanceof Error ? report.cause.message : String(report.cause)}`); return;
         case "restarted": console.log("Container became unavailable during setup, restarting..."); return;
         case "mcp-forwarded": console.error(`MCP forwarded: ${report.names.join(", ")}`); return;
         case "environment-skipped": console.error(`Skipped ${report.keys.length} host env var(s) to keep exec size bounded; use --env KEY=VALUE for required overrides.`); return;
@@ -164,6 +164,8 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         lifecycleLock: withContainerLifecycleLockAsync,
         setupLock: withContainerSetupLockAsync,
         startContainer: startProjectContainer,
+        prepareContainer: prepareProjectContainerStartup,
+        stateLock: withProjectContainerStateLockAsync,
         setSessionContainer: setSessionContainerId,
         setCleanupEnabled: setSessionCleanupEnabled,
         confirmOwnership: confirmSessionOwnership,

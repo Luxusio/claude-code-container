@@ -1,5 +1,60 @@
 import { describe, it, expect } from "vitest";
 import { observeProcessStarts, parseProcessStartObservations, sessionLockLiveness } from "../session-lock-liveness.js";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+
+it.runIf(process.platform === "linux")("observes a real owned zombie and reclaims its unavailable-identity guards through both native facades", () => {
+    const loader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+    const script = `
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {tmpdir,hostname} from 'node:os';
+import {join} from 'node:path';
+const pid=Number(process.argv[1]);
+const stat=readFileSync('/proc/'+pid+'/stat','utf8');
+const fields=stat.slice(stat.lastIndexOf(')')+1).trim().split(/\\s+/);
+assert.equal(fields[0],'Z');
+process.kill(pid,0);
+const session=await import(${JSON.stringify(new URL("../session-lock-liveness.ts", import.meta.url).href)});
+assert.equal(session.processStartToken(pid),null);
+assert.equal(session.sessionLockLiveness(JSON.stringify({version:2,pid,startToken:'linux:'+fields[19]})),'stale');
+assert.equal(session.sessionLockLiveness(String(pid)),'stale');
+const modules=[await import(${JSON.stringify(new URL("../../packages/device-lab/src/device-lab-shared-state.ts", import.meta.url).href)}),await import(${JSON.stringify(new URL("../../packages/device-lab/providers/state/shared-mutation-lock.mjs", import.meta.url).href)})];
+const root=mkdtempSync(join(tmpdir(),'ccc-owned-zombie-'));
+try {
+ for(const api of modules) for(const acquire of [api.withSharedMutationLock,api.withSharedMutationLockAsync]) {
+  const file=join(root,'mutation.guard');
+  writeFileSync(file,JSON.stringify({token:'0123456789abcdef0123456789abcdef',pid,host:hostname(),processIdentityStatus:'unavailable'}));
+  let calls=0;
+  assert.equal(await acquire(file,()=>{calls++;return 'admitted';},{waitMs:500}),'admitted');
+  assert.equal(calls,1);assert.equal(existsSync(file),false);
+ }
+} finally {rmSync(root,{recursive:true,force:true});}
+process.stdout.write('owned zombie qualified');
+`;
+    const python = `
+import os,sys,time,subprocess
+pid=os.fork()
+if pid==0: os._exit(0)
+try:
+ deadline=time.monotonic()+3
+ while True:
+  stat=open('/proc/%d/stat'%pid).read()
+  if stat[stat.rfind(')')+1:].split()[0]=='Z': break
+  if time.monotonic()>deadline: raise RuntimeError('owned child did not become zombie')
+  time.sleep(.01)
+ result=subprocess.run([sys.argv[1],'--import',sys.argv[2],'--input-type=module','-e',sys.argv[3],str(pid)],capture_output=True,text=True,timeout=12)
+ sys.stdout.write(result.stdout);sys.stderr.write(result.stderr)
+ sys.exit(result.returncode)
+finally:
+ os.waitpid(pid,0)
+`;
+    const result = spawnSync("python3", ["-c", python, process.execPath, loader, script], { encoding: "utf8", timeout: 20_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("owned zombie qualified");
+}, 25_000);
 
 // The saving this batches for is a Windows one — one `powershell.exe` per candidate lock file,
 // on every `ccc` invocation, which is why the operator's report of PowerShell windows varied

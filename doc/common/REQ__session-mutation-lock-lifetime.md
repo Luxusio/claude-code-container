@@ -15,3 +15,19 @@ After reservation capture installs the session signal handlers, SIGINT, SIGTERM 
 Signal cleanup waits for acquisition to settle before exiting. Repeated signals share one completion path. Expected cancellation alone preserves the existing exit status. Reservation, guardian-release, lifecycle-release and other acquisition failures remain visible even after rollback has cleared the session context; they produce a failure exit without an unhandled promise rejection or broader deletion authority.
 
 Verification uses the existing shared-mutation-lock, session-acquisition, session-cleanup-facade and emitted session-ownership integration suites. Native Windows evidence must be identified separately. These repairs do not establish the liveness or exact cause of an independently observed host guard whose process identity is unavailable.
+
+Normal exec prepares its immutable base/identity image before taking the host-wide Codex state or per-container lifecycle mutation guards. It acquires the global state guard asynchronously before the container lifecycle guard, using the existing token-qualified recovery of proven stale owners. The legacy synchronous compatibility wrapper retains its conservative no-reclaim setting. Runtime identity and mount sources are checked again inside the transaction. The distinct setup guard retains setup serialization through ownership acknowledgement and helper initialization. MCP, SSH and Git synchronization run after mutation guards are released; a safely deferred existing container keeps its narrower SSH/Git initialization behavior. Start/restart checkpoints reuse the setup transaction's pinned image preparation.
+
+Native create, start, replacement stop and removal commands have individual 30-second limits; rejected-container absence inspection has a 5-second limit. A client timeout does not prove daemon-side cancellation, container absence or permission to remove a name. Preserve the native error as cause and retain existing exact-ID/source/claim fences. These limits are not a total startup wall-clock guarantee.
+
+Helper initialization must reject source or exact running-container identity changes before it returns, including changes during the final helper. A prior handoff does not permit command launch after failed initialization.
+
+Rejected-create compensation preserves the original verification failure. If exact-ID removal or its independent absence observation also fails, retain those failures in an AggregateError with the original as cause. Subsequent proof of absence does not erase an observed removal failure.
+
+Successful command execution cannot mask failed session cleanup. A single primary command/preparation, disposal or cleanup failure propagates unchanged; multiple failures propagate in that order in an AggregateError with the first as cause. Restore-config and error-presentation failures remain secondary diagnostics. Both synchronous signal cleanup throws and asynchronous rejections use the controlled failure exit path, once.
+
+On Linux a well-formed /proc stat state Z or X proves the process has exited even when its PID and start ticks remain visible. Such owners are stale for session claims and absent for native shared-guard liveness. Other-host records and failed or malformed observations remain conservative; a reused live PID without a recorded identity is still not proof of the original owner's liveness or death.
+
+## Known ceiling
+
+Native timeouts bound individual client operations; daemon work may continue after timeout. Preserve uncertainty during qualification.

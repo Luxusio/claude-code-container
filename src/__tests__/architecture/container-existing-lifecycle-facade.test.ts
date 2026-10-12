@@ -42,6 +42,20 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
 }
 
 describe("existing container application through native composition", () => {
+    it.each(["start", "remove"] as const)("preserves native %s timeout cause without namespace compensation", operation => {
+        const failure = Object.assign(new Error("runtime timed out"), {code: "ETIMEDOUT"});
+        native.spawn.mockReturnValue({status: null, error: failure});
+        const f = fixture({isRunning: () => false});
+        let caught: unknown;
+        try {
+            if (operation === "start") f.lifecycle.run({containerName: name});
+            else f.lifecycle.replace({containerName: name, expectedContainerId: id, reason: "changed", replacementGuard: replace => { replace(); return true; }});
+        } catch (error) { caught = error; }
+        expect(caught).toMatchObject({cause: failure});
+        expect(native.spawn.mock.calls.map(call => call[1])).toEqual([[operation === "start" ? "start" : "rm", id]]);
+        expect(native.spawn.mock.calls[0][2]).toMatchObject({timeout: 30000});
+        expect(f.ports.finish).not.toHaveBeenCalled(); expect(f.order).not.toContain("mcp");
+    });
     beforeEach(() => {
         vi.resetAllMocks();
         native.runtime.mockReturnValue("podman");
@@ -80,7 +94,7 @@ describe("existing container application through native composition", () => {
     it("uses captured runtime only for pinned restart, with inherited stdio", () => {
         const f = fixture({ isRunning: () => false });
         expect(f.lifecycle.run({ containerName: name, debug: true })).toEqual({ kind: "joined", containerId: id });
-        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit" });
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
         expect(native.runtime).not.toHaveBeenCalled();
         expect(console.error).toHaveBeenNthCalledWith(2, `[ccc:debug] Container ${name} exists, restarting`);
         expect(f.order.slice(-4)).toEqual(["mcp", "ssh", "git", `finish:${id}`]);
@@ -116,7 +130,7 @@ describe("existing container application through native composition", () => {
     it("uses ordinary non-force removal on the captured stopped path without stop or managed reinspection", () => {
         const f = fixture();
         expect(f.lifecycle.replace({ containerName: name, expectedContainerId: id, reason: "changed", replacementGuard: operation => { operation(); return true; } })).toBe(true);
-        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" });
         expect(f.ports.managedIdentity).not.toHaveBeenCalled();
     });
 
@@ -170,7 +184,7 @@ describe("existing container application through native composition", () => {
         native.spawn.mockImplementation(() => { f.order.push("native-start"); return { status: 0 }; });
         expect(f.lifecycle.run({ containerName: name })).toEqual({ kind: "joined", containerId: id });
         expect(f.order.slice(-8)).toEqual(["before-start", "native-start", `after-start:${id}`, "live", "mcp", "ssh", "git", `finish:${id}`]);
-        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit" });
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
     });
     it("reads required destinations only when reporting a mismatch and safely defers without MCP", () => {
         const f = fixture({ inspectContract: (_id, report) => { report("credential mount changed"); return false; } });
@@ -211,8 +225,8 @@ describe("existing container application through native composition", () => {
         const callback = vi.fn();
         expect(f.lifecycle.replace({ containerName: name, reason: "changed", replacementGuard: replace => { replace(); replace(); return false; }, onRecreate: callback })).toBe(false);
         expect(native.spawn.mock.calls).toEqual([
-            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }],
-            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }],
+            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" }],
+            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" }],
         ]);
         expect(callback).toHaveBeenCalledTimes(2);
     });
