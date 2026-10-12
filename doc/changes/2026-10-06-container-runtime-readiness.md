@@ -1,65 +1,45 @@
-# Container runtime refusal policy extraction
+# Container runtime readiness policy and native presentation
 
-The refusal sequence inside `ensureDockerRunning` now lives in
-`src/application/container-runtime-readiness.ts`, behind the required ports in
-`src/ports/container-runtime-readiness.ts`. The observations return a boolean
-and `{ runtime: RuntimeName; flavor: string }` synchronously;
-`reportError(message: () => string)` and exit return `undefined`. Message
-suppliers return strings synchronously; eager strings and async/void suppliers
-are rejected by the type contract. The pure domain `RuntimeName` is imported
-as a type. Native `RuntimeInfo` and its flavor union stay in the native facade, whose existing
-facts satisfy the port structurally.
+`src/application/container-runtime-readiness.ts` owns the readiness decision.
+Its only ports are synchronous `isRunning(): boolean` and
+`runtimeInfo(): { runtime: RuntimeName; flavor: string }`, declared in
+`src/ports/container-runtime-readiness.ts`. A successful running observation
+returns `{ kind: "ready" }` without an additional runtime-info observation.
+Otherwise the application observes runtime info once and returns
+`{ kind: "refused", runtime, repairCategory }`.
 
-Construction validates `isRunning`, `runtimeInfo`, `reportError` and
-`exitFailure` as callable, in order, without invoking them. Missing or malformed
-ports throw `TypeError` with the exact
-`Container runtime readiness requires a callable NAME port.` diagnostic;
-capability getter exceptions preserve their original thrown values.
+The finite repair categories are `docker-desktop`, `docker-service`,
+`podman-machine`, `podman-rootless` and `podman-service`. Selection preserves
+the established runtime-first policy: Docker uses its Desktop hint only for
+`docker-desktop` flavor and otherwise uses the Docker service hint; Podman
+uses machine or rootless hints for those flavors and otherwise uses the
+Podman service hint. Unknown, arbitrary and cross-runtime flavor strings
+retain these fallbacks. Runtime selection and capability policy remain in
+the runtime boundary; readiness does not select or start an engine.
 
-`run(): undefined` keeps the original running guard. A ready runtime skips the
-additional explicit info-port observation, both refusal reports and exit.
-Failure looks up info once and supplies the first diagnostic lazily. The
-reporter selects its native callee and receiver before evaluating the supplier
-exactly once synchronously. Thus `console.error` property access precedes
-reading runtime for `Error: ${info.runtime} is not running.`. After reporting,
-the application reads runtime again for branching.
-Flavor is read once for Docker or a Podman machine and twice for other Podman
-branches. There is no snapshot, normalization or fact validation, so changing
-getters and report-time mutations retain their original effects.
+The native `src/docker.ts` facade keeps `ensureDockerRunning(): void` and
+composes the application with the existing observations. On refusal it renders
+exactly `Error: RUNTIME is not running.` followed by the existing hint for the
+returned repair category, then calls `process.exit(1)`. The facade renders
+facts; the application contains no terminal text, reporting or exit effects.
+There are no lazy message suppliers or capture/descriptor/arity validation.
+Synchronous observation, native reporting and exit faults propagate unchanged
+and prevent later effects. Recovery commands are printed guidance only.
 
-All five recovery hints retain their exact text: Docker Desktop, the Docker
-service, a Podman machine, rootless Podman and the Podman service. Unknown,
-arbitrary and cross-runtime flavor strings retain the existing branch behavior.
-The second report precedes failure exit. Observation, fact getter, reporting
-and exit failures preserve Error and non-Error identity and stop later effects.
-Promise or thenable effect results are ignored without inspection, awaiting or
-returning; the application remains strictly synchronous.
+`isDockerRunning` retains the selected runtime's exact `info` argv, UTF-8
+encoding, pipe stdio and status-zero readiness. When DEBUG is truthy, a failed
+probe reports trimmed nonempty stderr before readiness refusal. Runtime fact
+collection and caching belong to `container-runtime.ts`; the readiness
+application has no cache or native transport knowledge. Existing index, clean
+and lifecycle callers continue to use the same public wrapper.
 
-Docker remains the temporary composition root until M13. Its public wrapper
-keeps `ensureDockerRunning(): void`, constructs the factory per call and invokes
-the existing observations. Its reporting and exit wrappers look up
-`console.error` and `process.exit` late and preserve their native receivers.
-The direct `console.error(message())` call selects the reporter before
-rendering the message once without retaining the supplier; exit uses code 1.
-The cutover is one import and that function body. Existing
-index, clean and lifecycle callers, locks and native helpers keep their behavior.
-
-The native `isDockerRunning` probe remains unchanged: exact runtime `info`
-argv, UTF-8 encoding, pipe stdio, status-0 readiness and DEBUG reporting of
-trimmed nonempty stderr before refusal. `runtimeCli` may read cached facts as
-part of that probe. Detection, selection and cache ownership stay native.
-Recovery commands are printed guidance; the policy executes no service startup.
-
-Verification anchors include strict architecture type contracts, core policy
-tests and real Docker/application facade tests with mocked native boundaries.
-Shared distribution smoke checks emitted declarations, type-only ports and the
-compiled Docker import, then executes the actual compiled policy and facade in
-both extracted npm packages and materialized installs. Combined runtime getter
-and reporter accessor regressions preserve callee selection before first
-interpolation, including mutations and thrown accessor values. Cached fake
-facts and fenced native calls prevent real discovery or service execution.
-Independent code/documentation review and fresh CLI QA against final source and artifacts
-remain required acceptance gates; portable checks do not certify native behavior.
+Verification anchors are the readiness core, facade and strict type-contract
+suites plus selected-runtime caller regressions. Core checks cover the ready
+fast path, all five repair categories, arbitrary/cross-runtime fallbacks and
+synchronous observation failures. Native facade checks cover exact messages,
+exit code, probe arguments, DEBUG stderr and reporting/exit failures. Joint
+compiler, build, packaging, independent review and CLI QA remain acceptance
+gates; source changes alone do not establish those results.
 
 ## Known ceiling
 
@@ -72,8 +52,6 @@ Docker/Podman, rootless UID/SELinux or remote behavior — upgrade when retained
 native acceptance gates execute against actual source and artifact hashes.
 The unavailable native PowerShell parser check remains SKIP.
 
-M10j is a candidate slice covering refusal policy. Native readiness probes and
-host facts, other preparation, setup/credentials, cache ownership,
-identity-fenced claim release and reliable native outcomes remain M10 work.
-M13 composition closure, M14 acceptance and the M00–M14 Goal remain outstanding;
-independently blocked M02c attestation is unaffected.
+This readiness boundary does not certify whole-Goal completion. Remaining
+composition, native acceptance and source-wide closure obligations retain
+their separate evidence requirements.

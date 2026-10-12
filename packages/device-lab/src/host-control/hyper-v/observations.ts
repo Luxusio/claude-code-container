@@ -1,3 +1,4 @@
+import type {HyperVLinuxSeedObservation} from "../../device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {
     HYPER_V_QEMU_IMG_SIGNATURE_STATUSES,
     type HyperVQemuImgSignatureStatus,
@@ -40,6 +41,30 @@ function parseLastJsonObject(stdout: string): Record<string, unknown> | null {
         }
     }
     return null;
+}
+
+export function decodeHyperVLinuxSeedObservation(stdout: unknown): HyperVLinuxSeedObservation | null {
+    try {
+        const line = String(stdout || "").trim().split(/\r?\n/).at(-1) || "";
+        const parsed: unknown = JSON.parse(line);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+        const value = parsed as Record<string, unknown>;
+        return {
+            ok: value.ok === true,
+            vmId: String(value.vmId),
+            vmName: String(value.vmName || ""),
+            seedDiskPath: String(value.seedDiskPath || ""),
+            sshPrivateKeyPath: String(value.sshPrivateKeyPath || ""),
+            sshPublicKeyPath: String(value.sshPublicKeyPath || ""),
+            sshHostPublicKeyPath: String(value.sshHostPublicKeyPath || ""),
+            sshHostKeyFingerprint: String(value.sshHostKeyFingerprint || ""),
+            knownHostsPath: String(value.knownHostsPath || ""),
+            guestUsername: String(value.guestUsername || ""),
+            networkAddress: String(value.networkAddress || ""),
+        };
+    } catch {
+        return null;
+    }
 }
 
 function parseMarkedJsonObject(stdout: string): Record<string, unknown> | null {

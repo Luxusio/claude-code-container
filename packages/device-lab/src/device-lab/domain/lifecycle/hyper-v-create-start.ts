@@ -99,7 +99,23 @@ export type HyperVLifecycleOutcome<Connection,Receipt> = HyperVLifecycleFacts<Co
  {kind:'created'|'started'|'rebooted';plan:HyperVPlannedFacts<Connection>;device:unknown;invoked:true;dryRun:false;execution:HyperVLifecycleExecution<Receipt>;journalDisposition:'clear';recoveryDisposition:'already-handled'} |
  {kind:'admission-refused';error:string;reason:'invalid'|'forbidden'|'missing'|'conflict'|'provider-unavailable'|'unsupported';journalDisposition:'clear';recoveryDisposition:'required'} |
  {kind:'operation-failed'|'uncertain';error:string;reason:HyperVLifecycleFailureReason;journalDisposition:'clear'|'retain';recoveryDisposition:'already-handled'|'required'});
-export type HyperVPreparedSeed<Receipt>=(timeout:number,outputLimit:number)=>Promise<HyperVNativeExecution<Receipt>>;
+export interface HyperVLinuxSeedObservation {
+    ok: boolean;
+    vmId: string;
+    vmName: string;
+    seedDiskPath: string;
+    sshPrivateKeyPath: string;
+    sshPublicKeyPath: string;
+    sshHostPublicKeyPath: string;
+    sshHostKeyFingerprint: string;
+    knownHostsPath: string;
+    guestUsername: string;
+    networkAddress: string;
+}
+export interface HyperVSeedExecution<Receipt> extends HyperVNativeExecution<Receipt> {
+    observation: HyperVLinuxSeedObservation | null;
+}
+export type HyperVPreparedSeed<Receipt>=(timeout:number,outputLimit:number)=>Promise<HyperVSeedExecution<Receipt>>;
 export function hyperVCreateRecord(value:unknown):value is Record<string,unknown>{return Boolean(value)&&typeof value==='object'&&!Array.isArray(value);}
 export function hyperVCreateField(value:unknown,key:string):string|null{if(!hyperVCreateRecord(value))return null;const field=value[key];return typeof field==='string'&&field?field:null;}
 export function hyperVCreateSucceeded(value:{status?:number|null;error?:string}){return value.status===0&&!value.error;}

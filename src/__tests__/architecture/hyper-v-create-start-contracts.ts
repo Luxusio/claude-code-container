@@ -91,6 +91,10 @@ function finiteNativeCapabilities(ports: WorkflowPorts): void {
     createHyperVCreateStartApplication({ ...ports, probeLinuxReadiness: () => ({ mode: "exec", provider: "hyper-v", status: 0 }) });
     // @ts-expect-error A prepared seed must return the completion of its native execution.
     createHyperVCreateStartApplication({ ...ports, prepareLinuxSeed: () => () => ({ mode: "exec", provider: "hyper-v", status: 0 }) });
+    // @ts-expect-error Seed command preparation must fail synchronously inside the planning guard.
+    createHyperVCreateStartApplication({ ...ports, prepareLinuxSeed: async () => ports.prepareLinuxSeed({} as Connection, {} as Parameters<WorkflowPorts["prepareLinuxSeed"]>[1]) });
+    // @ts-expect-error A settled seed execution must carry the decoded observation, including null on invalid output.
+    createHyperVCreateStartApplication({ ...ports, prepareLinuxSeed: () => async () => ({ mode: "exec", provider: "hyper-v", status: 0 }) });
     void [prepareCreateDirectories, removeCreateArtifact, prepareLinuxSeed];
 }
 void finiteNativeCapabilities;

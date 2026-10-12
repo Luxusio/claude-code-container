@@ -1717,7 +1717,7 @@ describe("device-lab Hyper-V broker", () => {
         }
     });
 
-    it.each(["command", "invalid-result"] as const)("recovers an owner-marked Linux VM when seed provisioning fails before the seed disk is attached (%s)", async (failureMode) => {
+    it.each(["command", "invalid-result", "trailing-diagnostic", "normalization-failure", "array"] as const)("recovers an owner-marked Linux VM when seed provisioning fails before the seed disk is attached (%s)", async (failureMode) => {
         const cwd = join(process.env.HOME!, "project");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -1762,6 +1762,9 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
             if (script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'")) {
+                if (failureMode === "trailing-diagnostic") return { ...command, status: 0, stdout: `${JSON.stringify({ ok: true, vmId, vmName })}\nprovider final diagnostic`, stderr: "" };
+                if (failureMode === "normalization-failure") return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId: { toString: null } }), stderr: "" };
+                if (failureMode === "array") return { ...command, status: 0, stdout: JSON.stringify([{ ok: true, vmId, vmName }]), stderr: "" };
                 if (failureMode === "invalid-result") {
                     return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId,
                         vmName: "foreign-vm", seedDiskPath: join(deviceRoot, "disks", "cidata.iso") }), stderr: "" };
@@ -2530,7 +2533,7 @@ describe("device-lab Hyper-V broker", () => {
                             : snapshot
                                 ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: true } : {}) }
                                 : { ok: true, vmId, vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: vmState, status: "Operating normally", diskPath, checkpointPolicy: "Production", snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
-            return { ...command, status: 0, stdout: JSON.stringify(result), stderr: "" };
+            return { ...command, status: 0, stdout: seed ? `seed progress\r\n${JSON.stringify({ ...result, vmId: vmId.toUpperCase() })}\r\n` : JSON.stringify(result), stderr: "" };
         });
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: "until-readback",

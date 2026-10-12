@@ -59,6 +59,7 @@ import {
     parseHyperVSnapshotRepairObservation,
     parseHyperVSetupObservation,
     parseHyperVVmObservation,
+    decodeHyperVLinuxSeedObservation,
 } from "@ccc/device-lab/host-control/hyper-v/index.js";
 import { hyperVProviderDiagnosticCode } from "@ccc/device-lab/device-lab/broker/hyper-v/public-response.js";
 import { isoWriterLines, jsonScript } from "@ccc/device-lab/host-control/hyper-v/core.js";
@@ -142,6 +143,37 @@ function loaderOf(command: { args: string[] }): string {
 // Windows PowerShell 5.1 lacks these accelerators; use [UInt64]/[UInt32]/[UInt16] instead.
 const WINDOWS_POWERSHELL_UNSUPPORTED_ACCELERATOR = /\[(?:ulong|uint|ushort|sbyte|semver)\]/i;
 describe("Hyper-V provider adapter", () => {
+    it("decodes only the final Linux seed output line and preserves normalized fields", () => {
+        const seed = { ok: true, vmId: vmId.toUpperCase(), vmName: "owned", seedDiskPath: "seed.iso", sshPrivateKeyPath: "private", sshPublicKeyPath: "public", sshHostPublicKeyPath: "host", sshHostKeyFingerprint: "SHA256:host", knownHostsPath: "known", guestUsername: "guest", networkAddress: "172.29.0.10" };
+        expect(decodeHyperVLinuxSeedObservation(`progress\r\n${JSON.stringify(seed)}\r\n  `)).toEqual(seed);
+        expect(decodeHyperVLinuxSeedObservation(`${JSON.stringify({ ...seed, vmName: "foreign" })}\n${JSON.stringify(seed)}`)).toEqual(seed);
+    });
+
+    it.each(["null", "true", "42", '"seed"', "[]", "[{\"ok\":true}]", "{broken", '{"ok":true} trailing', "final diagnostic"])("rejects invalid final seed data without accepting an earlier object (%s)", (line) => {
+        expect(decodeHyperVLinuxSeedObservation(`${JSON.stringify({ ok: true, vmId })}\n${line}`)).toBeNull();
+    });
+
+    it("normalizes every listed seed field and only literal true admits ok", () => {
+        const fields = ["vmName", "seedDiskPath", "sshPrivateKeyPath", "sshPublicKeyPath", "sshHostPublicKeyPath", "sshHostKeyFingerprint", "knownHostsPath", "guestUsername", "networkAddress"] as const;
+        for (const value of [undefined, null, false, 0, 17, true, ["part"], { part: "value" }]) {
+            const input = Object.fromEntries(fields.map(field => [field, value]));
+            expect(decodeHyperVLinuxSeedObservation(JSON.stringify({ ok: true, vmId: value, ...input }))).toEqual({
+                ok: true, vmId: String(value), ...Object.fromEntries(fields.map(field => [field, String(value || "")])),
+            });
+        }
+        for (const ok of [undefined, null, false, 1, "true"]) {
+            expect(decodeHyperVLinuxSeedObservation(JSON.stringify({ ok, vmId }))).toMatchObject({ ok: false, vmId });
+        }
+    });
+
+    it("contains normalization failures as invalid seed observations", () => {
+        expect(decodeHyperVLinuxSeedObservation("  \r\n ")).toBeNull();
+        expect(decodeHyperVLinuxSeedObservation(JSON.stringify({ ok: true, vmId: { toString: null } }))).toBeNull();
+        for (const field of ["vmName", "seedDiskPath", "sshPrivateKeyPath", "sshPublicKeyPath", "sshHostPublicKeyPath", "sshHostKeyFingerprint", "knownHostsPath", "guestUsername", "networkAddress"]) {
+            expect(decodeHyperVLinuxSeedObservation(JSON.stringify({ ok: true, vmId, [field]: { toString: null } }))).toBeNull();
+        }
+        expect(decodeHyperVLinuxSeedObservation({ toString() { throw new Error("transport conversion failed"); } })).toBeNull();
+    });
     it("restricts provisioning media filesystem masks at compile time", () => {
         expectTypeOf<Parameters<typeof isoWriterLines>[0]>().toEqualTypeOf<3 | 7 | undefined>();
     });

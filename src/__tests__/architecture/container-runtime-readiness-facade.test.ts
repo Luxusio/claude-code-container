@@ -20,6 +20,11 @@ const cases: Array<[RuntimeName, string, string]> = [
     ["podman", "podman-machine", "Please start the Podman machine (`podman machine start`) and try again."],
     ["podman", "podman-rootless", "Please start the rootless Podman service (`systemctl --user start podman.socket`) and try again."],
     ["podman", "podman-rootful", "Please start the Podman service (`sudo systemctl start podman.socket`) and try again."],
+    ["docker", "podman-machine", "Please start the docker service (e.g. `sudo systemctl start docker`) and try again."],
+    ["docker", "future-flavor", "Please start the docker service (e.g. `sudo systemctl start docker`) and try again."],
+    ["podman", "docker-desktop", "Please start the Podman service (`sudo systemctl start podman.socket`) and try again."],
+    ["podman", "unknown", "Please start the Podman service (`sudo systemctl start podman.socket`) and try again."],
+    ["podman", "future-flavor", "Please start the Podman service (`sudo systemctl start podman.socket`) and try again."],
 ];
 
 function result(status: number | null = 1, stderr = ""): SpawnSyncReturns<string> {
@@ -75,6 +80,23 @@ describe("container runtime readiness public facade", () => {
         expect(native.info).not.toHaveBeenCalled();
     });
 
+    it.each(["docker", "podman"] as const)("probes the selected %s executable with info", runtime => {
+        fixture(runtime);
+        native.cli.mockReturnValue(runtime);
+        expect(docker.isDockerRunning()).toBe(false);
+        expect(native.spawn.mock.calls).toEqual([[runtime, ["info"], options]]);
+        expect(native.info).not.toHaveBeenCalled();
+    });
+
+    it("does not report stderr from a successful probe even with DEBUG enabled", () => {
+        fixture("podman", "podman-machine", 0, "native warning");
+        vi.stubEnv("DEBUG", "1");
+        expect(docker.ensureDockerRunning()).toBeUndefined();
+        expect(console.error).not.toHaveBeenCalled();
+        expect(process.exit).not.toHaveBeenCalled();
+        assertOnlyInfoProbe();
+    });
+
     it.each(cases)("prints exact %s/%s guidance and exits once without service commands", (runtime, flavor, hint) => {
         const f = fixture(runtime, flavor);
         expect(docker.ensureDockerRunning()).toBeUndefined();
@@ -103,22 +125,16 @@ describe("container runtime readiness public facade", () => {
 });
 
 describe("container runtime readiness facade failure behavior", () => {
-    const steps = ["cli", "probe", "info", "runtime:1", "report:1", "runtime:2", "flavor:1", "flavor:2", "report:2", "exit"];
+    const steps = ["cli", "probe", "info", "report:1", "report:2", "exit"];
 
     it.each(steps)("preserves Error and non-Error throws at %s and stops later effects", step => {
         for (const failure of [new Error("native failure"), { failure: step }]) {
             const f = fixture("podman", "podman-rootless");
-            let runtimes = 0;
-            let flavors = 0;
             let reports = 0;
             const visit = (name: string) => {
                 f.trace.push(name);
                 if (step === name) throw failure;
             };
-            Object.defineProperties(f.info, {
-                runtime: { get() { visit(`runtime:${++runtimes}`); return "podman"; } },
-                flavor: { get() { visit(`flavor:${++flavors}`); return "podman-rootless"; } },
-            });
             native.cli.mockImplementation(() => { visit("cli"); return "fixture-runtime"; });
             native.spawn.mockImplementation(() => { visit("probe"); return result(); });
             native.info.mockImplementation(() => { visit("info"); return f.info; });

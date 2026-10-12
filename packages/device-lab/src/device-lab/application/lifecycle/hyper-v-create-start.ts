@@ -1218,33 +1218,25 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
-            let seedResult: Record<string, unknown> | null = null;
-            try {
-                const line = String(seedExecution.stdout || "").trim().split(/\r?\n/).at(-1) || "";
-                const value = JSON.parse(line);
-                seedResult = hyperVCreateRecord(value) ? value : null;
-            }
-            catch {
-                seedResult = null;
-            }
-            const sshHostKeyFingerprint = String(seedResult?.sshHostKeyFingerprint || "");
+            const seedResult = seedExecution.observation;
+            const sshHostKeyFingerprint = seedResult?.sshHostKeyFingerprint || "";
             let seedFilesAvailable = false;
             try {
                 seedFilesAvailable = Boolean(seedResult
-                    && String(seedResult.vmName || "") === expectedVmName
-                    && String(seedResult.guestUsername || "") === guestUsername
-                    && String(seedResult.networkAddress || "") === String(parsed.create?.networkAddress || "")
-                    && ports.samePath(String(seedResult.sshPrivateKeyPath || ""), sshPrivateKeyPath)
-                    && ports.samePath(String(seedResult.sshPublicKeyPath || ""), sshPublicKeyPath)
-                    && ports.samePath(String(seedResult.sshHostPublicKeyPath || ""), sshHostPublicKeyPath)
-                    && ports.samePath(String(seedResult.knownHostsPath || ""), knownHostsPath)
+                    && seedResult.vmName === expectedVmName
+                    && seedResult.guestUsername === guestUsername
+                    && seedResult.networkAddress === String(parsed.create?.networkAddress || "")
+                    && ports.samePath(seedResult.sshPrivateKeyPath, sshPrivateKeyPath)
+                    && ports.samePath(seedResult.sshPublicKeyPath, sshPublicKeyPath)
+                    && ports.samePath(seedResult.sshHostPublicKeyPath, sshHostPublicKeyPath)
+                    && ports.samePath(seedResult.knownHostsPath, knownHostsPath)
                     && /^SHA256:[A-Za-z0-9+/]{43}$/.test(sshHostKeyFingerprint)
                     && ports.validateHostIdentity(ownerId, parsed.deviceId, sshHostPublicKeyPath, knownHostsPath, String(parsed.create?.networkAddress || ""), sshHostKeyFingerprint));
             }
             catch {
                 seedFilesAvailable = false;
             }
-            if (!seedResult || seedResult.ok !== true || String(seedResult.vmId).toLowerCase() !== observation.vmId || !ports.samePath(String(seedResult.seedDiskPath || ""), seedDiskPath) || !seedFilesAvailable) {
+            if (!seedResult || seedResult.ok !== true || seedResult.vmId.toLowerCase() !== observation.vmId || !ports.samePath(seedResult.seedDiskPath, seedDiskPath) || !seedFilesAvailable) {
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-invalid-result", ownerId, deviceId: parsed.deviceId, rollback};
             }

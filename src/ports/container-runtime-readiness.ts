@@ -1,9 +1,17 @@
 import type { RuntimeName } from "../domain/container-runtime.js";
 
+export type ContainerRuntimeRepairCategory =
+    | "docker-desktop"
+    | "docker-service"
+    | "podman-machine"
+    | "podman-rootless"
+    | "podman-service";
+
+export type ContainerRuntimeReadinessResult =
+    | { kind: "ready" }
+    | { kind: "refused"; runtime: RuntimeName; repairCategory: ContainerRuntimeRepairCategory };
+
 export interface ContainerRuntimeReadinessPorts {
     isRunning(): boolean;
     runtimeInfo(): { runtime: RuntimeName; flavor: string };
-    /** Select the reporter before rendering once synchronously; do not retain the supplier. */
-    reportError(message: () => string): undefined;
-    exitFailure(): undefined;
 }

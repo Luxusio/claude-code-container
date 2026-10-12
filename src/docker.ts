@@ -28,6 +28,7 @@ import { fileURLToPath } from "url";
 import { createContainerSessionHandoff } from "./application/container-session-handoff.js";
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
+import type { ContainerRuntimeRepairCategory } from "./ports/container-runtime-readiness.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
 import { ContainerEngineUnavailableError } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
@@ -1227,19 +1228,24 @@ export function isDockerRunning(): boolean {
     return result.status === 0;
 }
 
+const CONTAINER_RUNTIME_REPAIR_HINTS: Record<ContainerRuntimeRepairCategory, string> = {
+    "docker-desktop": "Please start Docker Desktop and try again.",
+    "docker-service": "Please start the docker service (e.g. `sudo systemctl start docker`) and try again.",
+    "podman-machine": "Please start the Podman machine (`podman machine start`) and try again.",
+    "podman-rootless": "Please start the rootless Podman service (`systemctl --user start podman.socket`) and try again.",
+    "podman-service": "Please start the Podman service (`sudo systemctl start podman.socket`) and try again.",
+};
+
 export function ensureDockerRunning(): void {
-    createContainerRuntimeReadiness({
+    const result = createContainerRuntimeReadiness({
         isRunning: () => isDockerRunning(),
         runtimeInfo: () => getRuntimeInfo(),
-        reportError: message => {
-            console.error(message());
-            return undefined;
-        },
-        exitFailure: () => {
-            process.exit(1);
-            return undefined;
-        },
     }).run();
+    if (result.kind === "ready") return;
+
+    console.error(`Error: ${result.runtime} is not running.`);
+    console.error(CONTAINER_RUNTIME_REPAIR_HINTS[result.repairCategory]);
+    process.exit(1);
 }
 
 export function isContainerRunning(

@@ -155,7 +155,7 @@ import {
     restoreDeviceLabHyperVSnapshot,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxGuiTypeGuestCommand, hyperVLinuxGuiScrollGuestCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
+import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxGuiTypeGuestCommand, hyperVLinuxGuiScrollGuestCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "@ccc/device-lab/device-lab/providers/ios-simulator.js";
 import { DEVICE_LAB_VERSION } from "./version.js";
 
@@ -6525,7 +6525,10 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         seedFailureCode:linuxSeedFailureCode,
         prepareLinuxSeed: (connection, request) => {
             const command = hyperVLinuxSeedCommand({executable: connection.executable, ...request});
-            return async (timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, command, {timeoutMs, outputLimit}));
+            return async (timeoutMs, outputLimit) => {
+                const execution = nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, command, {timeoutMs, outputLimit}));
+                return {...execution, observation: decodeHyperVLinuxSeedObservation(execution.stdout)};
+            };
         },
         prepareWindowsProvisionMedia: (connection, request) => hyperVGuestProvisionMediaCommand({executable: connection.executable, ...request}),
         probeLinuxReadiness: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
