@@ -48,7 +48,8 @@ const structuralIds = new Set();
 for (const lane of structuralPlans) {
     if (structuralIds.has(lane.id) || typeof lane.workStatus !== "string" || !Object.hasOwn(structuralCounts, lane.workStatus)
         || [lane.title, lane.remainingWork, lane.completionCriteria].some(value => typeof value !== "string" || !value.trim())
-        || (lane.workStatus === "completed" && !/^[a-f0-9]{40}$/.test(lane.acceptedIntegrationCommit ?? ""))) {
+        || (lane.workStatus === "completed" && (typeof lane.acceptedIntegrationCommit !== "string"
+            || !/^[a-f0-9]{40}$/.test(lane.acceptedIntegrationCommit)))) {
         throw Error("Invalid structural group: " + lane.id);
     }
     structuralIds.add(lane.id);
