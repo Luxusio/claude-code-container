@@ -4,8 +4,8 @@ Updated: 2026\-10\-12. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **7/16 완료 (43.8%)**, **9개 남음**.
-부분 완료: **4**; 진행 중: **1**; 미착수: **4**.
+확인된 구조 정리 그룹: **8/16 완료 (50.0%)**, **8개 남음**.
+부분 완료: **4**; 진행 중: **0**; 미착수: **4**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -17,7 +17,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | 브로커 물리 기기·리스·정리 | 부분 완료 | 물리 기기 선택 안내 문구와 Apple inventory stdout 해석을 어댑터로 옮긴다\. | 선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다\. | packages/device\-lab/src/device\-lab/application/broker\-physical\-devices\.ts |
 | Hyper\-V 수명주기·네이티브 경계 | 부분 완료 | Linux seed stdout의 마지막 줄 JSON 해석을 네이티브 어댑터로 옮긴다\. | 코어는 검증된 seed 관측을 받고, VM·키·네트워크 동일성 판단과 rollback 정책을 유지한다\. | packages/device\-lab/src/device\-lab/application/lifecycle/hyper\-v\-create\-start\.ts |
 | 컨테이너 실행·준비 경계 | 부분 완료 | runtime readiness의 Docker·Podman 복구 안내 문구를 CLI 어댑터로 옮긴다\. | 컨테이너 정책은 준비 상태·거절 이유를 결정하고, CLI가 runtime별 명령 구성과 안내를 처리한다\. | src/application/container\-runtime\-readiness\.ts |
-| Desktop 제어·파일 전송 | 진행 중 | X11·Windows·macOS 경계 구현과 독립 리뷰는 끝났고, 빌드·행동 QA·로컬 통합을 진행한다\. | 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책을 QA 후 통합한다\. | packages/device\-lab/providers/application/desktop\-control\-transfer\.mjs |
 | Workspace 열기·사용자 안내 | 미착수 | workspace open의 prompt·출력 문구·exit 표현을 CLI 어댑터로 옮긴다\. | 코어가 등록 복구·사용자 확인·소유권·충돌 판단을 유지하고, 어댑터가 질문·출력·종료를 처리한다\. | src/application/workspace/open\.ts |
 | Runtime capability 관측 | 미착수 | raw status·stdout·JSON 해석과 Vitest 전용 분기를 코어 밖으로 정리한다\. | 어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다\. | src/application/runtime\-capabilities\.ts, src/adapters/runtime\-capabilities\.ts |
 | Codex·Claude 설정 포트 단순화 | 미착수 | 내부 포트의 getter·descriptor·Reflect 호출 보존 계층을 필요한 일반 함수로 줄인다\. | 설정 lock·prepare·bootstrap·finally 복구와 안전한 파일 공개 정책을 보존하면서, 실제 내부 호출 계약에 맞춘 단순한 포트를 사용한다\. | src/application/codex\-harness\.ts, src/adapters/codex\-harness\.ts, src/application/mcp\-forward\.ts, src/adapters/mcp\-forward\.ts |
@@ -34,6 +33,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | Device Lab 관리 명령 | `2d82f06c` | 관리 진단·setup·delete 정책은 의미 관측을 사용하고, 실행 recipe·터미널 출력은 네이티브 어댑터가 처리한다\. |
 | Remote 연결·전송 경계 | `9c1d1e5d` | 원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
 | 도구 설치·Doctor 진단 | `c9cae5ae` | 설치·진단 정책이 의미 관측을 사용하고, 네이티브 실행·터미널 표현이 어댑터에 있으며 리뷰·QA·통합이 확인된다\. |
+| Desktop 제어·파일 전송 | `a71e9ed2` | 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다\. |
 
 각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
 

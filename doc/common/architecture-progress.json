@@ -1704,18 +1704,20 @@
       "id": "desktop-native-boundaries-structural",
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
-      "workStatus": "in-progress",
-      "remainingWork": "X11·Windows·macOS 경계 구현과 독립 리뷰는 끝났고, 빌드·행동 QA·로컬 통합을 진행한다.",
-      "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책을 QA 후 통합한다.",
-      "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
+      "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
+      "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
-        "remainingPaths": [
+        "owningPaths": [
           "packages/device-lab/providers/application/desktop-control-transfer.mjs"
         ]
       },
-      "status": "Confirmed current source scope; in-progress. Zero additional operation credit; full Goal acceptance remains unverified.",
+      "status": "Accepted bounded source at a71e9ed2: actual independent Code/Security/Docs and portable QA194/11whole files, strict contracts, full build, lint/package/shipping/archive/public-entry checks passed; locally integrated. Original formal receipt-empty park and native/full-Goal ceilings retained. Zero operation credit.",
       "taskId": "TASK__architecture-desktop-native-boundaries",
-      "candidateCommit": "a47d7b2972c4cbcdf0e7d329c06b1178da3a2bca"
+      "acceptedIntegrationCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
+      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/desktop-native-a71e-oxrqrcau/final-result.json",
+      "deliveryEvidence": "/tmp/ccc-desktop-native-integration-20261012.json"
     },
     {
       "id": "workspace-open-presentation-structural",
