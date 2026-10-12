@@ -842,7 +842,6 @@ require('node:module').syncBuiltinESMExports();`);
         for (const override of [
             { downloadPath: "C:\\outside\\unsafe.txt" },
             { downloadPath: "C:\\ccc\\scratch\\downloads\\foreign-id-remote.txt" },
-            { downloadPath: null, hostDownloadPath: null },
             { id: "foreign-id" },
             { type: "upload" },
         ]) {
@@ -852,6 +851,14 @@ require('node:module').syncBuiltinESMExports();`);
             expect(rejectedDownload.isError).toBe(true);
             expect(readFileSync(downloadTarget, "utf8")).toBe("preserve destination");
         }
+        responseOverride = undefined;
+
+        responseOverride = { downloadPath: null, hostDownloadPath: null };
+        writeFileSync(downloadTarget, "replace destination");
+        const fallbackDownload = await client.callTool({ name: "download", arguments: { deviceId: "windows-win-helper", remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt", localPath: downloadTarget, timeoutMs: 1000 } });
+        expect(fallbackDownload.isError).not.toBe(true);
+        expect(JSON.parse((fallbackDownload.content as Array<{ text: string }>)[0].text)).toMatchObject({ downloaded: { remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt", localPath: downloadTarget } });
+        expect(readFileSync(downloadTarget, "utf8")).toBe("downloaded");
         responseOverride = undefined;
 
         for (const remoteName of ["directory.bin", "missing.bin"]) {
