@@ -127,6 +127,65 @@ function fakeBrokerPortProcess(pid: number, commandLine: string | null) {
 
 vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
 
+type AuthIdentityFault = "none" | "volume" | "missing-primary-volume" | "missing-volume" | "inode" | "missing-inode" | "zero-inode" | "linked-handle" | "pathname-link" | "pathname-hardlink" | "pathname-swap" | "pathname-volume" | "open-refused";
+
+// Keep real files and descriptors; only reproduce Windows' missing pathname volume
+// and hostile identity observations at the fs boundary used by the public broker.
+async function windowsAuthIdentityFixture(file: string, fault: AuthIdentityFault = "none") {
+    const actual = await vi.importActual<typeof import("fs")>("fs");
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const opened: number[] = [], closed: number[] = [], live = new Map<number, number>();
+    const reads: number[] = [], openFlags: Array<string | number> = [];
+    let readOpens = 0;
+    const inode = 9007199254740992n;
+    const volume = 574283787n;
+    const metadata = (stat: nativeFs.Stats | nativeFs.BigIntStats, changes: Record<string, unknown>) =>
+        Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, changes) as nativeFs.BigIntStats;
+    Object.defineProperty(process, "platform", { configurable: true, get: () => "win32" });
+    vi.spyOn(nativeFs, "openSync").mockImplementation((path, flags, mode) => {
+        const readingAuth = String(path) === file && (flags === "r" || typeof flags === "number" && (flags & (actual.constants.O_WRONLY | actual.constants.O_RDWR)) === actual.constants.O_RDONLY);
+        if (readingAuth && ++readOpens % 2 === 0 && fault === "open-refused") {
+            throw Object.assign(new Error("fresh auth handle refused"), { code: "EACCES" });
+        }
+        const fd = actual.openSync(path, flags, mode);
+        if (readingAuth) { opened.push(fd); openFlags.push(flags); live.set(fd, readOpens % 2); }
+        return fd;
+    });
+    vi.spyOn(nativeFs, "fstatSync").mockImplementation(((fd: number, options?: { bigint?: boolean }) => {
+        const stat = actual.fstatSync(fd, options as { bigint: true });
+        if (!live.has(fd)) return stat;
+        const second = live.get(fd) === 0;
+        return metadata(stat, {
+            dev: fault === "missing-primary-volume" ? 0n : second && fault === "volume" ? volume + 1n : second && fault === "missing-volume" ? 0n : volume,
+            ino: second && fault === "inode" ? inode + 1n : second && fault === "missing-inode" ? undefined : fault === "zero-inode" ? 0n : inode,
+            nlink: second && fault === "linked-handle" ? 2n : 1n,
+        });
+    }) as typeof nativeFs.fstatSync);
+    vi.spyOn(nativeFs, "lstatSync").mockImplementation(((path: nativeFs.PathLike, options?: { bigint?: boolean }) => {
+        const stat = actual.lstatSync(path, options as { bigint: true });
+        if (String(path) !== file) return stat;
+        const fresh = [...live.values()].includes(0);
+        return metadata(stat, {
+            dev: fresh && fault === "pathname-volume" ? volume + 1n : 0n,
+            ino: fresh && fault === "pathname-swap" ? inode + 1n : fault === "zero-inode" ? 0n : inode,
+            nlink: fresh && fault === "pathname-hardlink" ? 2n : 1n,
+            ...(fresh && fault === "pathname-link" ? { isSymbolicLink: () => true } : {}),
+        });
+    }) as typeof nativeFs.lstatSync);
+    vi.spyOn(nativeFs, "closeSync").mockImplementation(fd => {
+        if (live.has(fd)) { closed.push(fd); live.delete(fd); }
+        actual.closeSync(fd);
+    });
+    vi.spyOn(nativeFs, "readSync").mockImplementation(((...args: Parameters<typeof nativeFs.readSync>) => {
+        if (live.has(args[0])) reads.push(live.get(args[0])!);
+        return actual.readSync(...args);
+    }) as typeof nativeFs.readSync);
+    return {
+        opened, closed, live, reads, openFlags,
+        restore: () => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platformDescriptor); },
+    };
+}
+
 describe("device-lab host broker daemon", () => {
     let originalHomeRestore: (() => void) | undefined;
     let fixtureHome: string | undefined;
@@ -565,6 +624,92 @@ describe("device-lab host broker daemon", () => {
         chmodSync(secretFile, 0o644);
         expect(deviceBrokerOwnerToken(ownerId)).toBe(token);
         if (process.platform !== "win32") expect(statSync(secretFile).mode & 0o777).toBe(0o600);
+    });
+
+    it("keeps the owner token and authenticates RPC with a Windows zero-volume pathname qualified by real handles", async () => {
+        const cwd = "/project/broker-windows-auth-identity";
+        const ownerId = deviceLabOwnerId(cwd);
+        const token = deviceBrokerOwnerToken(ownerId);
+        const file = deviceBrokerAuthSecretFile(ownerId);
+        const bytes = readFileSync(file, "utf8");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const identity = await windowsAuthIdentityFixture(file);
+        try {
+            expect(deviceBrokerOwnerToken(ownerId)).toBe(token);
+            expect(deviceBrokerOwnerToken(ownerId)).toBe(token);
+            const response = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: JSON.stringify({ method: "broker.echo", params: { identity: "qualified" } }),
+            });
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({ ok: true, result: { ownerId, params: { identity: "qualified" } } });
+            expect(readFileSync(file, "utf8")).toBe(bytes);
+            expect(identity.opened.length).toBeGreaterThanOrEqual(6);
+            expect(identity.closed).toHaveLength(identity.opened.length);
+            expect(identity.live.size).toBe(0);
+            expect(identity.reads.length).toBeGreaterThan(0);
+            expect(identity.reads.every(handle => handle === 1)).toBe(true);
+            for (const flags of identity.openFlags) {
+                expect(typeof flags).toBe("number");
+                expect(Number(flags) & (nativeFs.constants.O_WRONLY | nativeFs.constants.O_RDWR)).toBe(0);
+                if (nativeFs.constants.O_NOFOLLOW) expect(Number(flags) & nativeFs.constants.O_NOFOLLOW).toBe(nativeFs.constants.O_NOFOLLOW);
+            }
+        } finally {
+            identity.restore();
+            await close(server);
+        }
+    });
+
+    it.each<AuthIdentityFault>([
+        "volume", "missing-primary-volume", "missing-volume", "inode", "missing-inode", "zero-inode", "linked-handle", "pathname-link", "pathname-hardlink", "pathname-swap", "pathname-volume", "open-refused",
+    ])("refuses authenticated RPC and closes every auth descriptor when Windows identity proof fails: %s", async fault => {
+        const cwd = "/project/broker-windows-auth-refusal";
+        const ownerId = deviceLabOwnerId(cwd);
+        const token = deviceBrokerOwnerToken(ownerId);
+        const file = deviceBrokerAuthSecretFile(ownerId);
+        const bytes = readFileSync(file, "utf8");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const identity = await windowsAuthIdentityFixture(file, fault);
+        try {
+            const response = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: JSON.stringify({ method: "broker.echo", params: { forbidden: true } }),
+            });
+            expect(response.status).toBe(401);
+            expect(await response.json()).toMatchObject({ ok: false, error: "invalid-owner-token" });
+            expect(readFileSync(file, "utf8")).toBe(bytes);
+            expect(identity.opened.length).toBeGreaterThanOrEqual(1);
+            expect(identity.closed).toHaveLength(identity.opened.length);
+            expect(identity.live.size).toBe(0);
+            if (fault === "missing-primary-volume") {
+                expect(identity.opened).toHaveLength(1);
+                expect(identity.reads).toEqual([]);
+            }
+        } finally {
+            identity.restore();
+            await close(server);
+        }
+    });
+
+    it.runIf(process.platform === "linux")("qualifies healthy Linux auth using one opened descriptor", async () => {
+        const ownerId = "0a0b0c0d0e0f1122";
+        const token = deviceBrokerOwnerToken(ownerId);
+        const file = deviceBrokerAuthSecretFile(ownerId);
+        const actual = await vi.importActual<typeof import("fs")>("fs");
+        const opened: number[] = [], closed: number[] = [];
+        vi.spyOn(nativeFs, "openSync").mockImplementation((path, flags, mode) => {
+            const fd = actual.openSync(path, flags, mode);
+            if (String(path) === file) opened.push(fd);
+            return fd;
+        });
+        vi.spyOn(nativeFs, "closeSync").mockImplementation(fd => { closed.push(fd); actual.closeSync(fd); });
+        expect(deviceBrokerOwnerToken(ownerId)).toBe(token);
+        expect(opened).toHaveLength(1);
+        expect(closed).toContain(opened[0]);
     });
 
     it("atomically replaces owner-mismatched auth metadata", () => {

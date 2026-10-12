@@ -96,13 +96,14 @@ function ownedRoots(owner: Owner): boolean {
 function readAllocationJournal(owner: Owner): { allocations: Allocation[]; pending: PendingAllocation[]; bytes: string } {
     const expected = owner.journal;
     const path = lstatSync(expected.path, { bigint: true });
-    const matches = (stat: typeof path) => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n
-        && String(stat.dev) === expected.dev && String(stat.ino) === expected.ino;
-    if (!matches(path)) throw new Error("allocation journal identity unavailable");
+    const matches = (stat: typeof path, pathname = false) => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n
+        && BigInt(expected.dev) > 0n && stat.ino > 0n && String(stat.ino) === expected.ino
+        && (String(stat.dev) === expected.dev || pathname && process.platform === "win32" && stat.dev === 0n);
+    if (!matches(path, true)) throw new Error("allocation journal identity unavailable");
     const descriptor = openSync(expected.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     try {
         const opened = fstatSync(descriptor, { bigint: true });
-        if (!matches(opened) || !matches(lstatSync(expected.path, { bigint: true }))) throw new Error("allocation journal changed");
+        if (!matches(opened) || !matches(lstatSync(expected.path, { bigint: true }), true)) throw new Error("allocation journal changed");
         const buffer = Buffer.alloc(32769);
         let count = 0;
         while (count < buffer.length) {
@@ -140,7 +141,7 @@ function readAllocationJournal(owner: Owner): { allocations: Allocation[]; pendi
         }
         const final = fstatSync(descriptor, { bigint: true });
         if (!matches(final) || final.size !== opened.size || final.mtimeNs !== opened.mtimeNs
-            || final.ctimeNs !== opened.ctimeNs || !matches(lstatSync(expected.path, { bigint: true }))) throw new Error("allocation journal changed during read");
+            || final.ctimeNs !== opened.ctimeNs || !matches(lstatSync(expected.path, { bigint: true }), true)) throw new Error("allocation journal changed during read");
         return { allocations, pending: [...pending.values()], bytes };
     } finally { closeSync(descriptor); }
 }
@@ -249,8 +250,18 @@ export async function createFakeIosMcpContext(options: {
         logPath = join(homeDir, "fake-ios.log");
         const allocationPath = join(homeDir, "fake-ios-allocation.jsonl");
         const header = JSON.stringify({ schema: 1, kind: "header", token }) + "\n";
-        writeFileSync(allocationPath, header, { flag: "wx" }); // Authenticated known-empty before any spawn.
-        const journalStat = lstatSync(allocationPath, { bigint: true });
+        const journalDescriptor = openSync(allocationPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0));
+        const journalStat = (() => {
+            try {
+                writeFileSync(journalDescriptor, header); // Authenticated known-empty before any spawn.
+                const opened = fstatSync(journalDescriptor, { bigint: true });
+                const pathname = lstatSync(allocationPath, { bigint: true });
+                if (!opened.isFile() || opened.nlink !== 1n || opened.dev <= 0n || opened.ino <= 0n
+                    || !pathname.isFile() || pathname.isSymbolicLink() || pathname.nlink !== 1n || pathname.ino !== opened.ino
+                    || pathname.dev !== opened.dev && !(process.platform === "win32" && pathname.dev === 0n)) throw new Error("allocation journal creation identity unavailable");
+                return opened;
+            } finally { closeSync(journalDescriptor); }
+        })();
         const journal = Object.freeze({ path: allocationPath, header, dev: String(journalStat.dev), ino: String(journalStat.ino),
             mtimeNs: String(journalStat.mtimeNs), ctimeNs: String(journalStat.ctimeNs) });
         const containerRoot = join(homeDir, "ios-app-container");
@@ -343,11 +354,20 @@ process.on('exit', () => diagnostic('exit'));
 const allocationPath = ${JSON.stringify(join(homeDir, "fake-ios-allocation.jsonl"))};
 const allocationId = require('crypto').randomUUID();
 function publishAllocation(record) {
+  function matchesPath() {
+    const pathname = fs.lstatSync(allocationPath, {bigint: true});
+    return pathname.isFile() && !pathname.isSymbolicLink() && pathname.nlink === 1n && pathname.ino > 0n
+      && String(pathname.ino) === ${JSON.stringify(String(journalStat.ino))}
+      && (String(pathname.dev) === ${JSON.stringify(String(journalStat.dev))} || process.platform === 'win32' && pathname.dev === 0n);
+  }
+  if (!matchesPath()) throw new Error('allocation journal pathname identity');
   const fd = fs.openSync(allocationPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW || 0));
   try {
     const stat = fs.fstatSync(fd, {bigint: true});
-    if (!stat.isFile() || stat.nlink !== 1n || String(stat.dev) !== ${JSON.stringify(String(journalStat.dev))} || String(stat.ino) !== ${JSON.stringify(String(journalStat.ino))} || stat.size >= 32768n) throw new Error('allocation journal identity/bound');
+    if (!stat.isFile() || stat.nlink !== 1n || stat.dev <= 0n || stat.ino <= 0n || String(stat.dev) !== ${JSON.stringify(String(journalStat.dev))} || String(stat.ino) !== ${JSON.stringify(String(journalStat.ino))} || stat.size >= 32768n || !matchesPath()) throw new Error('allocation journal identity/bound');
     fs.writeFileSync(fd, JSON.stringify(record) + '\\n');
+    const published = fs.fstatSync(fd, {bigint: true});
+    if (!published.isFile() || published.nlink !== 1n || published.dev !== stat.dev || published.ino !== stat.ino || !matchesPath()) throw new Error('allocation journal changed during publication');
   } finally { fs.closeSync(fd); }
 }
 // Synchronous pending publication precedes every asynchronous identity/startup step.

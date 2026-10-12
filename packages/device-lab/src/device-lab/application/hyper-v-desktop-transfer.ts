@@ -414,12 +414,13 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         },
                     };
                 }
+                if (execution.windowFailure) return {kind:'failure',category:'provider-failed',facts:{ok:false,error:execution.windowFailure,ownerId,backend:match.backend,deviceId}};
                 let bytes = sourceBytes;
                 if (parsed.tool === "device_download" && localPath) {
                     try {
                         const maxBytes = downloadMaxBytes || 16 * 1024 * 1024;
                         const downloaded = execution.artifact as Bytes | undefined;
-                        if (!downloaded) throw new Error("hyper-v-linux-guest-download-invalid-artifact");
+                        if (execution.artifactInvalid || !downloaded) throw new Error("hyper-v-linux-guest-download-invalid-artifact");
                         if (downloaded.length > maxBytes) {
                             return {
                                 kind: 'failure', category: 'too-large', facts: {
@@ -572,6 +573,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                             ok: false, error: "hyper-v-guest-invalid-result", ownerId, backend: match.backend, deviceId
                         }
                     };
+                if (nativeObservation?.windowFailure) return {kind:'failure',category:'provider-failed',facts:{ok:false,error:nativeObservation.windowFailure,ownerId,backend:match.backend,deviceId}};
                 if (parsed.tool === "device_download" && transferLocalPath && transferStage) {
                     try {
                         const maxBytes = typeof parsed.params.maxFileBytes === "number" ? Math.min(parsed.params.maxFileBytes, 16 * 1024 * 1024) : 16 * 1024 * 1024;

@@ -30,7 +30,7 @@ describe("Hyper-V native desktop observations", () => {
     it("decodes Unicode binary download framing and rejects malformed framing", () => {
         const bytes = Buffer.from("한글\u0000abc");
         expect(observeDesktopExecution({ status: 0, stdout: bytes.toString("base64") }, "download")).toMatchObject({ ok: true, action: "download", artifact: bytes, stdout: "" });
-        for (const stdout of ["%%%", "YQ=", "YQ==\nnoise"]) expect(() => observeDesktopExecution({ status: 0, stdout }, "download")).toThrow("invalid-base64");
+        for (const stdout of ["%%%", "YQ=", "YQ==\nnoise"]) expect(observeDesktopExecution({ status: 0, stdout }, "download")).toMatchObject({ ok: true, action: "download", artifactInvalid: true });
         expect(observeDesktopExecution({ status: 1, stdout: "%%%", error: "native-failed" }, "download")).toMatchObject({ ok: false, error: "native-failed" });
     });
     it("rejects a successful native action different from the requested download", () => {
@@ -39,8 +39,8 @@ describe("Hyper-V native desktop observations", () => {
     it("projects Windows windows and focus only from successful native guest results", () => {
         const action = { action: "exec" as const, command: "native-command" };
         expect(observeDesktopDirect({ action: "exec", status: 0, stdout: '{"windows":[{"handle":"42","title":"한글","processId":3,"extra":true}]}', stderr: "" }, action, { kind: "window-list" }).windows).toEqual({ windows: [{ handle: "42", title: "한글", processId: 3 }] });
-        expect(() => observeDesktopDirect({ action: "exec", status: 0, stdout: "{}", stderr: "" }, action, { kind: "window-list" })).toThrow("window-list-invalid-result");
-        expect(() => observeDesktopDirect({ action: "exec", status: 0, stdout: '{"error":"window-focus-denied"}', stderr: "" }, action, { kind: "focus", handle: "42" })).toThrow("window-focus-denied");
+        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: "{}", stderr: "" }, action, { kind: "window-list" })).toMatchObject({ windowFailure: "window-list-invalid-result" });
+        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: '{"error":"window-focus-denied"}', stderr: "" }, action, { kind: "focus", handle: "42" })).toMatchObject({ windowFailure: "window-focus-denied" });
         expect(observeDesktopDirect({ action: "exec", status: 9, stdout: "{}", stderr: "denied" }, action, { kind: "window-list" })).toMatchObject({ guestFailed: true, result: { status: 9 } });
     });
     it("frames Unicode paths and keeps native commands inside guest limits", () => {
@@ -49,6 +49,40 @@ describe("Hyper-V native desktop observations", () => {
         expect(desktopRemoteReadCommand(path, 8)).toContain("head -c 9");
         expect(desktopGuestCommand("windows-vm", { kind: "window-list" }).length).toBeLessThanOrEqual(4096);
         expect(desktopGuestCommand("windows-vm", { kind: "focus", handle: "42" }).length).toBeLessThanOrEqual(4096);
+    });
+});
+
+describe("Hyper-V normalized native failure composition", () => {
+    it("maps malformed Linux download to the established artifact failure without publication", async () => {
+        const f = fixture("linux-vm");
+        f.execution.mockResolvedValueOnce(observeDesktopExecution({ status: 0, stdout: "%%%" }, "download"));
+        expect(await f.invoke()).toMatchObject({ kind: "failure", category: "provider-failed", facts: { error: "hyper-v-linux-guest-download-invalid-artifact" } });
+        expect(f.ports.writeDestination).not.toHaveBeenCalled();
+        expect(f.execution).toHaveBeenCalledTimes(1);
+    });
+    it.each([
+        ["device_focus_window", "window-focus-denied", "focus"],
+        ["device_window_list", "window-list-session-changed", "window-list"],
+    ] as const)("preserves bounded native %s failure through the application", async (tool, code, kind) => {
+        const f = fixture();
+        const intent = kind === "focus" ? { kind, handle: "42" } : { kind };
+        f.ports.direct.mockResolvedValueOnce(observeDesktopDirect({ action: "exec", status: 0, stdout: JSON.stringify({ error: code }), stderr: "" }, { action: "exec", command: "native-command" }, intent));
+        expect(await f.invoke(tool, { handle: "42" })).toMatchObject({ kind: "failure", category: "provider-failed", facts: { error: code } });
+        expect(f.ports.direct).toHaveBeenCalledTimes(1);
+        expect(f.ports.writeDestination).not.toHaveBeenCalled();
+    });
+    it("normalizes arbitrary window error text instead of publishing a native diagnosis", async () => {
+        const f = fixture();
+        const secret = "native password=PRIVATE diagnostic";
+        f.ports.direct.mockResolvedValueOnce(observeDesktopDirect({ action: "exec", status: 0, stdout: JSON.stringify({ error: secret }), stderr: "" }, { action: "exec", command: "native-command" }, { kind: "window-list" }));
+        const outcome = await f.invoke("device_window_list");
+        expect(outcome).toMatchObject({ kind: "failure", facts: { error: "window-list-invalid-result" } });
+        expect(JSON.stringify(outcome)).not.toContain(secret);
+    });
+    it("keeps a nonzero guest exit separate from window framing failure", async () => {
+        const f = fixture();
+        f.ports.direct.mockResolvedValueOnce(observeDesktopDirect({ action: "exec", status: 9, stdout: '{"error":"window-focus-denied"}', stderr: "guest failed" }, { action: "exec", command: "native-command" }, { kind: "focus", handle: "42" }));
+        expect(await f.invoke("device_focus_window", { handle: "42" })).toMatchObject({ kind: "failure", category: "guest-failed", facts: { error: "hyper-v-guest-command-failed" } });
     });
 });
 

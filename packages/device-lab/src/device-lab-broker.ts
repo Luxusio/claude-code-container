@@ -1184,11 +1184,29 @@ function readDeviceBrokerOwnerSecret(ownerId: string): string | null {
         if (!inspectDeviceBrokerAuthDirectory()) return null;
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
         fd = openSync(file, fsConstants.O_RDONLY | noFollow);
-        const stat = fstatSync(fd);
-        const pathStat = lstatSync(file);
-        if (!stat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink() || stat.nlink !== 1
-            || stat.dev !== pathStat.dev || stat.ino !== pathStat.ino) return null;
-        if (stat.size > DEVICE_BROKER_AUTH_FILE_LIMIT_BYTES) return null;
+        const stat = fstatSync(fd, { bigint: true });
+        const pathStat = lstatSync(file, { bigint: true });
+        if (!stat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink()
+            || stat.nlink !== 1n || pathStat.nlink !== 1n || stat.dev === 0n || stat.ino <= 0n
+            || stat.ino !== pathStat.ino) return null;
+        if (stat.dev !== pathStat.dev) {
+            // Some supported Windows Node versions omit the pathname's volume ID.
+            // Prove it with another opened handle; a zero pathname ID is not proof.
+            if (process.platform !== "win32" || pathStat.dev !== 0n || stat.dev === 0n) return null;
+            const verificationFd = openSync(file, fsConstants.O_RDONLY | noFollow);
+            try {
+                const verification = fstatSync(verificationFd, { bigint: true });
+                const currentPath = lstatSync(file, { bigint: true });
+                if (!verification.isFile() || verification.nlink !== 1n
+                    || verification.dev !== stat.dev || verification.ino !== stat.ino
+                    || !currentPath.isFile() || currentPath.isSymbolicLink() || currentPath.nlink !== 1n
+                    || currentPath.ino !== verification.ino
+                    || (currentPath.dev !== 0n && currentPath.dev !== verification.dev)) return null;
+            } finally {
+                closeSync(verificationFd);
+            }
+        }
+        if (stat.size > BigInt(DEVICE_BROKER_AUTH_FILE_LIMIT_BYTES)) return null;
         const parsed = JSON.parse(readBoundedUtf8Descriptor(fd, DEVICE_BROKER_AUTH_FILE_LIMIT_BYTES)) as { ownerId?: unknown; secret?: unknown };
         if (parsed.ownerId !== ownerId || typeof parsed.secret !== "string" || !/^[a-f0-9]{64}$/.test(parsed.secret)) return null;
         try { fchmodSync(fd, 0o600); } catch { /* best effort on non-POSIX filesystems */ }

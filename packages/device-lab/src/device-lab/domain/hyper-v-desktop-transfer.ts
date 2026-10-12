@@ -175,6 +175,7 @@ export type DesktopDirectResult = {
     bytes: number;
 };
 export type DesktopGuestIntent = {kind:"exec";command:string}|{kind:"window-list"}|{kind:"focus";handle:string}|{kind:"type";text:string}|{kind:"scroll";direction:"up"|"down";amount:number};
+export type DesktopWindowFailure = 'window-focus-invalid-result' | 'window-list-invalid-result' | 'window-focus-denied' | 'window-not-found' | 'focus-window-session-changed' | 'window-list-session-changed' | 'window-list-query-failed';
 export type DesktopExecution = {
     ok: boolean;
     guestFailed?: boolean;
@@ -182,6 +183,8 @@ export type DesktopExecution = {
     windows?: DesktopWindowList;
     focused?: boolean;
     artifact?: { readonly length: number };
+    artifactInvalid?: boolean;
+    windowFailure?: DesktopWindowFailure;
     mode?: string;
     provider?: string;
     status?: number | null;
