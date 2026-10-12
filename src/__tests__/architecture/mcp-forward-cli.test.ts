@@ -77,10 +77,18 @@ vi.mock("../../codex-state-ownership.js", () => ({ assertCodexStateAccessible: f
 vi.mock("../../codex-harness.js", () => ({ ensureCodexHarness: f.harness }));
 vi.mock("../../localhost-proxy-setup.js", () => ({ setupLocalhostProxy: () => f.events.push("proxy") }));
 vi.mock("../../codex-clipboard-image.js", () => ({ maybeAttachCodexClipboardImage: async (_path: string, args: string[]) => ({ args }) }));
-vi.mock("../../codex-launch.js", () => ({ prepareCodexLaunch: (_runtime: string, args: string[], command: string[]) => {
-    expect(args).toContain("final-id"); f.events.push("launch-preparation");
-    return f.launchFailure ? { ok: false, status: 9, error: "daemon unavailable" } : { ok: true, command };
-} }));
+vi.mock("../../codex-launch.js", async original => {
+    const actual = await original<typeof import("../../codex-launch.js")>();
+    return {
+        prepareCodexLaunchSemantic: (_runtime: string, args: string[], command: string[]) => {
+            expect(args).toContain("final-id"); f.events.push("launch-preparation");
+            return f.launchFailure
+                ? { ok: false, command, status: 9, reason: "engine-unavailable", cause: "daemon unavailable" }
+                : { ok: true, command };
+        },
+        presentCodexLaunchPreparation: actual.presentCodexLaunchPreparation,
+    };
+});
 import { clearSession } from "../../session.js";
 import { main } from "../../index.js";
 class Exit extends Error { constructor(readonly status: number) { super(`exit ${status}`); } }
